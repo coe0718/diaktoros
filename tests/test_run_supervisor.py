@@ -2,7 +2,9 @@
 import concurrent.futures
 import os
 from pathlib import Path
+import signal
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -10,8 +12,64 @@ import time
 import unittest
 from unittest.mock import patch
 
-from review_loop.run_supervisor import MAX_ATTEMPTS, SILENT, Supervisor
+from review_loop.run_supervisor import _WORKERS, MAX_ATTEMPTS, SILENT, Supervisor
 
+# Longest a test waits for its detached workers after it ends. The slowest fixture child
+# sleeps 2s under a 5s child timeout; this leaves room for a loaded runner.
+WORKER_EXIT_TIMEOUT = 20
+
+
+def _processes_naming(marker: str) -> dict[int, str]:
+    """Live processes (other than this one) whose command line names ``marker``."""
+    found = {}
+    proc = Path('/proc')
+    if proc.is_dir():
+        for entry in proc.iterdir():
+            if not entry.name.isdigit() or int(entry.name) == os.getpid():
+                continue
+            try:
+                cmd = (entry / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
+            except OSError:
+                continue
+            if marker in cmd:  # a zombie's command line is empty: it is not writing
+                found[int(entry.name)] = cmd.strip()
+        return found
+    out = subprocess.run(['ps', '-axww', '-o', 'pid=,command='], capture_output=True,
+                         text=True, check=True).stdout
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition(' ')
+        if pid.isdigit() and int(pid) != os.getpid() and marker in cmd:
+            found[int(pid)] = cmd.strip()
+    return found
+
+
+def wait_for_workers(root: Path, timeout: float = WORKER_EXIT_TIMEOUT) -> None:
+    """Block until no detached worker or fixture child still uses ``root`` (#108).
+
+    ``enqueue`` returns as soon as it has spawned a detached worker, and a finished worker's
+    ``recover`` can spawn another, which is not this process's child. A test that returns on
+    the ledger reaching a terminal state can therefore tear down its temp dir while a worker
+    still opens the ledger there (or recreates the dir). Every worker and child names a path
+    under ``root`` on its command line, and only a live worker spawns another, so an empty
+    scan means none is left.
+    """
+    marker = str(root)
+    until = time.monotonic() + timeout
+    while True:
+        for worker in list(_WORKERS):
+            worker.poll()  # reap our own exited children so they do not linger as zombies
+        live = _processes_naming(marker)
+        if not live:
+            return
+        if time.monotonic() >= until:
+            for pid in live:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            raise AssertionError(f"detached workers still running {timeout}s after the test "
+                                 f"under {marker} (killed): {live}")
+        time.sleep(0.05)
 
 
 class Lifecycle(unittest.TestCase):
@@ -19,6 +77,8 @@ class Lifecycle(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # Cleanups run last-in first-out: every worker is gone before the temp dir is removed.
+        self.addCleanup(wait_for_workers, self.root)
         self.db = self.root / "ledger.sqlite"
         self.events = self.root / "launches"
         self.child = self.root / "child.py"
@@ -182,6 +242,9 @@ class ReviewerClaimConcurrency(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # The tests below set production_config after the first enqueue, so a later enqueue
+        # spawns a (failing) detached production worker that names this temp dir.
+        self.addCleanup(wait_for_workers, Path(self.tmp.name))
         self.db = Path(self.tmp.name) / 'ledger.sqlite'
         self.sup = Supervisor(self.db)
         self.sup.enqueue('review', 'o/r', 1, 'a' * 40, 'reviewer')
