@@ -1414,17 +1414,18 @@ def _ledger_path() -> pathlib.Path:
     return config.home() / "state" / "review-loop-runs.sqlite"
 
 
-def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> None:
-    """The isolated run ledger's failed/waiting/uncertain rows for this loop, read-only (#53)."""
+def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> list[dict]:
+    """The isolated run ledger's failed/waiting/uncertain rows for this loop, read-only (#53).
+    Prints them and returns them ([] when there is no readable ledger)."""
     from .run_supervisor import describe_run, read_only_view
 
     ledger = _ledger_path()
     if not ledger.exists():
-        return
+        return []
     rows = read_only_view(ledger, loop["repo"], pr)
     if rows is None:
         print(f"{prefix}run ledger unreadable ({ledger})")
-        return
+        return []
     for row in rows[-limit:]:
         print(prefix + describe_run(row, loop["id"]))
         if row.get("detail") and pr is not None:
@@ -1433,6 +1434,7 @@ def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> N
     if len(rows) > limit:
         print(f"{prefix}… {len(rows) - limit} more: python -m review_loop.run_supervisor "
               f"status {ledger}")
+    return rows
 
 
 def cmd_retry(args) -> int:
@@ -1507,6 +1509,7 @@ def cmd_explain(args) -> int:
     unknown, with the read to retry.
     """
     from . import state as state_mod
+    from .run_supervisor import next_step
 
     if args.loop:
         try:
@@ -1543,12 +1546,21 @@ def cmd_explain(args) -> int:
         print(f"  {'escalation:':<12}{report['escalation']}")
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")
-        _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
-        for text in report["blockers"]:
+        runs = _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
+        # A ledgered turn at the current head that waits to retry, failed before any write, or
+        # is quarantined holds the PR as surely as any gate guard (#53): it is the blocker, and
+        # its step is next. A failed turn that did write is final; GitHub shows where it left off.
+        held = [row for row in runs if report.get("head") and row["head"] == report["head"]
+                and (row["state"] != "failed" or row["write"] is None)]
+        blockers = list(report["blockers"]) + [
+            f"isolated {row['seat']} turn {row['state']} at this head — "
+            f"{row['error'] or 'no reason recorded'}" for row in held]
+        for text in blockers:
             print(f"  {'blocked:':<12}{text}")
-        if not report["blockers"]:
+        if not blockers:
             print(f"  {'blocked:':<12}nothing — no guard is holding this PR back")
-        print(f"  {'next:':<12}{report['next']['action']}")
+        print(f"  {'next:':<12}"
+              + (next_step(held[-1], loop["id"]) if held else report['next']['action']))
     return 0
 
 

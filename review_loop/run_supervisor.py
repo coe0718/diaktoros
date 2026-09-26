@@ -354,19 +354,23 @@ def describe_run(row: dict, loop_id: str = 'LOOP') -> str:
     text = (f"{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']}"
             + (f" ({row['turn_key']})" if row.get('turn_key') else '')
             + f" — {row['error'] or 'no reason recorded'}")
+    return f"{text}; {next_step(row, loop_id)}"
+
+
+def next_step(row: dict, loop_id: str = 'LOOP') -> str:
+    """What moves a failed, waiting or uncertain ``runs_view`` row on (#53)."""
     if row['state'] == 'waiting':
         due = max(0, int((row['retry_at'] or 0) - time.time()))
-        return text + (f"; attempt {(row['retries'] or 0) + 1} of {MAX_RETRIES} due in {due}s "
-                       "(starts on the next event or armed watchdog sweep)")
+        return (f"attempt {(row['retries'] or 0) + 1} of {MAX_RETRIES} due in {due}s "
+                "(starts on the next event or armed watchdog sweep)")
     if row['write'] is None:
-        return text + (f"; no external write — re-arm: hermes review-loop retry --loop {loop_id} "
-                       f"--pr {row['pr']} --seat {row['seat']}")
+        return (f"no external write — re-arm: hermes review-loop retry --loop {loop_id} "
+                f"--pr {row['pr']} --seat {row['seat']}")
     if row['state'] == 'failed':
-        return text + (f"; may have written ({row['write']}) — never replayed; a new head "
-                       "gets a fresh turn")
-    return text + (f"; may have written ({row['write']}) — inspect the PR, then "
-                   f"python -m review_loop.run_supervisor reconcile DB {row['id']} --reason "
-                   "REASON --acknowledge-no-live-worker")
+        return f"may have written ({row['write']}) — never replayed; a new head gets a fresh turn"
+    return (f"may have written ({row['write']}) — inspect the PR, then "
+            f"python -m review_loop.run_supervisor reconcile DB {row['id']} --reason "
+            "REASON --acknowledge-no-live-worker")
 
 
 class Supervisor:
@@ -591,6 +595,12 @@ class Supervisor:
 
     @staticmethod
     def _notice_message(row, current, wrote: str | None) -> str:
+        loop_id = 'LOOP'
+        try:
+            from . import config
+            loop_id = (config.by_repo(row['repo']) or {}).get('id') or loop_id
+        except Exception:
+            pass                      # a notice must go out even if the config is unreadable
         head = (f"⚠️ Review-loop worker {current['state']}: "
                 f"https://github.com/{row['repo']}/pull/{row['pr']} "
                 f"seat={row['seat']} head={row['head']} run={row['id']}. "
@@ -601,7 +611,7 @@ class Supervisor:
             # Nothing reached GitHub: the host's write-ahead records for this run are empty.
             return (head + f" No external write was made ({current['retries'] or 0} failed "
                     "attempts on record). Fix the cause if it is not transient, then re-arm it: "
-                    f"`hermes review-loop retry --loop LOOP --pr {row['pr']} --seat {row['seat']}` "
+                    f"`hermes review-loop retry --loop {loop_id} --pr {row['pr']} --seat {row['seat']}` "
                     f"(or `python -m review_loop.run_supervisor retry DB {row['id']}`); a "
                     "redelivered webhook for this head also re-arms it.")
         return (head + f" Possible external write ({wrote}). "

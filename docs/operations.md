@@ -446,7 +446,8 @@ pending ──claim──► claimed ──► launching/running ──► succe
 Due retries start on the next event for the PR, when another run finishes, or on the next armed
 watchdog sweep. A failed run's notice carries the real reason (the exception text, or the sandbox
 exit status) and the tail of the turn's stdout/stderr; `status` and `explain` print the same with
-the next step. `hermes review-loop retry --loop name --pr 123 [--seat reviewer]` re-arms the
+the next step, and `explain` reports a waiting, write-free failed or uncertain run at the PR's head
+as a `blocked:` line with that step as `next:`. `hermes review-loop retry --loop name --pr 123 [--seat reviewer]` re-arms the
 PR's failed or waiting runs at its newest head, resets their retry budget and starts the worker;
 it refuses a run that may have written and prints the `reconcile` command instead.
 
