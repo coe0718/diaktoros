@@ -143,6 +143,11 @@ class World(http.server.BaseHTTPRequestHandler):
             self._send(200, [world['pr']] if page == 1 and world['pr']['state'] == 'open' else [])
         elif path == base + '/pulls/7/reviews':
             self._send(200, world['reviews'] if page == 1 else [])
+        elif path == base + '/pulls/7/files':
+            # The change under review (#50): one modified file, one page.
+            self._send(200, [{'filename': name, 'status': 'modified', 'additions': 1,
+                              'deletions': 0, 'patch': '@@ -0,0 +1 @@\n+x'}
+                             for name in list(world['blobs'])[:1]] if page == 1 else [])
         elif path.startswith(base + '/pulls/7/reviews/'):
             rid = int(path.rsplit('/', 1)[-1])
             found = [r for r in world['reviews'] if r['id'] == rid]
