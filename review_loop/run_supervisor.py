@@ -943,10 +943,11 @@ class Supervisor:
                   proxy_model=inference.proxy_model, client_identity=inference.client_identity,
                   prompt=prompt, timeout=budget,
                   work_root=Path(loop["state_dir"]) / "isolated-runs")
-        except subprocess.TimeoutExpired:
+        except trusted_turn.TurnBudgetExceeded as exc:
             # Name the clock: an opaque "TimeoutExpired" hides that a setting killed the turn.
-            error = (f"isolated turn failed: TimeoutExpired — killed at the {budget}s turn budget "
-                     "(raise turn_budget_s)")
+            # Only the sandbox's own wall clock lands here; any other timeout stays generic.
+            error = (f"isolated turn failed: TimeoutExpired — killed at the {exc.budget}s turn "
+                     f"budget (sandbox stopped {exc.grace}s past it; raise turn_budget_s)")
         except Exception as exc:
             error = f"isolated turn failed: {type(exc).__name__}"
         finally:

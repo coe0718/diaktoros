@@ -32,6 +32,19 @@ class TurnDenied(Exception):
     pass
 
 
+class TurnBudgetExceeded(subprocess.TimeoutExpired):
+    """The sandbox outlived its turn budget and was SIGKILLed (whole process tree).
+
+    Raised only for the sandbox wall clock, so a caller can name the budget without mistaking
+    any other timeout for it. Still a ``TimeoutExpired``: code that treats a timeout as such
+    keeps doing so.
+    """
+
+    def __init__(self, cmd, budget: int, grace: int):
+        super().__init__(cmd, budget + grace)
+        self.budget, self.grace = budget, grace
+
+
 def _safe_code_snapshot(source: Path, destination: Path) -> None:
     """Export blobs from a pinned commit, never the index or mutable worktree."""
     source = Path(source).absolute()
@@ -290,14 +303,19 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                            '--query-file', '/opt/query', '--oneshot', '-Q',
                            '--provider', provider, '-m', model, '-t', 'terminal,file',
                            '--ignore-rules', '--max-turns', '24', '--run-budget', str(timeout)]
-                result = contained.run(code=code, venv=venv, runtime=runtime,
-                    home=home, checkout=checkout, rust=rust, query=query, entry=command,
-                    inference_socket_dir=inference.directory,
-                    broker_socket_dir=broker.socket_path.parent,
-                    client_code=client.parent, timeout=timeout + KILL_GRACE_S,
-                    # A ruling is judgement, not a change: the adjudicator's tree is mounted
-                    # read-only so nothing it runs can dress up the head it rules on.
-                    checkout_writable=scope.role != 'adjudicator')
+                grace = KILL_GRACE_S
+                try:
+                    result = contained.run(code=code, venv=venv, runtime=runtime,
+                        home=home, checkout=checkout, rust=rust, query=query, entry=command,
+                        inference_socket_dir=inference.directory,
+                        broker_socket_dir=broker.socket_path.parent,
+                        client_code=client.parent, timeout=timeout + grace,
+                        # A ruling is judgement, not a change: the adjudicator's tree is mounted
+                        # read-only so nothing it runs can dress up the head it rules on.
+                        checkout_writable=scope.role != 'adjudicator')
+                except subprocess.TimeoutExpired as exc:
+                    # contained.run has already SIGKILLed the sandbox's process group.
+                    raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None
                 if observed is not None:
                     observed.update(returncode=result.returncode,
                                     stdout=result.stdout[-4000:], stderr=result.stderr[-4000:],

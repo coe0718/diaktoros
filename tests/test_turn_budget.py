@@ -304,10 +304,20 @@ class GateToProductionWorker(unittest.TestCase):
 
     def test_a_timeout_names_the_budget(self):
         def run_turn(_loop, scope, **kw):
-            raise subprocess.TimeoutExpired(["bwrap"], kw["timeout"])
+            raise trusted_turn.TurnBudgetExceeded(["bwrap"], kw["timeout"], 30)
         row = self.run_production(run_turn)
         self.assertEqual(row["state"], "failed")
-        self.assertIn("killed at the 2700s turn budget", row["error"])
+        self.assertIn("killed at the 2700s turn budget (sandbox stopped 30s past it", row["error"])
+
+    def test_another_timeout_is_not_blamed_on_the_budget(self):
+        # Only the sandbox's own wall clock is the budget; a timeout elsewhere in the turn
+        # (a host-side read, a helper) must not send the operator off to raise turn_budget_s.
+        def run_turn(_loop, scope, **kw):
+            raise subprocess.TimeoutExpired(["git"], 15)
+        row = self.run_production(run_turn)
+        self.assertEqual(row["state"], "failed")
+        self.assertNotIn("turn budget", row["error"])
+        self.assertIn("TimeoutExpired", row["error"])
 
 
 class RealTurnArgv(test_selftest.SelftestBase):
@@ -369,7 +379,7 @@ class RealTurnArgv(test_selftest.SelftestBase):
         # the request abandoned mid-write (for a fixer: an unresolved push intent → quarantine).
         seen, rc, text = self.capture(delay_dispatch=6, time_out=True)
         self.assertTrue(seen.get("dispatched"))
-        self.assertIn("TimeoutExpired", text)
+        self.assertIn("TurnBudgetExceeded", text)   # the sandbox clock, named as such
         self.assertNotIn("broker did not shut down", text)
 
 

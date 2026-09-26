@@ -77,8 +77,11 @@ claims it (a worker spawned by another loop's event included) runs it on this lo
 `set` changes turns enqueued after it. `status` and `doctor` print each seat's budget, and
 `doctor` warns (⚠️) when a budget is longer than `grace_min`, since the watchdog could then call a
 healthy long turn a stall. A turn killed at its budget fails with
-`isolated turn failed: TimeoutExpired — killed at the Ns turn budget`, visible in the run ledger's
-`status`. `selftest --live-turn` runs for the loop's reviewer budget unless `--timeout` says
+`isolated turn failed: TimeoutExpired — killed at the Ns turn budget (sandbox stopped 30s past
+it; raise turn_budget_s)`, visible in the run ledger's `status` and the watchdog's operator
+notice; the whole sandbox process tree goes with it (a child that detached into its own session
+included), and the seat is free for the next turn at once. Only the sandbox's own clock is
+reported this way — any other timeout during a turn keeps its generic reason. `selftest --live-turn` runs for the loop's reviewer budget unless `--timeout` says
 otherwise, so a passing selftest means the turn fits what production enforces.
 
 Before this setting (issue #49) every production turn got a hard-coded 120 s — too short for any
