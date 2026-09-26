@@ -277,10 +277,15 @@ def _route_state(loop: dict, role: str) -> str:
     want = config.seat_profile(loop, role)
     entry = routes.route(name)
     if not entry:
+        if role == "observer":
+            # init refuses an existing loop, so "run init" would be a dead end for the feed.
+            return (f"{role} {name}: not installed — hermes review-loop doctor --loop "
+                    f"{loop['id']} --repair")
         return f"{role} {name}: not installed — run init"
     got = str(entry.get("profile") or "default")
     if got == want:
-        return f"{role} {name} → {got} (ok)"
+        muted = role == "observer" and (loop.get("observer") or {}).get("mute")
+        return f"{role} {name} → {got} (ok{', muted' if muted else ''})"
     return (f"{role} {name} → {got}, not {want}: MISMATCH — "
             f"hermes review-loop apply --loop {loop['id']}")
 
@@ -1396,7 +1401,7 @@ def cmd_status(args) -> int:
         # What the registry actually serves, next to what the config claims: those two facts can
         # disagree after a profile change, and this is the one place the operator would see it.
         print("  routes:     " + " · ".join(_route_state(loop, role)
-                                            for role in config.ROUTE_ROLES
+                                            for role in (*config.ROUTE_ROLES, "observer")
                                             if role in _routes_of(loop)))
         refs = _credential_lines(loop)
         if refs:

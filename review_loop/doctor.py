@@ -45,7 +45,7 @@ import socket
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from . import config, gh, route_intent, routes
+from . import config, gh, observer, route_intent, routes
 
 VERIFIED = "verified"
 ABSENT = "absent"
@@ -404,6 +404,9 @@ def check_routes(loop: dict) -> list[Check]:
     adjudicator = check_adjudicator_route(loop, data)
     if adjudicator:
         checks.append(adjudicator)
+    feed = check_observer_route(loop, data)
+    if feed:
+        checks.append(feed)
     return _intent_overlay(loop, data, checks)
 
 
@@ -564,6 +567,67 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
         return Check(f"route:{name}", ABSENT, f"gate_adjudicator.py missing from {scripts_dir()}",
                      "reinstall the plugin")
     return Check(f"route:{name}", VERIFIED, f"{profile} · adjudication wake")
+
+
+def check_observer_route(loop: dict, data: dict) -> Check | None:
+    """The observer feed's route: present, serving the profile the loop names, and exactly the
+    delivery-only contract the feed checks before every notice (``observer.route_contract``).
+
+    Nothing to check when the loop has no feed. A misconfigured feed has no route to check, but
+    it is still a feed that delivers nothing, so it is reported rather than skipped.
+    """
+    cfg = loop.get("observer") or {}
+    if not cfg:
+        return None
+    if cfg.get("misconfigured"):
+        return Check("route:observer", MISMATCH, str(cfg["misconfigured"]),
+                     f"`hermes review-loop set --loop {loop['id']} --observer-profile <name>` "
+                     "(or --observer-disable): the feed delivers nothing as configured")
+    name = str(cfg.get("route") or "")
+    profile = config.seat_profile(loop, "observer")
+    entry = _route_entry(data, name)
+    if entry is None:
+        return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
+                     f"`hermes review-loop doctor --loop {loop['id']} --repair` restores it from "
+                     "the plugin's intent record; with no record, `hermes review-loop set --loop "
+                     f"{loop['id']} --observer-disable` then `--observer-profile {profile}` "
+                     "writes it again")
+    if str(entry.get("profile") or "default") != profile:
+        return Check(f"route:{name}", MISMATCH,
+                     f"wakes profile {entry.get('profile')!r}, but observer.profile is "
+                     f"{profile!r} — the notice would go out through the wrong profile",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to rebind it to "
+                     f"{profile} (its secret is kept)")
+    contract = observer.route_contract(loop)
+    wrong = sorted(key for key, value in contract.items() if key != "profile"
+                   and ((entry.get(key) or {}) != value if key == "deliver_extra"
+                        else entry.get(key) != value))
+    if wrong:
+        return Check(f"route:{name}", MISMATCH,
+                     "does not match the observer delivery-only contract: " + ", ".join(wrong)
+                     + " — the feed refuses to deliver through it",
+                     f"`hermes review-loop doctor --loop {loop['id']} --repair` restores the "
+                     "recorded route; if it was changed on purpose, make the change with "
+                     "`hermes review-loop set` instead")
+    if not str(entry.get("secret") or ""):
+        return Check(f"route:{name}", ABSENT, "registered without a secret",
+                     f"`hermes review-loop doctor --loop {loop['id']} --repair`: a notice without "
+                     "a secret cannot be signed")
+    host = str(loop.get("host") or "")
+    stored = str(entry.get("host") or "").removesuffix("/")
+    if not host:
+        return Check(f"route:{name}", ABSENT, "the loop names no gateway origin",
+                     f"`hermes review-loop set --loop {loop['id']} --host "
+                     "https://your-gateway.example`: the feed never borrows the registry's host")
+    if stored and stored != host:
+        return Check(f"route:{name}", MISMATCH,
+                     "registered gateway origin differs from the loop's configured origin "
+                     "(URLs withheld)",
+                     f"`hermes review-loop doctor --loop {loop['id']} --repair`, or change the "
+                     "host with `hermes review-loop set`")
+    muted = " · muted" if cfg.get("mute") else ""
+    return Check(f"route:{name}", VERIFIED,
+                 f"{profile} · observer feed → {contract['deliver']} · deliver-only{muted}")
 
 
 def check_scripts() -> Check:

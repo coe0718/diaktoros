@@ -157,6 +157,10 @@ class Base(unittest.TestCase):
         return self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
                             "--adjudicator-profile", "tuck", "--observer-profile", "default")
 
+    def observer_install(self):
+        return self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
+                            "--adjudicator-profile", "default", "--observer-profile", "tuck")
+
     def loop_routes(self, loop_id="widgets") -> dict:
         path = pathlib.Path(self.env["REVIEW_LOOP_SUBS"])
         registry = json.loads(path.read_text()) if path.exists() else {}
@@ -427,10 +431,6 @@ class DoctorApplyUninstall(Base):
 class ObserverApply(Base):
     """Issue #107: `apply` must check the observer route against the profile `init` wrote."""
 
-    def observer_install(self):
-        return self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
-                            "--adjudicator-profile", "default", "--observer-profile", "tuck")
-
     def test_every_path_names_the_profile_init_wrote(self):
         self.observer_install()
         loop = config.load_id("widgets")
@@ -471,6 +471,94 @@ class ObserverApply(Base):
         self.assertEqual(routes.route("widgets-observe")["profile"], "tuck")
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual((rc, "already matches the plugin settings" in out), (0, True), out)
+
+
+class ObserverStatusDoctor(Base):
+    """The observer route gets the same status line and doctor route/intent checks as a seat."""
+
+    def route_check(self):
+        checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
+        return checks.get("route:widgets-observe")
+
+    def drift(self, **changes):
+        entry = dict(routes.route("widgets-observe"))
+        kwargs = {"profile": entry["profile"], "prompt": entry["prompt"],
+                  "events": entry["events"], "script": entry["script"],
+                  "deliver": entry["deliver"], "deliver_only": entry.get("deliver_only", False),
+                  "host": entry.get("host")}
+        kwargs.update(changes)
+        routes.new_route("widgets-observe", **kwargs)
+
+    def status(self):
+        rc, out = self.run_cli(["status", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        return next(line for line in out.splitlines() if line.strip().startswith("routes:"))
+
+    def test_doctor_verifies_a_healthy_observer_route_against_its_intent_record(self):
+        self.observer_install()
+        check = self.route_check()
+        self.assertIsNotNone(check, "doctor has no route check for the observer")
+        self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+        self.assertIn("tuck", check.detail)
+        self.assertIn("matches intent record", check.detail)
+
+    def test_doctor_flags_a_drifted_observer_profile_and_apply_clears_it(self):
+        self.observer_install()
+        self.drift(profile="drey")
+        check = self.route_check()
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn("'drey'", check.detail)
+        self.assertIn("'tuck'", check.detail)
+        self.assertIn("intent record", check.detail)
+        self.assertTrue(check.fix)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.route_check().status, doctor.VERIFIED)
+
+    def test_doctor_names_the_fix_without_an_intent_record(self):
+        from review_loop import route_intent
+        self.observer_install()
+        route_intent.path(config.load_id("widgets")).unlink()
+        self.drift(profile="drey")
+        check = self.route_check()
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn("hermes review-loop apply --loop widgets", check.fix)
+        self.drift(profile="tuck", deliver_only=False)
+        check = self.route_check()
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn("deliver_only", check.detail)
+        self.assertTrue(check.fix)
+
+    def test_doctor_flags_a_missing_observer_route_and_repair_restores_it(self):
+        self.observer_install()
+        routes.remove_route("widgets-observe")
+        check = self.route_check()
+        self.assertEqual(check.status, doctor.ABSENT)
+        self.assertIn("doctor --repair", check.fix)
+        rc, out = self.run_cli(["doctor", "--loop", "widgets", "--offline", "--repair"])
+        self.assertIn("widgets-observe", out)
+        self.assertEqual(self.route_check().status, doctor.VERIFIED)
+
+    def test_no_observer_no_observer_route_check(self):
+        self.install()
+        self.assertIsNone(self.route_check())
+
+    def test_status_lists_the_observer_route(self):
+        self.observer_install()
+        self.assertIn("observer widgets-observe → tuck (ok)", self.status())
+        self.drift(profile="drey")
+        self.assertIn("observer widgets-observe → drey, not tuck: MISMATCH — "
+                      "hermes review-loop apply --loop widgets", self.status())
+        routes.remove_route("widgets-observe")
+        line = self.status()
+        self.assertIn("observer widgets-observe: not installed — "
+                      "hermes review-loop doctor --loop widgets --repair", line)
+
+    def test_status_says_when_the_observer_is_muted(self):
+        self.observer_install()
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--observer-mute"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("observer widgets-observe → tuck (ok, muted)", self.status())
 
 
 if __name__ == "__main__":
