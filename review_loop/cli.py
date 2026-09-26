@@ -168,7 +168,7 @@ def _install_routes(loop: dict, roles=None) -> dict:
                                           "verdict", **common)
         else:
             adjudicator = loop.get("adjudicator") or {}
-            routes.new_route(name, profile=adjudicator.get("profile", "default"),
+            routes.new_route(name, profile=config.seat_profile(loop, "adjudicator"),
                              prompt=prompts.ADJUDICATOR, events=["pull_request"],
                              deliver=adjudicator.get("deliver", "telegram"),
                              description=f"{loop['repo']} — adjudicate a loop that spent its "
@@ -177,7 +177,7 @@ def _install_routes(loop: dict, roles=None) -> dict:
     if "observer" in wanted and "observer" in names:
         observer_cfg = loop["observer"]
         name = names["observer"]
-        routes.new_route(name, profile=observer_cfg.get("profile", "default"),
+        routes.new_route(name, profile=config.seat_profile(loop, "observer"),
                          prompt=prompts.OBSERVER, events=["pull_request"],
                          script="observe.py", deliver=observer_cfg.get("deliver", "telegram"),
                          deliver_only=True, host=host,
@@ -1071,7 +1071,8 @@ def cmd_set(args) -> int:
             return 2
         try:
             host = config.webhook_host(updated.get("host"), required=True)
-            written = routes.new_route(name, profile=after["profile"], prompt=prompts.OBSERVER,
+            written = routes.new_route(name, profile=config.seat_profile(updated, "observer"),
+                                       prompt=prompts.OBSERVER,
                                        events=["pull_request"], script="observe.py",
                                        deliver=after["deliver"], deliver_only=True, host=host,
                                        description=f"{updated['repo']} — read-only observer feed")

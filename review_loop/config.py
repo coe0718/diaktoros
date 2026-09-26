@@ -258,9 +258,21 @@ def seat_mapping(settings: dict | None) -> dict:
 
 
 def seat_profile(loop: dict, role: str) -> str:
-    """What a seat (or the adjudicator) runs as, from the config it is actually driving with."""
+    """What a seat (or the adjudicator, or the observer feed) runs as, from the config it is
+    actually driving with.
+
+    This is the one answer to "which profile does this role's route serve": ``init`` and ``set``
+    write the route with it, and ``apply``/``doctor``/the gate shims check the route against it.
+    The observer is not a seat, but its route still carries a profile; a loop with no observer
+    route has none (``""``).
+    """
     if role == "adjudicator":
         return str((loop.get("adjudicator") or {}).get("profile") or "default")
+    if role == "observer":
+        observer = loop.get("observer") or {}
+        if not str(observer.get("route") or "").strip():
+            return ""
+        return str(observer.get("profile") or "default").strip() or "default"
     return str(((loop.get("seats") or {}).get(role) or {}).get("profile") or "")
 
 

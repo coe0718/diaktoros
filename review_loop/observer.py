@@ -38,7 +38,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
-from . import gh, prompts, routes
+from . import config, gh, prompts, routes
 from .util import log, now_iso
 
 # The transitions an observer may subscribe to. These names are the loop's vocabulary for what
@@ -136,7 +136,8 @@ def describe(observer: dict) -> str:
 def route_contract(loop: dict) -> dict:
     """Exact destination and no-model adapter the observer has authorized."""
     cfg = loop.get("observer") or {}
-    return {"profile": cfg.get("profile", "default"), "deliver": cfg.get("deliver", "telegram"),
+    return {"profile": config.seat_profile(loop, "observer"),
+            "deliver": cfg.get("deliver", "telegram"),
             "deliver_only": True, "prompt": prompts.OBSERVER, "script": "observe.py",
             "events": ["pull_request"], "deliver_extra": cfg.get("deliver_extra") or {}}
 

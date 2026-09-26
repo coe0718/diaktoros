@@ -340,7 +340,6 @@ class DoctorApplyUninstall(Base):
                          doctor.ABSENT)
 
     def test_doctor_resolves_like_the_gateway_and_apply_repairs(self):
-        # (No observer here: `apply` on an observer loop trips an unrelated route-bind check.)
         self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
                      "--adjudicator-profile", "tuck")
         checks = self.gateway_checks()
@@ -423,6 +422,55 @@ class DoctorApplyUninstall(Base):
     def test_gate_names_agree(self):
         from review_loop import gate_shims
         self.assertEqual(gate_shims.GATE_SCRIPT, cli.GATE_SCRIPT)
+
+
+class ObserverApply(Base):
+    """Issue #107: `apply` must check the observer route against the profile `init` wrote."""
+
+    def observer_install(self):
+        return self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
+                            "--adjudicator-profile", "default", "--observer-profile", "tuck")
+
+    def test_every_path_names_the_profile_init_wrote(self):
+        self.observer_install()
+        loop = config.load_id("widgets")
+        self.assertEqual(routes.route("widgets-observe")["profile"], "tuck")
+        self.assertEqual(config.seat_profile(loop, "observer"), "tuck")
+        from review_loop import gate_shims, observer
+        self.assertIn(("tuck", "observe.py"), gate_shims.wanted(loop))
+        self.assertEqual(observer.route_contract(loop)["profile"], "tuck")
+        self.assertEqual(cli._route_binds(loop, set(cli._routes_of(loop))), {})
+
+    def test_no_observer_has_no_observer_profile(self):
+        self.install()
+        self.assertEqual(config.seat_profile(config.load_id("widgets"), "observer"), "")
+
+    def test_apply_on_an_observer_loop_is_a_no_op(self):
+        self.observer_install()
+        before = self.loop_routes()
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("readback does not match", out)
+        self.assertIn("already matches the plugin settings", out)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("already matches the plugin settings", out)
+        self.assertEqual(self.loop_routes(), before)
+
+    def test_apply_rebinds_a_drifted_observer_route_to_its_profile(self):
+        self.observer_install()
+        entry = routes.route("widgets-observe")
+        routes.new_route("widgets-observe", profile="drey", prompt=entry["prompt"],
+                         events=["pull_request"], script="observe.py",
+                         deliver=entry.get("deliver", "telegram"), deliver_only=True,
+                         host="https://gateway.example")
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("route widgets-observe: profile drey → tuck", out)
+        self.assertIn("route widgets-observe rebound → profile tuck", out)
+        self.assertEqual(routes.route("widgets-observe")["profile"], "tuck")
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual((rc, "already matches the plugin settings" in out), (0, True), out)
 
 
 if __name__ == "__main__":

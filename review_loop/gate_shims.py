@@ -128,10 +128,7 @@ def wanted(loop: dict) -> set[tuple[str, str]]:
     """(profile, script) for each route this loop's config installs."""
     out = set()
     for role in route_intent.routes_of(loop):
-        if role == "observer":
-            profile = str((loop.get("observer") or {}).get("profile") or "default")
-        else:
-            profile = config.seat_profile(loop, role)
+        profile = config.seat_profile(loop, role)
         if profile:                     # a seat with no profile has no route to serve
             out.add((profile, GATE_SCRIPT[role]))
     return out
