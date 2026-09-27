@@ -1499,6 +1499,17 @@ def cmd_list(args) -> int:
     return 0
 
 
+def _dependency_lines(loop: dict, pr: int | None = None, limit: int = 5) -> list[str]:
+    """What the host dependency prefetch did for this loop's newest turns (#51), from the ledger.
+
+    Read-only; an absent or unreadable ledger is simply no lines (status/explain say the rest).
+    """
+    from .run_supervisor import dependency_view, describe_dependencies
+    rows = dependency_view(config.home() / "state" / "review-loop-runs.sqlite", loop["repo"], pr,
+                           limit)
+    return [describe_dependencies(row) for row in rows or []]
+
+
 def cmd_status(args) -> int:
     loops = [config.load_id(args.loop)] if args.loop else config.all_loops()
     for loop in loops:
@@ -1540,6 +1551,8 @@ def cmd_status(args) -> int:
             for key, entry in (entries or {}).items():
                 held = (time.time() - entry.get("at", time.time())) / 60
                 print(f"  running:    {seat} on {key} for {held:.0f}m")
+        for line in _dependency_lines(loop):
+            print(f"  deps:       {line}")
         for seat in ("reviewer", "fixer"):
             queued = len(st.queue_items(seat))
             if queued:
@@ -1622,9 +1635,12 @@ def cmd_explain(args) -> int:
         print(f"  {'seat:':<12}{report['seat']}")
         print(f"  {'queue:':<12}{report['queue']}")
         print(f"  {'in-flight:':<12}{report['inflight']}")
+        for line in _dependency_lines(loop, args.pr, limit=3):
+            print(f"  {'deps:':<12}{line}")
         print(f"  {'escalation:':<12}{report['escalation']}")
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")
+        print(f"  {'github:':<12}{report['github']}")
         for text in report["blockers"]:
             print(f"  {'blocked:':<12}{text}")
         if not report["blockers"]:
