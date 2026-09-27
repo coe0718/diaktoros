@@ -105,12 +105,19 @@ def sweep_budget_spent(loop: dict, st: state_mod.LoopState, budget: float,
     return lines
 
 
+# How a gate-failure alert is said. ``main`` prints and flushes each one as it is made, so the
+# ledger marks an alert only once it has actually been written out (a sweep killed before that
+# leaves the entry's claim to expire and a later sweep says it). In-process callers (tests)
+# leave it None and get the lines back instead.
+EMIT = None
+
+
 def sweep_gate_failures(ledger: gate_failures.Ledger, header: str, cooldown_s: float,
-                        may_redrive: bool) -> list[str]:
+                        may_redrive: bool, held: str = "") -> list[str]:
     """A gate that crashed, overran, or silenced after a failed read (#75): alert, re-drive."""
     try:
         return gate_failures.sweep(ledger, header, SCRIPTS, cooldown_s=cooldown_s,
-                                   may_redrive=may_redrive)
+                                   may_redrive=may_redrive, held=held, emit=EMIT)
     except Exception as exc:                      # never let this hide the stall scan
         return [f"⚠️ Review loop {header} gate-failure sweep failed: {type(exc).__name__}: {exc}"]
 
@@ -198,24 +205,31 @@ def _outage_like(error: str) -> bool:
     return status in (401, 403) or status >= 500
 
 
+def _pr_list(failures: list[tuple[int, str]]) -> str:
+    """Every failed PR, by number: the first three with their reason, the rest as numbers."""
+    listed = "; ".join(f"#{n}: {gh.one_line(e, 120)}" for n, e in failures[:3])
+    rest = [f"#{n}" for n, _ in failures[3:]]
+    return listed + (f"; also {', '.join(rest)}" if rest else "")
+
+
 def settle_health(loop: dict, watch: dict, now: float, health: Health,
-                  pr_failures: list[tuple[int, str]]) -> tuple[list[str], bool]:
-    """After the sweep's per-PR reads: an outage-like per-PR failure counts as a failed read
-    (same cadence, same alert); "reads work again" is said only when *every* read this sweep
-    made succeeded. ``(lines, alerted)`` — ``alerted`` when the alert covered the per-PR
-    failures, so their own line is not needed."""
+                  pr_failures: list[tuple[int, str]]) -> tuple[list[str], set[int]]:
+    """After the sweep's per-PR reads: outage-like per-PR failures count as a failed read
+    (same cadence, same alert, naming every one of those PRs); "reads work again" is said only
+    when *every* read this sweep made succeeded. ``(lines, covered)`` — the PRs the alert
+    named, which therefore need no line of their own."""
     if health.failing:
-        return [], False
+        return [], set()
     outage = [(n, e) for n, e in pr_failures if _outage_like(e)]
     if outage:
-        more = f" (+{len(outage) - 1} more PR(s))" if len(outage) > 1 else ""
-        number, error = outage[0]
-        return _read_failed(loop, watch, now, health.who,
-                            gh.one_line(f"PR review read: #{number}: {error}{more}", 300),
-                            gh.status_of(error),
-                            "Those PRs' stall checks are skipped (nothing guessed); ")
+        said, alerted = _read_failed(
+            loop, watch, now, health.who,
+            gh.one_line(f"PR review read: {_pr_list(outage)}", 1000),
+            gh.status_of(outage[0][1]),
+            "Those PRs' stall checks are skipped (nothing guessed); ")
+        return said, ({n for n, _ in outage} if alerted else set())
     if pr_failures:
-        return [], False                 # not healthy yet, and not an outage: say neither
+        return [], set()                 # not healthy yet, and not an outage: no recovery
     record = watch.get("github_read") if isinstance(watch.get("github_read"), dict) else {}
     lines = []
     if record.get("alerted"):
@@ -226,7 +240,7 @@ def settle_health(loop: dict, watch: dict, now: float, health: Health,
     if isinstance(marks, dict):
         for key in [k for k in marks if k.startswith("read:")]:
             marks.pop(key)
-    return lines, False
+    return lines, set()
 
 
 def github_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
@@ -648,19 +662,19 @@ def retry_pending_breaches(loop: dict, st: state_mod.LoopState, prs: list,
 
 def finish_reads(loop: dict, watch: dict, now: float, health: Health | None,
                  pr_failures: list[tuple[int, str]], lines: list[str]) -> None:
-    """Say which PRs' review reads failed this sweep (one bounded line, unless the health
-    alert just said it), and settle the health check now that every read is in."""
-    alerted = False
+    """Say which PRs' review reads failed this sweep, and settle the health check now that
+    every read is in. Every failed PR appears in some line: the ones the read alert named are
+    not repeated, every other one is in a single bounded line."""
+    covered: set[int] = set()
     if health is not None:
-        said, alerted = settle_health(loop, watch, now, health, pr_failures)
+        said, covered = settle_health(loop, watch, now, health, pr_failures)
         lines.extend(said)
-    if pr_failures and not alerted:
-        listed = "; ".join(f"#{n}: {gh.one_line(e, 120)}" for n, e in pr_failures[:3])
-        more = f"; +{len(pr_failures) - 3} more" if len(pr_failures) > 3 else ""
+    rest = [(n, e) for n, e in pr_failures if n not in covered]
+    if rest:
         lines.append(gh.one_line(
             f"⚠️ Review loop [{loop['id']}] {loop['repo']}: could not read reviews for "
-            f"{len(pr_failures)} PR(s) — {listed}{more} — their stall check skipped this sweep "
-            f"(no verdict guessed)", 600))
+            f"{len(rest)} PR(s) — {_pr_list(rest)} — their stall check skipped this sweep "
+            f"(no verdict guessed)", 1000))
 
 
 def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = None) -> list[str]:
@@ -672,7 +686,15 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
 
     armed, armed_error = (True, "") if TEST else gate.hooks_read(loop)
     if armed is False:
-        return lines                              # parked on purpose: say nothing, ever
+        # Parked on purpose: no stall is reported and nothing is re-driven. A gate failure
+        # already recorded is still said — it is a fact about a delivery, not a stall.
+        if loop.get("state_dir"):
+            lines.extend(sweep_gate_failures(
+                gate_failures.loop_ledger(loop), f"[{loop['id']}] {loop['repo']}",
+                0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600, may_redrive=False,
+                held="not re-driven while the loop's hooks are paused; `hermes review-loop arm "
+                     f"--loop {loop['id']}` resumes it, or re-deliver it from GitHub"))
+        return lines
     # Armed, or unknown because the hook list could not be read. Unknown is not paused: say so.
     # With the hooks confirmed, the open-PR listing is read here, before the health check, so
     # that a listing GitHub refuses counts as a failed read in the same sweep (a /user probe
@@ -946,6 +968,8 @@ def main() -> None:
     ap.add_argument("--drain", action="store_true", help="start a queued run and print nothing else")
     ap.add_argument("--seat", default="reviewer", choices=["reviewer", "fixer"])
     args = ap.parse_args()
+    global EMIT
+    EMIT = lambda line: print(line, flush=True)  # noqa: E731
     budget = watchdog_budget()
     gh.begin_gate(time.monotonic() + budget, per_call=min(WATCHDOG_PER_CALL_S, budget))
     try:
@@ -992,10 +1016,11 @@ def run(args: argparse.Namespace, budget: float) -> None:
             sup.notify(lambda message: print(message, flush=True))
         except Exception as exc:
             out.append(f"⚠️ Review-loop operator notification sweep failed: {type(exc).__name__}: {exc}")
-    if not args.loop:
-        # Failures no loop could be named for (a malformed payload, a broken config).
-        out.extend(sweep_gate_failures(gate_failures.fallback_ledger(), "(no loop)",
-                                       0.0 if TEST else 6 * 3600, may_redrive=True))
+    # Failures no loop could be named for (a malformed payload, a broken config) — swept by
+    # every run, scoped or not: an install whose cron jobs are all ``--loop``-scoped would
+    # otherwise never say them. The ledger's claims keep overlapping sweeps to one alert.
+    out.extend(sweep_gate_failures(gate_failures.fallback_ledger(), "(no loop)",
+                                   0.0 if TEST else 6 * 3600, may_redrive=True))
     for loop in loops:
         lines: list[str] = []
         try:

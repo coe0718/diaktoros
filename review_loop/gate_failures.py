@@ -20,8 +20,8 @@ So every gate runs under :func:`run`, which
    20s): every GitHub call is clipped to what is left, a spent budget raises
    :class:`gh.GateBudgetExceeded`, and a ``SIGALRM`` backstop a few seconds later interrupts
    anything else that hangs (a lock, a subprocess);
-2. records a crash, a timeout, or a silence that followed a failed GitHub read ("incomplete")
-   durably in the loop's ``gate-failures.json`` — event fingerprint, repo, PR, head, action,
+2. records a crash, a timeout, a stop (SIGTERM), or a silence that followed a failed GitHub
+   read ("incomplete") durably in the loop's ``gate-failures.json`` — event fingerprint, repo, PR, head, action,
    gate, exception type and message, a bounded traceback — with the payload (up to 1 MiB) kept
    beside it so the watchdog can re-drive the event;
 3. marks the fingerprint's entry resolved the next time the same event completes cleanly
@@ -153,6 +153,10 @@ def effective_timeout(home: pathlib.Path | None = None) -> tuple[int | None, lis
     return (min(known) if known else None), rows
 
 
+class _NoYamlReader(Exception):
+    """This interpreter has no YAML parser and the text is not JSON: unknown, not malformed."""
+
+
 def _read_yaml(raw: str):
     for name in ("yaml", "ruamel.yaml"):
         try:
@@ -163,65 +167,146 @@ def _read_yaml(raw: str):
             return YAML(typ="safe").load(raw) or {}
         except ImportError:
             continue
-    return json.loads(raw)       # a JSON config is valid YAML; otherwise ValueError: no reader
+    try:
+        return json.loads(raw)       # a JSON config is valid YAML
+    except ValueError as exc:
+        raise _NoYamlReader() from exc
+
+
+_ENV_REF = re.compile(r"\$\{(?:env:)?([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _managed_config() -> pathlib.Path | None:
+    """The administrator's overlay (``hermes_cli.managed_scope``): ``$HERMES_MANAGED_DIR`` when
+    it names a directory, else ``/etc/hermes`` when it exists."""
+    override = os.environ.get("HERMES_MANAGED_DIR", "").strip()
+    directory = pathlib.Path(override) if override else pathlib.Path("/etc/hermes")
+    return directory / "config.yaml" if directory.is_dir() else None
+
+
+def _deep_merge(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for key, value in over.items():
+        out[key] = (_deep_merge(out[key], value)
+                    if isinstance(value, dict) and isinstance(out.get(key), dict) else value)
+    return out
+
+
+def _leaf(data, *keys):
+    for key in keys:
+        data = data.get(key) if isinstance(data, dict) else None
+    return data
 
 
 def gateway_script_timeout(home: pathlib.Path | None = None) -> tuple[int | None, str]:
     """``(seconds, where)`` — what the gateway will allow a route script, as it computes it.
 
-    Layers, later winning (``gateway/config_loader.py`` ``merge_platform_sections``):
-    ``gateway.json`` ``platforms.webhook``, then ``config.yaml`` ``gateway.platforms.webhook``,
-    ``platforms.webhook``, ``gateway.webhook``. Inside a block an ``extra:`` value beats a
-    top-level one (``PlatformConfig.from_dict``). ``(None, reason)`` when a file names the key
-    but cannot be read here.
+    The gateway's layers, read from hermes-agent (``gateway/config.py`` ``load_gateway_config``,
+    ``gateway/config_loader.py``), later winning:
+
+    1. legacy ``gateway.json`` ``platforms.webhook`` — malformed is ``{}`` plus a warning;
+    2. ``config.yaml`` (the administrator's managed overlay deep-merged over it), merged per
+       ``merge_platform_sections``: ``gateway.platforms.webhook``, then ``platforms.webhook``,
+       then ``gateway.webhook`` — a block's plain keys and its ``extra:`` merged separately, so
+       an ``extra`` value from an earlier layer survives a later plain key; a malformed
+       ``config.yaml`` drops this whole layer (the loader falls back to ``gateway.json``);
+    3. a **top-level** ``webhook:`` block, bridged into ``extra`` last (``_bridged_keys`` with
+       ``root_block``) — its plain key, then its own ``extra``;
+    4. ``PlatformConfig.from_dict``: ``extra`` beats the block's plain key; the adapter reads
+       ``extra.get("script_timeout_seconds", 30)`` (``gateway/platforms/webhook.py``).
+
+    ``(None, reason)`` when the deciding value cannot be known here.
     """
     home = pathlib.Path(home) if home is not None else config.home()
-    blocks: list[tuple[str, object]] = []
+    notes: list[str] = []
+    plain: tuple | None = None       # (value, where) of the merged block's plain key
+    extra: tuple | None = None       # (value, where) of the merged block's extra
+
+    def layer(block, where: str) -> None:
+        nonlocal plain, extra
+        if not isinstance(block, dict):
+            return
+        if KEY in block:
+            plain = (block[KEY], where)
+        more = block.get("extra")
+        if isinstance(more, dict) and KEY in more:
+            extra = (more[KEY], where + ".extra")
+
     legacy = home / "gateway.json"
     try:
         text = legacy.read_text(encoding="utf-8-sig") if legacy.is_file() else ""
-        if KEY in text:
-            data = json.loads(text)
-            blocks.append((f"{legacy}", ((data.get("platforms") or {}).get("webhook"))
-                           if isinstance(data, dict) else None))
-    except (OSError, ValueError, AttributeError) as exc:
-        return None, f"{legacy} unreadable ({type(exc).__name__})"
+        data = json.loads(text) if text.strip() else {}
+        layer(_leaf(data, "platforms", "webhook"), f"{legacy} platforms.webhook")
+    except (OSError, ValueError) as exc:
+        notes.append(f"{legacy} unreadable, ignored as the gateway ignores it "
+                     f"({type(exc).__name__})")
+
     path = home / "config.yaml"
     try:
         text = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
     except OSError as exc:
         return None, f"{path} unreadable ({type(exc).__name__})"
-    if KEY in text:
+    user: dict = {}
+    if text.strip():
         try:
-            data = _read_yaml(text)
-        except ValueError:
-            return None, (f"{path} sets {KEY} but this interpreter ({sys.executable}) has no "
+            parsed = _read_yaml(text)
+            user = parsed if isinstance(parsed, dict) else {}
+        except _NoYamlReader:
+            return None, (f"{path} cannot be read by this interpreter ({sys.executable}): no "
                           f"YAML reader")
-        except Exception as exc:  # noqa: BLE001 - a broken file is "unknown", never "30"
-            return None, f"{path} unreadable ({type(exc).__name__})"
-        data = data if isinstance(data, dict) else {}
-        gw = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
-        plat = gw.get("platforms") if isinstance(gw.get("platforms"), dict) else {}
-        top = data.get("platforms") if isinstance(data.get("platforms"), dict) else {}
-        blocks += [(f"{path} gateway.platforms.webhook", plat.get("webhook")),
-                   (f"{path} platforms.webhook", top.get("webhook")),
-                   (f"{path} gateway.webhook", gw.get("webhook"))]
-    top_value = extra_value = None
-    top_where = extra_where = ""
-    for where, block in blocks:
-        if not isinstance(block, dict):
-            continue
-        if KEY in block:
-            top_value, top_where = block[KEY], where
-        extra = block.get("extra")
-        if isinstance(extra, dict) and KEY in extra:
-            extra_value, extra_where = extra[KEY], where + ".extra"
-    value, where = ((extra_value, extra_where) if extra_value is not None
-                    else (top_value, top_where))
-    if value is None:
-        return GATEWAY_DEFAULT_TIMEOUT_S, "gateway default (not set)"
+        except Exception as exc:  # noqa: BLE001 - the gateway drops the whole yaml layer too
+            notes.append(f"{path} malformed, so the gateway falls back to gateway.json "
+                         f"({type(exc).__name__})")
+            user = None
+    if user is not None:
+        managed_path, managed = _managed_config(), {}
+        if managed_path is not None:
+            try:
+                parsed = _read_yaml(managed_path.read_text(encoding="utf-8-sig"))
+                managed = parsed if isinstance(parsed, dict) else {}
+            except _NoYamlReader:
+                return None, f"{managed_path} cannot be read by this interpreter: no YAML reader"
+            except Exception as exc:  # noqa: BLE001 - fail-open, as managed_scope is
+                notes.append(f"{managed_path} malformed, ignored as the gateway ignores it "
+                             f"({type(exc).__name__})")
+        merged = _deep_merge(user, managed)
+
+        def label(*keys) -> str:
+            return (f"{managed_path}" if managed and _leaf(managed, *keys) is not None
+                    else f"{path}")
+
+        for keys in (("gateway", "platforms", "webhook"), ("platforms", "webhook"),
+                     ("gateway", "webhook")):
+            block = _leaf(merged, *keys)
+            if isinstance(block, dict):
+                where_plain = f"{label(*keys, KEY)} {'.'.join(keys)}"
+                where_extra = f"{label(*keys, 'extra', KEY)} {'.'.join(keys)}"
+                if KEY in block:
+                    plain = (block[KEY], where_plain)
+                more = block.get("extra")
+                if isinstance(more, dict) and KEY in more:
+                    extra = (more[KEY], where_extra + ".extra")
+        top = merged.get("webhook")
+        if isinstance(top, dict):                      # bridged into extra, last
+            if KEY in top:
+                extra = (top[KEY], f"{label('webhook', KEY)} webhook")
+            more = top.get("extra")
+            if isinstance(more, dict) and KEY in more:
+                extra = (more[KEY], f"{label('webhook', 'extra', KEY)} webhook.extra")
+
+    decided = extra or plain
+    note = f" ({'; '.join(notes)})" if notes else ""
+    if decided is None:
+        return GATEWAY_DEFAULT_TIMEOUT_S, "gateway default (not set)" + note
+    value, where = decided
+    if isinstance(value, str):
+        ref = _ENV_REF.fullmatch(value.strip())
+        if ref:
+            if ref.group(1) not in os.environ:
+                return None, f"{where}: {KEY} is {value!r}, which cannot be resolved here"
+            value = os.environ[ref.group(1)]
     try:
-        return max(1, int(value)), where
+        return max(1, int(value)), where + note
     except (TypeError, ValueError):
         return None, f"{where}: {KEY} is not a number ({str(value)[:40]!r})"
 
@@ -454,10 +539,12 @@ class Ledger:
         """Decide, under the lock, whether *this* sweep alerts on ``key`` and re-drives it.
 
         The decision is re-made against the entry as it is now, not as a sweep saw it earlier,
-        and committed before anything runs: the alert marker, and for a re-drive the
-        incremented ``redrives`` plus a ``claim`` leased to this sweep. A second, overlapping
-        sweep then finds the alert already made and the re-drive already owned (or the cap
-        reached) and does nothing. Returns ``(entry, drive)``, or ``None`` for "not yours".
+        and committed before anything runs as a ``claim`` leased to this sweep (plus, for a
+        re-drive, the incremented ``redrives``, so the cap holds even if the sweep dies). An
+        overlapping sweep finds the live claim and does nothing. The alert itself is marked
+        only by :meth:`release`, after the line has been said: a sweep that dies before saying
+        it leaves the claim to expire, and a later sweep says it (at least once, never lost).
+        Returns ``(entry, drive)``, or ``None`` for "not yours".
         """
         with self._locked():
             data = self._load_for_write()
@@ -467,29 +554,30 @@ class Ledger:
             held = entry.get("claim")
             if (isinstance(held, dict) and held.get("sweep") != sweep
                     and _number(held.get("until")) > now):
-                return None                      # another sweep is re-driving it right now
-            if entry.get("kind") == CORRUPT:     # said once; it clears when the copy is gone
-                fresh, drive = not entry.get("alerted_at"), False
-            else:
-                fresh = (entry.get("alerted_attempts") != entry.get("attempts")
-                         or now - _number(entry.get("alerted_at")) > cooldown_s)
-                drive = bool(may_redrive and entry.get("redrivable") and entry.get("payload_kept")
-                             and int(entry.get("redrives") or 0) < MAX_REDRIVES
-                             and can_drive(entry))
+                return None                      # another sweep owns it right now
+            fresh = (now - _number(entry.get("alerted_at")) > cooldown_s
+                     or (entry.get("kind") != CORRUPT
+                         and entry.get("alerted_attempts") != entry.get("attempts")))
+            drive = bool(entry.get("kind") != CORRUPT and may_redrive and entry.get("redrivable")
+                         and entry.get("payload_kept")
+                         and int(entry.get("redrives") or 0) < MAX_REDRIVES
+                         and can_drive(entry))
             if not (fresh or drive):
                 return None
-            entry = {k: v for k, v in entry.items() if k != "claim"}
-            entry.update(alerted_at=now, alerted_attempts=entry.get("attempts"))
+            entry = {**entry, "claim": {"sweep": sweep, "until": now + CLAIM_LEASE_S}}
             if drive:
-                entry.update(redrives=int(entry.get("redrives") or 0) + 1, last_redrive_at=now,
-                             claim={"sweep": sweep, "until": now + CLAIM_LEASE_S})
+                entry.update(redrives=int(entry.get("redrives") or 0) + 1, last_redrive_at=now)
             data[key] = entry
             self._save(data)
             return dict(entry), drive
 
-    def release(self, key: str, sweep: str) -> dict:
-        """Record a re-drive's outcome: drop this sweep's claim and mark the attempt the re-run
-        itself may have added as already reported (the alert about to go out names it)."""
+    def current(self, key: str) -> dict:
+        entry = self.entries().get(key)
+        return dict(entry) if isinstance(entry, dict) else {}
+
+    def release(self, key: str, sweep: str, *, said: bool) -> dict:
+        """End this sweep's claim. ``said``: the alert line has been emitted, so mark it —
+        including any attempt a re-drive itself added, which that line reported."""
         with self._locked():
             data = self._load_for_write()
             entry = data.get(key)
@@ -497,8 +585,8 @@ class Ledger:
                 return {}
             if (entry.get("claim") or {}).get("sweep") == sweep:
                 entry = {k: v for k, v in entry.items() if k != "claim"}
-                if not entry.get("resolved"):
-                    entry["alerted_attempts"] = entry.get("attempts")
+                if said:
+                    entry.update(alerted_at=time.time(), alerted_attempts=entry.get("attempts"))
                 data[key] = entry
                 self._save(data)
             return dict(entry)
@@ -510,12 +598,14 @@ class Ledger:
         return {**entry, "payload_missing": True} if missing else entry
 
     def open_for(self, number: int) -> list[dict]:
-        """Unresolved failures for one PR — and an unreadable or moved-aside ledger, which may
-        be hiding this PR's failures."""
+        """Unresolved failures for one PR — plus the loop-level ones every PR's ``explain``
+        must show: a failure whose payload named no PR, and an unreadable or moved-aside
+        ledger, which may be hiding this PR's failures."""
         return [self.with_payload_state(str(e.get("id") or k), e)
                 for k, e in self.entries().items()
                 if isinstance(e, dict) and not e.get("resolved")
-                and (e.get("pr") == number or e.get("kind") == CORRUPT)]
+                and (e.get("pr") == number or e.get("pr") is None
+                     or e.get("kind") == CORRUPT)]
 
 
 def _existing_copy(directory: pathlib.Path, raw: bytes) -> pathlib.Path | None:
@@ -593,8 +683,20 @@ def _loop_for(payload) -> dict | None:
 
 
 def _ledgers_for(payload) -> list[Ledger]:
-    loop = _loop_for(payload)
-    return ([loop_ledger(loop)] if loop else []) + [fallback_ledger()]
+    """Where to record: the loop's ledger, then the fallback. Never raises — it runs on the
+    failure path, where an exception here would lose the very record it is looking for."""
+    ledgers: list[Ledger] = []
+    try:
+        loop = _loop_for(payload)
+        if loop:
+            ledgers.append(loop_ledger(loop))
+    except Exception as err:  # noqa: BLE001
+        log(f"gate-failure ledger for the loop not found: {type(err).__name__}: {err}")
+    try:
+        ledgers.append(fallback_ledger())
+    except Exception as err:  # noqa: BLE001
+        log(f"fallback gate-failure ledger not found: {type(err).__name__}: {err}")
+    return ledgers
 
 
 # -- the guard ------------------------------------------------------------------------------
@@ -617,6 +719,16 @@ def _claim_github_read(payload, key: str, since: float) -> None:
             st.github_failure_record({**failure, "owned_by": f"gate-failures:{key}"})
     except Exception as err:  # noqa: BLE001 - the health sweep then reports it; never silent
         log(f"could not mark the failed read as owned: {type(err).__name__}: {err}")
+
+
+class GateStopped(BaseException):
+    """The gate was told to stop (SIGTERM: a gateway or systemd stop, an operator's kill).
+    A ``BaseException`` so no gate's own ``except Exception`` can swallow it."""
+
+
+def _stopped(signum, _frame):
+    raise GateStopped(f"gate process received {signal.Signals(signum).name} while running "
+                      f"(a gateway stop or restart, or a kill)")
 
 
 def _backstop(_signum, _frame):
@@ -651,6 +763,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
     if alarm:
         signal.signal(signal.SIGALRM, _backstop)
         signal.setitimer(signal.ITIMER_REAL, budget + backstop)
+    signal.signal(signal.SIGTERM, _stopped)
     kind, exc, code = "", None, 0
     try:
         try:
@@ -658,6 +771,10 @@ def run(gate: str, main: Callable[[], None]) -> None:
         finally:
             if alarm:
                 signal.setitimer(signal.ITIMER_REAL, 0)
+            # The bookkeeping below is short and bounded; a second stop must not cut it off.
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    except GateStopped as stop:
+        kind, exc = "stopped", stop
     except SystemExit as stop:
         code = stop.code if isinstance(stop.code, int) else (0 if stop.code is None else 1)
         if code != 0:
@@ -692,7 +809,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
         signal.setitimer(signal.ITIMER_REAL, RECORD_S)
     facts = describe(payload)
     freed: list[str] = []
-    if kind in ("crash", "timeout"):
+    if kind in ("crash", "timeout", "stopped"):
         # A gate that claimed a seat and then died must not hold it until the TTL: the
         # re-drive (or the next event) has to find the seat free.
         from . import state as state_mod
@@ -741,7 +858,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
         signal.setitimer(signal.ITIMER_REAL, 0)
     if kind == "incomplete":
         raise SystemExit(0)   # the gate already printed its [SILENT]; the ledger tells them apart
-    raise SystemExit(3 if kind == "timeout" else 2)
+    raise SystemExit(3 if kind == "timeout" else 143 if kind == "stopped" else 2)
 
 
 # -- the watchdog's side --------------------------------------------------------------------
@@ -757,7 +874,20 @@ def redeliver_hint(entry: dict) -> str:
             f"/webhooks/{route} → Recent Deliveries → the {what or 'failed'} delivery → Redeliver")
 
 
-def not_driven(entry: dict, scripts_dir: pathlib.Path | None = None) -> str:
+SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+
+
+def explain_status(entry: dict) -> str:
+    """What happens next to an unresolved entry, for ``explain`` — the same tests the sweep
+    applies, so it never promises a re-drive the sweep could not make."""
+    redrives = int(entry.get("redrives") or 0)
+    if (entry.get("redrivable") and entry.get("payload_kept") and not entry.get("payload_missing")
+            and redrives < MAX_REDRIVES and (SCRIPTS_DIR / f"{entry.get('gate')}.py").is_file()):
+        return f"{redrives} watchdog re-drive(s) so far; the next sweep retries it"
+    return not_driven(entry, SCRIPTS_DIR)
+
+
+def not_driven(entry: dict, scripts_dir: pathlib.Path | None = None, held: str = "") -> str:
     """Why an unresolved entry is not re-driven, as the operator should read it."""
     if not entry.get("redrivable"):
         return "not re-driven (its output is a dispatch) — " + redeliver_hint(entry)
@@ -771,7 +901,7 @@ def not_driven(entry: dict, scripts_dir: pathlib.Path | None = None) -> str:
                 "cannot be re-driven — " + redeliver_hint(entry))
     if scripts_dir is not None and not (scripts_dir / f"{entry.get('gate')}.py").is_file():
         return f"{entry.get('gate')}.py not found — cannot re-drive"
-    return "not re-driven this sweep (GitHub is not answering); a later sweep retries it"
+    return held or "not re-driven this sweep (GitHub is not answering); a later sweep retries it"
 
 
 def redrive(ledger: Ledger, key: str, gate: str, scripts_dir: pathlib.Path) -> str:
@@ -803,17 +933,23 @@ def _corrupt_line(header: str, entry: dict) -> str:
 
 
 def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s: float,
-          may_redrive: bool = True) -> list[str]:
+          may_redrive: bool = True, held: str = "",
+          emit: Callable[[str], None] | None = None) -> list[str]:
     """Alert on unresolved gate failures (once per new failure, then per cooldown) and re-drive
     the re-drivable ones up to ``MAX_REDRIVES`` times.
 
     Overlapping sweeps are normal (one cron job per loop, each sweeping every loop), so each
     entry's decision is claimed under the ledger's lock first (:meth:`Ledger.claim`), acted on
-    outside it, and its outcome recorded after (:meth:`Ledger.release`)."""
+    outside it, and its outcome recorded after (:meth:`Ledger.release`). ``emit`` says a line
+    (the watchdog prints and flushes it); the alert is marked only after that returns. Without
+    ``emit`` the lines are returned, and marked as they are collected. ``held``: why nothing is
+    re-driven when ``may_redrive`` is false."""
     import uuid
     me = uuid.uuid4().hex
     lines: list[str] = []
+    say = emit or lines.append
     snapshot = ledger.snapshot()
+
     def age(item) -> float:
         return _number(item[1].get("last_at")) if isinstance(item[1], dict) else 0.0
     for key, _ in sorted(snapshot.items(), key=age):
@@ -831,19 +967,24 @@ def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s:
             continue
         entry, drive = claimed
         if entry.get("kind") == CORRUPT:
-            lines.append(_corrupt_line(header, entry))
-            continue
-        if drive:
-            try:
-                outcome = redrive(ledger, key, str(entry.get("gate")), scripts_dir)
-            finally:
-                entry = ledger.release(key, me) or entry
+            line = _corrupt_line(header, entry)
         else:
-            outcome = not_driven(ledger.with_payload_state(key, entry), scripts_dir)
-        pr = f"#{entry['pr']}" if entry.get("pr") else "no PR"
-        head = str(entry.get("head") or "")[:7] or "?"
-        lines.append(f"⚠️ Review loop {header} — gate failure {key}: {entry.get('gate')} "
-                     f"{entry.get('kind')} on {pr} @ {head} ({entry.get('action') or '?'}), "
-                     f"{entry.get('attempts')} attempt(s): {entry.get('error_type')}: "
-                     f"{_bounded(entry.get('error') or '', 160)} — {outcome}")
+            if drive:
+                try:
+                    outcome = redrive(ledger, key, str(entry.get("gate")), scripts_dir)
+                except BaseException:
+                    ledger.release(key, me, said=False)
+                    raise
+                entry = ledger.current(key) or entry
+            else:
+                outcome = not_driven(ledger.with_payload_state(key, entry), scripts_dir,
+                                     held if not may_redrive else "")
+            pr = f"#{entry['pr']}" if entry.get("pr") else "no PR"
+            head = str(entry.get("head") or "")[:7] or "?"
+            line = (f"⚠️ Review loop {header} — gate failure {key}: {entry.get('gate')} "
+                    f"{entry.get('kind')} on {pr} @ {head} ({entry.get('action') or '?'}), "
+                    f"{entry.get('attempts')} attempt(s): {entry.get('error_type')}: "
+                    f"{_bounded(entry.get('error') or '', 160)} — {outcome}")
+        say(line)                          # a sweep killed here leaves the claim to expire
+        ledger.release(key, me, said=True)
     return lines

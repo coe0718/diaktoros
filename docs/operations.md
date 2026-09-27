@@ -468,7 +468,16 @@ own record instead:
 
 * **Budget.** Each gate has 20s (`REVIEW_LOOP_GATE_BUDGET_S`) and shrinks it to fit the
   `script_timeout_seconds` of the gateway running it. The gateway reads `gateway.json` and
-  `config.yaml` from its own home, so the gate reads those same files.
+  `config.yaml` from its own home, so the gate reads those same files, with the gateway's
+  precedence (later wins):
+  1. `gateway.json` `platforms.webhook`. If the file is malformed it is skipped, as the gateway
+     skips it.
+  2. `config.yaml`, with the administrator's managed overlay (`$HERMES_MANAGED_DIR` or
+     `/etc/hermes`) merged over it: `gateway.platforms.webhook`, then `platforms.webhook`, then
+     `gateway.webhook`. In each of these an `extra:` value beats a plain key. A malformed
+     `config.yaml` drops this whole layer, as it does for the gateway.
+  3. A top-level `webhook:` block, which the gateway bridges into `extra` last: it beats every
+     block above, and its own `extra:` beats its plain key.
   - A `/p/<profile>/` route on the multiplexing host gateway (the default setup) runs under the
     root home's limit. The script's `HERMES_HOME` is still the profile's home.
   - A profile with `gateway.standalone: true` runs its own gateway and uses its own limit.
@@ -487,8 +496,8 @@ own record instead:
   script calls it. Every `st.acquire` is also remembered by the process
   that made it, so if any gate process ever claims a seat and then crashes or times out, it
   releases that claim on its way out, and a failed delivery never keeps a seat until `ttl_min`.
-* **Ledger.** A crash (exit 2), a timeout (exit 3), or a `[SILENT]` that followed a failed GitHub
-  read is written to `gate-failures.json` in the loop's state directory. The entry holds the gate,
+* **Ledger.** A crash (exit 2), a timeout (exit 3), a stop (SIGTERM from a gateway or systemd
+  stop, or a kill; exit 143), or a `[SILENT]` that followed a failed GitHub read is written to `gate-failures.json` in the loop's state directory. The entry holds the gate,
   repo, PR, head, action, exception type and message, and a bounded traceback, and the payload is
   stored beside it. Failures that happen before a loop can be named go to
   `~/.hermes/state/review-loop-gate-failures/`. The same event delivered again (same payload)
@@ -504,7 +513,7 @@ own record instead:
   replace the original path atomically. A crash in between leaves the original in place, and the
   next writer reuses the copy it already made. The fresh ledger holds one entry that names the
   copy. That entry is never pruned by the 200-entry bound while the copy exists. The watchdog
-  alerts on it once, and `explain` lists it for every PR of the loop, because that PR's earlier
+  alerts on it every cooldown until the copy is gone, and `explain` lists it for every PR of the loop, because that PR's earlier
   failures may only be in the copy. Salvage what you need from the copy and delete it; the next
   sweep then clears the entry. If no copy can be made, nothing is written, and the sweep reports
   why. An entry whose stored payload has since been deleted says so, and gives the same GitHub
@@ -514,15 +523,22 @@ own record instead:
   payload. This is safe because those gates re-read the live PR and the run ledger dedups a second
   enqueue. It stops after 3 re-drives. Sweeps overlap (every loop's cron job sweeps all
   loops), so each entry is claimed under the ledger's lock before anything is sent or run. The
-  claim records the alert, adds the re-drive to the count, and gives this sweep a 120-second
-  lease on the entry. Another sweep finds the entry already alerted or already being re-driven
-  and skips it. The owner records the outcome and drops the claim. If a sweep dies mid-re-drive,
-  its lease runs out and a later sweep takes the entry over. However many sweeps run, a failure
-  is alerted once per new attempt (and per cooldown) and re-driven at most 3 times in total.
+  claim adds the re-drive to the count and gives this sweep a 120-second lease on the entry.
+  Another sweep finds the live claim and skips the entry. The owner prints the alert, and only
+  then marks the entry alerted and drops the claim. If a sweep dies before its alert is printed,
+  the lease runs out and a later sweep says it: an alert can be repeated, never lost. However
+  many sweeps run, a failure is alerted once per new attempt (and per cooldown) and re-driven at
+  most 3 times in total. A loop whose hooks are paused still gets its gate failures alerted, but
+  nothing is re-driven until it is armed again. The no-loop ledger
+  (`~/.hermes/state/review-loop-gate-failures/`) is swept by every watchdog run, including one
+  scoped with `--loop`.
   Adjudicator failures are alerted but never re-driven, because that gate's output is its
   dispatch. An entry resolves when the same event later
   completes cleanly, whether through a re-drive or a manual redelivery from GitHub.
-* **`explain`** lists unresolved gate failures for the PR as blockers.
+* **`explain`** lists unresolved gate failures for the PR as blockers. It also lists the
+  loop's failures whose payload named no PR, and the corrupt-copy entry, for every PR. It says
+  "the next sweep retries it" only when the sweep could: re-drivable, payload kept and present,
+  under the cap, and the gate script present.
 * **One owner per failed read.** When a gate's GitHub read fails, the event's
   `gate-failures.json` entry owns it: that is what raises the alert and triggers the re-drive.
   `github-reads.json` still records it as the last failed call, which `explain` shows on its

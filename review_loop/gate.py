@@ -524,11 +524,9 @@ def gate_failure_line(entry: dict) -> str:
         return (f"gate-failure ledger {entry.get('path')} is unreadable ({entry.get('error')}); "
                 f"the next gate failure or watchdog sweep moves it aside, unchanged, for you to "
                 f"salvage")
-    redrives = int(entry.get("redrives") or 0)
-    status = (f"{redrives} watchdog re-drive(s) so far; the next sweep retries it"
-              if entry.get("redrivable") and entry.get("payload_kept")
-              and not entry.get("payload_missing") and redrives < gate_failures.MAX_REDRIVES
-              else gate_failures.not_driven(entry))
+    status = gate_failures.explain_status(entry)
+    if entry.get("pr") is None:
+        status += " (its payload names no PR, so every PR's explain shows it)"
     return (f"gate failure {entry.get('id')}: {entry.get('gate')} {entry.get('kind')} at head "
             f"{str(entry.get('head') or '?')[:7]} ({entry.get('action') or '?'}), last "
             f"{iso_at(float(entry.get('last_at') or 0))}, {entry.get('attempts')} attempt(s): "

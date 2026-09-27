@@ -23,12 +23,13 @@ from review_loop import config, gate, gate_failures, state as state_mod  # noqa:
 SCRIPTS = t.ROOT / "scripts"
 
 
-def gateway_run(script: str, payload, extra_env: dict | None = None):
-    """The gateway's contract, minus the HTTP: argv, stdin, cwd and its 30s timeout."""
+def gateway_run(script: str, payload, extra_env: dict | None = None, kill_after: float = 30):
+    """The gateway's contract, minus the HTTP: argv, stdin, cwd and its timeout (default 30s),
+    after which the gateway kills the child — ``subprocess.TimeoutExpired`` here."""
     raw = payload if isinstance(payload, str) else json.dumps(payload)
     started = time.monotonic()
     proc = subprocess.run([sys.executable, str(SCRIPTS / script)], input=raw,
-                          capture_output=True, text=True, cwd=str(SCRIPTS), timeout=30,
+                          capture_output=True, text=True, cwd=str(SCRIPTS), timeout=kill_after,
                           env={**t.env(), **(extra_env or {})})
     return proc, time.monotonic() - started
 
@@ -316,7 +317,8 @@ class GateFailureTest(unittest.TestCase):
         alerts = [line for line in first.splitlines() if str(copy) in line]
         self.assertEqual(len(alerts), 1, first)
         self.assertIn("salvage", alerts[0])
-        self.assertNotIn(str(copy), second)                  # once, even with no cooldown
+        # (TEST mode's cooldown is 0, so the second sweep may say it again; the cooldown test
+        # above pins the cadence.)
         self.assertEqual(copy.read_text(), self.GARBAGE)
         shown = [gate.gate_failure_line(e) for e in gate_failures.open_for(loop, 7)]
         self.assertEqual(len(shown), 1)
@@ -470,7 +472,8 @@ class GateFailureTest(unittest.TestCase):
         self.assertIsNone(gate_failures.gateway_script_timeout()[0])
         from unittest import mock
         self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 10}}})
-        with mock.patch.object(gate_failures, "_read_yaml", side_effect=ValueError):
+        with mock.patch.object(gate_failures, "_read_yaml",
+                               side_effect=gate_failures._NoYamlReader):
             timeout, why = gate_failures.gateway_script_timeout()
         self.assertIsNone(timeout)
         self.assertIn("no YAML reader", why)
@@ -566,6 +569,104 @@ class GateFailureTest(unittest.TestCase):
         self.assertEqual((entry["kind"], entry["budget_s"]), ("timeout", 4.0))
 
     # -- a failed gate never keeps a seat ------------------------------------------------------
+
+    # -- every layer the gateway reads (Tuck on 7cde354) -------------------------------------
+
+    def hang_stub(self) -> pathlib.Path:
+        hang = t.TMP / "hang_stub.py"
+        hang.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
+        hang.chmod(0o755)
+        return hang
+
+    def test_a_top_level_webhook_block_is_read_like_the_gateway_reads_it(self):
+        cfg = t.HOME / "config.yaml"
+        self.gateway_config({"webhook": {"script_timeout_seconds": 6}})
+        self.assertEqual(gate_failures.gateway_script_timeout(), (6, f"{cfg} webhook"))
+        # The top-level block is bridged into ``extra`` last: it beats every nested block ...
+        self.gateway_config({"platforms": {"webhook": {"extra": {"script_timeout_seconds": 45}}},
+                             "gateway": {"webhook": {"script_timeout_seconds": 50}},
+                             "webhook": {"script_timeout_seconds": 12}})
+        self.assertEqual(gate_failures.gateway_script_timeout()[0], 12)
+        # ... and inside it, its own ``extra`` beats its plain key.
+        self.gateway_config({"webhook": {"script_timeout_seconds": 12,
+                                         "extra": {"script_timeout_seconds": 9}}})
+        self.assertEqual(gate_failures.gateway_script_timeout(), (9, f"{cfg} webhook.extra"))
+        # doctor does not certify a 6s gateway as fitting the default budget.
+        from review_loop import doctor
+        self.gateway_config({"webhook": {"script_timeout_seconds": 6}})
+        self.assertEqual(self.doctor_lines()["gate:timeout:default"].status, doctor.MISMATCH)
+
+    def test_a_gateway_killing_at_a_top_level_6s_still_gets_a_recorded_timeout(self):
+        # Tuck's end-to-end repro: the gateway kills the child at 6s; the gate hangs in a read.
+        self.gateway_config({"webhook": {"script_timeout_seconds": 6}})
+        try:
+            proc, elapsed = gateway_run("gate_reviewer.py", t.pr_payload(7),
+                                        {"REVIEW_LOOP_GH_STUB": str(self.hang_stub())},
+                                        kill_after=6)
+        except subprocess.TimeoutExpired:
+            self.fail("the gateway killed the gate at 6s before it recorded anything")
+        self.assertEqual(proc.returncode, 3)
+        self.assertLess(elapsed, 6)
+        (entry,) = loop_entries().values()
+        self.assertEqual(entry["kind"], "timeout")
+        self.assertAlmostEqual(entry["budget_s"], 2.4)                         # 6 * 0.4
+
+    def test_a_malformed_gateway_json_is_skipped_like_the_gateway_skips_it(self):
+        legacy = t.HOME / "gateway.json"
+        self.addCleanup(legacy.unlink, missing_ok=True)
+        self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 10}}})
+        legacy.write_text('{"platforms": {"webhook": {"script_timeout_seconds": 90')   # torn
+        seconds, where = gate_failures.gateway_script_timeout()
+        self.assertEqual(seconds, 10)                    # config.yaml still decides
+        self.assertIn("gateway.json unreadable, ignored as the gateway ignores it", where)
+        self.gateway_config(None)
+        legacy.write_text('{"platforms": {"webhook": {"script_timeout_seconds": 90')
+        self.assertEqual(gate_failures.gateway_script_timeout()[0], 30)
+
+    def test_the_managed_overlay_wins_over_the_users_config(self):
+        managed = t.TMP / "managed"
+        managed.mkdir(exist_ok=True)
+        (managed / "config.yaml").write_text(json.dumps({"webhook": {"script_timeout_seconds": 7}}))
+        self.gateway_config({"webhook": {"script_timeout_seconds": 12}})
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"HERMES_MANAGED_DIR": str(managed)}):
+            self.assertEqual(gate_failures.gateway_script_timeout(),
+                             (7, f"{managed / 'config.yaml'} webhook"))
+
+    # -- a stopped gate leaves a record ---------------------------------------------------------
+
+    def test_a_sigterm_leaves_a_record(self):
+        import signal as sig
+        script = t.TMP / "stopped_gate.py"
+        script.write_text(
+            f"import sys\nsys.path.insert(0, {str(t.ROOT)!r})\n"
+            "from review_loop import gate_failures\n"
+            "def main():\n    import time\n    print('ready', file=sys.stderr, flush=True)\n"
+            "    time.sleep(60)\n"
+            "gate_failures.run('gate_reviewer', main)\n")
+        proc = subprocess.Popen([sys.executable, str(script)], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                env=t.env())
+        proc.stdin.write(json.dumps(t.pr_payload(7)))
+        proc.stdin.close()
+        proc.stderr.readline()                           # main() is running
+        proc.send_signal(sig.SIGTERM)
+        proc.wait(timeout=20)
+        proc.stdout.close()
+        proc.stderr.close()
+        self.assertEqual(proc.returncode, 143)
+        (entry,) = loop_entries().values()
+        self.assertEqual((entry["kind"], entry["error_type"]), ("stopped", "GateStopped"))
+        self.assertIn("SIGTERM", entry["error"])
+
+    def test_naming_the_ledgers_never_escapes_the_failure_path(self):
+        from unittest import mock
+        with mock.patch.object(gate_failures, "_loop_for", side_effect=RuntimeError("bad loop")):
+            self.assertEqual([l.path for l in gate_failures._ledgers_for({})],
+                             [gate_failures.fallback_ledger().path])
+        with mock.patch.object(gate_failures, "_loop_for", side_effect=RuntimeError("bad loop")), \
+             mock.patch.object(gate_failures, "fallback_ledger", side_effect=OSError("no home")):
+            self.assertEqual(gate_failures._ledgers_for({}), [])
 
     def claim_then(self, action: str):
         script = t.TMP / "claiming_gate.py"
@@ -695,6 +796,79 @@ class GateFailureTest(unittest.TestCase):
         self.assertIn("HTTP 410", unowned[0])
         self.assertNotIn("Traceback", out.stdout + out.stderr)
 
+    def test_explain_only_promises_a_retry_it_can_make(self):
+        ledger = self.redrivable_entry()
+        loop = config.load_id("widgets")
+        self.assertIn("the next sweep retries it", gate.gate_failure_line(ledger.open_for(7)[0]))
+        from unittest import mock
+        with mock.patch.object(gate_failures, "SCRIPTS_DIR", t.TMP / "no-scripts-here"):
+            line = gate.gate_failure_line(gate_failures.open_for(loop, 7)[0])
+        self.assertNotIn("retries it", line)
+        self.assertIn("gate_reviewer.py not found", line)
+
+    def test_a_failure_with_no_pr_is_shown_by_explain(self):
+        ledger = gate_failures.Ledger(t.STATE_DIR)
+        ledger.record("np", {"gate": "gate_reviewer", "kind": "crash", "pr": None,
+                             "redrivable": True, "error_type": "X", "error": "y"}, "{}")
+        shown = [gate.gate_failure_line(e) for e in
+                 gate_failures.open_for(config.load_id("widgets"), 7)]
+        self.assertEqual(len(shown), 1, shown)
+        self.assertIn("gate failure np", shown[0])
+        self.assertIn("names no PR", shown[0])
+
+    def test_a_paused_loop_still_reports_its_gate_failures(self):
+        from unittest import mock
+        from scripts import watchdog as wd
+        ledger = self.redrivable_entry()
+        with mock.patch.object(wd, "TEST", False), \
+             mock.patch.object(wd.gate, "hooks_read", return_value=(False, "paused")), \
+             mock.patch.object(wd, "SCRIPTS", self.slow_gate_dir(0)[0]):
+            lines = wd.sweep_loop(config.load_id("widgets"), state_mod.state_for(
+                config.load_id("widgets")))
+        said = [x for x in lines if "gate failure k1" in x]
+        self.assertEqual(len(said), 1, lines)
+        self.assertIn("hooks are paused", said[0])
+        self.assertEqual(ledger.entries()["k1"]["redrives"], 0)      # paused: never re-driven
+
+    def test_a_scoped_watchdog_also_sweeps_the_no_loop_ledger(self):
+        proc, _ = gateway_run("gate_reviewer.py", {"repository": "acme/widgets", "action": "x"})
+        self.assertEqual(proc.returncode, 2)
+        out = subprocess.run([sys.executable, str(SCRIPTS / "watchdog.py"), "--loop", "widgets"],
+                             capture_output=True, text=True, cwd=str(SCRIPTS), timeout=120,
+                             env=t.env()).stdout
+        self.assertIn("(no loop) — gate failure", out)
+
+    def test_an_alert_is_committed_only_after_it_is_said(self):
+        ledger = self.redrivable_entry()
+        ledger.update("k1", {"redrivable": False})
+        said = []
+
+        def killed(line):                       # the sweep dies while saying it
+            raise KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=3600, emit=killed)
+        self.assertNotIn("alerted_at", ledger.entries()["k1"])
+        # Its claim is leased: once the lease is out, the next sweep says it — and only then
+        # is it marked alerted, so the cooldown holds after that.
+        ledger.update("k1", {"claim": {"sweep": "dead", "until": time.time() - 1}})
+        gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=3600, emit=said.append)
+        self.assertEqual(len(said), 1)
+        self.assertIn("alerted_at", ledger.entries()["k1"])
+        gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=3600, emit=said.append)
+        self.assertEqual(len(said), 1)
+
+    def test_the_corrupt_copy_pointer_is_re_raised_on_the_cooldown(self):
+        ledger = self.corrupt_ledger()
+        ledger.snapshot()
+        said = []
+        gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=3600, emit=said.append)
+        gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=3600, emit=said.append)
+        self.assertEqual(len(said), 1)
+        (key,) = [k for k, e in ledger.entries().items() if e.get("kind") == "ledger"]
+        ledger.update(key, {"alerted_at": time.time() - 7200})
+        gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=3600, emit=said.append)
+        self.assertEqual(len(said), 2)
+
     # -- per-PR review reads are visible, and "reads work again" means all of them (#99) ------
 
     REVIEWS_7 = "/pulls/7/reviews?per_page=100"
@@ -722,6 +896,17 @@ class GateFailureTest(unittest.TestCase):
         self.assertEqual(t.load_state("watchdog.json")["github_read"]["sweeps"], 3)
         well, _ = self.normal_watchdog(self.switch_stub("world"))
         self.assertIn("GitHub reads work again", well.stdout)
+
+    def test_every_pr_whose_reviews_failed_is_named_when_the_alert_fires(self):
+        t.set_prs({"7": t.pr(7), "8": t.pr(8)})
+        self.normal_watchdog(self.switch_stub("world"))              # arms the loop
+        stub = self.switch_stub("world", {self.REVIEWS_7: 401,
+                                          "/pulls/8/reviews?per_page=100": 404})
+        proc, _ = self.normal_watchdog(stub)
+        out = proc.stdout
+        self.assertIn("cannot read GitHub", out)
+        self.assertIn("#7", out)
+        self.assertIn("#8: review page 1: HTTP 404", out)
 
     def test_reads_work_again_waits_for_every_read_in_the_sweep(self):
         t.set_prs({"7": t.pr(7)})
