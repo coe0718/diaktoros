@@ -291,13 +291,14 @@ def check_seat_extras(loop: dict) -> list[Check]:
                                 f"write {runtime} naming source/venv/runtime/rust"))
             continue
         needed = maybe = None
+        explain: dict = {}
         try:
             status, _, _, wire = seat_model.describe_seat_wire(loop, seat, settings)
             if wire is not None and status != "fail":
                 needed, maybe = seat_model.extras_for(
                     wire["provider"], wire["api_mode"], wire["base_url"],
                     model=wire.get("model") or "", configured=wire.get("configured") or "",
-                    facts=wire.get("facts"))
+                    facts=wire.get("facts"), entry=wire.get("entry"), explain=explain)
         except Exception as exc:        # a malformed URL, a broken description: undecided
             status, wire, reason = "warn", None, f" ({type(exc).__name__}: {exc})"
         else:
@@ -311,7 +312,10 @@ def check_seat_extras(loop: dict) -> list[Check]:
                                 "Hermes package is unknown",
                                 f"fix model:{seat} first, then re-run doctor"))
             continue
-        provider, mode, model = wire["provider"], wire["api_mode"], wire.get("model") or ""
+        provider, model = wire["provider"], wire.get("model") or ""
+        # The wire Hermes will use when it is decided (a named entry, nous native, ...), not
+        # the profile's own spelling.
+        mode = explain.get("wire") or wire["api_mode"]
         if not needed and not maybe:
             checks.append(Check(name, VERIFIED, f"{provider} [{mode}] needs no optional Hermes "
                                 "package"))
@@ -331,16 +335,18 @@ def check_seat_extras(loop: dict) -> list[Check]:
                          for e in needed + maybe)
         switch = "; ".join(
             f"may need the {e} extra: {provider} can use Anthropic's native wire for {model} "
-            f"{seat_model.HERMES_EXTRAS[e]['possible'][seat_model.provider_family(provider)]['why']}"
+            f"{explain.get(e, '')}".rstrip()
             for e in maybe_missing)
+        because = "; ".join(explain[e] for e in needed if explain.get(e))
         install = lambda extras: " and ".join(f"`hermes pm install --extra {e}`" for e in extras)
         where = (f"it installs into the venv Hermes selects, so if that is not {venv}, install the "
                  f"extra into {venv} or point `venv` in {runtime} at the venv that has it")
         if missing:
             checks.append(Check(
                 name, ABSENT,
-                f"{provider} [{mode}] needs the Hermes extra {what}, which {python} cannot "
-                f"import; the {seat} turn would fail at model setup"
+                f"{provider} [{mode}] needs the Hermes extra {what}"
+                + (f" ({because})" if because else "")
+                + f", which {python} cannot import; the {seat} turn would fail at model setup"
                 + (f" ({switch})" if switch else ""),
                 f"{install(missing + maybe_missing)} (Hermes's own command for a missing extra) "
                 f"— {where}; then re-run doctor"))

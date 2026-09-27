@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -598,8 +599,20 @@ class ProviderExtras(Base):
                               configured="chat_completions"), (["anthropic"], []))
         self.assertEqual(need("opencode-zen", "chat_completions", "", model="claude-sonnet-4-6",
                               configured="chat_completions"), (["anthropic"], []))
+        # A NAMED custom provider resolves from its providers.<name> entry, not model.api_mode
+        # (runtime_provider_custom._resolve_named_custom_runtime): an OpenCode-family entry with no
+        # api_mode of its own re-derives the wire from the model — unless its credential comes
+        # from a pool (_try_resolve_from_custom_pool returns first), which doctor cannot see.
+        bridge = {"url": "https://gw.test/v1", "api_mode": "", "model": ""}
         self.assertEqual(need("opencode-go-bridge", "chat_completions", "", model="minimax-m2",
-                              configured="chat_completions"), ([], []))  # custom: its api_mode wins
+                              configured="chat_completions", entry=bridge), ([], ["anthropic"]))
+        self.assertEqual(need("acme", "chat_completions", "", model="claude-sonnet-4-6",
+                              configured="chat_completions",
+                              entry={"url": "https://api.anthropic.com", "api_mode": "", "model": ""}),
+                         (["anthropic"], []))
+        self.assertEqual(need("acme", "anthropic_messages", "https://api.anthropic.com",
+                              entry={"url": "https://api.anthropic.com",
+                                     "api_mode": "chat_completions", "model": ""}), ([], []))
 
     def test_a_possible_switch_without_the_package_is_a_warning_with_the_fix(self):
         write_profile(self.home, "rev", {"default": "anthropic/claude-x", "provider": "nous"},
@@ -638,7 +651,50 @@ class ProviderExtras(Base):
     def test_nous_native_wire_in_the_profile_is_required(self):
         write_profile(self.home, "rev", {"default": "anthropic/claude-x", "provider": "nous"},
                       extra={"nous": {"anthropic_wire": "native"}})
-        self.assertEqual(self.extras(self.bare)["extras:reviewer"].status, doctor.ABSENT)
+        check = self.extras(self.bare)["extras:reviewer"]
+        self.assertEqual(check.status, doctor.ABSENT)
+        self.assertIn("[anthropic_messages]", check.detail)            # the wire Hermes will use
+        self.assertNotIn("[chat_completions]", check.detail)
+        self.assertIn("nous.anthropic_wire: native", check.detail)      # and why
+
+    def named(self, entry: dict, model: str = "claude-sonnet-4-6", legacy: bool = False,
+              api_mode: str = "chat_completions") -> "doctor.Check":
+        block = {"default": model, "provider": "custom:acme" if legacy else "acme"}
+        if api_mode:
+            block["api_mode"] = api_mode
+        extra = ({"custom_providers": [{"name": "Acme", **entry}]} if legacy
+                 else {"providers": {"acme": entry}})
+        write_profile(self.home, "rev", block, extra=extra)
+        return self.extras(self.bare)["extras:reviewer"]
+
+    def test_a_named_provider_entry_decides_not_model_api_mode(self):
+        # Tuck's repro: Hermes resolves this to anthropic_messages although model.api_mode says chat.
+        check = self.named({"base_url": "https://api.anthropic.com"})
+        self.assertEqual(check.status, doctor.ABSENT)
+        self.assertIn("[anthropic_messages]", check.detail)
+        self.assertIn("providers.acme", check.detail)
+        self.assertEqual(self.named({"base_url": "https://gw.test/v1",
+                                     "transport": "anthropic_messages"}).status, doctor.ABSENT)
+        self.assertEqual(self.named({"base_url": "https://gw.test/anthropic"}, legacy=True).status,
+                         doctor.ABSENT)
+
+    def test_a_named_entry_pinned_to_chat_needs_nothing(self):
+        # the mirror: the entry's own api_mode wins over an Anthropic-looking host
+        check = self.named({"base_url": "https://api.anthropic.com", "api_mode": "chat_completions"},
+                           api_mode="")
+        self.assertEqual(check.status, doctor.VERIFIED)
+        self.assertIn("needs no optional", check.detail)
+
+    def test_an_opencode_hosted_bridge_is_decided_by_its_model(self):
+        check = self.named({"base_url": "https://opencode.ai/zen/go/v1"}, model="minimax-m2.7")
+        self.assertEqual(check.status, doctor.UNKNOWN)                  # pool-dependent: may need
+        self.assertIn("may need the anthropic extra", check.detail)
+        self.assertIn("hermes pm install --extra anthropic", check.detail)
+        self.assertEqual(self.named({"base_url": "https://opencode.ai/zen/go/v1"},
+                                    model="deepseek-v4-flash").status, doctor.VERIFIED)
+        self.assertEqual(self.named({"base_url": "https://opencode.ai/zen/go/v1",
+                                     "api_mode": "anthropic_messages"}, model="deepseek-v4-flash"
+                                    ).status, doctor.ABSENT)
 
     def test_an_unresolved_model_skips_the_extras_line(self):
         write_profile(self.home, "fix", {"default": "fix-model"})              # no provider
@@ -758,6 +814,142 @@ class ProviderExtras(Base):
             checks = doctor.check_loop(self.loop, offline=True)
         spy.assert_called_once()
         self.assertIn("extras:reviewer", [c.name for c in checks])
+
+
+HERMES_SOURCE = os.environ.get("REVIEW_LOOP_REQUIRE_HERMES_SOURCE", "")
+_TRUTH = r"""
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from hermes_cli import runtime_provider as rp
+try:
+    print(json.dumps({"api_mode": rp.resolve_runtime_provider().get("api_mode")}))
+except Exception as exc:
+    print(json.dumps({"error": type(exc).__name__}))
+"""
+# A dummy, non-secret-shaped value for the placeholder credentials Hermes needs before it will
+# resolve a provider at all. It is never sent anywhere: nothing here makes a request.
+_DUMMY = "placeholder-value-0000111122223333"
+
+
+@unittest.skipUnless(HERMES_SOURCE, "set REVIEW_LOOP_REQUIRE_HERMES_SOURCE to a Hermes checkout "
+                                    "with its venv/ to compare doctor with Hermes's own resolver")
+class HermesAgreement(unittest.TestCase):
+    """#118, differential: for each profile, the pinned Hermes resolver's api_mode against
+    doctor's verdict. Hermes on the Messages wire ⇒ doctor lists the extra (required or possible);
+    Hermes elsewhere ⇒ doctor never *requires* it. Throwaway HOME and HERMES_HOME, placeholder
+    credentials only, no network."""
+
+    CASES = {
+        # named custom providers: the entry decides, model.api_mode does not
+        "acme-host": ({"model": {"provider": "acme", "default": "claude-sonnet-4-6",
+                                 "api_mode": "chat_completions"},
+                       "providers": {"acme": {"base_url": "https://api.anthropic.com",
+                                              "key_env": "ACME_KEY"}}}, {"ACME_KEY": _DUMMY}),
+        "acme-host-inline": ({"model": {"provider": "acme", "default": "claude-sonnet-4-6",
+                                        "api_mode": "chat_completions"},
+                              "providers": {"acme": {"base_url": "https://api.anthropic.com",
+                                                     "api_key": _DUMMY}}}, {}),
+        "acme-entry-chat": ({"model": {"provider": "acme", "default": "claude-sonnet-4-6"},
+                             "providers": {"acme": {"base_url": "https://api.anthropic.com",
+                                                    "api_mode": "chat_completions",
+                                                    "key_env": "ACME_KEY"}}}, {"ACME_KEY": _DUMMY}),
+        "acme-transport": ({"model": {"provider": "acme", "default": "m"},
+                            "providers": {"acme": {"base_url": "https://gw.test/v1",
+                                                   "transport": "anthropic_messages",
+                                                   "key_env": "ACME_KEY"}}}, {"ACME_KEY": _DUMMY}),
+        "legacy-anthropic-url": ({"model": {"provider": "custom:acme", "default": "m",
+                                            "api_mode": "chat_completions"},
+                                  "custom_providers": [{"name": "Acme",
+                                                        "base_url": "https://gw.test/anthropic",
+                                                        "api_key": _DUMMY}]}, {}),
+        "bridge-minimax": ({"model": {"provider": "bridge", "default": "minimax-m2.7",
+                                      "api_mode": "chat_completions"},
+                            "providers": {"bridge": {"base_url": "https://opencode.ai/zen/go/v1",
+                                                     "key_env": "BRIDGE_KEY"}}},
+                           {"BRIDGE_KEY": _DUMMY}),
+        "bridge-minimax-pool": ({"model": {"provider": "bridge", "default": "minimax-m2.7"},
+                                 "providers": {"bridge": {"base_url": "https://opencode.ai/zen/go/v1",
+                                                          "api_key": _DUMMY}}}, {}),
+        "bridge-deepseek": ({"model": {"provider": "bridge", "default": "deepseek-v4-flash"},
+                             "providers": {"bridge": {"base_url": "https://opencode.ai/zen/go/v1",
+                                                      "key_env": "BRIDGE_KEY"}}},
+                            {"BRIDGE_KEY": _DUMMY}),
+        # built-ins: a configured model.api_mode wins over the provider default, except where
+        # Hermes pins the wire
+        "minimax": ({"model": {"provider": "minimax", "default": "MiniMax-M2"}},
+                    {"MINIMAX_API_KEY": _DUMMY}),
+        "minimax-chat": ({"model": {"provider": "minimax", "default": "MiniMax-M2",
+                                    "api_mode": "chat_completions"}}, {"MINIMAX_API_KEY": _DUMMY}),
+        "kimi": ({"model": {"provider": "kimi-coding", "default": "kimi-k2.6"}},
+                 {"KIMI_API_KEY": _DUMMY}),
+        "kimi-code-key": ({"model": {"provider": "kimi-coding", "default": "kimi-k2.6"}},
+                          {"KIMI_API_KEY": "sk-kimi-" + _DUMMY}),
+        "opencode-zen-claude": ({"model": {"provider": "opencode-zen", "default": "claude-sonnet-4-6",
+                                           "api_mode": "chat_completions"}},
+                                {"OPENCODE_ZEN_API_KEY": _DUMMY}),
+        "anthropic": ({"model": {"provider": "anthropic", "default": "claude-sonnet-4-6",
+                                 "api_mode": "chat_completions"}}, {"ANTHROPIC_API_KEY": _DUMMY}),
+        "openrouter-anthropic-url": ({"model": {"provider": "openrouter", "default": "x/y",
+                                                "base_url": "https://gw.test/anthropic"}},
+                                     {"OPENROUTER_API_KEY": _DUMMY}),
+        "openrouter": ({"model": {"provider": "openrouter", "default": "x/y"}},
+                       {"OPENROUTER_API_KEY": _DUMMY}),
+        "bare-custom-chat": ({"model": {"provider": "custom", "default": "m", "api_key": _DUMMY,
+                                        "base_url": "https://api.anthropic.com",
+                                        "api_mode": "chat_completions"}}, {}),
+        "bare-custom": ({"model": {"provider": "custom", "default": "m", "api_key": _DUMMY,
+                                   "base_url": "https://api.anthropic.com"}}, {}),
+    }
+
+    def setUp(self):
+        self.source = pathlib.Path(HERMES_SOURCE)
+        self.python = self.source / "venv" / "bin" / "python"
+        self.assertTrue(self.python.exists(), f"{self.python}: REVIEW_LOOP_REQUIRE_HERMES_SOURCE "
+                                              "must name a Hermes checkout with its venv/")
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = pathlib.Path(temp.name)
+        self.home = self.root / "hermes"
+        patcher = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.settings = {"source": str(self.source), "venv": str(self.source / "venv"),
+                         "runtime": str(self.root), "rust": str(self.root)}
+
+    def truth(self, profile: pathlib.Path, env: dict) -> str:
+        user = self.root / "user-home"
+        user.mkdir(exist_ok=True)
+        run = subprocess.run([str(self.python), "-E", "-s", "-c", _TRUTH, str(self.source)],
+                             env={"PATH": "/usr/bin:/bin", "HOME": str(user), "LANG": "C.UTF-8",
+                                  "HERMES_HOME": str(profile), **env},
+                             cwd=str(profile), capture_output=True, timeout=120, check=False)
+        answer = json.loads(run.stdout.decode().strip().splitlines()[-1])
+        self.assertNotIn("error", answer, f"{profile.name}: Hermes did not resolve ({answer})")
+        return answer["api_mode"]
+
+    def test_doctor_agrees_with_the_pinned_hermes_resolver(self):
+        rows = []
+        for name, (cfg, env) in self.CASES.items():
+            profile = self.home / "profiles" / name
+            profile.mkdir(parents=True)
+            (profile / "config.yaml").write_text(json.dumps(cfg))
+            hermes = self.truth(profile, env)
+            loop = {"id": "d", "seats": {"reviewer": {"profile": name}, "fixer": {"profile": name}}}
+            status, _, _, wire = seat_model.describe_seat_wire(loop, "reviewer", self.settings)
+            self.assertEqual(status, "ok", name)
+            required, possible = seat_model.extras_for(
+                wire["provider"], wire["api_mode"], wire["base_url"], model=wire["model"],
+                configured=wire["configured"], facts=wire["facts"], entry=wire["entry"])
+            rows.append((name, hermes, required, possible))
+        if os.environ.get("REVIEW_LOOP_SHOW_AGREEMENT"):
+            for row in rows:
+                print(*row, file=sys.stderr)
+        for name, hermes, required, possible in rows:
+            with self.subTest(name, hermes=hermes, required=required, possible=possible):
+                if hermes == "anthropic_messages":
+                    self.assertIn("anthropic", required + possible)
+                else:
+                    self.assertNotIn("anthropic", required)
 
 
 if __name__ == "__main__":

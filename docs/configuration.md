@@ -302,7 +302,15 @@ per seat:
 `nous` with `nous.anthropic_wire: native` needs it outright; unset or `chat` never reaches the
 Messages wire. An explicit `model.api_mode` other than `anthropic_messages` wins over a Messages
 provider's default or an Anthropic-looking URL, as it does in Hermes — except for `anthropic`,
-`minimax-oauth`, `nous` and the built-in OpenCode providers, whose wire Hermes fixes itself. The
+`minimax-oauth`, `nous` and the built-in OpenCode providers, whose wire Hermes fixes itself. A
+**named custom provider** (`model.provider: <name>` with a `providers.<name>` or `custom_providers`
+entry) is decided by that entry, not by `model.api_mode`: the entry's `api_mode`/`transport`, else
+its URL. An OpenCode-family entry (named after `opencode-go`/`opencode-zen`, or on `opencode.ai`)
+with no `api_mode` of its own is ⚠️ "may need": Hermes derives its wire from the model unless the
+credential comes from a pool, which doctor does not read. The describe step reads only the entry's
+URL, wire and default model — never its key. With `REVIEW_LOOP_REQUIRE_HERMES_SOURCE` pointing at a
+Hermes checkout (with its `venv/`), `tests/test_seat_models.py` compares these verdicts with that
+Hermes's own resolver on a table of profiles. The
 provider→extra table, including those "possible" entries, is `HERMES_EXTRAS` in
 `review_loop/seat_model.py`.
 
