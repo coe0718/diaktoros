@@ -306,8 +306,12 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
     seen = valid_clock(watch.get("gate_failure_seen"), now) or 0.0
     # A gate's failed read that its gate-failure entry owns is alerted (and re-driven) by that
     # ledger's sweep; saying it here too would report one read twice.
-    settled = failure.get("owned_by") or failure.get("resolved_by")
-    if at is not None and at > seen and settled and failure.get("resolved_by"):
+    # Owned only while a ledger still backs the owner: a marker whose entry is gone (its ledger
+    # was moved aside) must not keep this read silent.
+    owner = gate_failures.owner_state(loop, failure) if failure.get("owned_by") else ""
+    done = bool(failure.get("resolved_by")) or owner == "resolved"
+    settled = done or owner == "open"
+    if at is not None and at > seen and done:
         watch["gate_failure_seen"] = at      # its gate-failure entry said it, and it resolved
     if at is not None and at > seen and not settled:
         watch["gate_failure_seen"] = at

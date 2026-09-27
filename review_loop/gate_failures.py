@@ -563,7 +563,7 @@ class Ledger:
                 data[key] = {**data[key], **fields}
                 self._save(data)
 
-    def resolve(self, key: str, how: str) -> bool:
+    def resolve(self, key: str, how: str, settle: bool = True) -> bool:
         with self._locked():
             data = self._load_for_write()
             entry = data.get(key)
@@ -577,7 +577,8 @@ class Ledger:
             self._save(data)
         with contextlib.suppress(OSError):
             (self.payload_dir / f"{key}.json").unlink()
-        _settle_github_read(entry.get("repo"), key, f"resolved — {how}")   # outside our lock
+        if settle:                                   # outside our lock
+            _settle_github_read(entry.get("repo"), key, f"resolved — {how}")
         return True
 
     # -- one sweep owns an entry's alert and re-drive (the pattern of ``breach_deliver``) ------
@@ -749,6 +750,39 @@ def _home_ledger(entry: dict) -> "Ledger | None":
         return None
 
 
+def owner_state(loop: dict, failure: dict) -> str:
+    """Whether the gate-failure entry a failed read is marked ``owned_by`` still backs it:
+    ``"open"`` (a ledger holds it unresolved, or the holding ledger cannot be read, so it may),
+    ``"resolved"``, or ``"gone"`` (no ledger holds it — its ledger was moved aside, or it was
+    dropped). ``""`` when the read is not owned. Read-only: ``explain`` calls it."""
+    owner = str(failure.get("owned_by") or "")
+    if not owner.startswith("gate-failures:"):
+        return ""
+    key = owner.removeprefix("gate-failures:")
+    held_in = str(failure.get("owned_in") or "")
+    candidates = []
+    try:
+        if held_in:
+            candidates.append(Ledger(pathlib.Path(held_in).parent))
+        else:
+            if loop.get("state_dir"):
+                candidates.append(loop_ledger(loop))
+            candidates.append(fallback_ledger())
+    except Exception:  # noqa: BLE001 - cannot tell: keep the promise
+        return "open"
+    resolved = False
+    for ledger in candidates:
+        data, _why = ledger._read()
+        if data is None:
+            return "open"                    # unreadable: it may still be in there
+        entry = data.get(key)
+        if isinstance(entry, dict):
+            if not entry.get("resolved"):
+                return "open"
+            resolved = True
+    return "resolved" if resolved else "gone"
+
+
 def _settle_github_read(repo, key: str, how: str) -> None:
     """The failed read an entry owned (``owned_by``) is settled when the entry leaves: marked
     ``resolved_by`` instead, so ``explain`` stops promising a gate-failure line and the health
@@ -905,6 +939,9 @@ def run(gate: str, main: Callable[[], None]) -> None:
                 ledger.resolve(key, how)
             except Exception as err:  # noqa: BLE001
                 log(f"gate-failure ledger resolve failed: {type(err).__name__}: {err}")
+        # The event completed: a read it owned is settled even if no ledger still held the
+        # entry (a moved-aside ledger discards what it could not read).
+        _settle_github_read(describe(payload)["repo"], key, f"resolved — {how}")
         raise SystemExit(code)
 
     if alarm:
@@ -1096,7 +1133,8 @@ def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s:
         if home is not None and home.path != ledger.path and isinstance(home.entries().get(key), dict):
             # One event, two ledgers (a handover that raced a landed write): the loop's own
             # ledger owns it, so the alert and the re-drive budget are counted once, there.
-            ledger.resolve(key, f"duplicate of the same event in {home.path}; handled there")
+            ledger.resolve(key, f"duplicate of the same event in {home.path}; handled there",
+                           settle=False)             # the original there still owns its read
             continue
         claimed = ledger.claim(
             key, me, now=time.time(), cooldown_s=cooldown_s, may_redrive=may_redrive,

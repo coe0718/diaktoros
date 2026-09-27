@@ -573,8 +573,13 @@ own record instead:
   ledger as a duplicate, so it is alerted once and re-driven at most 3 times in total. A failure
   the no-loop ledger had to take (the loop's ledger was busy) is still shown by `explain --pr N`
   for that loop's PR, and its `github-reads.json` record names the ledger that holds it. When
-  the owning entry resolves or is pruned, that record is marked `resolved_by`, so `explain` stops
-  pointing at a gate-failure line and the health check does not announce the old read.
+  the owning entry resolves or is pruned, or the same event later completes cleanly, that record
+  is marked `resolved_by`, so `explain` stops pointing at a gate-failure line and the health check
+  does not announce the old read. A duplicate resolved in the no-loop ledger leaves the mark
+  alone, because the original still owns the read. Both `explain` and the health check also
+  check that some ledger still holds the owning entry. If none does (its ledger was moved aside,
+  say), `explain` says so instead of promising a line, and the health check reports the read
+  itself.
 
 ## How it handles a burst
 

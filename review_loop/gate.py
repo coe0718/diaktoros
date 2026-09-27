@@ -455,12 +455,7 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
                                                     failure.get("status")
                                                     if type(failure.get("status")) is int
                                                     else None))
-                           + (f" (tracked as {failure['owned_by']}"
-                              + (f" in {failure['owned_in']}" if failure.get("owned_in") else "")
-                              + ": its gate-failure line says what happens next)"
-                              if failure.get("owned_by") else
-                              f" (settled: {failure['resolved_by']})"
-                              if failure.get("resolved_by") else ""))
+                           + _owner_note(loop, failure))
     github_line = " · ".join(github_bits) or "no failed GitHub call recorded"
 
     return {"seat": seat_line, "queue": queue_line, "inflight": inflight_line,
@@ -516,6 +511,23 @@ def explain_facts(loop: dict, number: int) -> dict:
             "armed": armed, "armed_error": armed_error, "read_at": time.time(),
             "chain": chain, "parent_readiness": readiness,
             "receipts": receipts, "receipts_error": receipts_error}
+
+
+def _owner_note(loop: dict, failure: dict) -> str:
+    """How ``explain`` names who handles a failed read — only what a ledger still backs."""
+    if failure.get("resolved_by"):
+        return f" (settled: {failure['resolved_by']})"
+    owner = failure.get("owned_by")
+    if not owner:
+        return ""
+    where = f" in {failure['owned_in']}" if failure.get("owned_in") else ""
+    state = gate_failures.owner_state(loop, failure)
+    if state == "open":
+        return f" (tracked as {owner}{where}: its gate-failure line says what happens next)"
+    if state == "resolved":
+        return f" (tracked as {owner}{where}, which has resolved)"
+    return (f" (was owned by {owner}, which is no longer in any gate-failure ledger — the ledger "
+            f"was moved aside or the entry dropped; the watchdog reports this read itself)")
 
 
 def gate_failure_line(entry: dict) -> str:

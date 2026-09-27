@@ -1119,6 +1119,53 @@ class GateFailureTest(unittest.TestCase):
             lines = wd.github_health(loop, st, {}, time.time(), True, "")
         self.assertEqual([x for x in lines if "could not" in x], [])   # settled, not re-announced
 
+    def test_an_owned_read_whose_entry_was_moved_aside_is_not_promised(self):
+        # Tuck's repro: a 502 failure owns its read; the ledger is torn and moved aside (which
+        # discards the entry); the same event then completes cleanly.
+        from unittest import mock
+        from scripts import watchdog as wd
+        failing = t.TMP / "fail_stub.py"
+        failing.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('HTTP 502')\nsys.exit(1)\n")
+        failing.chmod(0o755)
+        t.set_prs({"7": t.pr(7, requested=t.SEAT)})
+        gateway_run("gate_reviewer.py", t.pr_payload(7), {"REVIEW_LOOP_GH_STUB": str(failing)})
+        (key, _), = loop_entries().items()
+        loop = config.load_id("widgets")
+        st = state_mod.LoopState(loop)
+        self.assertEqual(st.github_failure().get("owned_by"), f"gate-failures:{key}")
+        ledger = gate_failures.Ledger(t.STATE_DIR)
+        ledger.path.write_text("{torn")
+        ledger.snapshot()                                          # a writer moves it aside
+        self.assertNotIn(key, ledger.entries())
+        # Read-only explain, before anything settles it: no promise of a line that cannot come.
+        local = gate._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
+        self.assertNotIn("its gate-failure line says what happens next", local["github"])
+        self.assertIn("no longer in any gate-failure ledger", local["github"])
+        # The health check does not keep suppressing it on a marker nothing backs.
+        ok = wd.gh.Response({"login": t.REVIEWER}, "", 200, {})
+        with mock.patch.object(wd, "TEST", False), \
+             mock.patch.object(wd.gh, "auth_probe", return_value=ok):
+            lines = wd.github_health(loop, st, {}, time.time(), True, "")
+        self.assertEqual(len([x for x in lines if "could not GET" in x]), 1, lines)
+        # And a clean completion of the same event settles it, although no ledger held it.
+        gateway_run("gate_reviewer.py", t.pr_payload(7))
+        failure = st.github_failure()
+        self.assertNotIn("owned_by", failure)
+        self.assertIn(key, failure.get("resolved_by", ""))
+
+    def test_resolving_a_duplicate_does_not_settle_the_open_original(self):
+        loop_ledger = self.redrivable_entry()
+        st = state_mod.LoopState(config.load_id("widgets"))
+        st.github_failure_record({"at": time.time(), "where": "gate_reviewer.py", "method": "GET",
+                                  "path": "/x", "error": "HTTP 502", "status": 502,
+                                  "owned_by": "gate-failures:k1", "owned_in": str(loop_ledger.path)})
+        fallback = gate_failures.fallback_ledger()
+        fallback.record("k1", {"gate": "gate_reviewer", "kind": "crash", "pr": 7, "repo": t.REPO,
+                               "redrivable": True, "error_type": "X", "error": "y"}, "{}")
+        gate_failures.sweep(fallback, "(no loop)", SCRIPTS, cooldown_s=3600)
+        self.assertTrue(fallback.entries()["k1"]["resolved"])
+        self.assertEqual(st.github_failure().get("owned_by"), "gate-failures:k1")   # still open
+
     # -- per-PR review reads are visible, and "reads work again" means all of them (#99) ------
 
     REVIEWS_7 = "/pulls/7/reviews?per_page=100"
