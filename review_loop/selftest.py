@@ -918,11 +918,21 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
         return
     names = {name: seat for seat, name in ((s, str(loop["seats"][s].get("route") or ""))
                                            for s in ("reviewer", "fixer")) if name}
-    ours = [(names[name], hook) for hook in hooks for name in names
-            if isinstance(hook.get("config"), dict) and str(hook["config"].get("url") or "")
-            .rstrip("/").endswith("/webhooks/" + name)]
+    try:
+        # uninstall's matcher: route name *and* this loop's gateway origin, so another
+        # install's hook on the same route name is never pinged or counted as this loop's.
+        own, foreign = doctor.split_route_hooks(loop, hooks, names)
+    except config.ConfigError as exc:
+        report.add(step, "hooks:signature", FAIL, f"cannot tell this loop's hooks apart: {exc}",
+                   f"hermes review-loop set --loop {loop['id']} --host https://your-gateway.example")
+        return
+    ours = [(names[doctor.hook_route_name(hook)], hook) for hook in own]
     if not ours:
-        report.add(step, "hooks:signature", FAIL, "no repo hook posts to this loop's routes",
+        elsewhere = (f"; {len(foreign)} hook(s) post to the same route names on another gateway "
+                     f"({', '.join(sorted({doctor.hook_origin(h) for h in foreign}))}) and were "
+                     "not touched" if foreign else "")
+        report.add(step, "hooks:signature", FAIL,
+                   f"no repo hook posts to this loop's routes on its gateway{elsewhere}",
                    "run init --hooks (see doctor)")
         return
     for seat, hook in ours:

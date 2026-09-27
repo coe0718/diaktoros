@@ -122,19 +122,26 @@ owner case above.
 the config, and reads both back. If it cannot (a token without `admin:repo_hook`/`repo`, an API
 failure, a job the scheduler will not remove) it refuses, changes nothing else, and prints the
 exact `gh api -X DELETE …` / `hermes cron remove …` commands; `--keep-hooks` is the explicit
-opt-out. A loop with no `host` never created hooks (`init --hooks` needs one), so `uninstall`
-skips the hook step for it, says so, and prints the `gh api` listing command. `--purge` deletes the
-state directory last; if that delete fails (a permission, a busy mount) it exits 2 with
-`uninstall INCOMPLETE — removed: …; left behind: …` and the exact `rm -rf -- '<dir>'` that finishes
-it — the config is already gone by then, so a re-run cannot. `init --hooks` refuses when hooks from a previous install still post to the loop's
+opt-out. A loop with no `host` cannot tell its own hooks from another install's, so `uninstall`
+reads the listing first: it refuses (exit 2, with the delete commands) when any hook posts to the
+loop's route names — a host blanked by hand leaves its hooks behind — and goes on only when none
+does. `set --host` refuses a blank or invalid origin rather than blanking it. `--purge` refuses
+up front, untouched, when the state directory cannot even be read for its in-flight check. It
+deletes the state directory last; if that delete — or removing the config before it — fails (a
+permission, a busy mount) it exits 2 with `uninstall INCOMPLETE — removed: …; left behind: …` and
+the exact `rm` commands that finish it — the config may already be gone by then, so a re-run
+cannot. `init --hooks` refuses when hooks from a previous install still post to the loop's
 routes (they sign with a secret the new routes will not hold), and `doctor` fails a route with
 more than one hook, or whose latest delivery the gateway answered 401/403 (a secret that does not
-match). After `arm` (and `init --hooks --arm`) activates the hooks it asks GitHub to **ping** each
+match) or any other non-2xx (a 5xx is the gateway erroring); a latest delivery with no HTTP answer
+at all (timed out, refused) is reported as unproven, never as green. After `arm` (and `init --hooks --arm`) activates the hooks it asks GitHub to **ping** each
 one and waits up to 10s for the delivery: `✅ … signature accepted`, `❌ … HTTP 401 — signature
 rejected` (exit 1), or `⚠️ no ping delivery seen` (nothing proven yet). A ping is harmless: the
 gateway checks its signature, then ignores it, because the loop's routes subscribe only to
 `pull_request` / `pull_request_review`. `doctor` never pings; `selftest` reads the recorded
-deliveries and pings only with `--ping` (its single GitHub write, e.g.
+deliveries and pings only with `--ping` — only hooks on this loop's own gateway origin, matched
+the way `uninstall` matches them, never another install's hook on the same route name (its single
+GitHub write, e.g.
 `hermes review-loop selftest --loop name --no-model --ping --admin-token LOGIN`).
 
 `set` is how you change the knobs after install — `--reviewer-concurrency`, `--fixer-concurrency`,

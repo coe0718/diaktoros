@@ -222,24 +222,60 @@ class UninstallRefusalTest(Base):
 
 
 class HostlessTest(Base):
-    def test_a_loop_without_a_host_owns_no_hooks_and_uninstalls(self):
-        # init --hooks needs a host, so a host-less config never created a repo hook: there is
-        # nothing to delete, and "the loop's repo hooks are still live" would be false.
+    def blank_host(self) -> None:
         cfg = json.loads(LOOP_FILE.read_text())
         cfg["host"] = ""
         LOOP_FILE.write_text(json.dumps(cfg))
+
+    def test_a_host_less_loop_with_no_hook_on_its_routes_uninstalls(self):
         other = {"id": 9, "active": True, "events": ["pull_request"],
-                 "config": {"url": "https://elsewhere.example/webhooks/widgets-review"}}
+                 "config": {"url": "https://elsewhere.example/webhooks/ci"}}
         self.world(hooks=[other])
+        self.blank_host()
         rc, out = self.cli("uninstall", "--loop", "widgets")
         self.assertEqual(rc, 0, out)
         self.assertNotIn("still live", out)
-        self.assertNotIn("refused", out)
-        self.assertIn("hooks: skipped — the loop has no host", out)
-        self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+        self.assertIn("hooks: none — the loop has no host, and no repo hook posts to its route "
+                      "names", out)
         self.assertEqual(self.hooks(), [other])  # nothing on GitHub was touched
         self.assertFalse(LOOP_FILE.exists())
         self.assertIsNone(routes.route("widgets-review"))
+
+    def test_a_blanked_host_never_leaves_its_own_hooks_live(self):
+        # The review's repro: install with hooks, arm, blank the host, uninstall. The hooks are
+        # this install's; skipping them would leave them live with routes and config gone.
+        self.fresh_install()
+        self.world(hooks=[{**hook, "active": True} for hook in self.hooks()])
+        ids = sorted(hook["id"] for hook in self.hooks())
+        self.blank_host()
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"hooks {ids[0]}, {ids[1]} post to this loop's route names", out)
+        for hook_id in ids:
+            self.assertIn(f"  gh api -X DELETE repos/{t.REPO}/hooks/{hook_id}\n", out)
+        self.assertEqual(sorted(hook["id"] for hook in self.hooks()), ids)
+        self.assertTrue(LOOP_FILE.exists())
+        self.assertIsNotNone(routes.route("widgets-review"))
+        self.assertNotIn("route removed", out)
+
+    def test_an_unreadable_listing_refuses_a_host_less_uninstall(self):
+        self.world(hooks=None)
+        self.blank_host()
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("could not read the repo's hooks", out)
+        self.assertTrue(LOOP_FILE.exists())
+
+    def test_set_refuses_a_blank_or_invalid_host(self):
+        before = LOOP_FILE.read_bytes()
+        for value, reason in (("   ", "a blank host would orphan the loop's hooks"),
+                              ("", "a blank host would orphan the loop's hooks"),
+                              ("gateway.local", "")):
+            rc, out = self.cli("set", "--loop", "widgets", "--host", value)
+            self.assertEqual(rc, 2, (value, out))
+            self.assertIn("refused:", out)
+            self.assertIn(reason, out)
+            self.assertEqual(LOOP_FILE.read_bytes(), before)
 
 
 class CronTest(Base):
@@ -350,6 +386,9 @@ class PurgeTest(Base):
         # PermissionError there must end in a summary and the exact command, never a traceback.
         self.fresh_install()
         self.cron_store([self.job("widgets", "job1")])
+        shim = config.home() / "scripts" / cli.SHIM_NAME
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text("#!/bin/sh\n")
         target = self.default_state()
         locked = target / "sub"
         locked.chmod(0o500)  # x.json cannot be unlinked from a read-only parent
@@ -364,7 +403,7 @@ class PurgeTest(Base):
         self.assertIn(f"state NOT removed: {target}", out)
         self.assertIn(f"Permission denied: {locked / 'x.json'}", out)  # the full path, not 'x.json'
         summary = next(line for line in out.splitlines() if line.startswith("uninstall INCOMPLETE"))
-        for part in ("repo hooks", "watchdog job", "routes", "config"):
+        for part in ("repo hooks", "watchdog job", "cron shim", "routes", "config"):
             self.assertIn(part, summary)
         self.assertIn("left behind", summary)
         command = f"rm -rf -- {shlex.quote(str(target))}"
@@ -372,6 +411,48 @@ class PurgeTest(Base):
         locked.chmod(0o700)
         os.system(command)  # the printed command is the one that finishes the job
         self.assertFalse(target.exists())
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                     "root ignores directory permissions")
+    def test_an_unreadable_state_dir_refuses_the_purge_before_anything(self):
+        # The in-flight check takes the state lock inside the directory about to be deleted.
+        self.fresh_install()
+        target = self.default_state()
+        target.chmod(0o500)                     # state.lock cannot be created
+        self.addCleanup(lambda: target.exists() and target.chmod(0o700))
+        rc, out = self.cli("uninstall", "--loop", "widgets", "--purge")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("refused: --purge cannot check for a run in flight", out)
+        self.assertIn(f"rm -rf -- {shlex.quote(str(target))}", out)
+        self.assertEqual(len(self.hooks()), 2)
+        self.assertTrue(LOOP_FILE.exists())
+        self.assertIsNotNone(routes.route("widgets-review"))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                     "root ignores directory permissions")
+    def test_a_config_that_will_not_go_is_reported_not_raised(self):
+        self.fresh_install()
+        self.cron_store([self.job("widgets", "job1")])
+        shim = config.home() / "scripts" / cli.SHIM_NAME
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text("#!/bin/sh\n")
+        target = self.default_state()
+        LOOP_FILE.parent.chmod(0o500)            # the config file cannot be unlinked
+        self.addCleanup(LOOP_FILE.parent.chmod, 0o700)
+        rc, out = self.cli("uninstall", "--loop", "widgets", "--purge")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self.hooks(), [])
+        self.assertIsNone(routes.route("widgets-review"))
+        self.assertTrue(LOOP_FILE.exists())
+        self.assertTrue(target.exists())
+        self.assertIn(f"config NOT removed: {LOOP_FILE}", out)
+        summary = next(line for line in out.splitlines() if line.startswith("uninstall INCOMPLETE"))
+        for part in ("repo hooks", "watchdog job", "cron shim", "routes"):
+            self.assertIn(part, summary.split("; left behind")[0])
+        self.assertIn(f"left behind: the loop config {LOOP_FILE}", summary)
+        self.assertIn("the state directory", summary)
+        self.assertIn(f"  rm -f -- {shlex.quote(str(LOOP_FILE))}\n", out)
+        self.assertIn(f"  rm -rf -- {shlex.quote(str(target))}\n", out)
 
     def test_without_purge_default_state_is_kept_and_named(self):
         self.default_state()
@@ -456,6 +537,26 @@ class DoctorDeliveriesTest(Base):
         self.assertEqual(check.status, doctor.VERIFIED)
         self.assertIn("no deliveries yet", check.detail)
 
+    def test_a_delivery_with_no_response_is_unproven_not_green(self):
+        check = self.check([{"id": 2, "status_code": None, "delivered_at": "2026-09-02T00:00:00Z",
+                             "event": "pull_request", "status": "timed out"},
+                            self.delivery(1, 202, "2026-09-01T00:00:00Z")])
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("no HTTP response", check.detail)
+        self.assertIn("timed out", check.detail)
+        self.assertIn("--ping", check.fix)
+        check = self.check([{"id": 3, "status_code": 0, "delivered_at": "2026-09-03T00:00:00Z",
+                             "event": "pull_request", "status": "connection refused"}])
+        self.assertEqual(check.status, doctor.UNKNOWN)
+
+    def test_a_5xx_delivery_is_failing_not_green(self):
+        for code in (500, 502, 404):
+            check = self.check([self.delivery(2, code, "2026-09-02T00:00:00Z")])
+            self.assertEqual(check.status, doctor.MISMATCH, code)
+            self.assertIn(f"HTTP {code}", check.detail)
+            self.assertIn("unproven", check.detail)
+        self.assertIn("gateway errored", self.check([self.delivery(2, 503, "2026-09-02T00:00:00Z")]).detail)
+
     def test_an_unreadable_delivery_list_is_unknown_not_green(self):
         check = self.check("not a list")
         self.assertEqual(check.status, doctor.UNKNOWN)
@@ -525,6 +626,29 @@ class PingTest(Base):
         state_after = sorted(str(p.relative_to(t.STATE_DIR)) for p in t.STATE_DIR.rglob("*"))
         self.assertEqual([p for p in state_after if "pending" in p or "queue" in p],
                          [p for p in state_before if "pending" in p or "queue" in p])
+
+    def test_selftest_ping_never_pings_another_installs_hook(self):
+        from review_loop import selftest
+        loop = config.load_id("widgets")
+        theirs = [{**hook, "config": {**hook["config"], "url": hook["config"]["url"].replace(
+            t.HOST, "https://other-gateway.example")}} for hook in self.hooks()]
+        self.world(hooks=theirs, pings=[])
+        report = selftest.Report(out=io.StringIO())
+        selftest.check_hook_signatures(report, loop, ping=True, login=t.FIXER)
+        self.assertEqual(json.loads(t.WORLD_FILE.read_text())["pings"], [])
+        self.assertEqual([r[2] for r in report.results], [selftest.FAIL])
+        text = report.out.getvalue()
+        self.assertIn("no repo hook posts to this loop's routes on its gateway", text)
+        self.assertIn("https://other-gateway.example", text)
+        # Ours next to theirs (same route names): only ours is pinged.
+        ours = [{**hook, "id": hook["id"] + 100, "config": {**hook["config"], "url": hook[
+            "config"]["url"].replace("https://other-gateway.example", t.HOST)}} for hook in theirs]
+        self.world(hooks=theirs + ours, pings=[])
+        report = selftest.Report(out=io.StringIO())
+        selftest.check_hook_signatures(report, loop, ping=True, login=t.FIXER)
+        self.assertEqual(sorted(json.loads(t.WORLD_FILE.read_text())["pings"]),
+                         sorted(hook["id"] for hook in ours))
+        self.assertEqual({r[2] for r in report.results}, {selftest.PASS})
 
     def test_selftest_reads_evidence_and_pings_only_when_asked(self):
         from review_loop import selftest

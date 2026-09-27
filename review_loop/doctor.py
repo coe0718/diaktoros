@@ -943,6 +943,34 @@ REJECTED = {401: "signature rejected — the hook's secret does not match the ro
             403: "refused — the route is disabled or holds no secret"}
 
 
+def hook_route_name(hook: dict) -> str:
+    """The webhook route a hook posts to: the last ``/webhooks/<name>`` path segment, exactly."""
+    url = (hook.get("config") or {}).get("url") if isinstance(hook.get("config"), dict) else ""
+    path = urlsplit(str(url or "")).path.rstrip("/")
+    return path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
+
+
+def hook_origin(hook: dict) -> str:
+    """The scheme://authority a hook posts to, lower-cased."""
+    cfg = hook.get("config") if isinstance(hook.get("config"), dict) else {}
+    parts = urlsplit(str(cfg.get("url") or ""))
+    return f"{parts.scheme}://{parts.netloc}".lower()
+
+
+def split_route_hooks(loop: dict, listing: list, names) -> tuple[list[dict], list[dict]]:
+    """``(own, foreign)``: hooks posting to one of ``names`` on this loop's origin, and elsewhere.
+
+    The one matcher ``uninstall``, ``init``'s stale-hook guard and ``selftest --ping`` share: a
+    path suffix alone would take another machine's install (same route name, other gateway) for
+    this one's. Raises ``ConfigError`` when the loop has no usable host to compare against.
+    """
+    origin = config.webhook_host(loop.get("host"), required=True).rstrip("/").lower()
+    named = [hook for hook in listing
+             if isinstance(hook, dict) and hook_route_name(hook) in set(names)]
+    return ([hook for hook in named if hook_origin(hook) == origin],
+            [hook for hook in named if hook_origin(hook) != origin])
+
+
 def check_deliveries(loop: dict, hook_id, name: str) -> "Check | str":
     """How the gateway answered this hook's most recent delivery — GitHub's only secret evidence.
 
@@ -965,6 +993,18 @@ def check_deliveries(loop: dict, hook_id, name: str) -> "Check | str":
         return "no deliveries yet — the secret is unproven until the first one arrives"
     latest = max(stamped, key=lambda d: d["delivered_at"])
     code = latest.get("status_code")
+    deliveries = f"`gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`"
+    ping = f"`hermes review-loop selftest --loop {shlex.quote(loop['id'])} --no-model --ping`"
+    if type(code) is not int or code <= 0:
+        # GitHub recorded the delivery but no HTTP answer (a timeout, a refused connection): the
+        # gateway never judged the signature, so nothing is proven — hook_ping refuses this too.
+        return Check(f"hook:{name}", UNKNOWN,
+                     f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got no HTTP "
+                     f"response from the gateway (GitHub recorded: "
+                     f"{latest.get('status') or 'no status'}) — it never answered, so whether "
+                     "its secret matches is unproven",
+                     f"check the gateway is running and reachable from GitHub (`hermes gateway "
+                     f"status`), then {ping}; the delivery log: {deliveries}")
     if code in REJECTED:
         return Check(f"hook:{name}", MISMATCH,
                      f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got HTTP {code}: "
@@ -972,6 +1012,15 @@ def check_deliveries(loop: dict, hook_id, name: str) -> "Check | str":
                      f"`hermes review-loop uninstall --loop {shlex.quote(loop['id'])}` (deletes the "
                      f"hook), then re-run init --hooks so the new hook and route share one fresh "
                      f"secret; then `hermes review-loop arm --loop {shlex.quote(loop['id'])}`")
+    if not 200 <= code < 300:
+        # A 5xx is the gateway erroring on the delivery (and any other non-2xx is it refusing):
+        # either way nothing woke, and the signature was never shown to verify.
+        kind = "the gateway errored" if code >= 500 else "the gateway did not accept it"
+        return Check(f"hook:{name}", MISMATCH,
+                     f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got HTTP {code}: "
+                     f"{kind}, so the hook wakes nothing and its secret is unproven",
+                     f"read the gateway's log for that delivery ({deliveries}), fix what it "
+                     f"reports, then {ping}")
     return f"latest delivery {code}"
 
 
