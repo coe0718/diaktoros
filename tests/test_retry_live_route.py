@@ -38,6 +38,8 @@ from review_loop import run_supervisor
 from review_loop.inference_proxy import PATH
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from worker_wait import wait_for_workers  # noqa: E402
 HEAD = 'a' * 40
 REPO = 'acme/widgets'
 
@@ -204,6 +206,8 @@ class LiveRouteRetry(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # Every detached worker a route spawned exits before the temp dir goes (see worker_wait).
+        self.addCleanup(wait_for_workers, self.root)
         self.home = home = self.root / 'home'
         home.mkdir(mode=0o700)
         (home / 'review-loops.d').mkdir()

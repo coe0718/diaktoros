@@ -23,6 +23,8 @@ from tests.test_turn_vertical import SOURCE, RUST
 from review_loop.inference_proxy import PATH
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from worker_wait import wait_for_workers  # noqa: E402
 HEAD = 'a' * 40
 
 
@@ -119,6 +121,8 @@ class RouteWorkerVertical(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # Every detached worker a route spawned exits before the temp dir goes (see worker_wait).
+        self.addCleanup(wait_for_workers, self.root)
         self.home = self.root / 'home'
         self.home.mkdir(mode=0o700)
         (self.home / 'review-loops.d').mkdir()
