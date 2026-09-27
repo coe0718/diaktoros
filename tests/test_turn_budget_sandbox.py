@@ -61,7 +61,6 @@ if spec['mode'] == 'push_then_hang':
     # (like one waiting on its tool call) overruns the budget meanwhile.
     with open('/work/src/lib.rs', 'w') as out:
         out.write('// fixed\n')
-    save(push_sent=round(time.time() - start, 2))
     subprocess.run([sys.executable, '-m', 'review_loop.broker_client', 'push', '--files',
                     'src/lib.rs', '--message', 'fix'], **quiet)
     while True:
@@ -344,6 +343,10 @@ class SandboxedTurnBudget(unittest.TestCase):
             'write_rc': 0 if driver['writes'] else 1,
             'finished_after': driver['elapsed'],
             'children': len([cmd for cmd in seen.values() if self.marker in cmd]),
+            # When the seat's push was sent, from the worker's own result (the host rebases it to
+            # the turn): the fixture writes nothing inside the sandbox, so this is the channel the
+            # host really has, alongside the /proc argv above.
+            'push_sent': (driver['pushes'] or [{}])[0].get('at'),
         }
         return driver, {cmd: 1 for cmd in seen.values()}, evidence
 

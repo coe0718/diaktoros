@@ -265,8 +265,14 @@ class DoctorWallClock(unittest.TestCase):
                               "acme/widgets#2": {"at": now - died - 60}}}
         lines = watchdog.died_locks(loop, locks, now)
         self.assertEqual(len(lines), 1, lines)
-        self.assertIn("acme/widgets#2", lines[0])
-        self.assertIn(f"frees itself at {-(-config.seat_ttl_s(loop) // 60)}m", lines[0])
+        # Each line is ``(stable key, message)``: the sweep cools down on the key, so a persisting
+        # mark warns once per window (#77), and the wording names the prune rather than a slot
+        # that frees itself at ttl_min.
+        key, line = lines[0]
+        self.assertEqual(key, "lock:reviewer:acme/widgets#2")
+        self.assertIn("acme/widgets#2", line)
+        self.assertIn("the mark is pruned on the next sweep", line)
+        self.assertNotIn("frees itself at", line)
 
 
 def _watchdog():
