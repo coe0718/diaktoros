@@ -679,6 +679,46 @@ class DoctorApplyUninstall(Base):
         self.assertNotIn("placeholder-recreated-key", out, "never print a secret")
         self.assertEqual(self.hook_config(world)["secret"], "placeholder-old-hook-key")
 
+    def test_set_host_then_apply_moves_the_loops_hooks_to_the_new_origin(self):
+        """#112: apply rewrites the routes' recorded origin after `set --host`; the repo hooks that
+        post to the old origin move with them, through #106's hook-move path."""
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
+        old_review = "https://gateway.example/p/vex/webhooks/widgets-review"
+        old_fix = "https://gateway.example/p/drey/webhooks/widgets-fix"
+        world = self.github_with_hook(old_review, secret=REVIEW_KEY, hook_id=41,
+                                      more=[(51, old_fix)],
+                                      events=("pull_request", "pull_request_review"))
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--host", "https://moved.example"])
+        self.assertEqual(rc, 0, out)
+        new_review = "https://moved.example/p/vex/webhooks/widgets-review"
+        new_fix = "https://moved.example/p/drey/webhooks/widgets-fix"
+
+        rc, dry = self.run_cli(["apply", "--loop", "widgets", "--dry-run"])
+        self.assertIn(f"hook 41 would move → {new_review}", dry)
+        self.assertIn(f"hook 51 would move → {new_fix}", dry)
+        self.assertEqual(json.loads(world.read_text())["patches"], 0, "a dry run wrote")
+
+        seen, recording = self.logins()
+        with recording:
+            rc, out = self.run_cli(["apply", "--loop", "widgets", "--admin-token", "admin-acct"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"hook 41 → {new_review}", out)
+        self.assertIn(f"hook 51 → {new_fix}", out)
+        self.assertEqual(seen, [("PATCH", "admin-acct"), ("PATCH", "admin-acct")])
+        self.assertEqual(self.hook_config(world, 41),
+                         {"url": new_review, "content_type": "json", "insecure_ssl": "0",
+                          "secret": REVIEW_KEY})
+        self.assertEqual(self.hook_config(world, 51)["url"], new_fix)
+        self.assertNotIn(REVIEW_KEY, out, "never print a secret")
+        for name in ("widgets-review", "widgets-fix"):
+            self.assertEqual(routes.route(name)["host"], "https://moved.example")
+        hooks = [c for c in doctor.check_hooks(config.load_id("widgets"), offline=False)]
+        self.assertTrue(hooks and all(c.status == doctor.VERIFIED for c in hooks),
+                        [(c.name, c.status, c.detail) for c in hooks])
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual((rc, "already matches" in out), (0, True), out)
+
     def test_a_hook_url_move_keeps_the_hook_secret_under_wholesale_patch(self):
         """apply moving a hook to the seat's new profile sends the whole config, secret included."""
         self.install()

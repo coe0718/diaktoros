@@ -615,6 +615,26 @@ def _hook_moves(before: dict, after: dict, binds: dict,
     return moves, redundant
 
 
+def _hook_origin(loop: dict, drifted: dict) -> dict:
+    """The loop as its repo hooks still know it, for ``_hook_moves``' "before" side.
+
+    After ``set --host`` the loop config already names the new origin while the seat routes (and
+    the hooks that post to them) still carry the old one; apply rewrites the routes' origin
+    (``drifted`` ⊇ "host"), so the hooks' old URLs are the routes' *recorded* origin. Handing
+    that to ``_hook_moves`` moves the hooks with the routes through #106's own path — its
+    listing, active-first choice, duplicate naming and full-config PATCH — unchanged.
+    """
+    hosts = {str((routes.route(name) or {}).get("host") or "").removesuffix("/")
+             for role, (name, fields) in drifted.items()
+             if role in ("reviewer", "fixer") and "host" in fields}
+    if not hosts:
+        return loop
+    if len(hosts) > 1:
+        raise config.ConfigError("the reviewer and fixer routes record different gateway origins; "
+                                 "cannot tell which one their repo hooks post to — no changes made")
+    return {**loop, "host": hosts.pop()}
+
+
 def _redundant_hook_line(loop: dict, hook: dict, keep: dict) -> str:
     def state(h: dict) -> str:
         return "active" if h["active"] else "paused"
@@ -1444,6 +1464,19 @@ def cmd_apply(args) -> int:
         if getattr(args, "recreate_routes", False):
             rewritten |= set(missing.values())
         left = _diverged(updated, rewritten=rewritten)
+        try:
+            hook_before = _hook_origin(loop, drifted)
+            if hook_before is not loop:
+                # The routes' origin moves, so their hooks move too: preview it (reads only).
+                moves, redundant = _hook_moves(hook_before, updated, binds,
+                                               getattr(args, "admin_token", "") or None)
+                for hook_id, _old, new, _ssl in moves:
+                    print(f"  hook {hook_id} would move → {new}")
+                for hook, keep in redundant:
+                    print(f"  {_redundant_hook_line(loop, hook, keep)}")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
         print("(dry run — nothing written: no loop config, no routes touched)")
         if left:
             print("  apply would exit 1: the route(s) above still disagree with the config after it")
@@ -1463,7 +1496,7 @@ def cmd_apply(args) -> int:
     # Preflight remote hooks before any local mutation. Snapshot each owned route and roll back
     # both surfaces on any failure; config is published only after route/hook readback agrees.
     try:
-        hook_moves, redundant_hooks = _hook_moves(loop, updated, binds,
+        hook_moves, redundant_hooks = _hook_moves(_hook_origin(loop, drifted), updated, binds,
                                                   getattr(args, "admin_token", "") or None)
     except config.ConfigError as exc:
         print(f"refused: {exc}")
