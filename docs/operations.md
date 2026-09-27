@@ -257,7 +257,7 @@ A correct installation:
 $ hermes review-loop doctor --loop widgets
 [widgets] acme/widgets — preflight (read-only: it writes nothing and fires nothing)
   ✅ config               doctor-demo/loops/widgets.json (repo acme/widgets, cap 3, base main)
-  ✅ turn-budget          reviewer 900s · fixer 900s · adjudicator 900s per isolated turn (sandbox killed past it); up to 1830s launch to end (300s dependency prefetch + 900s budget + 30s kill grace + 600s broker drain) — fits the watchdog grace 35m; seat lock TTL 45m, 'that run died' after 90m
+  ✅ turn-budget          reviewer 900s · fixer 900s · adjudicator 900s per isolated turn (sandbox killed past it); up to 1830s launch to end (300s dependency prefetch + 900s budget + 30s kill grace + 600s broker drain) — fits the watchdog grace 35m; seat lock TTL 45m, 'that run died' after 90m; breach marker: awaiting-adjudication stalls after 60m; adjudicating only with no live ruling run, after 60m
   ✅ profile:reviewer     reviewer-profile → doctor-demo/hermes-home/profiles/reviewer-profile
   ✅ credential:reviewer  rev-coach → a nonempty token file (identity and API access not checked)
   ✅ profile:fixer        fixer-profile → doctor-demo/hermes-home/profiles/fixer-profile
@@ -288,7 +288,7 @@ and the same loop with six of the ways it really breaks:
 $ hermes review-loop doctor --loop widgets
 [widgets] acme/widgets — preflight (read-only: it writes nothing and fires nothing)
   ✅ config               doctor-demo/loops/widgets.json (repo acme/widgets, cap 3, base main)
-  ✅ turn-budget          reviewer 900s · fixer 900s · adjudicator 900s per isolated turn (sandbox killed past it); up to 1830s launch to end (300s dependency prefetch + 900s budget + 30s kill grace + 600s broker drain) — fits the watchdog grace 35m; seat lock TTL 45m, 'that run died' after 90m
+  ✅ turn-budget          reviewer 900s · fixer 900s · adjudicator 900s per isolated turn (sandbox killed past it); up to 1830s launch to end (300s dependency prefetch + 900s budget + 30s kill grace + 600s broker drain) — fits the watchdog grace 35m; seat lock TTL 45m, 'that run died' after 90m; breach marker: awaiting-adjudication stalls after 60m; adjudicating only with no live ruling run, after 60m
   ✅ profile:reviewer     reviewer-profile → doctor-demo/hermes-home/profiles/reviewer-profile
   ✅ credential:reviewer  rev-coach → a nonempty token file (identity and API access not checked)
   ❌ profile:fixer        no profile home at doctor-demo/hermes-home/profiles/fixer-profile

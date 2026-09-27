@@ -182,9 +182,10 @@ def check_turn_budget(loop: dict) -> Check:
     A turn runs from launch to end for up to ``config.worst_turn_s``: the host dependency
     prefetch (#51), the budget, the sandbox kill grace, and the broker drain that lets an
     in-flight write finish (#98). The watchdog's stall threshold (``grace_min``) must fit that
-    — it is the operator's setting, so too short a grace is a warning. The seat-lock TTL and
-    the "that run died" report (twice the TTL) follow the turn by construction
-    (``config.seat_ttl_s``); doctor prints them so the operator sees what they are.
+    — it is the operator's setting, so too short a grace is a warning. The seat-lock TTL, the
+    "that run died" report (twice the TTL) and the stall clock of an ``adjudicating`` breach
+    marker follow the turn by construction (``config.seat_ttl_s``,
+    ``config.adjudicating_stall_s``); doctor prints them so the operator sees what they are.
     """
     seats = ["reviewer", "fixer"] + (["adjudicator"] if (loop.get("adjudicator") or {}).get("route")
                                      else [])
@@ -200,6 +201,13 @@ def check_turn_budget(loop: dict) -> Check:
     lock = (f"seat lock TTL {ttl}m" + ("" if ttl == ttl_min else
                                          f" (ttl_min {ttl_min}m, raised to fit the turn)")
             + f", 'that run died' after {-(-config.seat_died_after_s(loop) // 60)}m")
+    if "adjudicator" in seats:
+        # The breach marker's stall clocks (#98): a ruling in flight is never a stall; one
+        # claimed with no live run is, only after the adjudicator's whole turn.
+        marker = int(loop.get("marker_grace_min") or config.DEFAULTS["marker_grace_min"])
+        lock += (f"; breach marker: awaiting-adjudication stalls after {marker}m; adjudicating "
+                 "only with no live ruling run, after "
+                 f"{-(-config.adjudicating_stall_s(loop) // 60)}m")
     grace = int(loop.get("grace_min") or 0) * 60
     if grace and worst > grace:
         return Check("turn-budget", UNKNOWN,

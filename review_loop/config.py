@@ -491,37 +491,54 @@ def turn_budget(loop: dict, seat: str) -> int:
     return int(value)
 
 
-def turn_parts(loop: dict) -> dict:
+def turn_parts(loop: dict, seat: str | None = None, recorded: float | None = None) -> dict:
     """The pieces of one isolated turn's worst-case wall clock, launch to end, in seconds.
 
     Before the budget: the host dependency prefetch (``deps.FETCH_TIMEOUT``, #51). Then the
-    longest seat budget, the sandbox kill grace after it (``trusted_turn.KILL_GRACE_S``), and the
-    broker drain that lets an in-flight write (a push) finish once the sandbox is gone
-    (``trusted_turn.BROKER_DRAIN_S``) — all inside the run, all before its seat is released.
+    budget — ``seat``'s, or the longest seat's — the sandbox kill grace after it
+    (``trusted_turn.KILL_GRACE_S``), and the broker drain that lets an in-flight write (a push)
+    finish once the sandbox is gone (``trusted_turn.BROKER_DRAIN_S``) — all inside the run, all
+    before its seat is released. ``recorded`` is a budget a running turn was started with: the
+    clock never runs shorter than it, whatever the loop says now (a row keeps its budget).
     """
     from . import deps, trusted_turn   # imported late: both import this module
-    return {"prefetch": deps.FETCH_TIMEOUT,
-            "budget": max(turn_budget(loop, seat) for seat in (*SEAT_KEYS, "adjudicator")),
+    seats = (seat,) if seat else (*SEAT_KEYS, "adjudicator")
+    budget = max(turn_budget(loop, name) for name in seats)
+    try:
+        budget = max(budget, int(float(recorded or 0)))
+    except (TypeError, ValueError):
+        pass
+    return {"prefetch": deps.FETCH_TIMEOUT, "budget": budget,
             "grace": trusted_turn.KILL_GRACE_S, "drain": trusted_turn.BROKER_DRAIN_S}
 
 
-def worst_turn_s(loop: dict) -> int:
+def worst_turn_s(loop: dict, seat: str | None = None, recorded: float | None = None) -> int:
     """Seconds one isolated turn may take from launch to end (see ``turn_parts``)."""
-    return sum(turn_parts(loop).values())
+    return sum(turn_parts(loop, seat, recorded).values())
 
 
-def seat_ttl_s(loop: dict) -> int:
+def seat_ttl_s(loop: dict, recorded: float | None = None) -> int:
     """How long a seat claim lives: ``ttl_min``, or the whole worst-case turn if that is longer.
 
     ``ttl_min`` is the backstop for a run that died without a verdict; it must never be what
-    takes a slot from a turn that is still inside its own budget (#98).
+    takes a slot from a turn that is still inside its own budget (#98). ``recorded``, the
+    budget the claim was taken with, keeps a lowered ``turn_budget_s`` from shortening it.
     """
-    return max(int(loop.get("ttl_min") or DEFAULTS["ttl_min"]) * 60, worst_turn_s(loop))
+    return max(int(loop.get("ttl_min") or DEFAULTS["ttl_min"]) * 60,
+               worst_turn_s(loop, recorded=recorded))
 
 
-def seat_died_after_s(loop: dict) -> int:
+def seat_died_after_s(loop: dict, recorded: float | None = None) -> int:
     """Age past which the watchdog reports a seat claim as a run that died: twice its TTL."""
-    return 2 * seat_ttl_s(loop)
+    return 2 * seat_ttl_s(loop, recorded)
+
+
+def adjudicating_stall_s(loop: dict) -> int:
+    """How long a breach marker may sit ``adjudicating`` — a ruling claimed — with no live
+    adjudicator run before the watchdog calls the PR stalled: ``marker_grace_min``, or the
+    adjudicator's whole worst-case turn if that is longer (#98). While the run is live, never."""
+    grace = int(loop.get("marker_grace_min") or DEFAULTS["marker_grace_min"]) * 60
+    return max(grace, worst_turn_s(loop, "adjudicator"))
 
 
 def _check_budget(value, what: str, where: str) -> int:

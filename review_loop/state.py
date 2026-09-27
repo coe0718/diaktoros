@@ -33,7 +33,7 @@ import uuid
 from collections.abc import Callable
 
 from . import config
-from .util import log
+from .util import log, now_iso
 
 # Per-thread depth of the state lock we already hold, keyed by lock path. ``flock`` is tied to
 # the open file description, so a second ``open`` + ``flock`` in the same thread would deadlock
@@ -145,11 +145,12 @@ class LoopState:
         and exactly what the acceptance test for a read-only command looks at.
         """
         entries = (self._load(self.locks, {}) or {}).get(seat) or {}
-        # ttl_min, raised to the loop's whole worst-case turn: a healthy turn never loses its slot.
-        ttl = config.seat_ttl_s(self.loop)
+        # ttl_min, raised to the whole worst-case turn — on the budget the claim was taken with,
+        # or the loop's now if longer — so a healthy turn never loses its slot (#98).
         now = time.time()
         return {k: v for k, v in entries.items()
-                if isinstance(v, dict) and now - v.get("at", 0) <= ttl}
+                if isinstance(v, dict) and now - v.get("at", 0) <= config.seat_ttl_s(
+                    self.loop, v.get("budget"))}
 
     def active(self, seat: str) -> dict:
         """This seat's live runs, ``{key: entry}``, expired ones dropped and persisted away.
@@ -194,7 +195,9 @@ class LoopState:
     def acquire(self, seat: str, key: str, head: str = "", why: str = "") -> None:
         with self.locked():
             data = self._load(self.locks, {}) or {}
-            data.setdefault(seat, {})[key] = {"at": time.time(), "head": head, "why": why}
+            # The budget the claim is taken with: its TTL never shrinks below it (#98).
+            data.setdefault(seat, {})[key] = {"at": time.time(), "head": head, "why": why,
+                                              "budget": config.turn_budget(self.loop, seat)}
             self._save(self.locks, data)
 
     def release_if(self, seat: str, key: str, head: str | None = None) -> bool:
@@ -445,7 +448,7 @@ class LoopState:
                             or (marker.get("status") == "delivery-pending"
                                 and marker.get("delivery_token")))):
                 return None
-            data[key] = {**marker, "status": "adjudicating"}
+            data[key] = {**marker, "status": "adjudicating", "adjudicating_at": now_iso()}
             self._breach_save(data)
             return marker
 
@@ -470,6 +473,8 @@ class LoopState:
             data[key] = {k: v for k, v in marker.items()
                          if k not in {"delivery_token", "delivery_at"}}
             data[key]["status"] = "adjudicating"
+            # When the ruling started: the watchdog's stall clock for it counts from here.
+            data[key]["adjudicating_at"] = now_iso()
             self._breach_save(data)
             return marker
 

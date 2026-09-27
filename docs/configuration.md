@@ -50,7 +50,7 @@ See [Preflight](architecture.md#preflight-can-this-installation-run) and, for ex
 | `state_dir` | `~/.hermes/state/review-loops/<id>` | locks, queue, in-flight marks, breach markers, artifacts, watchdog memory |
 | `host` | unset | your gateway's HTTP(S) webhook origin; `init` requires `--host` or an explicit plugin setting before it writes config/routes/hooks |
 | `grace_min` | `35` | how long a quiet head is allowed to sit before the watchdog speaks; it must cover a whole turn (1830 s at the defaults — see [Turn budget](#turn-budget-how-long-one-turn-may-run)) |
-| `marker_grace_min` | `60` | how long a breach marker may sit unpicked-up |
+| `marker_grace_min` | `60` | how long a breach marker may wait for its adjudicator run (`awaiting-adjudication`) before the watchdog reports the PR parked. A marker being ruled on (`adjudicating`) is never a stall while its adjudicator run is live; with no live run it is reported only after the adjudicator's whole worst-case turn, or this, if longer (`doctor` prints both) |
 | `cooldown_h` | `6` | repeat suppression per stall |
 | `ttl_min` | `45` | seat-lock lifetime; past this a crashed run has lost its seat. Raised automatically to the loop's whole worst-case turn, so a healthy long turn never loses its slot; the watchdog calls a claim dead at twice that |
 | `inflight_ttl_min` | `10` | how long a same-head burst is considered already handled |
@@ -82,7 +82,10 @@ kill grace, then up to 600 s of broker drain for a write still in flight: the de
 is up to 1830 s (30.5 min) against the default 35 min grace, and a 1500 s budget needs `grace_min`
 of at least 41. The seat-lock TTL follows the same figure: `ttl_min`, raised to the whole turn when
 the turn is longer, and the watchdog reports a claim as a run that died only at twice that — so a
-long budget never loses its slot or reads as dead. `doctor` prints all three thresholds.
+long budget never loses its slot or reads as dead — on the budget the claim was taken with, so
+lowering `turn_budget_s` mid-turn cannot free a live seat early. A breach marker being ruled on
+follows the adjudicator's turn the same way (see `marker_grace_min`). `doctor` prints every one of
+these thresholds.
 A turn killed at its budget fails with
 `isolated turn failed: TimeoutExpired — killed at the Ns turn budget (sandbox stopped 30s past
 it) — raise turn_budget_s (hermes review-loop set …), then `retry``, shown by `status`,
@@ -92,7 +95,10 @@ once. Such a turn is **not** retried automatically — the same budget would mos
 again. If it made no write, once the budget is raised `hermes review-loop retry` (or a new event
 for the head) re-arms it, on the budget the loop has *then*. If a write finished during the drain
 (a push published after the kill), the reason says `after it wrote (fixer push recorded) — final:
-never replayed; a new head gets a fresh turn`: that run is final, and `retry` refuses it. An adjudicator killed this way
+never replayed; a new head gets a fresh turn`: that run is final, and `retry` refuses it. If the
+drain itself runs out, the run is quarantined `uncertain` (a write may still land) and the reason
+names both clocks: `broker did not shut down within 600s after the sandbox was killed at the Ns
+turn budget …`. An adjudicator killed this way
 hands its breach marker back, so the re-armed ruling starts again. Only the sandbox's own clock
 is reported this way; any other timeout keeps its reason and its automatic retry.
 `selftest --live-turn` runs for the loop's reviewer budget unless `--timeout` says otherwise, so a

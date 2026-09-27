@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -45,6 +46,13 @@ class TurnBudgetExceeded(subprocess.TimeoutExpired):
     def __init__(self, cmd, budget: int, grace: int):
         super().__init__(cmd, budget + grace)
         self.budget, self.grace = budget, grace
+
+
+def drain_failure(killed: "TurnBudgetExceeded") -> str:
+    """The reason when the broker outlives its drain after a budget kill: both facts."""
+    return (f"broker did not shut down within {BROKER_DRAIN_S}s after the sandbox was killed at "
+            f"the {killed.budget}s turn budget (sandbox stopped {killed.grace}s past it) — an "
+            "in-flight write may still land")
 
 
 def _report(progress, text: str) -> None:
@@ -407,4 +415,9 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 broker.close()
                 server.join(timeout=BROKER_DRAIN_S)
                 if server.is_alive():
+                    # Raised here it replaces whatever was in flight; keep a budget kill in the
+                    # reason (and as the cause) so the operator sees both clocks (#98).
+                    killed = sys.exc_info()[1]
+                    if isinstance(killed, TurnBudgetExceeded):
+                        raise TurnDenied(drain_failure(killed)) from killed
                     raise TurnDenied('broker did not shut down')

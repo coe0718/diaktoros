@@ -269,6 +269,159 @@ class DoctorWallClock(unittest.TestCase):
         self.assertIn(f"frees itself at {-(-config.seat_ttl_s(loop) // 60)}m", lines[0])
 
 
+def _watchdog():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("watchdog_under_test",
+                                                  ROOT / "scripts" / "watchdog.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class MarkerGraceFollowsTheRuling(unittest.TestCase):
+    """#98 review 2, item 1: a breach marker's stall clock, through the real sweep (TEST off).
+
+    ``awaiting-adjudication`` (no ruling run yet) is judged by ``marker_grace_min`` as before. An
+    ``adjudicating`` marker has a ruling out: while its adjudicator run is live it is not a
+    stall at all, and with no live run it is one only past the adjudicator's whole worst-case
+    turn (or ``marker_grace_min``, if longer), counted from when the ruling started.
+    """
+
+    def setUp(self):
+        from review_loop import state as state_mod
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.home = pathlib.Path(temp.name)
+        patch = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home),
+                                             "REVIEW_LOOP_CONFIG_DIR": str(self.home / "none")})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.state_mod = state_mod
+        self.watchdog = _watchdog()
+        self.watchdog.TEST = False                   # the real grace clocks
+
+    def sweep(self, budget, status, age_s, run_state=None):
+        # Each sweep gets its own loop state and run ledger (a marker keeps its first "at").
+        self.calls = getattr(self, "calls", 0) + 1
+        home = self.home / f"call-{self.calls}"
+        home.mkdir()
+        with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+            return self._sweep(home, budget, status, age_s, run_state)
+
+    def _sweep(self, home, budget, status, age_s, run_state):
+        wd, now = self.watchdog, time.time()
+        raw = _loop(state_dir=str(home / "loop-state"),
+                    read_token="reviewer", cap=3,
+                    adjudicator={"route": "widgets-breach", "profile": "default"})
+        loop = config.normalize(raw)
+        loop["seats"]["adjudicator"] = {"turn_budget_s": budget}
+        st = self.state_mod.state_for(loop)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - age_s))
+        st.breach_set(7, {"pr": 7, "head": HEAD, "rounds": 3, "status": status, "at": stamp,
+                          "reason": "cap spent", **({"adjudicating_at": stamp}
+                                                    if status == "adjudicating" else {})})
+        st.watch_save({"armed_since": now - 90000, "heads": {"7": {
+            "sha": HEAD, "base": "main", "base_sha": "b" * 40, "observed_at": now - 90000,
+            "last_seen_at": now}}})
+        ledger = Supervisor(home / "state" / "review-loop-runs.sqlite")
+        if run_state:
+            ledger.enqueue(f"adj-{budget}-{status}-{run_state}", loop["repo"], 7, HEAD,
+                           "adjudicator", turn_key="breach:3", budget=budget)
+            with sqlite3.connect(ledger.db) as con:
+                con.execute("UPDATE runs SET state=? WHERE delivery=?",
+                            (run_state, f"adj-{budget}-{status}-{run_state}"))
+        pr = {"number": 7, "state": "open", "draft": False, "title": "t",
+              "user": {"login": "fixer"}, "created_at": "2026-01-01T00:00:00Z",
+              "base": {"ref": "main", "sha": "b" * 40}, "head": {"sha": HEAD}}
+        verdicts = [{"id": n, "state": "CHANGES_REQUESTED", "commit_id": HEAD,
+                     "submitted_at": "2026-01-01T00:00:00Z",
+                     "user": {"login": "reviewer", "id": 2}} for n in (1, 2, 3)]
+        with mock.patch.object(wd.gate, "hooks_read", return_value=(True, "")), \
+             mock.patch.object(wd.gh, "open_prs", return_value=[pr]), \
+             mock.patch.object(wd.gh, "reviews", return_value=verdicts), \
+             mock.patch.object(wd, "github_health", return_value=[]), \
+             mock.patch.object(wd.route_intent, "heal", return_value=[]), \
+             mock.patch.object(wd.gate, "resume_isolated", return_value=False), \
+             mock.patch.object(wd, "reconcile_stacked"), \
+             mock.patch.object(wd, "retry_fresh_reviews"), \
+             mock.patch.object(wd, "retry_pending_breaches"), \
+             mock.patch.object(wd, "drain_queued"), \
+             mock.patch.object(wd.observer, "notify"), \
+             mock.patch.object(wd.observer, "retry", return_value=False), \
+             mock.patch.object(wd.observer, "flush"):
+            lines = wd.sweep_loop(loop, st)
+        # Every stall line about #7 (a young marker must not read as "no escalation marker").
+        return [line for line in lines if "#7" in line]
+
+    def test_a_ruling_in_flight_is_never_a_stall(self):
+        for budget in (900, 7200, 14400):
+            with self.subTest(budget=budget):
+                self.assertEqual(self.sweep(budget, "adjudicating", 61 * 60, "running"), [])
+
+    def test_a_ruling_with_no_live_run_waits_for_the_whole_adjudicator_turn(self):
+        from review_loop import deps
+        extra = trusted_turn.KILL_GRACE_S + deps.FETCH_TIMEOUT + trusted_turn.BROKER_DRAIN_S
+        # 900 s: the whole turn (1830 s) is under marker_grace_min (60 m), which then decides.
+        self.assertEqual(len(self.sweep(900, "adjudicating", 61 * 60)), 1)
+        for budget in (7200, 14400):
+            with self.subTest(budget=budget):
+                self.assertEqual(self.sweep(budget, "adjudicating", 61 * 60), [])
+                [line] = self.sweep(budget, "adjudicating", budget + extra + 120, "uncertain")
+                self.assertIn("no adjudicator run is live (uncertain)", line)
+
+    def test_a_marker_awaiting_its_run_keeps_marker_grace(self):
+        for budget in (900, 7200, 14400):
+            with self.subTest(budget=budget):
+                [line] = self.sweep(budget, "awaiting-adjudication", 61 * 60)
+                self.assertIn("parked awaiting adjudication", line)
+                self.assertEqual(self.sweep(budget, "awaiting-adjudication", 59 * 60), [])
+
+    def test_doctor_names_the_marker_clocks(self):
+        loop = config.normalize(_loop(adjudicator={"route": "widgets-breach", "profile": "default"}))
+        loop["seats"]["adjudicator"] = {"turn_budget_s": 7200}
+        check = doctor.check_turn_budget(loop)
+        self.assertIn("breach marker: awaiting-adjudication stalls after 60m; adjudicating only "
+                      "with no live ruling run, after 136m", check.detail)
+
+    def test_breach_start_stamps_when_the_ruling_started(self):
+        from review_loop import state as state_mod
+        loop = config.normalize(_loop(state_dir=str(self.home / "s")))
+        st = state_mod.state_for(loop)
+        st.breach_set(7, {"pr": 7, "head": HEAD, "rounds": 3, "status": "awaiting-adjudication",
+                          "at": "2026-01-01T00:00:00Z"})
+        st.breach_start(7, HEAD, 3)
+        self.assertTrue(st.breach_get(7).get("adjudicating_at"))
+
+
+class SeatClockFollowsTheRecordedBudget(unittest.TestCase):
+    """#98 review 2, item 2: lowering turn_budget_s mid-turn must not free a live seat early."""
+
+    def test_a_claim_keeps_the_budget_it_was_taken_with(self):
+        from review_loop import state as state_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            loop = config.normalize(_loop(state_dir=tmp, turn_budget_s=14400, ttl_min=45))
+            st = state_mod.state_for(loop)
+            st.acquire("reviewer", "acme/widgets#1", HEAD, "review")
+            self.assertEqual(st._load(st.locks, {})["reviewer"]["acme/widgets#1"]["budget"], 14400)
+            data = st._load(st.locks, {})
+            data["reviewer"]["acme/widgets#1"]["at"] = time.time() - 60 * 60
+            st._save(st.locks, data)
+            loop["turn_budget_s"] = 60                 # lowered mid-turn
+            self.assertLess(config.seat_ttl_s(loop), 60 * 60)
+            self.assertIn("acme/widgets#1", st.live_locks("reviewer"))
+            self.assertIn("acme/widgets#1", st.active("reviewer"))
+            entry = st._load(st.locks, {})["reviewer"]["acme/widgets#1"]
+            self.assertEqual(config.seat_ttl_s(loop, entry.get("budget")),
+                             config.seat_ttl_s({**loop, "turn_budget_s": 14400}))
+            # Nor is it reported dead on the lowered budget's clock.
+            self.assertEqual(_watchdog().died_locks(loop, st._load(st.locks, {}), time.time()), [])
+
+    def test_a_legacy_claim_without_a_budget_uses_the_loops(self):
+        loop = config.normalize(_loop(turn_budget_s=900, ttl_min=45))
+        self.assertEqual(config.seat_ttl_s(loop, None), config.seat_ttl_s(loop))
+        self.assertEqual(config.seat_ttl_s(loop, 60), config.seat_ttl_s(loop))  # never shorter
+
+
 class LedgerAndWorker(unittest.TestCase):
     """A real Supervisor, its real detached worker process, and a fixture child."""
 
@@ -477,6 +630,19 @@ class GateToProductionWorker(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fixer push recorded"):
             sup.retry(row["id"])
 
+    def test_a_drain_failure_after_a_budget_kill_names_both(self):
+        # #98 review 2, item 3: the broker not shutting down (raised in run_turn's finally)
+        # must not hide that the sandbox was killed at its budget first.
+        def run_turn(_loop, scope, **kw):
+            try:
+                raise trusted_turn.TurnBudgetExceeded(["bwrap"], kw["timeout"], 30)
+            except trusted_turn.TurnBudgetExceeded as exc:
+                raise trusted_turn.TurnDenied(trusted_turn.drain_failure(exc)) from exc
+        row = self.run_production(run_turn)
+        self.assertEqual(row["state"], "uncertain")          # a write may still land
+        self.assertIn("killed at the 2700s turn budget", row["error"])
+        self.assertIn("broker did not shut down", row["error"])
+
     def test_another_timeout_is_not_blamed_on_the_budget(self):
         # Only the sandbox's own wall clock is the budget; a timeout elsewhere in the turn
         # (a host-side read, a helper) must not send the operator off to raise turn_budget_s.
@@ -542,6 +708,12 @@ class RealTurnArgv(test_selftest.SelftestBase):
         seen, rc, text = self.capture()
         entry = seen["entry"]
         self.assertEqual(entry[entry.index("--run-budget") + 1], "900")
+
+    def test_a_drain_that_outlives_its_bound_still_names_the_budget_kill(self):
+        with mock.patch.object(trusted_turn, "BROKER_DRAIN_S", 1):
+            seen, rc, text = self.capture(delay_dispatch=4, time_out=True)
+        self.assertIn("broker did not shut down", text)
+        self.assertIn("turn budget", text)
 
     def test_a_kill_mid_request_lets_the_broker_finish_instead_of_abandoning_it(self):
         # 6 s > the old 5 s join: before #49 this surfaced as "broker did not shut down" with

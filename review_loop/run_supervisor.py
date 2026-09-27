@@ -646,6 +646,27 @@ def read_only_view(db: str | Path, repo: str, pr: int | None = None) -> list[dic
         return None
 
 
+def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str | None:
+    """The newest ledger state of ``seat``'s turn on this PR head, read-only (#98).
+
+    None when the ledger is absent, unreadable or holds no such turn. The watchdog uses it to
+    tell a ruling still in flight from a breach marker nobody is working on.
+    """
+    try:
+        con = _read_only(db)
+        if con is None:
+            return None
+        try:
+            row = con.execute("SELECT state FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
+                              "ORDER BY updated DESC, created DESC LIMIT 1",
+                              (repo, pr, head, seat)).fetchone()
+            return row[0] if row else None
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
 def dependency_view(db: str | Path, repo: str, pr: int | None = None,
                     limit: int = 5) -> list[dict] | None:
     """The newest runs that recorded a dependency prefetch, for ``status``/``explain`` (#51).

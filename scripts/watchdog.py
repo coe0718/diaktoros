@@ -693,9 +693,11 @@ def sweep_loop(loop: dict, st: state_mod.LoopState) -> list[str]:
         head_postdates_arming = TEST or observed_at is not None
         kind = ""
 
-        if marker.get("head") == head and age_min(marker.get("at")) > marker_grace:
-            kind = (f"parked awaiting adjudication for {age_min(marker.get('at')) / 60:.1f}h "
-                    f"(marker {marker.get('at') or 'unknown'})")
+        # A marker at this head is the escalation: whether it is a stall is its own question
+        # (parked_kind), and it is never "no escalation marker" while it is young (#98).
+        parked = parked_kind(loop, marker, number, head, marker_grace)
+        if parked is not None:
+            kind = parked
         elif len(changes) >= loop["cap"] and head_postdates_arming:
             kind = (f"{len(changes)} verdicts, no approval and NO escalation marker — "
                     f"the cap may not have fired")
@@ -771,16 +773,54 @@ def sweep_loop(loop: dict, st: state_mod.LoopState) -> list[str]:
     return lines
 
 
+LIVE_TURN = ("pending", "claimed", "launching", "running", "waiting")
+
+
+def parked_kind(loop: dict, marker: dict, number: int, head: str,
+                marker_grace: float) -> str | None:
+    """The stall a breach marker at ``head`` amounts to: ``""`` when it is none yet, None when
+    the marker is not this head's (#98).
+
+    ``awaiting-adjudication`` — no ruling run has started — is parked once it is older than
+    ``marker_grace_min``. ``adjudicating`` means a ruling is out: while its adjudicator run is
+    live in the ledger it is not a stall at all (the run's own clocks bound it), and with no
+    live run it is one only once older than ``config.adjudicating_stall_s`` — the adjudicator's
+    whole worst-case turn, or ``marker_grace_min`` if longer — counted from when it started.
+    """
+    if not isinstance(marker, dict) or marker.get("head") != head:
+        return None
+    if marker.get("status") != "adjudicating":
+        mins = age_min(marker.get("at"))
+        if mins > marker_grace:
+            return (f"parked awaiting adjudication for {mins / 60:.1f}h "
+                    f"(marker {marker.get('at') or 'unknown'})")
+        return ""
+    from review_loop.run_supervisor import turn_state
+    run = turn_state(config.home() / "state" / "review-loop-runs.sqlite", loop["repo"],
+                     number, head, "adjudicator")
+    if run in LIVE_TURN:
+        return ""
+    since = marker.get("adjudicating_at") or marker.get("at")
+    mins = age_min(since)
+    if mins > (0.0 if TEST else config.adjudicating_stall_s(loop) / 60):
+        return (f"adjudicating for {mins / 60:.1f}h (since {since or 'unknown'}) but no "
+                f"adjudicator run is live ({run or 'no run on record'}) — the ruling is not "
+                "coming by itself")
+    return ""
+
+
 def died_locks(loop: dict, locks: dict, now: float) -> list[str]:
     """Seat claims old enough to call their run dead: past twice the seat-lock TTL, which is
     ``ttl_min`` raised to the loop's whole worst-case turn (``config.seat_ttl_s``, #98) — so a
     healthy turn with a long budget is never reported as one that died."""
-    ttl_m = -(-config.seat_ttl_s(loop) // 60)
     lines = []
     for seat, entries in locks.items():
         for key, entry in (entries or {}).items():
-            age = now - (entry or {}).get("at", now)
-            if age > config.seat_died_after_s(loop):
+            entry = entry if isinstance(entry, dict) else {}
+            age = now - entry.get("at", now)
+            # On the budget the claim was taken with, if longer than the loop's now (#98).
+            if age > config.seat_died_after_s(loop, entry.get("budget")):
+                ttl_m = -(-config.seat_ttl_s(loop, entry.get("budget")) // 60)
                 lines.append(f"  {seat} slot held {age / 60:.0f}m on {key} — that run died; the "
                              f"slot frees itself at {ttl_m}m")
     return lines
