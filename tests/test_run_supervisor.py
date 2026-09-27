@@ -450,6 +450,12 @@ class ReviewerClaimConcurrency(unittest.TestCase):
         # The tests below set production_config after the first enqueue, so a later enqueue
         # spawns a (failing) detached production worker that names this temp dir.
         self.addCleanup(wait_for_workers, Path(self.tmp.name))
+        # A fixer claim takes the host policy lock under $HERMES_HOME/review-loops.d: keep it in
+        # this fixture, never the operator's home (#109).
+        env = patch.dict(os.environ, {'HERMES_HOME': self.tmp.name,
+                                      'REVIEW_LOOP_CONFIG_DIR': str(Path(self.tmp.name) / 'review-loops.d')})
+        env.start()
+        self.addCleanup(env.stop)
         self.db = Path(self.tmp.name) / 'ledger.sqlite'
         self.sup = Supervisor(self.db)
         self.sup.enqueue('review', 'o/r', 1, 'a' * 40, 'reviewer')

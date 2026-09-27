@@ -397,6 +397,7 @@ hermes review-loop explain --loop widgets --pr 7    # --loop may be omitted when
   escalation: none
   hooks:      armed — both seat routes are active repo hooks
   sweep:      no watchdog sweep recorded — nothing has read this loop's PRs yet
+  github:     no failed GitHub call recorded
   blocked:    the changes-requested verdict at head aaaaaaa has no fix run out — the fixer gate did not start one for that delivery
   next:       re-deliver the changes-requested review event for head aaaaaaa to the fixer gate after checking why its run did not start — no fixer is running to push a fix
 ```
@@ -424,6 +425,7 @@ A PR that is waiting rather than broken says so, instead of looking like a failu
   escalation: none
   hooks:      armed — both seat routes are active repo hooks
   sweep:      no watchdog sweep recorded — nothing has read this loop's PRs yet
+  github:     no failed GitHub call recorded
   blocked:    no capacity: queued with the reviewer seat — reviewer at capacity 1/1: acme/widgets#7 (720s)
   next:       a reviewer slot frees — the queued run starts then (a verdict or a handoff ends the run holding it; the lock expiry at 45m is the backstop)
 ```
