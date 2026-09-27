@@ -1166,6 +1166,96 @@ class GateFailureTest(unittest.TestCase):
         self.assertTrue(fallback.entries()["k1"]["resolved"])
         self.assertEqual(st.github_failure().get("owned_by"), "gate-failures:k1")   # still open
 
+    # -- owner_state looks at every ledger; an immovable ledger never silences a read -------
+
+    def owned_502(self) -> tuple[str, dict]:
+        failing = t.TMP / "fail_stub.py"
+        failing.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('HTTP 502')\nsys.exit(1)\n")
+        failing.chmod(0o755)
+        t.set_prs({"7": t.pr(7, requested=t.SEAT)})
+        gateway_run("gate_reviewer.py", t.pr_payload(7), {"REVIEW_LOOP_GH_STUB": str(failing)})
+        (key, _), = loop_entries().items()
+        return key, config.load_id("widgets")
+
+    def health_lines(self, loop) -> list[str]:
+        from unittest import mock
+        from scripts import watchdog as wd
+        ok = wd.gh.Response({"login": t.REVIEWER}, "", 200, {})
+        with mock.patch.object(wd, "TEST", False), \
+             mock.patch.object(wd.gh, "auth_probe", return_value=ok):
+            return wd.github_health(loop, state_mod.LoopState(loop), {}, time.time(), True, "")
+
+    def test_an_owner_open_in_any_ledger_is_open(self):
+        # Tuck: the same key in both ledgers, owned_in naming the no-loop one; its copy resolved
+        # as a duplicate while the loop's copy is open — and later pruned by retention.
+        key, loop = self.owned_502()
+        st = state_mod.LoopState(loop)
+        fallback = gate_failures.fallback_ledger()
+        fallback.record(key, {"gate": "gate_reviewer", "kind": "incomplete", "pr": 7,
+                              "repo": t.REPO, "redrivable": True, "error_type": "X",
+                              "error": "y"}, "{}")
+        st.github_failure_record({**st.github_failure(), "owned_in": str(fallback.path)})
+        gate_failures.sweep(fallback, "(no loop)", SCRIPTS, cooldown_s=3600)   # duplicate
+        self.assertTrue(fallback.entries()[key]["resolved"])
+        for stage in ("duplicate resolved", "duplicate pruned"):
+            with self.subTest(stage=stage):
+                self.assertEqual(gate_failures.owner_state(loop, st.github_failure()), "open")
+                local = gate._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
+                self.assertIn("its gate-failure line says what happens next", local["github"])
+                self.assertEqual([x for x in self.health_lines(loop) if "could not GET" in x], [])
+            data = json.loads(fallback.path.read_text())
+            data.pop(key, None)                            # the 7-day retention prune
+            fallback.path.write_text(json.dumps(data))
+
+    def ledger_as_directory(self) -> gate_failures.Ledger:
+        ledger = gate_failures.Ledger(t.STATE_DIR)
+        ledger.path.unlink(missing_ok=True)
+        ledger.path.mkdir()                                # unreadable as JSON and as bytes
+        self.addCleanup(lambda: ledger.path.rmdir() if ledger.path.is_dir() else None)
+        return ledger
+
+    def test_a_ledger_that_cannot_be_moved_aside_never_silences_its_read(self):
+        key, loop = self.owned_502()
+        self.ledger_as_directory()
+        st = state_mod.LoopState(loop)
+        self.assertEqual(gate_failures.owner_state(loop, st.github_failure()), "unreadable")
+        local = gate._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
+        self.assertNotIn("its gate-failure line says what happens next", local["github"])
+        self.assertIn("cannot be read", local["github"])
+        # A real watchdog in normal mode names the read itself, not only the ledger.
+        out, _ = self.normal_watchdog(self.switch_stub("world"))
+        self.assertIn("/repos/acme/widgets/pulls/7", out.stdout)
+        self.assertIn("could not be copied aside", out.stdout)
+
+    def test_explain_promises_a_move_aside_only_when_one_can_happen(self):
+        loop = config.load_id("widgets")
+        ledger = gate_failures.Ledger(t.STATE_DIR)
+        ledger.dir.mkdir(parents=True, exist_ok=True)
+        ledger.path.write_text("{torn")
+        (line,) = [gate.gate_failure_line(e) for e in gate_failures.open_for(loop, 7)
+                   if e.get("kind") == "ledger"]
+        self.assertIn("moves it aside", line)
+        ledger.path.unlink()
+        self.ledger_as_directory()
+        (line,) = [gate.gate_failure_line(e) for e in gate_failures.open_for(loop, 7)
+                   if e.get("kind") == "ledger"]
+        self.assertNotIn("moves it aside", line)
+        self.assertIn("cannot be moved aside automatically", line)
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-000 file anyway")
+    def test_a_mode_000_ledger_is_still_moved_aside(self):
+        key, loop = self.owned_502()
+        ledger = gate_failures.Ledger(t.STATE_DIR)
+        before = ledger.path.read_bytes()
+        ledger.path.chmod(0)
+        self.addCleanup(lambda: [c.chmod(0o600) for c in self.corrupt_copies()])
+        ledger.snapshot()                                   # a writer: link, then fresh ledger
+        (copy,) = self.corrupt_copies()
+        copy.chmod(0o600)
+        self.assertEqual(copy.read_bytes(), before)
+        st = state_mod.LoopState(loop)
+        self.assertEqual(gate_failures.owner_state(loop, st.github_failure()), "gone")
+
     # -- per-PR review reads are visible, and "reads work again" means all of them (#99) ------
 
     REVIEWS_7 = "/pulls/7/reviews?per_page=100"

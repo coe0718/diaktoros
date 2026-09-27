@@ -531,8 +531,11 @@ own record instead:
   copy. That entry is never pruned by the 200-entry bound while the copy exists. The watchdog
   alerts on it every cooldown until the copy is gone, and `explain` lists it for every PR of the loop, because that PR's earlier
   failures may only be in the copy. Salvage what you need from the copy and delete it; the next
-  sweep then clears the entry. If no copy can be made, nothing is written, and the sweep reports
-  why. An entry whose stored payload has since been deleted says so, and gives the same GitHub
+  sweep then clears the entry. A file that cannot even be read as bytes (mode 000) is still
+  moved aside, by hard link. Something that is not a regular file (a directory in its place), or
+  a state directory that is not writable, cannot be moved aside. For those, nothing is written,
+  the sweep reports why, `explain` says it cannot be moved aside automatically, and the failed
+  reads its entries owned are reported by the health check instead. An entry whose stored payload has since been deleted says so, and gives the same GitHub
   redelivery steps as a payload that was never kept.
 * **Watchdog.** Each sweep alerts on unresolved entries, once per new failure and again after the
   cooldown. It re-drives reviewer and fixer events by running the gate again on the stored
@@ -577,9 +580,10 @@ own record instead:
   is marked `resolved_by`, so `explain` stops pointing at a gate-failure line and the health check
   does not announce the old read. A duplicate resolved in the no-loop ledger leaves the mark
   alone, because the original still owns the read. Both `explain` and the health check also
-  check that some ledger still holds the owning entry. If none does (its ledger was moved aside,
-  say), `explain` says so instead of promising a line, and the health check reports the read
-  itself.
+  check that some ledger still holds the owning entry: the ledger named by `owned_in`, the
+  loop's, and the no-loop one, since one event can be in two. If none holds it open (its ledger
+  was moved aside, pruned, or cannot be read at all), `explain` says so instead of promising a
+  line, and the health check reports the read itself.
 
 ## How it handles a burst
 

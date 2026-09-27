@@ -526,6 +526,10 @@ def _owner_note(loop: dict, failure: dict) -> str:
         return f" (tracked as {owner}{where}: its gate-failure line says what happens next)"
     if state == "resolved":
         return f" (tracked as {owner}{where}, which has resolved)"
+    if state == "unreadable":
+        return (f" (owned by {owner}, but a gate-failure ledger that may hold it cannot be read, "
+                f"so no line about it can come from there; the watchdog reports this read "
+                f"itself)")
     return (f" (was owned by {owner}, which is no longer in any gate-failure ledger — the ledger "
             f"was moved aside or the entry dropped; the watchdog reports this read itself)")
 
@@ -537,9 +541,14 @@ def gate_failure_line(entry: dict) -> str:
                     f"and was moved aside to {entry.get('corrupt_copy')}; failures recorded before "
                     f"then (this PR's too) are only in that copy — salvage what you need, then "
                     f"delete it")
-        return (f"gate-failure ledger {entry.get('path')} is unreadable ({entry.get('error')}); "
-                f"the next gate failure or watchdog sweep moves it aside, unchanged, for you to "
-                f"salvage")
+        if entry.get("movable", True):
+            return (f"gate-failure ledger {entry.get('path')} is unreadable "
+                    f"({entry.get('error')}); the next gate failure or watchdog sweep moves it "
+                    f"aside, unchanged, for you to salvage")
+        return (f"gate-failure ledger {entry.get('path')} is unreadable ({entry.get('error')}) "
+                f"and cannot be moved aside automatically ({entry.get('why_not')}): nothing is "
+                f"recorded there until you repair or move it yourself, and the failures in it are "
+                f"unknown — the watchdog reports failed reads it would have owned itself")
     status = gate_failures.explain_status(entry)
     if entry.get("pr") is None:
         status += " (its payload names no PR, so every PR's explain shows it)"

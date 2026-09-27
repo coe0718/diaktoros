@@ -446,14 +446,26 @@ class Ledger:
                 return None, f"entry {key[:40]!r} is not an object ({type(value).__name__})"
         return data, ""
 
+    def movable(self) -> tuple[bool, str]:
+        """Whether a writer could move this (unreadable) file aside: ``(yes, why not)``. A
+        regular file in a writable directory can be hard-linked or copied and then replaced;
+        anything else (a directory in its place, a read-only state directory) cannot."""
+        if not self.path.is_file():
+            return False, "it is not a regular file"
+        if not os.access(self.dir, os.W_OK | os.X_OK):
+            return False, f"{self.dir} is not writable"
+        return True, ""
+
     def entries(self) -> dict:
         """A read-only view. An unreadable file shows as one synthetic entry, so ``explain``
         says so before any writer has moved it aside; no writer ever saves this view."""
         data, why = self._read()
         if data is None:
+            movable, why_not = self.movable()
             return {UNREADABLE: {"id": UNREADABLE, "gate": "ledger", "kind": CORRUPT,
                                  "resolved": False, "error_type": "LedgerUnreadable",
-                                 "error": why, "path": str(self.path), "attempts": 1}}
+                                 "error": why, "path": str(self.path), "attempts": 1,
+                                 "movable": movable, "why_not": why_not}}
         return data
 
     def _load_for_write(self) -> dict:
@@ -470,13 +482,21 @@ class Ledger:
         if data is not None:
             return data
         try:
-            raw = self.path.read_bytes()
-            copy = _existing_copy(self.dir, raw)
+            if not self.path.is_file():
+                raise OSError(f"{self.path} is not a regular file, so it cannot be copied aside")
+            try:
+                raw: bytes | None = self.path.read_bytes()
+            except OSError:
+                raw = None                      # e.g. mode 000: a hard link keeps it all the same
+            copy = (_existing_copy(self.dir, raw) if raw is not None
+                    else _existing_link(self.dir, self.path))
             if copy is None:
                 copy = _new_copy_name(self.dir)
                 try:
                     os.link(self.path, copy)
                 except OSError:
+                    if raw is None:
+                        raise
                     _write_copy(copy, raw)
                 _fsync_dir(self.dir)
         except OSError as exc:
@@ -672,6 +692,18 @@ def _existing_copy(directory: pathlib.Path, raw: bytes) -> pathlib.Path | None:
     return None
 
 
+def _existing_link(directory: pathlib.Path, path: pathlib.Path) -> pathlib.Path | None:
+    """A ``.corrupt-*`` name already linked to ``path`` (same inode) — for bytes that cannot be
+    read, the retry after a crash finds its copy this way instead of by content."""
+    for candidate in sorted(directory.glob(f"{LEDGER}.corrupt-*")):
+        try:
+            if os.path.samefile(candidate, path):
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
 def _new_copy_name(directory: pathlib.Path) -> pathlib.Path:
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     copy, n = directory / f"{LEDGER}.corrupt-{stamp}", 1
@@ -751,36 +783,45 @@ def _home_ledger(entry: dict) -> "Ledger | None":
 
 
 def owner_state(loop: dict, failure: dict) -> str:
-    """Whether the gate-failure entry a failed read is marked ``owned_by`` still backs it:
-    ``"open"`` (a ledger holds it unresolved, or the holding ledger cannot be read, so it may),
-    ``"resolved"``, or ``"gone"`` (no ledger holds it — its ledger was moved aside, or it was
-    dropped). ``""`` when the read is not owned. Read-only: ``explain`` calls it."""
+    """Whether a gate-failure entry still backs a failed read marked ``owned_by``. The same
+    event can be in two ledgers (a duplicate), so every ledger it could be in is asked — the one
+    ``owned_in`` names, the loop's, and the no-loop one:
+
+    * ``"open"`` — some ledger holds it unresolved: its alert line is (or will be) said;
+    * ``"resolved"`` — held, and resolved everywhere it is held (the event completed);
+    * ``"unreadable"`` — not held by any readable ledger, and one cannot be read, so no line
+      about it can come from there: the health check reports the read itself;
+    * ``"gone"`` — no ledger holds it (moved aside, pruned).
+
+    ``""`` when the read is not owned. Read-only: ``explain`` calls it."""
     owner = str(failure.get("owned_by") or "")
     if not owner.startswith("gate-failures:"):
         return ""
     key = owner.removeprefix("gate-failures:")
-    held_in = str(failure.get("owned_in") or "")
-    candidates = []
+    paths: list[pathlib.Path] = []
     try:
-        if held_in:
-            candidates.append(Ledger(pathlib.Path(held_in).parent))
-        else:
-            if loop.get("state_dir"):
-                candidates.append(loop_ledger(loop))
-            candidates.append(fallback_ledger())
-    except Exception:  # noqa: BLE001 - cannot tell: keep the promise
-        return "open"
-    resolved = False
-    for ledger in candidates:
-        data, _why = ledger._read()
+        if failure.get("owned_in"):
+            paths.append(pathlib.Path(str(failure["owned_in"])).parent)
+        if loop.get("state_dir"):
+            paths.append(loop_ledger(loop).dir)
+        paths.append(fallback_ledger().dir)
+    except Exception:  # noqa: BLE001
+        pass
+    seen, resolved, unreadable = set(), False, False
+    for directory in paths:
+        if directory in seen:
+            continue
+        seen.add(directory)
+        data, _why = Ledger(directory)._read()
         if data is None:
-            return "open"                    # unreadable: it may still be in there
+            unreadable = True
+            continue
         entry = data.get(key)
         if isinstance(entry, dict):
             if not entry.get("resolved"):
                 return "open"
             resolved = True
-    return "resolved" if resolved else "gone"
+    return "resolved" if resolved else "unreadable" if unreadable else "gone"
 
 
 def _settle_github_read(repo, key: str, how: str) -> None:

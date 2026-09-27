@@ -310,7 +310,7 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
     # was moved aside) must not keep this read silent.
     owner = gate_failures.owner_state(loop, failure) if failure.get("owned_by") else ""
     done = bool(failure.get("resolved_by")) or owner == "resolved"
-    settled = done or owner == "open"
+    settled = done or owner == "open"        # "gone" or "unreadable": nothing else will say it
     if at is not None and at > seen and done:
         watch["gate_failure_seen"] = at      # its gate-failure entry said it, and it resolved
     if at is not None and at > seen and not settled:
