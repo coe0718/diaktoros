@@ -19,13 +19,16 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
-from typing import Iterator
+from typing import Callable, Iterator
 
 
 @contextlib.contextmanager
 def connect(path, *, row_factory=None, pragmas: tuple[str, ...] = (),
+            opener: Callable[[], sqlite3.Connection] | None = None,
             **kwargs) -> Iterator[sqlite3.Connection]:
-    con = sqlite3.connect(path, **kwargs)
+    # ``opener`` is for a caller that must open (and vet) the connection itself; it then takes
+    # the same transaction and the same close as any other, and ``path``/kwargs are unused.
+    con = opener() if opener is not None else sqlite3.connect(path, **kwargs)
     try:
         if row_factory is not None:
             con.row_factory = row_factory
