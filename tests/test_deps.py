@@ -693,14 +693,14 @@ class LedgerTests(unittest.TestCase):
 
     def test_a_slow_prefetch_keeps_its_lease_and_is_never_taken_for_a_lost_worker(self):
         from review_loop.run_supervisor import Supervisor
-        # child_timeout matters: _run_one's launching lease is child_timeout + lease_seconds, and
-        # with the 120 s default no sweep inside this test could ever reclaim the run, heartbeat
-        # or not. The lease (5 s) is five sweep periods and three heartbeat periods (5/3 s), so a
-        # live heartbeat has ~3.3 s of scheduling slack: what varies is whether it runs at all,
-        # never how promptly. The pre-sandbox phase lasts over two lease lengths (11 s), so a
-        # run nobody renews is reclaimed by the sweeps in it, deterministically.
+        # The lease (5 s) is five sweep periods and three heartbeat periods (5/3 s), so a live
+        # heartbeat has ~3.3 s of scheduling slack: what varies is whether it runs at all, never
+        # how promptly. What makes the lease expirable is slow_turn's own UPDATE below (the one
+        # _run_production makes: running, on a one-lease lease); _run_one's longer launching
+        # lease is overwritten before any sweep sees it. The pre-sandbox phase lasts over two
+        # lease lengths (11 s), so a run nobody renews is reclaimed by the sweeps in it.
         sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
-                         hermes_home=self.root, lease_seconds=5.0, child_timeout=5.0)
+                         hermes_home=self.root, lease_seconds=5.0)
         run_id = self.row(sup, state="claimed")
         seen = []
 
