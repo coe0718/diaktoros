@@ -177,6 +177,14 @@ class Health(unittest.TestCase):
         back, *_ = self.sweep(hooks=(True, ""), probe=OK, at=self.now + 1800)
         self.assertTrue(any("GitHub reads work again as rev-coach" in line for line in back), back)
 
+    def test_the_listing_line_dedupe_does_not_depend_on_the_alert_wording(self):
+        denied = "open PR page 1: HTTP 403 " + PRETTY_403
+        with mock.patch.object(watchdog, "READ_ALERT", "GitHub refuses reads by {who}"):
+            lines, *_ = self.sweep(hooks=(True, ""), probe=OK, listing_error=denied)
+        self.assertEqual(len([x for x in lines if "GitHub refuses reads by rev-coach" in x]), 1,
+                         lines)
+        self.assertFalse(any("could not list open PRs" in x for x in lines), lines)
+
     def post_failure(self, error: str, status):
         self.st.github_failure_record({
             "at": self.now - 60, "where": "gate_fixer.py", "method": "POST",

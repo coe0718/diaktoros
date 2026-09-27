@@ -381,11 +381,14 @@ def issue_comments_read(loop: dict, number: int) -> tuple[list[dict] | None, str
                        "comment", MAX_COMMENT_PAGES)
 
 
-def reviews(loop: dict, number: int):
+def reviews(loop: dict, number: int, errors: list | None = None):
+    """The PR's whole review history, or ``None`` (unknown). Pass ``errors`` to receive why."""
     result, error = reviews_read(loop, number)
     if error:
-        log(f"gh GET {reviews_path(loop, number)} failed: {error}")
+        log(f"gh GET {reviews_path(loop, number)} failed: {one_line(error)}")
         record_failure(loop, "GET", reviews_path(loop, number), error)
+        if errors is not None:
+            errors.append(error)
     return result
 
 

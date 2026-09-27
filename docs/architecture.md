@@ -232,7 +232,11 @@ the watchdog neither drains nor scans there, but alerts with the read token's lo
 status (a 401/403 at once, a 5xx or no answer after three failed sweeps in a row, re-raised every
 `cooldown_h`), and `explain` prints "unknown" rather than guessing in either direction. The
 open-PR listing counts the same way: a token that can see the hooks but is refused the pulls (a
-403) raises the same alert on the same cadence. A gate that cannot read the current PR still
+403) raises the same alert on the same cadence. The stall scan's per-PR review reads are not silent either:
+a PR whose reviews cannot be read is skipped without a guessed verdict, but the sweep names it
+in one bounded line (`could not read reviews for N PR(s) — #7: …`). If the failure looks like an
+outage (a 401/403, a 5xx, or no answer), it also counts toward the read alert. "GitHub reads work
+again" is said only after a sweep in which every read it made succeeded. A gate that cannot read the current PR still
 answers `[SILENT]`, but leaves the failed call in `github-reads.json`: the next sweep reports it
 once, and `explain` shows it on its `github:` line. A failed write is reported by what is known:
 a 4xx means GitHub refused it and nothing changed; no answer or a 5xx leaves the outcome unknown,

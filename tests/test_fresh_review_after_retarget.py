@@ -103,7 +103,7 @@ class FreshReviewTest(unittest.TestCase):
         with mock.patch.object(watchdog, "TEST", True), \
              mock.patch.object(watchdog.gh, "open_prs", return_value=listing), \
              mock.patch.object(watchdog.gh, "pr", side_effect=lambda _loop, n: self.live(n)), \
-             mock.patch.object(watchdog.gh, "reviews", side_effect=lambda *_: list(self.reviews)), \
+             mock.patch.object(watchdog.gh, "reviews", side_effect=lambda *_, **__: list(self.reviews)), \
              mock.patch.object(watchdog.gh, "reviews_read", side_effect=lambda *_: (
                  (None, self.baseline_error) if self.baseline_error else (list(self.reviews), ""))), \
              mock.patch.object(watchdog.gh, "fetch", return_value=(
@@ -137,7 +137,7 @@ class FreshReviewTest(unittest.TestCase):
              contextlib.redirect_stdout(output), contextlib.redirect_stderr(output), \
              mock.patch.object(module.gate, "context", return_value=(self.loop, self.st)), \
              mock.patch.object(module.gh, "pr", side_effect=lambda _loop, n: self.live(n)), \
-             mock.patch.object(module.gh, "reviews", side_effect=lambda *_: list(self.reviews)), \
+             mock.patch.object(module.gh, "reviews", side_effect=lambda *_, **__: list(self.reviews)), \
              mock.patch.object(module.gh, "reviews_read", side_effect=lambda *_: (list(self.reviews), "")), \
              mock.patch.object(gate, "enqueue_isolated", side_effect=self.fake_enqueue), \
              mock.patch.object(module.gate, "block_pr_agent", side_effect=block), \
@@ -400,7 +400,7 @@ class FreshReviewTest(unittest.TestCase):
         def claim():
             with mock.patch("review_loop.config.by_repo", return_value=self.loop), \
                  mock.patch("review_loop.gh.api", return_value=self.child), \
-                 mock.patch("review_loop.gh.reviews", side_effect=lambda *_: list(self.reviews)):
+                 mock.patch("review_loop.gh.reviews", side_effect=lambda *_, **__: list(self.reviews)):
                 return sup._claim()
 
         # The latest listed verdict is an old rejection: not a work order after the boundary.

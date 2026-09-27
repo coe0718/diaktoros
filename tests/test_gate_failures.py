@@ -695,6 +695,46 @@ class GateFailureTest(unittest.TestCase):
         self.assertIn("HTTP 410", unowned[0])
         self.assertNotIn("Traceback", out.stdout + out.stderr)
 
+    # -- per-PR review reads are visible, and "reads work again" means all of them (#99) ------
+
+    REVIEWS_7 = "/pulls/7/reviews?per_page=100"
+
+    def test_a_failed_per_pr_review_read_is_said_and_feeds_the_health_alert(self):
+        t.set_prs({"7": t.pr(7)})
+        self.normal_watchdog(self.switch_stub("world"))             # arms the loop
+        outs = []
+        for _ in range(gate_failures.MAX_REDRIVES):                  # three failing sweeps
+            proc, _ = self.normal_watchdog(self.switch_stub("world", {self.REVIEWS_7: 502}))
+            outs.append(proc.stdout)
+        per_pr = [[x for x in out.splitlines() if "could not read reviews" in x] for out in outs]
+        alert = [[x for x in out.splitlines() if "cannot read GitHub" in x] for out in outs]
+        # Sweeps 1-2: the one bounded per-PR line, with the reason, no verdict guessed.
+        for lines in per_pr[:2]:
+            self.assertEqual(len(lines), 1, outs)
+            self.assertIn("#7: review page 1: HTTP 502", lines[0])
+            self.assertIn("stall check skipped", lines[0])
+            self.assertNotIn("\n", lines[0])
+        # Sweep 3: a 5xx pattern escalates to #99's health alert, and is not said twice.
+        self.assertEqual(alert[:2], [[], []])
+        self.assertEqual(len(alert[2]), 1, outs[2])
+        self.assertIn("PR review read: #7", alert[2][0])
+        self.assertEqual(per_pr[2], [])
+        self.assertEqual(t.load_state("watchdog.json")["github_read"]["sweeps"], 3)
+        well, _ = self.normal_watchdog(self.switch_stub("world"))
+        self.assertIn("GitHub reads work again", well.stdout)
+
+    def test_reads_work_again_waits_for_every_read_in_the_sweep(self):
+        t.set_prs({"7": t.pr(7)})
+        self.normal_watchdog(self.switch_stub("world"))              # arms the loop
+        dead, _ = self.normal_watchdog(self.switch_stub("401"))
+        self.assertIn("cannot read GitHub", dead.stdout)
+        # /user, the hooks and the listing answer again, but #7's reviews do not.
+        partial, _ = self.normal_watchdog(self.switch_stub("world", {self.REVIEWS_7: 404}))
+        self.assertNotIn("reads work again", partial.stdout)
+        self.assertIn("could not read reviews for 1 PR(s)", partial.stdout)
+        well, _ = self.normal_watchdog(self.switch_stub("world"))
+        self.assertIn("GitHub reads work again", well.stdout)
+
     def test_a_gate_drain_runs_on_the_gates_clock(self):
         from unittest import mock
         from review_loop import gh
