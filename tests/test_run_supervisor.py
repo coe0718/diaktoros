@@ -524,7 +524,9 @@ class Lifecycle(unittest.TestCase):
             if now > launched["lease"] and row["lease"] - now >= 1:
                 break
             if time.monotonic() > until:
-                self.fail(f"no heartbeat renewed the lease past its launch grant: {row}")
+                log = self.root / "ledger.sqlite.workers.log"
+                self.fail(f"no heartbeat renewed the lease past its launch grant: {row}; "
+                          f"worker log: {log.read_text() if log.exists() else '(none)'}")
             time.sleep(0.05)
         sup.recover()
         self.assertEqual(sup.get("heartbeat")["state"], "running")

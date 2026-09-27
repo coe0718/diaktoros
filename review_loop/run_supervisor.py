@@ -1197,6 +1197,7 @@ class Supervisor:
     def _heartbeat(self, run_id: str, owner: str, stop: threading.Event) -> None:
         # Only the owning worker can extend a live lease. An expired lease is
         # never silently revived after recovery has quarantined the turn.
+        reported = set()
         while not stop.wait(max(0.01, min(self.lease_seconds / 3, 5))):
             try:
                 with self._connect() as con:
@@ -1204,10 +1205,15 @@ class Supervisor:
                     con.execute("UPDATE runs SET lease=?, updated=? WHERE id=? AND owner=? "
                                 "AND state IN ('launching','running') AND lease>=?",
                                 (now + self.lease_seconds, now, run_id, owner, now))
-            except (sqlite3.Error, LedgerMissing):
+            except (sqlite3.Error, LedgerMissing) as exc:
                 # Recovery will quarantine this run if persistence stays down; a worker whose
-                # ledger is gone never recreates it and ends when its run does.
-                pass
+                # ledger is gone never recreates it and ends when its run does. Each distinct
+                # failure is logged once (the worker log), so a missed beat has a reason.
+                reason = f"{type(exc).__name__}: {exc}"
+                if reason not in reported:
+                    reported.add(reason)
+                    print(f"review-loop worker {os.getpid()}: heartbeat for run {run_id} "
+                          f"failed: {reason}", file=sys.stderr, flush=True)
 
     def complete_uncertain(self, run_id: str, owner: str, rc: int | None,
                            error: str | None = None, *, stopped: bool = True) -> None:
