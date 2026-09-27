@@ -155,9 +155,42 @@ class CliSurfaces(unittest.TestCase):
         check = doctor.check_turn_budget(loop)
         self.assertEqual(check.status, doctor.UNKNOWN)          # 2400s > 25m watchdog grace
         self.assertIn("reviewer 1200s · fixer 2400s", check.detail)
-        self.assertIn("--grace-min above 40", check.fix)
+        self.assertIn("--grace-min above 46", check.fix)      # 2400 + 30 + 300 s
         ok = doctor.check_turn_budget(config.normalize(_loop()))
         self.assertEqual((ok.status, ok.detail[:28]), (doctor.VERIFIED, "reviewer 900s · fixer 900s p"))
+
+
+class DoctorWallClock(unittest.TestCase):
+    """The watchdog's stall threshold must fit the whole turn, not just the budget (#49 + #51).
+
+    From launch to a verdict a turn may take the host dependency prefetch (bounded at
+    deps.FETCH_TIMEOUT, before the budget starts), then the budget, then the sandbox kill grace.
+    """
+
+    def check(self, budget, grace_min=25):
+        loop = config.normalize(_loop())
+        loop["turn_budget_s"], loop["grace_min"] = budget, grace_min
+        return doctor.check_turn_budget(loop)
+
+    def test_a_budget_under_the_grace_is_not_enough_when_the_turn_is_longer(self):
+        from review_loop import deps, trusted_turn
+        check = self.check(1500)                     # 1500 s = the 25 min grace, exactly
+        self.assertNotEqual(check.status, doctor.VERIFIED)
+        worst = 1500 + trusted_turn.KILL_GRACE_S + deps.FETCH_TIMEOUT
+        self.assertIn(f"{worst}s", check.detail)
+        self.assertIn("dependency prefetch", check.detail)
+        self.assertIn(f"--grace-min above {-(-worst // 60)}", check.fix)
+
+    def test_the_default_budget_fits_the_default_grace(self):
+        check = self.check(900)                      # 900 + 30 + 300 = 1230 s < 1500 s
+        self.assertEqual(check.status, doctor.VERIFIED)
+        self.assertIn("1230s", check.detail)
+
+    def test_the_boundary(self):
+        from review_loop import deps, trusted_turn
+        extra = trusted_turn.KILL_GRACE_S + deps.FETCH_TIMEOUT
+        self.assertEqual(self.check(1500 - extra).status, doctor.VERIFIED)
+        self.assertNotEqual(self.check(1500 - extra + 1).status, doctor.VERIFIED)
 
 
 class LedgerAndWorker(unittest.TestCase):

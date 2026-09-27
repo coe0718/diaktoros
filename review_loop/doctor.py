@@ -177,19 +177,29 @@ def check_config(loop: dict) -> Check:
 
 
 def check_turn_budget(loop: dict) -> Check:
-    """The wall clock each isolated seat turn gets (#49) — Hermes's --run-budget and the kill."""
+    """The wall clock each isolated seat turn gets (#49) — Hermes's --run-budget and the kill.
+
+    What the watchdog's stall threshold (``grace_min``) must fit is the whole turn, launch to
+    verdict: the host dependency prefetch (bounded at ``deps.FETCH_TIMEOUT``, before the budget
+    starts, #51), the budget itself, and the sandbox kill grace after it.
+    """
+    from . import deps, trusted_turn
     seats = ["reviewer", "fixer"] + (["adjudicator"] if (loop.get("adjudicator") or {}).get("route")
                                      else [])
     budgets = {seat: config.turn_budget(loop, seat) for seat in seats}
     detail = " · ".join(f"{seat} {value}s" for seat, value in budgets.items())
+    worst = max(budgets.values()) + trusted_turn.KILL_GRACE_S + deps.FETCH_TIMEOUT
+    whole = (f"up to {worst}s launch to verdict ({deps.FETCH_TIMEOUT}s dependency prefetch + "
+             f"{max(budgets.values())}s budget + {trusted_turn.KILL_GRACE_S}s kill grace)")
     grace = int(loop.get("grace_min") or 0) * 60
-    if grace and max(budgets.values()) > grace:
+    if grace and worst > grace:
         return Check("turn-budget", UNKNOWN,
-                     f"{detail} — longer than the {loop['grace_min']}m watchdog grace, so a "
-                     "healthy long turn can be reported as a stall",
-                     f"raise --grace-min above {-(-max(budgets.values()) // 60)} or lower the "
-                     "turn budget (`hermes review-loop set`)")
-    return Check("turn-budget", VERIFIED, f"{detail} per isolated turn (sandbox killed past it)")
+                     f"{detail} — {whole}, longer than the {loop['grace_min']}m watchdog grace, "
+                     "so a healthy long turn can be reported as a stall",
+                     f"raise --grace-min above {-(-worst // 60)} or lower the turn budget "
+                     "(`hermes review-loop set`)")
+    return Check("turn-budget", VERIFIED, f"{detail} per isolated turn (sandbox killed past it); "
+                                          f"{whole}")
 
 
 def _check_profile(name: str, seat: str) -> Check:

@@ -54,7 +54,7 @@ See [Preflight](architecture.md#preflight-can-this-installation-run) and, for ex
 | `cooldown_h` | `6` | repeat suppression per stall |
 | `ttl_min` | `45` | seat-lock lifetime; past this a crashed run has lost its seat |
 | `inflight_ttl_min` | `10` | how long a same-head burst is considered already handled |
-| `turn_budget_s` | `900` | wall-clock seconds one isolated seat turn may run — read the PR, build, run tests, submit. See [Turn budget](#turn-budget-how-long-one-turn-may-run). Plugin setting `turn_budget_s`; `init`/`set --turn-budget N` |
+| `turn_budget_s` | `900` | wall-clock seconds one isolated seat turn may run — read the PR, build, run tests, submit. The whole turn is up to 330 s longer (dependency prefetch before it, kill grace after), and `grace_min` must cover that total. See [Turn budget](#turn-budget-how-long-one-turn-may-run). Plugin setting `turn_budget_s`; `init`/`set --turn-budget N` |
 | `seats.<seat>.turn_budget_s` | loop default | this seat's own budget (`reviewer`, `fixer`, `adjudicator`), overriding `turn_budget_s`. `init`/`set --reviewer-turn-budget N` / `--fixer-turn-budget N`; the adjudicator's is set in the file |
 | `observer` | `{}` | the read-only observer feed. `{}` means no feed, and the loop is untouched by its absence — see [The observer feed](#the-observer-feed) |
 
@@ -75,8 +75,11 @@ Every isolated seat turn (reviewer, fixer, adjudicator) runs against one wall cl
 The gate records the budget on the run's ledger row when it enqueues the turn, so whichever worker
 claims it (a worker spawned by another loop's event included) runs it on this loop's terms; a
 `set` changes turns enqueued after it. `status` and `doctor` print each seat's budget, and
-`doctor` warns (⚠️) when a budget is longer than `grace_min`, since the watchdog could then call a
-healthy long turn a stall. A turn killed at its budget fails with
+`doctor` warns (⚠️) when a whole turn can outlast `grace_min`, since the watchdog could then call a
+healthy long turn a stall. A whole turn, launch to verdict, is the host dependency prefetch
+(bounded at 300 s, and run before the budget starts, so it never shortens it), then the budget,
+then the 30 s kill grace: the default 900 s budget is up to 1230 s (20.5 min) against the default
+25 min grace, and a 1500 s budget needs `grace_min` of at least 31. A turn killed at its budget fails with
 `isolated turn failed: TimeoutExpired — killed at the Ns turn budget (sandbox stopped 30s past
 it) — raise turn_budget_s (hermes review-loop set …), then `retry``, shown by `status`,
 `explain` and the watchdog's operator notice. The whole sandbox process tree goes with it (a
