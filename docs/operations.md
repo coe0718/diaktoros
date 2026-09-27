@@ -127,7 +127,7 @@ cause, never flipped, and leaves its seat ABSENT; so does a seat whose route is 
 registry, or bound to another profile ("the wake would run the wrong agent"), in `doctor`'s
 words — and `arm` will not arm a hook at the seat's URL that subscribes to the wrong event, does
 not post JSON, or ends in a trailing slash (`doctor`'s MISMATCH), since it would never wake the
-seat; pausing and `uninstall` still recognise such a hook as this install's. Pausing is stricter about
+seat; pausing still recognises such a hook as this install's and stops it. Pausing is stricter about
 *whose* hook it is and looser about the route: `arm --pause` stops every hook this install made —
 at the route's registry URL, or the URL the loop config gives it — even once the route is gone
 from the registry (as `uninstall` leaves it), and still never touches another install's. The `fix:` advice is per hook: a
@@ -397,7 +397,7 @@ python -m review_loop.run_supervisor status ~/.hermes/state/review-loop-runs.sql
 | 2 bubblewrap | unprivileged user namespaces work; a probe in the real sandbox layout (committed source snapshot, configured venv/runtime/Rust) cannot read a dummy host secret, any model key file, each seat profile's `.env`/`auth.json`/`config.yaml`, the PATs, the runtime file, `~/.hermes/.env` or the loop config, and has no network or credential-like env |
 | 3 inference | one ~16-token request in the seat's own wire format (chat completion, Responses or Messages) through the host inference capability **per distinct seat resolution** (seats that share a profile's provider, model and credential share one call), each with that resolution's own credential; an OAuth seat's 401 is refreshed and retried once on the host before it is reported (`--no-model` skips it) |
 | 4 identities | read, reviewer, fixer (and optional adjudicator) PATs resolve via `/user` to the expected logins and distinct principals; the repo is readable |
-| 5 authorization | with `--pr N`: the broker's reviewer-write checks (`broker.authorize`, reads only) and the host receipt generation |
+| 5 authorization | with `--pr N`: the broker's reviewer-write checks (`broker.authorize`, reads only) and the host receipt generation; then whether the seat can build that head: `build:rust:fetch` is the host prefetch of its `Cargo.lock` crates.io dependencies (a warning when refused or failed, since turns still run and the seat judges by reading; it prints the cache's size against its byte cap, and names a `REVIEW_LOOP_CRATE_CACHE_GIB` value it refused), and `build:rust` is an offline `cargo metadata --locked` inside the real sandbox layout with the cache mounted read-only ([dependency prefetch](issue-16-boundary.md#dependency-prefetch-issue-51-the-host-fetches-the-sandbox-builds-offline)) |
 | 6 supervisor | the ledger migrates and `status` reads; the route would accept the runtime file; `doctor`'s state dir, cron shim/job and gateway checks; the observer route |
 | 7 live turn | with `--live-turn --pr N`: a real isolated reviewer turn with the reviewer seat's resolved model (`--timeout`, default 600 s); the verdict and body the agent *would* submit are printed |
 
@@ -438,9 +438,11 @@ hermes review-loop explain --loop widgets --pr 7    # --loop may be omitted when
   seat:       nobody holds it
   queue:      not queued
   in-flight:  none
+  deps:       reviewer #7 @ aaaaaaa succeeded — rust: ready — 224 crates.io crates from Cargo.lock (2.4s)
   escalation: none
   hooks:      armed — both seat routes are active repo hooks
   sweep:      no watchdog sweep recorded — nothing has read this loop's PRs yet
+  github:     no failed GitHub call recorded
   blocked:    the changes-requested verdict at head aaaaaaa has no fix run out — the fixer gate did not start one for that delivery
   next:       re-deliver the changes-requested review event for head aaaaaaa to the fixer gate after checking why its run did not start — no fixer is running to push a fix
 ```
@@ -468,9 +470,20 @@ A PR that is waiting rather than broken says so, instead of looking like a failu
   escalation: none
   hooks:      armed — both seat routes are active repo hooks
   sweep:      no watchdog sweep recorded — nothing has read this loop's PRs yet
+  github:     no failed GitHub call recorded
   blocked:    no capacity: queued with the reviewer seat — reviewer at capacity 1/1: acme/widgets#7 (720s)
   next:       a reviewer slot frees — the queued run starts then (a verdict or a handoff ends the run holding it; the lock expiry at 45m is the backstop)
 ```
+
+The `deps:` line is what the host's dependency prefetch did for that PR's newest turns, read from
+the run ledger: `fetching — started …` while a turn is still fetching (it is bounded at 300 s and
+runs before the turn budget starts, so it is not a hung turn), then `ready` or `unavailable` with
+the reason — for example `the host crate cache would exceed 2 GiB (host limit
+REVIEW_LOOP_CRATE_CACHE_GIB)`, or a lockfile with git dependencies, which the host never fetches
+([dependency prefetch](issue-16-boundary.md#dependency-prefetch-issue-51-the-host-fetches-the-sandbox-builds-offline)).
+`status` prints the same line for the loop's newest turns. The cap is a host setting: set
+`REVIEW_LOOP_CRATE_CACHE_GIB` (whole GiB, 1-1024, default 2) in the environment of the process
+that runs the supervisor (normally the gateway), and it applies from the next prefetch.
 
 Three rules keep it honest:
 
