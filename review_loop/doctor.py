@@ -177,15 +177,17 @@ def check_config(loop: dict) -> Check:
 
 
 def check_turn_budget(loop: dict) -> Check:
-    """The wall clock each isolated seat turn gets (#49), against every clock that judges it.
+    """The wall clock each isolated seat turn gets (#49), and every clock that judges it.
 
     A turn runs from launch to end for up to ``config.worst_turn_s``: the host dependency
     prefetch (#51), the budget, the sandbox kill grace, and the broker drain that lets an
-    in-flight write finish (#98). The watchdog's stall threshold (``grace_min``) must fit that
-    — it is the operator's setting, so too short a grace is a warning. The seat-lock TTL, the
-    "that run died" report (twice the TTL) and the stall clock of an ``adjudicating`` breach
-    marker follow the turn by construction (``config.seat_ttl_s``,
-    ``config.adjudicating_stall_s``); doctor prints them so the operator sees what they are.
+    in-flight write finish (#98). Every age threshold the watchdog applies to a seat follows
+    *that seat's* whole turn by construction: its stall grace (``grace_min``, raised to the
+    turn — ``config.stall_grace_s``), its seat-lock TTL (``ttl_min``, raised the same way —
+    ``config.seat_ttl_s``), the "that run died" report at twice the TTL, and an
+    ``adjudicating`` breach marker's stall clock (``config.adjudicating_stall_s``). One seat's
+    long budget never lengthens another's. So there is nothing to warn about: doctor prints
+    each figure, and names every one the turn raised past the operator's setting.
     """
     seats = ["reviewer", "fixer"] + (["adjudicator"] if (loop.get("adjudicator") or {}).get("route")
                                      else [])
@@ -196,28 +198,37 @@ def check_turn_budget(loop: dict) -> Check:
     whole = (f"up to {worst}s launch to end ({parts['prefetch']}s dependency prefetch + "
              f"{parts['budget']}s budget + {parts['grace']}s kill grace + {parts['drain']}s "
              "broker drain)")
+    grace_min = int(loop.get("grace_min") or config.DEFAULTS["grace_min"])
     ttl_min = int(loop.get("ttl_min") or config.DEFAULTS["ttl_min"])
-    ttl = -(-config.seat_ttl_s(loop) // 60)
-    lock = (f"seat lock TTL {ttl}m" + ("" if ttl == ttl_min else
-                                         f" (ttl_min {ttl_min}m, raised to fit the turn)")
-            + f", 'that run died' after {-(-config.seat_died_after_s(loop) // 60)}m")
+
+    def minutes(seconds: int) -> int:
+        return -(-seconds // 60)
+
+    def per_seat(name: str, setting: int, clock) -> str:
+        bits = []
+        for seat in seats:
+            value = minutes(clock(seat))
+            bits.append(f"{seat} {value}m" + ("" if value == setting else
+                                               " (raised to fit its turn)"))
+        return f"{name} " + " · ".join(bits)
+
+    stall_seats = [seat for seat in seats if seat != "adjudicator"]
+    stall = "stall grace " + " · ".join(
+        f"{seat} {minutes(config.stall_grace_s(loop, seat))}m"
+        + ("" if minutes(config.stall_grace_s(loop, seat)) == grace_min
+           else " (raised to fit its turn)") for seat in stall_seats)
+    lock = (per_seat("seat lock TTL", ttl_min, lambda seat: config.seat_ttl_s(loop, None, seat))
+            + "; 'that run died' after twice that")
+    text = (f"{detail} per isolated turn (sandbox killed past it); {whole} — grace_min "
+            f"{grace_min}m, ttl_min {ttl_min}m; {stall}; {lock}")
     if "adjudicator" in seats:
         # The breach marker's stall clocks (#98): a ruling in flight is never a stall; one
         # claimed with no live run is, only after the adjudicator's whole turn.
         marker = int(loop.get("marker_grace_min") or config.DEFAULTS["marker_grace_min"])
-        lock += (f"; breach marker: awaiting-adjudication stalls after {marker}m; adjudicating "
+        text += (f"; breach marker: awaiting-adjudication stalls after {marker}m; adjudicating "
                  "only with no live ruling run, after "
-                 f"{-(-config.adjudicating_stall_s(loop) // 60)}m")
-    grace = int(loop.get("grace_min") or 0) * 60
-    if grace and worst > grace:
-        return Check("turn-budget", UNKNOWN,
-                     f"{detail} — {whole}, longer than the {loop['grace_min']}m watchdog grace, "
-                     f"so a healthy long turn can be reported as a stall; {lock}",
-                     f"set --grace-min {-(-worst // 60)} (or more), or lower the turn budget "
-                     "(`hermes review-loop set`)")
-    return Check("turn-budget", VERIFIED,
-                 f"{detail} per isolated turn (sandbox killed past it); {whole} — fits the "
-                 f"watchdog grace {loop.get('grace_min')}m; {lock}")
+                 f"{minutes(config.adjudicating_stall_s(loop))}m")
+    return Check("turn-budget", VERIFIED, text)
 
 
 def _check_profile(name: str, seat: str) -> Check:

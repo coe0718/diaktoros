@@ -49,12 +49,12 @@ See [Preflight](architecture.md#preflight-can-this-installation-run) and, for ex
 | `seats.<seat>.concurrency` | loop default | this seat's own limit, overriding the default. Set with `hermes review-loop set --reviewer-concurrency N` / `--fixer-concurrency N`. |
 | `state_dir` | `~/.hermes/state/review-loops/<id>` | locks, queue, in-flight marks, breach markers, artifacts, watchdog memory |
 | `host` | unset | your gateway's HTTP(S) webhook origin; `init` requires `--host` or an explicit plugin setting before it writes config/routes/hooks |
-| `grace_min` | `35` | how long a quiet head is allowed to sit before the watchdog speaks; it must cover a whole turn (1830 s at the defaults — see [Turn budget](#turn-budget-how-long-one-turn-may-run)) |
+| `grace_min` | `35` | how long a quiet head is allowed to sit before the watchdog speaks. Per seat it is raised to that seat's whole turn when the turn is longer (see [Turn budget](#turn-budget-how-long-one-turn-may-run)); 35 covers a whole default turn (1830 s). Before #98 the default was 25 |
 | `marker_grace_min` | `60` | how long a breach marker may wait for its adjudicator run (`awaiting-adjudication`) before the watchdog reports the PR parked. A marker being ruled on (`adjudicating`) is never a stall while its adjudicator run is live; with no live run it is reported only after the adjudicator's whole worst-case turn, or this, if longer (`doctor` prints both) |
 | `cooldown_h` | `6` | repeat suppression per stall |
-| `ttl_min` | `45` | seat-lock lifetime; past this a crashed run has lost its seat. Raised automatically to the loop's whole worst-case turn, so a healthy long turn never loses its slot; the watchdog calls a claim dead at twice that |
+| `ttl_min` | `45` | seat-lock lifetime; past this a crashed run has lost its seat. Raised automatically, per seat, to that seat's whole worst-case turn, so a healthy long turn never loses its slot; the watchdog calls a claim dead at twice that |
 | `inflight_ttl_min` | `10` | how long a same-head burst is considered already handled |
-| `turn_budget_s` | `900` | wall-clock seconds one isolated seat turn may run — read the PR, build, run tests, submit. The whole turn is up to 930 s longer (300 s dependency prefetch before it, 30 s kill grace and up to 600 s broker drain after), and `grace_min` must cover that total. See [Turn budget](#turn-budget-how-long-one-turn-may-run). Plugin setting `turn_budget_s`; `init`/`set --turn-budget N` |
+| `turn_budget_s` | `900` | wall-clock seconds one isolated seat turn may run — read the PR, build, run tests, submit. The whole turn is up to 930 s longer (300 s dependency prefetch before it, 30 s kill grace and up to 600 s broker drain after); that seat's stall grace and lock TTL follow the total. See [Turn budget](#turn-budget-how-long-one-turn-may-run). Plugin setting `turn_budget_s`; `init`/`set --turn-budget N` |
 | `seats.<seat>.turn_budget_s` | loop default | this seat's own budget (`reviewer`, `fixer`, `adjudicator`), overriding `turn_budget_s`. `init`/`set --reviewer-turn-budget N` / `--fixer-turn-budget N`; the adjudicator's is set in the file |
 | `observer` | `{}` | the read-only observer feed. `{}` means no feed, and the loop is untouched by its absence — see [The observer feed](#the-observer-feed) |
 
@@ -74,18 +74,19 @@ Every isolated seat turn (reviewer, fixer, adjudicator) runs against one wall cl
 
 The gate records the budget on the run's ledger row when it enqueues the turn, so whichever worker
 claims it (a worker spawned by another loop's event included) runs it on this loop's terms; a
-`set` changes turns enqueued after it. `status` and `doctor` print each seat's budget, and
-`doctor` warns (⚠️) when a whole turn can outlast `grace_min`, since the watchdog could then call a
-healthy long turn a stall. A whole turn, launch to end, is the host dependency prefetch (bounded at
-300 s, and run before the budget starts, so it never shortens it), then the budget, then the 30 s
-kill grace, then up to 600 s of broker drain for a write still in flight: the default 900 s budget
-is up to 1830 s (30.5 min) against the default 35 min grace, and a 1500 s budget needs `grace_min`
-of at least 41. The seat-lock TTL follows the same figure: `ttl_min`, raised to the whole turn when
-the turn is longer, and the watchdog reports a claim as a run that died only at twice that — so a
-long budget never loses its slot or reads as dead — on the budget the claim was taken with, so
-lowering `turn_budget_s` mid-turn cannot free a live seat early. A breach marker being ruled on
-follows the adjudicator's turn the same way (see `marker_grace_min`). `doctor` prints every one of
-these thresholds.
+`set` changes turns enqueued after it. `status` and `doctor` print each seat's budget. A whole
+turn, launch to end, is the host dependency prefetch (bounded at 300 s, and run before the budget
+starts, so it never shortens it), then the budget, then the 30 s kill grace, then up to 600 s of
+broker drain for a write still in flight: the default 900 s budget is up to 1830 s (30.5 min).
+
+Every age threshold the watchdog applies to a seat follows **that seat's** whole turn, never
+another seat's: its stall grace is `grace_min` raised to the seat's turn (a 1500 s fixer budget
+waits 41 min before "fixer never pushed", while the reviewer keeps the 35 min default); its
+seat-lock TTL is `ttl_min` raised the same way — on the budget the claim was taken with, so
+lowering `turn_budget_s` mid-turn cannot free a live seat early — and the watchdog calls a claim
+a run that died only at twice that. A breach marker being ruled on follows the adjudicator's turn
+(see `marker_grace_min`). `doctor` prints every one of these per seat and names each one a turn
+raised past your setting; there is nothing to tune by hand.
 A turn killed at its budget fails with
 `isolated turn failed: TimeoutExpired — killed at the Ns turn budget (sandbox stopped 30s past
 it) — raise turn_budget_s (hermes review-loop set …), then `retry``, shown by `status`,

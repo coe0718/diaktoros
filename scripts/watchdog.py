@@ -650,7 +650,9 @@ def sweep_loop(loop: dict, st: state_mod.LoopState) -> list[str]:
         observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
         return lines
 
-    grace = 0.0 if TEST else loop["grace_min"]
+    # Per seat (#98): each seat's stall waits for its own whole turn, never another seat's.
+    grace = {seat: 0.0 if TEST else config.stall_grace_s(loop, seat) / 60
+             for seat in ("reviewer", "fixer")}
     marker_grace = 0.0 if TEST else loop["marker_grace_min"]
     cooldown = 0.0 if TEST else loop["cooldown_h"] * 3600
     breach = st.breach_all()
@@ -703,19 +705,19 @@ def sweep_loop(loop: dict, st: state_mod.LoopState) -> list[str]:
                     f"the cap may not have fired")
         elif at_head and not config.unattended_fixer_push_enabled(loop):
             mins = age_min(at_head[-1].get("submitted_at"))
-            if mins > grace:
+            if mins > grace["fixer"]:
                 # Not a stall the fixer can end: no fixer turn starts until the loop opts in.
                 kind = (f"{PUSH_OFF_KIND} — changes requested {mins / 60:.1f}h ago at head "
                         f"{head[:7]} waits for you: run "
                         f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
         elif at_head:
             mins = age_min(at_head[-1].get("submitted_at"))
-            if mins > grace:
+            if mins > grace["fixer"]:
                 kind = (f"fixer never pushed — changes requested {mins / 60:.1f}h ago at head "
                         f"{head[:7]} by {gate.reviewer_login(at_head[-1])}")
         else:
             mins = (now - observed_at) / 60 if observed_at is not None else 0.0
-            if (TEST or mins > grace) and head_postdates_arming:
+            if (TEST or mins > grace["reviewer"]) and head_postdates_arming:
                 kind = (f"reviewer never posted a verdict — head {head[:7]} observed "
                         f"{mins / 60:.1f}h ago, 0 verdicts at this head")
 
@@ -730,7 +732,7 @@ def sweep_loop(loop: dict, st: state_mod.LoopState) -> list[str]:
             if config.is_fixer_push_hold(entry):
                 continue  # reported once per head as a stall above, not on every sweep
             age = (now - entry.get("at", now)) / 60
-            if age > loop["grace_min"]:
+            if age > config.stall_grace_s(loop, seat) / 60:
                 stuck.append(f"  {seat} queue: {key} waiting {age:.0f}m — {entry.get('reason')}")
 
     if alerts or stuck:
@@ -819,8 +821,9 @@ def died_locks(loop: dict, locks: dict, now: float) -> list[str]:
             entry = entry if isinstance(entry, dict) else {}
             age = now - entry.get("at", now)
             # On the budget the claim was taken with, if longer than the loop's now (#98).
-            if age > config.seat_died_after_s(loop, entry.get("budget")):
-                ttl_m = -(-config.seat_ttl_s(loop, entry.get("budget")) // 60)
+            # This seat's own turn: another seat's longer budget never keeps it alive (#98).
+            if age > config.seat_died_after_s(loop, entry.get("budget"), seat):
+                ttl_m = -(-config.seat_ttl_s(loop, entry.get("budget"), seat) // 60)
                 lines.append(f"  {seat} slot held {age / 60:.0f}m on {key} — that run died; the "
                              f"slot frees itself at {ttl_m}m")
     return lines

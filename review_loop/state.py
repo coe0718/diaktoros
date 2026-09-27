@@ -150,7 +150,7 @@ class LoopState:
         now = time.time()
         return {k: v for k, v in entries.items()
                 if isinstance(v, dict) and now - v.get("at", 0) <= config.seat_ttl_s(
-                    self.loop, v.get("budget"))}
+                    self.loop, v.get("budget"), seat)}
 
     def active(self, seat: str) -> dict:
         """This seat's live runs, ``{key: entry}``, expired ones dropped and persisted away.

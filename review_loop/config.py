@@ -517,20 +517,30 @@ def worst_turn_s(loop: dict, seat: str | None = None, recorded: float | None = N
     return sum(turn_parts(loop, seat, recorded).values())
 
 
-def seat_ttl_s(loop: dict, recorded: float | None = None) -> int:
-    """How long a seat claim lives: ``ttl_min``, or the whole worst-case turn if that is longer.
+def seat_ttl_s(loop: dict, recorded: float | None = None, seat: str | None = None) -> int:
+    """How long a ``seat``'s claim lives: ``ttl_min``, or that seat's whole worst-case turn if
+    that is longer (the longest seat's when no seat is named).
 
     ``ttl_min`` is the backstop for a run that died without a verdict; it must never be what
-    takes a slot from a turn that is still inside its own budget (#98). ``recorded``, the
-    budget the claim was taken with, keeps a lowered ``turn_budget_s`` from shortening it.
+    takes a slot from a turn that is still inside its own budget (#98) — and another seat's
+    longer budget must not keep a dead claim alive either. ``recorded``, the budget the claim
+    was taken with, keeps a lowered ``turn_budget_s`` from shortening it.
     """
     return max(int(loop.get("ttl_min") or DEFAULTS["ttl_min"]) * 60,
-               worst_turn_s(loop, recorded=recorded))
+               worst_turn_s(loop, seat, recorded))
 
 
-def seat_died_after_s(loop: dict, recorded: float | None = None) -> int:
+def seat_died_after_s(loop: dict, recorded: float | None = None, seat: str | None = None) -> int:
     """Age past which the watchdog reports a seat claim as a run that died: twice its TTL."""
-    return 2 * seat_ttl_s(loop, recorded)
+    return 2 * seat_ttl_s(loop, recorded, seat)
+
+
+def stall_grace_s(loop: dict, seat: str) -> int:
+    """How long the watchdog lets ``seat``'s part of a PR sit quiet before calling it a stall:
+    ``grace_min``, or that seat's whole worst-case turn if longer (#98). Per seat, so one
+    seat's long budget never delays the stall report of another."""
+    grace = int(loop.get("grace_min") or DEFAULTS["grace_min"]) * 60
+    return max(grace, worst_turn_s(loop, seat))
 
 
 def adjudicating_stall_s(loop: dict) -> int:

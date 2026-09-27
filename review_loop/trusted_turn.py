@@ -417,7 +417,12 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 if server.is_alive():
                     # Raised here it replaces whatever was in flight; keep a budget kill in the
                     # reason (and as the cause) so the operator sees both clocks (#98).
-                    killed = sys.exc_info()[1]
-                    if isinstance(killed, TurnBudgetExceeded):
-                        raise TurnDenied(drain_failure(killed)) from killed
+                    in_flight = sys.exc_info()[1]
+                    if isinstance(in_flight, TurnBudgetExceeded):
+                        raise TurnDenied(drain_failure(in_flight)) from in_flight
+                    if in_flight is not None:
+                        # Whatever the sandbox raised stays the cause, and is named (#98).
+                        raise TurnDenied(f'broker did not shut down (after '
+                                         f'{type(in_flight).__name__}: {in_flight})'[:400]
+                                         ) from in_flight
                     raise TurnDenied('broker did not shut down')
