@@ -474,8 +474,9 @@ own record instead:
      skips it.
   2. `config.yaml`, with the administrator's managed overlay (`$HERMES_MANAGED_DIR` or
      `/etc/hermes`) merged over it: `gateway.platforms.webhook`, then `platforms.webhook`, then
-     `gateway.webhook`. In each of these an `extra:` value beats a plain key. A malformed
-     `config.yaml` drops this whole layer, as it does for the gateway.
+     `gateway.webhook`. In each of these an `extra:` value beats a plain key. A `config.yaml`
+     that is malformed, or that cannot be read or decoded as UTF-8 (a UTF-16 or Latin-1 file,
+     say), drops this whole layer, as it does for the gateway, and `gateway.json` decides.
   3. A top-level `webhook:` block, which the gateway bridges into `extra` last: it beats every
      block above, and its own `extra:` beats its plain key.
   - A `/p/<profile>/` route on the multiplexing host gateway (the default setup) runs under the
@@ -484,11 +485,14 @@ own record instead:
 
   From inside the script these two cases look the same. So for a profile that isn't marked
   standalone, the gate uses the lower of the host's and the profile's limits. Every GitHub call
-  is clipped to the time left, a timer 3s later interrupts anything else that hangs, and a
-  gate-triggered queue drain gets at most half the remaining time. `doctor` prints one
-  `gate:timeout:<profile>` line for each profile hosting a loop route (reviewer, fixer,
-  adjudicator, observer). Each line names the gateway and file, flags any limit below 28s, and
-  says which file to fix.
+  is clipped to the time left, a timer up to 3s later interrupts anything else that hangs, and a
+  gate-triggered queue drain gets at most half the remaining time. The fit always keeps 1s for
+  start-up and 3s for recording a failure. Recording never waits on a busy ledger past its
+  share of those 3s: it falls through to the no-loop ledger, which every watchdog run sweeps.
+  `doctor` prints one `gate:timeout:<profile>` line for each profile hosting a loop route
+  (reviewer, fixer, adjudicator, observer). Each line names the gateway and file, flags any
+  limit below 28s, flags a limit below 5s as too small for a gate even to record its own
+  failure, and says which file to fix.
 * **Seats.** The reviewer and fixer gates do not claim seats: they enqueue an isolated turn in
   the host run ledger (`gate.block_pr_agent` → `enqueue_isolated`), whose worker enforces each
   seat's capacity. What a gate does with `locks.json` is release a legacy claim it finds for the

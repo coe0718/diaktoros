@@ -116,7 +116,7 @@ def _profile_standalone(home: pathlib.Path) -> bool | None:
     path = home / "config.yaml"
     try:
         text = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
-    except OSError:
+    except (OSError, ValueError):     # unreadable or undecodable: unknown, so fit both hosts
         return None
     if "standalone" not in text:
         return False
@@ -242,11 +242,20 @@ def gateway_script_timeout(home: pathlib.Path | None = None) -> tuple[int | None
                      f"({type(exc).__name__})")
 
     path = home / "config.yaml"
+    user: dict | None = {}
     try:
+        # The gateway opens it the same way (utf-8-sig); a file it cannot read or decode makes
+        # ``load_yaml_layer`` raise, and ``load_gateway_config`` then warns and carries on with
+        # gateway.json alone. So a file this cannot decode drops the same layer here.
         text = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
+    except UnicodeDecodeError as exc:
+        notes.append(f"{path} cannot be decoded as UTF-8 ({exc.reason} at byte {exc.start}), "
+                     f"so the gateway drops it and falls back to gateway.json")
+        text, user = "", None
     except OSError as exc:
-        return None, f"{path} unreadable ({type(exc).__name__})"
-    user: dict = {}
+        notes.append(f"{path} cannot be read ({type(exc).__name__}), so the gateway drops it "
+                     f"and falls back to gateway.json")
+        text, user = "", None
     if text.strip():
         try:
             parsed = _read_yaml(text)
@@ -311,18 +320,28 @@ def gateway_script_timeout(home: pathlib.Path | None = None) -> tuple[int | None
         return None, f"{where}: {KEY} is not a number ({str(value)[:40]!r})"
 
 
+STARTUP_S = 1.0     # interpreter start-up and imports before ``run`` starts its clock (~0.1s idle)
+RECORD_S = 3.0      # the most the bookkeeping after a failure may take (lock waits included)
+
+
 def plan(timeout: float, base: float | None = None) -> tuple[float, float]:
-    """``(budget, backstop)`` that fit inside the gateway's timeout with room to record."""
+    """``(budget, backstop)`` that fit inside the gateway's timeout with room to record.
+
+    Start-up and the whole record phase are reserved first — ``STARTUP_S + budget + backstop
+    + RECORD_S <= timeout`` holds for every timeout of at least ``MIN_RECORDABLE_S`` — and the
+    rest is split: the backstop takes a quarter, at most ``BACKSTOP_S``. Below
+    ``MIN_RECORDABLE_S`` nothing can guarantee a record; ``doctor`` says so."""
     base = budget_s() if base is None else base
-    # budget + backstop + up to RECORD_S of bookkeeping + interpreter start-up < timeout
-    if timeout >= 13:
-        return min(base, timeout - 8), BACKSTOP_S
-    return min(base, timeout * 0.4), timeout * 0.15
+    spare = max(float(timeout) - STARTUP_S - RECORD_S, 0.4)
+    backstop = min(BACKSTOP_S, spare * 0.25)
+    return min(base, spare - backstop), backstop
 
 
 # The lowest gateway timeout at which the full default budget, its backstop, the bookkeeping
 # after a failure and the interpreter's start-up all still fit.
 MIN_TIMEOUT_S = int(DEFAULT_BUDGET_S) + 8
+# The lowest at which a gate can still record its own failure (a second of work at most).
+MIN_RECORDABLE_S = STARTUP_S + RECORD_S + 1.0
 
 
 def fingerprint(gate: str, raw: str) -> str:
@@ -360,6 +379,10 @@ CORRUPT = "ledger"           # ``kind`` of the entry standing for a ledger that 
 CLAIM_LEASE_S = 120.0        # a re-drive runs at most 60s; a sweep that dies frees it after this
 
 
+class LedgerBusy(Exception):
+    """Another process held the ledger's lock past the caller's deadline."""
+
+
 class LedgerUnreadable(Exception):
     """The ledger file is not a JSON object and could not be moved aside, so nothing is
     written: the operator's only copy of the recorded failures stays where it is."""
@@ -381,10 +404,22 @@ class Ledger:
         self.payload_dir = self.dir / PAYLOADS
 
     @contextlib.contextmanager
-    def _locked(self):
+    def _locked(self, deadline: float | None = None):
+        """The ledger's flock. With ``deadline`` (``time.monotonic()``), give up at it with
+        :class:`LedgerBusy` rather than wait — the gate's record phase has a hard end."""
         self.dir.mkdir(parents=True, exist_ok=True)
         with (self.dir / "gate-failures.lock").open("a+") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            if deadline is None:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            else:
+                while True:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise LedgerBusy(f"{self.path} is locked by another process")
+                        time.sleep(0.02)
             yield
 
     def _read(self) -> tuple[dict | None, str]:
@@ -474,9 +509,9 @@ class Ledger:
         with self._locked():
             return self._load_for_write()
 
-    def record(self, key: str, entry: dict, raw: str) -> dict:
+    def record(self, key: str, entry: dict, raw: str, deadline: float | None = None) -> dict:
         now = time.time()
-        with self._locked():
+        with self._locked(deadline):
             data = self._load_for_write()
             prior = data.get(key) if isinstance(data.get(key), dict) else {}
             merged = {**prior, **entry, "id": key, "last_at": now,
@@ -509,8 +544,8 @@ class Ledger:
             self._save(data)
             return merged
 
-    def update(self, key: str, fields: dict) -> None:
-        with self._locked():
+    def update(self, key: str, fields: dict, deadline: float | None = None) -> None:
+        with self._locked(deadline):
             data = self._load_for_write()
             if isinstance(data.get(key), dict):
                 data[key] = {**data[key], **fields}
@@ -735,7 +770,6 @@ def _backstop(_signum, _frame):
     raise gh.GateBudgetExceeded("gate exceeded its hard time budget (not in a GitHub read)")
 
 
-RECORD_S = 3.0   # the most the bookkeeping after a failure may take (lock waits included)
 
 
 class _RecordTimeout(Exception):
@@ -807,16 +841,8 @@ def run(gate: str, main: Callable[[], None]) -> None:
     if alarm:
         signal.signal(signal.SIGALRM, _record_overrun)
         signal.setitimer(signal.ITIMER_REAL, RECORD_S)
+    record_start = time.monotonic()
     facts = describe(payload)
-    freed: list[str] = []
-    if kind in ("crash", "timeout", "stopped"):
-        # A gate that claimed a seat and then died must not hold it until the TTL: the
-        # re-drive (or the next event) has to find the seat free.
-        from . import state as state_mod
-        try:
-            freed = state_mod.release_process_claims()
-        except Exception as err:  # noqa: BLE001
-            log(f"seat claim release failed: {type(err).__name__}: {err}")
     if kind == "incomplete":
         error_type = "GitHubReadFailed"
         message = "; ".join(f"{m} {p}: {e}" for m, p, e in failed_reads[:4])
@@ -835,15 +861,41 @@ def run(gate: str, main: Callable[[], None]) -> None:
     entry = {"gate": gate, "kind": kind, **facts, "error_type": error_type, "route": route,
              "error": _bounded(message, 500), "traceback": _bounded(trace, 4000),
              "elapsed_s": round(elapsed, 2), "budget_s": budget,
-             "redrivable": gate in REDRIVABLE, "released_claims": freed}
-    recorded, kept = "", {}
-    for ledger in _ledgers_for(payload):
+             "redrivable": gate in REDRIVABLE, "released_claims": []}
+    # The record comes first, and no lock may make it miss the gateway's kill: each ledger
+    # gets an equal share of what is left of the record phase (the last 0.5s is kept for the
+    # seat release and the exit), and a busy one hands over to the next — the fallback ledger,
+    # which every watchdog run sweeps.
+    recorded, kept, used = "", {}, None
+    ledgers = _ledgers_for(payload)
+    why_here = ""
+    for i, ledger in enumerate(ledgers):
+        left = record_start + RECORD_S - 0.5 - time.monotonic()
         try:
-            kept = ledger.record(key, entry, raw)
-            recorded = str(ledger.path)
+            kept = ledger.record(key, {**entry, **({"recorded_here_because": why_here}
+                                                   if why_here else {})},
+                                 raw, deadline=time.monotonic() + max(0.05, left / (len(ledgers) - i)))
+            recorded, used = str(ledger.path), ledger
             break
         except Exception as err:  # noqa: BLE001 - fall through to the next ledger
+            why_here = (f"{ledger.path} was busy or unwritable when this gate recorded "
+                        f"({type(err).__name__}: {err})")
             log(f"gate-failure ledger write failed ({ledger.path}): {type(err).__name__}: {err}")
+    freed: list[str] = []
+    if kind in ("crash", "timeout", "stopped"):
+        # A gate that claimed a seat and then died must not hold it until the TTL: the
+        # re-drive (or the next event) has to find the seat free.
+        from . import state as state_mod
+        try:
+            freed = state_mod.release_process_claims()
+        except Exception as err:  # noqa: BLE001
+            log(f"seat claim release failed: {type(err).__name__}: {err}")
+    if used is not None and freed:
+        try:
+            used.update(key, {"released_claims": freed},
+                        deadline=max(time.monotonic() + 0.05, record_start + RECORD_S - 0.2))
+        except Exception as err:  # noqa: BLE001 - the claims are free; only the note is lost
+            log(f"could not note the released claims: {type(err).__name__}: {err}")
     if recorded:
         _claim_github_read(payload, key, started_wall)
     where = f"#{facts['pr']}" if facts["pr"] else "an unnamed PR"

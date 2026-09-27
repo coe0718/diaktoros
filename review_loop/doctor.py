@@ -602,11 +602,17 @@ def check_gate_timeouts(loop: dict) -> list[Check]:
     checks = []
     for profile, roles in gate_timeout_profiles(loop).items():
         name = f"gate:timeout:{profile}"
-        home = config.profile_dir(profile)
-        limit, rows = gf.effective_timeout(home)
+        serves = f"serves {', '.join(roles)}"
+        try:
+            home = config.profile_dir(profile)
+            limit, rows = gf.effective_timeout(home)
+        except Exception as exc:  # noqa: BLE001 - one unreadable profile must not stop doctor
+            checks.append(Check(name, UNKNOWN,
+                                f"{serves}; the script timeout could not be worked out: "
+                                f"{type(exc).__name__}: {exc}"))
+            continue
         hosts = "; ".join(f"{label}: {f'{sec}s' if sec is not None else 'unreadable'} ({where})"
                           for label, _host, sec, where in rows)
-        serves = f"serves {', '.join(roles)}"
         unread = [row for row in rows if row[2] is None]
         if unread:
             checks.append(Check(name, UNKNOWN,
@@ -616,6 +622,17 @@ def check_gate_timeouts(loop: dict) -> list[Check]:
             continue
         budget, backstop = gf.plan(limit, gf.DEFAULT_BUDGET_S)
         low = [row for row in rows if row[2] < gf.MIN_TIMEOUT_S]
+        tiny = [row for row in rows if row[2] < gf.MIN_RECORDABLE_S]
+        if tiny:
+            checks.append(Check(
+                name, MISMATCH,
+                f"{serves}; {hosts} — too small for a gate even to record its own failure (it "
+                f"needs at least {gf.MIN_RECORDABLE_S:g}s: {gf.STARTUP_S:g}s to start, "
+                f"{gf.RECORD_S:g}s to record, 1s of work); a hung gate is killed with no record",
+                "; ".join(f"set platforms.webhook.{gf.KEY}: {gf.GATEWAY_DEFAULT_TIMEOUT_S} (at "
+                          f"least {gf.MIN_TIMEOUT_S}) in {host / 'config.yaml'} for the {label}"
+                          for label, host, _sec, _where in tiny) + "; then restart that gateway"))
+            continue
         if low:
             fixes = "; ".join(
                 f"set platforms.webhook.{gf.KEY}: {gf.GATEWAY_DEFAULT_TIMEOUT_S} (at least "

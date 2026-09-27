@@ -554,7 +554,7 @@ class GateFailureTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 3)
         self.assertLess(elapsed, 12)
         (entry,) = loop_entries().values()
-        self.assertAlmostEqual(entry["budget_s"], 4.8)                         # 12 * 0.4
+        self.assertAlmostEqual(entry["budget_s"], gate_failures.plan(12)[0])  # 12s, fitted
 
     def test_gate_shrinks_its_budget_to_a_low_gateway_timeout(self):
         self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 10}}})
@@ -566,7 +566,8 @@ class GateFailureTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 3)
         self.assertLess(elapsed, 10)                      # inside the gateway's 10s kill
         (entry,) = loop_entries().values()
-        self.assertEqual((entry["kind"], entry["budget_s"]), ("timeout", 4.0))
+        self.assertEqual(entry["kind"], "timeout")
+        self.assertAlmostEqual(entry["budget_s"], gate_failures.plan(10)[0])
 
     # -- a failed gate never keeps a seat ------------------------------------------------------
 
@@ -609,7 +610,7 @@ class GateFailureTest(unittest.TestCase):
         self.assertLess(elapsed, 6)
         (entry,) = loop_entries().values()
         self.assertEqual(entry["kind"], "timeout")
-        self.assertAlmostEqual(entry["budget_s"], 2.4)                         # 6 * 0.4
+        self.assertAlmostEqual(entry["budget_s"], gate_failures.plan(6)[0])   # 6s, fitted
 
     def test_a_malformed_gateway_json_is_skipped_like_the_gateway_skips_it(self):
         legacy = t.HOME / "gateway.json"
@@ -632,6 +633,106 @@ class GateFailureTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HERMES_MANAGED_DIR": str(managed)}):
             self.assertEqual(gate_failures.gateway_script_timeout(),
                              (7, f"{managed / 'config.yaml'} webhook"))
+
+    # -- a config the gateway cannot decode is skipped, as the gateway skips it --------------
+
+    UNDECODABLE = {
+        "latin-1": ('# caf\xe9\n' + json.dumps(
+            {"platforms": {"webhook": {"script_timeout_seconds": 20}}})).encode("latin-1"),
+        "utf-16": json.dumps(
+            {"platforms": {"webhook": {"script_timeout_seconds": 20}}}).encode("utf-16"),
+    }
+
+    def raw_config(self, home: pathlib.Path, data: bytes | None, legacy: dict | None = None):
+        home.mkdir(parents=True, exist_ok=True)
+        cfg, gw = home / "config.yaml", home / "gateway.json"
+        before = cfg.read_bytes() if cfg.exists() else None
+        cfg.write_bytes(data) if data is not None else cfg.unlink(missing_ok=True)
+        gw.write_text(json.dumps(legacy)) if legacy is not None else gw.unlink(missing_ok=True)
+        self.addCleanup(lambda: cfg.write_bytes(before) if before is not None
+                        else cfg.unlink(missing_ok=True))
+        self.addCleanup(gw.unlink, missing_ok=True)
+
+    def test_an_undecodable_config_yaml_falls_back_to_gateway_json_end_to_end(self):
+        # Tuck's repro: config.yaml names 20 but cannot be decoded, so the real gateway drops it
+        # and gateway.json's 6 wins. The gate must plan under 6s and record the timeout.
+        for encoding, data in self.UNDECODABLE.items():
+            with self.subTest(encoding=encoding):
+                t.reset(prs={})
+                self.raw_config(t.HOME, data,
+                                {"platforms": {"webhook": {"script_timeout_seconds": 6}}})
+                seconds, where = gate_failures.gateway_script_timeout()
+                self.assertEqual(seconds, 6)
+                self.assertIn("cannot be decoded", where)
+                try:
+                    proc, elapsed = gateway_run("gate_reviewer.py", t.pr_payload(7),
+                                                {"REVIEW_LOOP_GH_STUB": str(self.hang_stub())},
+                                                kill_after=6)
+                except subprocess.TimeoutExpired:
+                    self.fail("the gateway killed the gate at 6s before it recorded anything")
+                self.assertEqual(proc.returncode, 3)
+                (entry,) = loop_entries().values()
+                self.assertEqual(entry["kind"], "timeout")
+
+    def test_a_junk_profile_config_never_raises_out_of_the_fit_or_doctor(self):
+        from review_loop import doctor
+        self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 12}}})
+        junk = t.HOME / "profiles" / "reviewer-profile"
+        self.raw_config(junk, b"\xff\xfe\x00\x81junk\x00")
+        limit, rows = gate_failures.effective_timeout(junk)
+        self.assertEqual(limit, 12)                    # the host's readable, lower limit
+        self.assertEqual(len(rows), 2)
+        checks = self.doctor_lines()                   # does not raise
+        self.assertIn("gate:timeout:reviewer-profile", checks)
+
+    def test_doctor_reports_a_fit_check_that_cannot_run_instead_of_dying(self):
+        from unittest import mock
+        from review_loop import doctor
+        with mock.patch.object(gate_failures, "effective_timeout",
+                               side_effect=RuntimeError("boom")):
+            checks = self.doctor_lines()
+        self.assertTrue(checks)
+        self.assertTrue(all(c.status == doctor.UNKNOWN for c in checks.values()))
+        self.assertIn("RuntimeError: boom", next(iter(checks.values())).detail)
+
+    # -- the record phase always has its time ---------------------------------------------------
+
+    def test_plan_always_leaves_start_up_and_the_record_phase(self):
+        for timeout in (3, 5, 6, 6.7, 8, 10, 12, 13, 20, 28, 30, 60):
+            budget, backstop = gate_failures.plan(timeout)
+            spent = gate_failures.STARTUP_S + budget + backstop + gate_failures.RECORD_S
+            if timeout >= gate_failures.MIN_RECORDABLE_S:
+                self.assertLessEqual(spent, timeout, (timeout, budget, backstop))
+            self.assertGreater(budget, 0)
+        self.assertEqual(gate_failures.plan(30), (20.0, 3.0))
+
+    def test_doctor_says_when_a_timeout_is_too_small_to_record_a_failure(self):
+        from review_loop import doctor
+        self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 3}}})
+        check = self.doctor_lines()["gate:timeout:default"]
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn(f"at least {gate_failures.MIN_RECORDABLE_S:g}s", check.detail)
+        self.assertIn("too small", check.detail)
+
+    def test_a_held_ledger_lock_cannot_cost_the_record(self):
+        # Tuck's lock-held variant: 6s gateway, the gate hangs, and another process holds the
+        # loop ledger's lock through the record phase. Before: rc -9, nothing recorded.
+        import fcntl
+        self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 6}}})
+        t.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(t.STATE_DIR / "gate-failures.lock", "a+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            try:
+                proc, elapsed = gateway_run("gate_reviewer.py", t.pr_payload(7),
+                                            {"REVIEW_LOOP_GH_STUB": str(self.hang_stub())},
+                                            kill_after=6)
+            except subprocess.TimeoutExpired:
+                self.fail("killed at 6s with the ledger lock held, nothing recorded")
+        self.assertEqual(proc.returncode, 3)
+        (entry,) = gate_failures.fallback_ledger().entries().values()
+        self.assertEqual(entry["kind"], "timeout")
+        self.assertIn("busy", entry.get("recorded_here_because", ""))
+        self.assertIn("recorded", proc.stderr)
 
     # -- a stopped gate leaves a record ---------------------------------------------------------
 
