@@ -298,7 +298,8 @@ def check_seat_extras(loop: dict) -> list[Check]:
                 needed, maybe = seat_model.extras_for(
                     wire["provider"], wire["api_mode"], wire["base_url"],
                     model=wire.get("model") or "", configured=wire.get("configured") or "",
-                    facts=wire.get("facts"), entry=wire.get("entry"), explain=explain)
+                    facts=wire.get("facts"), entry=wire.get("entry"), hermes=wire.get("hermes"),
+                    entry_hint=bool(wire.get("entry_hint")), explain=explain)
         except Exception as exc:        # a malformed URL, a broken description: undecided
             status, wire, reason = "warn", None, f" ({type(exc).__name__}: {exc})"
         else:

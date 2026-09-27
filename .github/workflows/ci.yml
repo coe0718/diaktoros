@@ -115,3 +115,16 @@ jobs:
         run: python -c "import hermes_cli; print('installed mode:', hermes_cli.__file__)"
       - name: Loop tests (installed mode)
         run: python tests/run_tests.py
+      # #118: doctor's provider-extra verdict against the pinned Hermes's own resolver, on a table
+      # of profiles (placeholder credentials, throwaway homes, no network). The variable makes the
+      # test run rather than skip, and the grep fails the step if it was skipped anyway.
+      - name: Doctor agrees with the pinned Hermes resolver (HermesAgreement)
+        env:
+          REVIEW_LOOP_REQUIRE_HERMES_SOURCE: ${{ github.workspace }}/hermes
+          HERMES_AGENT_SOURCE: ${{ github.workspace }}/hermes
+        run: |
+          python -m venv --system-site-packages "$GITHUB_WORKSPACE/hermes/venv"
+          python -m unittest -v tests.test_seat_models.HermesAgreement 2>&1 | tee hermes-agreement.log
+          grep -q "^Ran 1 test" hermes-agreement.log
+          grep -q "^OK$" hermes-agreement.log
+          ! grep -q "skipped" hermes-agreement.log

@@ -670,34 +670,97 @@ class ProviderExtras(Base):
         write_profile(self.home, "rev", block, extra=extra)
         return self.extras(self.bare)["extras:reviewer"]
 
-    def test_a_named_provider_entry_decides_not_model_api_mode(self):
-        # Tuck's repro: Hermes resolves this to anthropic_messages although model.api_mode says chat.
-        check = self.named({"base_url": "https://api.anthropic.com"})
+    def test_without_hermes_a_named_entry_is_never_verified(self):
+        # The fixture's "Hermes" cannot answer (no runtime_provider_custom): doctor must not guess
+        # an entry's wire, so every such seat is ⚠️ "may need" — never ✅ — until Hermes decides.
+        for entry, api_mode in (({"base_url": "https://api.anthropic.com"}, "chat_completions"),
+                                ({"base_url": "https://api.anthropic.com",
+                                  "api_mode": "chat_completions"}, ""),
+                                ({"base_url": "https://gw.test/v1"}, "")):
+            check = self.named(entry, api_mode=api_mode)
+            self.assertEqual(check.status, doctor.UNKNOWN, entry)
+            self.assertIn("may need the anthropic extra", check.detail)
+            self.assertIn("Hermes could not be imported", check.detail)
+
+    def hermes_answer(self, entry: dict | None = None, error: str = "", **model) -> dict:
+        """What the describe step returns when it could ask Hermes (a real Hermes gives these
+        values; HermesAgreement checks them against the pinned resolver)."""
+        hermes = {"configured": "", "url_wire": ""}
+        if entry is not None:
+            hermes["entry"] = {"where": "providers.acme", "url": "https://gw.test/v1", "api_mode": "",
+                               "model": "", "url_wire": "", "family": "", "model_wire": "", **entry}
+        if error:
+            hermes["error"] = error
+        return {"requested": "acme", "model": "claude-sonnet-4-6", "api_mode": "chat_completions",
+                "base_url": "", "hermes": hermes, **model}
+
+    def with_answer(self, answer: dict, venv: str | None = None) -> dict:
+        real = seat_model.run_resolver
+
+        def fake(profile, mode, settings, *a, **k):
+            return answer if profile == "rev" else real(profile, mode, settings, *a, **k)
+        with mock.patch.object(seat_model, "run_resolver", side_effect=fake):
+            return (self.extras(venv or self.bare),
+                    {c.name: c for c in doctor.check_seat_models(self.loop)})
+
+    def test_with_hermes_the_entry_decides_not_model_api_mode(self):
+        # Tuck's repro, as Hermes answers it: entry at api.anthropic.com, model.api_mode chat.
+        extras, models = self.with_answer(self.hermes_answer(
+            {"url": "https://api.anthropic.com", "url_wire": "anthropic_messages"}))
+        check = extras["extras:reviewer"]
         self.assertEqual(check.status, doctor.ABSENT)
         self.assertIn("[anthropic_messages]", check.detail)
         self.assertIn("providers.acme", check.detail)
-        self.assertEqual(self.named({"base_url": "https://gw.test/v1",
-                                     "transport": "anthropic_messages"}).status, doctor.ABSENT)
-        self.assertEqual(self.named({"base_url": "https://gw.test/anthropic"}, legacy=True).status,
-                         doctor.ABSENT)
+        self.assertIn("[anthropic_messages", models["model:reviewer"].detail)   # the model line too
+        extras, _ = self.with_answer(self.hermes_answer({"api_mode": "anthropic_messages"}))
+        self.assertEqual(extras["extras:reviewer"].status, doctor.ABSENT)
 
-    def test_a_named_entry_pinned_to_chat_needs_nothing(self):
-        # the mirror: the entry's own api_mode wins over an Anthropic-looking host
-        check = self.named({"base_url": "https://api.anthropic.com", "api_mode": "chat_completions"},
-                           api_mode="")
-        self.assertEqual(check.status, doctor.VERIFIED)
-        self.assertIn("needs no optional", check.detail)
+    def test_with_hermes_an_entry_pinned_to_chat_needs_nothing(self):
+        extras, models = self.with_answer(self.hermes_answer(
+            {"url": "https://api.anthropic.com", "url_wire": "anthropic_messages",
+             "api_mode": "chat_completions"}))
+        self.assertEqual(extras["extras:reviewer"].status, doctor.VERIFIED)
+        self.assertIn("needs no optional", extras["extras:reviewer"].detail)
+        self.assertIn("[chat_completions", models["model:reviewer"].detail)
 
-    def test_an_opencode_hosted_bridge_is_decided_by_its_model(self):
-        check = self.named({"base_url": "https://opencode.ai/zen/go/v1"}, model="minimax-m2.7")
+    def test_with_hermes_an_opencode_bridge_is_decided_by_its_model(self):
+        bridge = {"url": "https://opencode.ai/zen/go/v1", "family": "opencode-go"}
+        extras, _ = self.with_answer(self.hermes_answer({**bridge, "model_wire": "anthropic_messages"}))
+        check = extras["extras:reviewer"]
         self.assertEqual(check.status, doctor.UNKNOWN)                  # pool-dependent: may need
         self.assertIn("may need the anthropic extra", check.detail)
         self.assertIn("hermes pm install --extra anthropic", check.detail)
-        self.assertEqual(self.named({"base_url": "https://opencode.ai/zen/go/v1"},
-                                    model="deepseek-v4-flash").status, doctor.VERIFIED)
-        self.assertEqual(self.named({"base_url": "https://opencode.ai/zen/go/v1",
-                                     "api_mode": "anthropic_messages"}, model="deepseek-v4-flash"
-                                    ).status, doctor.ABSENT)
+        extras, _ = self.with_answer(self.hermes_answer({**bridge, "model_wire": "chat_completions"}))
+        self.assertEqual(extras["extras:reviewer"].status, doctor.VERIFIED)
+        extras, _ = self.with_answer(self.hermes_answer({**bridge, "api_mode": "anthropic_messages",
+                                                         "model_wire": ""}))
+        self.assertEqual(extras["extras:reviewer"].status, doctor.ABSENT)
+
+    def test_with_hermes_a_refused_provider_holds_the_seat(self):
+        for answer in (self.hermes_answer(error="Hermes knows no provider acme (disabled)"),
+                       self.hermes_answer({"api_mode": "bedrock_converse"})):
+            extras, models = self.with_answer(answer)
+            self.assertEqual(models["model:reviewer"].status, doctor.ABSENT, answer)
+            self.assertIn("will be held", models["model:reviewer"].detail)
+            self.assertEqual(extras["extras:reviewer"].status, doctor.SKIPPED)
+
+    def test_without_hermes_urls_and_aliases_are_read_as_hermes_reads_them(self):
+        # the fallback: every Hermes api_mode alias, and the URL's parsed path
+        self.assertEqual(seat_model._canonical_mode("messages"), "anthropic_messages")
+        self.assertEqual(seat_model._canonical_mode("anthropic-messages"), "anthropic_messages")
+        self.assertEqual(seat_model._canonical_mode("bedrock"), "bedrock_converse")
+        self.assertEqual(len(seat_model.API_MODE_ALIASES), 13)
+        need = lambda *a, **k: seat_model.extras_for(*a, **k)[0]
+        self.assertEqual(need("custom", "chat_completions", "https://gw.test/anthropic?x=1"),
+                         ["anthropic"])
+        self.assertEqual(need("custom", "chat_completions", "https://gw.test/anthropic#f"),
+                         ["anthropic"])
+        self.assertEqual(need("custom", "chat_completions", "https://gw.test/v1",
+                              configured="messages"), ["anthropic"])
+        # and when Hermes answers, its answer is used, not the local reading
+        self.assertEqual(need("custom", "chat_completions", "https://gw.test/v1",
+                              hermes={"url_wire": "anthropic_messages", "configured": ""}),
+                         ["anthropic"])
 
     def test_an_unresolved_model_skips_the_extras_line(self):
         write_profile(self.home, "fix", {"default": "fix-model"})              # no provider
@@ -725,8 +788,8 @@ class ProviderExtras(Base):
         self.assertEqual(checks["extras:reviewer"].status, doctor.VERIFIED)
         self.assertIn("anthropic", checks["extras:reviewer"].detail)
         self.assertIn(self.full, checks["extras:reviewer"].detail)
-        self.assertEqual(checks["extras:fixer"].status, doctor.VERIFIED)       # custom:acme
-        self.assertIn("no optional", checks["extras:fixer"].detail)
+        # custom:acme, a named entry the fixture's Hermes cannot resolve: "may use", importable
+        self.assertEqual(checks["extras:fixer"].status, doctor.VERIFIED)
 
     def test_a_venv_without_the_package_fails_with_the_install_command(self):
         checks = self.extras(self.bare)
@@ -737,7 +800,8 @@ class ProviderExtras(Base):
         self.assertIn(self.bare, check.detail)
         self.assertIn("hermes pm install --extra anthropic", check.fix)
         self.assertIn("review-loop-runtime.json", check.fix)
-        self.assertEqual(checks["extras:fixer"].status, doctor.VERIFIED)
+        # custom:acme without a Hermes to resolve its entry: ⚠️ "may need", never ✅
+        self.assertEqual(checks["extras:fixer"].status, doctor.UNKNOWN)
         self.assertEqual(checks["extras:adjudicator"].status, doctor.VERIFIED)
 
     def test_a_messages_wire_provider_needs_it_too(self):
@@ -902,13 +966,60 @@ class HermesAgreement(unittest.TestCase):
                                         "api_mode": "chat_completions"}}, {}),
         "bare-custom": ({"model": {"provider": "custom", "default": "m", "api_key": _DUMMY,
                                    "base_url": "https://api.anthropic.com"}}, {}),
+        # Tuck's review of 70e5765: routes a re-implementation got wrong
+        "entry-alias-messages": ({"model": {"provider": "acme", "default": "m"},
+                                  "providers": {"acme": {"base_url": "https://gw.test/v1",
+                                                         "api_mode": "messages",
+                                                         "key_env": "ACME_KEY"}}},
+                                 {"ACME_KEY": _DUMMY}),
+        "entry-alias-anthropic-messages": ({"model": {"provider": "acme", "default": "m"},
+                                            "providers": {"acme": {"base_url": "https://gw.test/v1",
+                                                                   "transport": "anthropic-messages",
+                                                                   "key_env": "ACME_KEY"}}},
+                                           {"ACME_KEY": _DUMMY}),
+        "entry-bedrock": ({"model": {"provider": "acme", "default": "m"},
+                           "providers": {"acme": {"base_url": "https://gw.test/v1",
+                                                  "api_mode": "bedrock", "key_env": "ACME_KEY"}}},
+                          {"ACME_KEY": _DUMMY}),
+        "legacy-transport": ({"model": {"provider": "custom:acme", "default": "m"},
+                              "custom_providers": [{"name": "Acme", "base_url": "https://gw.test/v1",
+                                                    "transport": "anthropic_messages",
+                                                    "api_key": _DUMMY}]}, {}),
+        "legacy-url-key": ({"model": {"provider": "custom:acme", "default": "m"},
+                            "custom_providers": [{"name": "Acme", "url": "https://gw.test/anthropic",
+                                                  "api_key": _DUMMY}]}, {}),
+        "legacy-no-name": ({"model": {"provider": "custom:acme", "default": "m"},
+                            "custom_providers": [{"provider_key": "acme",
+                                                  "base_url": "https://gw.test/anthropic",
+                                                  "api_key": _DUMMY}]}, {}),
+        "entry-named-custom": ({"model": {"provider": "custom", "default": "m"},
+                                "providers": {"custom": {"base_url": "https://gw.test/v1",
+                                                         "api_mode": "anthropic_messages",
+                                                         "key_env": "ACME_KEY"}}},
+                               {"ACME_KEY": _DUMMY}),
+        "entry-enabled-empty": ({"model": {"provider": "acme", "default": "m"},
+                                 "providers": {"acme": {"base_url": "https://api.anthropic.com",
+                                                        "enabled": "", "key_env": "ACME_KEY"}}},
+                                {"ACME_KEY": _DUMMY}),
+        "entry-disabled": ({"model": {"provider": "acme", "default": "m"},
+                            "providers": {"acme": {"base_url": "https://api.anthropic.com",
+                                                   "enabled": False, "key_env": "ACME_KEY"}}},
+                           {"ACME_KEY": _DUMMY}),
+        "entry-url-query": ({"model": {"provider": "acme", "default": "m"},
+                             "providers": {"acme": {"base_url": "https://gw.test/anthropic?x=1",
+                                                    "key_env": "ACME_KEY"}}}, {"ACME_KEY": _DUMMY}),
+        "openrouter-url-query": ({"model": {"provider": "openrouter", "default": "x/y",
+                                            "base_url": "https://gw.test/anthropic#frag"}},
+                                 {"OPENROUTER_API_KEY": _DUMMY}),
     }
 
     def setUp(self):
         self.source = pathlib.Path(HERMES_SOURCE)
-        self.python = self.source / "venv" / "bin" / "python"
+        self.venv = self.source / "venv"
+        self.python = self.venv / "bin" / "python"
         self.assertTrue(self.python.exists(), f"{self.python}: REVIEW_LOOP_REQUIRE_HERMES_SOURCE "
-                                              "must name a Hermes checkout with its venv/")
+                                              "must name a Hermes checkout with a venv/ that can "
+                                              "import it")
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = pathlib.Path(temp.name)
@@ -916,7 +1027,7 @@ class HermesAgreement(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home)})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.settings = {"source": str(self.source), "venv": str(self.source / "venv"),
+        self.settings = {"source": str(self.source), "venv": str(self.venv),
                          "runtime": str(self.root), "rust": str(self.root)}
 
     def truth(self, profile: pathlib.Path, env: dict) -> str:
@@ -927,10 +1038,12 @@ class HermesAgreement(unittest.TestCase):
                                   "HERMES_HOME": str(profile), **env},
                              cwd=str(profile), capture_output=True, timeout=120, check=False)
         answer = json.loads(run.stdout.decode().strip().splitlines()[-1])
-        self.assertNotIn("error", answer, f"{profile.name}: Hermes did not resolve ({answer})")
-        return answer["api_mode"]
+        return answer.get("api_mode") or "error:" + str(answer.get("error"))
 
     def test_doctor_agrees_with_the_pinned_hermes_resolver(self):
+        """Hermes on the Messages wire ⇒ doctor lists the extra; elsewhere ⇒ never requires it.
+        Hermes refusing the provider (an error, or a wire the proxy cannot speak) ⇒ doctor's
+        ``model:`` line fails too. A decided seat's ``model:`` wire is the one Hermes uses."""
         rows = []
         for name, (cfg, env) in self.CASES.items():
             profile = self.home / "profiles" / name
@@ -939,21 +1052,30 @@ class HermesAgreement(unittest.TestCase):
             hermes = self.truth(profile, env)
             loop = {"id": "d", "seats": {"reviewer": {"profile": name}, "fixer": {"profile": name}}}
             status, _, _, wire = seat_model.describe_seat_wire(loop, "reviewer", self.settings)
-            self.assertEqual(status, "ok", name)
-            required, possible = seat_model.extras_for(
-                wire["provider"], wire["api_mode"], wire["base_url"], model=wire["model"],
-                configured=wire["configured"], facts=wire["facts"], entry=wire["entry"])
-            rows.append((name, hermes, required, possible))
+            required = possible = None
+            if wire is not None:
+                required, possible = seat_model.extras_for(
+                    wire["provider"], wire["api_mode"], wire["base_url"], model=wire["model"],
+                    configured=wire["configured"], facts=wire["facts"], entry=wire["entry"],
+                    hermes=wire["hermes"])
+            rows.append((name, hermes, status, wire and wire["api_mode"], required, possible))
         if os.environ.get("REVIEW_LOOP_SHOW_AGREEMENT"):
             for row in rows:
                 print(*row, file=sys.stderr)
-        for name, hermes, required, possible in rows:
-            with self.subTest(name, hermes=hermes, required=required, possible=possible):
+        self.assertEqual(len(rows), len(self.CASES))
+        for name, hermes, status, mode, required, possible in rows:
+            with self.subTest(name, hermes=hermes, status=status, mode=mode, required=required,
+                              possible=possible):
+                if hermes.startswith("error:") or hermes in seat_model.REFUSED_API_MODES:
+                    self.assertEqual(status, "fail")
+                    continue
+                self.assertEqual(status, "ok")
                 if hermes == "anthropic_messages":
                     self.assertIn("anthropic", required + possible)
                 else:
                     self.assertNotIn("anthropic", required)
-
+                if not possible:
+                    self.assertEqual(mode, hermes)
 
 if __name__ == "__main__":
     unittest.main()
