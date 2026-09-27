@@ -128,7 +128,7 @@ cause, never flipped, and leaves its seat ABSENT; so does a seat whose route is 
 registry, or bound to another profile ("the wake would run the wrong agent"), in `doctor`'s
 words — and `arm` will not arm a hook at the seat's URL that subscribes to the wrong event, does
 not post JSON, or ends in a trailing slash (`doctor`'s MISMATCH), since it would never wake the
-seat; pausing still recognises such a hook as this install's and stops it. Pausing is stricter about
+seat; pausing and `uninstall` still recognise such a hook as this install's (and stop or delete it). Pausing is stricter about
 *whose* hook it is and looser about the route: `arm --pause` stops every hook this install made —
 at the route's registry URL, or the URL the loop config gives it — even once the route is gone
 from the registry (as `uninstall` leaves it), and still never touches another install's. The `fix:` advice is per hook: a

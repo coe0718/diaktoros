@@ -957,11 +957,12 @@ def hook_url_difference(posted: str, expected: str) -> str:
 def install_hook_urls(loop: dict, name: str) -> list[str]:
     """Every URL a hook *this install* made (or is about to make) for route ``name`` posts to.
 
-    An ownership question, not a delivery one: pausing (``arm --pause``) asks "is this hook one
-    of ours?", and the answer includes the
-    route's registry URL whatever profile it binds, and the URL the loop's config gives it —
-    which is all there is once the registry entry is gone (``uninstall`` removes it, then tells
-    the operator to pause any hooks it left). Arming never uses this: whether a hook *wakes the
+    An ownership question, not a delivery one: pausing (``arm --pause``), ``uninstall``
+    deleting its hooks (``cli._classify_hooks``) and ``init``'s stale-hook guard (the same
+    function) ask "is this hook one of ours?", and the answer includes the route's registry URL
+    whatever profile it binds, and the URL the loop's config gives it — which is all there is
+    once the registry entry is gone (a route removed before its hooks, or for ``init`` not
+    written yet). Arming never uses this: whether a hook *wakes the
     seat* is ``seat_route_target``'s question, and only the registry binding answers it.
     """
     urls = []
@@ -996,14 +997,15 @@ def split_route_hooks(loop: dict, listing: list, names, *,
                       ownership: bool = False) -> tuple[list[dict], list[dict]]:
     """``(own, other)`` for the hooks posting to one of the route ``names``.
 
-    The one matcher for hooks (``arm``, arming and pausing; ``doctor``'s helpers use the same
-    URL rules). A hook is a
+    The one matcher for hooks: ``arm`` (arming and pausing), ``uninstall`` and ``init``'s
+    stale-hook guard (via ``cli._classify_hooks``) and ``selftest --ping``; ``doctor``'s helpers
+    use the same URL rules. A hook is a
     seat's only when it posts to exactly that route's registry URL, and the registry entry binds
     the seat's profile (``seat_route_target``). Every other hook
     whose last ``/webhooks/<route>`` segment names one of the routes — another profile's URL, a
     retired gateway, another install — is *other*: reported, never flipped, deleted or pinged
-    as this loop's. ``ownership=True`` (pausing) counts the URLs ``install_hook_urls`` names
-    instead. Raises ``ConfigError`` when the loop has no usable
+    as this loop's. ``ownership=True`` (pausing, uninstall, init's stale-hook guard) counts the
+    URLs ``install_hook_urls`` names instead. Raises ``ConfigError`` when the loop has no usable
     host.
     """
     config.webhook_host(loop.get("host"), required=True)

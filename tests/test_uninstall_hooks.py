@@ -413,6 +413,11 @@ class PurgeTest(Base):
         self.assertIn(f"rm -- {shlex.quote(str(target))}", out)
         self.assertTrue((real / "sub" / "x.json").exists())
         self.assertTrue(LOOP_FILE.exists())
+        # It cannot know where the link points — here, the loop's own moved state — so it says
+        # so and tells the operator to look, like the mid-run symlink branch does.
+        self.assertNotIn("the target is outside", out)
+        self.assertIn("it may point at this loop's own (moved) state", out)
+        self.assertIn(f"ls -ld -- {shlex.quote(str(target))}   # where it points", out)
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
                      "root ignores directory permissions")
@@ -639,6 +644,44 @@ class PurgeTest(Base):
         self.assertNotIn("gh api -X DELETE", out)
         self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
         self.assertTrue(LOOP_FILE.exists())
+
+    def test_no_hooks_of_ours_means_no_read_back_and_nothing_called_live(self):
+        # The first, complete listing found none of this loop's hooks: nothing is deleted, so a
+        # failing second read cannot make "still live" claims about hooks that do not exist.
+        self.world(hooks=[])
+        original = cli._loop_hooks
+        cli._loop_hooks = lambda loop, login: (None, "HTTP 502 Bad Gateway")
+        self.addCleanup(setattr, cli, "_loop_hooks", original)
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("still live", out)
+        self.assertNotIn("<id>", out)
+        self.assertIn("hooks: none of this loop's routes has a repo hook", out)
+        self.assertFalse(LOOP_FILE.exists())
+
+    def test_a_failed_delete_is_live_and_an_accepted_one_unconfirmed(self):
+        # Recorded as they fail, not recovered from the failure prose: hook A's DELETE fails and
+        # is named live with its DELETE command; hook B's was accepted and is only unconfirmed.
+        self.fresh_install()
+        first, second = sorted(hook["id"] for hook in self.hooks())
+        real_fetch = cli.gh.fetch
+
+        def fetch(loop, path, method="GET", body=None, login=None):
+            if method == "DELETE" and path.endswith(f"/hooks/{first}"):
+                return None, "HTTP 500 Internal Server Error"
+            return real_fetch(loop, path, method=method, body=body, login=login)
+        original = cli._loop_hooks
+        cli.gh.fetch = fetch
+        cli._loop_hooks = lambda loop, login: (None, "HTTP 502 Bad Gateway")
+        self.addCleanup(setattr, cli.gh, "fetch", real_fetch)
+        self.addCleanup(setattr, cli, "_loop_hooks", original)
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"hook {first}: DELETE failed (HTTP 500", out)
+        self.assertIn(f"could not confirm the deletion of hook {second} (GitHub accepted", out)
+        self.assertIn("still live", out)
+        self.assertIn(f"  gh api -X DELETE repos/{t.REPO}/hooks/{first}\n", out)
+        self.assertNotIn(f"hooks/{second}\n", out)
 
     def test_without_purge_default_state_is_kept_and_named(self):
         self.default_state()

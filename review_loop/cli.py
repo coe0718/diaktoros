@@ -807,18 +807,22 @@ def _delete_loop_hooks(loop: dict, login: str | None) -> tuple[list[str], list[s
     if hooks is None:
         return [], [f"could not read the repo's hooks: {error}"], []
     done, failures = _foreign_lines(loop, foreign), []
+    if not hooks:
+        # The first (complete) listing proved there is nothing of ours to delete: no DELETE, so
+        # no read-back to fail, and nothing to call live.
+        return done, failures, []
     login = login or loop.get("read_token")
+    refused: list[int] = []                       # ids whose DELETE failed, recorded as they fail
     for hook in hooks:
         _, error = gh.fetch(loop, f"/repos/{loop['repo']}/hooks/{hook['id']}", method="DELETE",
                             login=login)
         if error:
+            refused.append(hook["id"])
             failures.append(f"hook {hook['id']}: DELETE failed ({error})")
     after, error = _loop_hooks(loop, login)
     if after is None:
         # Only the hooks whose DELETE failed are known to be live; the rest were accepted and
         # merely not read back — say exactly that, never "still live" about ids that are gone.
-        refused = [hook["id"] for hook in hooks if any(
-            line.startswith(f"hook {hook['id']}: DELETE failed") for line in failures)]
         accepted = [hook["id"] for hook in hooks if hook["id"] not in refused]
         if accepted:
             failures.append(f"could not confirm the deletion of hook"
@@ -940,10 +944,14 @@ def _purge_target(loop: dict) -> tuple[pathlib.Path | None, str]:
                       f"rm -rf -- {shlex.quote(str(raw))}")
     for path in (base / "state", base / "state" / "review-loops", default):
         if path.is_symlink():
-            return None, (f"{path} is a symlink; --purge never follows one (the target is outside "
-                          "the loop's state). To drop the link itself (not its target), run:\n"
+            return None, (f"{path} is a symlink; --purge never follows one — it may point at "
+                          "this loop's own (moved) state or somewhere else entirely, and this "
+                          "command cannot tell which. Check where it points, uninstall without "
+                          "--purge, remove the link, and remove the directory it points at by "
+                          "hand if it is this loop's:\n"
+                          f"  ls -ld -- {shlex.quote(str(path))}   # where it points\n"
                           f"  hermes review-loop uninstall --loop {lid} && "
-                          f"rm -- {shlex.quote(str(path))}")
+                          f"rm -- {shlex.quote(str(path))}   # the link itself")
     if default.exists() and not default.is_dir():
         return None, f"{default} is not a directory"
     return default, ""
