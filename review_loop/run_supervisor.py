@@ -1402,7 +1402,9 @@ class Supervisor:
                             else:
                                 latest = gate.latest_effective_review_at_head(reviews, loop, row['head'])
                                 if latest is None:
-                                    read_error = 'no changes-requested review readable at this head'
+                                    # Read fine, and no effective verdict yet (a receipt still
+                                    # landing after a retarget): a wait, like a draft.
+                                    retry_read = True
                                 elif gh.review_state(latest) != 'CHANGES_REQUESTED':
                                     superseded = 'fixer verdict superseded'
                 except Exception as exc:
