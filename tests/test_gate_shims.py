@@ -915,6 +915,47 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.hook_config(world, 41)["url"], new)
 
+    FIX_URL = "https://gateway.example/p/drey/webhooks/widgets-fix"
+
+    def test_a_trailing_slash_hook_is_not_armed_anywhere(self):
+        """explain/watchdog (gate.hooks_read) and `arm` agree with doctor: the gateway 404s it."""
+        from review_loop import gate
+        self.install()
+        self.github_with_hook(self.REVIEW_URL + "/", hook_id=41, events=("pull_request",),
+                              more=[(42, self.FIX_URL)])
+        armed, missing = gate.hooks_read(config.load_id("widgets"))
+        self.assertEqual((armed, missing), (False, "reviewer"))
+        rc, out = self.run_cli(["arm", "--loop", "widgets"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("hook 41", out)
+        self.assertIn("does not route", out)
+        self.assertIn("hermes review-loop apply --loop widgets", out)
+        # Exact URLs are armed, and `arm` says so with rc 0.
+        self.github_with_hook(self.REVIEW_URL, hook_id=41, events=("pull_request",),
+                              more=[(42, self.FIX_URL)])
+        self.assertEqual(gate.hooks_read(config.load_id("widgets")), (True, ""))
+        rc, out = self.run_cli(["arm", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+
+    def test_a_repair_names_the_fix_for_its_cause_not_always_the_token(self):
+        """A route with no secret is not a token problem: no --admin-token remedy for it."""
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(secret=""))
+        self.github_with_hook(self.REVIEW_URL + "/", hook_id=41, events=("pull_request",))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("has no secret", out)
+        self.assertNotIn("--admin-token", out)
+        self.assertIn("hermes review-loop doctor --loop widgets", out)
+        # A refused write is: that one does name the token scope.
+        self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
+        self.github_with_hook(self.REVIEW_URL + "/", hook_id=41, events=("pull_request",),
+                              patch_fails=True)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("--admin-token <login>", out)
+        self.assertIn("admin:repo_hook", out)
+
     def test_recreate_routes_refuses_when_the_hook_listing_cannot_be_read(self):
         from review_loop import route_intent
         self.install()
