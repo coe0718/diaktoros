@@ -217,7 +217,11 @@ class Lifecycle(unittest.TestCase):
             for name, value in patches.items():
                 stack.enter_context(patch.object(Supervisor, name, value))
             stack.enter_context(patch.object(sys, "argv", argv))
-            stack.enter_context(patch.dict(os.environ, {"REVIEW_LOOP_TEST_FIXTURE": "1"}))
+            # A spawned worker always has HOME and HERMES_HOME (_spawn sets both); the fixture
+            # child's environment is built from them.
+            stack.enter_context(patch.dict(os.environ, {"REVIEW_LOOP_TEST_FIXTURE": "1",
+                                                        "HOME": str(self.root),
+                                                        "HERMES_HOME": str(self.root)}))
             stack.enter_context(contextlib.redirect_stderr(err))
             run_supervisor.main()  # returning normally is the worker's exit status 0
         return err.getvalue().splitlines()
