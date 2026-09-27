@@ -176,13 +176,15 @@ jobs:
           path: ${{ runner.temp }}/uv-cache
           key: uv-verticals-${{ runner.os }}-${{ hashFiles('hermes/uv.lock', 'hermes/pm/lock.json') }}
       # Hermes's own recipe: the CPython its lock pins, then its locked dependencies plus Hermes
-      # itself (editable) into hermes/venv, where the tests look for bin/hermes.
+      # itself (editable) into hermes/venv, where the tests look for bin/hermes. The `anthropic`
+      # extra is the SDK a Claude seat's native Messages provider imports; without it Hermes
+      # refuses that seat's turn (and lazy installs are off inside the sandbox).
       - name: Hermes venv at the pinned commit
         run: |
           py=$(jq -r '.packages.python.version | split("+")[0]' hermes/pm/lock.json)
           echo "Hermes pins CPython $py"
           uv venv --python "$py" hermes/venv
-          cd hermes && UV_PROJECT_ENVIRONMENT="$HERMES_AGENT_SOURCE/venv" uv sync --frozen --no-dev
+          cd hermes && UV_PROJECT_ENVIRONMENT="$HERMES_AGENT_SOURCE/venv" uv sync --frozen --no-dev --extra anthropic
           test -x "$HERMES_AGENT_SOURCE/venv/bin/hermes"
       - uses: actions/cache/save@v4
         if: steps.uv-cache.outputs.cache-hit != 'true'
