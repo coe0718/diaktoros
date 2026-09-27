@@ -120,13 +120,15 @@ route — printed as `cannot arm: …`).
 A hook is a seat's only when it posts to exactly that seat's route URL as the route registry
 (the gateway's subscription file) serves it — `/p/<profile>/webhooks/<route>`, or
 `/webhooks/<route>` for the default profile, on the loop's gateway (scheme and host compared
-case-insensitively) — and that registry entry binds the seat's own profile. The gateway binds a
+case-insensitively, the path exactly: the gateway registers no other shape, so a trailing slash is
+a 404) — and that registry entry binds the seat's own profile. The gateway binds a
 route to its profile by that URL and answers any other profile's URL 404, so a hook at another
 profile, another path or another origin (a retired gateway, another install) is listed with that
 cause, never flipped, and leaves its seat ABSENT; so does a seat whose route is missing from the
 registry, or bound to another profile ("the wake would run the wrong agent"), in `doctor`'s
-words — and `arm` will not arm a hook at the seat's URL that subscribes to the wrong event or does
-not post JSON (`doctor`'s MISMATCH), since it would never wake the seat. Pausing is stricter about
+words — and `arm` will not arm a hook at the seat's URL that subscribes to the wrong event, does
+not post JSON, or ends in a trailing slash (`doctor`'s MISMATCH), since it would never wake the
+seat; pausing and `uninstall` still recognise such a hook as this install's. Pausing is stricter about
 *whose* hook it is and looser about the route: `arm --pause` stops every hook this install made —
 at the route's registry URL, or the URL the loop config gives it — even once the route is gone
 from the registry (as `uninstall` leaves it), and still never touches another install's. The `fix:` advice is per hook: a

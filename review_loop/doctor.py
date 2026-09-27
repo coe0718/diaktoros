@@ -907,10 +907,29 @@ def seat_hook_url(loop: dict, name: str) -> str | None:
 
 
 def same_hook_url(posted: str, expected: str) -> bool:
-    """URL equality as the gateway sees it: scheme and host case-insensitive, path exact."""
+    """Is this hook *for* that route URL? Scheme and host case-insensitive, a trailing slash
+    ignored. For finding a hook (whose is it, which one to pause or delete) — never for deciding
+    it is correct: see ``exact_hook_url``."""
     got, want = urlsplit(posted.rstrip("/")), urlsplit(expected.rstrip("/"))
     return ((got.scheme.lower(), got.netloc.lower(), got.path, got.query)
             == (want.scheme.lower(), want.netloc.lower(), want.path, want.query))
+
+
+def exact_hook_url(posted: str, expected: str) -> bool:
+    """Does the gateway route this hook's URL to that route? Path byte-exact.
+
+    The gateway registers ``/webhooks/{route_name}`` and ``/p/{profile}/webhooks/{route_name}``
+    only (``{route_name}`` cannot hold a ``/``, and no path normalizing is installed), so
+    ``…/webhooks/<route>/`` falls through to the ``/p/{profile}/{tail}`` catch-all and is
+    answered 404. Scheme and host still compare case-insensitively (DNS and the Host header).
+    """
+    got, want = urlsplit(posted), urlsplit(expected)
+    return ((got.scheme.lower(), got.netloc.lower(), got.path, got.query)
+            == (want.scheme.lower(), want.netloc.lower(), want.path, want.query))
+
+
+SLASH_404 = ("posts to the route's URL with a trailing slash — the gateway does not route it "
+             "(404), so this seat is never woken")
 
 
 def _profile_in(path: str) -> str:
@@ -1052,6 +1071,10 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                      f"hook {hook_id} posts to {why}, not [webhook URL redacted]",
                      f"re-run init --hooks, or repoint hook {hook_id} at the route's URL: the "
                      "gateway delivers this route only at that URL, so the hook wakes nothing")
+    if not exact_hook_url(posted, url):
+        return Check(f"hook:{name}", MISMATCH, f"hook {hook_id} {SLASH_404}",
+                     f"edit hook {hook_id}'s URL on GitHub to drop the trailing slash (or re-run "
+                     "init --hooks for a fresh loop)")
     events = [str(item) for item in (match.get("events") or [])]
     if event not in events:
         return Check(f"hook:{name}", MISMATCH,
