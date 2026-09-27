@@ -115,12 +115,17 @@ read-back that disagrees, an unreadable hook listing, no loop hooks on the repo,
 missing — named per seat as `hook:<route> ABSENT (fixer seat)`, the way `doctor` names it, since a
 loop armed halfway is not armed — and **2** when the loop cannot be loaded: no loop of that name,
 none configured, or a loop file `normalize` refuses (a `ConfigError` on load — a hand-edited file
-missing `seats.reviewer.route`, say, or giving both seats one route — printed as `cannot arm: …`).
-A hook is a seat's only when it posts to exactly that seat's route URL — the registry's
-`/p/<profile>/webhooks/<route>` (or `/webhooks/<route>` for the default profile) on the loop's
-gateway. The gateway binds a route to its profile by that URL and answers any other profile's
-URL for it 404, so a hook at another profile, another path or another origin (a retired gateway,
-another install) is listed with that cause, never flipped, and leaves its seat ABSENT. The `fix:` advice is per hook: a
+missing `seats.reviewer.route`, say, a `cap` that is not a whole number, or both seats on one
+route — printed as `cannot arm: …`).
+A hook is a seat's only when it posts to exactly that seat's route URL as the route registry
+(the gateway's subscription file) serves it — `/p/<profile>/webhooks/<route>`, or
+`/webhooks/<route>` for the default profile, on the loop's gateway (scheme and host compared
+case-insensitively) — and that registry entry binds the seat's own profile. The gateway binds a
+route to its profile by that URL and answers any other profile's URL 404, so a hook at another
+profile, another path or another origin (a retired gateway, another install) is listed with that
+cause, never flipped, and leaves its seat ABSENT; so does a seat whose route is missing from the
+registry, or bound to another profile ("the wake would run the wrong agent"), in `doctor`'s
+words. The `fix:` advice is per hook: a
 failed PATCH that looks transient (a timeout, a 5xx) gets "retry `arm`" first, a refusal (401,
 403, 404, or a PATCH that did not stick) the token-scope line, each naming its hooks. Without `--admin-token` the PATCH
 goes out as the loop's `read_token`; the `fix:` line names the scope that login's file needs
@@ -513,7 +518,8 @@ Three rules keep it honest:
 It needs to read the repo's hooks to tell "paused" from "armed", so the read token wants enough
 scope to see them (`repo` is normally enough); if it cannot, the line says the hook state is unknown
 rather than claiming the loop is parked. `explain` exits 2 only when the question cannot be asked at
-all — an unknown loop, or several loops and no `--loop`.
+all — an unknown loop, a loop file the loader refuses (without `--loop` each such file is named on a
+`skipping <file>: <reason>` line), or several loops and no `--loop`.
 
 The guard order `explain` walks is in
 [architecture: Explain](architecture.md#explain--why-is-this-pr-not-moving).

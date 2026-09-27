@@ -558,9 +558,14 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
                 "https://your-gateway.example"], False
     out, ok = [], True
     failed: list[tuple[int, list[str]]] = []      # (hook id, the errors that decide its fix)
+    targets = {name: doctor.seat_route_target(loop, name) for name in wanted}
     for hook in foreign:
         name = doctor.hook_route_name(hook)
-        want = doctor.seat_hook_url(loop, name) or ""
+        want, reason = targets[name]
+        if want is None:
+            out.append(f"hook {hook['id']} posts to route {name!r}; {reason} — not armed, "
+                       "left as it is")
+            continue
         why = doctor.hook_url_difference(str(hook["config"].get("url") or ""), want)
         out.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this seat's hook "
                    "(nothing this loop serves receives it), left as it is")
@@ -595,13 +600,15 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         # A PATCH GitHub accepted that did not stick is a refusal; a failed PATCH is judged by its
         # own code, so a timeout or a 5xx gets the retry advice, not the token-scope one.
         failed.append((hook["id"], [error or "refused"]))
-    if not matched:
+    unbound = [(role, name) for role, name in seats if targets[name][0] is None]
+    if not matched and not unbound:
         return out + ["no loop hooks found at the routes' own URLs — run init --hooks first "
                       f"(looked for hooks posting to {', '.join(wanted) or 'a loop route'})"], False
     missing = [(role, name) for role, name in seats if name not in matched]
     for role, name in missing:
-        out.append(f"hook:{name} ABSENT ({role} seat) — no repo hook posts to this route's "
-                   f"URL, so the loop cannot be {'armed' if active else 'paused'} as a whole")
+        reason = targets[name][1] or ("no repo hook posts to this route's URL, so the loop "
+                                      f"cannot be {'armed' if active else 'paused'} as a whole")
+        out.append(f"hook:{name} ABSENT ({role} seat) — {reason}")
     # The fix is per hook: one refused hook must not hide the retry advice another hook's 5xx
     # earned. Hooks that need the same fix share its line.
     advice: dict[str, list[int]] = {}
@@ -613,7 +620,12 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
                           []).append(hook_id)
     for text, ids in advice.items():
         out.append(f"fix: hook{'s' if len(ids) > 1 else ''} {', '.join(map(str, ids))}: {text}")
-    if missing:
+    if unbound:
+        ok = False
+        out.append(f"fix: `hermes review-loop doctor --loop {loop.get('id')}` names what each "
+                   "route needs (its `route:` line and fix) — repair the route first, then run "
+                   f"`arm{' --pause' if not active else ''}` again")
+    if [pair for pair in missing if pair not in unbound]:
         ok = False
         out.append(f"fix: `hermes review-loop doctor --loop {loop.get('id')}` shows the hook each "
                    "seat needs; add the missing one (by hand with its route's URL and secret, or "
@@ -696,7 +708,6 @@ def _hook_route_names(loop: dict) -> set[str]:
 # One matcher for every caller (uninstall, init's stale-hook guard, selftest --ping): a hook is
 # this install's only when it posts to one of the loop's route names on the loop's own origin.
 _hook_route_name = doctor.hook_route_name
-_hook_origin = doctor.hook_origin
 
 
 def _classify_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, list[dict], str]:
@@ -933,7 +944,14 @@ def _write_config_locked(loop: dict, *, policy_change: bool = False) -> pathlib.
     if path.exists() and not policy_change:
         # Set/apply snapshots never own this switch. Re-read under the same lock
         # used by explicit enable/disable and by the broker's ref operation.
-        current = config.load_id(loop['id'])
+        try:
+            current = config.load_id(loop['id'])
+        except config.ConfigError:
+            # `set --read-token` repairing a file whose only defect is its missing reader.
+            current = config.load_id_for_reader_repair(loop['id'],
+                                                       str(loop.get('read_token') or ''))
+            if current is None:
+                raise
         if current['repo'] != loop['repo']:
             raise config.ConfigError('repository changed during config update')
         loop = {**loop, 'unattended_fixer_push': current['unattended_fixer_push']}
@@ -1316,8 +1334,18 @@ def cmd_set(args) -> int:
     try:
         loop = config.load_id(args.loop)
     except config.ConfigError as exc:
-        print(f"no such loop: {exc}")
-        return 2
+        # The one repair a verb can make to a file the loader refuses: a missing reader, named
+        # here with --read-token (and its --token). Any other defect still refuses.
+        try:
+            loop = config.load_id_for_reader_repair(args.loop,
+                                                    str(getattr(args, "read_token", "") or "").strip())
+        except config.ConfigError as other:
+            exc = other
+            loop = None
+        if loop is None:
+            print(f"no such loop: {exc}")
+            return 2
+        print(f"repairing {args.loop}: it has no read_token; setting the reader named by --read-token")
 
     host = args.host
     if host is not None:
@@ -1939,10 +1967,17 @@ def cmd_explain(args) -> int:
             print(f"no such loop: {exc}")
             return 2
     else:
-        loops = config.all_loops()
-        if len(loops) > 1:
-            print(f"{len(loops)} loops are configured "
-                  f"({', '.join(loop['id'] for loop in loops)}) — name one with --loop")
+        loops, skipped = _readable_loops()
+        for line in skipped:
+            print(line)
+        # A file that will not load is still a configured loop: the question may be about it.
+        names = [loop["id"] for loop in loops] + [
+            line.split(":", 1)[0].removeprefix("skipping ").removesuffix(".json")
+            for line in skipped]
+        if len(names) > 1:
+            print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
+            return 2
+        if skipped:
             return 2
         if not loops:
             print(f"no loops configured in {config.config_dir()}")

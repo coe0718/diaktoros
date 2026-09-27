@@ -274,18 +274,23 @@ class ReaderIdentityTests(_Loop):
         self.assertIn("uninstall", verbs)
         self.assertIn("cleanup", verbs)
         for verb, sub in verbs.items():
-            takes_loop = any("--loop" in a.option_strings for a in sub._actions)
-            argv = [verb, *(["--loop", "widgets"] if takes_loop else []), *extra.get(verb, [])]
-            try:
-                rc, out = self.run_cli(argv)
-            except SystemExit as exc:          # argparse: a required option this list lacks
-                self.fail(f"{argv}: add its required options to `extra` ({exc})")
-            except Exception as exc:           # noqa: BLE001 - the point of the test
-                self.fail(f"{argv} raised {type(exc).__name__}: {exc}")
-            self.assertIsInstance(rc, int, argv)
-            if takes_loop or verb == "list":
-                self.assertEqual(rc, 2, (argv, out))
-                self.assertIn("'read_token' is not set", out, argv)
+            loop_opt = next((a for a in sub._actions if "--loop" in a.option_strings), None)
+            # With --loop where the verb takes one, and again without it where --loop is
+            # optional (the verb then reads every loop file — `explain --pr 1`, `status`, …).
+            argvs = [[verb, *(["--loop", "widgets"] if loop_opt else []), *extra.get(verb, [])]]
+            if loop_opt is not None and not loop_opt.required:
+                argvs.append([verb, *extra.get(verb, [])])
+            for argv in argvs:
+                try:
+                    rc, out = self.run_cli(argv)
+                except SystemExit as exc:      # argparse: a required option this list lacks
+                    self.fail(f"{argv}: add its required options to `extra` ({exc})")
+                except Exception as exc:       # noqa: BLE001 - the point of the test
+                    self.fail(f"{argv} raised {type(exc).__name__}: {exc}")
+                self.assertIsInstance(rc, int, argv)
+                if loop_opt is not None or verb == "list":
+                    self.assertEqual(rc, 2, (argv, out))
+                    self.assertIn("'read_token' is not set", out, argv)
         # scripts/cleanup.py is also run directly (and by the cleanup verb): same answer.
         proc = subprocess.run([sys.executable, str(ROOT / "scripts" / "cleanup.py"),
                                "--loop", "widgets", "--sweep", "--dry-run"],
@@ -294,6 +299,60 @@ class ReaderIdentityTests(_Loop):
         self.assertNotIn("Traceback", proc.stderr)
         self.assertIn("cannot clean up:", proc.stdout)
         self.assertIn("'read_token' is not set", proc.stdout)
+
+    def test_set_read_token_repairs_a_file_with_no_reader(self):
+        rc, out = self.run_cli(self.init_argv())
+        self.assertEqual(rc, 0, out)
+        data = json.loads(self.loop_file().read_text())
+        del data["read_token"]
+        del data["tokens"][READER]
+        self.loop_file().write_text(json.dumps(data))
+        # The refusal names the repair, and the repair works on exactly this defect.
+        rc, out = self.run_cli(["status", "--loop", "widgets"])
+        self.assertIn("`hermes review-loop set --loop widgets --read-token LOGIN --token "
+                      "LOGIN=/abs/path/to/pat` writes both", out)
+        new = self.pat("fresh-reader")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--read-token", "fresh-reader",
+                                "--token", f"fresh-reader={new}"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("repairing widgets: it has no read_token", out)
+        self.assertIn("read_token: (none) → fresh-reader", out)
+        loop = config.load_id("widgets")
+        self.assertEqual(loop["read_token"], "fresh-reader")
+        self.assertEqual(doctor.check_read_token(loop).status, doctor.VERIFIED)
+        # The repair still holds the four-identity rule, and repairs nothing else.
+        del data["tokens"]
+        data["tokens"] = {REV: str(self.keys / "rev-pat"), FIX: str(self.keys / "fix-pat")}
+        self.loop_file().write_text(json.dumps(data))
+        before = self.loop_file().read_bytes()
+        self.refused(["set", "--loop", "widgets", "--read-token", REV], r"also the reviewer seat")
+        self.assertEqual(self.loop_file().read_bytes(), before)
+        data["cap"] = "many"
+        self.loop_file().write_text(json.dumps(data))
+        self.refused(["set", "--loop", "widgets", "--read-token", "fresh-reader",
+                      "--token", f"fresh-reader={new}"], r"'cap' must be a whole number")
+        # Without --read-token there is nothing to repair with: the ordinary refusal.
+        data["cap"] = 3
+        self.loop_file().write_text(json.dumps(data))
+        self.refused(["set", "--loop", "widgets", "--cap", "4"], r"'read_token' is not set")
+
+    def test_explain_without_loop_names_a_refused_file(self):
+        rc, out = self.run_cli(self.init_argv())
+        self.assertEqual(rc, 0, out)
+        data = json.loads(self.loop_file().read_text())
+        del data["read_token"]
+        self.loop_file().write_text(json.dumps(data))
+        rc, out = self.run_cli(["explain", "--pr", "1"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("skipping widgets.json: ", out)
+        # A healthy loop next to it: still ambiguous — the question may be about the bad one.
+        (config.config_dir() / "clean.json").write_text(json.dumps(
+            {**data, "id": "clean", "repo": "acme/clean", "read_token": READER,
+             "seats": {"reviewer": {"profile": "vex", "route": "clean-review"},
+                       "fixer": {"profile": "drey", "route": "clean-fix"}}}))
+        rc, out = self.run_cli(["explain", "--pr", "1"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("2 loops are configured (clean, widgets) — name one with --loop", out)
 
     def test_apply_refuses_a_reader_with_no_token_file(self):
         rc, out = self.run_cli(self.init_argv())

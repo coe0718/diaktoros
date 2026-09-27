@@ -128,7 +128,15 @@ manage hooks, and here the owner is also the reader, so its file needs hook writ
 `--dry-run` too), and `arm` exits 1 naming it if GitHub refuses. To keep the reader read-only, leave `--hooks` off and add and toggle the hooks by
 hand (or, on an org repo, name a separate admin login with its own file and pass the same
 `--admin-token` to `arm`). A reader can be changed later with
-`hermes review-loop set --loop ID --read-token LOGIN --token LOGIN=/path/to/pat`.
+`hermes review-loop set --loop ID --read-token LOGIN --token LOGIN=/path/to/pat` — the same command
+repairs a loop file that has no `read_token` at all.
+
+**Upgrading a loop whose reader is a seat** (the shape this rule now refuses — `doctor` and
+`status` flag it): give the reader its own account and PAT and move it with the `set` command
+above. If that loop's hooks are edited without `--admin-token` (the default), `arm` and
+`arm --pause` now act as the new reader, so its PAT needs hook write
+(`repository_hooks: write`, `admin:repo_hook` or classic `repo`) — a read-only reader PAT means
+passing `--admin-token <owner login>` to those commands instead.
 
 Each `--token` is a *path* to one account's **classic** PAT (mode 600) — never the token itself, and
 never a fine-grained token, which GitHub refuses for a seat that is a collaborator on someone else's

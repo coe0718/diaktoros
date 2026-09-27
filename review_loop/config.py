@@ -501,7 +501,8 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
         raise ConfigError(f"{where}: seats.adjudicator may only hold 'login' and 'concurrency'")
     seat: dict = {}
     if raw.get("concurrency") not in (None, ""):
-        seat["concurrency"] = int(raw["concurrency"])
+        seat["concurrency"] = _as_int(raw["concurrency"], "seats.adjudicator.concurrency",
+                                      where)
         if seat["concurrency"] < 1:
             raise ConfigError(f"{where}: seats.adjudicator.concurrency must be >= 1 (1 = serialized)")
     login = raw.get("login")
@@ -921,8 +922,12 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
 
     raw_seats = loop.get("seats") if isinstance(loop.get("seats"), dict) else {}
     seats = {}
+    if not isinstance(loop.get("seats"), dict):
+        raise ConfigError(f"{where}: 'seats' must be an object with reviewer and fixer")
     for seat in SEAT_KEYS:
-        seat_cfg = dict((loop.get("seats") or {}).get(seat) or {})
+        if not isinstance(loop["seats"].get(seat) or {}, dict):
+            raise ConfigError(f"{where}: seats.{seat} must be an object")
+        seat_cfg = dict(loop["seats"].get(seat) or {})
         if not seat_cfg.get("route"):
             raise ConfigError(f"{where}: seats.{seat}.route is required")
         if not seat_cfg.get("profile"):
@@ -957,7 +962,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
 
     loop["observer"] = normalize_observer(loop.get("observer"))
 
-    loop["cap"] = int(loop["cap"])
+    loop["cap"] = _as_int(loop["cap"], "cap", where)
     if loop["cap"] < 2:
         raise ConfigError(f"{where}: 'cap' is the number of verdicts allowed; must be >= 2")
 
@@ -968,8 +973,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if not loop["read_token"]:
         raise ConfigError(f"{where}: 'read_token' is not set, and the reader is never inferred "
                           "from 'tokens' — add \"read_token\": \"<login>\" naming the reader's "
-                          "own account, with its own entry in 'tokens' (--token LOGIN=/abs/path at "
-                          f"init); {FOUR_IDENTITY_RULE}")
+                          "own account, with its own entry in 'tokens': `hermes review-loop set "
+                          f"--loop {loop.get('id') or '<id>'} --read-token LOGIN --token "
+                          f"LOGIN=/abs/path/to/pat` writes both; {FOUR_IDENTITY_RULE}")
     adjudicator_seat = _adjudicator_seat(raw_seats.get("adjudicator"), loop, where)
     if adjudicator_seat:
         seats["adjudicator"] = adjudicator_seat
@@ -985,7 +991,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     raw_capacity = loop.get("concurrency")
     if raw_capacity is None or raw_capacity == "":
         raw_capacity = 1
-    loop["concurrency"] = int(raw_capacity)
+    loop["concurrency"] = _as_int(raw_capacity, "concurrency", where)
     if loop["concurrency"] < 1:
         raise ConfigError(f"{where}: 'concurrency' must be >= 1 (1 = serialized)")
 
@@ -993,7 +999,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         raw = seats[seat].get("concurrency")
         if raw is None or raw == "":
             continue
-        seats[seat]["concurrency"] = int(raw)
+        seats[seat]["concurrency"] = _as_int(raw, f"seats.{seat}.concurrency", where)
         if seats[seat]["concurrency"] < 1:
             raise ConfigError(f"{where}: seats.{seat}.concurrency must be >= 1 (1 = serialized)")
 
@@ -1018,7 +1024,52 @@ def load_file(path: pathlib.Path) -> dict:
         raw = json.loads(path.read_text())
     except Exception as exc:
         raise ConfigError(f"{path}: {exc}") from exc
-    return normalize(raw, path)
+    try:
+        return normalize(raw, path)
+    except ConfigError:
+        raise
+    except (TypeError, ValueError, AttributeError, KeyError) as exc:
+        # A hand-edited value of the wrong shape is a refusal with a reason, never a traceback
+        # out of whichever verb happened to load it.
+        raise ConfigError(f"{path}: malformed loop file ({type(exc).__name__}: {exc})") from exc
+
+
+def _as_int(value, key: str, where: str) -> int:
+    """An integer setting, or a ConfigError naming it (``int("many")`` must not escape)."""
+    if isinstance(value, bool):
+        raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}") from None
+
+
+def load_id_for_reader_repair(loop_id: str, reader: str) -> dict | None:
+    """The loop ``set --read-token`` may repair: one whose *only* defect is a missing reader.
+
+    Normalized as if ``reader`` were set (every other rule still applies — any other defect
+    raises), then handed back with ``read_token`` empty so the caller records and validates the
+    change like any other. ``None`` when the file does have a reader (nothing to repair here).
+    """
+    path = config_dir() / f"{loop_id}.json"
+    if not loop_id or pathlib.Path(loop_id).name != loop_id or path.is_symlink() or not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not isinstance(raw, dict) or str(raw.get("read_token") or "").strip() or not reader:
+        return None
+    try:
+        loop = normalize({**raw, "read_token": reader}, path)
+    except ConfigError:
+        raise
+    except (TypeError, ValueError, AttributeError, KeyError) as exc:
+        raise ConfigError(f"{path}: malformed loop file ({type(exc).__name__}: {exc})") from exc
+    if loop["id"] != loop_id:
+        raise ConfigError(f"{path}: loop ID does not match filename")
+    loop["read_token"] = ""
+    return loop
 
 
 def load_id(loop_id: str) -> dict:
@@ -1042,6 +1093,41 @@ def all_loops() -> list[dict]:
     if not directory.exists():
         return []
     return [load_id(p.stem) for p in sorted(directory.glob("*.json"))]
+
+
+def loop_for_repo(full_name: str, warn=None) -> dict | None:
+    """The one loop that owns ``full_name``, loading each file on its own — for the wake path.
+
+    ``by_repo`` is all-or-nothing, which is right for the verbs that act on every loop but wrong
+    for a gate: one hand-edited sibling file the loader refuses must not stop a healthy loop's
+    events. A file that will not load is skipped (``warn`` gets one line) — unless it might be
+    this repo's own: when its raw ``repo`` names this repo, or cannot be read at all, the
+    ownership question has no safe answer and this raises, exactly as ``by_repo`` would.
+    """
+    want = str(full_name or "").lower()
+    directory = config_dir()
+    if not directory.exists():
+        return None
+    matches = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            loop = load_id(path.stem)
+        except ConfigError as exc:
+            try:
+                raw_repo = str(json.loads(path.read_text()).get("repo") or "").strip().lower()
+            except Exception:
+                raw_repo = None
+            if raw_repo is None or not raw_repo or raw_repo == want:
+                raise ConfigError(f"{exc} (it may own {want or 'this repository'}; "
+                                  "unattended writes denied until it loads)") from exc
+            if warn:
+                warn(f"skipping {path.name} (loop for {raw_repo}): {exc}")
+            continue
+        if loop["repo"] == want:
+            matches.append(loop)
+    if len(matches) > 1:
+        raise ConfigError(f"duplicate loop configs for {want}: unattended writes denied")
+    return matches[0] if matches else None
 
 
 def by_repo(full_name: str) -> dict | None:
