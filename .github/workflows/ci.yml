@@ -124,7 +124,9 @@ jobs:
           HERMES_AGENT_SOURCE: ${{ github.workspace }}/hermes
         run: |
           python -m venv --system-site-packages "$GITHUB_WORKSPACE/hermes/venv"
-          python -m unittest -v tests.test_seat_models.HermesAgreement 2>&1 | tee hermes-agreement.log
+          # discover from tests/: Hermes (on PYTHONPATH here) has a `tests` package of its own
+          python -m unittest discover -v -s tests -p test_seat_models.py -k HermesAgreement 2>&1 \
+            | tee hermes-agreement.log
           grep -q "^Ran 1 test" hermes-agreement.log
           grep -q "^OK$" hermes-agreement.log
           ! grep -q "skipped" hermes-agreement.log
