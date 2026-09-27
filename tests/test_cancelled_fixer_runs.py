@@ -152,6 +152,49 @@ class CancelledFixer(unittest.TestCase):
         self.assertIn("next:       ", out)
         self.assertIn("--enable --acknowledge-pr-race", out.split("next:", 1)[1])
 
+    def test_retry_never_rearms_a_superseded_cancellation(self):
+        # Tuck on #97: `retry` offered every cancelled row; a head that moved was "re-armed",
+        # reported as success, and the claim cancelled it again. Only a push-policy cancellation
+        # is the operator's to recover; a new head gets its own turn. The surfaces agree.
+        self.sup.submit("rev-1", REPO, 7, HEAD, "reviewer")
+        with sqlite3.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='cancelled', "
+                        "error='PR head moved before the review started'")
+        with mock.patch.object(gate, "resume_isolated") as resume:
+            code, out = self.cli(cli.cmd_retry, loop="widgets", pr=7, seat="reviewer")
+        self.assertEqual(code, 2, out)
+        self.assertIn("nothing to retry", out)
+        self.assertNotIn("re-armed", out)
+        resume.assert_not_called()
+        self.assertEqual(read_only_view(self.db, REPO, 7), [])
+        with sqlite3.connect(self.db) as con:
+            run_id = con.execute("SELECT id FROM runs").fetchone()[0]
+        with self.assertRaisesRegex(ValueError, "a new head gets its own turn"):
+            self.sup.retry(run_id)
+        self.assertEqual(self.row_of("reviewer")["state"], "cancelled")
+
+    def test_an_unreadable_loop_config_is_a_named_refusal_not_a_crash(self):
+        # Tuck on #97: config.by_repo raises ConfigError (not a ValueError) — e.g. two loop files
+        # for one repo — and cmd_retry aborted with a traceback, skipping the other candidates.
+        self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
+        self.sup.submit("rev-1", REPO, 7, HEAD, "reviewer")
+        with sqlite3.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='failed', error='turn exited with status 3'")
+        (self.loops / "widgets-copy.json").write_text(
+            (self.loops / "widgets.json").read_text().replace('"widgets"', '"copy"'))
+        with mock.patch.object(config, "load_id", return_value={"id": "widgets", "repo": REPO}), \
+             mock.patch.object(gate, "resume_isolated", return_value=True):
+            code, out = self.cli(cli.cmd_retry, loop="widgets", pr=7, seat=None)
+        self.assertEqual(code, 2, out)
+        self.assertIn("fixer #7 @ aaaaaaa failed: refused: the loop configuration for "
+                      "acme/widgets is unusable (duplicate loop configs", out)
+        self.assertIn("reviewer #7 @ aaaaaaa re-armed", out)      # the other candidate still ran
+
+    def row_of(self, seat):
+        with sqlite3.connect(self.db) as con:
+            con.row_factory = sqlite3.Row
+            return dict(con.execute("SELECT * FROM runs WHERE seat=?", (seat,)).fetchone())
+
     def test_a_superseded_cancellation_stays_out_of_the_view(self):
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
         with sqlite3.connect(self.db) as con:

@@ -294,11 +294,14 @@ GITHUB_FILES_CAP = 3000
 class PRChange(NamedTuple):
     """The prompt section for the change, and the bounded unified diff staged beside it.
 
-    ``partial`` is empty only when the seat is shown the whole change, else the host's own words
-    for what it could not show: the file list unreadable (#110); files GitHub declares but does
-    not list and the trees could not name, in whole or in part (#93); or whole files left out of
-    the diff by its byte bound. The worker records it in the run ledger and the run's host-built
-    scope before launch, and the broker refuses an approval (and a fixer's push) while it is set.
+    ``partial`` is empty when every changed file is named to the seat and every patch GitHub
+    gave is in the diff, else the host's own words for what it could not show: the file list
+    unreadable (#110); files GitHub declares but does not list and the trees could not name, in
+    whole or in part (#93); or whole files left out of the diff by its byte bound. A file GitHub
+    lists without a patch (binary, or too large for GitHub to inline) does not make it partial:
+    it is named with its status, marked "no patch" in the diff, and read in `/work` at the head.
+    The worker records ``partial`` in the run ledger and the run's host-built scope before
+    launch, and the broker refuses an approval (and a fixer's push) while it is set.
     """
     record: str
     diff: str
@@ -613,9 +616,17 @@ def write_evidence(con, run_id: str) -> str | None:
     return write_records(con, run_id)
 
 
+def policy_cancelled(error: object) -> bool:
+    """Whether a cancelled run was cancelled by the fixer push policy (FIXER_NOT_ADMITTED /
+    FIXER_PUSH_REVOKED) — the one cancellation an operator ``retry`` recovers. Any other
+    cancellation is superseded (head moved, PR closed): a new head gets its own turn."""
+    return str(error or '').startswith('fixer push ')
+
+
 def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:
-    """Up to 100 failed, waiting and uncertain runs, oldest first. Each row carries ``write``:
-    why it may have written (never re-armed), or None — then ``retry`` re-arms it."""
+    """Up to 100 failed, waiting, uncertain and push-policy-cancelled runs, oldest first. Each
+    row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
+    re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
     # A fixer run cancelled at claim by the push policy is dead for its head until an operator
     # acts, so it is listed too (Tuck on #97); a superseded cancellation (head moved, PR
     # closed) is not, since a new head gets its own turn.
@@ -769,12 +780,13 @@ def describe_run(row: dict, loop_id: str = 'LOOP') -> str:
 
 
 def next_step(row: dict, loop_id: str = 'LOOP') -> str:
-    """What moves a failed, waiting or uncertain ``runs_view`` row on (#53)."""
+    """What moves a failed, waiting, uncertain or push-policy-cancelled ``runs_view`` row on
+    (#53)."""
     if row['state'] == 'waiting':
         due = max(0, int((row['retry_at'] or 0) - time.time()))
         return (f"attempt {(row['retries'] or 0) + 1} of {MAX_RETRIES} due in {due}s "
                 "(starts on the next event or armed watchdog sweep)")
-    if row['state'] == 'cancelled' and str(row['error'] or '').startswith('fixer push'):
+    if row['state'] == 'cancelled' and policy_cancelled(row['error']):
         return (f"no external write — if unattended fixer pushes are off, turn them on "
                 f"(`hermes review-loop fixer-push --loop {loop_id} --enable "
                 f"--acknowledge-pr-race`), then re-admit it: `hermes review-loop retry --loop "
@@ -1390,8 +1402,14 @@ class Supervisor:
         with (config.push_policy_lock() if fixer else nullcontext()), self._connect() as con:
             admitted, policy_off = None, ''
             if fixer:
-                loop = config.by_repo(first['repo'])
-                if loop is None or not config.unattended_fixer_push_enabled(loop):
+                try:
+                    loop = config.by_repo(first['repo'])
+                except config.ConfigError as exc:
+                    # Not a ValueError: named here so `retry` reports it per run, not a crash.
+                    loop, policy_off = None, (f"refused: the loop configuration for "
+                                              f"{first['repo']} is unusable ({exc})")
+                if not policy_off and (loop is None
+                                       or not config.unattended_fixer_push_enabled(loop)):
                     command = (config.fixer_push_enable_command(loop) if loop else
                                'hermes review-loop fixer-push --loop LOOP --enable '
                                '--acknowledge-pr-race')
@@ -1400,7 +1418,7 @@ class Supervisor:
                                   f"`{command}` first, then retry")
                 admitted = 1
             con.execute('BEGIN IMMEDIATE')
-            row = con.execute('SELECT state FROM runs WHERE id=?', (run_id,)).fetchone()
+            row = con.execute('SELECT state,error FROM runs WHERE id=?', (run_id,)).fetchone()
             if row is None:
                 con.execute('COMMIT')
                 raise ValueError(f'no run {run_id}')
@@ -1417,6 +1435,12 @@ class Supervisor:
                 con.execute('COMMIT')
                 raise ValueError(f"refused: run is {row['state']}, not failed, waiting or "
                                  "cancelled")
+            if row['state'] == 'cancelled' and not policy_cancelled(row['error']):
+                # Superseded (head moved, PR closed): re-arming it would only be cancelled again
+                # by the claim; a new head gets its own turn (the same line runs_view draws).
+                con.execute('COMMIT')
+                raise ValueError(f"refused: cancelled because {row['error'] or 'superseded'} — "
+                                 "a new head gets its own turn; nothing to retry")
             if policy_off:
                 # After the write and state checks: those refusals say more about the run.
                 con.execute('COMMIT')

@@ -1530,10 +1530,13 @@ def cmd_retry(args) -> int:
               + (f" for the {args.seat} seat" if args.seat else ""))
         return 2
     head = rows[-1]["head"]
-    # 'cancelled' is re-armable like 'failed' (Supervisor.retry's REARMABLE): a fixer run the
-    # push policy cancelled at claim is recovered here, under the policy in force now.
+    # A fixer run the push policy cancelled at claim is recovered here, under the policy in
+    # force now; any other cancellation is superseded and is not offered (runs_view draws the
+    # same line: a new head gets its own turn).
+    from .run_supervisor import policy_cancelled
     candidates = [row for row in rows if row["head"] == head
-                  and row["state"] in ("failed", "waiting", "uncertain", "cancelled")]
+                  and (row["state"] in ("failed", "waiting", "uncertain")
+                       or (row["state"] == "cancelled" and policy_cancelled(row["error"])))]
     if not candidates:
         print(f"[{loop['id']}] #{args.pr} @ {head[:7]}: nothing to retry — "
               + ", ".join(f"{row['seat']} {row['state']}" for row in rows if row["head"] == head))
