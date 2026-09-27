@@ -867,32 +867,43 @@ def hook_route_name(hook: dict) -> str:
     return path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
 
 
-def hook_origin(hook: dict) -> str:
-    """The scheme://authority a hook posts to, lower-cased."""
-    cfg = hook.get("config") if isinstance(hook.get("config"), dict) else {}
-    parts = urlsplit(str(cfg.get("url") or ""))
-    return f"{parts.scheme}://{parts.netloc}".lower()
+def seat_route_target(loop: dict, name: str) -> tuple[str | None, str]:
+    """``(url, "")`` for the one URL a hook must post to for route ``name`` to wake its seat, or
+    ``(None, reason)`` when no hook can.
+
+    The registry is the gateway's binding, so it is the only source: the gateway serves
+    ``/webhooks/<route>`` (default profile) and ``/p/<profile>/webhooks/<route>`` for a route in
+    its subscription file, and answers anything else 404 — another profile's URL included. A
+    route missing from the registry has no binding at all; a route whose entry binds another
+    profile than the seat's would run the wrong agent. Both are ``doctor.check_route``'s findings,
+    in its words, and neither has a URL a hook could be credited to.
+    """
+    role = next((role for role, route in route_intent.routes_of(loop).items() if route == name),
+                "")
+    entry = routes.route(name)
+    if entry is None:
+        return None, (f"route {name!r} is not in {routes.subs_path().name} — the gateway has no "
+                      "binding for it, so no hook can wake this seat")
+    want = config.seat_profile(loop, role) if role else ""
+    if role in ("reviewer", "fixer") and str(entry.get("profile") or "") != want:
+        return None, (f"route {name!r} wakes profile {entry.get('profile')!r}, but "
+                      f"seats.{role}.profile is {want!r} — the wake would run the wrong agent")
+    url = routes.url_for(name, str(loop.get("host") or "") or None)
+    if not url:
+        return None, f"route {name!r} has no gateway host to build its URL from"
+    return url, ""
 
 
 def seat_hook_url(loop: dict, name: str) -> str | None:
-    """The one URL a hook must post to for route ``name`` to receive it, or ``None``.
+    """The registry URL a hook must post to for route ``name`` (see ``seat_route_target``)."""
+    return seat_route_target(loop, name)[0]
 
-    The gateway binds a route to a profile *by its URL* (docs/architecture.md): it serves
-    ``/webhooks/<route>`` for the default profile and ``/p/<profile>/webhooks/<route>`` for
-    another, and answers any other profile's URL for that route 404 — the same answer as an
-    unknown route. So the canonical URL is the registry's (``routes.url_for``); when the registry
-    has no entry for the route (it was removed), the URL the loop's own config gives it, so the
-    hooks ``init`` made can still be recognised.
-    """
-    url = routes.url_for(name, str(loop.get("host") or "") or None)
-    if url:
-        return url
-    role = next((role for role, route in route_intent.routes_of(loop).items() if route == name),
-                None)
-    if role is None:
-        return None
-    return routes.url_for_profile(name, config.seat_profile(loop, role),
-                                  str(loop.get("host") or "") or None)
+
+def same_hook_url(posted: str, expected: str) -> bool:
+    """URL equality as the gateway sees it: scheme and host case-insensitive, path exact."""
+    got, want = urlsplit(posted.rstrip("/")), urlsplit(expected.rstrip("/"))
+    return ((got.scheme.lower(), got.netloc.lower(), got.path, got.query)
+            == (want.scheme.lower(), want.netloc.lower(), want.path, want.query))
 
 
 def _profile_in(path: str) -> str:
@@ -903,8 +914,10 @@ def _profile_in(path: str) -> str:
 
 def hook_url_difference(posted: str, expected: str) -> str:
     """Why ``posted`` is not the route's own URL, in the operator's terms (no URL echoed)."""
+    if not expected:
+        return "a route with no registry binding (see the route's line)"
     got, want = urlsplit(posted.rstrip("/")), urlsplit(expected.rstrip("/"))
-    if (got.scheme, got.netloc.lower()) != (want.scheme, want.netloc.lower()):
+    if (got.scheme.lower(), got.netloc.lower()) != (want.scheme.lower(), want.netloc.lower()):
         return f"another origin ({got.scheme}://{got.netloc.lower()}, not this loop's gateway)"
     have, need = _profile_in(got.path), _profile_in(want.path)
     if have and need and have != need and got.path.endswith(want.path.rsplit("/webhooks/", 1)[-1]):
@@ -918,7 +931,8 @@ def split_route_hooks(loop: dict, listing: list, names) -> tuple[list[dict], lis
 
     The one matcher every hook-owning command shares (``arm``, ``doctor``, and on later
     releases ``uninstall``, ``init``'s stale-hook guard and ``selftest --ping``). A hook is a
-    seat's only when it posts to exactly that route's URL (``seat_hook_url``). Every other hook
+    seat's only when it posts to exactly that route's registry URL, and the registry entry binds
+    the seat's profile (``seat_route_target``). Every other hook
     whose last ``/webhooks/<route>`` segment names one of the routes — another profile's URL, a
     retired gateway, another install — is *other*: reported, never flipped, deleted or pinged
     as this loop's. Raises ``ConfigError`` when the loop has no usable host.
@@ -932,9 +946,9 @@ def split_route_hooks(loop: dict, listing: list, names) -> tuple[list[dict], lis
         name = hook_route_name(hook)
         if name not in expected:
             continue
-        posted = str((hook.get("config") or {}).get("url") or "").rstrip("/")
+        posted = str((hook.get("config") or {}).get("url") or "")
         want = expected[name]
-        (own if want and posted == want.rstrip("/") else other).append(hook)
+        (own if want and same_hook_url(posted, want) else other).append(hook)
     return own, other
 
 
@@ -944,7 +958,7 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
         cfg = hook.get("config")
         return str(cfg.get("url") or "") if isinstance(cfg, dict) else ""
 
-    exact = [hook for hook in hooks if posted_url(hook).rstrip("/") == url.rstrip("/")]
+    exact = [hook for hook in hooks if same_hook_url(posted_url(hook), url)]
     # A wrong origin/profile/path for the same webhook route is a mismatch (reported with its
     # cause), not an absent hook — "the same route" is the exact segment, never a substring.
     candidates = exact or [hook for hook in hooks if hook_route_name(hook) == name]
@@ -957,7 +971,7 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                      f"hand with that URL and the route's secret")
     hook_id = match.get("id")
     posted = posted_url(match)
-    if posted.removesuffix("/") != url.removesuffix("/"):
+    if not same_hook_url(posted, url):
         why = hook_url_difference(posted, url)
         return Check(f"hook:{name}", MISMATCH,
                      f"hook {hook_id} posts to {why}, not [webhook URL redacted]",

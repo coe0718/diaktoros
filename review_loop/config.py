@@ -501,7 +501,8 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
         raise ConfigError(f"{where}: seats.adjudicator may only hold 'login' and 'concurrency'")
     seat: dict = {}
     if raw.get("concurrency") not in (None, ""):
-        seat["concurrency"] = int(raw["concurrency"])
+        seat["concurrency"] = _as_int(raw["concurrency"], "seats.adjudicator.concurrency",
+                                      where)
         if seat["concurrency"] < 1:
             raise ConfigError(f"{where}: seats.adjudicator.concurrency must be >= 1 (1 = serialized)")
     login = raw.get("login")
@@ -861,8 +862,12 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
 
     raw_seats = loop.get("seats") if isinstance(loop.get("seats"), dict) else {}
     seats = {}
+    if not isinstance(loop.get("seats"), dict):
+        raise ConfigError(f"{where}: 'seats' must be an object with reviewer and fixer")
     for seat in SEAT_KEYS:
-        seat_cfg = dict((loop.get("seats") or {}).get(seat) or {})
+        if not isinstance(loop["seats"].get(seat) or {}, dict):
+            raise ConfigError(f"{where}: seats.{seat} must be an object")
+        seat_cfg = dict(loop["seats"].get(seat) or {})
         if not seat_cfg.get("route"):
             raise ConfigError(f"{where}: seats.{seat}.route is required")
         if not seat_cfg.get("profile"):
@@ -897,7 +902,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
 
     loop["observer"] = normalize_observer(loop.get("observer"))
 
-    loop["cap"] = int(loop["cap"])
+    loop["cap"] = _as_int(loop["cap"], "cap", where)
     if loop["cap"] < 2:
         raise ConfigError(f"{where}: 'cap' is the number of verdicts allowed; must be >= 2")
 
@@ -918,7 +923,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     raw_capacity = loop.get("concurrency")
     if raw_capacity is None or raw_capacity == "":
         raw_capacity = 1
-    loop["concurrency"] = int(raw_capacity)
+    loop["concurrency"] = _as_int(raw_capacity, "concurrency", where)
     if loop["concurrency"] < 1:
         raise ConfigError(f"{where}: 'concurrency' must be >= 1 (1 = serialized)")
 
@@ -926,7 +931,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         raw = seats[seat].get("concurrency")
         if raw is None or raw == "":
             continue
-        seats[seat]["concurrency"] = int(raw)
+        seats[seat]["concurrency"] = _as_int(raw, f"seats.{seat}.concurrency", where)
         if seats[seat]["concurrency"] < 1:
             raise ConfigError(f"{where}: seats.{seat}.concurrency must be >= 1 (1 = serialized)")
 
@@ -951,7 +956,24 @@ def load_file(path: pathlib.Path) -> dict:
         raw = json.loads(path.read_text())
     except Exception as exc:
         raise ConfigError(f"{path}: {exc}") from exc
-    return normalize(raw, path)
+    try:
+        return normalize(raw, path)
+    except ConfigError:
+        raise
+    except (TypeError, ValueError, AttributeError, KeyError) as exc:
+        # A hand-edited value of the wrong shape is a refusal with a reason, never a traceback
+        # out of whichever verb happened to load it.
+        raise ConfigError(f"{path}: malformed loop file ({type(exc).__name__}: {exc})") from exc
+
+
+def _as_int(value, key: str, where: str) -> int:
+    """An integer setting, or a ConfigError naming it (``int("many")`` must not escape)."""
+    if isinstance(value, bool):
+        raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}") from None
 
 
 def load_id(loop_id: str) -> dict:

@@ -548,9 +548,14 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
                 "https://your-gateway.example"], False
     out, ok = [], True
     failed: list[tuple[int, list[str]]] = []      # (hook id, the errors that decide its fix)
+    targets = {name: doctor.seat_route_target(loop, name) for name in wanted}
     for hook in foreign:
         name = doctor.hook_route_name(hook)
-        want = doctor.seat_hook_url(loop, name) or ""
+        want, reason = targets[name]
+        if want is None:
+            out.append(f"hook {hook['id']} posts to route {name!r}; {reason} — not armed, "
+                       "left as it is")
+            continue
         why = doctor.hook_url_difference(str(hook["config"].get("url") or ""), want)
         out.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this seat's hook "
                    "(nothing this loop serves receives it), left as it is")
@@ -585,13 +590,15 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         # A PATCH GitHub accepted that did not stick is a refusal; a failed PATCH is judged by its
         # own code, so a timeout or a 5xx gets the retry advice, not the token-scope one.
         failed.append((hook["id"], [error or "refused"]))
-    if not matched:
+    unbound = [(role, name) for role, name in seats if targets[name][0] is None]
+    if not matched and not unbound:
         return out + ["no loop hooks found at the routes' own URLs — run init --hooks first "
                       f"(looked for hooks posting to {', '.join(wanted) or 'a loop route'})"], False
     missing = [(role, name) for role, name in seats if name not in matched]
     for role, name in missing:
-        out.append(f"hook:{name} ABSENT ({role} seat) — no repo hook posts to this route's "
-                   f"URL, so the loop cannot be {'armed' if active else 'paused'} as a whole")
+        reason = targets[name][1] or ("no repo hook posts to this route's URL, so the loop "
+                                      f"cannot be {'armed' if active else 'paused'} as a whole")
+        out.append(f"hook:{name} ABSENT ({role} seat) — {reason}")
     # The fix is per hook: one refused hook must not hide the retry advice another hook's 5xx
     # earned. Hooks that need the same fix share its line.
     advice: dict[str, list[int]] = {}
@@ -603,7 +610,12 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
                           []).append(hook_id)
     for text, ids in advice.items():
         out.append(f"fix: hook{'s' if len(ids) > 1 else ''} {', '.join(map(str, ids))}: {text}")
-    if missing:
+    if unbound:
+        ok = False
+        out.append(f"fix: `hermes review-loop doctor --loop {loop.get('id')}` names what each "
+                   "route needs (its `route:` line and fix) — repair the route first, then run "
+                   f"`arm{' --pause' if not active else ''}` again")
+    if [pair for pair in missing if pair not in unbound]:
         ok = False
         out.append(f"fix: `hermes review-loop doctor --loop {loop.get('id')}` shows the hook each "
                    "seat needs; add the missing one (by hand with its route's URL and secret, or "

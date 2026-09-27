@@ -78,6 +78,18 @@ class ArmVerifyTests(unittest.TestCase):
         self.addCleanup(env.stop)
         config.config_dir().mkdir()
         (config.config_dir() / "widgets.json").write_text(json.dumps(raw_loop("widgets")))
+        # The gateway's binding: every arm test runs against a real route registry, so the
+        # predicate under test is the registry's URL, never one derived from the loop file.
+        self.write_registry({"widgets-review": "reviewer", "widgets-fix": "fixer"})
+
+    def write_registry(self, bindings):
+        from review_loop import routes
+        path = routes.subs_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({name: {"profile": profile, "secret": "fixture-secret",
+                                           "events": ["pull_request"], "prompt": "p",
+                                           "host": HOST}
+                                    for name, profile in bindings.items()}))
 
     def arm(self, fake, pause=False, admin_token="", loop="widgets"):
         args = argparse.Namespace(loop=loop, pause=pause, admin_token=admin_token)
@@ -205,6 +217,91 @@ class ArmVerifyTests(unittest.TestCase):
         loop["seats"]["reviewer"]["route"] = reviewer_route
         loop["seats"]["fixer"]["route"] = fixer_route
         (config.config_dir() / "widgets.json").write_text(json.dumps(loop))
+        self.write_registry({reviewer_route: "reviewer", fixer_route: "fixer"})
+
+    def test_a_seat_route_missing_from_the_registry_is_absent_not_armed(self):
+        # No registry entry = no gateway binding: the hooks at the loop-file URL wake nothing.
+        self.write_registry({"widgets-fix": "fixer"})
+        fake = FakeGitHub(hooks(True))
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("hook:widgets-review ABSENT (reviewer seat) — route 'widgets-review' is "
+                      "not in webhook_subscriptions.json", out)
+        self.assertIn("hook 1 posts to route 'widgets-review'; route 'widgets-review' is not "
+                      "in webhook_subscriptions.json", out)
+        self.assertNotIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls)
+        self.assertIn("hook 2 → paused (read back)", out)
+        self.assertIn("names what each route needs (its `route:` line and fix)", out)
+        # An empty registry: nothing is armed or paused, both seats named.
+        self.write_registry({})
+        fake = FakeGitHub(hooks(True))
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 1, out)
+        self.assertEqual([c for c in fake.calls if c[0] == "PATCH"], [])
+        self.assertIn("hook:widgets-fix ABSENT (fixer seat) — route 'widgets-fix' is not in", out)
+
+    def test_a_route_binding_another_profile_is_the_wrong_agent_not_armed(self):
+        from review_loop import doctor
+        self.write_registry({"widgets-review": "someone-else", "widgets-fix": "fixer"})
+        fake = FakeGitHub(hooks(True))
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("hook:widgets-review ABSENT (reviewer seat) — route 'widgets-review' wakes "
+                      "profile 'someone-else', but seats.reviewer.profile is 'reviewer' — the "
+                      "wake would run the wrong agent", out)
+        self.assertNotIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls)
+        # The review's case: the hook posts to the registry's (other-profile) URL itself. The
+        # event would reach 'someone-else', not the reviewer seat — still not armed.
+        drifted = hooks(True)
+        drifted[1]["config"]["url"] = f"{HOST}/p/someone-else/webhooks/widgets-review"
+        fake = FakeGitHub(drifted)
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the wake would run the wrong agent", out)
+        self.assertNotIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls)
+        # doctor says the same thing about the same loop.
+        from review_loop import routes
+        check = doctor.check_route(config.load_id("widgets"), routes.all_routes(), "reviewer")
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn("the wake would run the wrong agent", check.detail)
+
+    def test_the_registry_url_is_the_one_credited(self):
+        from review_loop import doctor
+        loop = config.load_id("widgets")
+        self.assertEqual(doctor.seat_hook_url(loop, "widgets-review"),
+                         f"{HOST}/p/reviewer/webhooks/widgets-review")
+        self.write_registry({"widgets-review": "default", "widgets-fix": "fixer"})
+        loop["seats"]["reviewer"]["profile"] = "default"
+        self.assertEqual(doctor.seat_hook_url(loop, "widgets-review"),
+                         f"{HOST}/webhooks/widgets-review")
+
+    def test_host_case_alone_is_the_same_url(self):
+        upper = hooks(True)
+        upper[1]["config"]["url"] = "HTTPS://GW.EXAMPLE/p/reviewer/webhooks/widgets-review"
+        rc, out = self.arm(FakeGitHub(upper), pause=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("hook 1 → paused (read back)", out)
+        self.assertNotIn("another path", out)
+
+    def test_a_malformed_number_is_a_clean_refusal(self):
+        for key, value in (("cap", "many"), ("concurrency", "two"), ("cap", None)):
+            loop = raw_loop("widgets")
+            loop[key] = value
+            (config.config_dir() / "widgets.json").write_text(json.dumps(loop))
+            rc, out = self.arm(FakeGitHub(hooks(True)))
+            self.assertEqual(rc, 2, (key, value, out))
+            self.assertIn(f"{key!r} must be a whole number", out)
+        loop = raw_loop("widgets")
+        loop["seats"]["reviewer"]["concurrency"] = "lots"
+        (config.config_dir() / "widgets.json").write_text(json.dumps(loop))
+        rc, out = self.arm(FakeGitHub(hooks(True)))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("'seats.reviewer.concurrency' must be a whole number", out)
+        loop["seats"] = ["not", "an", "object"]
+        (config.config_dir() / "widgets.json").write_text(json.dumps(loop))
+        rc, out = self.arm(FakeGitHub(hooks(True)))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("'seats' must be an object", out)
 
     def test_a_route_name_inside_another_never_credits_the_wrong_seat(self):
         # Probe (a): reviewer route "widgets" is a substring of the fixer's "widgets-fix". The
