@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 import re
 import shlex
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -258,13 +260,56 @@ class ReaderIdentityTests(_Loop):
                                     r"'read_token' is not set, and the reader is never inferred "
                                     r"from 'tokens' — add \"read_token\": \"<login>\""):
             config.load_id("widgets")
-        # Every verb answers with that reason and an exit code — never a traceback.
-        for argv in (["list"], ["status"], ["status", "--loop", "widgets"],
-                     ["doctor", "--loop", "widgets", "--offline"], ["arm", "--loop", "widgets"],
-                     ["set", "--loop", "widgets", "--cap", "4"], ["apply", "--loop", "widgets"]):
-            rc, out = self.run_cli(argv)
-            self.assertEqual(rc, 2, (argv, out))
-            self.assertIn("'read_token' is not set", out, argv)
+        # Every verb answers with that reason and an exit code — never a traceback. The verbs
+        # come from the parser itself, so a verb added later cannot be forgotten here.
+        ctx = _Ctx()
+        cli.register_cli(ctx, settings={})
+        parser = argparse.ArgumentParser(prog="hermes review-loop")
+        ctx.setup(parser)
+        verbs = next(a for a in parser._actions
+                     if isinstance(a, argparse._SubParsersAction)).choices
+        extra = {"explain": ["--pr", "1"], "fixer-push": ["--disable"],
+                 "models": ["--seat", "reviewer"],
+                 "init": ["--repo", "acme/other", "--dry-run"]}
+        self.assertIn("uninstall", verbs)
+        self.assertIn("cleanup", verbs)
+        for verb, sub in verbs.items():
+            takes_loop = any("--loop" in a.option_strings for a in sub._actions)
+            argv = [verb, *(["--loop", "widgets"] if takes_loop else []), *extra.get(verb, [])]
+            try:
+                rc, out = self.run_cli(argv)
+            except SystemExit as exc:          # argparse: a required option this list lacks
+                self.fail(f"{argv}: add its required options to `extra` ({exc})")
+            except Exception as exc:           # noqa: BLE001 - the point of the test
+                self.fail(f"{argv} raised {type(exc).__name__}: {exc}")
+            self.assertIsInstance(rc, int, argv)
+            if takes_loop or verb == "list":
+                self.assertEqual(rc, 2, (argv, out))
+                self.assertIn("'read_token' is not set", out, argv)
+        # scripts/cleanup.py is also run directly (and by the cleanup verb): same answer.
+        proc = subprocess.run([sys.executable, str(ROOT / "scripts" / "cleanup.py"),
+                               "--loop", "widgets", "--sweep", "--dry-run"],
+                              capture_output=True, text=True, env=os.environ.copy(), timeout=60)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("cannot clean up:", proc.stdout)
+        self.assertIn("'read_token' is not set", proc.stdout)
+
+    def test_apply_refuses_a_reader_with_no_token_file(self):
+        rc, out = self.run_cli(self.init_argv())
+        self.assertEqual(rc, 0, out)
+        data = json.loads(self.loop_file().read_text())
+        data["read_token"] = "ghost-account"         # hand-edited; no tokens entry for it
+        self.loop_file().write_text(json.dumps(data))
+        before = self.loop_file().read_bytes()
+        settings = {"reviewer_profile": "vex", "fixer_profile": "drey", "reviewer_login": REV,
+                    "fixer_login": FIX, "host": "https://gateway.example", "cap": 5}
+        rc, out = self.run_cli(["apply", "--loop", "widgets"], settings)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("read_token 'ghost-account' has no entry in 'tokens'", out)
+        self.assertIn("fix: hermes review-loop set --loop widgets --read-token ghost-account "
+                      "--token ghost-account=", out)
+        self.assertEqual(self.loop_file().read_bytes(), before)
 
     def test_set_read_token_refusals(self):
         rc, out = self.run_cli(self.init_argv())
@@ -296,9 +341,10 @@ class HookWriteTests(_Loop):
         def fetch(loop, path, method="GET", body=None, login=None):
             calls.append((method, path, login))
             if path.endswith("/hooks?per_page=100"):
+                # Each hook at its route's own URL (the seat's profile is part of it).
                 return [{"id": n, "active": state[n], "config": {
-                    "url": f"https://gateway.example/p/x/webhooks/widgets-{r}"}}
-                    for n, r in ((1, "review"), (2, "fix"))], ""
+                    "url": f"https://gateway.example/p/{profile}/webhooks/widgets-{r}"}}
+                    for n, r, profile in ((1, "review", "vex"), (2, "fix", "drey"))], ""
             hook_id = int(path.rsplit("/", 1)[-1])
             if method == "PATCH":
                 if patch_error:

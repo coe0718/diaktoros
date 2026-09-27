@@ -107,17 +107,20 @@ hermes review-loop uninstall --loop name --admin-token LOGIN --purge   # hook-ad
 
 `arm` and `arm --pause` never report what they asked for — after each PATCH they read the hook back
 and print the state GitHub shows (`hook 12 → paused (read back)`, or `hook 12 is still active, not
-paused: PATCH failed (HTTP 403 …)`), then a `fix:` line. They exit **0** only when both seats'
+paused: PATCH failed (HTTP 403 …)`), and a `fix:` line for each thing that failed (a run that
+succeeds prints none). They exit **0** only when both seats'
 hooks (reviewer and fixer) exist and every one was observed in the requested state (a hook whose
 listing shows that state as a real true/false counts), **1** on a refused or unconfirmed PATCH, a
 read-back that disagrees, an unreadable hook listing, no loop hooks on the repo, or one seat's hook
 missing — named per seat as `hook:<route> ABSENT (fixer seat)`, the way `doctor` names it, since a
-loop armed halfway is not armed — and **2** when the loop is unknown or none is configured. A
-hook is a seat's only when it posts to exactly that seat's route name (the last `/webhooks/<route>`
-segment, never a substring of the URL) on the loop's own gateway origin — the exact route URL, or
-the same route under another profile prefix there, which the gateway resolves by name. A hook
-posting to the route name at another origin (a retired gateway, another install) is listed as
-not this loop's, never flipped, and leaves that seat ABSENT. The `fix:` advice is per hook: a
+loop armed halfway is not armed — and **2** when the loop cannot be loaded: no loop of that name,
+none configured, or a loop file `normalize` refuses (a `ConfigError` on load — a hand-edited file
+missing `seats.reviewer.route`, say, or giving both seats one route — printed as `cannot arm: …`).
+A hook is a seat's only when it posts to exactly that seat's route URL — the registry's
+`/p/<profile>/webhooks/<route>` (or `/webhooks/<route>` for the default profile) on the loop's
+gateway. The gateway binds a route to its profile by that URL and answers any other profile's
+URL for it 404, so a hook at another profile, another path or another origin (a retired gateway,
+another install) is listed with that cause, never flipped, and leaves its seat ABSENT. The `fix:` advice is per hook: a
 failed PATCH that looks transient (a timeout, a 5xx) gets "retry `arm`" first, a refusal (401,
 403, 404, or a PATCH that did not stick) the token-scope line, each naming its hooks. Without `--admin-token` the PATCH
 goes out as the loop's `read_token`; the `fix:` line names the scope that login's file needs

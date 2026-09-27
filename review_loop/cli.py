@@ -548,9 +548,9 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         return [f"could not read the repo's hooks: {exc}",
                 f"fix: {_hook_write_fix(token_login, loop=loop)}"], False
     try:
-        # One matcher (doctor.split_route_hooks): exactly the seat's route name on this loop's
-        # gateway origin. Never a substring of the URL — a route named inside another route's
-        # name, or embedded in a retired gateway's URL, is not that seat's hook.
+        # One matcher (doctor.split_route_hooks): a seat's hook posts to exactly its route's URL.
+        # Another profile's URL (the gateway answers it 404), another path, a retired gateway —
+        # or a route named inside another route's name — is not that seat's hook.
         own, foreign = doctor.split_route_hooks(loop, hooks, wanted)
     except config.ConfigError as exc:
         return [f"cannot tell this loop's hooks from anyone else's: {exc}",
@@ -559,9 +559,11 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
     out, ok = [], True
     failed: list[tuple[int, list[str]]] = []      # (hook id, the errors that decide its fix)
     for hook in foreign:
-        out.append(f"hook {hook['id']} posts to route {doctor.hook_route_name(hook)!r} at "
-                   f"{doctor.hook_origin(hook)}, not this loop's gateway — not this loop's hook, "
-                   "left as it is")
+        name = doctor.hook_route_name(hook)
+        want = doctor.seat_hook_url(loop, name) or ""
+        why = doctor.hook_url_difference(str(hook["config"].get("url") or ""), want)
+        out.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this seat's hook "
+                   "(nothing this loop serves receives it), left as it is")
     matched: set[str] = set()
     for hook in own:
         matched.add(doctor.hook_route_name(hook))
@@ -594,13 +596,12 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         # own code, so a timeout or a 5xx gets the retry advice, not the token-scope one.
         failed.append((hook["id"], [error or "refused"]))
     if not matched:
-        return out + ["no loop hooks found on this loop's gateway — run init --hooks first "
+        return out + ["no loop hooks found at the routes' own URLs — run init --hooks first "
                       f"(looked for hooks posting to {', '.join(wanted) or 'a loop route'})"], False
     missing = [(role, name) for role, name in seats if name not in matched]
     for role, name in missing:
-        out.append(f"hook:{name} ABSENT ({role} seat) — no repo hook posts to this route on the "
-                   f"loop's gateway, so the loop cannot be {'armed' if active else 'paused'} as "
-                   "a whole")
+        out.append(f"hook:{name} ABSENT ({role} seat) — no repo hook posts to this route's "
+                   f"URL, so the loop cannot be {'armed' if active else 'paused'} as a whole")
     # The fix is per hook: one refused hook must not hide the retry advice another hook's 5xx
     # earned. Hooks that need the same fix share its line.
     advice: dict[str, list[int]] = {}
@@ -1585,6 +1586,14 @@ def cmd_apply(args) -> int:
         print(f"settings refused: {updated['id']}: {problem} — {config.FOUR_IDENTITY_RULE}")
         print(f"fix: {config.reader_fix(updated)}")
         return 2
+    reader = str(updated.get("read_token") or "")
+    if reader.casefold() not in {str(k).casefold() for k in updated.get("tokens") or {}}:
+        # doctor fails this loop; apply must not report success over it either.
+        print(f"settings refused: {updated['id']}: read_token {reader!r} has no entry in "
+              "'tokens' — the gates read GitHub as that login and have no file to read it from")
+        print(f"fix: hermes review-loop set --loop {updated['id']} --read-token {reader} "
+              f"--token {reader}=/path/to/pat")
+        return 2
 
     identity, touched = _seat_diffs(loop, updated)
     # The installed registry can drift independently of the loop and the form. Repair those
@@ -2202,12 +2211,22 @@ def _cmd_fixer_push_locked(args) -> int:
 
 
 def cmd_drain(args) -> int:
+    try:
+        config.load_id(args.loop)          # the watchdog reports a bad file but exits 0 (cron)
+    except config.ConfigError as exc:
+        print(f"cannot drain: {exc}")
+        return 2
     watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
     cmd = [sys.executable, str(watchdog), "--loop", args.loop, "--drain", "--seat", args.seat]
     return subprocess.run(cmd).returncode
 
 
 def cmd_cleanup(args) -> int:
+    try:
+        config.load_id(args.loop)          # refuse a loop that will not load here, by name
+    except config.ConfigError as exc:
+        print(f"cannot clean up: {exc}")
+        return 2
     cleanup = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "cleanup.py"
     cmd = [sys.executable, str(cleanup), "--loop", args.loop]
     cmd += ["--pr", str(args.pr)] if args.pr else ["--sweep"]
