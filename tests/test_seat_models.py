@@ -25,6 +25,9 @@ from review_loop import cli, config, doctor, gh, seat_model, trusted_turn  # noq
 from review_loop.run_supervisor import Supervisor  # noqa: E402
 
 HEAD = "a" * 40
+# What the parent process holds under a provider variable: a plain marker, not secret-shaped (a
+# token-shaped literal is what the Hermes plugin guard flags, #36), that no seat may pick up.
+PARENT_LEAK = "parent-process-leak-9999"
 KEYS = {"rev": "REVIEWER-PROFILE-KEY-1111", "fix": "FIXER-PROFILE-KEY-2222",
         "adj": "ADJUDICATOR-PROFILE-KEY-3333"}
 
@@ -213,7 +216,7 @@ class Base(unittest.TestCase):
         # .env into os.environ): it must never satisfy a seat's resolution.
         env = {k: v for k, v in os.environ.items()
                if k not in ("OPENROUTER_API_KEY", "DEEPSEEK_API_KEY")}
-        env.update(HERMES_HOME=str(self.home), OPENROUTER_API_KEY="PARENT-PROCESS-LEAK-9999")
+        env.update(HERMES_HOME=str(self.home), OPENROUTER_API_KEY=PARENT_LEAK)
         patcher = mock.patch.dict(os.environ, env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -247,7 +250,7 @@ class ProfileResolution(Base):
         with self.assertRaises(seat_model.SeatModelError) as caught:
             seat_model.resolve_seat(self.loop, "reviewer", self.settings)
         self.assertIn("No usable credentials", str(caught.exception))
-        self.assertNotIn("PARENT-PROCESS-LEAK", str(caught.exception))
+        self.assertNotIn(PARENT_LEAK, str(caught.exception))
 
     def test_unsupported_providers_are_refused_before_credentials_are_touched(self):
         for provider in ("bedrock", "copilot", "someoauth", "auto"):
