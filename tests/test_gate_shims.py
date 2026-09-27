@@ -494,6 +494,141 @@ class DoctorApplyUninstall(Base):
         check = self.gateway_checks()["gateway-script:widgets-fix"]
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
 
+    # -- second review of #106 -------------------------------------------------------------
+
+    def shims(self):
+        return [self.hermes / "profiles/vex/scripts/gate_reviewer.py",
+                self.hermes / "profiles/drey/scripts/gate_fixer.py"]
+
+    def test_apply_reconciles_a_route_diverged_to_a_missing_profile(self):
+        """Tuck's repro: a live pair apply is about to rebind away must not block it."""
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(profile="ghost"))
+        for shim in self.shims():
+            shim.unlink()
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--dry-run"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("route widgets-review: profile ghost → vex", out)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(routes.route("widgets-review")["profile"], "vex")
+        for shim in self.shims():
+            self.assertTrue(shim.is_file(), shim)
+        self.assertTrue(all(c.status == doctor.VERIFIED for c in self.gateway_checks().values()))
+        self.assertFalse((self.hermes / "profiles/ghost").exists(), "never create a profile")
+
+    def test_apply_rebinds_away_from_a_foreign_gate_file_but_never_writes_over_one(self):
+        self.install()
+        foreign = self.hermes / "profiles/tuck/scripts/gate_reviewer.py"
+        foreign.parent.mkdir(parents=True)
+        foreign.write_text("print('tuck owns this')\n")
+        self.edit_registry(lambda d: d["widgets-review"].update(profile="tuck"))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(routes.route("widgets-review")["profile"], "vex")
+        self.assertEqual(foreign.read_text(), "print('tuck owns this')\n")
+        # A foreign file on a pair apply *would* write still refuses, before anything moves.
+        mine = self.hermes / "profiles/vex/scripts/gate_reviewer.py"
+        mine.write_text("print('vex owns this')\n")
+        self.edit_registry(lambda d: d["widgets-review"].update(profile="tuck"))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("not written by hermes-review-loop", out)
+        self.assertEqual(mine.read_text(), "print('vex owns this')\n")
+        self.assertEqual(routes.route("widgets-review")["profile"], "tuck")
+
+    def test_init_dry_run_raises_no_false_alarm_for_routes_it_would_create(self):
+        rc, out = self.run_cli(self.init_argv("acme/widgets", "--dry-run"))
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("⚠️", out)
+        self.assertNotIn("404", out)
+        # On an existing loop a real disagreement is still named.
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(profile="tuck"))
+        rc, out = self.run_cli(self.init_argv("acme/widgets", "--dry-run"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("registry runs tuck/gate_reviewer.py, loop config says vex/gate_reviewer.py",
+                      out)
+        self.assertNotIn("404", out)
+
+    def github_with_hook(self, url: str) -> pathlib.Path:
+        """A stateful gh stub holding one repo hook; it logs every PATCH body it accepts."""
+        world = self.tmp / "world.json"
+        world.write_text(json.dumps({"hooks": [{"id": 51, "active": True,
+                                                "events": ["pull_request_review"],
+                                                "config": {"url": url, "content_type": "json",
+                                                           "secret": "********"}}],
+                                     "patches": []}))
+        stub = self.tmp / "gh-hooks"
+        stub.write_text(textwrap.dedent(f"""\
+            #!{sys.executable}
+            import json, os, sys
+            path = sys.argv[1]
+            world = json.load(open({str(world)!r}))
+            method = os.environ.get("GH_METHOD", "GET")
+            if path.endswith("/hooks?per_page=100"):
+                print(json.dumps(world["hooks"]))
+            elif "/hooks/" in path:
+                hook = next(h for h in world["hooks"] if str(h["id"]) == path.rsplit("/", 1)[1])
+                if method == "PATCH":
+                    body = json.loads(sys.argv[2])
+                    world["patches"].append(body)
+                    hook["config"] = {{**body["config"], "secret": "********"}}
+                    json.dump(world, open({str(world)!r}, "w"))
+                print(json.dumps(hook))
+            else:
+                print("{{}}")
+        """))
+        stub.chmod(0o755)
+        os.environ["REVIEW_LOOP_GH_STUB"] = str(stub)
+        return world
+
+    def test_missing_route_without_intent_record_names_a_remedy_that_works(self):
+        from review_loop import route_intent
+        self.install()
+        route_intent.path(config.load_id("widgets")).unlink()
+        self.edit_registry(lambda d: d.pop("widgets-fix"))
+        world = self.github_with_hook("https://gateway.example/p/drey/webhooks/widgets-fix")
+        remedy = "hermes review-loop apply --loop widgets --recreate-routes"
+        checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
+        for name in ("route:widgets-fix", "gateway-script:widgets-fix"):
+            self.assertEqual(checks[name].status, doctor.ABSENT, checks[name].detail)
+            self.assertIn(remedy, checks[name].fix)
+            self.assertNotIn("re-run init", checks[name].fix)
+        # Plain apply does not invent a route behind your back, and says what would.
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn(remedy, out)
+        self.assertIsNone(routes.route("widgets-fix"))
+        # The printed remedy, end to end.
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
+        self.assertEqual(rc, 0, out)
+        entry = routes.route("widgets-fix")
+        self.assertEqual((entry["profile"], entry["script"]), ("drey", "gate_fixer.py"))
+        self.assertIn("hook 51", out)
+        patches = json.loads(world.read_text())["patches"]
+        self.assertEqual([p["config"]["secret"] for p in patches], [entry["secret"]],
+                         "the repo hook must sign with the recreated route's secret")
+        checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
+        for name in ("route:widgets-fix", "gateway-script:widgets-fix"):
+            self.assertEqual(checks[name].status, doctor.VERIFIED, checks[name].detail)
+        self.assertEqual(route_intent.load(config.load_id("widgets"))["widgets-fix"]["secret"],
+                         entry["secret"])
+
+    def test_recreate_routes_refuses_when_the_hook_listing_cannot_be_read(self):
+        from review_loop import route_intent
+        self.install()
+        route_intent.path(config.load_id("widgets")).unlink()
+        self.edit_registry(lambda d: d.pop("widgets-fix"))
+        broken = self.tmp / "gh-broken"
+        broken.write_text("#!/bin/sh\nexit 1\n")
+        broken.chmod(0o755)
+        os.environ["REVIEW_LOOP_GH_STUB"] = str(broken)
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("hook listing", out)
+        self.assertIsNone(routes.route("widgets-fix"))
+
     def test_uninstall_keeps_shims_another_loop_needs(self):
         self.install("acme/widgets")
         self.install("acme/gizmos", "--id", "gizmos", "--fixer-profile", "tuck")

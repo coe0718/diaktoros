@@ -389,9 +389,7 @@ def check_routes(loop: dict) -> list[Check]:
     """Route/profile/secret correspondence, read from the gateway's own subscription file."""
     path = routes.subs_path()
     if not path.exists():
-        return [Check("routes", ABSENT, f"no route registry at {path}",
-                      "re-run init for this loop: it writes the routes into the subscription "
-                      "file the gateway already reads")]
+        return [Check("routes", ABSENT, f"no route registry at {path}", _missing_route_fix(loop))]
     try:
         data = json.loads(path.read_text())
     except Exception as exc:
@@ -452,6 +450,13 @@ def _intent_overlay(loop: dict, data: dict, checks: list[Check]) -> list[Check]:
     return checks
 
 
+def _missing_route_fix(loop: dict) -> str:
+    """``init`` refuses an existing loop, so a lost route is written back by ``apply``. (With an
+    intent record, ``_intent_overlay`` replaces this with ``doctor --repair``, same secret.)"""
+    from . import gate_shims
+    return gate_shims.recreate_fix(loop)
+
+
 def check_route(loop: dict, data: dict, seat: str) -> Check:
     name = str(loop["seats"][seat].get("route") or "")
     profile = str(loop["seats"][seat].get("profile") or "")
@@ -461,8 +466,7 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
     entry = _route_entry(data, name)
     if entry is None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
-                     f"re-run init for this loop (it writes {name!r} with a generated secret), "
-                     f"or `hermes webhook subscribe {name}`")
+                     _missing_route_fix(loop))
     if str(entry.get("profile") or "") != profile:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but seats.{seat}.profile is "
@@ -524,8 +528,8 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
     entry = _route_entry(data, name)
     if entry is None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
-                     f"re-run init with --adjudicator-route {name}: the breach marker is the only "
-                     f"record of an escalation nobody is woken for")
+                     _missing_route_fix(loop) + " — the breach marker is the only record of an "
+                     "escalation nobody is woken for")
     if str(entry.get("profile") or "") != profile:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but adjudicator.profile is "

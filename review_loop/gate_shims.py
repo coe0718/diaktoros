@@ -124,7 +124,7 @@ def state(home: pathlib.Path, script: str) -> tuple[str, pathlib.Path, str]:
     return "ok", path, f"{path} → {plugin_script(script)}"
 
 
-def _config_profile(loop: dict, role: str) -> str:
+def config_profile(loop: dict, role: str) -> str:
     if role == "observer":
         return str((loop.get("observer") or {}).get("profile") or "default")
     return config.seat_profile(loop, role)
@@ -134,7 +134,7 @@ def wanted(loop: dict) -> set[tuple[str, str]]:
     """(profile, script) for each route this loop's config installs."""
     out = set()
     for role in route_intent.routes_of(loop):
-        profile = _config_profile(loop, role)
+        profile = config_profile(loop, role)
         if profile:                     # a seat with no profile: see ``divergence``
             out.add((profile, GATE_SCRIPT[role]))
     return out
@@ -144,7 +144,14 @@ def _side(profile: str, script: str) -> str:
     return f"{profile or '(no profile)'}/{script}"
 
 
-def divergence(loop: dict) -> dict:
+def recreate_fix(loop: dict) -> str:
+    """The command that writes a loop's missing routes when no intent record can restore them.
+    ``init`` refuses an existing loop, so it is never the answer here."""
+    return (f"`hermes review-loop apply --loop {loop.get('id', '?')} --recreate-routes` (writes "
+            "it from the loop config with a new secret and re-keys the repo hook that points at it)")
+
+
+def divergence(loop: dict, *, include_missing: bool = True) -> dict:
     """route name → (detail, fix, status) for each loop route whose registry entry is not what the
     loop config would install: another profile or gate, no profile in the config, or no route.
 
@@ -159,17 +166,17 @@ def divergence(loop: dict) -> dict:
     lid = loop.get("id", "?")
     out = {}
     for role, name in sorted(route_intent.routes_of(loop).items()):
-        want = (_config_profile(loop, role), GATE_SCRIPT[role])
+        want = (config_profile(loop, role), GATE_SCRIPT[role])
         entry = registry.get(name) if isinstance(registry, dict) else None
         recorded = intent.get(name) if isinstance(intent.get(name), dict) else None
         restorable = recorded is not None and (
             str(recorded.get("profile") or "default"), recorded.get("script")) == want
         repair = f"`hermes review-loop doctor --loop {lid} --repair` (restores the route the plugin wrote)"
         if not isinstance(entry, dict):
-            out[name] = (f"loop config says {_side(*want)}, but the registry holds no route "
-                         f"{name!r} — the gateway 404s this seat",
-                         repair if restorable else f"re-run `hermes review-loop init` for this "
-                         "loop (no intent record to restore it from)", "absent")
+            if include_missing:
+                out[name] = (f"loop config says {_side(*want)}, but the registry holds no route "
+                             f"{name!r} — the gateway 404s this seat",
+                             repair if restorable else recreate_fix(loop), "absent")
             continue
         profile = entry.get("profile", "default")
         have = (profile if isinstance(profile, str) and profile.strip() else "default",
@@ -248,12 +255,28 @@ def _write(path: pathlib.Path, text: str) -> None:
 def install(loop: dict, *, dry_run: bool = False, pairs=None, report: bool = True) -> list[str]:
     """Write every missing or stale shim this loop needs; idempotent. Raises ShimError/OSError.
 
-    By default that is what the config installs *and* what the registry runs now, and every route
-    where those disagree is reported (``divergence``) — never skipped in silence.
+    Refuses (before writing anything) only over what the config installs. What the registry runs
+    now is written too where it can be, and every route where the two disagree is reported
+    (``divergence``) — never skipped in silence. ``report=False`` leaves that to the caller.
     """
     lines = []
-    for status, path, script, _detail in _plan((wanted(loop) | live(loop)) if pairs is None
-                                               else pairs):
+    plan = _plan(wanted(loop) if pairs is None else pairs)
+    if pairs is None:
+        # What the registry runs today, where the config would not install it: written when it
+        # can be (the gateway runs it until the route is reconciled), never a reason to refuse —
+        # `apply` is about to rebind exactly these routes away.
+        planned = {path for _s, path, _sc, _d in plan}
+        for profile, script in sorted(live(loop) - wanted(loop)):
+            status, path, detail = state(home_for(profile), script)
+            if path in planned:
+                continue
+            if status in ("foreign", "nohome"):
+                if report:
+                    lines.append(f"⚠️ gate shim not written for profile {profile!r}: {detail}")
+                continue
+            planned.add(path)
+            plan.append((status, path, script, detail))
+    for status, path, script, _detail in plan:
         if status == "ok":
             continue
         verb = "would write" if dry_run else ("rewrote" if status == "stale" else "wrote")
