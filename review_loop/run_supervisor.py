@@ -81,6 +81,14 @@ DETAIL_BYTES = 2000
 REARMABLE = ("failed", "cancelled")
 SEATS = ("reviewer", "fixer", "adjudicator")
 RULINGS = ("ACCEPT", "REJECT", "RESPEC")
+# Host-limit settings the sandboxed worker must inherit. The worker starts from the scrubbed
+# environment built in Supervisor._spawn, so an override the operator set for the gateway is
+# otherwise dropped before contained.py reads it — silently, while `doctor` and `selftest`, which
+# run in the CLI's own environment, report it as in force. That is a remedy nobody can use: the
+# documented answer to "my build outgrew the cap" would do nothing in production.
+# Anything added here must be a name contained._size_from_env can read;
+# tests/test_sandbox_limits.py asserts the two stay in step.
+HOST_LIMIT_ENV = ("REVIEW_LOOP_CHECKOUT_SIZE_GIB", "REVIEW_LOOP_SCRATCH_SIZE_GIB")
 # Terminal states of the optional PR comment. 'posting' is a durable pre-POST intent: a
 # worker that dies after it can never tell whether GitHub accepted the comment, so it is
 # reported as uncertain and never replayed.

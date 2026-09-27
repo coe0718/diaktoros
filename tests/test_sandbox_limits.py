@@ -23,12 +23,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import broker_ipc, contained
+from review_loop import broker_ipc, contained, run_supervisor
 
 MiB = 1024 * 1024
 # Small enough to prove enforcement inside a test, larger than anything the probe stages.
@@ -433,6 +434,36 @@ class BrokerClaimTests(unittest.TestCase):
             corrected = doctor.check_sandbox_caps({"id": "t"})
         self.assertEqual(corrected.status, "verified",
                          "a corrected override must not leave the install red forever")
+
+    def test_a_size_override_reaches_the_worker_that_sizes_the_sandbox(self):
+        """`doctor` reads the override; the SEAT is sized by it. Only a forwarded env does that.
+
+        The production worker starts from a scrubbed environment, so an override set for the
+        gateway is dropped before contained reads it — while doctor, which runs in the CLI's own
+        environment, reports it as in force. A remedy that does nothing in production is worse
+        than no remedy, because the operator believes it.
+        """
+        fake = types.SimpleNamespace(
+            fixture_mode=False, production_config="/tmp/widgets.json", fixture_command=None,
+            db="/tmp/none.sqlite", capacity=3, lease_seconds=60.0, child_timeout=120.0,
+            hermes_home=pathlib.Path("/tmp/fake-home"))
+        with mock.patch.dict(os.environ, {"REVIEW_LOOP_CHECKOUT_SIZE_GIB": "64",
+                                          "REVIEW_LOOP_SCRATCH_SIZE_GIB": "4"}), \
+                mock.patch.object(subprocess, "Popen") as popen:
+            # A duck-typed stand-in for a Supervisor: _spawn only reads these seven attributes,
+            # and building a real one needs a database this test has no use for.
+            run_supervisor.Supervisor._spawn(fake)  # type: ignore[arg-type]
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env.get("REVIEW_LOOP_CHECKOUT_SIZE_GIB"), "64",
+                         "an override set for the gateway must be what sizes the seat's sandbox")
+        self.assertEqual(env.get("REVIEW_LOOP_SCRATCH_SIZE_GIB"), "4")
+        self.assertNotIn("GH_TOKEN", env, "the allowlist stays a host-limit allowlist")
+
+    def test_every_mount_override_contained_reads_is_forwarded(self):
+        """A new size setting that is not added to HOST_LIMIT_ENV silently does nothing."""
+        for stem in ("CHECKOUT_SIZE", "SCRATCH_SIZE"):
+            self.assertIn(f"REVIEW_LOOP_{stem}_GIB", run_supervisor.HOST_LIMIT_ENV,
+                          f"REVIEW_LOOP_{stem}_GIB is read by contained but never reaches the worker")
 
 
 if __name__ == "__main__":
