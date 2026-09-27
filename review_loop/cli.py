@@ -547,14 +547,24 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
     except config.ConfigError as exc:
         return [f"could not read the repo's hooks: {exc}",
                 f"fix: {_hook_write_fix(token_login, loop=loop)}"], False
-    out, ok, errors = [], True, []
+    try:
+        # One matcher (doctor.split_route_hooks): exactly the seat's route name on this loop's
+        # gateway origin. Never a substring of the URL — a route named inside another route's
+        # name, or embedded in a retired gateway's URL, is not that seat's hook.
+        own, foreign = doctor.split_route_hooks(loop, hooks, wanted)
+    except config.ConfigError as exc:
+        return [f"cannot tell this loop's hooks from anyone else's: {exc}",
+                f"fix: hermes review-loop set --loop {loop.get('id')} --host "
+                "https://your-gateway.example"], False
+    out, ok = [], True
+    failed: list[tuple[int, list[str]]] = []      # (hook id, the errors that decide its fix)
+    for hook in foreign:
+        out.append(f"hook {hook['id']} posts to route {doctor.hook_route_name(hook)!r} at "
+                   f"{doctor.hook_origin(hook)}, not this loop's gateway — not this loop's hook, "
+                   "left as it is")
     matched: set[str] = set()
-    for hook in hooks:
-        url = (hook.get("config") or {}).get("url", "")
-        hit = [name for name in wanted if name in url]
-        if not hit:
-            continue
-        matched.update(hit)
+    for hook in own:
+        matched.add(doctor.hook_route_name(hook))
         # Only a real bool is a state: a hook with no `active` (or a non-bool one) is flipped and
         # read back like any other, never taken as already there.
         if isinstance(hook.get("active"), bool) and hook["active"] == active:
@@ -570,7 +580,7 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
             out.append(f"hook {hook['id']} NOT CONFIRMED {word}: "
                        + (f"PATCH failed ({error}); " if error else "")
                        + f"read-back failed ({read_error or 'no hook in the answer'})")
-            errors += [e for e in (error, read_error) if e]  # the codes decide the fix
+            failed.append((hook["id"], [e for e in (error, read_error) if e]))
             continue
         seen = "active" if actual["active"] else "paused"
         if actual["active"] == active:
@@ -581,20 +591,27 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
                    + (f": PATCH failed ({error})" if error else ": GitHub accepted the PATCH "
                       "but the read-back disagrees"))
         # A PATCH GitHub accepted that did not stick is a refusal; a failed PATCH is judged by its
-        # own code below, so a timeout or a 5xx gets the retry advice, not the token-scope one.
-        errors.append(error or "refused")
+        # own code, so a timeout or a 5xx gets the retry advice, not the token-scope one.
+        failed.append((hook["id"], [error or "refused"]))
     if not matched:
-        return ["no loop hooks found — run init --hooks first "
-                f"(looked for hooks whose URL names {', '.join(wanted) or 'a loop route'})"], False
+        return out + ["no loop hooks found on this loop's gateway — run init --hooks first "
+                      f"(looked for hooks posting to {', '.join(wanted) or 'a loop route'})"], False
     missing = [(role, name) for role, name in seats if name not in matched]
     for role, name in missing:
-        out.append(f"hook:{name} ABSENT ({role} seat) — no repo hook posts to this route, so "
-                   f"the loop cannot be {'armed' if active else 'paused'} as a whole")
-    if not ok:
+        out.append(f"hook:{name} ABSENT ({role} seat) — no repo hook posts to this route on the "
+                   f"loop's gateway, so the loop cannot be {'armed' if active else 'paused'} as "
+                   "a whole")
+    # The fix is per hook: one refused hook must not hide the retry advice another hook's 5xx
+    # earned. Hooks that need the same fix share its line.
+    advice: dict[str, list[int]] = {}
+    for hook_id, errors in failed:
         # GitHub answers 404 to a token that may not see hooks, so 404 counts as a refusal too.
         refused = any(e == "refused" or any(f"HTTP {code}" in e for code in (401, 403, 404))
                       for e in errors)
-        out.append(f"fix: {_hook_write_fix(token_login, transient=not refused, loop=loop)}")
+        advice.setdefault(_hook_write_fix(token_login, transient=not refused, loop=loop),
+                          []).append(hook_id)
+    for text, ids in advice.items():
+        out.append(f"fix: hook{'s' if len(ids) > 1 else ''} {', '.join(map(str, ids))}: {text}")
     if missing:
         ok = False
         out.append(f"fix: `hermes review-loop doctor --loop {loop.get('id')}` shows the hook each "

@@ -863,6 +863,43 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
     return checks
 
 
+def hook_route_name(hook: dict) -> str:
+    """The webhook route a hook posts to: the last ``/webhooks/<name>`` path segment, exactly.
+
+    Never a substring test on the URL: route ``widgets`` must not claim a hook posting to
+    ``widgets-fix``, nor a route name embedded anywhere else in a URL.
+    """
+    url = (hook.get("config") or {}).get("url") if isinstance(hook.get("config"), dict) else ""
+    path = urlsplit(str(url or "")).path.rstrip("/")
+    return path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
+
+
+def hook_origin(hook: dict) -> str:
+    """The scheme://authority a hook posts to, lower-cased."""
+    cfg = hook.get("config") if isinstance(hook.get("config"), dict) else {}
+    parts = urlsplit(str(cfg.get("url") or ""))
+    return f"{parts.scheme}://{parts.netloc}".lower()
+
+
+def split_route_hooks(loop: dict, listing: list, names) -> tuple[list[dict], list[dict]]:
+    """``(own, foreign)``: hooks posting to one of ``names`` on this loop's origin, and elsewhere.
+
+    The one matcher every hook-owning command shares (``arm``, ``doctor``, and on later
+    releases ``uninstall``, ``init``'s stale-hook guard and ``selftest --ping``). A hook is a
+    seat's when it posts to exactly that route name on the loop's own gateway origin — the exact
+    ``routes.url_for`` URL, or the same route under another profile prefix on that origin, which
+    the gateway resolves by name. The same route name at another origin (a retired gateway,
+    another machine's install) is *foreign*: never flipped, deleted or pinged as this loop's.
+    Raises ``ConfigError`` when the loop has no usable host to compare against.
+    """
+    origin = config.webhook_host(loop.get("host"), required=True).rstrip("/").lower()
+    wanted = set(names)
+    named = [hook for hook in listing
+             if isinstance(hook, dict) and hook_route_name(hook) in wanted]
+    return ([hook for hook in named if hook_origin(hook) == origin],
+            [hook for hook in named if hook_origin(hook) != origin])
+
+
 def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check:
     event = GATE_EVENT[seat]
     def posted_url(hook: dict) -> str:
@@ -870,23 +907,19 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
         return str(cfg.get("url") or "") if isinstance(cfg, dict) else ""
 
     exact = [hook for hook in hooks if posted_url(hook).rstrip("/") == url.rstrip("/")]
-    # A wrong origin/profile for the same webhook route is a mismatch, not an absent hook.
-    candidates = exact or [hook for hook in hooks if
-                           urlsplit(posted_url(hook)).path.rstrip("/").endswith(
-                               "/webhooks/" + name)]
+    # A wrong origin/profile for the same webhook route is a mismatch, not an absent hook — and
+    # "the same route" is the exact route segment (hook_route_name), never a substring.
+    candidates = exact or [hook for hook in hooks if hook_route_name(hook) == name]
     # Every hook posting to this route name, on any origin. More than one is a previous install
     # left behind: GitHub never returns a secret, but a leftover signs with the secret the old
     # route held, so at most one of them can authenticate — and "hook N active" says nothing
     # about which one that is.
-    def origin(value: str) -> str:
-        parts = urlsplit(value)
-        return f"{parts.scheme}://{parts.netloc}".lower()
-
     # Only this gateway's hooks can be duplicates: the same route name on another origin is
     # another install (or an old gateway) and never receives this route's deliveries.
+    wanted_origin = urlsplit(url)
+    wanted_origin = f"{wanted_origin.scheme}://{wanted_origin.netloc}".lower()
     named = [hook for hook in hooks if hook in exact or
-             (urlsplit(posted_url(hook)).path.rstrip("/").endswith("/webhooks/" + name)
-              and origin(posted_url(hook)) == origin(url))]
+             (hook_route_name(hook) == name and hook_origin(hook) == wanted_origin)]
     if len(named) > 1:
         ids = sorted(hook.get("id") for hook in named if isinstance(hook.get("id"), int))
         active = sum(1 for hook in named if hook.get("active"))
@@ -941,34 +974,6 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
 # signature", 403 a route that is disabled or has no HMAC secret to check against.
 REJECTED = {401: "signature rejected — the hook's secret does not match the route's",
             403: "refused — the route is disabled or holds no secret"}
-
-
-def hook_route_name(hook: dict) -> str:
-    """The webhook route a hook posts to: the last ``/webhooks/<name>`` path segment, exactly."""
-    url = (hook.get("config") or {}).get("url") if isinstance(hook.get("config"), dict) else ""
-    path = urlsplit(str(url or "")).path.rstrip("/")
-    return path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
-
-
-def hook_origin(hook: dict) -> str:
-    """The scheme://authority a hook posts to, lower-cased."""
-    cfg = hook.get("config") if isinstance(hook.get("config"), dict) else {}
-    parts = urlsplit(str(cfg.get("url") or ""))
-    return f"{parts.scheme}://{parts.netloc}".lower()
-
-
-def split_route_hooks(loop: dict, listing: list, names) -> tuple[list[dict], list[dict]]:
-    """``(own, foreign)``: hooks posting to one of ``names`` on this loop's origin, and elsewhere.
-
-    The one matcher ``uninstall``, ``init``'s stale-hook guard and ``selftest --ping`` share: a
-    path suffix alone would take another machine's install (same route name, other gateway) for
-    this one's. Raises ``ConfigError`` when the loop has no usable host to compare against.
-    """
-    origin = config.webhook_host(loop.get("host"), required=True).rstrip("/").lower()
-    named = [hook for hook in listing
-             if isinstance(hook, dict) and hook_route_name(hook) in set(names)]
-    return ([hook for hook in named if hook_origin(hook) == origin],
-            [hook for hook in named if hook_origin(hook) != origin])
 
 
 def check_deliveries(loop: dict, hook_id, name: str) -> "Check | str":

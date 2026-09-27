@@ -46,8 +46,10 @@ class FakeGitHub:
             return [dict(h) for h in self.hooks.values()], ""
         hook_id = int(path.rsplit("/", 1)[-1])
         if method == "PATCH":
-            if self.patch_error:
-                return None, self.patch_error
+            error = (self.patch_error.get(hook_id, "") if isinstance(self.patch_error, dict)
+                     else self.patch_error)
+            if error:
+                return None, error
             if not self.ignore_patch:
                 self.hooks[hook_id]["active"] = body["active"]
             return dict(self.hooks[hook_id]), ""
@@ -184,7 +186,67 @@ class ArmVerifyTests(unittest.TestCase):
         self.assertIn("hook 1 is still active, not paused: PATCH failed (HTTP 502", out)
         fix = [line for line in out.splitlines() if "fix:" in line]
         self.assertEqual(len(fix), 1, out)
-        self.assertTrue(fix[0].startswith("[widgets] fix: retry `arm`"), fix)
+        self.assertTrue(fix[0].startswith("[widgets] fix: hooks 1, 2: retry `arm`"), fix)
+
+    def test_each_failed_hook_gets_its_own_fix(self):
+        # One refusal must not hide the retry advice another hook's 5xx earned (and vice versa).
+        fake = FakeGitHub(hooks(True), patch_error={1: "HTTP 403 Resource not accessible",
+                                                    2: "HTTP 502 Bad Gateway"})
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 1, out)
+        fix = [line for line in out.splitlines() if "fix:" in line]
+        self.assertEqual(len(fix), 2, out)
+        self.assertTrue(fix[0].startswith("[widgets] fix: hook 1: the token for 'reader' needs "
+                                          "hook write"), fix)
+        self.assertTrue(fix[1].startswith("[widgets] fix: hook 2: retry `arm`"), fix)
+
+    def write_loop(self, reviewer_route, fixer_route):
+        loop = raw_loop("widgets")
+        loop["seats"]["reviewer"]["route"] = reviewer_route
+        loop["seats"]["fixer"]["route"] = fixer_route
+        (config.config_dir() / "widgets.json").write_text(json.dumps(loop))
+
+    def test_a_route_name_inside_another_never_credits_the_wrong_seat(self):
+        # Probe (a): reviewer route "widgets" is a substring of the fixer's "widgets-fix". The
+        # fixer's hook alone must not count for the reviewer too.
+        self.write_loop("widgets", "widgets-fix")
+        fake = FakeGitHub({2: hooks(True)[2]})
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("hook 2 → paused (read back)", out)
+        self.assertIn("hook:widgets ABSENT (reviewer seat)", out)
+        self.assertIn("pause NOT confirmed for: widgets", out)
+
+    def test_hooks_at_a_retired_gateway_are_not_the_loops(self):
+        # Probe (b): the route names are right, the origin is an old gateway's — events go
+        # nowhere this loop listens, so neither seat is armed or paused by them.
+        retired = {n: {**h, "config": {"url": h["config"]["url"].replace(
+            HOST, "https://old-gw.example")}} for n, h in hooks(True).items() if n in (1, 2)}
+        fake = FakeGitHub(retired)
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 1, out)
+        for hook_id, route in ((1, "widgets-review"), (2, "widgets-fix")):
+            self.assertIn(f"hook {hook_id} posts to route {route!r} at https://old-gw.example, "
+                          "not this loop's gateway", out)
+        self.assertIn("no loop hooks found on this loop's gateway", out)
+        self.assertFalse([c for c in fake.calls if c[0] == "PATCH"], fake.calls)
+        # Next to a real one: only the loop's own hook is flipped; the other seat is ABSENT.
+        fake = FakeGitHub({**retired, 5: {**hooks(True)[1], "id": 5}})
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("hook 5 → paused (read back)", out)
+        self.assertIn("hook:widgets-fix ABSENT (fixer seat)", out)
+        self.assertEqual([c[1] for c in fake.calls if c[0] == "PATCH"],
+                         ["/repos/owner/widgets/hooks/5"])
+
+    def test_another_profile_on_the_loops_own_gateway_is_that_seats_hook(self):
+        # The gateway resolves a route by name, so /p/<other profile>/webhooks/<route> on this
+        # origin still delivers to the seat: it is flipped like the exact URL.
+        moved = hooks(True)
+        moved[1]["config"]["url"] = f"{HOST}/p/someone-else/webhooks/widgets-review"
+        rc, out = self.arm(FakeGitHub(moved), pause=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("hook 1 → paused (read back)", out)
 
     def test_fix_lines_are_formatted_alike(self):
         outs = [self.arm(FakeGitHub(hooks(True), list_error="HTTP 404"))[1],
