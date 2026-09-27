@@ -1580,9 +1580,10 @@ def cmd_settings(args) -> int:
 def _readable_loops() -> tuple[list[dict], list[str]]:
     """Every loop that loads, plus one ``skipping <file>: <reason>`` line per one that does not.
 
-    For the verbs that answer about loops without acting on them (``list``, ``status``,
-    ``explain``): one broken file must not hide every healthy loop's state. Verbs that act on
-    loops keep ``all_loops``'s all-or-nothing refusal.
+    The formatted form of ``config.readable_loops`` for ``list`` and ``status``: one broken file
+    must not hide every healthy loop's state. (``explain`` calls ``config.readable_loops``
+    itself — it needs the ids, not these lines.) Verbs that act on loops keep ``all_loops``'s
+    all-or-nothing refusal.
     """
     loops, skipped = config.readable_loops()
     return loops, [f"skipping {loop_id}.json: {reason}" for loop_id, reason in skipped]
@@ -1717,9 +1718,10 @@ def cmd_explain(args) -> int:
     opinion about them.
 
     Exit 2 only when the question cannot be asked at all: an unknown loop, a loop file the loader
-    refuses (without ``--loop`` each is named on a ``skipping <file>: <reason>`` line), or several
-    loops — refused ones included — and no ``--loop``. A PR GitHub does not have, or cannot be read, is an *answer*: it is reported as
-    unknown, with the read to retry.
+    refuses (without ``--loop`` each is named on a ``skipping <file>: <reason>`` line), several
+    loops — refused ones included — and no ``--loop``, or no loop files at all. A PR GitHub does
+    not have, or cannot be read, is an *answer*: it is reported as unknown, with the read to
+    retry.
     """
     from . import state as state_mod
 

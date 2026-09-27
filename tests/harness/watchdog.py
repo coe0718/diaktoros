@@ -435,7 +435,7 @@ def group_watchdog() -> None:
     reset(prs={"7": pr(7)})
     out, _, _ = run("watchdog.py", None, "--loop", "widgets", extra_env=blind)
     check("unreadable hooks alert with login and status",
-          "cannot read GitHub as rev-coach: HTTP 401" in out, True)
+          f"cannot read GitHub as {READ_LOGIN}: HTTP 401" in out, True)   # the reader (#56)
     out, _, _ = run("watchdog.py", None, "--loop", "widgets", "--drain", "--seat", "reviewer",
                     extra_env=blind)
     check("  drain says unreadable, not paused", "hook list unreadable" in out, True)

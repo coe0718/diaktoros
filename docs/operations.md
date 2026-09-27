@@ -506,7 +506,8 @@ It needs to read the repo's hooks to tell "paused" from "armed", so the read tok
 scope to see them (`repo` is normally enough); if it cannot, the line says the hook state is unknown
 rather than claiming the loop is parked. `explain` exits 2 only when the question cannot be asked at
 all — an unknown loop, a loop file the loader refuses (without `--loop` each such file is named on a
-`skipping <file>: <reason>` line), or several loops and no `--loop`.
+`skipping <file>: <reason>` line), several loops (refused ones included) and no `--loop`, or no loop
+files at all (`no loops configured in <dir>`).
 
 The guard order `explain` walks is in
 [architecture: Explain](architecture.md#explain--why-is-this-pr-not-moving).
