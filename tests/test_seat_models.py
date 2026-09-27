@@ -540,13 +540,76 @@ class ProviderExtras(Base):
 
     def test_the_table_names_the_anthropic_extra_and_its_import(self):
         self.assertEqual(seat_model.HERMES_EXTRAS["anthropic"]["module"], "anthropic")
-        self.assertEqual(seat_model.extras_for("anthropic", "anthropic_messages", ""), ["anthropic"])
-        self.assertEqual(seat_model.extras_for("claude-code", "", ""), ["anthropic"])
-        self.assertEqual(seat_model.extras_for("minimax-oauth", "anthropic_messages", ""), ["anthropic"])
-        self.assertEqual(seat_model.extras_for("custom:acme", "anthropic_messages", ""), ["anthropic"])
-        self.assertEqual(seat_model.extras_for("custom:acme", "", "https://gw.test/anthropic"),
+        need = lambda *a, **k: seat_model.extras_for(*a, **k)[0]
+        self.assertEqual(need("anthropic", "anthropic_messages", ""), ["anthropic"])
+        self.assertEqual(need("claude-code", "", ""), ["anthropic"])
+        self.assertEqual(need("minimax-oauth", "anthropic_messages", ""), ["anthropic"])
+        self.assertEqual(need("custom:acme", "anthropic_messages", ""), ["anthropic"])
+        self.assertEqual(need("custom:acme", "", "https://gw.test/anthropic"), ["anthropic"])
+        self.assertEqual(need("custom:acme", "", "https://gw.test/anthropic/v1"), ["anthropic"])
+        self.assertEqual(need("custom:acme", "", "https://api.kimi.com/coding/v1"), ["anthropic"])
+        self.assertEqual(seat_model.extras_for("openrouter", "chat_completions", ""), ([], []))
+
+    def test_a_model_that_picks_the_messages_wire_needs_it(self):
+        # OpenCode's per-model wire table (hermes_cli/models.py _OPENCODE_API_MODE_PREFIXES)
+        need = lambda p, m: seat_model.extras_for(p, "chat_completions", "", model=m)
+        self.assertEqual(need("opencode-zen", "claude-sonnet-4-6"), (["anthropic"], []))
+        self.assertEqual(need("opencode", "opencode-zen/qwen3-coder"), (["anthropic"], []))
+        self.assertEqual(need("opencode-go", "minimax-m2.7"), (["anthropic"], []))
+        self.assertEqual(need("opencode-zen", "gpt-5"), ([], []))
+        self.assertEqual(need("opencode-go", "deepseek-v4-flash"), ([], []))
+
+    def test_a_provider_that_can_switch_wire_is_possible(self):
+        got = seat_model.extras_for("nous", "chat_completions", "", model="anthropic/claude-x")
+        self.assertEqual(got[0], [])
+        self.assertEqual(got[1], ["anthropic"])
+        self.assertEqual(seat_model.extras_for("nous", "chat_completions", "",
+                                               model="anthropic/claude-x",
+                                               facts={"nous_anthropic_wire": "native"})[0],
                          ["anthropic"])
-        self.assertEqual(seat_model.extras_for("openrouter", "chat_completions", ""), [])
+        self.assertEqual(seat_model.extras_for("nous", "chat_completions", "", model="openai/gpt-5"),
+                         ([], []))
+        self.assertEqual(seat_model.extras_for("kimi-coding", "", "", model="kimi-k2.6"),
+                         ([], ["anthropic"]))
+        self.assertEqual(seat_model.extras_for("kimi", "", "https://api.moonshot.ai/v1",
+                                               model="kimi-k2.6"), ([], []))
+
+    def test_a_possible_switch_without_the_package_is_a_warning_with_the_fix(self):
+        write_profile(self.home, "rev", {"default": "anthropic/claude-x", "provider": "nous"})
+        check = self.extras(self.bare)["extras:reviewer"]
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("may need the anthropic extra: nous can use Anthropic's native wire for "
+                      "anthropic/claude-x", check.detail)
+        self.assertIn("hermes pm install --extra anthropic", check.detail)
+        self.assertEqual(self.extras(self.full)["extras:reviewer"].status, doctor.VERIFIED)
+        write_profile(self.home, "rev", {"default": "openai/gpt-5", "provider": "nous"})
+        self.assertEqual(self.extras(self.bare)["extras:reviewer"].status, doctor.VERIFIED)
+
+    def test_nous_native_wire_in_the_profile_is_required(self):
+        write_profile(self.home, "rev", {"default": "anthropic/claude-x", "provider": "nous"},
+                      extra={"nous": {"anthropic_wire": "native"}})
+        self.assertEqual(self.extras(self.bare)["extras:reviewer"].status, doctor.ABSENT)
+
+    def test_an_unresolved_model_skips_the_extras_line(self):
+        write_profile(self.home, "fix", {"default": "fix-model"})              # no provider
+        self.write_runtime_for(self.full)
+        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        self.assertEqual(models["model:fixer"].status, doctor.ABSENT)
+        check = {c.name: c for c in doctor.check_seat_extras(self.loop)}["extras:fixer"]
+        self.assertEqual(check.status, doctor.SKIPPED)
+        self.assertFalse(check.failed)
+        self.assertEqual(check.detail, "skipped: model unresolved (see model:fixer)")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            doctor.report(self.loop, [check])
+        self.assertIn("skipped: model unresolved (see model:fixer)", out.getvalue())
+        self.assertIn("0 unknown", out.getvalue())
+        self.assertIn("1 skipped", out.getvalue())
+
+    def write_runtime_for(self, venv: str) -> None:
+        runtime = self.home / "review-loop-runtime.json"
+        runtime.write_text(json.dumps({**self.settings, "venv": venv}))
+        runtime.chmod(0o600)
 
     def test_a_venv_with_the_package_passes(self):
         checks = self.extras(self.full)
@@ -583,16 +646,19 @@ class ProviderExtras(Base):
         for secret in (*KEYS.values(), "SUBSCRIPTION-TOKEN-7777"):
             self.assertNotIn(secret, text)
 
-    def test_an_unreadable_provider_is_unknown_not_verified(self):
+    def test_an_unreadable_provider_is_skipped_or_unknown_never_verified(self):
         (self.home / "profiles" / "rev" / "config.yaml").write_text("{ not: [valid")
         write_profile(self.home, "fix", {"default": "fix-model"})              # no provider
-        loop = {**self.loop, "seats": {**self.loop["seats"], "reviewer": {"profile": "ghost"}}}
+        loop = {**self.loop, "seats": {**self.loop["seats"], "adjudicator": {"profile": "ghost"}},
+                "adjudicator": {"route": "breach", "profile": "ghost"}}
         checks = self.extras(self.full, loop)
-        self.assertEqual(checks["extras:reviewer"].status, doctor.UNKNOWN)
-        self.assertEqual(checks["extras:fixer"].status, doctor.UNKNOWN)
-        checks = self.extras(self.full)
-        self.assertEqual(checks["extras:reviewer"].status, doctor.UNKNOWN)
-        self.assertIn("could not be read", checks["extras:reviewer"].detail)
+        for seat in ("reviewer", "fixer", "adjudicator"):
+            self.assertEqual(checks[f"extras:{seat}"].status, doctor.SKIPPED, seat)
+        undecided = ("warn", "profile rev: Hermes gave no answer", "run selftest", None)
+        with mock.patch.object(seat_model, "describe_seat_wire", return_value=undecided):
+            check = self.extras(self.full)["extras:reviewer"]
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("could not be read", check.detail)
 
     def test_the_probe_asks_the_venvs_own_python(self):
         full, bare = (str(pathlib.Path(v) / "bin" / "python") for v in (self.full, self.bare))

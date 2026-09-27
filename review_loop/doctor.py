@@ -11,14 +11,16 @@ preflight answers it before anyone arms anything:
 
     hermes review-loop doctor --loop attest
 
-One line per check, in one of four states:
+One line per check, in one of these states:
 
 * ``verified`` — checked, and correct;
 * ``absent`` — the thing is not there (a missing profile, token file, route, hook, job, script);
 * ``mismatch`` — present, but not what this loop needs (a route waking the wrong profile, a hook
   pointing at another gateway, a shim pinned to a stale plugin path, a world-readable PAT);
 * ``unknown`` — could not be decided *from here* (a hooks read the token was not allowed to make,
-  a probe skipped with ``--offline``).
+  a probe skipped with ``--offline``);
+* ``skipped`` — not checked because another line already fails for the same cause
+  (``extras:<seat>`` while ``model:<seat>`` is absent): neither a pass nor a second warning.
 
 ``unknown`` is never folded into ``absent``. "The API refused to tell me" and "there are no
 hooks" are different claims, and printing the second one when the first is true sends the
@@ -52,8 +54,11 @@ VERIFIED = "verified"
 ABSENT = "absent"
 MISMATCH = "mismatch"
 UNKNOWN = "unknown"
+# Not checked because another line already fails for the same cause (``extras:<seat>`` when
+# ``model:<seat>`` is ❌): neither a pass nor a second warning.
+SKIPPED = "skipped"
 FAILURES = (ABSENT, MISMATCH)
-MARKS = {VERIFIED: "✅", ABSENT: "❌", MISMATCH: "❌", UNKNOWN: "⚠️"}
+MARKS = {VERIFIED: "✅", ABSENT: "❌", MISMATCH: "❌", UNKNOWN: "⚠️", SKIPPED: "➖"}
 
 # What `init` writes, mirrored here because ``cli`` imports this module (so this module cannot
 # import ``cli``) and `tests/run_tests.py` asserts the two spellings agree — a preflight that
@@ -282,53 +287,68 @@ def check_seat_extras(loop: dict) -> list[Check]:
                                 f"write {runtime} naming source/venv/runtime/rust"))
             continue
         try:
-            _, _, _, wire = seat_model.describe_seat_wire(loop, seat, settings)
+            status, _, _, wire = seat_model.describe_seat_wire(loop, seat, settings)
         except Exception as exc:                        # a description that broke is undecided
-            wire = None
-            reason = f" ({type(exc).__name__})"
+            status, wire, reason = "warn", None, f" ({type(exc).__name__})"
         else:
             reason = ""
+        if status == "fail":
+            checks.append(Check(name, SKIPPED, f"skipped: model unresolved (see model:{seat})"))
+            continue
         if wire is None:
             checks.append(Check(name, UNKNOWN, f"the {seat} seat's provider could not be read"
                                 f"{reason} (see model:{seat}), so whether it needs an optional "
                                 "Hermes package is unknown",
                                 f"fix model:{seat} first, then re-run doctor"))
             continue
-        provider, mode = wire["provider"], wire["api_mode"]
-        needed = seat_model.extras_for(provider, mode, wire["base_url"])
-        if not needed:
+        provider, mode, model = wire["provider"], wire["api_mode"], wire.get("model") or ""
+        needed, maybe = seat_model.extras_for(provider, mode, wire["base_url"], model=model,
+                                              facts=wire.get("facts"))
+        if not needed and not maybe:
             checks.append(Check(name, VERIFIED, f"{provider} [{mode}] needs no optional Hermes "
                                 "package"))
             continue
         python = str(pathlib.Path(venv) / "bin" / "python")
-        missing, undecided = [], []
-        for extra in needed:
+
+        def probe(extra: str) -> bool | None:
             module = seat_model.HERMES_EXTRAS[extra]["module"]
             if module not in probes:
                 probes[module] = venv_has_module(python, module)
-            if probes[module] is False:
-                missing.append(extra)
-            elif probes[module] is None:
-                undecided.append(extra)
-        what = ", ".join(f"`{e}` (import {seat_model.HERMES_EXTRAS[e]['module']})" for e in needed)
+            return probes[module]
+
+        missing = [e for e in needed if probe(e) is False]
+        undecided = [e for e in needed if probe(e) is None]
+        maybe_missing = [e for e in maybe if probe(e) is not True]
+        what = ", ".join(f"`{e}` (import {seat_model.HERMES_EXTRAS[e]['module']})"
+                         for e in needed + maybe)
+        switch = "; ".join(
+            f"may need the {e} extra: {provider} can use Anthropic's native wire for {model} "
+            f"{seat_model.HERMES_EXTRAS[e]['possible'][seat_model.provider_family(provider)]['why']}"
+            for e in maybe_missing)
+        install = lambda extras: " and ".join(f"`hermes pm install --extra {e}`" for e in extras)
+        where = (f"it installs into the venv Hermes selects, so if that is not {venv}, install the "
+                 f"extra into {venv} or point `venv` in {runtime} at the venv that has it")
         if missing:
-            installs = " and ".join(f"`hermes pm install --extra {e}`" for e in missing)
             checks.append(Check(
                 name, ABSENT,
                 f"{provider} [{mode}] needs the Hermes extra {what}, which {python} cannot "
-                f"import; the {seat} turn would fail at model setup",
-                f"{installs} (Hermes's own command for a missing extra) — it installs into the "
-                f"venv Hermes selects, so if that is not {venv}, install the extra into {venv} "
-                f"or point `venv` in {runtime} at the venv that has it; then re-run doctor"))
-        elif undecided:
-            checks.append(Check(name, UNKNOWN,
-                                f"{provider} [{mode}] needs the Hermes extra {what}; {python} "
-                                "could not answer whether it is importable (missing, not a "
-                                "python, or no answer in time)",
-                                f"check `venv` in {runtime}"))
+                f"import; the {seat} turn would fail at model setup"
+                + (f" ({switch})" if switch else ""),
+                f"{install(missing + maybe_missing)} (Hermes's own command for a missing extra) "
+                f"— {where}; then re-run doctor"))
+        elif undecided or maybe_missing:
+            if switch and not undecided:
+                detail = (f"{switch}; {python} cannot import it (install: "
+                          f"{install(maybe_missing)} — {where})")
+            else:
+                detail = (f"{provider} [{mode}] needs the Hermes extra {what}; {python} could not "
+                          "answer whether it is importable (missing, not a python, or no answer "
+                          "in time)")
+            checks.append(Check(name, UNKNOWN, detail, f"check `venv` in {runtime}"))
         else:
+            label = "may use" if maybe and not needed else "needs"
             checks.append(Check(name, VERIFIED,
-                                f"{provider} [{mode}] needs {what}: importable by {python}"))
+                                f"{provider} [{mode}] {label} {what}: importable by {python}"))
     return checks
 
 
@@ -1051,8 +1071,9 @@ def report(loop: dict, checks: list[Check], strict: bool = False) -> int:
         if check.failed and check.fix:
             print(f"      fix: {_safe_report_text(check.fix)}")
     print()
-    print(f"{loop['id']}: {len(verified)} verified, {len(failed)} failed, {len(unknown)} unknown "
-          f"(of {len(checks)} checks)")
+    skipped = [check for check in checks if check.status == SKIPPED]
+    print(f"{loop['id']}: {len(verified)} verified, {len(failed)} failed, {len(unknown)} unknown"
+          + (f", {len(skipped)} skipped" if skipped else "") + f" (of {len(checks)} checks)")
     if failed:
         print(f"  {len(failed)} failed: {', '.join(check.name for check in failed)} — "
               f"fix the ❌ lines above before this loop is armed.")

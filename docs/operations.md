@@ -226,7 +226,7 @@ hermes review-loop doctor --loop attest --offline   # skip the gateway probe and
 hermes review-loop doctor --loop attest --strict    # an undecided check counts as a failure
 ```
 
-One line per check, in one of four states:
+One line per check, in one of these states:
 
 | state | meaning |
 |---|---|
@@ -234,6 +234,7 @@ One line per check, in one of four states:
 | ❌ absent | the thing is not there — a missing profile, token file, route, hook, job or script |
 | ❌ mismatch | present, but not what this loop needs — a route waking another profile, a hook on another gateway, a shim pinned to a stale plugin path, a world-readable PAT |
 | ⚠️ unknown | could not be decided *from here* — a hooks read the token was not allowed to make, or a probe skipped with `--offline` — or a decision still yours to make: `fixer-push` is ⚠️ while unattended fixer pushes are off, because the fix leg cannot run (verdicts are held for you) |
+| ➖ skipped | not checked because another line already fails for the same cause — `extras:<seat>` while `model:<seat>` is ❌ (no provider to check); neither a pass nor a failure |
 
 Each failure is followed by the one command that fixes it, failures exit 1, and `unknown` is never
 reported as `absent`: "the API refused to tell me" and "there are no hooks" are different claims,

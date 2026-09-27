@@ -77,7 +77,8 @@ ANTHROPIC_ALIASES = frozenset({"anthropic", "claude", "claude-code"})
 REFUSED_API_MODES = frozenset({"bedrock_converse", "codex_app_server"})
 
 # Optional Hermes extras a seat's sandboxed Hermes imports to talk to its provider (#118). Keyed
-# by the extra's name in Hermes's ``pyproject.toml`` ``[project.optional-dependencies]``:
+# by the extra's name in Hermes's ``pyproject.toml`` ``[project.optional-dependencies]``; every
+# fact is from the pinned Hermes source:
 #
 # * ``module`` — the import that proves the extra is installed (Hermes's own anchor for it,
 #   ``pm/extras.py`` ``ANCHORS``), checked with ``find_spec`` by the runtime venv's python;
@@ -86,29 +87,96 @@ REFUSED_API_MODES = frozenset({"bedrock_converse", "codex_app_server"})
 #   for every provider on that wire, the Claude subscription included);
 # * ``providers`` — providers Hermes always puts on such a wire (``hermes_cli/providers.py``
 #   ``transport="anthropic_messages"``), for a profile whose config names no ``api_mode``;
-# * ``hosts`` / ``url_suffixes`` — base-URL hosts and endings Hermes maps onto that wire
-#   (``host_mandated_api_mode``).
+# * ``hosts`` / ``url_suffixes`` / ``host_paths`` — base URLs Hermes maps onto that wire
+#   (``runtime_provider._detect_api_mode_for_url``, ``providers.host_mandated_api_mode``);
+# * ``models`` — provider families whose *model* picks the wire, by model-id prefix
+#   (``hermes_cli/models.py`` ``_OPENCODE_API_MODE_PREFIXES``): required, like the above;
+# * ``possible`` — providers Hermes *can* put on that wire depending on what doctor does not read
+#   (a credential's shape, a per-session decision): ``models`` prefixes (empty: any model),
+#   ``required_if`` a profile setting that makes it certain, ``unless_base_url`` when a configured
+#   base URL decides instead, and ``why``. Without the package such a seat is ⚠️, never ✅.
 #
 # The fix is Hermes's own command for a missing extra (``pm/extras.py`` ``install_hint``).
 HERMES_EXTRAS = {
-    "anthropic": {"module": "anthropic", "wires": frozenset({"anthropic_messages"}),
-                  "providers": ANTHROPIC_ALIASES | {"minimax", "minimax-cn", "minimax-oauth",
-                                                    "tencent-tokenplan"},
-                  "hosts": frozenset({"api.anthropic.com"}), "url_suffixes": ("/anthropic",)},
+    "anthropic": {
+        "module": "anthropic",
+        "wires": frozenset({"anthropic_messages"}),
+        "providers": ANTHROPIC_ALIASES | {"minimax", "minimax-cn", "minimax-oauth",
+                                          "tencent-tokenplan"},
+        "hosts": frozenset({"api.anthropic.com"}),
+        "url_suffixes": ("/anthropic", "/anthropic/v1"),
+        "host_paths": (("api.kimi.com", "/coding"),),
+        "models": {"opencode-zen": ("claude-", "union-alpha", "qwen"),
+                   "opencode-go": ("minimax-", "qwen", "union-alpha")},
+        "possible": {
+            # hermes_cli/providers.py nous_api_mode + agent/nous_wire.py: anthropic/* rides the
+            # native Messages wire with nous.anthropic_wire: native, and `auto` may promote to it.
+            "nous": {"models": ("anthropic/",),
+                     "required_if": {"nous_anthropic_wire": "native"},
+                     "why": "with nous.anthropic_wire native (or auto's promotion)"},
+            # hermes_cli/auth_zai_kimi.py _resolve_kimi_base_url: a Kimi Code (sk-kimi-) key is
+            # redirected to api.kimi.com/coding, which Hermes speaks on the Messages wire.
+            "kimi-coding": {"models": (), "unless_base_url": True,
+                            "why": "with a Kimi Code key (redirected to api.kimi.com/coding)"},
+        },
+    },
+}
+# Hermes's aliases for the provider families above (hermes_cli/auth.py, hermes_cli/models.py
+# opencode_provider_family), so a profile's spelling finds its table entry.
+PROVIDER_FAMILIES = {
+    "opencode": "opencode-zen", "zen": "opencode-zen", "go": "opencode-go",
+    "opencode-go-sub": "opencode-go",
+    "nous-portal": "nous", "nousresearch": "nous",
+    "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
+    "kimi-coding-cn": "kimi-coding", "kimi-cn": "kimi-coding", "moonshot-cn": "kimi-coding",
 }
 
 
-def extras_for(provider: str, api_mode: str = "", base_url: str = "") -> list[str]:
-    """The optional Hermes extras (``HERMES_EXTRAS`` keys) a seat on this provider/wire needs."""
+def provider_family(provider: str) -> str:
     provider = (provider or "").strip().lower()
+    for family in ("opencode-go", "opencode-zen"):    # built-ins and custom names extending them
+        if provider.startswith(family):
+            return family
+    return PROVIDER_FAMILIES.get(provider, provider)
+
+
+def _bare_model(provider: str, family: str, model: str) -> str:
+    model = (model or "").strip().lower()
+    for prefix in (f"{provider}/", f"{family}/"):
+        if model.startswith(prefix):
+            return model[len(prefix):]
+    return model
+
+
+def extras_for(provider: str, api_mode: str = "", base_url: str = "", *, model: str = "",
+               facts: dict | None = None) -> tuple[list[str], list[str]]:
+    """``(required, possible)`` optional Hermes extras (``HERMES_EXTRAS`` keys) for a seat on this
+    provider, wire, endpoint and model. ``facts`` carries profile settings the table's
+    ``required_if`` reads (``nous_anthropic_wire``); never a credential."""
+    provider = (provider or "").strip().lower()
+    family = provider_family(provider)
+    bare = _bare_model(provider, family, model)
     url = (base_url or "").strip().rstrip("/").lower()
     host = urlsplit(url).hostname or ""
-    needed = []
+    facts = facts or {}
+    required, possible = [], []
     for extra, spec in HERMES_EXTRAS.items():
         if (api_mode in spec["wires"] or provider in spec["providers"] or host in spec["hosts"]
-                or (url and url.endswith(spec["url_suffixes"]))):
-            needed.append(extra)
-    return needed
+                or (url and url.endswith(spec["url_suffixes"]))
+                or any(host == h and path in url for h, path in spec["host_paths"])
+                or (family in spec["models"] and bare.startswith(spec["models"][family]))):
+            required.append(extra)
+            continue
+        maybe = spec["possible"].get(family)
+        if (maybe and (not maybe["models"] or bare.startswith(maybe["models"]))
+                and not (maybe.get("unless_base_url") and url)):
+            wanted = maybe.get("required_if") or {}
+            if wanted and all(str(facts.get(k) or "").strip().lower() == v
+                              for k, v in wanted.items()):
+                required.append(extra)
+            else:
+                possible.append(extra)
+    return required, possible
 
 
 _SECRETISH = re.compile(r"(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}"
@@ -392,11 +460,14 @@ if mode == "describe":             # read-only: the profile's config, no credent
     if isinstance(block, str):
         block = {"default": block}
     block = block if isinstance(block, dict) else {}
+    nous = cfg.get("nous") if isinstance(cfg, dict) else None
+    nous = nous if isinstance(nous, dict) else {}
     done(model=str(block.get("default") or block.get("model") or ""),
          requested=str(block.get("provider") or "auto").strip().lower(),
          base_url=str(block.get("base_url") or ""),
          api_mode=str(block.get("api_mode") or "").strip().lower(),
-         openai_runtime=str(block.get("openai_runtime") or "").strip().lower())
+         openai_runtime=str(block.get("openai_runtime") or "").strip().lower(),
+         nous_anthropic_wire=str(nous.get("anthropic_wire") or "").strip().lower())
 try:
     from hermes_cli.env_loader import load_hermes_dotenv
     from hermes_cli import runtime_provider as rp
@@ -843,7 +914,9 @@ def describe_seat_wire(loop: dict, seat: str,
             return ("ok", f"profile {profile}: {requested} / {model}"
                           + (f" via {urlsplit(base).hostname}" if base else "")
                           + f" [{mode}, {label}] (credential checked by selftest)", "",
-                    {"provider": requested, "api_mode": mode, "base_url": str(base)})
+                    {"provider": requested, "api_mode": mode, "base_url": str(base),
+                     "model": model,
+                     "facts": {"nous_anthropic_wire": str(answer.get("nous_anthropic_wire") or "")}})
     fix = (f"set a supported provider in profile {profile or '<name>'} (see `docs/configuration.md`), "
            f"or add seats.{seat} to the runtime file")
     if legacy is not None:
