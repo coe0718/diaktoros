@@ -36,10 +36,11 @@ FAKE_HERMES = {
         def load_hermes_dotenv(*, hermes_home=None, **_):
             path = os.path.join(str(hermes_home), ".env")
             if os.path.exists(path):
-                for line in open(path):
-                    if "=" in line:
-                        name, value = line.strip().split("=", 1)
-                        os.environ[name] = value
+                with open(path) as handle:
+                    for line in handle:
+                        if "=" in line:
+                            name, value = line.strip().split("=", 1)
+                            os.environ[name] = value
     """,
     "hermes_cli/config.py": """
         import json, os

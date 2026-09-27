@@ -15,9 +15,13 @@ the guard charges them to the running test, naming the child's argv:
     python tests/run_tests.py                                   # the harness installs it itself
 
 Each leak names the statement that released it; to also see where it was allocated, run with
-``PYTHONTRACEMALLOC=10`` (children inherit it). A child that scrubs its environment carries the
-recorder only where the fixture path forwards it (``run_supervisor``'s fixture worker and
-fixture command); a process inside the bubblewrap sandbox cannot reach the log.
+``PYTHONTRACEMALLOC=10`` (children inherit it). A child whose environment is scrubbed gets the
+recorder from ``review_loop.util.leak_guard_env``/``leak_guard_code``, which change nothing
+unless this guard is running: supervisor fixture workers and fixture commands (via
+``PYTHONPATH``), the seat-model resolver (``python -E -s -c``) and Git's askpass (loaded by
+absolute path). A process inside the bubblewrap sandbox is not covered: the log is outside the
+sandbox's fixed mount allowlist and its environment is set only by ``--setenv`` in
+``contained.command``, the production sandbox argv, which this guard does not change.
 """
 
 from __future__ import annotations
@@ -79,7 +83,6 @@ def install() -> None:
     _child_log = Path(name)
     atexit.register(_child_log.unlink, missing_ok=True)
     os.environ["REVIEW_LOOP_LEAK_LOG"] = name
-    os.environ["REVIEW_LOOP_LEAK_SITE"] = str(SITE)
     path = os.environ.get("PYTHONPATH")
     os.environ["PYTHONPATH"] = str(SITE) + (os.pathsep + path if path else "")
 
@@ -127,6 +130,12 @@ class _LeakResult(unittest.TextTestResult):
 
 class _LeakRunner(unittest.TextTestRunner):
     resultclass = _LeakResult
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # unittest.main hands the runner warnings='default', which the runner applies to every
+        # category for the whole run: ResourceWarning would go back to a printed line.
+        self.warnings = None
 
 
 def main(argv: list[str]) -> int:

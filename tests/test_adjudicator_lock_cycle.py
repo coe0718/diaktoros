@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -89,6 +90,9 @@ class AdjudicatorCycleTest(unittest.TestCase):
                     urllib.request.Request(f"http://127.0.0.1:{self.server.server_port}/",
                                            data=json.dumps(payload).encode()), timeout=4) as response:
                     return response.status == 200
+            except urllib.error.HTTPError as exc:
+                exc.close()   # the error is the open response
+                return False
             except Exception:
                 return False
         return self.st.breach_deliver(7, entry, current or (lambda: self.head_file.read_text() == head), send)

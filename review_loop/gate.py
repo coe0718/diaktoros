@@ -30,6 +30,7 @@ import pathlib
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 from . import config, gh, isolation, observer, routes, situation, transition, state as state_mod
@@ -1020,6 +1021,8 @@ def ping_start(loop: dict, seat: str, text: str) -> None:
             if resp.status not in (200, 201):
                 raise RuntimeError(f"Discord HTTP {resp.status}")
     except Exception as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()   # it holds the response open
         log(f"start-ping failed: {exc}")
 
 

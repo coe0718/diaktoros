@@ -353,7 +353,8 @@ OAUTH_HERMES = {
             path = os.path.join(HOME(), "auth.json")
             with open(os.path.join(HOME(), "auth.lock"), "a") as lock:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-                store = json.load(open(path))
+                with open(path) as handle:
+                    store = json.load(handle)
                 tokens = store["tokens"]
                 if force_refresh or _exp(tokens["access_token"]) - time.time() < 120:
                     with open(os.path.join(HOME(), "refresh.count"), "a") as c:
@@ -362,7 +363,8 @@ OAUTH_HERMES = {
                     n = store.get("n", 0) + 1
                     tokens = {"access_token": _jwt(time.time() + 3600) + str(n),
                               "refresh_token": "RT-rotated-%d" % n}
-                    json.dump({"tokens": tokens, "n": n}, open(path, "w"))
+                    with open(path, "w") as handle:
+                        json.dump({"tokens": tokens, "n": n}, handle)
             return {"api_key": tokens["access_token"], "base_url": "https://chatgpt.com/backend-api/codex",
                     "last_refresh": "2026-01-01T00:00:00Z"}
 

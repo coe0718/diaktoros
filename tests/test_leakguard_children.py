@@ -12,6 +12,7 @@ import unittest
 from unittest import mock
 
 GUARD = Path(__file__).resolve().parent / 'leakguard.py'
+SITE = Path(__file__).resolve().parent / 'leaksite'
 
 PROBE = '''
 import subprocess, sys, unittest
@@ -19,16 +20,30 @@ import subprocess, sys, unittest
 class Probe(unittest.TestCase):
     def test_child(self):
         subprocess.run([sys.executable, "-c", {child!r}], check=True, timeout=60)
-'''
+{own}'''
 
 
 class ChildLeaksFailTheRun(unittest.TestCase):
-    def guard(self, child: str, **env) -> subprocess.CompletedProcess:
+    def guard(self, child: str, own: str = '', **env) -> subprocess.CompletedProcess:
+        """Run the guard on a probe test that starts ``child``, then runs ``own`` itself."""
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
-            Path(tmp, 'probe_child.py').write_text(PROBE.format(child=textwrap.dedent(child)))
+            body = ''.join('        ' + line + '\n' for line in own.splitlines())
+            Path(tmp, 'probe_child.py').write_text(
+                PROBE.format(child=textwrap.dedent(child), own=body))
             return subprocess.run([sys.executable, str(GUARD), 'discover', '-s', tmp,
                                    '-p', 'probe_*.py'], cwd=tmp, capture_output=True,
-                                  text=True, timeout=120, env={**os.environ, **env})
+                                  text=True, timeout=120, env={**self.outside_guard(), **env})
+
+    @staticmethod
+    def outside_guard() -> dict:
+        """This suite's environment minus its own guard: the probe run's leaks are the probe's
+        to report, not this suite's."""
+        env = dict(os.environ)
+        env.pop('REVIEW_LOOP_LEAK_LOG', None)
+        path = [p for p in env.pop('PYTHONPATH', '').split(os.pathsep) if p and p != str(SITE)]
+        if path:
+            env['PYTHONPATH'] = os.pathsep.join(path)
+        return env
 
     def assert_charged(self, result, leak: str, where: str | None = 'released at:'):
         self.assertNotEqual(result.returncode, 0, result.stderr)
@@ -41,6 +56,16 @@ class ChildLeaksFailTheRun(unittest.TestCase):
     def test_clean_child_passes(self):
         result = self.guard('import sqlite3\ncon = sqlite3.connect(":memory:")\ncon.close()\n')
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_test_process_leaking_a_file_fails(self):
+        # The guard's own process: unittest.main would otherwise reset every warning category
+        # to 'default' for the run, and a finalizer's ResourceWarning would only print.
+        result = self.guard('pass', own='import os\nf = open(os.devnull)\ndel f')
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('ERROR: test_child', result.stderr)
+        self.assertIn('resource leaked while this test ran', result.stderr)
+        self.assertIn('unclosed file', result.stderr)
+        self.assertNotIn('in child', result.stderr)
 
     def test_child_leaking_a_file_fails(self):
         result = self.guard('import os\nf = open(os.devnull)\ndel f\n')
@@ -85,7 +110,7 @@ class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):
             if kwargs.pop('production', False):
                 kwargs.update(production_config=config, hermes_home=tmp)
             sup = run_supervisor.Supervisor(Path(tmp, 'runs.sqlite'), **kwargs)
-            env = {'REVIEW_LOOP_LEAK_LOG': '/leaks.jsonl', 'REVIEW_LOOP_LEAK_SITE': '/site'}
+            env = {'REVIEW_LOOP_LEAK_LOG': '/leaks.jsonl'}
             with mock.patch.dict(os.environ, env), \
                     mock.patch.object(run_supervisor.subprocess, 'Popen') as popen:
                 sup._spawn()
@@ -95,12 +120,12 @@ class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):
     def test_fixture_worker_carries_the_recorder(self):
         env = self.spawned_env(fixture_mode=True)
         self.assertEqual(env['REVIEW_LOOP_LEAK_LOG'], '/leaks.jsonl')
-        self.assertEqual(env['PYTHONPATH'].split(os.pathsep)[0], '/site')
+        self.assertEqual(env['PYTHONPATH'].split(os.pathsep)[0], str(SITE))
 
     def test_production_worker_never_does(self):
         env = self.spawned_env(production=True)
         self.assertNotIn('REVIEW_LOOP_LEAK_LOG', env)
-        self.assertNotIn('/site', env['PYTHONPATH'].split(os.pathsep))
+        self.assertNotIn(str(SITE), env['PYTHONPATH'].split(os.pathsep))
 
 
 if __name__ == '__main__':

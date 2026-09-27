@@ -44,8 +44,9 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       # Through tests/leakguard.py: an unclosed database, file or socket, or a child left
       # running, fails the run (a ResourceWarning from a finalizer would otherwise only print).
+      # -v names every test, so a skip in the log says which test and why.
       - name: Boundary tests (broker, push, fetch, proxy, supervisor, sandbox)
-        run: python tests/leakguard.py discover -s tests -p 'test_*.py'
+        run: python tests/leakguard.py discover -v -s tests -p 'test_*.py'
       # Scheduled runs repeat the boundary suite: a second pass doubles the chance to catch a timing flake.
       - name: Boundary tests, second pass (scheduled only)
         if: github.event_name == 'schedule'
