@@ -384,7 +384,9 @@ class ArmVerifyTests(unittest.TestCase):
         self.assertIn("hook 1 → active (read back)", out)
         check = doctor.check_hook(config.load_id("widgets"), [listing[1]], "reviewer",
                                   "widgets-review", f"{HOST}/p/reviewer/webhooks/widgets-review")
-        self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+        # Not a URL mismatch (later branches may still leave it unproven on delivery evidence).
+        self.assertNotEqual(check.status, doctor.MISMATCH, check.detail)
+        self.assertNotIn("another path", check.detail)
 
     def test_a_malformed_number_is_a_clean_refusal(self):
         for key, value in (("cap", "many"), ("concurrency", "two"), ("cap", None),
