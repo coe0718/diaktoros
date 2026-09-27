@@ -196,8 +196,14 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
         # neither the host filesystem nor the export the host staged.
         checkout_mount = [*_sized_tmpfs("/work", CHECKOUT_SIZE),
                           "--ro-bind", str(checkout), EXPORT_DIR]
+        target_mount = []
     else:
         checkout_mount = ["--ro-bind", str(checkout), "/work"]
+        # A read-only seat still builds: the adjudicator verifies a PR it must not modify. Its tree
+        # stays a read-only bind, so the build target gets a sized writable mount of its own — the
+        # 2 GiB scratch cannot hold a real Rust build, and pointing CARGO_TARGET_DIR into the
+        # read-only tree fails outright. This adds no writable path to the checkout itself.
+        target_mount = _sized_tmpfs("/target", CHECKOUT_SIZE)
     mounts = ["bwrap", "--unshare-all", "--die-with-parent", "--new-session",
             "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
             "--ro-bind", "/lib", "/lib", "--ro-bind-try", "/lib64", "/lib64",
@@ -212,6 +218,7 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             "--ro-bind", str(rust), "/opt/rust",
             "--bind", str(home), "/home/agent",
             *checkout_mount,
+            *target_mount,
             "--ro-bind", str(query), "/opt/query",
             # After the /tmp tmpfs above, so the read-only cache sits inside it.
             *dependency_binds]
@@ -234,7 +241,8 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
     return mounts + [
             "--setenv", "HOME", "/home/agent", "--setenv", "HERMES_HOME", "/home/agent",
             "--setenv", "PYTHONPATH", "/opt/code:/opt/client" if client_code else "/opt/code", "--setenv", "CARGO_HOME", "/tmp/cargo",
-            "--setenv", "RUSTUP_HOME", "/tmp/rustup", "--setenv", "CARGO_TARGET_DIR", "/work/target" if checkout_writable else "/tmp/target",
+            "--setenv", "RUSTUP_HOME", "/tmp/rustup", "--setenv", "CARGO_TARGET_DIR",
+            "/work/target" if checkout_writable else "/target",
             "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH", "/opt/venv/bin:/opt/rust/bin:/usr/bin:/bin",
             "--setenv", "GIT_CONFIG_GLOBAL", "/dev/null", "--setenv", "GIT_CONFIG_SYSTEM", "/dev/null",
             "--setenv", "GIT_TERMINAL_PROMPT", "0", "--setenv", *OFFLINE_ENV, "--chdir", "/work",

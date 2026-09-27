@@ -164,6 +164,24 @@ class LauncherLimitTests(unittest.TestCase):
                     self.assertEqual(argv[index - 2], "--size", argv[index - 2:index + 1])
                     self.assertTrue(argv[index - 1].isdigit(), argv[index - 1])
 
+    def test_every_seat_builds_into_a_sized_mount_never_the_scratch(self):
+        # The 2 GiB scratch cannot hold a real Rust build, and the read-only seat's checkout cannot
+        # be written to at all. So whichever seat this is, CARGO_TARGET_DIR must name a directory
+        # that a sized tmpfs is mounted on: /work/target for a writable checkout, /target for the
+        # read-only one (the adjudicator), and never /tmp/cargo or anything inside the read-only
+        # /work bind — where a build fails outright rather than outgrowing the cap.
+        for writable in (True, False):
+            with self.subTest(checkout_writable=writable):
+                argv = contained.command(checkout_writable=writable,
+                                         **self.kwargs(["/usr/bin/true"]))
+                target = argv[argv.index("CARGO_TARGET_DIR") + 1]
+                self.assertTrue(target.startswith("/"), target)
+                self.assertFalse(target.startswith("/tmp"), f"build target on the scratch: {target}")
+                self.assertEqual(target, "/work/target" if writable else "/target")
+                mounts = [argv[index + 1] for index, arg in enumerate(argv) if arg == "--tmpfs"]
+                self.assertTrue(any(target == m or target.startswith(m + "/") for m in mounts),
+                                f"{target} is not backed by a sized tmpfs: {mounts}")
+
 
 @unittest.skipUnless(bwrap_works(), "unprivileged bubblewrap unavailable")
 class SandboxLimitTests(unittest.TestCase):
