@@ -43,6 +43,7 @@ _leaks: list[str] = []
 _installed = False
 SITE = Path(__file__).resolve().parent / "leaksite"
 _child_log: Path | None = None
+_hook = None
 _child_offset = 0
 
 
@@ -77,7 +78,8 @@ def install() -> None:
         previous(unraisable)
 
     sys.unraisablehook = hook
-    global _child_log
+    global _child_log, _hook
+    _hook = hook
     fd, name = tempfile.mkstemp(prefix="leaks-", suffix=".jsonl")
     os.close(fd)
     _child_log = Path(name)
@@ -85,6 +87,25 @@ def install() -> None:
     os.environ["REVIEW_LOOP_LEAK_LOG"] = name
     path = os.environ.get("PYTHONPATH")
     os.environ["PYTHONPATH"] = str(SITE) + (os.pathsep + path if path else "")
+
+
+def disarmed() -> list[str]:
+    """Why this process's guard would not catch a leak; empty when it is fully armed.
+
+    A lane that runs green without its guard is indistinguishable from a clean one, so a lane
+    checks this before and after its run instead of trusting that install() was reached.
+    """
+    problems = []
+    if not _installed or _child_log is None:
+        problems.append("leakguard.install() never ran in this process")
+    elif os.environ.get("REVIEW_LOOP_LEAK_LOG") != str(_child_log):
+        problems.append("REVIEW_LOOP_LEAK_LOG does not name this run's child log")
+    if _hook is None or sys.unraisablehook is not _hook:
+        problems.append("sys.unraisablehook is not the guard's")
+    first = next((f for f in warnings.filters if issubclass(ResourceWarning, f[2])), None)
+    if first is None or first[0] != "error":
+        problems.append(f"ResourceWarning is not an error (first matching filter: {first})")
+    return problems
 
 
 def _child_leaks() -> list[str]:
@@ -140,15 +161,23 @@ class _LeakRunner(unittest.TextTestRunner):
 
 def main(argv: list[str]) -> int:
     install()
+    if disarmed():                             # green without the guard would mean nothing
+        for problem in disarmed():
+            print(f"leak guard is not armed: {problem}", file=sys.stderr)
+        return 3
     # A class, not an instance, so unittest still applies -v, -f, -b and the rest to it.
     program = unittest.main(module=None, argv=["leakguard", *argv], testRunner=_LeakRunner,
                             exit=False)
     late = drain() + running_children()
+    late += [f"leak guard is not armed after the run: {problem}" for problem in disarmed()]
     for leak in late:
         print(f"resource leaked after the last test:\n{leak}", file=sys.stderr)
     return 0 if program.result.wasSuccessful() and not late else 1
 
 
 if __name__ == "__main__":
+    here = os.path.dirname(os.path.abspath(__file__))
     sys.path[0] = os.getcwd()   # as ``python -m unittest`` would have it, not this script's dir
-    sys.exit(main(sys.argv[1:]))
+    sys.path.insert(1, here)
+    import leakguard            # one guard module however it was started, not __main__ and a copy
+    sys.exit(leakguard.main(sys.argv[1:]))

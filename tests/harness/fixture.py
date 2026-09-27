@@ -19,7 +19,6 @@ import os
 import pathlib
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile

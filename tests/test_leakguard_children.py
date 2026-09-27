@@ -23,6 +23,17 @@ class Probe(unittest.TestCase):
 {own}'''
 
 
+def outside_guard() -> dict:
+    """This suite's environment minus its own guard: a nested run's leaks are its own to
+    report, and its guard must arm itself rather than inherit this one."""
+    env = dict(os.environ)
+    env.pop('REVIEW_LOOP_LEAK_LOG', None)
+    path = [p for p in env.pop('PYTHONPATH', '').split(os.pathsep) if p and p != str(SITE)]
+    if path:
+        env['PYTHONPATH'] = os.pathsep.join(path)
+    return env
+
+
 class ChildLeaksFailTheRun(unittest.TestCase):
     def guard(self, child: str, own: str = '', **env) -> subprocess.CompletedProcess:
         """Run the guard on a probe test that starts ``child``, then runs ``own`` itself."""
@@ -32,18 +43,7 @@ class ChildLeaksFailTheRun(unittest.TestCase):
                 PROBE.format(child=textwrap.dedent(child), own=body))
             return subprocess.run([sys.executable, str(GUARD), 'discover', '-s', tmp,
                                    '-p', 'probe_*.py'], cwd=tmp, capture_output=True,
-                                  text=True, timeout=120, env={**self.outside_guard(), **env})
-
-    @staticmethod
-    def outside_guard() -> dict:
-        """This suite's environment minus its own guard: the probe run's leaks are the probe's
-        to report, not this suite's."""
-        env = dict(os.environ)
-        env.pop('REVIEW_LOOP_LEAK_LOG', None)
-        path = [p for p in env.pop('PYTHONPATH', '').split(os.pathsep) if p and p != str(SITE)]
-        if path:
-            env['PYTHONPATH'] = os.pathsep.join(path)
-        return env
+                                  text=True, timeout=120, env={**outside_guard(), **env})
 
     def assert_charged(self, result, leak: str, where: str | None = 'released at:'):
         self.assertNotEqual(result.returncode, 0, result.stderr)
@@ -96,6 +96,40 @@ class ChildLeaksFailTheRun(unittest.TestCase):
         result = self.guard('import subprocess\n'
                             'P = subprocess.Popen(["sleep", "2"], start_new_session=True)\n')
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class LanesRefuseToRunUnguarded(unittest.TestCase):
+    """Each lane checks its guard is armed; a run without it fails instead of passing green."""
+
+    DISARM = 'import leakguard; leakguard.install = lambda: None\n'
+
+    def lane(self, script: str, args: list[str], disarm: bool) -> subprocess.CompletedProcess:
+        program = ('import runpy, sys\n'
+                   f'sys.path.insert(0, {str(GUARD.parent)!r})\n'
+                   + (self.DISARM if disarm else '') +
+                   f'sys.argv = [{script!r}, *{args!r}]\n'
+                   f'runpy.run_path({script!r}, run_name="__main__")\n')
+        return subprocess.run([sys.executable, '-c', program], cwd=str(GUARD.parents[1]),
+                              env=outside_guard(), capture_output=True, text=True, timeout=300)
+
+    def test_harness_lane(self):
+        script = str(GUARD.parent / 'run_tests.py')
+        armed = self.lane(script, ['config'], disarm=False)
+        self.assertEqual(armed.returncode, 0, armed.stdout[-2000:] + armed.stderr[-2000:])
+        unarmed = self.lane(script, ['config'], disarm=True)
+        self.assertNotEqual(unarmed.returncode, 0, unarmed.stdout[-2000:])
+        self.assertIn('leak guard is not armed: leakguard.install() never ran', unarmed.stderr)
+
+    def test_boundary_lane(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            Path(tmp, 'probe_clean.py').write_text(
+                'import unittest\nclass P(unittest.TestCase):\n    def test_ok(self): pass\n')
+            args = ['discover', '-s', tmp, '-p', 'probe_*.py']
+            armed = self.lane(str(GUARD), args, disarm=False)
+            self.assertEqual(armed.returncode, 0, armed.stderr[-2000:])
+            unarmed = self.lane(str(GUARD), args, disarm=True)
+        self.assertNotEqual(unarmed.returncode, 0)
+        self.assertIn('leak guard is not armed: leakguard.install() never ran', unarmed.stderr)
 
 
 class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):

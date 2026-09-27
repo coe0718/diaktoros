@@ -83,6 +83,10 @@ def main() -> int:
         print(f"unknown area or group; areas: {', '.join(AREAS)} (see --list)", file=sys.stderr)
         return 2
     leakguard.install()
+    if leakguard.disarmed():                   # green without the guard would mean nothing
+        for problem in leakguard.disarmed():
+            print(f"leak guard is not armed: {problem}", file=sys.stderr)
+        return 3
     sink = fixture.start_sink()
     fixture.set_host(sink)
     fixture.DATA["host"] = sink
@@ -94,6 +98,8 @@ def main() -> int:
             fixture.results.append((False, f"{name}: resource leaked: {leak}"))
     for leak in leakguard.running_children():
         fixture.results.append((False, f"after the last group: {leak}"))
+    for problem in leakguard.disarmed():       # a group must not have disarmed it mid-run
+        fixture.results.append((False, f"leak guard is not armed after the run: {problem}"))
     results = fixture.results
     passed = sum(1 for ok, _ in results if ok)
     failed = [n for ok, n in results if not ok]
