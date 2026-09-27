@@ -43,12 +43,8 @@ def _processes_naming(marker: str) -> dict[int, str]:
             if marker in cmd:  # a zombie's command line is empty: it is not writing
                 found[int(entry.name)] = cmd.strip()
         return found
-    out = subprocess.run(['ps', '-axww', '-o', 'pid=,command='], capture_output=True,
-                         text=True, check=True).stdout
-    for line in out.splitlines():
-        pid, _, cmd = line.strip().partition(' ')
-        if pid.isdigit() and int(pid) != os.getpid() and marker in cmd:
-            found[int(pid)] = cmd.strip()
+    # Without /proc (not Linux) there is no scan: wait_for_workers then only reaps our own
+    # children, as the suite did before #108.
     return found
 
 
