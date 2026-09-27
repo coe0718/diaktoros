@@ -191,7 +191,7 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
     if pr['head'].get('sha') != row['head'] or pr.get('state') == 'closed':
         return 'superseded', {}
     if pr.get('state') != 'open' or pr.get('draft') is not False:
-        return 'retry', {}
+        return 'wait', {}              # a draft (or not yet open) PR: a wait, not a failed read
     if (pr.get('base') or {}).get('ref') != loop.get('base'):
         return 'superseded', {}
     author = ((pr.get('user') or {}).get('login') or '') if isinstance(pr.get('user'), dict) else ''
@@ -387,7 +387,7 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
     if files_error:
         count = (f"unknown — the host could not read the PR's file list ({files_error})"
                  + (f"; GitHub reports {declared}" if type(declared) is int else ''))
-    if type(declared) is int and declared != len(files):
+    if type(declared) is int and declared != len(files) and not files_error:
         count += (f"; GitHub reports {declared} changed files but lists "
                   f"{len(files)}" + (f" (it lists at most {GITHUB_FILES_CAP})"
                                      if len(files) >= GITHUB_FILES_CAP else ''))
@@ -1328,7 +1328,11 @@ class Supervisor:
         for row in candidates:
             generation = None
             unavailable = None
+            # retry_read: a legitimate wait (a draft), left pending. read_error: a read that
+            # failed — counted and backed off like a failed turn, then failed with its reason,
+            # so it can never sit pending and invisible (#53, Tuck on #97).
             retry_read = False
+            read_error = ""
             superseded = None
             if self.production_config and row['seat'] == 'reviewer':
                 from . import config, gh
@@ -1345,7 +1349,7 @@ class Supervisor:
                         # head retires this turn (a reopen/redelivery re-arms it); a draft waits
                         # for ready, as the fixer's claim does.
                         if not isinstance(pr, dict) or pr.get('number') != row['pr']:
-                            retry_read = True
+                            read_error = 'PR unreadable (GitHub read failed)'
                         elif pr.get('state') == 'closed':
                             superseded = 'PR closed before the review started'
                         elif (pr.get('head') or {}).get('sha') != row['head']:
@@ -1356,8 +1360,8 @@ class Supervisor:
                             generation = generation_for(pr, loop, row['pr'], row['head'])
                 except ReceiptDenied as exc:
                     unavailable = f'review generation unavailable: {exc}'
-                except Exception:
-                    retry_read = True
+                except Exception as exc:
+                    read_error = f'{type(exc).__name__}: {exc}'[:200]
             if row['seat'] not in self.capacity:
                 continue  # a worker spawned with another seat set never claims this row
             if self.production_config and row['seat'] == 'adjudicator':
@@ -1365,16 +1369,18 @@ class Supervisor:
                 try:
                     status, _ = adjudication_state(config.by_repo(row['repo']), row, self.db)
                     superseded = 'adjudication superseded' if status == 'superseded' else None
-                    retry_read = status == 'retry'
-                except Exception:
-                    retry_read = True
+                    if status == 'retry':
+                        read_error = 'adjudication facts unreadable (GitHub read failed)'
+                    retry_read = status == 'wait'
+                except Exception as exc:
+                    read_error = f'{type(exc).__name__}: {exc}'[:200]
             refused = ''
             if self.production_config and row['seat'] == 'fixer':
                 from . import config, gh, gate
                 try:
                     loop = config.by_repo(row['repo'])
                     if loop is None:
-                        retry_read = True
+                        read_error = 'loop not configured'
                     elif row['push_admitted'] != 1:
                         refused = FIXER_NOT_ADMITTED
                     elif not config.unattended_fixer_push_enabled(loop):
@@ -1383,7 +1389,7 @@ class Supervisor:
                         pr = gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}",
                                     login=loop['read_token'])
                         if not isinstance(pr, dict) or not isinstance(pr.get('head'), dict):
-                            retry_read = True
+                            read_error = 'PR unreadable (GitHub read failed)'
                         elif pr['head'].get('sha') != row['head'] or pr.get('state') == 'closed':
                             superseded = 'fixer verdict superseded'
                         elif pr.get('state') != 'open' or pr.get('draft') is not False:
@@ -1392,15 +1398,15 @@ class Supervisor:
                             reviews = effective_reviews(loop, row, gh.reviews(loop, row['pr']),
                                                         self.db)
                             if not isinstance(reviews, list):
-                                retry_read = True
+                                read_error = 'reviews or receipts unreadable (GitHub read failed)'
                             else:
                                 latest = gate.latest_effective_review_at_head(reviews, loop, row['head'])
                                 if latest is None:
-                                    retry_read = True
+                                    read_error = 'no changes-requested review readable at this head'
                                 elif gh.review_state(latest) != 'CHANGES_REQUESTED':
                                     superseded = 'fixer verdict superseded'
-                except Exception:
-                    retry_read = True
+                except Exception as exc:
+                    read_error = f'{type(exc).__name__}: {exc}'[:200]
             with self._connect() as con:
                 con.execute("BEGIN IMMEDIATE")
                 current = con.execute("SELECT * FROM runs WHERE id=?", (row['id'],)).fetchone()
@@ -1430,6 +1436,22 @@ class Supervisor:
                 if superseded:
                     con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
                                 (superseded, now, row['id']))
+                    con.execute('COMMIT')
+                    continue
+                if read_error:
+                    # Bounded like a failed turn (#53): back off, then fail with the reason and
+                    # a notice. Pre-write, so `retry` (or a new event) re-arms it.
+                    retries = (current['retries'] or 0) + 1
+                    reason = f'claim-time read failed: {read_error}'
+                    if retries < MAX_RETRIES:
+                        con.execute("UPDATE runs SET state='waiting', retries=?, retry_at=?, "
+                                    "error=?, updated=? WHERE id=?",
+                                    (retries, now + backoff(retries), reason, now, row['id']))
+                    else:
+                        con.execute("UPDATE runs SET state='failed', retries=?, retry_at=NULL, "
+                                    "error=?, updated=? WHERE id=?",
+                                    (retries, f'retry limit ({retries} attempts): {reason}'[:600],
+                                     now, row['id']))
                     con.execute('COMMIT')
                     continue
                 if retry_read:
@@ -1681,7 +1703,7 @@ class Supervisor:
                 # Same live checks as the claim, repeated right before launch: the claim's
                 # reads may be minutes old, and a ruling on a moved or approved head is noise.
                 status, facts = adjudication_state(loop, row, self.db)
-                if status == 'retry':
+                if status in ('retry', 'wait'):
                     raise RetryableError('adjudication facts unreadable before launch')
                 if status != 'ok':
                     raise ValueError('adjudication no longer current')

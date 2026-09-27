@@ -277,8 +277,14 @@ class ReviewerClaimConcurrency(unittest.TestCase):
         with patch('review_loop.config.by_repo', return_value=self.loop), \
              patch('review_loop.gh.api', side_effect=[TimeoutError('temporary'), self.pull()]):
             self.assertIsNone(self.sup._claim())
-            self.assertEqual(self.sup.get('review')['state'], 'pending')
-            self.assertEqual(self.sup.get('review')['attempts'], 0)
+            # Counted and backed off with its reason (#53): visible, bounded, not claimed.
+            row = self.sup.get('review')
+            self.assertEqual((row['state'], row['attempts'], row['retries']), ('waiting', 0, 1))
+            self.assertIn('claim-time read failed: TimeoutError: temporary', row['error'])
+            with sqlite3.connect(self.db) as con:
+                con.execute("UPDATE runs SET retry_at=0 WHERE delivery='review'")
+            with patch.object(self.sup, '_spawn'):
+                self.sup.recover()
             self.assertIsNotNone(self.sup._claim())
         self.assertEqual(self.sup.get('review')['state'], 'claimed')
 
@@ -286,9 +292,16 @@ class ReviewerClaimConcurrency(unittest.TestCase):
         with patch('review_loop.config.by_repo', return_value=self.loop), \
              patch('review_loop.gh.api', side_effect=TimeoutError('temporary')):
             self.assertIsNone(self.sup._claim())
+        # The failed read waits out its backoff (#53); a redelivery does not skip it, and the
+        # sweep that finds the backoff spent re-arms the worker.
         with patch.object(self.sup, '_spawn') as spawn:
             self.sup.enqueue('review', 'o/r', 1, 'a' * 40, 'reviewer')
+            spawn.assert_not_called()
+            with sqlite3.connect(self.db) as con:
+                con.execute("UPDATE runs SET retry_at=0 WHERE delivery='review'")
+            self.sup.recover()
             spawn.assert_called_once_with()
+        self.assertEqual(self.sup.get('review')['state'], 'pending')
 
     def test_dismissed_same_head_uses_new_turn_but_redelivery_deduplicates(self):
         head = 'a' * 40
