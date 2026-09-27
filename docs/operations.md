@@ -469,9 +469,17 @@ The guard order `explain` walks is in
 ### The loop stops with `RealHomeError` or `RealNetworkError`
 
 Those are the **test suite's** tripwires, not a loop failure. Under the test harness
-(`tests/_home_guard.py`), the plugin refuses to touch the real `~/.hermes`, run the real `hermes` or
-reach a real host. It raises a `BaseException`, so no handler swallows it. The message starts with
-`test guard active (REVIEW_LOOP_TEST_HOME_GUARD=1)`.
+(`tests/_home_guard.py`), the plugin refuses to touch anything inside the real home (`~/.hermes`
+included), run the real `hermes`, or reach a real host. It raises a `BaseException`, so no handler
+swallows it. The message starts with `test guard active (REVIEW_LOOP_TEST_HOME_GUARD=1)`.
+
+There is one exception to "no real host": the dependency prefetch (`deps._fetch`) may make an
+anonymous, credential-free `cargo fetch` from crates.io's own hosts, `index.crates.io` (the sparse
+index) and `static.crates.io` (downloads), for the dependency tests. Before cargo starts,
+`deps.guard_registry` refuses the fetch if anything could send it elsewhere: a proxy variable,
+another registry or a source replacement, a cargo config file, a registry key or
+`[source]`/`[registries]`/`[patch]`/`[replace]` table in the manifest, or a non-crates.io source in
+the lockfile. A refusal names which of these it found. Every other host is refused.
 
 The tripwires arm only when **both** of these are set, and only the test harness sets them:
 

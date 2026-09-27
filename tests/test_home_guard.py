@@ -439,6 +439,21 @@ class CratesIoAllowlist(unittest.TestCase):
         self.assertEqual(self.env["CARGO_REGISTRIES_CRATES_IO_PROTOCOL"], "sparse")
         self.assertEqual(deps.CRATES_IO_HOSTS, frozenset({"index.crates.io", "static.crates.io"}))
 
+    def test_a_crate_named_like_a_registry_is_still_crates_io(self):
+        # A real lockfile (patchhive/attest) pins signal-hook-registry: a crate *name*, not a key.
+        for name in ("signal-hook-registry", "registry", "source", "patch-rs", "replace_me"):
+            with self.subTest(name):
+                lock = self.LOCK.replace('name = "itoa"', f'name = "{name}"')
+                self.check(manifest=deps.synthetic_manifest([(name, "1.0.18")]), lock=lock)
+
+    def test_manifest_registry_keys_and_sections_are_refused(self):
+        for extra in ('x = { version = "1", registry = "x" }\n', 'y = { registry="x", version="1" }\n',
+                      '[patch.crates-io]\nitoa = { path = "x" }\n',
+                      '[source.crates-io]\nreplace-with = "m"\n', '[registries.m]\nindex = "x"\n',
+                      '[replace]\n"itoa:1.0.18" = { path = "x" }\n'):
+            with self.subTest(extra), self.assertRaises(config.RealNetworkError):
+                self.check(manifest=self.manifest + extra)
+
     def test_another_registry_is_refused(self):
         cases = {
             "config in the package": lambda: (self.work / ".cargo").mkdir()

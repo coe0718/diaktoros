@@ -406,8 +406,11 @@ def guard_registry(env: dict, work: Path, cache: Path, manifest: str, locked: by
                 if path.exists()]
     if configs:
         why.append(f"a cargo config file could redirect it ({', '.join(configs)})")
-    if re.search(r"\bregistry\b|^\s*\[(source|registries|patch|replace)\b", manifest, re.M):
-        why.append("the manifest names a registry, source or patch")
+    # TOML structure only — a `registry`/`registry-index` key, or a [source], [registries], [patch]
+    # or [replace] table — never a crate name that merely contains the word (signal-hook-registry).
+    if (re.search(r"(?:^|[{,])\s*registry(?:-index)?\s*=", manifest, re.M)
+            or re.search(r"^\s*\[\s*(?:source|registries|patch|replace)\b", manifest, re.M)):
+        why.append("the manifest names a registry, source, patch or replace table")
     sources = set(re.findall(r'^source = "([^"]*)"', locked.decode("utf-8", "replace"), re.M))
     if sources - CRATES_IO:
         why.append(f"the lockfile names other sources ({', '.join(sorted(sources - CRATES_IO))})")
