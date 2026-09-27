@@ -266,7 +266,9 @@ def group_doctor() -> None:
     check("a route waking another profile fails", rc, 1)
     check("  and it names the route", "❌ route:widgets-fix" in out, True)
     check("  and both profiles", "someone-else" in out and "fixer-profile" in out, True)
-    check("  with a remediation", "re-run init" in out, True)
+    # A command that works on an existing loop (init refuses one): apply rebinds the route.
+    check("  with a remediation", "hermes review-loop apply --loop widgets" in out
+          and "re-run init" not in out, True)
 
     install_doctor_fixture()
     edit_subs(lambda subs: subs.pop("widgets-fix"))
@@ -422,7 +424,8 @@ def group_doctor() -> None:
     (TMP / "hermes-home" / "scripts" / cli.SHIM_NAME).unlink()
     rc, out = run_doctor("--loop", "widgets")
     check("a missing cron shim fails", rc, 1)
-    check("  and says how to write it", "❌ cron:shim" in out and "--schedule" in out, True)
+    check("  and says how to write it", "❌ cron:shim" in out
+          and "hermes review-loop apply --loop widgets --watchdog-shim" in out, True)
 
     install_doctor_fixture()
     shim = TMP / "hermes-home" / "scripts" / cli.SHIM_NAME

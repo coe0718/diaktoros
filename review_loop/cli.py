@@ -445,14 +445,17 @@ def _observer_args(args, loop_id: str) -> dict:
 
 
 
-def _install_hooks(loop: dict, token_login: str | None, active: bool = False) -> list[str]:
-    """Create the two repo hooks via the API. Needs hook write access on the repo: classic ``repo``,
-    or the narrower ``admin:repo_hook``."""
+def _install_hooks(loop: dict, token_login: str | None, active: bool = False,
+                   seats=("reviewer", "fixer")) -> list[str]:
+    """Create the loop's repo hooks via the API (both, or only ``seats``). Needs hook write access
+    on the repo: classic ``repo``, or the narrower ``admin:repo_hook``."""
     names = _routes_of(loop)
     host = config.webhook_host(loop.get("host"), required=True)
     # Validate both destinations and secrets before creating either external hook.
     hooks = []
     for seat, event in (("reviewer", "pull_request"), ("fixer", "pull_request_review")):
+        if seat not in seats:
+            continue
         route_name = names.get(seat, "")
         url = routes.url_for(route_name, host)
         secret = (routes.route(route_name) or {}).get("secret", "")
@@ -660,6 +663,80 @@ def _hook_origin(loop: dict, drifted: dict) -> dict:
     return {**loop, "host": hosts.pop()}
 
 
+def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool) -> int:
+    """``apply --hooks``: make this loop's two repo hooks what its routes need, the way ``init
+    --hooks`` would have for a new loop (``init`` refuses an existing one).
+
+    Per seat, hooks are matched by route name and one is kept by #106's ``_keep_one`` (active
+    first). A seat with none gets one created, paused until ``arm``. The kept hook is repointed at
+    the route's exact URL with ``_patch_hook_url`` (full config: the route's secret, the hook's own
+    TLS setting, json), and given the gate's event if it lacks it. Extra hooks are only named. The
+    listing is read first and nothing is written if it cannot be trusted; returns an exit code.
+    """
+    names = _routes_of(loop)
+    try:
+        host = config.webhook_host(loop.get("host"), required=True)
+        listing = _hook_listing(loop, token_login)
+        plans, missing = [], []
+        for seat, event in (("reviewer", "pull_request"), ("fixer", "pull_request_review")):
+            name = names.get(seat, "")
+            url = routes.url_for(name, host) if name else None
+            if not url or not (routes.route(name) or {}).get("secret"):
+                raise config.ConfigError(f"route {name!r} needs a webhook URL and a secret before "
+                                         "its hook can be written")
+            mine = [hook for hook in listing if routes.route_name_of(hook["config"]["url"]) == name]
+            if not mine:
+                missing.append((seat, url))
+                continue
+            keep, rest = _keep_one(mine, url)
+            todo = []
+            if keep["config"]["url"] != url or keep["config"].get("content_type") != "json":
+                todo.append("config")
+            if event not in (keep.get("events") or []):
+                todo.append("event")
+            plans.append((seat, event, url, keep, rest, todo))
+    except config.ConfigError as exc:
+        print(f"refused: repo hooks not reconciled: {exc}")
+        print(f"  fix: re-run with --admin-token <login> ({doctor.hook_write_need(loop['repo'])})")
+        return 2
+    verb = "would " if dry_run else ""
+    for seat, url in missing:
+        print(f"  hook for {names[seat]}: {verb}create → {url} (paused until `arm`)")
+    for seat, event, url, keep, rest, todo in plans:
+        if "config" in todo:
+            print(f"  hook {keep['id']}: {verb}repoint → {url} (json, secret and TLS kept)")
+        if "event" in todo:
+            print(f"  hook {keep['id']}: {verb}add event {event!r}")
+        for hook in rest:
+            print(f"  {_redundant_hook_line(loop, hook, keep)}")
+    redundant = any(rest for *_ignored, rest, _todo in plans)
+    if dry_run:
+        return 1 if redundant else 0
+    login = token_login or loop.get("read_token")
+    try:
+        if missing:
+            for line in _install_hooks(loop, token_login, seats=[seat for seat, _ in missing]):
+                print(f"  {line}")
+        for seat, event, url, keep, rest, todo in plans:
+            if "config" in todo:
+                _patch_hook_url(loop, keep["id"], url, token_login,
+                                insecure_ssl=keep["config"].get("insecure_ssl"))
+                print(f"  hook {keep['id']} → {url}")
+            if "event" in todo:
+                path = f"/repos/{loop['repo']}/hooks/{keep['id']}"
+                gh.api(loop, path, method="PATCH", body={"add_events": [event]}, login=login)
+                actual = gh.api(loop, path, login=login)
+                if not isinstance(actual, dict) or event not in (actual.get("events") or []):
+                    raise config.ConfigError(f"hook {keep['id']} event {event!r} not confirmed — "
+                                             f"{doctor.hook_write_need(loop['repo'])}")
+                print(f"  hook {keep['id']} now subscribes to {event!r}")
+    except config.ConfigError as exc:
+        print(f"repo hooks NOT fully reconciled: {exc}")
+        print(f"  fix: re-run with --admin-token <login> ({doctor.hook_write_need(loop['repo'])})")
+        return 2
+    return 1 if redundant else 0
+
+
 def _redundant_hook_line(loop: dict, hook: dict, keep: dict) -> str:
     def state(h: dict) -> str:
         return "active" if h["active"] else "paused"
@@ -698,14 +775,20 @@ def _patch_hook_url(loop: dict, hook_id: int, url: str, login: str | None = None
                               f"{doctor.hook_write_need(loop['repo'])}")
 
 
-def _install_schedule(loop: dict, schedule: str, deliver: str) -> list[str]:
-    """A cron shim plus the job itself, through the scheduler's own CLI."""
+def _write_watchdog_shim() -> pathlib.Path:
+    """The cron shim the watchdog job runs by name, pinned to this plugin's watchdog."""
     scripts = config.home() / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
     shim = scripts / SHIM_NAME
     shim.write_text(SHIM.format(watchdog=watchdog))
     shim.chmod(0o755)
+    return shim
+
+
+def _install_schedule(loop: dict, schedule: str, deliver: str) -> list[str]:
+    """A cron shim plus the job itself, through the scheduler's own CLI."""
+    shim = _write_watchdog_shim()
     hermes = shutil.which("hermes") or "hermes"
     cmd = [hermes, "cron", "create", schedule, "--name", watchdog_job_name(loop),
            "--no-agent", "--script", SHIM_NAME, "--deliver", deliver]
@@ -1339,6 +1422,23 @@ def cmd_set(args) -> int:
 
 
 def cmd_apply(args) -> int:
+    """``apply``, then the explicit extras it was asked for (``--hooks``, ``--watchdog-shim``),
+    after the routes are what the config says — their URLs are what the hooks must post to."""
+    rc = _apply(args)
+    if rc == 2 or not (getattr(args, "hooks", False) or getattr(args, "watchdog_shim", False)):
+        return rc
+    loop = config.load_id(args.loop)
+    if getattr(args, "watchdog_shim", False):
+        if args.dry_run:
+            print(f"  would write the watchdog shim: {doctor.shim_path()}")
+        else:
+            print(f"  watchdog shim written: {_write_watchdog_shim()}")
+    if getattr(args, "hooks", False):
+        rc = max(rc, _ensure_hooks(loop, getattr(args, "admin_token", "") or None, args.dry_run))
+    return rc
+
+
+def _apply(args) -> int:
     """Make a loop match the plugin settings — one push, with the diff printed.
 
     Push, not subscription: a running loop whose numbers changed under it is exactly the kind of
@@ -2260,6 +2360,14 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                help="write this loop's routes the registry lost, from the loop "
                                     "config, with a new secret, and re-key the repo hooks that "
                                     "point at them (when no intent record can restore them)")
+        apply_cmd.add_argument("--hooks", action="store_true",
+                               help="make this loop's two repo hooks what its routes need: "
+                                    "create a missing one (paused until arm), repoint one at the "
+                                    "route's exact URL, add its gate's event (hook write access, "
+                                    "see --admin-token)")
+        apply_cmd.add_argument("--watchdog-shim", action="store_true",
+                               help="rewrite the cron shim the watchdog job runs, pinned to this "
+                                    "plugin's watchdog")
         apply_cmd.set_defaults(func=cmd_apply)
 
         settings_cmd = sub.add_parser("settings",

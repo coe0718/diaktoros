@@ -17,6 +17,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1633,6 +1634,138 @@ class ObserverStatusDoctor(Base):
         for seat in ("reviewer", "fixer"):
             self.assertEqual(gate_shims._GATE_EVENT[seat], doctor.GATE_EVENT[seat])
         self.assertEqual(gate_shims._GATE_EVENT["adjudicator"], "pull_request")
+
+
+class HookAndCronRemedies(Base):
+    """Review of #112 at 4ee0596: `hook:*` and `cron:*` remedies told the operator to re-run init,
+    which refuses an existing loop. Every one must now be a command that works, run as printed."""
+
+    REVIEW = "https://gateway.example/p/vex/webhooks/widgets-review"
+    FIX = "https://gateway.example/p/drey/webhooks/widgets-fix"
+
+    def world(self, hooks) -> pathlib.Path:
+        """A stateful gh stub: list/GET/PATCH (config replaced wholesale, add_events)/POST/DELETE,
+        reads masking the secret as GitHub does. Placeholder values only."""
+        world = self.tmp / "hooks-world.json"
+        world.write_text(json.dumps({"hooks": hooks, "writes": 0}))
+        stub = self.tmp / "gh-hooks-world"
+        stub.write_text(textwrap.dedent(f"""\
+            #!{sys.executable}
+            import json, os, sys
+            path, method = sys.argv[1], os.environ.get("GH_METHOD", "GET")
+            body = json.loads(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else {{}}
+            world = json.load(open({str(world)!r}))
+            def masked(hook):
+                config = dict(hook["config"])
+                if config.get("secret"):
+                    config["secret"] = "********"
+                return {{**hook, "config": config}}
+            def save():
+                world["writes"] += 1
+                json.dump(world, open({str(world)!r}, "w"))
+            if path.split("?")[0].endswith("/hooks") and method == "POST":
+                hook = {{"id": max([h["id"] for h in world["hooks"]] + [100]) + 1,
+                         "active": body.get("active", True), "events": body.get("events", []),
+                         "config": dict(body["config"])}}
+                world["hooks"].append(hook); save(); print(json.dumps(masked(hook)))
+            elif path.split("?")[0].endswith("/hooks"):
+                print(json.dumps([masked(h) for h in world["hooks"]]))
+            elif "/hooks/" in path:
+                hook_id = path.rsplit("/", 1)[1]
+                hook = next((h for h in world["hooks"] if str(h["id"]) == hook_id), None)
+                if method == "DELETE":
+                    world["hooks"] = [h for h in world["hooks"] if str(h["id"]) != hook_id]
+                    save(); print("{{}}")
+                elif method == "PATCH":
+                    if "config" in body:
+                        hook["config"] = dict(body["config"])
+                    for event in body.get("add_events", []):
+                        if event not in hook["events"]:
+                            hook["events"].append(event)
+                    save(); print(json.dumps(masked(hook)))
+                else:
+                    print(json.dumps(masked(hook)))
+            else:
+                print("{{}}")
+        """))
+        stub.chmod(0o755)
+        os.environ["REVIEW_LOOP_GH_STUB"] = str(stub)
+        return world
+
+    @staticmethod
+    def hook(hook_id, url, events, content_type="json", active=True):
+        return {"id": hook_id, "active": active, "events": list(events),
+                "config": {"url": url, "content_type": content_type, "insecure_ssl": "0",
+                           "secret": "placeholder-hook-key"}}
+
+    def hook_checks(self):
+        return {c.name: c for c in doctor.check_hooks(config.load_id("widgets"), offline=False)}
+
+    def run_printed(self, fix):
+        self.assertNotIn("re-run init", fix, "init refuses an existing loop")
+        self.assertNotIn("init --", fix)
+        command = re.search(r"`hermes review-loop ([^`]+)`", fix)
+        self.assertIsNotNone(command, f"no runnable command in: {fix}")
+        argv = shlex.split(command.group(1).replace("<login>", "admin-acct"))
+        rc, out = self.run_cli(argv)
+        self.assertEqual(rc, 0, out)
+        return argv, out
+
+    def test_every_hook_remedy_runs_as_printed_and_turns_green(self):
+        review, fix = (1, self.REVIEW, ["pull_request"]), (2, self.FIX, ["pull_request_review"])
+        cases = {
+            "reviewer hook missing": [self.hook(*fix)],
+            "hook at another origin": [self.hook(1, "https://old.example/p/vex/webhooks/"
+                                                    "widgets-review", ["pull_request"]),
+                                       self.hook(*fix)],
+            "hook missing its event": [self.hook(1, self.REVIEW, ["push"]), self.hook(*fix)],
+            "hook not json": [self.hook(*review, content_type="form"), self.hook(*fix)],
+        }
+        for label, hooks in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                self.install()
+                world = self.world(hooks)
+                check = self.hook_checks()["hook:widgets-review"]
+                self.assertTrue(check.failed, check.detail)
+                command = re.search(r"`hermes review-loop ([^`]+)`", check.fix)
+                self.assertIsNotNone(command, check.fix)
+                dry = shlex.split(command.group(1).replace("<login>", "admin-acct")) + ["--dry-run"]
+                rc, out = self.run_cli(dry)
+                self.assertEqual(json.loads(world.read_text())["writes"], 0, "a dry run wrote")
+                self.assertIn("hook", out)
+                self.run_printed(check.fix)
+                after = self.hook_checks()
+                self.assertFalse([c for c in after.values() if c.failed],
+                                 {n: c.detail for n, c in after.items()})
+                live = json.loads(world.read_text())["hooks"]
+                review_hook = next(h for h in live
+                                   if routes.route_name_of(h["config"]["url"]) == "widgets-review")
+                # A rewritten or created hook carries the route's own secret (full config); an
+                # event-only fix leaves the config — secret included — as it was.
+                expected = ("placeholder-hook-key" if label == "hook missing its event"
+                            else routes.route("widgets-review")["secret"])
+                self.assertEqual(review_hook["config"]["secret"], expected)
+
+    def test_cron_remedies_run_as_printed(self):
+        self.install()
+        check = doctor.check_shim(config.load_id("widgets"))
+        self.assertEqual(check.status, doctor.ABSENT)
+        self.run_printed(check.fix)
+        self.assertEqual(doctor.check_shim(config.load_id("widgets")).status, doctor.VERIFIED)
+        doctor.shim_path().write_text("print('stale')\n")
+        check = doctor.check_shim(config.load_id("widgets"))
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.run_printed(check.fix)
+        self.assertEqual(doctor.check_shim(config.load_id("widgets")).status, doctor.VERIFIED)
+        job = doctor.check_cron_job(config.load_id("widgets"))
+        self.assertEqual(job.status, doctor.ABSENT)
+        self.assertNotIn("init", job.fix)
+        self.assertIn("hermes cron create", job.fix)
+        (doctor.cron_store().parent).mkdir(parents=True, exist_ok=True)
+        doctor.cron_store().write_text("not json")
+        job = doctor.check_cron_job(config.load_id("widgets"))
+        self.assertNotIn("init", job.fix)
 
 
 if __name__ == "__main__":

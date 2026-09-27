@@ -117,20 +117,23 @@ def watchdog_job_name(loop: dict) -> str:
     return f"review loop watchdog ({loop['id']})"
 
 
-def init_fix(loop: dict, extra: str = "") -> str:
-    """The one remediation that fixes most route/shim problems: rewrite them from the config.
-
-    Worded as a command the operator can actually run, not as advice: the plugin never writes
-    anything itself during a preflight.
-    """
-    tail = f" {extra}" if extra else ""
-    return (f"re-run `hermes review-loop init --repo {loop['repo']} ...` for this loop to "
-            f"regenerate it from the config{tail}")
-
-
 def cron_fix(loop: dict) -> str:
+    """The scheduler's own command for the watchdog job. Never ``init``: it refuses a loop that
+    already exists, and the job is the scheduler's to create."""
     return (f"`hermes cron create 15m --name \"{watchdog_job_name(loop)}\" --no-agent "
-            f"--script {SHIM_NAME} --deliver local` (or re-run init with --schedule 15m)")
+            f"--script {SHIM_NAME} --deliver local`")
+
+
+def shim_fix(loop: dict) -> str:
+    return (f"`hermes review-loop apply --loop {loop['id']} --watchdog-shim` rewrites it from the "
+            "plugin (the scheduled job runs it by name)")
+
+
+def hooks_fix(loop: dict, what: str) -> str:
+    """``apply --hooks`` reconciles this loop's two repo hooks with its routes; ``init --hooks``
+    refuses an existing loop."""
+    return (f"`hermes review-loop apply --loop {loop['id']} --hooks --admin-token <login>` {what} "
+            f"({hook_write_need(loop['repo'])})")
 
 
 def _env_keys(path: pathlib.Path) -> set[str]:
@@ -734,13 +737,12 @@ def check_shim(loop: dict) -> Check:
     path = shim_path()
     if not path.exists():
         return Check("cron:shim", ABSENT, f"no {path}",
-                     f"re-run init with --schedule 15m: it writes the shim and the cron job that "
-                     f"runs the watchdog")
+                     f"{shim_fix(loop)}; then, if no job runs it yet: {cron_fix(loop)}")
     try:
         text = path.read_text()
     except Exception as exc:
         return Check("cron:shim", MISMATCH, f"{path} cannot be read ({exc})",
-                     f"chmod +r {path}, or re-run init --schedule 15m to rewrite it")
+                     f"chmod +r {path}, or {shim_fix(loop)}")
     # Do not run arbitrary installed shim code during a read-only preflight. Instead require
     # byte-for-byte identity with the shim init actually generates; a dead assignment, commented
     # line or altered subprocess invocation cannot pass merely by mentioning WATCHDOG.
@@ -749,7 +751,7 @@ def check_shim(loop: dict) -> Check:
     expected = cli.SHIM.format(watchdog=pathlib.Path(live))
     if text != expected:
         return Check("cron:shim", MISMATCH, f"{path} differs from init's executable shim for {live}",
-                     "re-run init --schedule 15m to rewrite the shim")
+                     shim_fix(loop))
     pinned = live
     return Check("cron:shim", VERIFIED, f"{path} → {pinned}")
 
@@ -764,12 +766,12 @@ def check_cron_job(loop: dict) -> Check:
         data = json.loads(path.read_text())
     except Exception as exc:
         return Check("cron:job", MISMATCH, f"{path} is not readable JSON ({exc})",
-                     "repair the job store (or re-run init --schedule 15m): a store the scheduler "
-                     "cannot read is a watchdog that never sweeps")
+                     "repair the job store (a store the scheduler cannot read is a watchdog that "
+                     f"never sweeps), then, if the job is gone: {cron_fix(loop)}")
     jobs = data.get("jobs", []) if isinstance(data, dict) else data
     if not isinstance(jobs, list):
         return Check("cron:job", MISMATCH, f"{path} has no job list",
-                     "repair the job store (or re-run init --schedule 15m)")
+                     f"repair the job store, then, if the job is gone: {cron_fix(loop)}")
     wanted = watchdog_job_name(loop)
     job = next((entry for entry in jobs if isinstance(entry, dict)
                 and str(entry.get("name") or "").strip() == wanted), None)
@@ -1018,9 +1020,8 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                   event in (hook.get("events") or [])), None) or (candidates[0] if candidates else None)
     if match is None:
         return Check(f"hook:{name}", ABSENT, "no repo hook posts to [webhook URL redacted]",
-                     f"re-run init --hooks --admin-token <login> "
-                     f"({hook_write_need(loop['repo'], delete=True)}), or add the hook by "
-                     f"hand with that URL and the route's secret")
+                     hooks_fix(loop, "creates it, paused until `arm`") + ", or add the hook "
+                     "by hand with that URL and the route's secret")
     hook_id = match.get("id")
     posted = posted_url(match)
     if posted != url and routes.same_webhook_url(posted, url):
@@ -1032,19 +1033,20 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
     if posted != url:
         return Check(f"hook:{name}", MISMATCH,
                      f"hook {hook_id} posts to another origin, not [webhook URL redacted]",
-                     f"re-run init --hooks, or repoint hook {hook_id} at the route's URL: this "
-                     f"loop cannot be woken through the old origin")
+                     hooks_fix(loop, f"repoints hook {hook_id} at the route's URL (secret and TLS "
+                                     "setting kept): this loop cannot be woken through the old "
+                                     "origin"))
     events = [str(item) for item in (match.get("events") or [])]
     if event not in events:
         return Check(f"hook:{name}", MISMATCH,
                      f"hook {hook_id} subscribes to {events or '(no events)'}, not {event!r}",
-                     f"re-run init --hooks, or add {event!r} to hook {hook_id} on {loop['repo']}")
+                     hooks_fix(loop, f"adds {event!r} to hook {hook_id}"))
     content_type = match["config"].get("content_type")
     if content_type != "json":
         return Check(f"hook:{name}", MISMATCH,
                      f"hook {hook_id} has content_type {content_type!r}, expected 'json'",
-                     f"re-run init --hooks, or set hook {hook_id}'s content_type to json: "
-                     "the gate reads a JSON payload, not form-encoded data")
+                     hooks_fix(loop, f"sets hook {hook_id}'s content_type to json: the gate reads a "
+                                     "JSON payload, not form-encoded data"))
     if not match.get("active"):
         return Check(f"hook:{name}", VERIFIED,
                      f"hook {hook_id} → [webhook URL redacted] ({event}, PAUSED — nothing fires "
