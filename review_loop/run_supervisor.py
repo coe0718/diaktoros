@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from typing import NamedTuple
+import urllib.request
 import uuid
 from contextlib import nullcontext
 
@@ -78,6 +79,10 @@ FIXER_NOT_ADMITTED = ("fixer push not admitted: unattended fixer pushes were off
                       "no turn launched; this head needs a manual fix or a new commit")
 FIXER_PUSH_REVOKED = ("fixer push revoked: unattended fixer pushes were disabled after this "
                       "run was admitted — no turn launched")
+
+
+class LedgerMissing(FileNotFoundError):
+    """A worker found no ledger: its state was removed (e.g. ``uninstall --purge``)."""
 
 
 class FixerPushDisabled(ValueError):
@@ -450,7 +455,17 @@ class Supervisor:
                  fixture_mode: bool = False, capacity: dict[str, int] | None = None,
                  lease_seconds: float = 60, child_timeout: float = 120,
                  production_config: str | Path | None = None,
-                 hermes_home: str | Path | None = None):
+                 hermes_home: str | Path | None = None, create: bool = True):
+        """``create=False`` is the detached worker's mode: it opens an existing ledger only.
+
+        Only host-side callers (gate enqueue, CLI, init) create the ledger and its directory.
+        A worker can start after ``uninstall --purge`` removed the state dir; recreating it
+        would leave an empty ledger behind in a directory the operator just deleted, so it
+        raises ``LedgerMissing`` instead and every later connection refuses to create a file.
+        """
+        # First, before any other check: a purged state dir is a quiet exit, not an error.
+        if not create and not Path(db).is_file():
+            raise LedgerMissing(f"run ledger {db} is gone")
         if fixture_mode and production_config is not None:
             raise ValueError("fixture and production modes are exclusive")
         if production_config is not None and hermes_home is None:
@@ -473,7 +488,9 @@ class Supervisor:
             raise ValueError("positive seat capacities required")
         self.lease_seconds = lease_seconds
         self.child_timeout = child_timeout
-        self.db.parent.mkdir(parents=True, exist_ok=True)
+        self.create = create
+        if create:
+            self.db.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as con:
             con.executescript(SCHEMA)
             con.execute('BEGIN IMMEDIATE')
@@ -493,7 +510,17 @@ class Supervisor:
             con.execute('COMMIT')
 
     def _connect(self):
-        con = sqlite3.connect(self.db, timeout=10, isolation_level=None)
+        if self.create:
+            con = sqlite3.connect(self.db, timeout=10, isolation_level=None)
+        else:
+            # mode=rw: a ledger removed after the check above is an error, never a new file.
+            uri = "file:" + urllib.request.pathname2url(str(self.db.resolve())) + "?mode=rw"
+            try:
+                con = sqlite3.connect(uri, uri=True, timeout=10, isolation_level=None)
+            except sqlite3.OperationalError as exc:
+                if not self.db.exists():
+                    raise LedgerMissing(f"run ledger {self.db} is gone") from exc
+                raise
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA busy_timeout=10000")
         con.execute("PRAGMA journal_mode=WAL")
@@ -1277,19 +1304,25 @@ def main():
         return
     if a.command is None or a.capacity is None or a.lease is None or a.timeout is None:
         p.error('worker requires command, capacity, lease and timeout')
-    if a.operation == "_fixture-worker":
-        if os.environ.get("REVIEW_LOOP_TEST_FIXTURE") != "1":
-            raise SystemExit("fixture worker disabled")
-        sup = Supervisor(a.db, fixture_mode=True, fixture_command=json.loads(a.command),
-                         capacity=json.loads(a.capacity), lease_seconds=a.lease,
-                         child_timeout=a.timeout)
-    else:
-        home = os.environ.get("HERMES_HOME")
-        if not home or os.environ.get("REVIEW_LOOP_TEST_FIXTURE") != "0":
-            raise SystemExit("production worker requires explicit host home")
-        sup = Supervisor(a.db, production_config=a.command, hermes_home=home,
-                         capacity=json.loads(a.capacity), lease_seconds=a.lease,
-                         child_timeout=a.timeout)
+    # A worker never creates the ledger or its directory (create=False): if the state was
+    # purged before this worker got going, there is no work left for it.
+    try:
+        if a.operation == "_fixture-worker":
+            if os.environ.get("REVIEW_LOOP_TEST_FIXTURE") != "1":
+                raise SystemExit("fixture worker disabled")
+            sup = Supervisor(a.db, fixture_mode=True, fixture_command=json.loads(a.command),
+                             capacity=json.loads(a.capacity), lease_seconds=a.lease,
+                             child_timeout=a.timeout, create=False)
+        else:
+            home = os.environ.get("HERMES_HOME")
+            if not home or os.environ.get("REVIEW_LOOP_TEST_FIXTURE") != "0":
+                raise SystemExit("production worker requires explicit host home")
+            sup = Supervisor(a.db, production_config=a.command, hermes_home=home,
+                             capacity=json.loads(a.capacity), lease_seconds=a.lease,
+                             child_timeout=a.timeout, create=False)
+    except LedgerMissing as exc:
+        print(f"review-loop worker: {exc}; nothing to run", file=sys.stderr)
+        return
     sup._run_one()
 
 

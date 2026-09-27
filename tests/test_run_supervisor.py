@@ -2,6 +2,7 @@
 import concurrent.futures
 import os
 from pathlib import Path
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -12,7 +13,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from review_loop.run_supervisor import _WORKERS, MAX_ATTEMPTS, SILENT, Supervisor
+from review_loop.run_supervisor import (_WORKERS, MAX_ATTEMPTS, SILENT, LedgerMissing,
+                                        Supervisor)
 
 # Longest a test waits for its detached workers after it ends. The slowest fixture child
 # sleeps 2s under a 5s child timeout; this leaves room for a loaded runner.
@@ -136,6 +138,53 @@ class Lifecycle(unittest.TestCase):
         self.wait(sup, "a", "succeeded")
         self.wait(sup, "b", "succeeded")
         self.assertEqual(len(self.launches()), 2)
+
+    def test_worker_never_recreates_a_deleted_ledger_dir(self):
+        # uninstall --purge can delete the state dir while an idle worker is still starting.
+        # That worker, spawned exactly as recover() spawns one, must exit cleanly and leave
+        # the dir deleted rather than recreate an empty ledger there.
+        config = self.root / "runtime.json"
+        config.write_text("{}")
+        config.chmod(0o600)
+        hermes = self.root / "hermes-home"
+        hermes.mkdir()
+        modes = {
+            "fixture": lambda db: Supervisor(db, fixture_mode=True, fixture_command=[
+                sys.executable, str(self.child), str(self.events), "0", "0"]),
+            "production": lambda db: Supervisor(db, production_config=config, hermes_home=hermes),
+        }
+        for mode, make in modes.items():
+            with self.subTest(mode=mode):
+                state = self.root / f"{mode}-state"
+                sup = make(state / "runs.sqlite")
+                self.assertTrue(state.is_dir())
+                shutil.rmtree(state)
+                sup._spawn()
+                worker = _WORKERS[-1]
+                self.assertEqual(worker.wait(timeout=WORKER_EXIT_TIMEOUT), 0)
+                self.assertFalse(state.exists(), f"{mode} worker recreated {state}")
+        self.assertFalse(self.events.exists())
+
+    def test_worker_mode_ledger_removed_mid_life_is_never_recreated(self):
+        state = self.root / "late-state"
+        Supervisor(state / "runs.sqlite")  # the host creates it
+        worker = Supervisor(state / "runs.sqlite", create=False)
+        shutil.rmtree(state)
+        with self.assertRaises(LedgerMissing):
+            worker.get("anything")
+        self.assertFalse(state.exists())
+        with self.assertRaises(LedgerMissing):
+            Supervisor(state / "runs.sqlite", create=False)
+        self.assertFalse(state.exists())
+
+    def test_host_enqueue_creates_a_missing_ledger_dir(self):
+        state = self.root / "fresh-state"
+        sup = Supervisor(state / "runs.sqlite", fixture_mode=True, fixture_command=[
+            sys.executable, str(self.child), str(self.events), "0", "0"])
+        self.assertTrue((state / "runs.sqlite").is_file())
+        sup.enqueue("fresh", "o/r", 1, "a", "reviewer")
+        self.wait(sup, "fresh", "succeeded")
+        self.assertEqual(len(self.launches()), 1)
 
     def test_child_failure_and_timeout_release_seat(self):
         sup = self.supervisor(rc=7)
