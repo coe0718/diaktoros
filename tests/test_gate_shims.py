@@ -82,8 +82,17 @@ def real_python():
     return str(venv) if venv.exists() else sys.executable
 
 
+# CI's installed-mode job sets this: there the Hermes checkout is the point, so a missing or
+# unimportable source is a failure, never a quiet skip.
+REQUIRED = os.environ.get("REVIEW_LOOP_REQUIRE_HERMES_SOURCE") == "1"
+
+
 def real_resolver_available() -> bool:
-    return (SOURCE / "gateway" / "platforms" / "webhook_filters.py").exists()
+    present = (SOURCE / "gateway" / "platforms" / "webhook_filters.py").exists()
+    if not present and REQUIRED:
+        raise AssertionError(f"REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1 but no Hermes source at {SOURCE}"
+                             " — set HERMES_AGENT_SOURCE to the hermes-agent checkout")
+    return present
 
 
 def real_resolve(home_env: dict, pairs) -> list:
@@ -92,7 +101,10 @@ def real_resolve(home_env: dict, pairs) -> list:
                           capture_output=True, text=True, timeout=120, env=home_env,
                           cwd=home_env["HOME"])
     if proc.returncode != 0:
-        raise unittest.SkipTest(f"Hermes resolver not importable here: {proc.stderr[-300:]}")
+        message = f"Hermes resolver not importable from {SOURCE}: {proc.stderr[-300:]}"
+        if REQUIRED:
+            raise AssertionError(message)
+        raise unittest.SkipTest(message)
     return json.loads(proc.stdout)
 
 
@@ -111,6 +123,11 @@ class Base(unittest.TestCase):
         self.env = {"HOME": str(self.home), "HERMES_HOME": str(self.hermes),
                     "REVIEW_LOOP_CONFIG_DIR": str(self.hermes / "review-loops.d"),
                     "REVIEW_LOOP_SUBS": str(self.hermes / "webhook_subscriptions.json")}
+        # GitHub is always the stub here: no test in this file may reach the network.
+        stub = self.tmp / "gh-world"
+        stub.write_text('#!/bin/sh\ncase "$1" in */hooks*) echo "[]";; *) echo "{}";; esac\n')
+        stub.chmod(0o755)
+        self.env["REVIEW_LOOP_GH_STUB"] = str(stub)
         patcher = patch.dict(os.environ, self.env)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -382,14 +399,103 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(check.status, doctor.ABSENT)
         self.assertIn("resolves outside", check.detail)
 
-    def test_doctor_follows_the_route_profile_in_the_registry(self):
+    # -- config and registry disagree (review of #106): loud, and the named remedy works -------
+
+    def edit_registry(self, mutate):
+        path = pathlib.Path(self.env["REVIEW_LOOP_SUBS"])
+        data = json.loads(path.read_text())
+        mutate(data)
+        path.write_text(json.dumps(data, indent=2))
+
+    def edit_config(self, mutate):
+        path = config.config_dir() / "widgets.json"
+        data = json.loads(path.read_text())
+        mutate(data)
+        path.write_text(json.dumps(data, indent=2, sort_keys=True))
+
+    def doctor_out(self):
+        rc, out = self.run_cli(["doctor", "--loop", "widgets", "--offline"])
+        return out
+
+    def test_hand_edited_registry_profile_is_a_mismatch_and_repair_fixes_it(self):
         self.install()
-        routes.new_route("widgets-review", profile="tuck", prompt=routes.route("widgets-review")["prompt"],
-                         events=["pull_request"], script="gate_reviewer.py", deliver="discord",
-                         host="https://gateway.example")
+        self.edit_registry(lambda d: d["widgets-review"].update(profile="tuck"))
         check = self.gateway_checks()["gateway-script:widgets-review"]
-        self.assertEqual(check.status, doctor.ABSENT)
-        self.assertIn(str(self.hermes / "profiles/tuck/scripts/gate_reviewer.py"), check.detail)
+        self.assertEqual(check.status, doctor.MISMATCH, check.detail)
+        self.assertIn("registry runs tuck/gate_reviewer.py", check.detail)
+        self.assertIn("loop config says vex/gate_reviewer.py", check.detail)
+        self.assertIn("hermes review-loop doctor --loop widgets --repair", check.fix)
+        # Never silent: install writes the shim the gateway will run *and* says the two disagree.
+        from review_loop import gate_shims
+        lines = gate_shims.install(config.load_id("widgets"))
+        self.assertIn(f"gate shim wrote: {self.hermes / 'profiles/tuck/scripts/gate_reviewer.py'}",
+                      lines)
+        self.assertTrue(any("registry runs tuck/gate_reviewer.py" in line for line in lines), lines)
+        # The named remedy, end to end.
+        rc, out = self.run_cli(["doctor", "--loop", "widgets", "--repair", "--offline"])
+        self.assertIn("widgets-review: had changed profile", out)
+        self.assertEqual(routes.route("widgets-review")["profile"], "vex")
+        check = self.gateway_checks()["gateway-script:widgets-review"]
+        self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+
+    def test_hand_edited_config_profile_is_a_mismatch_and_apply_fixes_it(self):
+        self.install()
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        check = self.gateway_checks()["gateway-script:widgets-review"]
+        self.assertEqual(check.status, doctor.MISMATCH, check.detail)
+        self.assertIn("registry runs vex/gate_reviewer.py", check.detail)
+        self.assertIn("loop config says tuck/gate_reviewer.py", check.detail)
+        self.assertIn("hermes review-loop apply --loop widgets", check.fix)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(routes.route("widgets-review")["profile"], "tuck")
+        check = self.gateway_checks()["gateway-script:widgets-review"]
+        self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+
+    def test_blank_config_profile_is_a_mismatch_and_its_remedy_works(self):
+        """A seat with no profile: the loader refuses such a file, so this is the in-memory shape a
+        pre-validation loop has. The registry still routes the seat, so the gateway still runs it."""
+        from review_loop import gate_shims
+        self.install()
+        loop = config.load_id("widgets")
+        loop["seats"]["reviewer"]["profile"] = ""
+        shim = self.hermes / "profiles/vex/scripts/gate_reviewer.py"
+        shim.unlink()
+        self.assertEqual(gate_shims.wanted(loop) & {("vex", "gate_reviewer.py")}, set())
+        # Not the silent [] from the review: install writes the shim the gateway runs, and says why.
+        lines = gate_shims.install(loop)
+        self.assertIn(f"gate shim wrote: {shim}", lines)
+        self.assertTrue(any("loop config says (no profile)/gate_reviewer.py" in line
+                            for line in lines), lines)
+        found = {name: (status, detail, fix) for name, status, detail, fix
+                 in gate_shims.live_checks(loop)}
+        status, detail, fix = found["gateway-script:widgets-review"]
+        self.assertEqual(status, "mismatch", detail)
+        self.assertIn("registry runs vex/gate_reviewer.py", detail)
+        self.assertIn("under `seats.reviewer` in the loop config", fix)
+        self.assertIn("hermes review-loop apply --loop widgets", fix)
+        # On disk the loader refuses the blank profile by name; the named remedy clears it.
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile=""))
+        with self.assertRaisesRegex(config.ConfigError, "seats.reviewer.profile is required"):
+            config.load_id("widgets")
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="vex"))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        check = self.gateway_checks()["gateway-script:widgets-review"]
+        self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+
+    def test_route_missing_from_registry_is_named_and_repair_restores_it(self):
+        self.install()
+        self.edit_registry(lambda d: d.pop("widgets-fix"))
+        check = self.gateway_checks()["gateway-script:widgets-fix"]
+        self.assertEqual(check.status, doctor.ABSENT, check.detail)
+        self.assertIn("loop config says drey/gate_fixer.py", check.detail)
+        self.assertIn("registry holds no route", check.detail)
+        self.assertIn("hermes review-loop doctor --loop widgets --repair", check.fix)
+        self.run_cli(["doctor", "--loop", "widgets", "--repair", "--offline"])
+        self.assertIsNotNone(routes.route("widgets-fix"))
+        check = self.gateway_checks()["gateway-script:widgets-fix"]
+        self.assertEqual(check.status, doctor.VERIFIED, check.detail)
 
     def test_uninstall_keeps_shims_another_loop_needs(self):
         self.install("acme/widgets")
