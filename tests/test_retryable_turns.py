@@ -388,8 +388,16 @@ class OperatorCommands(unittest.TestCase):
         loop = config.load_id('widgets')
         import contextlib
         import io
+        import gc
         out = io.StringIO()
+        # setUp's connections (Supervisor._connect's `with` commits but does not close) keep the
+        # ledger in WAL mode with -wal/-shm files beside it until the garbage collector closes
+        # them — at a moment that depends on everything that ran before this test. Close them
+        # now, so the snapshot below is the ledger at rest and only the read under test can
+        # change the directory (#97 CI: 3.13 collected them in the middle of the read).
+        gc.collect()
         before = sorted(p.name for p in self.db.parent.iterdir())
+        self.assertEqual(before, ['review-loop-runs.sqlite'])
         with contextlib.redirect_stdout(out):
             cli._print_ledger_runs(loop, 7, '  run: ', limit=6)
         text = out.getvalue()
