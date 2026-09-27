@@ -253,8 +253,13 @@ def group_doctor() -> None:
     before_posts = len(RECEIVED)
     rc, out = run_doctor("--loop", "widgets")   # host memory is pinned at module scope
     check("a correct install passes", rc, 0)
-    check("  every check verified", "widgets: 26 verified, 0 failed, 0 unknown (of 26 checks)" in out,
-          True)
+    # The number of checks grows as `doctor` gains them, so assert the invariant rather than a
+    # literal that has to be kept in step in two files: every check ran, and none failed or was
+    # unknown. A pinned count silently stops testing the claim it names the moment doctor changes.
+    summary = next((ln for ln in out.splitlines() if ln.startswith("widgets: ") and "checks)" in ln), "")
+    parts = summary.split()   # "widgets: N verified, 0 failed, 0 unknown (of M checks)"
+    check("  every check verified",
+          "0 failed, 0 unknown" in summary and len(parts) > 2 and parts[1] == parts[-2], True)
     check("  nothing is marked failed", "❌" in out, False)
     check("  the header says it is read-only",
           "read-only: it writes nothing and fires nothing" in out, True)
