@@ -382,8 +382,7 @@ def check_read_token(loop: dict) -> Check:
         # The broker refuses every write while the reader is a seat, so a loop in this shape
         # installs, "passes", and then never posts a review.
         return Check("read_token", MISMATCH, f"{problem} — {config.FOUR_IDENTITY_RULE}",
-                     f"hermes review-loop set --loop {loop.get('id') or '<id>'} --read-token "
-                     "<its own login> --token <that login>=/path/to/pat")
+                     config.reader_fix(loop))
     return Check("read_token", VERIFIED, f"{name} (mapped in tokens; its own account and file)")
 
 

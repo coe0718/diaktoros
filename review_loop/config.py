@@ -628,6 +628,12 @@ def reader_problem(loop: dict) -> str:
     return ""
 
 
+def reader_fix(loop: dict) -> str:
+    """The command that moves a loop's reader onto its own account."""
+    return (f"hermes review-loop set --loop {loop.get('id') or '<id>'} --read-token "
+            "<its own login> --token <that login>=/path/to/pat")
+
+
 def verify_reader(loop: dict) -> None:
     """Refuse a reader that is not its own account, naming the four-identity rule."""
     problem = reader_problem(loop)
@@ -951,7 +957,14 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         raise ConfigError(f"{where}: 'cap' is the number of verdicts allowed; must be >= 2")
 
     loop["tokens"] = {k: str(v) for k, v in (loop.get("tokens") or {}).items()}
-    loop["read_token"] = str(loop.get("read_token") or (next(iter(loop["tokens"]), "")))
+    # The reader is named, never inferred: taking "the first token" would make whichever seat
+    # happens to be listed first the account every gate reads GitHub as.
+    loop["read_token"] = str(loop.get("read_token") or "").strip()
+    if not loop["read_token"]:
+        raise ConfigError(f"{where}: 'read_token' is not set, and the reader is never inferred "
+                          "from 'tokens' — add \"read_token\": \"<login>\" naming the reader's "
+                          "own account, with its own entry in 'tokens' (--token LOGIN=/abs/path at "
+                          f"init); {FOUR_IDENTITY_RULE}")
     adjudicator_seat = _adjudicator_seat(raw_seats.get("adjudicator"), loop, where)
     if adjudicator_seat:
         seats["adjudicator"] = adjudicator_seat

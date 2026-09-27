@@ -378,10 +378,20 @@ def group_doctor() -> None:
     check("  and says it is empty", "❌ token:rev-coach" in out and "is empty" in out, True)
 
     install_doctor_fixture()
-    edit_loop(tokens={}, read_token="")
+    edit_loop(tokens={})
     rc, out = run_doctor("--loop", "widgets")
     check("no credential mapping at all fails", rc, 1)
     check("  reported once, not per seat", "❌ tokens" in out and "❌ read_token" in out, True)
+
+    install_doctor_fixture()
+    edit_loop(tokens={}, read_token="")
+    rc, out = run_doctor("--loop", "widgets")
+    # The reader is never inferred (not from the first token either): a file without one is
+    # refused on load, with the key to add, before any check runs.
+    check("no reader named is refused on load", rc, 2)
+    check("  saying it is never inferred and what to add",
+          "'read_token' is not set, and the reader is never inferred" in out
+          and '"read_token": "<login>"' in out, True)
 
     install_doctor_fixture()
     edit_loop(read_token="who-is-that")

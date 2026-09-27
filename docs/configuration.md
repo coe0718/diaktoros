@@ -42,7 +42,7 @@ See [Preflight](architecture.md#preflight-can-this-installation-run) and, for ex
 | `seats.adjudicator.concurrency` | `1` | isolated adjudicator turns at once. Does not inherit the loop-level `concurrency` |
 | `skill` | — | skill the seats are told to load |
 | `tokens` | `{}` | `login → path of a file containing that seat's PAT (mode 600)` |
-| `read_token` | — (`init` requires `--read-token`) | login whose token performs reads. Its own account and its own `tokens` file: never a seat's login or file, nor the adjudicator login (the four-identity rule). `init`/`set` refuse it otherwise, `doctor` fails it; change it with `set --read-token LOGIN --token LOGIN=/abs/path` |
+| `read_token` | — **required**: never inferred from `tokens` (`init` requires `--read-token`; a hand-edited file without it is refused on load, naming the key to add) | login whose token performs reads. Its own account and its own `tokens` file: never a seat's login or file, nor the adjudicator login (the four-identity rule). `init`/`set`/`apply` refuse it otherwise (`apply` on every run, even when nothing else changes), `doctor` fails it and `status` flags it; change it with `set --read-token LOGIN --token LOGIN=/abs/path` |
 | `clone` | — | the local clone reviews may use; cleanup prunes its worktrees |
 | `roots` | `[]` | directories the cleanup may ever touch. Anything outside them is out of scope. A root may be shared between loops: a child is only this loop's when its name carries both the PR (`pr7`) and the repository name (`widgets-pr7-target`). `/`, the home directory and its ancestors are refused. |
 | `concurrency` | `1` | default runs at once *per seat*. `1` = serialized; above 1 requires `clone`, because every run then gets its own isolated clone. |
@@ -205,7 +205,7 @@ run, and they refuse it *before* the loop config, the routes or the hooks are to
 | reviewer and fixer differ in profile, in login, and in token file | one seat reviewing its own work is not a review |
 | an adjudicator differs from both seats | it is judging them |
 | every `tokens` mapping points at a real, non-empty file, and `read_token` is one of them | a missing PAT reads as an unauthenticated call, hours later, in a log nobody reads |
-| `read_token` is not a seat's login or the adjudicator login, and shares no seat's token file | the broker refuses every write while the reader wears a seat's hat — the loop would install and never post |
+| `read_token` is not a seat's login or the adjudicator login, and shares no seat's token file — checked by `apply` on the whole resulting config, not only on what it moves | the broker refuses every write while the reader wears a seat's hat — the loop would install and never post |
 | a token path from the settings form (and the adjudicator's) is absolute, yours, and mode 600 | a path is all the form may hold; a group-readable PAT is a shared credential |
 | a loop that maps tokens maps one for each seat it is writing | otherwise that seat pushes as the read identity |
 | a route is not claimed by another loop, and still runs this role's gate script | the registry is shared by every plugin on the host |

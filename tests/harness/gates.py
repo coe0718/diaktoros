@@ -32,7 +32,7 @@ def group_config() -> None:
         {**json.loads((LOOPS_DIR / "widgets.json").read_text()),
          "roots": ["~/.hermes/cache/scratch"]})["roots"], ["~/.hermes/cache/scratch"])
 
-    bad = {"repo": "no-slash", "fixers": ["x"], "reviewers": ["y"],
+    bad = {"repo": "no-slash", "fixers": ["x"], "reviewers": ["y"], "read_token": "z",
            "seats": {"reviewer": {"route": "r", "profile": "p"}, "fixer": {"route": "r", "profile": "p"}}}
     try:
         config.normalize(bad)
@@ -40,7 +40,7 @@ def group_config() -> None:
     except config.ConfigError:
         check("repo without a slash is refused", "ConfigError", "ConfigError")
 
-    missing_seat = {"repo": "a/b", "fixers": ["x"], "reviewers": ["y"], "seats": {"reviewer": {"route": "r", "profile": "p"}}}
+    missing_seat = {"repo": "a/b", "fixers": ["x"], "reviewers": ["y"], "read_token": "z", "seats": {"reviewer": {"route": "r", "profile": "p"}}}
     try:
         config.normalize(missing_seat)
         check("missing seat is refused", "accepted", "ConfigError")

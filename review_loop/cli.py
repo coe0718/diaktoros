@@ -506,6 +506,15 @@ def hook_write_need(loop: dict, token_login: str | None) -> str:
     return need
 
 
+def _hook_editor_line(loop: dict, token_login: str | None, armed: bool, dry_run: bool) -> str:
+    """Who created (or would create) the hooks, in which state, and what `arm` will need."""
+    who = token_login or loop.get("read_token")
+    verb = "would be created" if dry_run else "were created"
+    state = "armed (--arm)" if armed else "paused"
+    return (f"hooks {verb} {state} as {who}, and `arm` / `arm --pause` edit them as {who} too: "
+            f"{hook_write_need(loop, token_login)}")
+
+
 def _hook_write_fix(token_login: str | None, transient: bool = False,
                     loop: dict | None = None) -> str:
     """What to do when a hook read or write failed with the token ``arm`` used.
@@ -859,16 +868,16 @@ def cmd_init(args) -> int:
     if raw["observer"].get("route"):
         roles.add("observer")
     try:
-        loop = config.normalize(raw)
-        # Routes are installed even without --hooks; never write a partial loop with
-        # route URLs that cannot resolve to this operator's own gateway.
-        config.webhook_host(loop["host"], required=True)
         # The reader is named, never inferred: a default seat login (or the first token) is the
         # one-account-two-hats shape the broker refuses at the first write.
         if not args.read_token:
             raise config.ConfigError(
                 "--read-token LOGIN names the account the gates read GitHub as (map its file with "
                 f"--token LOGIN=/path/to/pat) — {config.FOUR_IDENTITY_RULE}")
+        loop = config.normalize(raw)
+        # Routes are installed even without --hooks; never write a partial loop with
+        # route URLs that cannot resolve to this operator's own gateway.
+        config.webhook_host(loop["host"], required=True)
         # Who does what, and may they: profiles, allowlists, distinct credentials and route
         # ownership are all checked before a single file is written.
         # The adjudicator's token file is checked first, so a relative, missing or shared-readable
@@ -899,8 +908,7 @@ def cmd_init(args) -> int:
         if args.hooks:
             print("  would create the two repo hooks (pull_request, pull_request_review), "
                   + ("armed (--arm)" if getattr(args, "arm", False) else "paused until `arm`"))
-            print(f"  hooks are created and armed as {args.admin_token or loop['read_token']}: "
-                  f"{hook_write_need(loop, args.admin_token)}")
+            print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), True)}")
         if args.schedule:
             print(f"  would install the watchdog cron job ({args.schedule})")
         if loop.get("observer", {}).get("route"):
@@ -978,6 +986,8 @@ def cmd_init(args) -> int:
         return 2
     for line in hook_lines:
         print(f"  {line}")
+    if args.hooks:
+        print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), False)}")
     if not args.hooks:
         print("  (repo hooks not created — pass --hooks, or add them by hand with the route URLs)")
     schedule_lines, scheduled = (_install_schedule(loop, args.schedule, args.watchdog_deliver)
@@ -1282,6 +1292,14 @@ def cmd_apply(args) -> int:
         print(f"settings refused: {exc}")
         return 2
 
+    # The four-identity rule holds for the config apply would leave behind, whether or not this
+    # push moves an identity: "nothing changed" must not endorse a reader that is also a seat.
+    problem = config.reader_problem(updated)
+    if problem:
+        print(f"settings refused: {updated['id']}: {problem} — {config.FOUR_IDENTITY_RULE}")
+        print(f"fix: {config.reader_fix(updated)}")
+        return 2
+
     identity, touched = _seat_diffs(loop, updated)
     # The installed registry can drift independently of the loop and the form. Repair those
     # routes through the same ownership, seat and in-flight preflight as an identity push.
@@ -1474,21 +1492,52 @@ def cmd_settings(args) -> int:
     return 0
 
 
+def _readable_loops() -> tuple[list[dict], list[str]]:
+    """Every loop that loads, plus one ``skipping <file>: <reason>`` line per one that does not.
+
+    For the read-only listings only: one broken file must not hide every healthy loop's state.
+    Verbs that act on loops keep ``all_loops``'s all-or-nothing refusal.
+    """
+    directory = config.config_dir()
+    if not directory.exists():
+        return [], []
+    loops, skipped = [], []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            loops.append(config.load_id(path.stem))
+        except config.ConfigError as exc:
+            skipped.append(f"skipping {path.name}: {exc}")
+    return loops, skipped
+
+
 def cmd_list(args) -> int:
-    loops = config.all_loops()
+    loops, skipped = _readable_loops()
+    for line in skipped:
+        print(line)
     if not loops:
-        print(f"no loops configured in {config.config_dir()}")
-        return 0
+        if not skipped:
+            print(f"no loops configured in {config.config_dir()}")
+        return 2 if skipped else 0
     for loop in loops:
         seats = " ".join(f"{seat}={config.seat_concurrency(loop, seat)}"
                          for seat in ("reviewer", "fixer"))
         print(f"{loop['id']:<20} {loop['repo']:<30} cap={loop['cap']} {seats} "
               f"fixers={','.join(loop['fixers'])} reviewers={','.join(loop['reviewers'])}")
-    return 0
+    return 2 if skipped else 0
 
 
 def cmd_status(args) -> int:
-    loops = [config.load_id(args.loop)] if args.loop else config.all_loops()
+    skipped: list[str] = []
+    if args.loop:
+        try:
+            loops = [config.load_id(args.loop)]
+        except config.ConfigError as exc:
+            print(f"cannot show loop: {exc}")
+            return 2
+    else:
+        loops, skipped = _readable_loops()
+        for line in skipped:
+            print(line)
     for loop in loops:
         from . import state as state_mod
 
@@ -1523,6 +1572,10 @@ def cmd_status(args) -> int:
         refs = _credential_lines(loop)
         if refs:
             print("  token refs: " + " · ".join(refs))
+        problem = config.reader_problem(loop)
+        if problem:
+            print(f"  ⚠️  reader:  {problem} — {config.FOUR_IDENTITY_RULE}")
+            print(f"  fix:        {config.reader_fix(loop)}")
         locks = st._load(st.locks, {}) or {}
         for seat, entries in locks.items():
             for key, entry in (entries or {}).items():
@@ -1561,7 +1614,7 @@ def cmd_status(args) -> int:
         watch = st.watch()
         if watch.get("last_run"):
             print(f"  watchdog:   last run {watch['last_run']}")
-    return 0
+    return 2 if skipped else 0
 
 
 def cmd_explain(args) -> int:

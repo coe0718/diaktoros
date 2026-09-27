@@ -124,8 +124,8 @@ reader that is a seat or shares a seat's file, because the broker would refuse e
 seat login must be in its `--reviewer`/`--fixer` allowlist. `--hooks` and `arm` edit the repo
 hooks as `--admin-token`'s login (default: the reader). On a user-owned repo only the owner can
 manage hooks, and here the owner is also the reader, so its file needs hook write — fine-grained
-`repository_hooks: write`, or classic `repo`; `init` prints this, and `arm` exits 1 naming it if
-GitHub refuses. To keep the reader read-only, leave `--hooks` off and add and toggle the hooks by
+`repository_hooks: write`, or classic `repo`; `init --hooks` prints the login and this need (in
+`--dry-run` too), and `arm` exits 1 naming it if GitHub refuses. To keep the reader read-only, leave `--hooks` off and add and toggle the hooks by
 hand (or, on an org repo, name a separate admin login with its own file and pass the same
 `--admin-token` to `arm`). A reader can be changed later with
 `hermes review-loop set --loop ID --read-token LOGIN --token LOGIN=/path/to/pat`.
