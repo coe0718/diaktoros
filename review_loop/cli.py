@@ -506,7 +506,8 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> list[str]:
     return out or ["no loop hooks found — run init --hooks first"]
 
 
-def _hook_moves(before: dict, after: dict, binds: dict) -> list[tuple[int, str, str]]:
+def _hook_moves(before: dict, after: dict, binds: dict,
+                token_login: str | None = None) -> list[tuple[int, str, str]]:
     """Preflight exact hook URLs against configured and installed owned route profiles."""
     names = _routes_of(after)
     expected: dict[str, tuple[str, str]] = {}
@@ -537,7 +538,7 @@ def _hook_moves(before: dict, after: dict, binds: dict) -> list[tuple[int, str, 
             unchanged[role] = new
     if not targets:
         return []
-    hooks = _hook_listing(before)  # Never repair a route if this listing cannot be trusted.
+    hooks = _hook_listing(before, token_login)  # Never repair a route if this listing cannot be trusted.
     moves = []
     route_names = {name: role for role, name in names.items() if role in ("reviewer", "fixer")}
     for hook in hooks:
@@ -559,15 +560,32 @@ def _hook_moves(before: dict, after: dict, binds: dict) -> list[tuple[int, str, 
     return moves
 
 
-def _patch_hook_url(loop: dict, hook_id: int, url: str) -> None:
+def _hook_config(url: str) -> dict:
+    """The complete config a loop hook for ``url`` must carry. Always sent whole: GitHub may treat
+    a PATCHed ``config`` as a replacement, and a url-only body would then drop the secret, leaving
+    a hook whose deliveries the route rejects. The secret is the route's own, from the registry;
+    it is never printed or logged."""
+    path = urlsplit(url).path
+    name = path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
+    secret = (routes.route(name) or {}).get("secret") or ""
+    if not name or not secret:
+        raise config.ConfigError(f"route {name or url!r} has no secret in the registry; "
+                                 "the hook was not changed")
+    return {"url": url, "content_type": "json", "insecure_ssl": "0", "secret": secret}
+
+
+def _patch_hook_url(loop: dict, hook_id: int, url: str, login: str | None = None,
+                    require_secret: bool = False) -> None:
     path = f"/repos/{loop['repo']}/hooks/{hook_id}"
-    result = gh.api(loop, path, method="PATCH", body={"config": {"url": url}},
-                    login=loop.get("read_token"))
+    login = login or loop.get("read_token")
+    result = gh.api(loop, path, method="PATCH", body={"config": _hook_config(url)}, login=login)
     # A lost response is ambiguous. Always read back and roll back if it does not agree.
-    actual = gh.api(loop, path, login=loop.get("read_token"))
-    if not isinstance(result, dict) or not isinstance(actual, dict) or \
-            (actual.get("config") or {}).get("url") != url:
-        raise config.ConfigError(f"hook {hook_id} URL update not confirmed as {url!r}")
+    actual = gh.api(loop, path, login=login)
+    got = (actual.get("config") or {}) if isinstance(actual, dict) else {}
+    if not isinstance(result, dict) or not isinstance(actual, dict) or got.get("url") != url \
+            or (require_secret and not got.get("secret")):
+        raise config.ConfigError(f"hook {hook_id} update not confirmed as {url!r} — "
+                                 f"{doctor.hook_write_need(loop['repo'])}")
 
 
 def _install_schedule(loop: dict, schedule: str, deliver: str) -> list[str]:
@@ -604,7 +622,8 @@ def _install_shims(loop: dict, report: bool = True, pairs=None) -> bool:
         return False
 
 
-def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool) -> int:
+def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
+                     token_login: str | None = None) -> int:
     """``apply --recreate-routes``: write routes the registry lost when no intent record can
     restore them. The old secret is gone with the route, so each gets a new one and the repo hook
     that points at the route's URL is re-keyed to it — a route whose hook still signs with the old
@@ -614,9 +633,10 @@ def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool) -> int:
     try:
         config.verify_seats(loop, roles & set(config.SEAT_KEYS))
         _verify_routes(loop, roles)
-        hooks = _hook_listing(loop)
+        hooks = _hook_listing(loop, token_login)
     except config.ConfigError as exc:
         print(f"refused: cannot recreate {names}: {exc}")
+        print(f"  fix: re-run with --admin-token <login> ({doctor.hook_write_need(loop['repo'])})")
         return 2
     urls = {name: routes.url_for_profile(name, gate_shims.config_profile(loop, role), loop.get("host"))
             for role, name in missing.items()}
@@ -633,16 +653,7 @@ def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool) -> int:
     try:
         written = list(_install_routes(loop, roles=tuple(roles)).values())
         for hook, name in rekey:
-            secret = (routes.route(name) or {}).get("secret") or ""
-            path = f"/repos/{loop['repo']}/hooks/{hook['id']}"
-            body = {"config": {"url": urls[name], "content_type": "json", "secret": secret,
-                               "insecure_ssl": str(hook["config"].get("insecure_ssl") or "0")}}
-            result = gh.api(loop, path, method="PATCH", body=body, login=loop.get("read_token"))
-            actual = gh.api(loop, path, login=loop.get("read_token"))
-            got = (actual or {}).get("config") if isinstance(actual, dict) else None
-            if not isinstance(result, dict) or not isinstance(got, dict) or \
-                    got.get("url") != urls[name] or not got.get("secret"):
-                raise config.ConfigError(f"hook {hook['id']} re-key not confirmed")
+            _patch_hook_url(loop, hook["id"], urls[name], token_login, require_secret=True)
             print(f"  hook {hook['id']} re-keyed for {name}")
         route_intent.record_live(loop, written)
     except Exception as exc:
@@ -653,6 +664,8 @@ def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool) -> int:
             print(f"ROLLBACK FAILED: {rollback_exc} — inspect routes {names} manually")
         print(f"route recreation FAILED: {exc}; the recreated routes were taken back out — a hook "
               "already re-keyed now signs with a secret no route holds: re-run this command")
+        print(f"  fix: re-run with --admin-token <login> ({doctor.hook_write_need(loop['repo'])}; "
+              "the reader is usually read-only)")
         return 2
     for name in written:
         print(f"  route {name} recreated")
@@ -1254,7 +1267,8 @@ def cmd_apply(args) -> int:
         return 2
     missing = {role: name for role, name in _routes_of(updated).items() if not routes.route(name)}
     if missing and getattr(args, "recreate_routes", False):
-        rc = _recreate_routes(updated, missing, dry_run=args.dry_run)
+        rc = _recreate_routes(updated, missing, dry_run=args.dry_run,
+                              token_login=getattr(args, "admin_token", "") or None)
         if rc:
             return rc
 
@@ -1318,7 +1332,8 @@ def cmd_apply(args) -> int:
     # Preflight remote hooks before any local mutation. Snapshot each owned route and roll back
     # both surfaces on any failure; config is published only after route/hook readback agrees.
     try:
-        hook_moves = _hook_moves(loop, updated, binds)
+        hook_moves = _hook_moves(loop, updated, binds,
+                                 getattr(args, "admin_token", "") or None)
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
@@ -1338,7 +1353,7 @@ def cmd_apply(args) -> int:
                 raise config.ConfigError(f"route {name} readback does not run {GATE_SCRIPT[role]}")
         for hook_id, old, new in hook_moves:
             attempted_hooks.append((hook_id, old))
-            _patch_hook_url(loop, hook_id, new)
+            _patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None)
         path = _write_config(updated) if changes or identity else config_path
         if rebound:
             route_intent.record_live(updated, [name for _, name in rebound])
@@ -1346,7 +1361,7 @@ def cmd_apply(args) -> int:
         failed = []
         for hook_id, old in reversed(attempted_hooks):
             try:
-                _patch_hook_url(loop, hook_id, old)
+                _patch_hook_url(loop, hook_id, old, getattr(args, "admin_token", "") or None)
             except Exception as rollback_exc:
                 failed.append(f"hook {hook_id}: {rollback_exc}")
         if previous:
@@ -2021,6 +2036,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         apply_cmd.add_argument("--while-busy", action="store_true",
                                help="rebind a seat's profile/login even while a run is in flight "
                                     "(that run keeps the identity it started with)")
+        apply_cmd.add_argument("--admin-token", default="",
+                               help="login whose token can write the repo's hooks, for the hook "
+                                    "moves and re-keys apply makes (default: the reader)")
         apply_cmd.add_argument("--recreate-routes", action="store_true",
                                help="write this loop's routes the registry lost, from the loop "
                                     "config, with a new secret, and re-key the repo hooks that "

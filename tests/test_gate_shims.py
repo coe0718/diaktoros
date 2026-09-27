@@ -32,6 +32,7 @@ from review_loop import cli, config, doctor, routes  # noqa: E402
 SOURCE = pathlib.Path(os.environ.get("HERMES_AGENT_SOURCE")
                       or pathlib.Path.home() / ".hermes/hermes-agent")
 FIX, REV, READER = "fix-acct", "rev-acct", "reader-acct"
+REVIEW_KEY = "placeholder-review-key"   # a stand-in route key: tests never hold a real one
 
 
 def gateway_home(root: pathlib.Path, profile) -> pathlib.Path:
@@ -551,14 +552,18 @@ class DoctorApplyUninstall(Base):
                       out)
         self.assertNotIn("404", out)
 
-    def github_with_hook(self, url: str) -> pathlib.Path:
-        """A stateful gh stub holding one repo hook; it logs every PATCH body it accepts."""
+    def github_with_hook(self, url: str, secret: str = "placeholder-old-hook-key", *,
+                         patch_fails: bool = False, hook_id: int = 51) -> pathlib.Path:
+        """A stateful gh stub holding one repo hook, with GitHub's worst-case PATCH semantics: the
+        body's ``config`` REPLACES the hook's config wholesale, so a key left out is gone. Reads
+        mask the secret as GitHub does. Every value here is a placeholder, never a real key."""
         world = self.tmp / "world.json"
-        world.write_text(json.dumps({"hooks": [{"id": 51, "active": True,
+        world.write_text(json.dumps({"hooks": [{"id": hook_id, "active": True,
                                                 "events": ["pull_request_review"],
                                                 "config": {"url": url, "content_type": "json",
-                                                           "secret": "********"}}],
-                                     "patches": []}))
+                                                           "insecure_ssl": "0",
+                                                           "secret": secret}}],
+                                     "patches": 0}))
         stub = self.tmp / "gh-hooks"
         stub.write_text(textwrap.dedent(f"""\
             #!{sys.executable}
@@ -566,22 +571,46 @@ class DoctorApplyUninstall(Base):
             path = sys.argv[1]
             world = json.load(open({str(world)!r}))
             method = os.environ.get("GH_METHOD", "GET")
+            def masked(hook):
+                config = dict(hook["config"])
+                if config.get("secret"):
+                    config["secret"] = "********"
+                return {{**hook, "config": config}}
             if path.endswith("/hooks?per_page=100"):
-                print(json.dumps(world["hooks"]))
+                print(json.dumps([masked(h) for h in world["hooks"]]))
             elif "/hooks/" in path:
                 hook = next(h for h in world["hooks"] if str(h["id"]) == path.rsplit("/", 1)[1])
                 if method == "PATCH":
+                    if {patch_fails!r}:
+                        sys.stderr.write("HTTP 404 Not Found\\n")
+                        sys.exit(1)
                     body = json.loads(sys.argv[2])
-                    world["patches"].append(body)
-                    hook["config"] = {{**body["config"], "secret": "********"}}
+                    if "config" in body:
+                        hook["config"] = dict(body["config"])      # wholesale, worst case
+                    world["patches"] += 1
                     json.dump(world, open({str(world)!r}, "w"))
-                print(json.dumps(hook))
+                print(json.dumps(masked(hook)))
             else:
                 print("{{}}")
         """))
         stub.chmod(0o755)
         os.environ["REVIEW_LOOP_GH_STUB"] = str(stub)
         return world
+
+    def hook_config(self, world: pathlib.Path) -> dict:
+        return json.loads(world.read_text())["hooks"][0]["config"]
+
+    def logins(self):
+        """Record the login each hook write is made as, while the stub still answers it."""
+        from review_loop import gh
+        seen = []
+        real = gh.api
+
+        def api(loop, path, method="GET", body=None, login=None):
+            if method != "GET":
+                seen.append((method, login))
+            return real(loop, path, method, body, login)
+        return seen, patch.object(gh, "api", side_effect=api)
 
     def test_missing_route_without_intent_record_names_a_remedy_that_works(self):
         from review_loop import route_intent
@@ -600,20 +629,72 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(rc, 1, out)
         self.assertIn(remedy, out)
         self.assertIsNone(routes.route("widgets-fix"))
-        # The printed remedy, end to end.
-        rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
+        # The printed remedy, end to end, as the admin login (the reader is usually read-only).
+        seen, recording = self.logins()
+        with patch("secrets.token_hex", return_value="placeholder-recreated-key"), recording:
+            rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes",
+                                    "--admin-token", "admin-acct"])
         self.assertEqual(rc, 0, out)
+        self.assertEqual(seen, [("PATCH", "admin-acct")])
         entry = routes.route("widgets-fix")
-        self.assertEqual((entry["profile"], entry["script"]), ("drey", "gate_fixer.py"))
+        self.assertEqual((entry["profile"], entry["script"], entry["secret"]),
+                         ("drey", "gate_fixer.py", "placeholder-recreated-key"))
         self.assertIn("hook 51", out)
-        patches = json.loads(world.read_text())["patches"]
-        self.assertEqual([p["config"]["secret"] for p in patches], [entry["secret"]],
-                         "the repo hook must sign with the recreated route's secret")
+        self.assertNotIn("placeholder-recreated-key", out, "never print a secret")
+        self.assertEqual(self.hook_config(world),
+                         {"url": "https://gateway.example/p/drey/webhooks/widgets-fix",
+                          "content_type": "json", "insecure_ssl": "0",
+                          "secret": "placeholder-recreated-key"})
         checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
         for name in ("route:widgets-fix", "gateway-script:widgets-fix"):
             self.assertEqual(checks[name].status, doctor.VERIFIED, checks[name].detail)
         self.assertEqual(route_intent.load(config.load_id("widgets"))["widgets-fix"]["secret"],
                          entry["secret"])
+
+    def test_recreate_routes_refused_hook_write_rolls_back_and_names_the_scope(self):
+        from review_loop import route_intent
+        self.install()
+        route_intent.path(config.load_id("widgets")).unlink()
+        self.edit_registry(lambda d: d.pop("widgets-fix"))
+        world = self.github_with_hook("https://gateway.example/p/drey/webhooks/widgets-fix",
+                                      patch_fails=True)
+        with patch("secrets.token_hex", return_value="placeholder-recreated-key"):
+            rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
+        self.assertEqual(rc, 2, out)
+        self.assertIsNone(routes.route("widgets-fix"), "the recreated route is taken back out")
+        self.assertNotIn("widgets-fix", route_intent.load(config.load_id("widgets")) or {})
+        self.assertIn("--admin-token <login>", out)
+        self.assertIn("admin:repo_hook", out)
+        self.assertNotIn("placeholder-recreated-key", out, "never print a secret")
+        self.assertEqual(self.hook_config(world)["secret"], "placeholder-old-hook-key")
+
+    def test_a_hook_url_move_keeps_the_hook_secret_under_wholesale_patch(self):
+        """apply moving a hook to the seat's new profile sends the whole config, secret included."""
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
+        world = self.github_with_hook("https://gateway.example/p/vex/webhooks/widgets-review",
+                                      secret=REVIEW_KEY, hook_id=41)
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("hook 41 → https://gateway.example/p/tuck/webhooks/widgets-review", out)
+        self.assertEqual(self.hook_config(world),
+                         {"url": "https://gateway.example/p/tuck/webhooks/widgets-review",
+                          "content_type": "json", "insecure_ssl": "0",
+                          "secret": REVIEW_KEY})
+        self.assertNotIn(REVIEW_KEY, out, "never print a secret")
+
+    def test_apply_moves_hooks_as_the_admin_login(self):
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
+        self.github_with_hook("https://gateway.example/p/vex/webhooks/widgets-review",
+                              secret=REVIEW_KEY, hook_id=41)
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        seen, recording = self.logins()
+        with recording:
+            rc, out = self.run_cli(["apply", "--loop", "widgets", "--admin-token", "admin-acct"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(seen, [("PATCH", "admin-acct")])
 
     def test_recreate_routes_refuses_when_the_hook_listing_cannot_be_read(self):
         from review_loop import route_intent

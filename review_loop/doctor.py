@@ -161,6 +161,12 @@ def _nearest_dir(path: pathlib.Path) -> pathlib.Path | None:
 # -- the checks ------------------------------------------------------------------
 
 
+def hook_write_need(repo: str, delete: bool = False) -> str:
+    """The token scope a hook write needs — one wording for every command that says so."""
+    what = "hook write and delete access" if delete else "hook write access"
+    return f"needs {what} on {repo}: `repo`, or the narrower `admin:repo_hook`"
+
+
 def check_config(loop: dict) -> Check:
     path = config.config_dir() / f"{loop['id']}.json"
     if not path.exists():
@@ -875,8 +881,8 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                   event in (hook.get("events") or [])), None) or (candidates[0] if candidates else None)
     if match is None:
         return Check(f"hook:{name}", ABSENT, "no repo hook posts to [webhook URL redacted]",
-                     f"re-run init --hooks --admin-token <login> (needs hook write and delete access on "
-                     f"{loop['repo']}: `repo`, or the narrower `admin:repo_hook`), or add the hook by "
+                     f"re-run init --hooks --admin-token <login> "
+                     f"({hook_write_need(loop['repo'], delete=True)}), or add the hook by "
                      f"hand with that URL and the route's secret")
     hook_id = match.get("id")
     posted = posted_url(match)
