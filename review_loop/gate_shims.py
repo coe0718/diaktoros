@@ -229,11 +229,6 @@ def _plan(pairs) -> list[tuple[str, pathlib.Path, str, str]]:
     return plan
 
 
-def preflight(loop: dict) -> None:
-    """Raise ShimError when a shim this loop needs could not be written. Writes nothing."""
-    _plan(wanted(loop))
-
-
 def _write(path: pathlib.Path, text: str) -> None:
     path.parent.mkdir(mode=0o755, exist_ok=True)
     fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)

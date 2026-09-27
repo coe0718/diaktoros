@@ -555,17 +555,19 @@ class DoctorApplyUninstall(Base):
 
     def github_with_hook(self, url: str, secret: str = "placeholder-old-hook-key", *,
                          patch_fails: bool = False, hook_id: int = 51,
-                         insecure_ssl: str = "0") -> pathlib.Path:
+                         insecure_ssl: str = "0", more=()) -> pathlib.Path:
         """A stateful gh stub holding one repo hook, with GitHub's worst-case PATCH semantics: the
         body's ``config`` REPLACES the hook's config wholesale, so a key left out is gone. Reads
         mask the secret as GitHub does. Every value here is a placeholder, never a real key."""
         world = self.tmp / "world.json"
-        world.write_text(json.dumps({"hooks": [{"id": hook_id, "active": True,
-                                                "events": ["pull_request_review"],
-                                                "config": {"url": url, "content_type": "json",
-                                                           "insecure_ssl": insecure_ssl,
-                                                           "secret": secret}}],
-                                     "patches": 0}))
+        hooks = [{"id": hook_id, "active": True, "events": ["pull_request_review"],
+                  "config": {"url": url, "content_type": "json", "insecure_ssl": insecure_ssl,
+                             "secret": secret}}]
+        hooks += [{"id": other_id, "active": True, "events": ["pull_request_review"],
+                   "config": {"url": other_url, "content_type": "json", "insecure_ssl": "0",
+                              "secret": "placeholder-other-hook-key"}}
+                  for other_id, other_url in more]
+        world.write_text(json.dumps({"hooks": hooks, "patches": 0}))
         stub = self.tmp / "gh-hooks"
         stub.write_text(textwrap.dedent(f"""\
             #!{sys.executable}
@@ -599,8 +601,9 @@ class DoctorApplyUninstall(Base):
         os.environ["REVIEW_LOOP_GH_STUB"] = str(stub)
         return world
 
-    def hook_config(self, world: pathlib.Path) -> dict:
-        return json.loads(world.read_text())["hooks"][0]["config"]
+    def hook_config(self, world: pathlib.Path, hook_id=None) -> dict:
+        hooks = json.loads(world.read_text())["hooks"]
+        return next(h for h in hooks if hook_id in (None, h["id"]))["config"]
 
     def logins(self):
         """Record the login each hook write is made as, while the stub still answers it."""
@@ -718,6 +721,54 @@ class DoctorApplyUninstall(Base):
             rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.hook_config(world)["insecure_ssl"], "1")
+
+    OLD_FIX = "https://gateway.example/p/vex/webhooks/widgets-fix"      # a profile it left
+    NEW_FIX = "https://gateway.example/p/drey/webhooks/widgets-fix"
+
+    def lose_fix_route(self):
+        from review_loop import route_intent
+        self.install()
+        route_intent.path(config.load_id("widgets")).unlink()
+        self.edit_registry(lambda d: d.pop("widgets-fix"))
+
+    def test_recreate_moves_a_hook_left_at_the_routes_previous_url(self):
+        self.lose_fix_route()
+        world = self.github_with_hook(self.OLD_FIX, hook_id=101)
+        with patch("secrets.token_hex", return_value="placeholder-recreated-key"):
+            rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("hook 101", out)
+        self.assertNotIn("no repo hook points at it", out)
+        self.assertEqual(self.hook_config(world, 101),
+                         {"url": self.NEW_FIX, "content_type": "json", "insecure_ssl": "0",
+                          "secret": "placeholder-recreated-key"})
+
+    def test_recreate_with_hooks_at_old_and_new_url_keeps_one_and_names_the_other(self):
+        self.lose_fix_route()
+        world = self.github_with_hook(self.OLD_FIX, hook_id=101, more=[(102, self.NEW_FIX)])
+        with patch("secrets.token_hex", return_value="placeholder-recreated-key"):
+            rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(self.hook_config(world, 102)["secret"], "placeholder-recreated-key")
+        self.assertEqual(self.hook_config(world, 101)["url"], self.OLD_FIX, "never a duplicate")
+        self.assertIn("hook 101", out)
+        self.assertIn("gh api -X DELETE repos/acme/widgets/hooks/101", out)
+        self.assertNotIn("placeholder-recreated-key", out)
+
+    def test_a_hook_move_never_duplicates_a_hook_already_at_the_target(self):
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
+        old = "https://gateway.example/p/vex/webhooks/widgets-review"
+        new = "https://gateway.example/p/tuck/webhooks/widgets-review"
+        world = self.github_with_hook(old, secret=REVIEW_KEY, hook_id=41, more=[(42, new)])
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(routes.route("widgets-review")["profile"], "tuck")
+        self.assertEqual(self.hook_config(world, 41)["url"], old, "the redundant hook is not moved")
+        self.assertEqual(self.hook_config(world, 42)["url"], new)
+        self.assertIn("hook 42 already posts there", out)
+        self.assertIn("gh api -X DELETE repos/acme/widgets/hooks/41", out)
 
     def test_recreate_routes_refuses_when_the_hook_listing_cannot_be_read(self):
         from review_loop import route_intent
