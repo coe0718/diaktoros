@@ -224,7 +224,7 @@ def write_loop() -> dict:
         "tokens": {REVIEWER: str(TMP / "rev.pat"), FIXER: str(TMP / "fix.pat")},
         "read_token": REVIEWER,
         "host": HOST,
-        "grace_min": 25, "marker_grace_min": 60, "cooldown_h": 6,
+        "grace_min": 35, "marker_grace_min": 60, "cooldown_h": 6,
         "ttl_min": 45, "inflight_ttl_min": 10,
         # The gate scenarios exercise the fix leg; the push-off hold has its own suite
         # (tests/test_fixer_gating.py).

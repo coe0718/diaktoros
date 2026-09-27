@@ -143,7 +143,8 @@ class LoopState:
         and exactly what the acceptance test for a read-only command looks at.
         """
         entries = (self._load(self.locks, {}) or {}).get(seat) or {}
-        ttl = self.loop["ttl_min"] * 60
+        # ttl_min, raised to the loop's whole worst-case turn: a healthy turn never loses its slot.
+        ttl = config.seat_ttl_s(self.loop)
         now = time.time()
         return {k: v for k, v in entries.items()
                 if isinstance(v, dict) and now - v.get("at", 0) <= ttl}

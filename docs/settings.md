@@ -30,7 +30,7 @@ The plugin declares a `config_schema`, so it has a settings form at
 | `adjudicator_token_file` | — | **path** to the adjudicator login's PAT file (never the token itself) |
 | `clone` | — | the local clone runs isolate from (required above 1) |
 | `base` | main | base branch the loop watches |
-| `grace_min` | 25 | quiet minutes before the watchdog speaks |
+| `grace_min` | 35 | quiet minutes before the watchdog speaks (covers a whole default turn, 1830 s) |
 | `ttl_min` | 45 | how long a seat slot survives a run that died without a verdict |
 | `inflight_ttl_min` | 10 | how long a mark blocks a second run at the same head |
 | `turn_budget_s` | 900 | seconds one isolated seat turn may run (Hermes's `--run-budget`; the sandbox is killed shortly after) |

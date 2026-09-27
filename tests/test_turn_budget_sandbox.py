@@ -62,6 +62,16 @@ if spec['mode'] == 'overrun':
     save(children=2)
     while True:            # a hung tool call: never honours --run-budget
         time.sleep(0.5)
+if spec['mode'] == 'push_then_hang':
+    # A fixer's one push, sent early; the host takes its time publishing it, and the agent
+    # (like one waiting on its tool call) overruns the budget meanwhile.
+    with open('/work/src/lib.rs', 'w') as out:
+        out.write('// fixed\n')
+    save(push_sent=round(time.time() - start, 2))
+    subprocess.run([sys.executable, '-m', 'review_loop.broker_client', 'push', '--files',
+                    'src/lib.rs', '--message', 'fix'], **quiet)
+    while True:
+        time.sleep(0.5)
 write = subprocess.run([sys.executable, '-m', 'review_loop.broker_client', 'review',
                         '--verdict', 'APPROVE', '--body-file', '/work/review.txt'],
                        capture_output=True, text=True)
@@ -81,23 +91,40 @@ def driver(spec_path: str) -> None:
     """
     from types import SimpleNamespace
     from unittest import mock
-    from review_loop import config, gh, seat_model, trusted_fetch, trusted_turn
+    from review_loop import config, gh, safe_push, seat_model, trusted_fetch, trusted_turn
     from review_loop import state as state_mod
-    from review_loop.run_supervisor import Supervisor, describe_run
+    from review_loop.run_supervisor import Supervisor, describe_run, write_evidence
 
     spec = json.loads(Path(spec_path).read_text())
     root, seat = Path(spec['root']), spec.get('seat', 'reviewer')
     loop = {'id': 'widgets', 'repo': 'acme/widgets', 'base': 'main', 'cap': 3,
             'state_dir': str(root / 'state'), 'fixers': ['fixer'], 'reviewers': ['reviewer'],
             'read_token': 'reader', 'turn_budget_s': spec['budget'],
+            'unattended_fixer_push': seat == 'fixer',
             'reviewer_seat': 'reviewer', 'ttl_min': 45, 'inflight_ttl_min': 10,
             'tokens': {name: str(root / f'{name}.pat') for name in ('reader', 'reviewer', 'fixer')},
             'seats': {'reviewer': {'login': 'reviewer'}, 'fixer': {'login': 'fixer'}}}
     heads = {7: HEAD7, 8: HEAD8}
+    def verdicts_for_fixer(seat):
+        # A fixer turn needs the changes-requested verdict it answers, at the head.
+        return [{'id': 1, 'state': 'CHANGES_REQUESTED', 'commit_id': HEAD7, 'body': 'fix it',
+                 'submitted_at': '2026-09-21T00:00:00Z', 'user': {'id': 2, 'login': 'reviewer'}}
+                ] if seat == 'fixer' else []
+
     # An adjudicator rules on a spent cap: three changes-requested verdicts at the head.
     verdicts = [{'id': n, 'state': 'CHANGES_REQUESTED', 'commit_id': HEAD7, 'body': 'no',
                  'submitted_at': f'2026-09-2{n}T00:00:00Z', 'user': {'id': 2, 'login': 'reviewer'}}
-                for n in (1, 2, 3)] if seat == 'adjudicator' else []
+                for n in (1, 2, 3)] if seat == 'adjudicator' else verdicts_for_fixer(seat)
+
+    pushes = []
+
+    def slow_push(_loop, **kw):
+        # The host side of the push: begin_push (the write-ahead intent) has been committed by
+        # the broker; this is the GitHub part, which here outlasts the sandbox's kill.
+        pushes.append({'at': time.monotonic()})
+        time.sleep(spec.get('push_hold', 0))
+        pushes[-1]['done'] = time.monotonic()
+        return {'new_head': 'd' * 40}
 
     def pr(number):
         return {'number': number, 'state': 'open', 'draft': False, 'user': {'login': 'fixer'},
@@ -142,7 +169,8 @@ def driver(spec_path: str) -> None:
          mock.patch.object(gh, 'issue_comments_read', return_value=([], '')), \
          mock.patch.object(trusted_fetch, 'stage', return_value=Path(spec['checkout'])), \
          mock.patch.object(seat_model, 'load_runtime', return_value=spec['runtime']), \
-         mock.patch.object(seat_model, 'resolve_seat', return_value=inference):
+         mock.patch.object(seat_model, 'resolve_seat', return_value=inference), \
+         mock.patch.object(safe_push, 'push', side_effect=slow_push):
         if seat == 'adjudicator':
             st.breach_set(7, {'pr': 7, 'head': HEAD7, 'rounds': 3,
                               'status': 'awaiting-adjudication', 'reason': 'cap spent'})
@@ -156,12 +184,19 @@ def driver(spec_path: str) -> None:
             started = time.monotonic()
             sup._run_one()
             elapsed = time.monotonic() - started
+            for push in pushes:
+                push['at'], push['done'] = (round(push['at'] - started, 2),
+                                            round(push.get('done', started) - started, 2))
             row = sup.get('turn-7')
             with sup._connect() as con:
                 active = con.execute("SELECT COUNT(*) FROM runs WHERE seat=? AND state IN "
                                      "('claimed','launching','running','uncertain')",
                                      (seat,)).fetchone()[0]
+            with sup._connect() as con:
+                wrote = write_evidence(con, row['id'])
             return {'elapsed': round(elapsed, 2), 'state': row['state'], 'error': row['error'],
+                    'write': wrote, 'pushes': list(pushes),
+                    'push_intent': row['push_intent'], 'push_confirmed': row['push_confirmed'],
                     'outcome': row['outcome'], 'budget': row['budget'], 'pid': row['pid'],
                     'retries': row['retries'], 'retry_at': row['retry_at'],
                     'active_runs_after': active,
@@ -252,7 +287,8 @@ class SandboxedTurnBudget(unittest.TestCase):
         self.tmpdir = (tempfile.gettempdir() if len(tempfile.gettempdir()) <= 30 else '/tmp')
 
     def turn(self, mode: str, finish_after: float = 0.0, budget: int = BUDGET,
-             seat: str = 'reviewer', retry_budget: int = 0) -> tuple[dict, dict, dict]:
+             seat: str = 'reviewer', retry_budget: int = 0,
+             push_hold: float = 0) -> tuple[dict, dict, dict]:
         marker = f'RLBUDGET-{uuid.uuid4().hex[:12]}'
         venv = self.root / f'venv-{mode}'
         (venv / 'bin').mkdir(parents=True)
@@ -263,10 +299,12 @@ class SandboxedTurnBudget(unittest.TestCase):
         checkout = self.root / f'checkout-{mode}'
         checkout.mkdir()
         (checkout / 'review.txt').write_text('checked offline')
+        (checkout / 'src').mkdir()
+        (checkout / 'src/lib.rs').write_text('// before\n')
         spec = self.root / f'spec-{mode}.json'
         spec.write_text(json.dumps({
             'root': str(self.root), 'budget': budget, 'grace': GRACE, 'checkout': str(checkout),
-            'seat': seat, 'retry_budget': retry_budget,
+            'seat': seat, 'retry_budget': retry_budget, 'push_hold': push_hold,
             'runtime': {'source': str(self.source), 'venv': str(venv),
                         'runtime': str(self.python.parents[1]), 'rust': str(self.root / 'rust')}}))
         env = {'PATH': '/usr/bin:/bin', 'HOME': str(self.home),
@@ -385,6 +423,34 @@ class SandboxedTurnBudget(unittest.TestCase):
         argv = [cmd for cmd in seen if cmd.startswith('/opt/venv/bin/python /opt/venv/bin/hermes')]
         self.assertEqual(sorted(cmd.split('--run-budget ')[1] for cmd in argv),
                          sorted([str(BUDGET), str(BUDGET + 2)]))
+
+    def test_a_push_completed_in_the_drain_makes_the_budget_kill_final(self):
+        # The fixer sends its push at once; the host's publish outlasts the kill (the drain
+        # lets it finish), so the turn is killed at its budget *after* a completed write. That
+        # run wrote: final, never replayed, and no "raise the budget, then retry".
+        hold = BUDGET + GRACE + 3
+        result, seen, evidence = self.turn('push_then_hang', seat='fixer', push_hold=hold)
+        [push] = result['pushes']
+        self.assertLess(push['at'], BUDGET)                          # sent inside the budget
+        self.assertGreater(push['done'], BUDGET + GRACE)             # finished after the kill
+        self.assertGreaterEqual(result['elapsed'], push['done'])     # the drain waited for it
+        self.assertEqual((result['push_intent'], bool(result['push_confirmed'])), (None, True))
+        self.assertEqual(result['write'], 'fixer push recorded')
+        self.assertEqual((result['state'], result['retries'], result['retry_at']),
+                         ('failed', 0, None))
+        self.assertIn(f'killed at the {BUDGET}s turn budget', result['error'])
+        self.assertIn('after it wrote (fixer push recorded)', result['error'])
+        for wrong in ('raise turn_budget_s', 'then `retry`', 'no external write'):
+            self.assertNotIn(wrong, result['error'])
+        [line] = [text for text in result['described'] if text.startswith('fixer #7')]
+        self.assertIn('may have written (fixer push recorded) — never replayed; a new head gets '
+                      'a fresh turn', line)
+        self.assertNotIn('re-arm', line)
+        [notice] = result['notices']
+        self.assertIn('Possible external write (fixer push recorded)', notice)
+        self.assertNotIn('No external write', notice)
+        self.assertEqual(evidence['argv_run_budget'], BUDGET)
+        self.assertLess(evidence['push_sent'], BUDGET)
 
     def test_the_ceiling_budget_reaches_the_sandbox_unclamped(self):
         # The largest budget a loop may set (4 h) is carried whole into the real sandbox's

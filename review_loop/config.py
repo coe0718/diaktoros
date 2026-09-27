@@ -32,7 +32,7 @@ File shape (all keys except ``repo`` have defaults)::
       "state_dir": "~/.hermes/state/review-loops/attest",
       "clone": "~/projects/attest",
       "roots": ["~/reviews", "~/.hermes/cache/scratch"],
-      "grace_min": 25, "marker_grace_min": 60, "cooldown_h": 6,
+      "grace_min": 35, "marker_grace_min": 60, "cooldown_h": 6,
       "ttl_min": 45, "inflight_ttl_min": 10, "turn_budget_s": 900
     }
 
@@ -77,7 +77,7 @@ SETTINGS_SCHEMA: dict = {
                              "parallel run in a shared checkout produces wrong verdicts"},
     "base": {"label": "Base branch", "type": "str", "default": "main",
              "description": "Base branch the loop watches"},
-    "grace_min": {"label": "Watchdog grace (minutes)", "type": "int", "default": 25,
+    "grace_min": {"label": "Watchdog grace (minutes)", "type": "int", "default": 35,
                   "description": "Minutes a quiet PR may sit before the watchdog speaks"},
     "ttl_min": {"label": "Seat slot TTL (minutes)", "type": "int", "default": 45,
                 "description": "Minutes a seat slot survives — the backstop for a run that died "
@@ -423,7 +423,10 @@ DEFAULTS: dict = {
     "clone": "",
     "roots": [],
     "concurrency": 1,         # runs allowed at once per seat; >1 requires isolation
-    "grace_min": 25,          # how long a quiet head is allowed to sit before the watchdog speaks
+    # How long a quiet head may sit before the watchdog speaks. It must cover a whole default
+    # turn — 300 s prefetch + 900 s budget + 30 s kill grace + 600 s broker drain = 1830 s — so a
+    # fresh install's healthy turn is never a "stall" (doctor checks it); 35 leaves a sweep's slack.
+    "grace_min": 35,
     "marker_grace_min": 60,
     "cooldown_h": 6,
     "ttl_min": 45,            # seat lock lifetime: past this a crashed run has lost its seat
@@ -486,6 +489,39 @@ def turn_budget(loop: dict, seat: str) -> int:
     if value is None or value == "":
         value = DEFAULT_TURN_BUDGET_S
     return int(value)
+
+
+def turn_parts(loop: dict) -> dict:
+    """The pieces of one isolated turn's worst-case wall clock, launch to end, in seconds.
+
+    Before the budget: the host dependency prefetch (``deps.FETCH_TIMEOUT``, #51). Then the
+    longest seat budget, the sandbox kill grace after it (``trusted_turn.KILL_GRACE_S``), and the
+    broker drain that lets an in-flight write (a push) finish once the sandbox is gone
+    (``trusted_turn.BROKER_DRAIN_S``) — all inside the run, all before its seat is released.
+    """
+    from . import deps, trusted_turn   # imported late: both import this module
+    return {"prefetch": deps.FETCH_TIMEOUT,
+            "budget": max(turn_budget(loop, seat) for seat in (*SEAT_KEYS, "adjudicator")),
+            "grace": trusted_turn.KILL_GRACE_S, "drain": trusted_turn.BROKER_DRAIN_S}
+
+
+def worst_turn_s(loop: dict) -> int:
+    """Seconds one isolated turn may take from launch to end (see ``turn_parts``)."""
+    return sum(turn_parts(loop).values())
+
+
+def seat_ttl_s(loop: dict) -> int:
+    """How long a seat claim lives: ``ttl_min``, or the whole worst-case turn if that is longer.
+
+    ``ttl_min`` is the backstop for a run that died without a verdict; it must never be what
+    takes a slot from a turn that is still inside its own budget (#98).
+    """
+    return max(int(loop.get("ttl_min") or DEFAULTS["ttl_min"]) * 60, worst_turn_s(loop))
+
+
+def seat_died_after_s(loop: dict) -> int:
+    """Age past which the watchdog reports a seat claim as a run that died: twice its TTL."""
+    return 2 * seat_ttl_s(loop)
 
 
 def _check_budget(value, what: str, where: str) -> int:

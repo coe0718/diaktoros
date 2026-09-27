@@ -153,44 +153,120 @@ class CliSurfaces(unittest.TestCase):
         self.assertIn("turn:       reviewer 1200s · fixer 2400s per turn", out)
 
         check = doctor.check_turn_budget(loop)
-        self.assertEqual(check.status, doctor.UNKNOWN)          # 2400s > 25m watchdog grace
+        self.assertEqual(check.status, doctor.UNKNOWN)          # the 2400s turn > the grace
         self.assertIn("reviewer 1200s · fixer 2400s", check.detail)
-        self.assertIn("--grace-min above 46", check.fix)      # 2400 + 30 + 300 s
+        self.assertIn("--grace-min 56", check.fix)          # 300 + 2400 + 30 + 600 s
         ok = doctor.check_turn_budget(config.normalize(_loop()))
         self.assertEqual((ok.status, ok.detail[:28]), (doctor.VERIFIED, "reviewer 900s · fixer 900s p"))
 
 
 class DoctorWallClock(unittest.TestCase):
-    """The watchdog's stall threshold must fit the whole turn, not just the budget (#49 + #51).
+    """Every clock that judges a turn must fit the whole turn, not just the budget (#49, #51, #98).
 
-    From launch to a verdict a turn may take the host dependency prefetch (bounded at
-    deps.FETCH_TIMEOUT, before the budget starts), then the budget, then the sandbox kill grace.
+    From launch to its end a turn may take the host dependency prefetch (deps.FETCH_TIMEOUT,
+    before the budget starts), the budget, the sandbox kill grace after it, and then the broker
+    drain (trusted_turn.BROKER_DRAIN_S) that lets an in-flight write finish — all inside the run.
     """
 
-    def check(self, budget, grace_min=25):
+    def loop(self, budget=None, grace_min=None, ttl_min=None):
         loop = config.normalize(_loop())
-        loop["turn_budget_s"], loop["grace_min"] = budget, grace_min
-        return doctor.check_turn_budget(loop)
+        for key, value in (("turn_budget_s", budget), ("grace_min", grace_min),
+                           ("ttl_min", ttl_min)):
+            if value is not None:
+                loop[key] = value
+        return loop
+
+    def check(self, budget, grace_min=25, ttl_min=None):
+        return doctor.check_turn_budget(self.loop(budget, grace_min, ttl_min))
+
+    @staticmethod
+    def extra():
+        from review_loop import deps
+        return trusted_turn.KILL_GRACE_S + deps.FETCH_TIMEOUT + trusted_turn.BROKER_DRAIN_S
+
+    def test_the_worst_case_counts_the_broker_drain(self):
+        from review_loop import deps
+        self.assertEqual(config.worst_turn_s(self.loop(900)), 900 + self.extra())
+        self.assertEqual(900 + self.extra(), 1830)            # 300 + 900 + 30 + 600
+        check = doctor.check_turn_budget(self.loop(900, 31))
+        self.assertIn(f"up to 1830s launch to end ({deps.FETCH_TIMEOUT}s dependency prefetch + "
+                      f"900s budget + {trusted_turn.KILL_GRACE_S}s kill grace + "
+                      f"{trusted_turn.BROKER_DRAIN_S}s broker drain)", check.detail)
 
     def test_a_budget_under_the_grace_is_not_enough_when_the_turn_is_longer(self):
-        from review_loop import deps, trusted_turn
         check = self.check(1500)                     # 1500 s = the 25 min grace, exactly
         self.assertNotEqual(check.status, doctor.VERIFIED)
-        worst = 1500 + trusted_turn.KILL_GRACE_S + deps.FETCH_TIMEOUT
+        worst = 1500 + self.extra()
         self.assertIn(f"{worst}s", check.detail)
         self.assertIn("dependency prefetch", check.detail)
-        self.assertIn(f"--grace-min above {-(-worst // 60)}", check.fix)
+        self.assertIn(f"--grace-min {-(-worst // 60)}", check.fix)
 
-    def test_the_default_budget_fits_the_default_grace(self):
-        check = self.check(900)                      # 900 + 30 + 300 = 1230 s < 1500 s
-        self.assertEqual(check.status, doctor.VERIFIED)
-        self.assertIn("1230s", check.detail)
+    def test_the_shipped_defaults_pass_their_own_check(self):
+        import re
+        loop = config.normalize(_loop())             # every default, as a fresh install has it
+        check = doctor.check_turn_budget(loop)
+        self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+        self.assertGreaterEqual(config.DEFAULTS["grace_min"] * 60, config.worst_turn_s(loop))
+        self.assertEqual(config.SETTINGS_SCHEMA["grace_min"]["default"], config.DEFAULTS["grace_min"])
+        yaml_text = (ROOT / "plugin.yaml").read_text()
+        declared = re.search(r"\n  grace_min:\n(?:    .*\n)*?    default: (\d+)", yaml_text)
+        self.assertEqual(int(declared.group(1)), config.DEFAULTS["grace_min"])
 
-    def test_the_boundary(self):
-        from review_loop import deps, trusted_turn
-        extra = trusted_turn.KILL_GRACE_S + deps.FETCH_TIMEOUT
-        self.assertEqual(self.check(1500 - extra).status, doctor.VERIFIED)
-        self.assertNotEqual(self.check(1500 - extra + 1).status, doctor.VERIFIED)
+    def test_the_grace_boundary(self):
+        grace = 31 * 60
+        self.assertEqual(self.check(grace - self.extra(), 31).status, doctor.VERIFIED)
+        self.assertNotEqual(self.check(grace - self.extra() + 1, 31).status, doctor.VERIFIED)
+
+    def test_the_seat_lock_ttl_follows_a_turn_longer_than_ttl_min(self):
+        at = 45 * 60 - self.extra()                  # the whole turn is exactly ttl_min
+        self.assertEqual(config.seat_ttl_s(self.loop(at, 60, 45)), 45 * 60)
+        self.assertEqual(config.seat_ttl_s(self.loop(at + 1, 60, 45)), 45 * 60 + 1)
+        ceiling = self.loop(14400, 60, 45)
+        self.assertEqual(config.seat_ttl_s(ceiling), 14400 + self.extra())
+        self.assertEqual(config.seat_died_after_s(ceiling), 2 * (14400 + self.extra()))
+
+    def test_doctor_compares_the_turn_with_every_threshold(self):
+        ok = self.check(900, 31, 45)
+        self.assertEqual(ok.status, doctor.VERIFIED, ok.detail)
+        for text in ("watchdog grace 31m", "seat lock TTL 45m", "'that run died' after 90m"):
+            self.assertIn(text, ok.detail)
+        # A turn longer than ttl_min keeps its claim: the lock TTL follows the turn, and the
+        # died report waits for twice that. Doctor says so; it is not a fault.
+        long = self.check(4000, 90, 45)
+        self.assertEqual(long.status, doctor.VERIFIED, long.detail)
+        self.assertIn(f"seat lock TTL {-(-(4000 + self.extra()) // 60)}m (ttl_min 45m, raised to "
+                      "fit the turn)", long.detail)
+        # The grace is still a threshold the operator sets: too short is still a warning.
+        short = self.check(4000, 60, 45)
+        self.assertEqual(short.status, doctor.UNKNOWN)
+
+    def test_a_healthy_long_turn_keeps_its_seat_claim(self):
+        from review_loop import state as state_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            loop = self.loop(14400, 300, 45)
+            loop["state_dir"] = tmp
+            st = state_mod.state_for(loop)
+            now = time.time()
+            st._save(st.locks, {"reviewer": {
+                "acme/widgets#1": {"head": HEAD, "at": now - 50 * 60},           # past ttl_min
+                "acme/widgets#2": {"head": HEAD, "at": now - config.seat_ttl_s(loop) - 60}}})
+            self.assertEqual(set(st.live_locks("reviewer")), {"acme/widgets#1"})
+
+    def test_the_watchdog_reports_a_died_run_only_past_twice_the_turn_ttl(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("watchdog_under_test",
+                                                      ROOT / "scripts" / "watchdog.py")
+        watchdog = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watchdog)
+        loop = self.loop(14400, 300, 45)
+        died = config.seat_died_after_s(loop)
+        now = time.time()
+        locks = {"reviewer": {"acme/widgets#1": {"at": now - 2 * 45 * 60 - 60},
+                              "acme/widgets#2": {"at": now - died - 60}}}
+        lines = watchdog.died_locks(loop, locks, now)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("acme/widgets#2", lines[0])
+        self.assertIn(f"frees itself at {-(-config.seat_ttl_s(loop) // 60)}m", lines[0])
 
 
 class LedgerAndWorker(unittest.TestCase):
@@ -374,6 +450,32 @@ class GateToProductionWorker(unittest.TestCase):
             con.execute("UPDATE runs SET state='failed'")
         self.assertEqual(sup.retry(again["id"], budget=4000), "pending")
         self.assertEqual(sup.get(f"acme/widgets:8:{HEAD}:fixer")["budget"], 4000)
+
+    def test_a_budget_kill_after_a_completed_push_is_final_not_retry(self):
+        # The drain lets an in-flight push finish after the sandbox is killed. Then the run
+        # wrote: it is final (never replayed), and nothing may tell the operator "raise the
+        # budget, then retry" — `retry` would refuse it.
+        def run_turn(_loop, scope, **kw):
+            sup = Supervisor(scope.ledger_db)
+            sup.begin_push(scope.run_id, scope.repo, scope.number, scope.head)
+            sup.confirm_push(scope.run_id, scope.repo, scope.number, scope.head)
+            raise trusted_turn.TurnBudgetExceeded(["bwrap"], kw["timeout"], 30)
+        with mock.patch.object(gh, "reviews", return_value=[]):
+            row = self.run_production(run_turn)
+        self.assertEqual((row["state"], row["retries"], row["retry_at"]), ("failed", 0, None))
+        self.assertIn("killed at the 2700s turn budget", row["error"])
+        self.assertIn("after it wrote (fixer push recorded)", row["error"])
+        self.assertIn("final: never replayed; a new head gets a fresh turn", row["error"])
+        for wrong in ("raise turn_budget_s", "then `retry`", "no external write"):
+            self.assertNotIn(wrong, row["error"])
+        sup = self.ledger()
+        [view] = [r for r in sup.status() if r["id"] == row["id"]]
+        line = run_supervisor.describe_run(view, "widgets")
+        self.assertIn("may have written (fixer push recorded) — never replayed", line)
+        for wrong in ("raise the turn budget", "re-arm", "no external write"):
+            self.assertNotIn(wrong, line)
+        with self.assertRaisesRegex(ValueError, "fixer push recorded"):
+            sup.retry(row["id"])
 
     def test_another_timeout_is_not_blamed_on_the_budget(self):
         # Only the sandbox's own wall clock is the budget; a timeout elsewhere in the turn

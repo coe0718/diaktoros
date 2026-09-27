@@ -1706,14 +1706,27 @@ class Supervisor:
             retry = rc != 0
         except trusted_turn.TurnBudgetExceeded as exc:
             # Name the clock (#49): an opaque "TimeoutExpired" hides that a setting killed the
-            # turn. Not retried automatically: the same budget would most likely run out again,
-            # each attempt burning a whole budget. Nothing was written, so once the budget is
-            # raised `retry` (or a new event) re-arms it on the new one.
-            flag = {'reviewer': '--reviewer-turn-budget', 'fixer': '--fixer-turn-budget'}.get(
-                row['seat'], '--turn-budget')
-            error = (f"isolated turn failed: TimeoutExpired — killed at the {exc.budget}s turn "
-                     f"budget (sandbox stopped {exc.grace}s past it) — raise turn_budget_s "
-                     f"(hermes review-loop set --loop {loop['id']} {flag} N), then `retry`")
+            # turn. Never retried automatically: the same budget would most likely run out
+            # again, each attempt burning a whole budget.
+            killed = (f"isolated turn failed: TimeoutExpired — killed at the {exc.budget}s turn "
+                      f"budget (sandbox stopped {exc.grace}s past it)")
+            # The broker drain lets a write already in flight finish after the kill (#98): a
+            # push can complete, a receipt be recorded. Then the run wrote — final, and the
+            # "raise the budget, then retry" advice would be wrong (`retry` refuses it).
+            with self._connect() as con:
+                wrote = write_evidence(con, run_id)
+            if wrote == 'review receipt claimed':
+                # Sent but never read back: the run goes uncertain (reconcile), not final.
+                error = (f"{killed} after it may have written ({wrote}) — never replayed; "
+                         "inspect the PR and reconcile")
+            elif wrote is not None:
+                error = (f"{killed} after it wrote ({wrote}) — final: never replayed; a new head "
+                         "gets a fresh turn")
+            else:
+                flag = {'reviewer': '--reviewer-turn-budget',
+                        'fixer': '--fixer-turn-budget'}.get(row['seat'], '--turn-budget')
+                error = (f"{killed} — raise turn_budget_s (hermes review-loop set --loop "
+                         f"{loop['id']} {flag} N), then `retry`")
             retry = False
         except Exception as exc:
             # The real reason, not just its type (#53). Messages here are host-generated

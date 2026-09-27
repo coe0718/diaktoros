@@ -49,12 +49,12 @@ See [Preflight](architecture.md#preflight-can-this-installation-run) and, for ex
 | `seats.<seat>.concurrency` | loop default | this seat's own limit, overriding the default. Set with `hermes review-loop set --reviewer-concurrency N` / `--fixer-concurrency N`. |
 | `state_dir` | `~/.hermes/state/review-loops/<id>` | locks, queue, in-flight marks, breach markers, artifacts, watchdog memory |
 | `host` | unset | your gateway's HTTP(S) webhook origin; `init` requires `--host` or an explicit plugin setting before it writes config/routes/hooks |
-| `grace_min` | `25` | how long a quiet head is allowed to sit before the watchdog speaks |
+| `grace_min` | `35` | how long a quiet head is allowed to sit before the watchdog speaks; it must cover a whole turn (1830 s at the defaults — see [Turn budget](#turn-budget-how-long-one-turn-may-run)) |
 | `marker_grace_min` | `60` | how long a breach marker may sit unpicked-up |
 | `cooldown_h` | `6` | repeat suppression per stall |
-| `ttl_min` | `45` | seat-lock lifetime; past this a crashed run has lost its seat |
+| `ttl_min` | `45` | seat-lock lifetime; past this a crashed run has lost its seat. Raised automatically to the loop's whole worst-case turn, so a healthy long turn never loses its slot; the watchdog calls a claim dead at twice that |
 | `inflight_ttl_min` | `10` | how long a same-head burst is considered already handled |
-| `turn_budget_s` | `900` | wall-clock seconds one isolated seat turn may run — read the PR, build, run tests, submit. The whole turn is up to 330 s longer (dependency prefetch before it, kill grace after), and `grace_min` must cover that total. See [Turn budget](#turn-budget-how-long-one-turn-may-run). Plugin setting `turn_budget_s`; `init`/`set --turn-budget N` |
+| `turn_budget_s` | `900` | wall-clock seconds one isolated seat turn may run — read the PR, build, run tests, submit. The whole turn is up to 930 s longer (300 s dependency prefetch before it, 30 s kill grace and up to 600 s broker drain after), and `grace_min` must cover that total. See [Turn budget](#turn-budget-how-long-one-turn-may-run). Plugin setting `turn_budget_s`; `init`/`set --turn-budget N` |
 | `seats.<seat>.turn_budget_s` | loop default | this seat's own budget (`reviewer`, `fixer`, `adjudicator`), overriding `turn_budget_s`. `init`/`set --reviewer-turn-budget N` / `--fixer-turn-budget N`; the adjudicator's is set in the file |
 | `observer` | `{}` | the read-only observer feed. `{}` means no feed, and the loop is untouched by its absence — see [The observer feed](#the-observer-feed) |
 
@@ -76,17 +76,23 @@ The gate records the budget on the run's ledger row when it enqueues the turn, s
 claims it (a worker spawned by another loop's event included) runs it on this loop's terms; a
 `set` changes turns enqueued after it. `status` and `doctor` print each seat's budget, and
 `doctor` warns (⚠️) when a whole turn can outlast `grace_min`, since the watchdog could then call a
-healthy long turn a stall. A whole turn, launch to verdict, is the host dependency prefetch
-(bounded at 300 s, and run before the budget starts, so it never shortens it), then the budget,
-then the 30 s kill grace: the default 900 s budget is up to 1230 s (20.5 min) against the default
-25 min grace, and a 1500 s budget needs `grace_min` of at least 31. A turn killed at its budget fails with
+healthy long turn a stall. A whole turn, launch to end, is the host dependency prefetch (bounded at
+300 s, and run before the budget starts, so it never shortens it), then the budget, then the 30 s
+kill grace, then up to 600 s of broker drain for a write still in flight: the default 900 s budget
+is up to 1830 s (30.5 min) against the default 35 min grace, and a 1500 s budget needs `grace_min`
+of at least 41. The seat-lock TTL follows the same figure: `ttl_min`, raised to the whole turn when
+the turn is longer, and the watchdog reports a claim as a run that died only at twice that — so a
+long budget never loses its slot or reads as dead. `doctor` prints all three thresholds.
+A turn killed at its budget fails with
 `isolated turn failed: TimeoutExpired — killed at the Ns turn budget (sandbox stopped 30s past
 it) — raise turn_budget_s (hermes review-loop set …), then `retry``, shown by `status`,
 `explain` and the watchdog's operator notice. The whole sandbox process tree goes with it (a
 child that detached into its own session included), and the seat is free for the next turn at
 once. Such a turn is **not** retried automatically — the same budget would most likely run out
-again — but it made no write, so once the budget is raised `hermes review-loop retry` (or a new
-event for the head) re-arms it, on the budget the loop has *then*. An adjudicator killed this way
+again. If it made no write, once the budget is raised `hermes review-loop retry` (or a new event
+for the head) re-arms it, on the budget the loop has *then*. If a write finished during the drain
+(a push published after the kill), the reason says `after it wrote (fixer push recorded) — final:
+never replayed; a new head gets a fresh turn`: that run is final, and `retry` refuses it. An adjudicator killed this way
 hands its breach marker back, so the re-armed ruling starts again. Only the sandbox's own clock
 is reported this way; any other timeout keeps its reason and its automatic retry.
 `selftest --live-turn` runs for the loop's reviewer budget unless `--timeout` says otherwise, so a
@@ -200,7 +206,7 @@ hermes review-loop apply --loop <id>             # write it
 | `adjudicator_login` | — | `seats.adjudicator.login`, on a loop that already has an `adjudicator.route` |
 | `adjudicator_token_file` | — | `tokens[<adjudicator login>]` — a **path** only, same checks, and not shared with any other login |
 | `clone`, `base`, `host` | —, `main`, unset | the same loop keys; a blank host in the form preserves an existing loop's explicit host |
-| `grace_min`, `ttl_min`, `inflight_ttl_min` | 25, 45, 10 | the same loop keys |
+| `grace_min`, `ttl_min`, `inflight_ttl_min` | 35, 45, 10 | the same loop keys |
 
 Settings are per profile (`plugins.entries.hermes-review-loop.settings`, written through Hermes'
 single config writer), and `review_loop/config.py::SETTINGS_SCHEMA` mirrors the manifest — the suite

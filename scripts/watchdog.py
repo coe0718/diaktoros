@@ -564,13 +564,7 @@ def sweep_loop(loop: dict, st: state_mod.LoopState) -> list[str]:
             if now - watch.get("alerts", {}).get(f"{number}:{head[:7]}:{kind[:24]}", 0) > cooldown:
                 alerts.append((number, kind, (pr.get("title") or "")[:60]))
 
-    stuck: list[str] = []
-    for seat, entries in (st._load(st.locks, {}) or {}).items():
-        for key, entry in (entries or {}).items():
-            age = (now - entry.get("at", now)) / 60
-            if age > loop["ttl_min"] * 2:
-                stuck.append(f"  {seat} slot held {age:.0f}m on {key} — that run died; the slot "
-                             f"frees itself at {loop['ttl_min']}m")
+    stuck: list[str] = died_locks(loop, st._load(st.locks, {}) or {}, now)
     for seat, items in st.queue_all().items():
         for key, entry in (items or {}).items():
             if config.is_fixer_push_hold(entry):
@@ -616,6 +610,21 @@ def sweep_loop(loop: dict, st: state_mod.LoopState) -> list[str]:
     watch["last_run"] = now_iso()
     st.watch_save(watch)
     st.note(f"run: {len(alerts)} alert(s), {len(stuck)} stuck, {len(prs)} open PRs")
+    return lines
+
+
+def died_locks(loop: dict, locks: dict, now: float) -> list[str]:
+    """Seat claims old enough to call their run dead: past twice the seat-lock TTL, which is
+    ``ttl_min`` raised to the loop's whole worst-case turn (``config.seat_ttl_s``, #98) — so a
+    healthy turn with a long budget is never reported as one that died."""
+    ttl_m = -(-config.seat_ttl_s(loop) // 60)
+    lines = []
+    for seat, entries in locks.items():
+        for key, entry in (entries or {}).items():
+            age = now - (entry or {}).get("at", now)
+            if age > config.seat_died_after_s(loop):
+                lines.append(f"  {seat} slot held {age / 60:.0f}m on {key} — that run died; the "
+                             f"slot frees itself at {ttl_m}m")
     return lines
 
 

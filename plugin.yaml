@@ -49,7 +49,7 @@ config_schema:
   grace_min:
     label: "Watchdog grace (minutes)"
     type: int
-    default: 25
+    default: 35
     description: "Minutes a quiet PR may sit before the watchdog speaks"
   ttl_min:
     label: "Seat slot TTL (minutes)"

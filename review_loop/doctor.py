@@ -177,29 +177,39 @@ def check_config(loop: dict) -> Check:
 
 
 def check_turn_budget(loop: dict) -> Check:
-    """The wall clock each isolated seat turn gets (#49) — Hermes's --run-budget and the kill.
+    """The wall clock each isolated seat turn gets (#49), against every clock that judges it.
 
-    What the watchdog's stall threshold (``grace_min``) must fit is the whole turn, launch to
-    verdict: the host dependency prefetch (bounded at ``deps.FETCH_TIMEOUT``, before the budget
-    starts, #51), the budget itself, and the sandbox kill grace after it.
+    A turn runs from launch to end for up to ``config.worst_turn_s``: the host dependency
+    prefetch (#51), the budget, the sandbox kill grace, and the broker drain that lets an
+    in-flight write finish (#98). The watchdog's stall threshold (``grace_min``) must fit that
+    — it is the operator's setting, so too short a grace is a warning. The seat-lock TTL and
+    the "that run died" report (twice the TTL) follow the turn by construction
+    (``config.seat_ttl_s``); doctor prints them so the operator sees what they are.
     """
-    from . import deps, trusted_turn
     seats = ["reviewer", "fixer"] + (["adjudicator"] if (loop.get("adjudicator") or {}).get("route")
                                      else [])
     budgets = {seat: config.turn_budget(loop, seat) for seat in seats}
     detail = " · ".join(f"{seat} {value}s" for seat, value in budgets.items())
-    worst = max(budgets.values()) + trusted_turn.KILL_GRACE_S + deps.FETCH_TIMEOUT
-    whole = (f"up to {worst}s launch to verdict ({deps.FETCH_TIMEOUT}s dependency prefetch + "
-             f"{max(budgets.values())}s budget + {trusted_turn.KILL_GRACE_S}s kill grace)")
+    parts = config.turn_parts(loop)
+    worst = config.worst_turn_s(loop)
+    whole = (f"up to {worst}s launch to end ({parts['prefetch']}s dependency prefetch + "
+             f"{parts['budget']}s budget + {parts['grace']}s kill grace + {parts['drain']}s "
+             "broker drain)")
+    ttl_min = int(loop.get("ttl_min") or config.DEFAULTS["ttl_min"])
+    ttl = -(-config.seat_ttl_s(loop) // 60)
+    lock = (f"seat lock TTL {ttl}m" + ("" if ttl == ttl_min else
+                                         f" (ttl_min {ttl_min}m, raised to fit the turn)")
+            + f", 'that run died' after {-(-config.seat_died_after_s(loop) // 60)}m")
     grace = int(loop.get("grace_min") or 0) * 60
     if grace and worst > grace:
         return Check("turn-budget", UNKNOWN,
                      f"{detail} — {whole}, longer than the {loop['grace_min']}m watchdog grace, "
-                     "so a healthy long turn can be reported as a stall",
-                     f"raise --grace-min above {-(-worst // 60)} or lower the turn budget "
+                     f"so a healthy long turn can be reported as a stall; {lock}",
+                     f"set --grace-min {-(-worst // 60)} (or more), or lower the turn budget "
                      "(`hermes review-loop set`)")
-    return Check("turn-budget", VERIFIED, f"{detail} per isolated turn (sandbox killed past it); "
-                                          f"{whole}")
+    return Check("turn-budget", VERIFIED,
+                 f"{detail} per isolated turn (sandbox killed past it); {whole} — fits the "
+                 f"watchdog grace {loop.get('grace_min')}m; {lock}")
 
 
 def _check_profile(name: str, seat: str) -> Check:
