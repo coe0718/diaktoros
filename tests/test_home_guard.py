@@ -91,6 +91,43 @@ class HomeGuard(unittest.TestCase):
             self.assertEqual(list(fake_home.rglob("*")), [])
 
 
+# A fresh guarded process that launches a real fixture worker through Supervisor._spawn, which
+# resolves the guarded HERMES_HOME strictly. Nothing else in that process has created it.
+_SPAWN_A_WORKER = """
+import _home_guard, os, pathlib, sys, time
+sys.path.insert(0, sys.argv[1])
+from review_loop.run_supervisor import SILENT, Supervisor
+root = pathlib.Path(sys.argv[2])
+child = root / "child.py"
+child.write_text("import sys\\nopen(sys.argv[1], 'a').write('launched')\\n")
+sup = Supervisor(root / "ledger.sqlite", fixture_mode=True,
+                 fixture_command=[sys.executable, str(child), str(root / "launched")])
+assert sup.enqueue("d", "o/r", 1, "sha", "reviewer") == SILENT
+until = time.monotonic() + 30
+while time.monotonic() < until and (sup.get("d") or {}).get("state") not in ("succeeded", "failed"):
+    time.sleep(0.05)
+print(os.environ["HERMES_HOME"], dict(sup.get("d")))
+"""
+
+
+class GuardedWorker(unittest.TestCase):
+    def test_guarded_spawn_launches_and_completes_a_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "home").mkdir()
+            env = {k: v for k, v in os.environ.items()
+                   if k not in (config.TEST_HOME_GUARD_ENV, "REVIEW_LOOP_TEST_USER_HOME",
+                                "HERMES_HOME", "REVIEW_LOOP_TEST_SHIM_DIR")}
+            env.update(HOME=str(root / "home"), REVIEW_LOOP_TEST_REAL_HOME=str(root / "home"))
+            result = subprocess.run([sys.executable, "-c", _SPAWN_A_WORKER, str(TESTS.parent), tmp],
+                                    cwd=TESTS, env=env, text=True, capture_output=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("'state': 'succeeded'", result.stdout, result.stdout + result.stderr)
+            self.assertIn("/.hermes", result.stdout.split()[0])
+            self.assertEqual((root / "launched").read_text(), "launched")
+            self.assertEqual(list((root / "home").rglob("*")), [])
+
+
 
 class HermesShim(unittest.TestCase):
     """No guarded test may run the operator's real ``hermes``; plugin code gets the shim."""

@@ -8,9 +8,10 @@ import in a process it:
   ``USER_HOME`` below). The real-Hermes tests take their Hermes source only from an explicit
   ``HERMES_AGENT_SOURCE`` — a disposable checkout, never the live ``~/.hermes/hermes-agent``
   (``needs_real_hermes`` fails them loudly if it points there);
-* points ``HOME`` and ``HERMES_HOME`` at a fresh temp directory and drops inherited overrides that
-  could name real state, so ``config.home()``, ``Path.home()``, ``~`` and every subprocess that
-  inherits the environment (gate scripts, run_supervisor workers, the watchdog) land there;
+* points ``HOME`` and ``HERMES_HOME`` at a fresh temp directory (creating both) and drops
+  inherited overrides that could name real state, so ``config.home()``, ``Path.home()``, ``~``
+  and every subprocess that inherits the environment (gate scripts, run_supervisor workers, the
+  watchdog) land there;
 * puts a ``hermes`` shim first on PATH that refuses to run (see ``FAKE_HERMES_ENV``);
 * arms the plugin's tripwire (``REVIEW_LOOP_TEST_HOME_GUARD``): while it is set, resolving the
   Hermes home, a ledger, a state dir or a cleanup root inside the real home's ``.hermes`` raises
@@ -49,6 +50,9 @@ else:
         os.environ.pop(_var, None)
     os.environ.update({"HOME": str(TEST_HOME), "HERMES_HOME": str(TEST_HOME / ".hermes"),
                        "REVIEW_LOOP_TEST_USER_HOME": str(USER_HOME), GUARD_ENV: "1"})
+    # Create it now: run_supervisor resolves HERMES_HOME strictly, so a guarded spawn must not
+    # depend on some earlier test having happened to create it.
+    (TEST_HOME / ".hermes").mkdir()
 
 # No guarded test, nor any process it starts, may run the operator's real `hermes` CLI: it acts on
 # the real install (a bare `hermes` once resumed an interrupted source update and rebuilt the real
