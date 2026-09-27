@@ -362,8 +362,8 @@ class RunBroker:
         """Why this run's seat could not see the whole change, or '' — from host records only.
 
         The scope the host built at launch, then the run ledger the worker wrote before the seat
-        started. An unreadable ledger adds nothing here; the receipt claim re-reads the same row
-        inside its transaction and refuses an approval there (review_receipt.ReceiptLedger).
+        started. An unreadable ledger is a partial view with that reason (fail closed); the receipt
+        claim re-reads the same row inside its transaction as well (review_receipt.ReceiptLedger).
         """
         if self.scope.partial_view:
             return self.scope.partial_view
@@ -372,8 +372,9 @@ class RunBroker:
         from .review_receipt import partial_view
         try:
             return partial_view(self.scope.ledger_db, self.scope.run_id)
-        except Exception:
-            return ""
+        except Exception as exc:
+            # Fail closed, and say so: a record nobody can read is not a whole view.
+            return f"the host could not read this run's view record ({type(exc).__name__})"
 
     def _publish_answers(self, head: str, text: str) -> str:
         """Post the fixer's answers as ONE PR comment by the fixer identity; return the outcome.

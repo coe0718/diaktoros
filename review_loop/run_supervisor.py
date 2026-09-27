@@ -292,9 +292,11 @@ GITHUB_FILES_CAP = 3000
 class PRChange(NamedTuple):
     """The prompt section for the change, and the bounded unified diff staged beside it.
 
-    ``partial`` is empty when the host could show the seat the whole change, else the host's own
-    words for what it could not show (#93, #110). The worker records it in the run ledger and the
-    run's scope before launch, and the broker refuses an approval while it is set.
+    ``partial`` is empty only when the seat is shown the whole change, else the host's own words
+    for what it could not show: the file list unreadable (#110); files GitHub declares but does
+    not list and the trees could not name, in whole or in part (#93); or whole files left out of
+    the diff by its byte bound. The worker records it in the run ledger and the run's host-built
+    scope before launch, and the broker refuses an approval (and a fixer's push) while it is set.
     """
     record: str
     diff: str
@@ -474,6 +476,23 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
     elif unnamed:
         unnamed.insert(0, "Named by the host from the merge-base and head trees; they have no "
                           "patches here, so read them in `/work`.")
+    # The trees may explain only part of the gap between what GitHub declares and what it
+    # lists: the rest is unnamed, and a seat cannot review files nobody can name.
+    remainder = (declared - len(files) - len(unlisted)
+                 if type(declared) is int and not files_error and not unlisted_error else 0)
+    if remainder > 0:
+        reason = (f"{remainder} changed file(s) are neither listed by GitHub nor named by the "
+                  f"merge-base and head trees (GitHub reports {declared}, lists {len(files)}, "
+                  f"the trees name {len(unlisted)})")
+        partial = '; '.join(filter(None, [partial, reason]))
+        unnamed.append(f"{reason[0].upper()}{reason[1:]}. You cannot see the whole change: "
+                       f"{instead}" + ("." if fixer else
+                                       " and say that the PR is too large to review whole."))
+    # Whole files the diff's byte bound left out are not in /opt/review/pr.diff either.
+    if diff_cut:
+        reason = (f"the whole diff is bounded to {DIFF_BYTES // 1024} KiB and {diff_cut} changed "
+                  f"file(s) did not fit, so neither the diff nor this record carries them")
+        partial = '; '.join(filter(None, [partial, reason]))
     if omitted:
         patches.append(f"({omitted} more patch(es) not shown here for size; see {REVIEW_DIFF})")
 
@@ -493,6 +512,9 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
         f"- title: {_line(pr.get('title'), CHANGE_TITLE_BYTES) or '(none)'}",
         f"- changed files: {count}",
         f"- whole diff (read-only, bounded to {DIFF_BYTES // 1024} KiB): {REVIEW_DIFF}",
+        *([f"- left out: {diff_cut} changed file(s) did not fit in the diff's "
+           f"{DIFF_BYTES // 1024} KiB. You cannot see the whole change: {instead}."]
+          if diff_cut else []),
         '',
         '### Description (author-written)',
         _fenced(body, 'text') if body else '(empty)',

@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -180,6 +181,21 @@ class Broker(unittest.TestCase):
         self.assertEqual([r["verdict"] for r in dry.recorded], ["REQUEST_CHANGES"])
 
 
+class UnreadableViewRecord(Broker):
+    """Tuck on #97: an unreadable view record must not read as 'whole' (fail closed, named)."""
+
+    def test_an_unreadable_ledger_refuses_the_approval_with_its_reason(self):
+        scope = broker_ipc.RunScope(REPO, 7, HEAD, "reviewer", "fix-7", "run-x",
+                                    str(self.root / "missing" / "runs.sqlite"), "g")
+        server = self.start(scope)
+        refused = self.send(server, "APPROVE")
+        self.assertFalse(refused["ok"])
+        self.assertIn(REFUSED, refused["error"])
+        self.assertIn("could not read this run's view record (OperationalError)", refused["error"])
+        self.assertEqual(self.posts, [])
+        self.assertFalse(server.completed)
+
+
 class FixerBroker(Broker):
     """A fixer that could not see the whole change cannot push it either (Tuck on #97).
 
@@ -279,6 +295,63 @@ class FixerBroker(Broker):
         self.assertNotIn("refuses a push", reviewer.record)
 
 
+class EveryLessThanWholeView(FixerBroker):
+    """Tuck on #97: a view truncated by DIFF_BYTES, or with an unnamed remainder past GitHub's
+    listing, is also partial — recorded, and enforced like the unreadable list."""
+
+    def truncated(self, seat="reviewer"):
+        # His probe: 100 files whose patches together are ~2 MiB — about 50 fit in the diff.
+        world = pc.World([pc.changed(i, patch="@@ -1 +1 @@\n+" + "x" * 20900) for i in range(100)])
+        with mock.patch.object(gh, "fetch", side_effect=world.fetch):
+            return run_supervisor.pr_change(self.loop, {**pc.Base.row, "seat": seat})
+
+    def test_a_diff_truncated_by_its_byte_bound_is_partial_and_refused(self):
+        change = self.truncated()
+        self.assertIn("file(s) omitted: the diff is bounded", change.diff)
+        self.assertLess(change.diff.count("diff --git"), 100)
+        self.assertIn("did not fit", change.partial)
+        self.assertIn("You cannot see the whole change: do not approve it", change.record)
+        sup, scope = self.ledgered(change.partial)
+        server = self.start(scope, require_receipt=True)
+        refused = self.send(server, "APPROVE")
+        self.assertIn(REFUSED, refused["error"])
+        self.assertIn("did not fit", refused["error"])
+        self.assertEqual(self.posts, [])
+
+    def test_a_truncated_fixer_cannot_push(self):
+        change = self.truncated("fixer")
+        self.assertIn("the broker refuses a push from this turn", change.record)
+        sup, scope = self.fixer_run(change.partial)
+        server = self.start(scope, require_push=True)
+        refused = self.push(server)
+        self.assertIn(self.PUSH_REFUSED, refused["error"])
+        self.assertEqual(self.posts, [])
+
+    def test_a_whole_view_under_the_bound_stays_complete(self):
+        world = pc.World([pc.changed(i) for i in range(100)])
+        with mock.patch.object(gh, "fetch", side_effect=world.fetch):
+            change = run_supervisor.pr_change(self.loop, pc.Base.row)
+        self.assertEqual(change.partial, "")
+        self.assertNotIn("You cannot see the whole change", change.record)
+
+
+class UnnamedRemainder(pc.Base):
+    def world(self, declared):
+        world = pc.Record.over_cap(self)
+        world.pr["changed_files"] = declared
+        return world
+
+    def test_trees_that_explain_the_whole_gap_are_complete(self):
+        self.assertEqual(self.change(self.world(3004)).partial, "")   # 3000 listed + 4 named
+
+    def test_an_unnamed_remainder_is_partial(self):
+        change = self.change(self.world(3006))
+        self.assertIn("2 changed file(s) are neither listed by GitHub nor named", change.partial)
+        section = change.record.split("### Changed files GitHub does not list", 1)[1]
+        self.assertIn("- added: src/new.rs", section)                   # the named part stays
+        self.assertIn("You cannot see the whole change: do not approve it", section)
+
+
 class HostRecordsTheView(pc.Base):
     """pr_change says whether the view is complete; the worker records it before launch."""
 
@@ -343,6 +416,116 @@ class HostRecordsTheView(pc.Base):
         seen, views = self.run_worker(pc.World([pc.changed(1)]))
         self.assertEqual((seen["ledger"], seen["scope"].partial_view), ("", ""))
         self.assertEqual(views, [])
+
+
+class LaunchPathRefuses(pc.Base):
+    """Tuck on #97: the whole path composed — host pr_change -> ledger + scope -> real run_turn ->
+    real RunBroker over its real socket -> real receipt ledger. Only GitHub REST, the sandbox
+    process and the inference proxy are faked; the fake sandbox is the seat, talking to the
+    broker with the real client."""
+
+    def test_a_404_file_list_launches_a_turn_whose_approval_the_broker_refuses(self):
+        from types import SimpleNamespace
+        from review_loop import contained, inference_proxy, trusted_fetch
+        world = pc.World([pc.changed(1)])
+        world.gone[pc.FILES] = "HTTP 404 {}"
+        world.pr.update({"user": {"login": "fix"}, "state": "open", "draft": False})
+        world.pr["head"]["repo"] = {"full_name": REPO}
+        world.pr["base"]["repo"] = {"full_name": REPO}
+        posts = []
+        base_fetch = world.fetch
+
+        def fetch(loop, path, method="GET", body=None, login=None):
+            if path == "/user":
+                return {"login": login, "id": {"read": 1, "review": 2, "fix": 3}[login]}, ""
+            if method == "POST" and path == f"/repos/{REPO}/pulls/7/reviews":
+                posts.append(body)
+                return {"id": 19}, ""
+            if path == f"/repos/{REPO}/pulls/7/reviews/19":
+                state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}
+                return {"id": 19, "state": state[posts[-1]["event"]], "commit_id": HEAD,
+                        "user": {"id": 2, "login": "review"}}, ""
+            if method != "GET":
+                raise AssertionError(f"unexpected write {method} {path}")
+            return base_fetch(loop, path, method, body, login)
+
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            tokens = {}
+            for login in ("read", "review", "fix"):
+                (root / f"{login}.pat").write_text("DUMMY_" + login)
+                (root / f"{login}.pat").chmod(0o600)
+                tokens[login] = str(root / f"{login}.pat")
+            loop = {**self.loop, "tokens": tokens, "state_dir": str(root / "state")}
+            runtime = root / "runtime.json"
+            runtime.write_text("{}")
+            runtime.chmod(0o600)
+            sup = Supervisor(root / "ledger.sqlite", production_config=runtime, hermes_home=root)
+            with mock.patch.object(sup, "_spawn"):
+                sup.enqueue("d", REPO, 7, HEAD, "reviewer")
+            generation = review_receipt.generation_for(world.pr, loop, 7, HEAD)
+            with sqlite3.connect(sup.db) as con:
+                con.execute("UPDATE runs SET state='launching', owner='w', generation=?, "
+                            "launch_intent=1", (generation,))
+                run_id = con.execute("SELECT id FROM runs").fetchone()[0]
+            for name in ("venv", "runtime", "rust"):
+                (root / name).mkdir()
+            settings = {"source": str(root), "venv": str(root / "venv"),
+                        "runtime": str(root / "runtime"), "rust": str(root / "rust")}
+            inference = SimpleNamespace(upstream="https://model.invalid", key="k", model="m",
+                                        api_mode="chat_completions", proxy_model="m",
+                                        client_identity="", credential_provider=lambda: None)
+            seat = {}
+
+            def sandbox(**kw):                       # the seat, inside the "sandbox"
+                sock = str(Path(kw["broker_socket_dir"]) / "broker.sock")
+                seat["query"] = Path(kw["query"]).read_text()
+                seat["approve"] = broker_client.call("review", verdict="APPROVE",
+                                                     body="looks fine", socket_path=sock)
+                seat["changes"] = broker_client.call("review", verdict="REQUEST_CHANGES",
+                                                     body="the file list was unavailable",
+                                                     socket_path=sock)
+                return subprocess.CompletedProcess([], 0, "", "")
+
+            class Inference:
+                def __init__(self, directory, *a, **k):
+                    self.directory = directory
+
+                def __enter__(self):
+                    self.directory.mkdir()
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            def stage(_loop, **kw):
+                kw["sandbox_root"].mkdir()
+                return kw["sandbox_root"]
+            with mock.patch("review_loop.seat_model.load_runtime", return_value=settings), \
+                 mock.patch("review_loop.seat_model.resolve_seat", return_value=inference), \
+                 mock.patch.object(config, "by_repo", return_value=loop), \
+                 mock.patch.object(gh, "fetch", side_effect=fetch), \
+                 mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
+                 mock.patch.object(trusted_turn, "_safe_code_snapshot",
+                                   side_effect=lambda src, dst: dst.mkdir()), \
+                 mock.patch.object(trusted_fetch, "stage", side_effect=stage), \
+                 mock.patch.object(inference_proxy, "InferenceCapability", Inference), \
+                 mock.patch.object(contained, "run", side_effect=sandbox), \
+                 mock.patch.object(sup, "recover"):
+                sup._run_production(run_id, "w")
+            with sqlite3.connect(sup.db) as con:
+                state = con.execute("SELECT state, error, partial_view FROM runs").fetchone()
+                receipts = con.execute("SELECT state, verdict FROM review_receipts").fetchall()
+        self.assertIn("could not read the PR's file list", seat["query"])
+        self.assertFalse(seat["approve"]["ok"])
+        self.assertIn(REFUSED, seat["approve"]["error"])
+        self.assertIn("HTTP 404", seat["approve"]["error"])
+        self.assertTrue(seat["changes"]["ok"], seat["changes"])
+        self.assertEqual([p["event"] for p in posts], ["REQUEST_CHANGES"])
+        self.assertEqual(receipts, [("confirmed", "CHANGES_REQUESTED")])
+        self.assertEqual(state[:2], ("succeeded", None))
+        self.assertIn("HTTP 404", state[2])
 
 
 class ExplainShowsIt(unittest.TestCase):
