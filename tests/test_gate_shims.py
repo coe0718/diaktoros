@@ -1039,6 +1039,9 @@ class ObserverStatusDoctor(Base):
         # Repair refuses a route something else holds: it may only come second, after the
         # operator moves that entry out of the way.
         self.assertTrue(check.fix.startswith("remove or rename that entry"), check.fix)
+        # The route check says the same: its intent-record drift must not promise a repair.
+        route_check = checks["route:widgets-review"]
+        self.assertTrue(route_check.fix.startswith("remove or rename that entry"), route_check.fix)
         rc, out = self.run_cli(["doctor", "--loop", "widgets", "--offline", "--repair"])
         self.assertIn("NOT restored", out)
         routes.remove_route("widgets-review")

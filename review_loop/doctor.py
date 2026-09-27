@@ -455,9 +455,16 @@ def _intent_overlay(loop: dict, data: dict, checks: list[Check]) -> list[Check]:
             check.status, check.detail = MISMATCH, what
         else:
             check.detail += f" ({what})"
+        live = data.get(name)
+        if isinstance(live, dict) and not route_intent.owned(live):
+            # Repair reports a route something else now runs as a conflict and never overwrites
+            # it, so it can only be the second step.
+            check.fix = (f"remove or rename that entry (it now runs {live.get('script')!r}, not a "
+                         "review-loop gate, so repair and apply leave it alone), then "
+                         f"`hermes review-loop doctor --loop {loop['id']} --repair`")
         # The observer check already chose between repair and a rebuild: repair only restores
         # the record, which is no fix when the record itself breaks the feed's contract.
-        if not (check.fix and name == (loop.get("observer") or {}).get("route")):
+        elif not (check.fix and name == (loop.get("observer") or {}).get("route")):
             check.fix = REPAIR_FIX
     return checks
 
