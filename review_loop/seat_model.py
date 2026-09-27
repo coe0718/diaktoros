@@ -76,6 +76,41 @@ OAUTH_PROVIDERS = {"openai-codex": "codex_responses", "xai-oauth": "codex_respon
 ANTHROPIC_ALIASES = frozenset({"anthropic", "claude", "claude-code"})
 REFUSED_API_MODES = frozenset({"bedrock_converse", "codex_app_server"})
 
+# Optional Hermes extras a seat's sandboxed Hermes imports to talk to its provider (#118). Keyed
+# by the extra's name in Hermes's ``pyproject.toml`` ``[project.optional-dependencies]``:
+#
+# * ``module`` — the import that proves the extra is installed (Hermes's own anchor for it,
+#   ``pm/extras.py`` ``ANCHORS``), checked with ``find_spec`` by the runtime venv's python;
+# * ``wires`` — the proxied ``api_mode``s whose Hermes client imports it (``anthropic_messages``:
+#   ``agent/agent_init.py`` → ``anthropic_adapter.build_anthropic_client`` → ``import anthropic``,
+#   for every provider on that wire, the Claude subscription included);
+# * ``providers`` — providers Hermes always puts on such a wire (``hermes_cli/providers.py``
+#   ``transport="anthropic_messages"``), for a profile whose config names no ``api_mode``;
+# * ``hosts`` / ``url_suffixes`` — base-URL hosts and endings Hermes maps onto that wire
+#   (``host_mandated_api_mode``).
+#
+# The fix is Hermes's own command for a missing extra (``pm/extras.py`` ``install_hint``).
+HERMES_EXTRAS = {
+    "anthropic": {"module": "anthropic", "wires": frozenset({"anthropic_messages"}),
+                  "providers": ANTHROPIC_ALIASES | {"minimax", "minimax-cn", "minimax-oauth",
+                                                    "tencent-tokenplan"},
+                  "hosts": frozenset({"api.anthropic.com"}), "url_suffixes": ("/anthropic",)},
+}
+
+
+def extras_for(provider: str, api_mode: str = "", base_url: str = "") -> list[str]:
+    """The optional Hermes extras (``HERMES_EXTRAS`` keys) a seat on this provider/wire needs."""
+    provider = (provider or "").strip().lower()
+    url = (base_url or "").strip().rstrip("/").lower()
+    host = urlsplit(url).hostname or ""
+    needed = []
+    for extra, spec in HERMES_EXTRAS.items():
+        if (api_mode in spec["wires"] or provider in spec["providers"] or host in spec["hosts"]
+                or (url and url.endswith(spec["url_suffixes"]))):
+            needed.append(extra)
+    return needed
+
+
 _SECRETISH = re.compile(r"(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}"
                         r"|sk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+|[A-Za-z0-9_-]{40,})")
 
@@ -755,12 +790,23 @@ def expected_wire(requested: str, api_mode: str = "") -> tuple[str, str]:
 
 def describe_seat(loop: dict, seat: str, settings: dict | None) -> tuple[str, str, str]:
     """Read-only (no credential lookup) — ``(status, detail, fix)`` with status ok|warn|fail."""
+    return describe_seat_wire(loop, seat, settings)[:3]
+
+
+def describe_seat_wire(loop: dict, seat: str,
+                       settings: dict | None) -> tuple[str, str, str, dict | None]:
+    """``describe_seat`` plus the wire the seat is expected to use — ``{"provider", "api_mode",
+    "base_url"}`` when it is decided (a profile's provider, a runtime override, or the legacy
+    fallback), else ``None``: a seat whose provider could not be read has no wire to reason
+    about."""
     profile = config.seat_profile(loop, seat)
     override = seat_override(settings or {}, seat)
     if override is not None:
         return ("ok", f"runtime override seats.{seat}: {override['model']} via "
                       f"{urlsplit(override['upstream']).hostname} [chat_completions, API key] "
-                      f"(profile {profile or '-'} unused)", "")
+                      f"(profile {profile or '-'} unused)", "",
+                {"provider": "override", "api_mode": "chat_completions",
+                 "base_url": override["upstream"]})
     legacy = legacy_override(settings or {})
     problem = profile_problem(profile, seat)
     reason = problem
@@ -768,7 +814,7 @@ def describe_seat(loop: dict, seat: str, settings: dict | None) -> tuple[str, st
         try:
             answer = run_resolver(profile, "describe", settings)
         except SeatModelError as exc:
-            return ("warn", f"profile {profile}: {exc}", "run `hermes review-loop selftest`")
+            return ("warn", f"profile {profile}: {exc}", "run `hermes review-loop selftest`", None)
         requested = str(answer.get("requested") or "auto")
         model = str(answer.get("model") or "")
         configured = str(answer.get("api_mode") or "")
@@ -778,7 +824,7 @@ def describe_seat(loop: dict, seat: str, settings: dict | None) -> tuple[str, st
                 return ("fail", f"{reason}; the {seat} turn will be held",
                         "name a venv with Hermes's own dependencies in "
                         f"{config.home() / 'review-loop-runtime.json'} — the interpreter the host "
-                        "picked cannot read YAML at all (docs/configuration.md)")
+                        "picked cannot read YAML at all (docs/configuration.md)", None)
         elif requested in ("", "auto"):
             reason = f"profile {profile} names no model.provider"
         elif requested in UNSUPPORTED_PROVIDERS:
@@ -796,10 +842,13 @@ def describe_seat(loop: dict, seat: str, settings: dict | None) -> tuple[str, st
             mode, label = expected_wire(requested, configured)
             return ("ok", f"profile {profile}: {requested} / {model}"
                           + (f" via {urlsplit(base).hostname}" if base else "")
-                          + f" [{mode}, {label}] (credential checked by selftest)", "")
+                          + f" [{mode}, {label}] (credential checked by selftest)", "",
+                    {"provider": requested, "api_mode": mode, "base_url": str(base)})
     fix = (f"set a supported provider in profile {profile or '<name>'} (see `docs/configuration.md`), "
            f"or add seats.{seat} to the runtime file")
     if legacy is not None:
         return ("warn", f"{reason}; falls back to the LEGACY runtime model {legacy['model']} "
-                        "(every such seat shares it)", fix)
-    return ("fail", f"{reason}; the {seat} turn will be held", fix)
+                        "(every such seat shares it)", fix,
+                {"provider": "legacy", "api_mode": "chat_completions",
+                 "base_url": str(legacy.get("upstream") or "")})
+    return ("fail", f"{reason}; the {seat} turn will be held", fix, None)

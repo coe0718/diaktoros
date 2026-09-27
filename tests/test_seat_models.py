@@ -512,5 +512,137 @@ class ReaderChain(Base):
         self.assertNotIn("set a supported provider", checks["model:reviewer"].fix)
 
 
+class ProviderExtras(Base):
+    """#118: a seat whose provider needs an optional Hermes extra (``anthropic`` for a Claude
+    subscription or any Messages-wire provider) fails at model setup when the runtime's venv lacks
+    it. doctor asks that venv's own python — ``find_spec``, read-only — and never a credential.
+
+    The two venvs are throwaway directories around this interpreter (no packages installed, no
+    network): one gets a stub ``anthropic`` package in its site-packages, the other does not.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.bare = self.settings["venv"]                       # Base's venv: no anthropic
+        full = self.root / "venv-with-anthropic"
+        resolver_venv(full)
+        site = next((full / "lib").glob("python*/site-packages"))
+        (site / "anthropic").mkdir()
+        (site / "anthropic" / "__init__.py").write_text("")
+        self.full = str(full)
+        write_profile(self.home, "rev", {"default": "claude-sonnet", "provider": "anthropic"})
+
+    def extras(self, venv: str | None = None, loop: dict | None = None, settings: dict | None = None):
+        runtime = self.home / "review-loop-runtime.json"
+        runtime.write_text(json.dumps(settings or {**self.settings, "venv": venv or self.bare}))
+        runtime.chmod(0o600)
+        return {c.name: c for c in doctor.check_seat_extras(loop or self.loop)}
+
+    def test_the_table_names_the_anthropic_extra_and_its_import(self):
+        self.assertEqual(seat_model.HERMES_EXTRAS["anthropic"]["module"], "anthropic")
+        self.assertEqual(seat_model.extras_for("anthropic", "anthropic_messages", ""), ["anthropic"])
+        self.assertEqual(seat_model.extras_for("claude-code", "", ""), ["anthropic"])
+        self.assertEqual(seat_model.extras_for("minimax-oauth", "anthropic_messages", ""), ["anthropic"])
+        self.assertEqual(seat_model.extras_for("custom:acme", "anthropic_messages", ""), ["anthropic"])
+        self.assertEqual(seat_model.extras_for("custom:acme", "", "https://gw.test/anthropic"),
+                         ["anthropic"])
+        self.assertEqual(seat_model.extras_for("openrouter", "chat_completions", ""), [])
+
+    def test_a_venv_with_the_package_passes(self):
+        checks = self.extras(self.full)
+        self.assertEqual(checks["extras:reviewer"].status, doctor.VERIFIED)
+        self.assertIn("anthropic", checks["extras:reviewer"].detail)
+        self.assertIn(self.full, checks["extras:reviewer"].detail)
+        self.assertEqual(checks["extras:fixer"].status, doctor.VERIFIED)       # custom:acme
+        self.assertIn("no optional", checks["extras:fixer"].detail)
+
+    def test_a_venv_without_the_package_fails_with_the_install_command(self):
+        checks = self.extras(self.bare)
+        check = checks["extras:reviewer"]
+        self.assertEqual(check.status, doctor.ABSENT)
+        self.assertTrue(check.failed)
+        self.assertIn("anthropic", check.detail)
+        self.assertIn(self.bare, check.detail)
+        self.assertIn("hermes pm install --extra anthropic", check.fix)
+        self.assertIn("review-loop-runtime.json", check.fix)
+        self.assertEqual(checks["extras:fixer"].status, doctor.VERIFIED)
+        self.assertEqual(checks["extras:adjudicator"].status, doctor.VERIFIED)
+
+    def test_a_messages_wire_provider_needs_it_too(self):
+        write_profile(self.home, "fix", {"default": "m2", "provider": "minimax-oauth"})
+        checks = self.extras(self.bare)
+        self.assertEqual(checks["extras:fixer"].status, doctor.ABSENT)
+
+    def test_it_never_resolves_a_credential(self):
+        write_profile(self.home, "rev", {"default": "claude-sonnet", "provider": "anthropic"},
+                      {"ANTHROPIC_TOKEN": "SUBSCRIPTION-TOKEN-7777"})
+        checks = self.extras(self.bare)
+        for name in ("rev", "fix", "adj"):
+            self.assertFalse((self.home / "profiles" / name / "resolved.marker").exists())
+        text = json.dumps([vars(c) for c in checks.values()])
+        for secret in (*KEYS.values(), "SUBSCRIPTION-TOKEN-7777"):
+            self.assertNotIn(secret, text)
+
+    def test_an_unreadable_provider_is_unknown_not_verified(self):
+        (self.home / "profiles" / "rev" / "config.yaml").write_text("{ not: [valid")
+        write_profile(self.home, "fix", {"default": "fix-model"})              # no provider
+        loop = {**self.loop, "seats": {**self.loop["seats"], "reviewer": {"profile": "ghost"}}}
+        checks = self.extras(self.full, loop)
+        self.assertEqual(checks["extras:reviewer"].status, doctor.UNKNOWN)
+        self.assertEqual(checks["extras:fixer"].status, doctor.UNKNOWN)
+        checks = self.extras(self.full)
+        self.assertEqual(checks["extras:reviewer"].status, doctor.UNKNOWN)
+        self.assertIn("could not be read", checks["extras:reviewer"].detail)
+
+    def test_the_probe_asks_the_venvs_own_python(self):
+        full, bare = (str(pathlib.Path(v) / "bin" / "python") for v in (self.full, self.bare))
+        self.assertIs(doctor.venv_has_module(full, "anthropic"), True)
+        self.assertIs(doctor.venv_has_module(bare, "anthropic"), False)
+        self.assertIs(doctor.venv_has_module(bare, "anthropic.types"), False)   # parent missing
+
+    def test_a_python_that_cannot_answer_is_undecided(self):
+        odd = self.root / "odd" / "python"
+        odd.parent.mkdir()
+        odd.write_text("#!/bin/sh\nexit 3\n")
+        odd.chmod(0o755)
+        self.assertIsNone(doctor.venv_has_module(str(odd), "anthropic"))
+        odd.write_text("#!/bin/sh\nexec sleep 5\n")
+        with mock.patch.object(doctor, "EXTRA_PROBE_TIMEOUT", 0.3):
+            self.assertIsNone(doctor.venv_has_module(str(odd), "anthropic"))
+        self.assertIsNone(doctor.venv_has_module(str(self.root / "missing" / "python"), "anthropic"))
+
+    def test_an_undecided_probe_is_unknown_not_verified(self):
+        with mock.patch.object(doctor, "venv_has_module", return_value=None):
+            check = self.extras(self.full)["extras:reviewer"]
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("could not answer", check.detail)
+
+    def test_no_runtime_file_is_unknown(self):
+        checks = {c.name: c for c in doctor.check_seat_extras(self.loop)}
+        self.assertEqual(checks["extras:reviewer"].status, doctor.UNKNOWN)
+        self.assertIn("review-loop-runtime.json", checks["extras:reviewer"].detail)
+
+    def test_a_runtime_override_needs_no_extra(self):
+        settings = {**self.settings, "seats": {"reviewer": {
+            "model": "m", "upstream": "https://o.test/v1/chat/completions",
+            "key_file": self.key_file("o.key", "OVERRIDE-KEY-8888")}}}
+        self.assertEqual(self.extras(settings=settings)["extras:reviewer"].status, doctor.VERIFIED)
+
+    def test_the_legacy_fallback_is_chat_completions(self):
+        loop = {**self.loop, "seats": {**self.loop["seats"], "reviewer": {"profile": "ghost"}}}
+        settings = {**self.settings, "model": "legacy-model",
+                    "upstream": "https://legacy.test/v1/chat/completions",
+                    "key_file": self.key_file("legacy.key", "LEGACY-KEY-5555")}
+        self.assertEqual(self.extras(loop=loop, settings=settings)["extras:reviewer"].status,
+                         doctor.VERIFIED)
+
+    def test_the_preflight_runs_the_check(self):
+        self.extras(self.bare)
+        with mock.patch.object(doctor, "check_seat_extras", wraps=doctor.check_seat_extras) as spy:
+            checks = doctor.check_loop(self.loop, offline=True)
+        spy.assert_called_once()
+        self.assertIn("extras:reviewer", [c.name for c in checks])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -279,6 +279,17 @@ turn starts. The reader tries `yaml`, then `ruamel.yaml`, then JSON (a JSON conf
 and names the interpreter it was when it has neither: a profile's `config.yaml` written as real
 YAML needs one of the first two.
 
+**It must also have the provider's optional Hermes package.** The sandboxed Hermes runs on this
+`venv`, and some providers need a Hermes extra that a plain install leaves out: every seat on the
+Messages wire (`anthropic_messages` — a Claude subscription or API key on `anthropic`, MiniMax,
+Tencent TokenPlan, or any endpoint ending in `/anthropic`) imports the `anthropic` package, and
+without it the turn fails at model setup. `doctor` prints one `extras:<seat>` line per seat: ✅ when
+the seat needs no extra or `venv`'s own python can import it (`find_spec`, read-only), ❌ with the
+fix — `hermes pm install --extra anthropic`, Hermes's own command for a missing extra, which installs
+into the venv Hermes selects, so this `venv` must be that one (or have the extra installed itself)
+— and ⚠️ when the seat's provider could not be read or the probe could not answer. The
+provider→extra table is `HERMES_EXTRAS` in `review_loop/seat_model.py`.
+
 **Each seat runs its own Hermes profile's model.** Before a turn, the host resolves the seat's
 profile (`seats.reviewer.profile`, `seats.fixer.profile`, `adjudicator.profile`) with Hermes's own
 resolution — the profile's `config.yaml` `model` block, its `.env`/secret sources and `auth.json`

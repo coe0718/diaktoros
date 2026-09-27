@@ -236,7 +236,7 @@ def group_doctor() -> None:
     before_posts = len(RECEIVED)
     rc, out = run_doctor("--loop", "widgets")
     check("a correct install passes", rc, 0)
-    check("  every check verified", "widgets: 25 verified, 0 failed, 0 unknown (of 25 checks)" in out,
+    check("  every check verified", "widgets: 28 verified, 0 failed, 0 unknown (of 28 checks)" in out,
           True)
     check("  nothing is marked failed", "❌" in out, False)
     check("  the header says it is read-only",
@@ -246,7 +246,8 @@ def group_doctor() -> None:
                  "route:widgets-review", "route:widgets-fix", "route:widgets-breach", "scripts",
                  "cron:shim", "cron:job", "clone", "state_dir", "roots", "gateway",
                  "hook:widgets-review", "hook:widgets-fix",
-                 "model:reviewer", "model:fixer", "model:adjudicator"):
+                 "model:reviewer", "model:fixer", "model:adjudicator",
+                 "extras:reviewer", "extras:fixer", "extras:adjudicator"):
         check(f"  ✅ {name}", f"✅ {name}" in out, True)
     check("  it writes nothing", tree_digest(TMP), before_files)
     for path in added:   # the model check reads profiles through the runtime's Hermes (#32)
