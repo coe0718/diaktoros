@@ -109,6 +109,7 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     state_dir = config._path(loop["state_dir"])
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "isolated-runs").mkdir(mode=0o700, exist_ok=True)
+    (state_dir / "deps").mkdir(mode=0o700, exist_ok=True)  # the worker's crate cache root
     seat_model.lock_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
     supervisor.recover()
     delivery = f"{loop['repo']}:{number}:{head}:{seat}"

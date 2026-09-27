@@ -3,8 +3,10 @@
 It wraps ``Supervisor.__init__`` so that a ledger (or a presence marker) under the real user's
 ``~/.hermes`` — found from the password database, not from ``HOME`` or ``HERMES_HOME``, which
 tests repoint — is refused before anything is read or written. The wrapper is process-wide,
-so one import during ``discover`` (``test_run_supervisor`` and the modules that use
-``module_home()`` import it) covers every test in the run.
+so one import during an unfiltered ``discover`` (``test_run_supervisor`` and the modules
+that use ``module_home()`` import it) covers every test in the run; the harness
+(``run_tests.py``) imports it too. A filtered run of another module alone does not install it;
+#101's whole-suite guard covers that case once merged.
 
 This is narrower than, and composes with, the whole-suite ``tests/_home_guard.py`` of #101
 (temp HOME/HERMES_HOME, hermes shim, ``RealHomeError`` tripwires; imported first by every test).
@@ -27,21 +29,24 @@ from review_loop import config, run_supervisor  # noqa: E402
 REAL_HERMES = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".hermes"
 # With #101's tripwire in the tree, a refusal here is also a ``config.RealHomeError``, so either
 # guard's tests accept the other's refusal.
-_BASE = getattr(config, "RealHomeError", RuntimeError)
+_TRIPWIRE = getattr(config, "RealHomeError", None)
 
 
-class RealHomeTouched(_BASE):
+class RealHomeTouched(_TRIPWIRE or RuntimeError):
     """A test reached the operator's real Hermes home."""
 
 
-# What a refusal of the real ledger can raise: this guard's, or #101's tripwire when present.
-REFUSED = (RealHomeTouched, _BASE)
+# What a refusal of the real ledger can raise: this guard's, or #101's tripwire when present —
+# never a bare RuntimeError, which an unrelated failure could satisfy.
+REFUSED = (RealHomeTouched,) + ((_TRIPWIRE,) if _TRIPWIRE else ())
 
 
 def under_real_home(path) -> bool:
-    real = os.path.abspath(REAL_HERMES)
-    candidate = os.path.abspath(os.path.expanduser(str(path)))
-    return candidate == real or candidate.startswith(real + os.sep)
+    """Is ``path`` the real ``~/.hermes`` or inside it, as spelled or through any symlink?"""
+    path = os.path.expanduser(str(path))
+    reals = {os.path.abspath(REAL_HERMES), os.path.realpath(REAL_HERMES)}
+    forms = {os.path.abspath(path), os.path.realpath(path)}
+    return any(form == real or form.startswith(real + os.sep) for form in forms for real in reals)
 
 
 def _install() -> None:
@@ -52,7 +57,8 @@ def _install() -> None:
     def guarded(self, db, *args, **kwargs):
         presence = kwargs.get("presence")
         if kwargs.get("create", True) and presence is None and \
-                os.path.abspath(db) == os.path.abspath(run_supervisor.production_ledger()):
+                run_supervisor._canonical(db) == run_supervisor._canonical(
+                    run_supervisor.production_ledger()):
             presence = run_supervisor.presence_marker()  # the default the host would use
         for path in (db, presence):
             if path is not None and under_real_home(path):

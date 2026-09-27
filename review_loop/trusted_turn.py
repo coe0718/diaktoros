@@ -20,6 +20,20 @@ from . import (broker_client, broker_ipc, contained, deps, gh, hostdirs, inferen
                safe_push, trusted_fetch)
 
 
+def dependency_cache(loop: dict) -> Path | None:
+    """The loop's host crate cache root, or None: then nothing is fetched into or mounted.
+
+    The host (gate enqueue) creates ``<state_dir>/deps``; a worker never does (#108), so a
+    worker that finds it gone runs without the cache rather than recreate it.
+    """
+    try:
+        if hostdirs.in_worker():
+            hostdirs.ensure(Path(loop['state_dir']).expanduser() / 'deps')
+        return deps.cache_root(loop)
+    except OSError:  # includes a non-private cache: never fetched into, never mounted
+        return None
+
+
 class TurnDenied(Exception):
     pass
 
@@ -321,10 +335,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
         checkout = trusted_fetch.stage(loop, repo=scope.repo, number=scope.number,
                                        head=scope.head, ref=scope.branch, role=scope.role,
                                        sandbox_root=root / 'export')
-        try:
-            cache: Path | None = deps.cache_root(loop)
-        except OSError:  # includes a non-private cache: never fetched into, never mounted
-            cache = None
+        cache = dependency_cache(loop)
         _report(progress, time.strftime('fetching — started %H:%M:%SZ', time.gmtime())
                 + f', bounded at {int(prefetch_timeout)}s, before the turn budget starts')
         prefetched = deps.prepare(checkout, cache, Path(rust), timeout=prefetch_timeout)

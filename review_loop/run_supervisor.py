@@ -191,9 +191,20 @@ def forget_ledger_presence() -> bool:
         return False
 
 
+def _canonical(path) -> str:
+    """Which file ``path`` names, not how it is spelled: ``~`` expanded, symlinks resolved.
+
+    A symlinked ``~/.hermes`` or an aliasing ``HERMES_HOME`` names the same ledger as the
+    canonical path, and a path whose tail does not exist yet resolves through its existing
+    part, so a wiped state dir still compares equal to the ledger it held.
+    """
+    return os.path.realpath(os.path.expanduser(str(path)))
+
+
 def _names(presence: Path | None, db: Path) -> bool:
+    """Does the config-dir marker record the ledger ``db`` is (by file, not spelling)?"""
     try:
-        return presence is not None and presence.read_text().strip() == os.path.abspath(db)
+        return presence is not None and _canonical(presence.read_text().strip()) == _canonical(db)
     except OSError:
         return False
 
@@ -633,14 +644,15 @@ class Supervisor:
         for the production ledger, so no host caller can forget it; other ledger paths use the
         beside-ledger marker alone unless one is passed.
         """
-        db = Path(db)
+        # A literal '~/…' (unexpanded by any shell) names the home's ledger, never ./~ here.
+        db = Path(os.path.expanduser(str(db)))
         # First, before any other check: no ledger at all is a quiet exit, not an error.
         if not create and not _has_content(db):
             raise LedgerMissing(f"run ledger {db} is gone, empty or not SQLite")
         vanished = False
         if create:
             empty = db.is_file() and db.stat().st_size == 0
-            if presence is None and os.path.abspath(db) == os.path.abspath(production_ledger()):
+            if presence is None and _canonical(db) == _canonical(production_ledger()):
                 presence = presence_marker()
             presence = Path(presence) if presence is not None else None
             vanished = (not db.is_file() or empty) and (ledger_marker(db).is_file()
@@ -704,7 +716,7 @@ class Supervisor:
             fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
                          0o600)
             with os.fdopen(fd, "w") as out:
-                out.write(os.path.abspath(self.db) + "\n")
+                out.write(_canonical(self.db) + "\n")
             os.replace(temp, presence)
 
     def _connect(self):

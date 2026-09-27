@@ -339,6 +339,17 @@ class Lifecycle(unittest.TestCase):
                                   work_root=state / "isolated-runs")
         self.assertFalse(state.exists())
 
+    def test_worker_never_creates_the_crate_cache_root(self):
+        state = self.root / "cache-state"
+        state.mkdir()
+        loop = {"state_dir": str(state)}
+        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}):
+            self.assertIsNone(trusted_turn.dependency_cache(loop))  # runs without the cache
+        self.assertFalse((state / "deps").exists())
+        self.assertEqual(trusted_turn.dependency_cache(loop), state / "deps")  # host creates it
+        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}):
+            self.assertEqual(trusted_turn.dependency_cache(loop), state / "deps")
+
     def test_worker_seat_lock_never_creates_the_lock_dir(self):
         home = self.root / "hermes-home"
         locks = home / "state" / "review-loop-seat-locks"
@@ -361,6 +372,7 @@ class Lifecycle(unittest.TestCase):
             gate.enqueue_isolated(loop, "reviewer", 1, "a" * 40)
         self.assertTrue(state.is_dir())
         self.assertEqual((state / "isolated-runs").stat().st_mode & 0o777, 0o700)
+        self.assertEqual((state / "deps").stat().st_mode & 0o777, 0o700)
         self.assertTrue((home / "state" / "review-loop-seat-locks").is_dir())
 
     def test_worker_stderr_goes_to_a_bounded_log_beside_the_ledger(self):
@@ -502,6 +514,77 @@ class Lifecycle(unittest.TestCase):
             watchdog.sweep_ledger(db, presence=run_supervisor.presence_marker())
         self.assertEqual(swept.getvalue().count("vanished"), 1, swept.getvalue())
 
+    def armed_then_wiped(self, home: Path) -> None:
+        """An armed install under ``home`` whose whole state dir is then removed."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(home),
+                                     "REVIEW_LOOP_CONFIG_DIR": str(home / "review-loops.d")}):
+            Supervisor(run_supervisor.production_ledger())
+        shutil.rmtree(home / "state")
+
+    def status_then_watchdog(self, db_arg: str, env: dict) -> tuple[list[str], str]:
+        from scripts import watchdog
+        err, swept = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, env), \
+                patch.object(sys, "argv", ["run_supervisor", "status", db_arg]), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            run_supervisor.main()
+        with patch.dict(os.environ, env), contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(swept):
+            for _ in range(2):
+                watchdog.sweep_ledger(run_supervisor.production_ledger(),
+                                      presence=run_supervisor.presence_marker())
+        return [line for line in own_lines(err) if "vanished" in line], swept.getvalue()
+
+    def test_a_wipe_is_reported_whatever_spelling_names_the_ledger(self):
+        # Identity is the file, not the string (Tuck, #113): a symlinked alias of the Hermes
+        # home, used by HERMES_HOME or by the status argument, is the same ledger.
+        real = self.root / "real-home"
+        alias = self.root / "alias-home"
+        alias.symlink_to(real, target_is_directory=True)
+        cases = {
+            "HERMES_HOME via the alias": (alias, alias / "state" / "review-loop-runs.sqlite"),
+            "argument via the alias": (real, alias / "state" / "review-loop-runs.sqlite"),
+            "argument via the real path, HERMES_HOME via the alias":
+                (alias, real / "state" / "review-loop-runs.sqlite"),
+        }
+        for name, (hermes_home, db_arg) in cases.items():
+            with self.subTest(name):
+                self.armed_then_wiped(real)
+                env = {"HERMES_HOME": str(hermes_home),
+                       "REVIEW_LOOP_CONFIG_DIR": str(hermes_home / "review-loops.d")}
+                lines, swept = self.status_then_watchdog(str(db_arg), env)
+                self.assertEqual(len(lines), 1, lines)
+                self.assertEqual(swept.count("vanished"), 1, swept)
+
+    def test_a_literal_tilde_argument_is_the_home_ledger(self):
+        # `status '~/.hermes/state/review-loop-runs.sqlite'` (no shell expansion) must open the
+        # home's ledger, not build ./~/.hermes under the working directory.
+        home = self.root / "tilde-home"
+        cwd = self.root / "cwd"
+        cwd.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(cwd)
+        self.armed_then_wiped(home / ".hermes")
+        env = {"HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
+               "REVIEW_LOOP_CONFIG_DIR": str(home / ".hermes" / "review-loops.d")}
+        lines, swept = self.status_then_watchdog("~/.hermes/state/review-loop-runs.sqlite", env)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertEqual(swept.count("vanished"), 1, swept)
+        self.assertFalse((cwd / "~").exists())
+
+    def test_the_ledger_guard_refuses_a_symlinked_way_into_the_real_home(self):
+        # Pointed at a throwaway "real" home: nothing real is ever named.
+        fake = self.root / "fake-real"
+        (fake / ".hermes" / "state").mkdir(parents=True)
+        alias = self.root / "way-in"
+        alias.symlink_to(fake, target_is_directory=True)
+        with patch.object(_ledger_guard, "REAL_HERMES", fake / ".hermes"):
+            for create in (True, False):
+                with self.subTest(create=create), \
+                        self.assertRaises(_ledger_guard.RealHomeTouched):
+                    Supervisor(alias / ".hermes" / "state" / "runs.sqlite", create=create)
+        self.assertEqual(list((fake / ".hermes" / "state").iterdir()), [])
+
     def test_a_ledger_one_migration_behind_is_migrated_then_accepted_by_a_worker(self):
         db = self.root / "legacy" / "runs.sqlite"
         Supervisor(db)
@@ -525,6 +608,9 @@ class Lifecycle(unittest.TestCase):
         with patch.dict(os.environ, {"HERMES_HOME": str(real)}), \
                 self.assertRaises(_ledger_guard.REFUSED):
             Supervisor(run_supervisor.production_ledger())
+        # REFUSED is this guard's class, plus #101's config.RealHomeError when that exists;
+        # never a bare RuntimeError, which any unrelated failure could satisfy.
+        self.assertNotIn(RuntimeError, _ledger_guard.REFUSED)
 
     def test_watchdog_notices_a_vanished_ledger_once(self):
         from scripts import watchdog
