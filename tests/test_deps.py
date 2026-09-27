@@ -1,13 +1,16 @@
 """Issue #51: host-side dependency prefetch, read-only offline cache, and what the seat is told."""
+import fcntl
 import json
 import os
 from pathlib import Path
 import pwd
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -143,10 +146,23 @@ elif mode == "fail":
     sys.exit(101)
 elif mode == "sleep":
     import time; time.sleep(30)
+elif mode in ("flood", "some"):
+    # A lockfile whose crates are large: 1 MiB unpacked per step, as cargo would land them.
+    import time
+    d = home / "registry/cache/index.crates.io-1949cf8c6b5b557f"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "itoa-1.0.18.crate").write_bytes(b"x")
+    src = home / "registry/src/index.crates.io-1949cf8c6b5b557f"
+    for step in range(64 if mode == "flood" else 2):
+        crate = src / f"big-{step}"
+        crate.mkdir(parents=True, exist_ok=True)
+        (crate / "lib.rs").write_bytes(b"y" * (1024 * 1024))
+        time.sleep(0.05)
+    (home / "finished").write_text("the fetch ran to completion")
 '''
 
 
-class PrefetchTests(Base):
+class FakeCargo(Base):
     def setUp(self):
         super().setUp()
         self.rust = self.root / "rust"
@@ -163,6 +179,8 @@ class PrefetchTests(Base):
     def record(self):
         return json.loads((self.cache_parent / "cargo/record.json").read_text())
 
+
+class PrefetchTests(FakeCargo):
     def test_not_a_rust_head(self):
         self.assertIsNone(deps.prefetch_rust(self.checkout, self.cache_parent, self.rust))
         self.assertEqual(deps.prepare(self.checkout, self.cache_parent, self.rust), [])
@@ -267,6 +285,170 @@ class PrefetchTests(Base):
             deps.cache_root(loop)
 
 
+MiB = 1024 * 1024
+
+
+def _inventory(root: Path) -> set[str]:
+    return {str(path.relative_to(root)) for path in root.rglob("*")} if root.exists() else set()
+
+
+class ByteCapTests(FakeCargo):
+    """The lockfile is PR-controlled: bounded by package count *and* by bytes, during the fetch."""
+
+    def seed(self, megabytes: int) -> set[str]:
+        """An existing cache from earlier PRs: crates this lockfile does not pin."""
+        cache = self.cache_parent / "cargo"
+        old = cache / "registry/src/index.crates.io-1949cf8c6b5b557f/old-1.0.0"
+        old.mkdir(parents=True)
+        for index in range(megabytes):
+            (old / f"f{index}").write_bytes(b"o" * MiB)
+        return _inventory(cache)
+
+    def test_a_fetch_past_the_cap_is_stopped_and_leaves_no_partial_cache(self):
+        self.write()
+        self.mode("flood")                              # would land 64 MiB
+        before = self.seed(1)
+        started = time.monotonic()
+        result = deps.prefetch_rust(self.checkout, self.cache_parent, self.rust, cap=4 * MiB)
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(result.status, deps.UNAVAILABLE, result)
+        self.assertIn("would exceed 4 MiB", result.reason)
+        self.assertIsNone(result.cache)
+        cache = self.cache_parent / "cargo"
+        self.assertFalse((cache / "finished").exists())            # stopped, not checked after
+        self.assertEqual(_inventory(cache), before)                # nothing this fetch landed
+        self.assertEqual(sorted(p.name for p in self.cache_parent.iterdir()
+                                if p.name.startswith("cargo.")), [])
+        note = deps.seat_note([result], "reviewer")
+        self.assertIn("would exceed 4 MiB", note)
+        self.assertIn("not the PR", note)
+
+    def test_a_first_fetch_past_the_cap_leaves_no_cache_at_all(self):
+        self.write()
+        self.mode("flood")
+        result = deps.prefetch_rust(self.checkout, self.cache_parent, self.rust, cap=3 * MiB)
+        self.assertEqual(result.status, deps.UNAVAILABLE)
+        self.assertEqual([p for p in (self.cache_parent / "cargo").rglob("*")
+                          if p.is_file() and p.stat().st_size], [])
+
+    def test_within_the_cap_is_ready(self):
+        self.write()
+        self.mode("some")                               # 2 MiB
+        result = deps.prefetch_rust(self.checkout, self.cache_parent, self.rust, cap=8 * MiB)
+        self.assertTrue(result.ready, result)
+        self.assertTrue((result.cache / "finished").exists())
+        deps.release([result])
+
+    def test_an_accumulated_cache_is_retired_and_refetched_not_blamed_on_the_pr(self):
+        self.write()
+        self.mode("some")                               # 2 MiB of its own
+        self.seed(3)                                    # 3 MiB other PRs left behind
+        result = deps.prefetch_rust(self.checkout, self.cache_parent, self.rust, cap=4 * MiB)
+        self.assertTrue(result.ready, result)
+        self.assertFalse(any("old-1.0.0" in p for p in _inventory(result.cache)))
+        self.assertEqual([p.name for p in self.cache_parent.iterdir()
+                          if p.name.startswith("cargo.retired")], [])   # nobody held it: gone
+        deps.release([result])
+
+    def test_a_retired_cache_a_running_turn_holds_is_kept_until_released(self):
+        self.write()
+        self.mode("some")
+        self.seed(3)
+        running = deps.hold(self.cache_parent / "cargo")    # a turn is building from it
+        result = deps.prefetch_rust(self.checkout, self.cache_parent, self.rust, cap=4 * MiB)
+        self.assertTrue(result.ready, result)
+        [retired] = [p for p in self.cache_parent.iterdir() if p.name.startswith("cargo.retired")]
+        self.assertTrue((retired / "registry/src/index.crates.io-1949cf8c6b5b557f/old-1.0.0/f0")
+                        .exists())                          # still readable by that turn
+        deps.release([result])
+        # A second retirement while the first is still held: refused, never a third copy.
+        self.seed(3)
+        blocked = deps.prefetch_rust(self.checkout, self.cache_parent, self.rust, cap=4 * MiB)
+        self.assertEqual(blocked.status, deps.UNAVAILABLE)
+        self.assertIn("would exceed 4 MiB", blocked.reason)
+        self.assertIn("still in use", blocked.reason)
+        os.close(running)
+        swept = deps.prefetch_rust(self.checkout, self.cache_parent, self.rust, cap=4 * MiB)
+        self.assertTrue(swept.ready, swept)
+        self.assertFalse(retired.exists())
+        deps.release([swept])
+
+    def test_a_ready_cache_is_held_for_the_turn(self):
+        self.write()
+        [result] = deps.prepare(self.checkout, self.cache_parent, self.rust)
+        self.assertTrue(result.ready)
+        probe = os.open(result.cache / deps.IN_USE, os.O_RDONLY)
+        try:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            deps.release([result])
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(probe)
+
+    def test_cap_default_and_override(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(deps.CAP_ENV, None)
+            self.assertEqual(deps.cache_cap(), 2 * 1024 * MiB)
+            self.assertEqual(deps.refused_cap_override(), None)
+            os.environ[deps.CAP_ENV] = "5"
+            self.assertEqual(deps.cache_cap(), 5 * 1024 * MiB)
+            for bad in ("abc", "0", "2000", "1.5"):
+                os.environ[deps.CAP_ENV] = bad
+                self.assertEqual(deps.cache_cap(), 2 * 1024 * MiB)
+                self.assertIn(bad, deps.refused_cap_override())
+        self.assertEqual(deps.human_bytes(2 * 1024 * MiB), "2 GiB")
+        self.assertEqual(deps.human_bytes(4 * MiB), "4 MiB")
+
+    def test_prepare_applies_the_configured_cap(self):
+        self.write()
+        self.mode("flood")
+        with mock.patch.dict(os.environ, {deps.CAP_ENV: "1"}), \
+             mock.patch.object(deps, "GIB", MiB):          # 1 "GiB" = 1 MiB for the test
+            [result] = deps.prepare(self.checkout, self.cache_parent, self.rust)
+        self.assertEqual(result.status, deps.UNAVAILABLE)
+        self.assertIn("would exceed", result.reason)
+
+
+class GitBoundaryTests(Base):
+    def test_git_dependency_note_names_the_boundary_and_its_reason(self):
+        self.write(LOCK + _package("x", "1.0.0", "git+https://github.com/o/x#a"))
+        rust = self.root / "rust"
+        result = deps.prefetch_rust(self.checkout, self.cache_parent, rust)
+        self.assertEqual(result.status, deps.UNAVAILABLE)
+        self.assertIn("git", result.reason)
+        self.assertTrue(result.boundary)
+        for role in ("reviewer", "fixer", "adjudicator"):
+            note = deps.seat_note([result], role)
+            self.assertIn("deliberate", note)
+            self.assertIn("the host fetches nothing it cannot name", note)
+            self.assertIn("URL the PR chose", note)
+            self.assertIn("not a defect of the PR", note)
+        # A crate name is PR-controlled: it never reaches the seat's host note.
+        self.assertNotIn('"x"', deps.seat_note([result], "reviewer"))
+
+    def test_other_registry_is_the_same_boundary(self):
+        self.write(LOCK + _package("x", "1.0.0", "registry+https://evil.example/index"))
+        result = deps.prefetch_rust(self.checkout, self.cache_parent, self.root / "rust")
+        self.assertTrue(result.boundary)
+        self.assertIn("registry other than crates.io", result.reason)
+
+
+class LedgerTextTests(unittest.TestCase):
+    def test_outcomes_are_one_bounded_line(self):
+        ready = deps.Prefetch("rust", deps.READY, "224 crates.io crates from Cargo.lock",
+                              Path("/c"), seconds=2.44)
+        self.assertEqual(deps.ledger_text([ready]),
+                         "rust: ready — 224 crates.io crates from Cargo.lock (2.4s)")
+        gone = deps.Prefetch("rust", deps.UNAVAILABLE, "x" * 5000, detail="SECRET tool output")
+        text = deps.ledger_text([gone])
+        self.assertTrue(text.startswith("rust: unavailable — "))
+        self.assertLessEqual(len(text), deps.LEDGER_MAX)
+        self.assertNotIn("SECRET", text)                  # tool output never reaches the ledger
+        self.assertEqual(deps.ledger_text([]), "none — no dependency lockfile at the head's root")
+        self.assertNotIn("\n", deps.ledger_text([deps.Prefetch("rust", deps.UNAVAILABLE, "a\nb")]))
+
+
 class SeatNoteTests(unittest.TestCase):
     def test_unavailable_tells_the_reviewer_to_judge_by_reading(self):
         note = deps.seat_note([deps.Prefetch("rust", deps.UNAVAILABLE, "no network")], "reviewer")
@@ -332,6 +514,229 @@ class ContainedMountTests(Base):
         with self.assertRaises(FileNotFoundError):
             contained.command(**self.layout(), entry=["true"],
                               dependency_caches={"rust": self.cache_parent / "absent"})
+
+
+REPO, HEAD = "acme/widgets", "a" * 40
+
+
+class TurnPrefetchTests(unittest.TestCase):
+    """#51 with #49: a slow prefetch is visible, and the sandbox's clock starts after it."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.root.chmod(0o700)
+        tokens = {}
+        for login in ("read", "review", "fix", "adj"):
+            path = self.root / f"{login}.pat"
+            path.write_text("DUMMY_" + login)
+            path.chmod(0o600)
+            tokens[login] = str(path)
+        self.loop = {"id": "widgets", "repo": REPO, "base": "main", "cap": 3,
+                     "state_dir": str(self.root / "state"), "fixers": ["fix"],
+                     "reviewers": ["review"], "tokens": tokens, "read_token": "read",
+                     "reviewer_seat": "review", "adjudicator": {"route": "widgets-breach"},
+                     "seats": {"reviewer": {"login": "review"}, "fixer": {"login": "fix"}}}
+
+    def test_prefetch_is_recorded_before_and_after_and_the_sandbox_gets_its_whole_budget(self):
+        from review_loop import broker_ipc, trusted_turn
+        events = []
+
+        def stage(_loop, **kw):
+            kw["sandbox_root"].mkdir()
+            return kw["sandbox_root"]
+
+        def prepare(checkout, cache, rust, timeout):
+            events.append(("prepare", time.monotonic()))
+            time.sleep(0.4)                     # a slow fetch, before any sandbox exists
+            return [deps.Prefetch("rust", deps.READY, "1 crates.io crates from Cargo.lock",
+                                  cache / "cargo", seconds=0.4)]
+
+        def run(**kw):
+            events.append(("sandbox", time.monotonic(), kw["timeout"]))
+            entry = kw["entry"]
+            events.append(("run-budget", entry[entry.index("--run-budget") + 1]))
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        class Inference:
+            def __init__(self, directory, *a, **k):
+                self.directory = directory
+
+            def __enter__(self):
+                self.directory.mkdir()
+                return self
+
+            def __exit__(self, *a):
+                return False
+        for name in ("venv", "runtime", "rust"):
+            (self.root / name).mkdir()
+        progress = []
+        scope = broker_ipc.RunScope(REPO, 7, HEAD, "adjudicator", "fix-7", "rid",
+                                    str(self.root / "runs.sqlite"))
+        with mock.patch.object(trusted_turn, "_safe_code_snapshot",
+                               side_effect=lambda src, dst: dst.mkdir()), \
+             mock.patch.object(trusted_turn.trusted_fetch, "stage", side_effect=stage), \
+             mock.patch.object(trusted_turn.inference_proxy, "InferenceCapability", Inference), \
+             mock.patch.object(deps, "prepare", side_effect=prepare), \
+             mock.patch.object(contained, "run", side_effect=run), \
+             self.assertRaises(trusted_turn.TurnDenied):
+            trusted_turn.run_turn(self.loop, scope, source=self.root, venv=self.root / "venv",
+                                  runtime=self.root / "runtime", rust=self.root / "rust",
+                                  upstream="https://model.invalid", key="k", model="m",
+                                  prompt="RULE", timeout=5, work_root=self.root / "work",
+                                  progress=progress.append)
+        [(_, fetched_at), (_, sandbox_at, kill_at), (_, run_budget)] = events
+        # The prefetch took none of the turn's budget (#49): Hermes gets all of it, and the
+        # sandbox is killed only at the budget plus its grace, both counted from launch.
+        self.assertEqual(run_budget, "5")
+        self.assertEqual(kill_at, 5 + trusted_turn.KILL_GRACE_S)
+        self.assertGreaterEqual(sandbox_at - fetched_at, 0.4)
+        self.assertEqual(len(progress), 2, progress)
+        self.assertTrue(progress[0].startswith("fetching"), progress)
+        self.assertIn(f"bounded at {deps.FETCH_TIMEOUT}s", progress[0])
+        self.assertEqual(progress[1], "rust: ready — 1 crates.io crates from Cargo.lock (0.4s)")
+
+    def test_a_failing_progress_sink_never_fails_the_turn(self):
+        from review_loop import trusted_turn
+        calls = []
+
+        def sink(text):
+            calls.append(text)
+            raise OSError("ledger busy")
+        trusted_turn._report(sink, "x")
+        trusted_turn._report(None, "x")
+        self.assertEqual(calls, ["x"])
+
+
+class LedgerTests(unittest.TestCase):
+    """Prefetch outcomes live in the run ledger, so status/explain show them after the fact."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.root.chmod(0o700)
+        self.runtime = self.root / "runtime.json"
+        self.runtime.write_text("{}")
+        self.runtime.chmod(0o600)
+
+    def row(self, sup, state="running", owner="w"):
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue(f"d{time.monotonic_ns()}", REPO, 7, HEAD, "reviewer")
+        with sqlite3.connect(sup.db) as con:
+            run_id = con.execute("SELECT id FROM runs ORDER BY created DESC").fetchone()[0]
+            con.execute("UPDATE runs SET state=?, owner=?, generation='g', lease=? WHERE id=?",
+                        (state, owner, time.time() + 60, run_id))
+        return run_id
+
+    def test_only_the_owner_of_a_live_run_records_and_it_is_bounded(self):
+        from review_loop.run_supervisor import Supervisor, dependency_view
+        sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
+                         hermes_home=self.root)
+        run_id = self.row(sup)
+        sup.record_dependencies(run_id, "w", "rust: unavailable — " + "z" * 5000 + "\x1b[31m")
+        sup.record_dependencies(run_id, "intruder", "rust: ready — forged")
+        [view] = dependency_view(sup.db, REPO, 7)
+        self.assertTrue(view["deps"].startswith("rust: unavailable — zzz"))
+        self.assertLessEqual(len(view["deps"]), deps.LEDGER_MAX)
+        self.assertNotIn("\x1b", view["deps"])
+        self.assertEqual((view["seat"], view["pr"], view["state"]), ("reviewer", 7, "running"))
+        self.assertEqual(dependency_view(sup.db, REPO, 8), [])
+        self.assertIsNone(dependency_view(self.root / "absent.sqlite", REPO))
+        # status JSON (python -m review_loop.run_supervisor status) carries it for failed runs.
+        with sqlite3.connect(sup.db) as con:
+            con.execute("UPDATE runs SET state='failed' WHERE id=?", (run_id,))
+        [failed] = sup.status()
+        self.assertTrue(failed["deps"].startswith("rust: unavailable"))
+
+    def test_the_worker_records_every_phase_the_turn_reports(self):
+        from types import SimpleNamespace
+        from review_loop import config, gh, run_supervisor, seat_model, trusted_turn
+        from review_loop.run_supervisor import Supervisor, dependency_view, describe_dependencies
+        sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
+                         hermes_home=self.root)
+        run_id = self.row(sup, state="launching")
+        seen = []
+
+        def run_turn(_loop, _scope, **kw):
+            kw["progress"]("fetching — started 12:00:00Z, bounded at 300s")
+            seen.append(dependency_view(sup.db, REPO, 7)[0]["deps"])
+            kw["progress"]("rust: unavailable — Cargo.lock pins a git dependency")
+            return 0
+        loop = {"id": "widgets", "repo": REPO, "read_token": "read",
+                "state_dir": str(self.root / "state")}
+        settings = {k: str(self.root) for k in ("source", "venv", "runtime", "rust")}
+        with mock.patch.object(seat_model, "load_runtime", return_value=settings), \
+             mock.patch.object(seat_model, "resolve_seat"), \
+             mock.patch.object(config, "by_repo", return_value=loop), \
+             mock.patch.object(gh, "api", return_value={"head": {"sha": HEAD, "ref": "b"}}), \
+             mock.patch.object(gh, "reviews", return_value=[]), \
+             mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
+             mock.patch.object(run_supervisor, "pr_change",
+                               return_value=SimpleNamespace(diff="d", record="r")), \
+             mock.patch.object(run_supervisor, "isolated_prompt", return_value="P"), \
+             mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
+             mock.patch.object(sup, "recover"):
+            sup._run_production(run_id, "w")
+        self.assertEqual(seen, ["fetching — started 12:00:00Z, bounded at 300s"])
+        [row] = dependency_view(sup.db, REPO, 7)
+        self.assertEqual(row["deps"], "rust: unavailable — Cargo.lock pins a git dependency")
+        self.assertEqual(row["state"], "succeeded")
+        self.assertEqual(describe_dependencies(row),
+                         "reviewer #7 @ aaaaaaa succeeded — rust: unavailable — Cargo.lock pins "
+                         "a git dependency")
+
+    def test_a_slow_prefetch_keeps_its_lease_and_is_never_taken_for_a_lost_worker(self):
+        from review_loop.run_supervisor import Supervisor
+        sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
+                         hermes_home=self.root, lease_seconds=1.0)
+        run_id = self.row(sup, state="claimed")
+        states = []
+
+        def slow_turn(rid, owner):
+            with sqlite3.connect(sup.db) as con:
+                con.execute("UPDATE runs SET state='running' WHERE id=?", (rid,))
+            for _ in range(4):                  # 4 s of prefetch: four lease lengths
+                time.sleep(1.0)
+                Supervisor(sup.db).recover()    # a concurrent sweep, as the watchdog runs one
+                with sqlite3.connect(sup.db) as con:
+                    states.append(con.execute("SELECT state FROM runs WHERE id=?",
+                                              (rid,)).fetchone()[0])
+        with mock.patch.object(sup, "_claim", return_value=(run_id, "w")), \
+             mock.patch.object(sup, "_run_production", side_effect=slow_turn):
+            sup._run_one()
+        self.assertEqual(set(states), {"running"})
+
+    def test_status_and_explain_lines_come_from_the_ledger(self):
+        from review_loop import cli, config
+        from review_loop.run_supervisor import Supervisor
+        (self.root / "state").mkdir()
+        sup = Supervisor(self.root / "state/review-loop-runs.sqlite",
+                         production_config=self.runtime, hermes_home=self.root)
+        run_id = self.row(sup)
+        loop = {"repo": REPO}
+        with mock.patch.object(config, "home", return_value=self.root):
+            self.assertEqual(cli._dependency_lines(loop), [])
+            sup.record_dependencies(run_id, "w", "rust: ready — 224 crates.io crates (2.4s)")
+            self.assertEqual(cli._dependency_lines(loop, 7),
+                             ["reviewer #7 @ aaaaaaa running — rust: ready — 224 crates.io "
+                              "crates (2.4s)"])
+            self.assertEqual(cli._dependency_lines({"repo": "other/repo"}), [])
+        with mock.patch.object(config, "home", return_value=self.root / "absent"):
+            self.assertEqual(cli._dependency_lines(loop), [])
+
+    def test_the_cap_override_reaches_the_worker(self):
+        from review_loop import run_supervisor
+        from review_loop.run_supervisor import Supervisor
+        sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
+                         hermes_home=self.root)
+        with mock.patch.dict(os.environ, {deps.CAP_ENV: "6", "GH_TOKEN": "ghp_x"}), \
+             mock.patch.object(run_supervisor.subprocess, "Popen") as popen:
+            sup._spawn()
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env[deps.CAP_ENV], "6")
+        self.assertNotIn("GH_TOKEN", env)
 
 
 @unittest.skipUnless((_toolchain() / "bin/cargo").exists(), "stable Rust toolchain unavailable")

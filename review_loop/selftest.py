@@ -830,11 +830,16 @@ def check_build(report: Report, loop: dict, settings: dict | None, pr: dict | No
             report.add(step, "build:deps", SKIP,
                        "no Cargo.lock/Cargo.toml at the head's root: nothing to prefetch")
             return
+        cap = f"cap {deps.human_bytes(deps.cache_cap())}"
+        refused = deps.refused_cap_override()
+        if refused:
+            cap += f" — {refused}"
         for result in results:
             if result.ready:
                 report.add(step, f"build:{result.ecosystem}:fetch", PASS,
-                           f"host prefetch: {result.reason} (cache {result.cache}, read-only "
-                           "in the sandbox)")
+                           f"host prefetch: {result.reason} in {result.seconds:.1f}s (cache "
+                           f"{result.cache}, {deps.human_bytes(deps._usage(result.cache))} of "
+                           f"the {cap}; read-only in the sandbox)")
             else:
                 tail = [line for line in result.detail.splitlines() if line.strip()][-1:]
                 report.add(step, f"build:{result.ecosystem}:fetch", WARN,
@@ -861,6 +866,8 @@ def check_build(report: Report, loop: dict, settings: dict | None, pr: dict | No
             rc, errors = result.returncode, result.stderr
         except Exception as exc:
             rc, errors = None, f"{type(exc).__name__}: {exc}"
+        finally:
+            deps.release(results)
     last = ([line for line in errors.splitlines() if line.strip()] or ["no output"])[-1][:200]
     if rc == 0:
         report.add(step, "build:rust", PASS,
