@@ -2239,10 +2239,19 @@ def cmd_uninstall(args) -> int:
     jobs, error = _cron_jobs(loop)
     if jobs is None:
         return _uninstall_refused(loop, [f"cron: {error}"], [], args)
+    # What is already gone, for the summary if a later step (the state purge) fails.
+    removed: list[str] = []
     # 1. Stop deliveries: delete the repo hooks while the config still names their routes.
     if keep_hooks:
         print("hooks: kept (--keep-hooks) — they stay live and post to routes about to be removed;"
               " find them with:")
+        print(f"  {_hook_find_command(loop)}")
+    elif not str(loop.get("host") or "").strip():
+        # `init --hooks` refuses without a host, so a host-less loop never created a repo hook
+        # and has no gateway origin to tell its own hooks from anyone else's: nothing to delete.
+        print("hooks: skipped — the loop has no host, so it owns no repo hooks on this gateway "
+              "and none were read or deleted. Any hook posting to its route names was made by "
+              "hand or by another install; list them with:")
         print(f"  {_hook_find_command(loop)}")
     else:
         done, failures, left = _delete_loop_hooks(loop, admin or None)
@@ -2254,12 +2263,16 @@ def cmd_uninstall(args) -> int:
             return _uninstall_refused(loop, failures, left, args)
         if not done:
             print("hooks: none of this loop's routes has a repo hook")
+        elif any(line.endswith(" deleted") for line in done):
+            removed.append("repo hooks")
     # 2. Stop the watchdog.
     done, failures = _remove_cron(loop)
     for line in done:
         print(line)
     if failures:
         return _uninstall_refused(loop, failures, [], args)
+    if done:
+        removed.append("watchdog job")
     shim_line = _remove_unused_shim()
     if shim_line:
         print(shim_line)
@@ -2273,17 +2286,51 @@ def cmd_uninstall(args) -> int:
     for name in _routes_of(loop).values():
         if name and routes.remove_route(name):
             print(f"route removed: {name}")
+            if "routes" not in removed:
+                removed.append("routes")
     if not args.keep_config:
         path = config.config_dir() / f"{loop['id']}.json"
         if path.exists():
             path.unlink()
             print(f"config removed: {path}")
+            removed.append("config")
     if target is not None:
         if target.is_symlink():
             print(f"refused: {target} became a symlink; state left in place")
             return 2
         if target.exists():
-            shutil.rmtree(target)
+            refused: list[tuple[str, str]] = []
+
+            def note(_func, path, exc_info) -> None:
+                # rmtree's own exception names only the entry, relative to an open directory:
+                # keep the full path of every refusal, and delete everything else it can.
+                exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+                refused.append((str(path), getattr(exc, "strerror", None) or str(exc)))
+
+            try:
+                if sys.version_info >= (3, 12):
+                    shutil.rmtree(target, onexc=note)
+                else:
+                    shutil.rmtree(target, onerror=note)
+            except OSError as exc:
+                refused.append((str(getattr(exc, "filename", None) or target),
+                                exc.strerror or str(exc)))
+            if refused or target.exists():
+                # Everything above is already undone and the config is gone, so a re-run cannot
+                # finish this: say what happened and hand over the one command that does.
+                path, why = refused[0] if refused else (str(target), "still present")
+                more = f" (and {len(refused) - 1} more)" if len(refused) > 1 else ""
+                print(f"state NOT removed: {target} — {why}: {path}{more}")
+                print("uninstall INCOMPLETE — removed: "
+                      + (", ".join(removed) or "nothing else")
+                      + "; left behind: "
+                      + ("the repo hooks (--keep-hooks), " if keep_hooks else "")
+                      + f"the state directory {target} (whatever the delete could remove "
+                      "is gone; the rest is still there)")
+                print("fix what refused the delete (the permissions of the path above), then "
+                      "finish with:")
+                print(f"  rm -rf -- {shlex.quote(str(target))}")
+                return 2
             print(f"state removed: {target}")
     elif not args.keep_config:
         _, why = _purge_target(loop)

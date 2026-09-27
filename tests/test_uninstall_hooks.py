@@ -221,6 +221,27 @@ class UninstallRefusalTest(Base):
         self.assertIn("another gateway", out)
 
 
+class HostlessTest(Base):
+    def test_a_loop_without_a_host_owns_no_hooks_and_uninstalls(self):
+        # init --hooks needs a host, so a host-less config never created a repo hook: there is
+        # nothing to delete, and "the loop's repo hooks are still live" would be false.
+        cfg = json.loads(LOOP_FILE.read_text())
+        cfg["host"] = ""
+        LOOP_FILE.write_text(json.dumps(cfg))
+        other = {"id": 9, "active": True, "events": ["pull_request"],
+                 "config": {"url": "https://elsewhere.example/webhooks/widgets-review"}}
+        self.world(hooks=[other])
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("still live", out)
+        self.assertNotIn("refused", out)
+        self.assertIn("hooks: skipped — the loop has no host", out)
+        self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+        self.assertEqual(self.hooks(), [other])  # nothing on GitHub was touched
+        self.assertFalse(LOOP_FILE.exists())
+        self.assertIsNone(routes.route("widgets-review"))
+
+
 class CronTest(Base):
     def test_uninstall_removes_its_job_through_the_fake_scheduler_only(self):
         self.cron_store([self.job("widgets", "job1"), self.job("gadgets", "job2")])
@@ -321,6 +342,36 @@ class PurgeTest(Base):
         self.assertIn(f"rm -- {shlex.quote(str(target))}", out)
         self.assertTrue((real / "sub" / "x.json").exists())
         self.assertTrue(LOOP_FILE.exists())
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                     "root ignores directory permissions")
+    def test_a_state_dir_that_will_not_go_is_reported_not_raised(self):
+        # Hooks, cron, routes and config are already gone when the recursive delete runs: a
+        # PermissionError there must end in a summary and the exact command, never a traceback.
+        self.fresh_install()
+        self.cron_store([self.job("widgets", "job1")])
+        target = self.default_state()
+        locked = target / "sub"
+        locked.chmod(0o500)  # x.json cannot be unlinked from a read-only parent
+        self.addCleanup(lambda: locked.exists() and locked.chmod(0o700))
+        rc, out = self.cli("uninstall", "--loop", "widgets", "--purge")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self.hooks(), [])
+        self.assertFalse(LOOP_FILE.exists())
+        self.assertIsNone(routes.route("widgets-review"))
+        self.assertTrue((locked / "x.json").exists())
+        self.assertNotIn("state removed", out)
+        self.assertIn(f"state NOT removed: {target}", out)
+        self.assertIn(f"Permission denied: {locked / 'x.json'}", out)  # the full path, not 'x.json'
+        summary = next(line for line in out.splitlines() if line.startswith("uninstall INCOMPLETE"))
+        for part in ("repo hooks", "watchdog job", "routes", "config"):
+            self.assertIn(part, summary)
+        self.assertIn("left behind", summary)
+        command = f"rm -rf -- {shlex.quote(str(target))}"
+        self.assertIn(f"  {command}\n", out)
+        locked.chmod(0o700)
+        os.system(command)  # the printed command is the one that finishes the job
+        self.assertFalse(target.exists())
 
     def test_without_purge_default_state_is_kept_and_named(self):
         self.default_state()

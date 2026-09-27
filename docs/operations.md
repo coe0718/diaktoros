@@ -122,7 +122,11 @@ owner case above.
 the config, and reads both back. If it cannot (a token without `admin:repo_hook`/`repo`, an API
 failure, a job the scheduler will not remove) it refuses, changes nothing else, and prints the
 exact `gh api -X DELETE …` / `hermes cron remove …` commands; `--keep-hooks` is the explicit
-opt-out. `init --hooks` refuses when hooks from a previous install still post to the loop's
+opt-out. A loop with no `host` never created hooks (`init --hooks` needs one), so `uninstall`
+skips the hook step for it, says so, and prints the `gh api` listing command. `--purge` deletes the
+state directory last; if that delete fails (a permission, a busy mount) it exits 2 with
+`uninstall INCOMPLETE — removed: …; left behind: …` and the exact `rm -rf -- '<dir>'` that finishes
+it — the config is already gone by then, so a re-run cannot. `init --hooks` refuses when hooks from a previous install still post to the loop's
 routes (they sign with a secret the new routes will not hold), and `doctor` fails a route with
 more than one hook, or whose latest delivery the gateway answered 401/403 (a secret that does not
 match). After `arm` (and `init --hooks --arm`) activates the hooks it asks GitHub to **ping** each
