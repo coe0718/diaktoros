@@ -150,7 +150,7 @@ def parse_expiry(value: str) -> float | None:
 
 
 def github_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
-                  armed: bool | None, armed_error: str) -> list[str]:
+                  armed: bool | None, armed_error: str, listing_error: str = "") -> list[str]:
     """Can this sweep read GitHub at all, as whom, and for how much longer?
 
     Runs every armed-or-unknown sweep, before anything that needs GitHub. Blindness is said out
@@ -170,6 +170,11 @@ def github_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
         error, status = probe.error, probe.status if probe.status is not None else gh.status_of(probe.error)
     elif armed is None:
         error, status = f"hook list: {armed_error or 'unreadable'}", gh.status_of(armed_error)
+    elif listing_error:
+        # The open-PR listing is a read like the others: a 403 there (a token that can see the
+        # hooks but not the pulls) is the same blindness, on the same cadence.
+        error, status = f"open PR list: {listing_error}", gh.status_of(listing_error)
+    error = gh.one_line(error, 300)
 
     record = watch.get("github_read") if isinstance(watch.get("github_read"), dict) else {}
     if error:
@@ -186,7 +191,9 @@ def github_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
                     f"{f' — {hint}' if hint else ''} ({sweeps} sweep(s) since "
                     f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(since))}). "
                     + ("Hook state unknown: stall scan and queue drain are skipped; "
-                       if armed is None else "")
+                       if armed is None else
+                       "Open PRs unknown: stall scan and queue drain are skipped; "
+                       if listing_error and not probe.error else "")
                     + "route self-heal and notices continue.")
         watch["github_read"] = record
     else:
@@ -228,9 +235,12 @@ def github_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
                 f"{failure.get('method') or 'GET'} {failure.get('path') or '?'} as "
                 f"{failure.get('login') or configured} at "
                 f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(at))}: "
-                f"{failure.get('error') or 'unknown error'}{f' — {hint}' if hint else ''}; "
+                f"{gh.one_line(failure.get('error') or 'unknown error', 300)}"
+                f"{f' — {hint}' if hint else ''}; "
                 + ("it treated the PR as unavailable and started nothing"
-                   if (failure.get("method") or "GET") == "GET" else "that call did not take effect")
+                   if (failure.get("method") or "GET") == "GET" else
+                   gh.write_outcome(str(failure.get("method")), str(failure.get("path") or ""),
+                                    status))
                 + (f" — `hermes review-loop explain --loop {loop['id']} --pr {number.group(1)}`"
                    " shows it" if number else ""))
     return lines
@@ -575,8 +585,17 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
     if armed is False:
         return lines                              # parked on purpose: say nothing, ever
     # Armed, or unknown because the hook list could not be read. Unknown is not paused: say so.
+    # With the hooks confirmed, the open-PR listing is read here, before the health check, so
+    # that a listing GitHub refuses counts as a failed read in the same sweep (a /user probe
+    # that works must not announce "reads work again" while the listing is still refused).
+    listing_errors: list[str] = []
+    prs = gh.open_prs(loop, errors=listing_errors) if armed else None
+    listing_said = False
     if not TEST:
-        lines.extend(github_health(loop, st, watch, now, armed, armed_error))
+        health = github_health(loop, st, watch, now, armed, armed_error,
+                               listing_errors[0] if listing_errors else "")
+        listing_said = bool(listing_errors) and any("cannot read GitHub" in x for x in health)
+        lines.extend(health)
 
     # Self-heal first, and independent of GitHub listing: a route another registry writer erased
     # or rewrote (issue #1) is a loop that cannot wake a seat, whatever the PRs look like.
@@ -604,8 +623,8 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
                 0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600, may_redrive=False))
         return lines
 
-    prs = gh.open_prs(loop)
     # Re-drive only while GitHub answers: a re-run during an outage would only fail again.
+    # (The listing was read above, before the health check.)
     if loop.get("state_dir"):
         lines.extend(sweep_gate_failures(
             gate_failures.loop_ledger(loop), f"[{loop['id']}] {loop['repo']}",
@@ -614,7 +633,10 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
     if not isinstance(prs, list):
         # Without a complete listing, even individually readable PRs cannot establish
         # that the sweep's scheduling view is current. Explicit --drain still rechecks.
-        lines.append(f"⚠️ {loop['id']}: could not list open PRs — stall scan and queue drain skipped this run")
+        why = f" ({gh.one_line(listing_errors[0], 200)})" if listing_errors else ""
+        if not listing_said:                  # the health alert above already said it, with why
+            lines.append(f"⚠️ {loop['id']}: could not list open PRs{why} — stall scan and queue "
+                         f"drain skipped this run")
         st.watch_save(watch)
         return lines
 

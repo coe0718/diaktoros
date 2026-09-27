@@ -302,7 +302,10 @@ def group_watchdog() -> None:
     save_world()
     out, _, _ = run("watchdog.py", None, "--loop", "widgets", extra_env=normal)
     check("failed initial listing reports uncertainty", "could not list open PRs" in out, True)
-    check("failed initial listing does not arm", load_state("watchdog.json"), {})
+    watch = load_state("watchdog.json")
+    check("failed initial listing does not arm", sorted(set(watch) - {"github_read"}), [])
+    check("failed initial listing counts as a failed GitHub read",
+          (watch.get("github_read") or {}).get("sweeps"), 1)
     set_prs({"7": pr(7)})
     run("watchdog.py", None, "--loop", "widgets", extra_env=normal)
     old = load_state("watchdog.json")
