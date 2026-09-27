@@ -158,11 +158,17 @@ def contract_drift(loop: dict, role: str, entry: dict) -> list[str]:
     role's prompt, subscribe to its gate's event, run an agent (no ``deliver_only``) and not be
     switched off (``enabled: false`` is a 403). A seat's ``deliver`` is left alone on purpose.
     """
+    wrong = []
+    # The origin a route records is where a manual POST or the plugin's own URL goes; after a
+    # host change (`set --host`, or apply with a new host) it is rewritten like any other field.
+    host = str(loop.get("host") or "").removesuffix("/")
+    stored = str(entry.get("host") or "").removesuffix("/")
+    if host and stored and stored != host:
+        wrong.append("host")
     if role == "observer":
         from . import observer
         return [key for key in routes.contract_mismatch(entry, observer.route_contract(loop))
-                if key not in ("profile", "script")]
-    wrong = []
+                if key not in ("profile", "script")] + wrong
     if entry.get("prompt") != route_intent.ROUTE_PROMPT[role]:
         wrong.append("prompt")
     events = entry.get("events")

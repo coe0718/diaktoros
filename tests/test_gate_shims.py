@@ -1487,6 +1487,72 @@ class ObserverStatusDoctor(Base):
                 rc, out = self.run_cli(["apply", "--loop", "widgets", "--dry-run"])
                 self.assertIn("route widgets-review:", out)
 
+    # -- fourth review of #112: every route-check remedy is a command that works ---------------
+
+    def route_checks(self):
+        return {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)
+                if c.name.startswith(("route:", "gateway-script:"))}
+
+    def follow_through(self, check):
+        """Run the remedy a failed check prints, including a first "remove that entry" step."""
+        self.assertNotIn("re-run init", check.fix, "init refuses an existing loop")
+        self.assertNotIn("init --", check.fix)
+        if check.fix.startswith("remove"):
+            routes.remove_route(check.name.split(":", 1)[1])
+        self.follow(check.fix)
+
+    def test_a_changed_gateway_origin_is_reconciled_by_the_printed_remedy(self):
+        self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
+                     "--adjudicator-profile", "tuck")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--host", "https://moved.example"])
+        self.assertEqual(rc, 0, out)
+        checks = self.route_checks()
+        failed = {name: c for name, c in checks.items() if c.failed}
+        self.assertIn("route:widgets-review", failed)
+        check = failed["route:widgets-review"]
+        self.assertIn("origin", check.detail)
+        rc, dry = self.run_cli(["apply", "--loop", "widgets", "--dry-run"])
+        self.assertNotIn("already matches", dry)
+        self.follow_through(check)
+        self.assertFalse([c for c in self.route_checks().values() if c.failed],
+                         {n: c.detail for n, c in self.route_checks().items() if c.failed})
+        for name in ("widgets-review", "widgets-fix", "widgets-breach"):
+            self.assertEqual(routes.route(name)["host"], "https://moved.example")
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual((rc, "already matches" in out), (0, True), out)
+
+    def test_no_route_check_remedy_names_init(self):
+        mutations = {
+            "secret removed": lambda e: e.pop("secret"),
+            "events changed": lambda e: e.update(events=["push"]),
+            "host elsewhere": lambda e: e.update(host="https://elsewhere.example"),
+            "another profile": lambda e: e.update(profile="drey" if e["profile"] != "drey"
+                                                  else "vex"),
+            "script foreign": lambda e: e.update(script="someone_elses.py"),
+            "prompt foreign": lambda e: e.update(prompt="something else"),
+        }
+        for route in ("widgets-review", "widgets-breach"):
+            for label, mutate in mutations.items():
+                with self.subTest(route=route, mutation=label):
+                    self.setUp()
+                    self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
+                                 "--adjudicator-profile", "tuck")
+                    self.forget_intent()
+                    self.edit_registry(route, mutate)
+                    failed = [c for c in self.route_checks().values()
+                              if c.failed and c.name.endswith(route)]
+                    self.assertTrue(failed, "doctor green over a drifted route")
+                    self.follow_through(failed[0])
+                    left = {n: c.detail for n, c in self.route_checks().items() if c.failed}
+                    self.assertFalse(left)
+
+    def test_the_gate_event_rule_has_one_answer(self):
+        # contract_drift (apply) and doctor's route checks must agree on each gate's event.
+        from review_loop import gate_shims
+        for seat in ("reviewer", "fixer"):
+            self.assertEqual(gate_shims._GATE_EVENT[seat], doctor.GATE_EVENT[seat])
+        self.assertEqual(gate_shims._GATE_EVENT["adjudicator"], "pull_request")
+
 
 if __name__ == "__main__":
     unittest.main()

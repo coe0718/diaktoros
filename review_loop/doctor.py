@@ -476,6 +476,27 @@ def _missing_route_fix(loop: dict) -> str:
     return gate_shims.recreate_fix(loop)
 
 
+def _apply_fix(loop: dict, what: str) -> str:
+    """``apply`` rewrites this loop's own routes from its config (secret kept): the remedy for
+    every route field it reconciles. Never ``init``, which refuses an existing loop."""
+    return f"run `hermes review-loop apply --loop {loop['id']}` to {what} (its secret is kept)"
+
+
+def _secret_fix(loop: dict) -> str:
+    """A route with no secret cannot be rewritten in place: apply keeps the secret it finds, and
+    a new one would not match the repo hook. Recreating it mints one and re-keys the hook."""
+    return (f"remove that entry (a route without a secret can never verify a signature), then "
+            f"{_missing_route_fix(loop)}")
+
+
+def _host_fixes(loop: dict) -> tuple[str, str]:
+    """(invalid origin, no origin): both name the loop's origin with ``set``, then ``apply``."""
+    lid = loop["id"]
+    both = (f"`hermes review-loop set --loop {lid} --host https://your-gateway.example`, then "
+            f"`hermes review-loop apply --loop {lid}` so the routes carry it")
+    return both, both
+
+
 def _prompt_fix(loop: dict, name: str) -> str:
     """The remedy for a route whose prompt no longer proves it is ours: the same one apply prints
     (``gate_shims.divergence``) — repair from the record when it holds the real prompt, else
@@ -490,7 +511,8 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
     profile = str(loop["seats"][seat].get("profile") or "")
     if not name:
         return Check(f"route:{seat}", ABSENT, "no route named for this seat",
-                     f"re-run init for this loop: it names {seat} routes <id>-review/-fix")
+                     f"name the route as seats.{seat}.route in the loop config, then "
+                     f"`hermes review-loop apply --loop {loop['id']} --recreate-routes`")
     entry = _route_entry(data, name)
     if entry is None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
@@ -499,8 +521,7 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but seats.{seat}.profile is "
                      f"{profile!r} — the wake would run the wrong agent",
-                     f"re-run init with --{seat}-profile {profile or '<name>'} so the route and "
-                     f"the loop config agree")
+                     _apply_fix(loop, f"rebind it to {profile or 'the configured profile'}"))
     if entry.get("deliver_only"):
         return Check(f"route:{name}", MISMATCH,
                      "deliver_only is set — the gateway delivers the rendered prompt and runs no "
@@ -515,8 +536,7 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
                      "secret is kept)")
     if not str(entry.get("secret") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a secret",
-                     f"re-run init for this loop: without a secret the hook signature can never "
-                     f"verify, so every event would be rejected")
+                     _secret_fix(loop))
     if not str(entry.get("prompt") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a prompt",
                      _prompt_fix(loop, name))
@@ -530,35 +550,31 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
         return Check(f"route:{name}", MISMATCH,
                      f"runs gate script {script or '(none)'!r}, expected "
                      f"{GATE_SCRIPT[seat]!r}",
-                     f"re-run init for this loop: {GATE_SCRIPT[seat]} is what decides whether an "
-                     f"event starts a {seat} run")
+                     _prompt_fix(loop, name))
     events = entry.get("events")
     if not isinstance(events, list) or any(not isinstance(event, str) for event in events):
         return Check(f"route:{name}", MISMATCH, "events must be a list of event names",
-                     f"re-run init for this loop: the gateway needs an event list for {seat}")
+                     _apply_fix(loop, f"rewrite it with the {seat} gate's event"))
     if GATE_EVENT[seat] not in events:
         return Check(f"route:{name}", MISMATCH,
                      f"events {events or '(none)'} do not include {GATE_EVENT[seat]!r}",
-                     f"re-run init for this loop: the gateway only routes the events a route "
-                     f"subscribes to, so {GATE_EVENT[seat]} never reaches this seat")
+                     _apply_fix(loop, f"rewrite it with {GATE_EVENT[seat]!r}: the gateway only "
+                                "routes the events a route subscribes to"))
     host = str(loop.get("host") or "")
     try:
         url = routes.url_for(name, host or None)
     except config.ConfigError:
         return Check(f"route:{name}", MISMATCH, "invalid webhook host (URL withheld)",
-                     f"fix the stored origin (`hermes review-loop set --loop {loop['id']} "
-                     f"--host https://your-gateway.example`) and re-run init")
+                     _host_fixes(loop)[0])
     if not url:
         return Check(f"route:{name}", ABSENT, "no webhook URL (neither the loop nor the route "
                                               "names a gateway origin)",
-                     "pass --host https://your-gateway.example at init (or set the plugin's "
-                     "webhook host), then re-run init so the route carries it")
+                     _host_fixes(loop)[1])
     stored = str(entry.get("host") or "").removesuffix("/")
     if host and stored and stored != host:
         return Check(f"route:{name}", MISMATCH,
                      "registered gateway origin differs from the loop's configured origin (URLs withheld)",
-                     "re-run init to rewrite the route: a hook or a manual POST still "
-                     f"goes to the recorded origin")
+                     _apply_fix(loop, "rewrite it at the loop's origin"))
     return Check(f"route:{name}", VERIFIED,
                  f"{profile} · {GATE_EVENT[seat]} · [webhook URL redacted]")
 
@@ -579,8 +595,8 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but adjudicator.profile is "
                      f"{profile!r}",
-                     f"re-run init with --adjudicator-profile {profile}: the ruling must not "
-                     f"happen as one of the two seats that just stalled")
+                     _apply_fix(loop, f"rebind it to {profile}: the ruling must not happen as one "
+                                "of the two seats that just stalled"))
     if entry.get("deliver_only"):
         return Check(f"route:{name}", MISMATCH,
                      "deliver_only is set — the gateway delivers the rendered prompt and runs no "
@@ -595,7 +611,7 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
                      "secret is kept)")
     if not str(entry.get("secret") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a secret",
-                     "re-run init for this loop: a wake without a secret cannot be signed")
+                     _secret_fix(loop))
     if not str(entry.get("prompt") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a prompt",
                      _prompt_fix(loop, name))
@@ -607,11 +623,11 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
     events = entry.get("events")
     if not isinstance(events, list) or any(not isinstance(event, str) for event in events):
         return Check(f"route:{name}", MISMATCH, "events must be a list of event names",
-                     "re-run init for this loop: the gateway needs an adjudicator event list")
+                     _apply_fix(loop, "rewrite it with the adjudicator gate's event"))
     if "pull_request" not in events:
         return Check(f"route:{name}", MISMATCH,
                      f"events {events or '(none)'} do not include 'pull_request'",
-                     "re-run init for this loop: breach wakes use pull_request events")
+                     _apply_fix(loop, "rewrite it with 'pull_request': breach wakes use it"))
     script = str(entry.get("script") or "")
     if script in config.LEGACY_GATE_SCRIPTS["adjudicator"]:
         # Installed before the dedicated adjudicator gate. `init` refuses an existing loop, so
@@ -624,11 +640,16 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
     if script != "gate_adjudicator.py":
         return Check(f"route:{name}", MISMATCH,
                      f"runs {script or '(none)'!r}, expected 'gate_adjudicator.py'",
-                     "this route is not the loop's adjudicator gate — point adjudicator.route at "
-                     "a route of its own")
+                     _prompt_fix(loop, name))
     if not (scripts_dir() / script).is_file():
         return Check(f"route:{name}", ABSENT, f"gate_adjudicator.py missing from {scripts_dir()}",
                      "reinstall the plugin")
+    host = str(loop.get("host") or "").removesuffix("/")
+    stored = str(entry.get("host") or "").removesuffix("/")
+    if host and stored and stored != host:
+        return Check(f"route:{name}", MISMATCH,
+                     "registered gateway origin differs from the loop's configured origin (URLs "
+                     "withheld)", _apply_fix(loop, "rewrite it at the loop's origin"))
     return Check(f"route:{name}", VERIFIED, f"{profile} · adjudication wake")
 
 
