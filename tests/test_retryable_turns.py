@@ -18,14 +18,22 @@ from review_loop.run_supervisor import MAX_REARMS, MAX_RETRIES, Supervisor
 
 HEAD = 'a' * 40
 CHILD = r'''
-import os, sqlite3, sys
+import os, sqlite3, sys, time
 db, codes, mode = sys.argv[1], sys.argv[2].split(','), sys.argv[3]
 counter = db + '.launches'
 n = len(open(counter).read().splitlines()) if os.path.exists(counter) else 0
 open(counter, 'a').write('x\n')
 code = int(codes[min(n, len(codes) - 1)])
 con = sqlite3.connect(db, timeout=10)
-run = con.execute("SELECT id FROM runs WHERE state='running'").fetchone()[0]
+# The worker marks the run 'running' just *after* spawning this child; a loaded machine can
+# run the child first. Wait for the mark (bounded) instead of racing it.
+row = None
+for _ in range(1000):
+    row = con.execute("SELECT id FROM runs WHERE state='running'").fetchone()
+    if row:
+        break
+    time.sleep(0.01)
+run = row[0]
 if mode in ('claimed', 'confirmed'):
     # What the broker commits before (claimed) or after (confirmed) a review POST.
     con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created) "
