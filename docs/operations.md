@@ -112,7 +112,13 @@ listing shows that state as a real true/false counts), **1** on a refused or unc
 read-back that disagrees, an unreadable hook listing, no loop hooks on the repo, or one seat's hook
 missing — named per seat as `hook:<route> ABSENT (fixer seat)`, the way `doctor` names it, since a
 loop armed halfway is not armed — and **2** when the loop is unknown or none is configured. A
-failed PATCH that looks transient (a timeout, a 5xx) gets "retry `arm`" first. Without `--admin-token` the PATCH
+hook is a seat's only when it posts to exactly that seat's route name (the last `/webhooks/<route>`
+segment, never a substring of the URL) on the loop's own gateway origin — the exact route URL, or
+the same route under another profile prefix there, which the gateway resolves by name. A hook
+posting to the route name at another origin (a retired gateway, another install) is listed as
+not this loop's, never flipped, and leaves that seat ABSENT. The `fix:` advice is per hook: a
+failed PATCH that looks transient (a timeout, a 5xx) gets "retry `arm`" first, a refusal (401,
+403, 404, or a PATCH that did not stick) the token-scope line, each naming its hooks. Without `--admin-token` the PATCH
 goes out as the loop's `read_token`; the `fix:` line names the scope that login's file needs
 (`repository_hooks: write`, `admin:repo_hook` or classic `repo`) and, when it is the reader, the
 owner case above.
