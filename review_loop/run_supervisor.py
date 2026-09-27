@@ -96,8 +96,8 @@ DEPS_MAX = 600                  # the ledger's dependencies line (``deps.LEDGER_
 # out after admission would be refused at the broker. Either way the turn would only spend a
 # model conversation, so it never starts.
 FIXER_NOT_ADMITTED = ("fixer push not admitted: unattended fixer pushes were off when this "
-                      "verdict was enqueued, and a later opt-in cannot authorize this run — "
-                      "no turn launched; this head needs a manual fix or a new commit")
+                      "verdict was enqueued, and a redelivered event never upgrades that — "
+                      "no turn launched; after opting in, an operator `retry` re-admits it")
 FIXER_PUSH_REVOKED = ("fixer push revoked: unattended fixer pushes were disabled after this "
                       "run was admitted — no turn launched")
 
@@ -294,9 +294,11 @@ GITHUB_FILES_CAP = 3000
 class PRChange(NamedTuple):
     """The prompt section for the change, and the bounded unified diff staged beside it.
 
-    ``partial`` is empty when the host could show the seat the whole change, else the host's own
-    words for what it could not show (#93, #110). The worker records it in the run ledger and the
-    run's scope before launch, and the broker refuses an approval while it is set.
+    ``partial`` is empty only when the seat is shown the whole change, else the host's own words
+    for what it could not show: the file list unreadable (#110); files GitHub declares but does
+    not list and the trees could not name, in whole or in part (#93); or whole files left out of
+    the diff by its byte bound. The worker records it in the run ledger and the run's host-built
+    scope before launch, and the broker refuses an approval (and a fixer's push) while it is set.
     """
     record: str
     diff: str
@@ -476,6 +478,23 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
     elif unnamed:
         unnamed.insert(0, "Named by the host from the merge-base and head trees; they have no "
                           "patches here, so read them in `/work`.")
+    # The trees may explain only part of the gap between what GitHub declares and what it
+    # lists: the rest is unnamed, and a seat cannot review files nobody can name.
+    remainder = (declared - len(files) - len(unlisted)
+                 if type(declared) is int and not files_error and not unlisted_error else 0)
+    if remainder > 0:
+        reason = (f"{remainder} changed file(s) are neither listed by GitHub nor named by the "
+                  f"merge-base and head trees (GitHub reports {declared}, lists {len(files)}, "
+                  f"the trees name {len(unlisted)})")
+        partial = '; '.join(filter(None, [partial, reason]))
+        unnamed.append(f"{reason[0].upper()}{reason[1:]}. You cannot see the whole change: "
+                       f"{instead}" + ("." if fixer else
+                                       " and say that the PR is too large to review whole."))
+    # Whole files the diff's byte bound left out are not in /opt/review/pr.diff either.
+    if diff_cut:
+        reason = (f"the whole diff is bounded to {DIFF_BYTES // 1024} KiB and {diff_cut} changed "
+                  f"file(s) did not fit, so neither the diff nor this record carries them")
+        partial = '; '.join(filter(None, [partial, reason]))
     if omitted:
         patches.append(f"({omitted} more patch(es) not shown here for size; see {REVIEW_DIFF})")
 
@@ -495,6 +514,9 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
         f"- title: {_line(pr.get('title'), CHANGE_TITLE_BYTES) or '(none)'}",
         f"- changed files: {count}",
         f"- whole diff (read-only, bounded to {DIFF_BYTES // 1024} KiB): {REVIEW_DIFF}",
+        *([f"- left out: {diff_cut} changed file(s) did not fit in the diff's "
+           f"{DIFF_BYTES // 1024} KiB. You cannot see the whole change: {instead}."]
+          if diff_cut else []),
         '',
         '### Description (author-written)',
         _fenced(body, 'text') if body else '(empty)',
@@ -594,7 +616,11 @@ def write_evidence(con, run_id: str) -> str | None:
 def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:
     """Up to 100 failed, waiting and uncertain runs, oldest first. Each row carries ``write``:
     why it may have written (never re-armed), or None — then ``retry`` re-arms it."""
-    where, args = "r.state IN ('failed','uncertain','waiting')", []
+    # A fixer run cancelled at claim by the push policy is dead for its head until an operator
+    # acts, so it is listed too (Tuck on #97); a superseded cancellation (head moved, PR
+    # closed) is not, since a new head gets its own turn.
+    where, args = ("(r.state IN ('failed','uncertain','waiting') OR "
+                   "(r.state='cancelled' AND r.error LIKE 'fixer push %'))"), []
     if repo is not None:
         where += ' AND r.repo=?'
         args.append(repo)
@@ -711,6 +737,12 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
         due = max(0, int((row['retry_at'] or 0) - time.time()))
         return (f"attempt {(row['retries'] or 0) + 1} of {MAX_RETRIES} due in {due}s "
                 "(starts on the next event or armed watchdog sweep)")
+    if row['state'] == 'cancelled' and str(row['error'] or '').startswith('fixer push'):
+        return (f"no external write — if unattended fixer pushes are off, turn them on "
+                f"(`hermes review-loop fixer-push --loop {loop_id} --enable "
+                f"--acknowledge-pr-race`), then re-admit it: `hermes review-loop retry --loop "
+                f"{loop_id} --pr {row['pr']} --seat fixer` (an operator retry admits it under the "
+                f"policy then in force; a redelivered event never does)")
     if row['write'] is None:
         rearm = (f"re-arm: hermes review-loop retry --loop {loop_id} "
                  f"--pr {row['pr']} --seat {row['seat']}")
@@ -1265,6 +1297,11 @@ class Supervisor:
                 wrote = write_evidence(con, prior['id'])
                 if wrote is not None:
                     outcome += f': {wrote} — reconcile, never replayed'
+                elif prior['error'] == FIXER_NOT_ADMITTED and prior['push_admitted'] != 1:
+                    # Never upgraded by an event: re-arming would only be cancelled again.
+                    outcome += (": fixer push not admitted — a redelivered event never upgrades "
+                                "admission; after opting in, `hermes review-loop retry` "
+                                "re-admits it")
                 elif (prior['retries'] or 0) >= MAX_REARMS:
                     outcome += (f": {prior['retries']} failed attempts — only "
                                 "`hermes review-loop retry` re-arms it")
@@ -1295,7 +1332,7 @@ class Supervisor:
         con.execute("DELETE FROM operator_notices WHERE run_id=?", (run_id,))
 
     def retry(self, run_id: str, budget: float | None = None) -> str:
-        """Operator re-arm of a failed or waiting run that never wrote (#53).
+        """Operator re-arm of a failed, waiting or cancelled run that never wrote (#53).
 
         ``budget``, when given, is the loop's seat budget now (#49): a turn killed at its
         budget is re-armed on the raised one, not the budget recorded when it was enqueued.
@@ -1303,8 +1340,28 @@ class Supervisor:
         Refuses anything that may have written — uncertain, quarantined, reconciled, or with
         a receipt claim, push intent or ruling on record — with the reconcile instructions.
         Resets the automatic retry budget. Returns the new state; raises ValueError on refusal.
+
+        A fixer run is re-admitted under the push policy in force *now*: a fresh admission
+        snapshot taken under the push-policy lock, the same lock ``submit`` and the broker's push
+        hold. While unattended fixer pushes are off the retry is refused with the command that
+        turns them on. (A redelivered event never upgrades admission; only this does.)
         """
+        from . import config
         with self._connect() as con:
+            first = con.execute('SELECT repo,seat FROM runs WHERE id=?', (run_id,)).fetchone()
+        fixer = first is not None and first['seat'] == 'fixer'
+        with (config.push_policy_lock() if fixer else nullcontext()), self._connect() as con:
+            admitted, policy_off = None, ''
+            if fixer:
+                loop = config.by_repo(first['repo'])
+                if loop is None or not config.unattended_fixer_push_enabled(loop):
+                    command = (config.fixer_push_enable_command(loop) if loop else
+                               'hermes review-loop fixer-push --loop LOOP --enable '
+                               '--acknowledge-pr-race')
+                    policy_off = (f"refused: unattended fixer pushes are off for "
+                                  f"{first['repo']}, so a fixer turn could not publish; run "
+                                  f"`{command}` first, then retry")
+                admitted = 1
             con.execute('BEGIN IMMEDIATE')
             row = con.execute('SELECT state FROM runs WHERE id=?', (run_id,)).fetchone()
             if row is None:
@@ -1321,10 +1378,17 @@ class Supervisor:
                     'gets a fresh turn.')
             if row['state'] not in REARMABLE + ('waiting',):
                 con.execute('COMMIT')
-                raise ValueError(f"refused: run is {row['state']}, not failed or waiting")
+                raise ValueError(f"refused: run is {row['state']}, not failed, waiting or "
+                                 "cancelled")
+            if policy_off:
+                # After the write and state checks: those refusals say more about the run.
+                con.execute('COMMIT')
+                raise ValueError(policy_off)
             if budget is not None and (isinstance(budget, bool) or not budget > 0):
                 con.execute('COMMIT')
                 raise ValueError('positive turn budget required')
+            if admitted is not None:
+                con.execute('UPDATE runs SET push_admitted=? WHERE id=?', (admitted, run_id))
             self._rearm(con, run_id, reset=True, budget=budget)
             con.execute('COMMIT')
         return 'pending'

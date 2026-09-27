@@ -488,25 +488,41 @@ written. Anything else did not.
 
 ```
 pending ──claim──► claimed ──► launching/running ──► succeeded
-   ▲  │ GitHub read failed (a 502), PR draft: stays pending, retried by the next event or sweep
-   │  └ PR closed / head moved: cancelled        (a reopen or redelivery re-arms it)
+   ▲  │ PR draft, or no effective verdict yet: stays pending (a wait, not a failure)
+   │  │ GitHub read failed at claim (a 502, a timeout): waiting, counted like a failed turn
+   │  │ PR closed / head moved: cancelled               (a reopen or redelivery re-arms it)
+   │  │ fixer push not admitted / revoked: cancelled    (listed; an operator `retry` after
+   │  │                                                   opting in re-admits it — see below)
    │                         │ failed, nothing on the write-ahead record
    │                         ├─ transient (non-zero sandbox exit — model 429/5xx, OAuth refresh —,
-   │                         │  timeout, network, staging read): waiting, backoff 2m·2ⁿ⁻¹ (≤1h)
-   ├──── backoff elapsed ────┘     … after 4 attempts: failed
+   │                         │  timeout, network, staging read): waiting, backoff 2m, 4m, 8m
+   ├──── backoff elapsed ────┘     … the 4th failure: failed (with a notice)
    │                         │ killed at its turn budget: failed at once (raise turn_budget_s)
-   ├──── redelivered event (≤8 failures) or `retry` ◄── failed / cancelled
+   ├──── redelivered event (≤8 failures) or `retry` ◄── failed / cancelled / waiting
    │                         │ may have written, or a worker lost/still alive: uncertain
    └─ never ◄────────────────┘   (operator `reconcile` only; never replayed)
 ```
 
+Backoff is `2m·2ⁿ⁻¹` after the n-th failure, so a run waits 120 s, 240 s and 480 s (the
+longest wait the chain can reach) before its fourth failure makes it `failed`. The same count
+covers a GitHub read that failed at claim time: a claim that cannot read the PR waits and retries
+like a failed turn, and is never left pending and invisible.
+
 Due retries start on the next event for the PR, when another run finishes, or on the next armed
 watchdog sweep. A failed run's notice carries the real reason (the exception text, or the sandbox
 exit status) and the tail of the turn's stdout/stderr; `status` and `explain` print the same with
-the next step, and `explain` reports a waiting, write-free failed or uncertain run at the PR's head
-as a `blocked:` line with that step as `next:`. `hermes review-loop retry --loop name --pr 123 [--seat reviewer]` re-arms the
-PR's failed or waiting runs at its newest head, resets their retry budget and starts the worker;
+the next step, and `explain` reports a waiting, write-free failed, cancelled-by-push-policy or
+uncertain run at the PR's head as a `blocked:` line with that step as `next:`.
+`hermes review-loop retry --loop name --pr 123 [--seat reviewer]` re-arms the PR's failed,
+waiting or cancelled runs at its newest head, resets their retry budget and starts the worker;
 it refuses a run that may have written and prints the `reconcile` command instead.
+
+A fixer run the push policy cancelled at claim (pushes were off when its verdict was enqueued, or
+were turned off before it started) is listed by `status` and `explain` with that reason and what
+to do. Admission has two rules. A redelivered event **never** upgrades it: a row admitted while
+pushes were off stays unadmitted. An operator `retry` re-admits it under the policy in force
+**now**, taking a fresh admission snapshot under the same push-policy lock the gate and the
+broker use. While pushes are still off, that retry is refused with the command that turns them on.
 
 ## How it handles a burst
 
