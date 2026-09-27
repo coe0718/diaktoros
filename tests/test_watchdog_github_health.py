@@ -114,11 +114,14 @@ class Health(unittest.TestCase):
         listing.assert_called_once()
 
     def test_expiry_warns_within_the_window_and_daily_after(self):
-        lines, *_ = self.sweep(hooks=(True, ""), probe=expiring(3))
+        # One token, one expiry: GitHub sends the same header on every read. (Building it twice
+        # from the wall clock could straddle a second and name a different expiry.)
+        soon = expiring(3)
+        lines, *_ = self.sweep(hooks=(True, ""), probe=soon)
         warn = [line for line in lines if "read token for rev-coach" in line]
         self.assertEqual(len(warn), 1, lines)
         self.assertIn("in 3.0 day(s)", warn[0])
-        lines, *_ = self.sweep(hooks=(True, ""), probe=expiring(3), at=self.now + 3600)
+        lines, *_ = self.sweep(hooks=(True, ""), probe=soon, at=self.now + 3600)
         self.assertFalse(any("read token" in line for line in lines))
         lines, *_ = self.sweep(hooks=(True, ""), probe=expiring(30))
         self.assertFalse(any("read token" in line for line in lines))
