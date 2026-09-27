@@ -49,6 +49,13 @@ PARTIAL_VIEW_REFUSAL = (
     "the host could not show you the whole change ({reason}); an approval is refused — submit "
     "REQUEST_CHANGES and explain in the body what was unavailable (COMMENT is not a verdict); "
     "nothing was written, resubmit")
+# The fixer's side of the same rule: a fix built without seeing the whole change is not pushed.
+# Its one write is its answers comment instead, stating what it could not see.
+PARTIAL_VIEW_PUSH_REFUSAL = (
+    "the host could not show you the whole change ({reason}); a push is refused — publish your "
+    "answers instead with `python -m review_loop.broker_client request_review --answers-file "
+    "<file>` (no push), saying what was unavailable and what you could check in /work; nothing "
+    "was written, the request is unspent")
 
 
 class ProtocolError(Exception):
@@ -195,6 +202,11 @@ class RunBroker:
                 raise ProtocolError("operation out of scope")
             if self._used:
                 raise ProtocolError("run capability already used")
+            reason = self._partial_view()
+            if reason:
+                # Before the capability, the policy reads and any Git call: a fixer that was not
+                # shown the whole change cannot publish a change to it (#93, #110).
+                raise ProtocolError(PARTIAL_VIEW_PUSH_REFUSAL.format(reason=reason[:300]))
             # The socket request and launch-time loop snapshot are not policy sources.
             # Reload the host-owned repository configuration at the write boundary.
             current_loop = config.by_repo(self.scope.repo)
@@ -273,7 +285,11 @@ class RunBroker:
         expected = {"reviewer": "review", "fixer": "request_review"}.get(self.scope.role)
         if operation != expected or expected is None:
             raise ProtocolError("operation out of scope")
-        if operation == "request_review" and self.require_push and not self._pushed_head:
+        # A partial-view fixer (#93, #110) may not push; its answers, alone, are its one write.
+        answers_only = (operation == "request_review" and not self._pushed_head
+                        and bool(self._partial_view()))
+        if (operation == "request_review" and self.require_push and not self._pushed_head
+                and not answers_only):
             raise ProtocolError("fixer must publish a confirmed push first")
         if not isinstance(verdict, str) or not isinstance(body, str) or len(body.encode()) > MAX_BODY:
             raise ProtocolError("invalid review fields")
@@ -283,7 +299,7 @@ class RunBroker:
         if answers:
             # The fixer's answers ride on its one review request (#52): checked here, before the
             # capability is consumed, so a refusal leaves the request unspent.
-            if not self._pushed_head:
+            if not self._pushed_head and not answers_only:
                 raise ProtocolError("answers are published with the review request after a "
                                     "confirmed push")
             if verdict or not broker.answers_valid(body):
@@ -292,6 +308,9 @@ class RunBroker:
                                     "nothing was written, resubmit")
             if not self.scope.run_id or not self.scope.ledger_db:
                 raise ProtocolError("host run ledger unavailable")
+        if answers_only and not answers:
+            raise ProtocolError("the host could not show you the whole change, so there is no "
+                                "push to review: publish your answers with --answers-file")
         if operation == "review" and (verdict not in broker.REVIEW_VERDICTS or not body.strip()):
             # Refused before the capability is consumed, so the reviewer can resubmit a real
             # verdict in the same turn. A COMMENT would neither wake the fixer nor cue a merge.
@@ -318,6 +337,14 @@ class RunBroker:
         else:
             if operation == 'review' and self.require_receipt:
                 raise ProtocolError('host review claim required')
+            if answers_only:
+                # Nothing was pushed, so nothing new to review: the answers comment at the head
+                # the fixer was given is the whole write. It must actually land.
+                self.answers_outcome = self._publish_answers(head, body)
+                if self.answers_outcome not in ("posted", "uncertain"):
+                    raise ProtocolError(f"answers comment {self.answers_outcome}")
+                self.completed = True
+                return {"answers": self.answers_outcome}
             if answers:
                 # Before the request: the request is what wakes the reviewer, whose record is
                 # read from GitHub, so the answers must already be there. Whatever the comment's

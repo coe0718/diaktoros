@@ -451,19 +451,26 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
     # The broker enforces the "do not approve" below (broker_ipc.PARTIAL_VIEW_REFUSAL): an
     # approval from this run is refused, so the seat is told which verdict it can give.
     partial = ''
+    # What a seat that cannot see the whole change may still do: the reviewer requests changes,
+    # the fixer answers instead of pushing (the broker enforces both).
+    fixer = row['seat'] == 'fixer'
+    instead = ("the broker refuses a push from this turn; publish your answers instead "
+               "(`request_review --answers-file <file>`, no push), saying what was unavailable "
+               "and what you could check in `/work`" if fixer else
+               "do not approve it (the broker refuses an approval from this turn); request "
+               "changes")
     if files_error:
         partial = f"the PR's file list could not be read ({files_error})"
         listed = [f"The host could not read the PR's file list ({files_error}). You cannot see "
-                  f"the whole change: do not approve it (the broker refuses an approval from "
-                  f"this turn); request changes, say that the file list was unavailable, "
-                  f"and review only what you can read in `/work` (the head's files, no history)."]
+                  f"the whole change: {instead}"
+                  + ("." if fixer else ", say that the file list was unavailable, and review "
+                     "only what you can read in `/work` (the head's files, no history).")]
     if unlisted_error:
         partial = partial or (f"GitHub did not list every changed file and the host could not "
                               f"name the rest ({unlisted_error})")
         unnamed = [f"GitHub did not list every changed file, and the host could not name the "
-                   f"rest ({unlisted_error}). You cannot see the whole change: do not approve "
-                   f"it (the broker refuses an approval from this turn); request changes and "
-                   f"say that the PR is too large to review whole."]
+                   f"rest ({unlisted_error}). You cannot see the whole change: {instead}"
+                   + ("." if fixer else " and say that the PR is too large to review whole.")]
     elif unnamed:
         unnamed.insert(0, "Named by the host from the merge-base and head trees; they have no "
                           "patches here, so read them in `/work`.")
@@ -914,12 +921,15 @@ class Supervisor:
             raise ValueError('invalid answers record')
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
-            row = con.execute('SELECT repo,pr,head,seat,state,launch_intent,push_confirmed '
-                              'FROM runs WHERE id=?', (run_id,)).fetchone()
+            row = con.execute('SELECT repo,pr,head,seat,state,launch_intent,push_confirmed,'
+                              'partial_view FROM runs WHERE id=?', (run_id,)).fetchone()
+            # Answers follow a confirmed push — or, when the host recorded that this fixer could
+            # not see the whole change (#93, #110), replace it, at the head it was given.
+            answers_only = bool(row is not None and row['partial_view'] and head == base)
             if (row is None or (row['repo'], row['pr'], row['head'], row['seat']) !=
                     (repo, pr, base, 'fixer') or row['launch_intent'] is None
                     or row['state'] not in ('launching', 'running')
-                    or row['push_confirmed'] is None):
+                    or (row['push_confirmed'] is None and not answers_only)):
                 raise ValueError('answers run identity unavailable')
             if con.execute('SELECT 1 FROM fixer_answers WHERE run_id=?', (run_id,)).fetchone():
                 raise ValueError('answers already recorded')

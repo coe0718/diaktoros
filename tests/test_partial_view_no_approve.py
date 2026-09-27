@@ -180,6 +180,105 @@ class Broker(unittest.TestCase):
         self.assertEqual([r["verdict"] for r in dry.recorded], ["REQUEST_CHANGES"])
 
 
+class FixerBroker(Broker):
+    """A fixer that could not see the whole change cannot push it either (Tuck on #97).
+
+    The push is refused before the capability is spent and before any policy read or Git call;
+    the fixer is told to publish its answers instead, and that one comment is its write.
+    """
+
+    PUSH_REFUSED = "a push is refused"
+
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+
+    def api(self, loop, path, method="GET", body=None, login=None):
+        self.calls.append((method, path, login))
+        if method == "POST" and path.endswith("/issues/7/comments"):
+            self.posts.append(body)
+            return {"id": 23}
+        return super().api(loop, path, method, body, login)
+
+    def fixer_run(self, partial):
+        sup = Supervisor(self.root / "runs.sqlite")
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("f", REPO, 7, HEAD, "fixer")
+        with sqlite3.connect(sup.db) as con:
+            con.execute("UPDATE runs SET state='running', owner='w', launch_intent=1, "
+                        "push_admitted=1")
+            run_id = con.execute("SELECT id FROM runs").fetchone()[0]
+        sup.record_view(run_id, "w", partial)
+        scope = broker_ipc.RunScope(REPO, 7, HEAD, "fixer", "fix-7", run_id, str(sup.db), None,
+                                    partial_view=partial)
+        return sup, scope
+
+    def raw(self, server, request):
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(6)
+            client.connect(str(server.socket_path))
+            client.sendall(json.dumps(request).encode() + b"\n")
+            client.shutdown(socket.SHUT_WR)
+            return json.loads(client.recv(16384))
+
+    def push(self, server):
+        return self.raw(server, {"operation": "push", "manifest": {
+            "files": [{"path": "src/lib.rs", "content": "fn x() {}\n"}], "message": "fix"}})
+
+    def test_a_partial_view_refuses_the_push_and_publishes_the_answers_instead(self):
+        sup, scope = self.fixer_run(REASON)
+        server = self.start(scope, require_push=True)
+        with mock.patch.object(config, "by_repo", side_effect=AssertionError("policy read")), \
+             mock.patch("review_loop.safe_push.push", side_effect=AssertionError("git push")):
+            refused = self.push(server)
+        self.assertFalse(refused["ok"])
+        self.assertIn(REFUSED, refused["error"])
+        self.assertIn(self.PUSH_REFUSED, refused["error"])
+        self.assertIn("--answers-file", refused["error"])
+        self.assertIn("HTTP 404", refused["error"])
+        self.assertEqual(self.posts, [])
+        self.assertFalse(server.completed)
+        # The capability is unspent: the answers, with no push, are this turn's one write.
+        answered = self.raw(server, {"operation": "request_review", "verdict": "",
+                                     "body": "The file list was unavailable (404); from /work "
+                                             "the finding at src/lib.rs:3 still holds."})
+        self.assertTrue(answered["ok"], answered)
+        self.assertEqual(answered["result"].get("answers"), "posted")
+        self.assertEqual(len(self.posts), 1)
+        self.assertIn("The file list was unavailable", self.posts[0]["body"])
+        # No review request: nothing was pushed, so there is nothing new to review.
+        self.assertFalse([c for c in self.calls if c[0] == "POST" and "requested_reviewers" in c[1]])
+        self.assertTrue(server.completed)
+        with sqlite3.connect(sup.db) as con:
+            self.assertEqual(con.execute("SELECT state, base, head FROM fixer_answers").fetchone(),
+                             ("posted", HEAD, HEAD))
+        again = self.push(server)
+        self.assertFalse(again["ok"])
+
+    def test_a_whole_view_still_needs_a_push_before_answers(self):
+        sup, scope = self.fixer_run("")
+        server = self.start(scope, require_push=True)
+        answered = self.raw(server, {"operation": "request_review", "verdict": "", "body": "x"})
+        self.assertFalse(answered["ok"])
+        self.assertIn("confirmed push first", answered["error"])
+        self.assertEqual(self.posts, [])
+        with self.assertRaises(ValueError):          # the ledger refuses a push-less record too
+            sup.begin_answers(run_id=scope.run_id, repo=REPO, pr=7, base=HEAD, head=HEAD,
+                              body="x")
+
+    def test_the_fixer_is_told_to_answer_not_to_push(self):
+        world = pc.World([pc.changed(1)])
+        world.gone[pc.FILES] = "HTTP 404 {}"
+        with mock.patch.object(gh, "fetch", side_effect=world.fetch):
+            fixer = run_supervisor.pr_change(pc.Base.loop, {**pc.Base.row, "seat": "fixer"})
+            reviewer = run_supervisor.pr_change(pc.Base.loop, pc.Base.row)
+        self.assertIn("the broker refuses a push from this turn", fixer.record)
+        self.assertIn("--answers-file", fixer.record)
+        self.assertNotIn("do not approve", fixer.record)
+        self.assertIn("do not approve it", reviewer.record)
+        self.assertNotIn("refuses a push", reviewer.record)
+
+
 class HostRecordsTheView(pc.Base):
     """pr_change says whether the view is complete; the worker records it before launch."""
 
