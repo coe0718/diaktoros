@@ -2,10 +2,6 @@
 
 Nothing here touches a real credential, profile, network or ~/.hermes: profiles live in a
 throwaway HERMES_HOME, a fake ``hermes_cli``/``agent`` tree (the entry points the resolver imports
-try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
-    from tests import _home_guard  # noqa: F401
-except ImportError:
-    import _home_guard  # noqa: F401
 from the real Hermes source) resolves them — including a fake Codex-style ``auth.json`` with a
 refresh token that rotates under a fake ``auth.lock`` — and every upstream is a local HTTP fake.
 """

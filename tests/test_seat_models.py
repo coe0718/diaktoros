@@ -4,10 +4,6 @@ No real Hermes, credentials, ~/.hermes or network: a throwaway HERMES_HOME holds
 and a fake ``hermes_cli`` package (the same entry points the resolver imports from the real
 Hermes source tree) resolves them. The model upstream is never contacted.
 """
-try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
-    from tests import _home_guard  # noqa: F401
-except ImportError:
-    import _home_guard  # noqa: F401
 import argparse
 import importlib.util
 import io

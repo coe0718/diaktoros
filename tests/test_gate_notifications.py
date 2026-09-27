@@ -1,10 +1,6 @@
 """Adversarial webhook snapshots must not claim stale heads or reclaimed disk."""
 from __future__ import annotations
 
-try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
-    from tests import _home_guard  # noqa: F401
-except ImportError:
-    import _home_guard  # noqa: F401
 import contextlib
 import io
 import json
@@ -28,7 +24,9 @@ def pr(head=HEAD_A, state="open"):
 
 
 # These tests reach code that reads config.home(): never the operator's (#108).
-setUpModule, tearDownModule = _home_guard.module_home()
+import _ledger_guard  # noqa: E402
+
+setUpModule, tearDownModule = _ledger_guard.module_home()
 
 
 class NotificationFreshnessTest(unittest.TestCase):

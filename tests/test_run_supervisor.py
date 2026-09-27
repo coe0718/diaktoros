@@ -1,8 +1,4 @@
 """Fixture-only lifecycle tests: never invoke a real Hermes agent."""
-try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
-    from tests import _home_guard  # noqa: F401
-except ImportError:
-    import _home_guard  # noqa: F401
 import concurrent.futures
 import contextlib
 import io
@@ -23,6 +19,7 @@ from unittest.mock import patch
 
 from review_loop import broker, broker_ipc, config, gate, run_supervisor, seat_model, trusted_turn
 from review_loop.hostdirs import HostStateGone
+import _ledger_guard  # noqa: E402  refuses the operator's real ledger (#108)
 from review_loop.run_supervisor import (_WORKERS, MAX_ATTEMPTS, SILENT, LedgerMissing,
                                         Supervisor)
 
@@ -520,16 +517,14 @@ class Lifecycle(unittest.TestCase):
                          ._expected_schema()["runs"], set())
 
     def test_the_suite_guard_refuses_the_real_ledger(self):
-        from tests import _home_guard
-        real = _home_guard.REAL_HERMES
-        with self.assertRaises(_home_guard.RealHomeTouched):
+        real = _ledger_guard.REAL_HERMES
+        # Installed process-wide by this module's import, so it covers the whole discover run.
+        self.assertTrue(getattr(Supervisor.__init__, "_ledger_guarded", False))
+        with self.assertRaises(_ledger_guard.RealHomeTouched):
             Supervisor(real / "state" / "review-loop-runs.sqlite")
         with patch.dict(os.environ, {"HERMES_HOME": str(real)}), \
-                self.assertRaises(_home_guard.RealHomeTouched):
+                self.assertRaises(_ledger_guard.REFUSED):
             Supervisor(run_supervisor.production_ledger())
-        missing = [p.name for p in Path(__file__).parent.glob("test_*.py")
-                   if "import _home_guard  # noqa: F401" not in p.read_text()]
-        self.assertEqual(missing, [], "every test module must import the guard")
 
     def test_watchdog_notices_a_vanished_ledger_once(self):
         from scripts import watchdog

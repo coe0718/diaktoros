@@ -1076,10 +1076,11 @@ class Supervisor:
         host_home = self.hermes_home or Path(os.environ.get("HERMES_HOME", os.environ["HOME"])).resolve(strict=True)
         env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
                "HOME": str(host_home), "HERMES_HOME": str(host_home),
-               "REVIEW_LOOP_TEST_FIXTURE": "1" if self.fixture_mode else "0",
-               WORKER_ENV: "1"}
+               "REVIEW_LOOP_TEST_FIXTURE": "1" if self.fixture_mode else "0"}
         if os.environ.get("REVIEW_LOOP_GH_STUB") and self.fixture_mode:
             env["REVIEW_LOOP_GH_STUB"] = os.environ["REVIEW_LOOP_GH_STUB"]
+
+        env[WORKER_ENV] = "1"  # hostdirs: a worker never creates host state (#108)
         _WORKERS[:] = [worker for worker in _WORKERS if worker.poll() is None]
         log = self._worker_log()
         try:

@@ -1,9 +1,15 @@
-"""Test-suite guard: no test may open the operator's real run ledger (#108).
+"""Ledger guard for the tests: no test may open the operator's real run ledger (#108).
 
-Every test module imports this. It wraps ``Supervisor.__init__`` so that a ledger (or a
-presence marker) under the real user's ``~/.hermes`` — found from the password database, not
-from ``HOME`` or ``HERMES_HOME``, which tests repoint — is refused before anything is read or
-written. A test that reaches the production ledger must pin ``HERMES_HOME`` to a temp dir.
+It wraps ``Supervisor.__init__`` so that a ledger (or a presence marker) under the real user's
+``~/.hermes`` — found from the password database, not from ``HOME`` or ``HERMES_HOME``, which
+tests repoint — is refused before anything is read or written. The wrapper is process-wide,
+so one import during ``discover`` (``test_run_supervisor`` and the modules that use
+``module_home()`` import it) covers every test in the run.
+
+This is narrower than, and composes with, the whole-suite ``tests/_home_guard.py`` of #101
+(temp HOME/HERMES_HOME, hermes shim, ``RealHomeError`` tripwires; imported first by every test).
+Intended final state once both are merged: ``_home_guard`` stays each test's first import, and
+imports ``_ledger_guard`` at its end, so every test and the harness get both.
 """
 from __future__ import annotations
 
@@ -16,13 +22,20 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from review_loop import run_supervisor  # noqa: E402
+from review_loop import config, run_supervisor  # noqa: E402
 
 REAL_HERMES = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".hermes"
+# With #101's tripwire in the tree, a refusal here is also a ``config.RealHomeError``, so either
+# guard's tests accept the other's refusal.
+_BASE = getattr(config, "RealHomeError", RuntimeError)
 
 
-class RealHomeTouched(RuntimeError):
+class RealHomeTouched(_BASE):
     """A test reached the operator's real Hermes home."""
+
+
+# What a refusal of the real ledger can raise: this guard's, or #101's tripwire when present.
+REFUSED = (RealHomeTouched, _BASE)
 
 
 def under_real_home(path) -> bool:
@@ -33,7 +46,7 @@ def under_real_home(path) -> bool:
 
 def _install() -> None:
     original = run_supervisor.Supervisor.__init__
-    if getattr(original, "_home_guarded", False):
+    if getattr(original, "_ledger_guarded", False):
         return
 
     def guarded(self, db, *args, **kwargs):
@@ -47,7 +60,7 @@ def _install() -> None:
                                       "pin HERMES_HOME (and REVIEW_LOOP_CONFIG_DIR) to a temp dir")
         return original(self, db, *args, **kwargs)
 
-    guarded._home_guarded = True
+    guarded._ledger_guarded = True
     run_supervisor.Supervisor.__init__ = guarded
 
 

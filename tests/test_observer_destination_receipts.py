@@ -1,8 +1,4 @@
 """Observer destination and legacy receipt safety regressions."""
-try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
-    from tests import _home_guard  # noqa: F401
-except ImportError:
-    import _home_guard  # noqa: F401
 import json
 import pathlib
 import tempfile
@@ -15,7 +11,9 @@ from review_loop.state import LoopState
 
 
 # These tests reach code that reads config.home(): never the operator's (#108).
-setUpModule, tearDownModule = _home_guard.module_home()
+import _ledger_guard  # noqa: E402
+
+setUpModule, tearDownModule = _ledger_guard.module_home()
 
 
 class ObserverSafetyTests(unittest.TestCase):

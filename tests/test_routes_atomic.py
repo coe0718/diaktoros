@@ -1,10 +1,6 @@
 """Cross-process and failure-path regression tests for the shared webhook registry."""
 from __future__ import annotations
 
-try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
-    from tests import _home_guard  # noqa: F401
-except ImportError:
-    import _home_guard  # noqa: F401
 import json
 import multiprocessing
 import os

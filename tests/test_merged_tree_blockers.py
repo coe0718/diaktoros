@@ -1,10 +1,6 @@
 """Regressions for observer installation, first-sweep notices, and effective verdicts."""
 from __future__ import annotations
 
-try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
-    from tests import _home_guard  # noqa: F401
-except ImportError:
-    import _home_guard  # noqa: F401
 import contextlib
 import io
 import pathlib
@@ -40,7 +36,9 @@ REJECTED = review(101, "CHANGES_REQUESTED", "2026-01-01T00:01:00Z")
 
 
 # These tests reach code that reads config.home(): never the operator's (#108).
-setUpModule, tearDownModule = _home_guard.module_home()
+import _ledger_guard  # noqa: E402
+
+setUpModule, tearDownModule = _ledger_guard.module_home()
 
 
 class ObserverInitCollisionTest(unittest.TestCase):

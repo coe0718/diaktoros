@@ -3,10 +3,6 @@
 Stdlib only, disposable HOME/HERMES_HOME. The "tokens" are short obviously-fake sentinels; every
 test ends by grepping everything the CLI printed and every file it wrote for them.
 """
-try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
-    from tests import _home_guard  # noqa: F401
-except ImportError:
-    import _home_guard  # noqa: F401
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
 import io

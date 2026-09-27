@@ -261,11 +261,14 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
         raise TurnDenied('scope mismatch')
     if no_write is not False and (no_write is not True or scope.role != 'reviewer'):
         raise TurnDenied('no-write mode supports only a reviewer turn')
+    # The host (gate enqueue) creates the work root; a worker never recreates host state (#108).
+    if hostdirs.in_worker():  # checks only: nothing is created here
+        hostdirs.ensure(Path(work_root or loop['state_dir']).expanduser())
+
     if not model or not prompt or timeout < 1 or not key:
         raise TurnDenied('missing model, prompt or credential')
     parent = Path(work_root or loop['state_dir']).resolve()
-    # The host (gate enqueue) creates the work root; a worker never recreates host state.
-    hostdirs.ensure(parent, mode=0o700)
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if parent.is_symlink() or parent.stat().st_mode & 0o077:
         raise TurnDenied('work root must be private')
     with tempfile.TemporaryDirectory(prefix='turn-', dir=parent) as tmp:

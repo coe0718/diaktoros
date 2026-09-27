@@ -4,10 +4,6 @@ The ONLY fake transport is sitecustomize in a disposable copy of the package.
 Production _spawn strips the ambient GH stub; production modules are copied unchanged.
 No real GitHub, provider, user HOME, or token is used.
 """
-try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
-    from tests import _home_guard  # noqa: F401
-except ImportError:
-    import _home_guard  # noqa: F401
 import hashlib
 import http.client
 import http.server
