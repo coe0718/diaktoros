@@ -485,6 +485,12 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
                      f"{profile!r} — the wake would run the wrong agent",
                      f"re-run init with --{seat}-profile {profile or '<name>'} so the route and "
                      f"the loop config agree")
+    if entry.get("enabled", True) is False:
+        return Check(f"route:{name}", MISMATCH,
+                     "disabled in the registry (enabled: false) — the gateway answers 403 to "
+                     "every event, so this seat is never woken",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to re-enable it (its "
+                     "secret is kept)")
     if not str(entry.get("secret") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a secret",
                      f"re-run init for this loop: without a secret the hook signature can never "
@@ -548,6 +554,12 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
                      f"{profile!r}",
                      f"re-run init with --adjudicator-profile {profile}: the ruling must not "
                      f"happen as one of the two seats that just stalled")
+    if entry.get("enabled", True) is False:
+        return Check(f"route:{name}", MISMATCH,
+                     "disabled in the registry (enabled: false) — the gateway answers 403 to "
+                     "every event, so no adjudicator is woken",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to re-enable it (its "
+                     "secret is kept)")
     if not str(entry.get("secret") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a secret",
                      "re-run init for this loop: a wake without a secret cannot be signed")

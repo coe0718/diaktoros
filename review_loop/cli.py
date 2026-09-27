@@ -357,6 +357,23 @@ def _route_binds(loop: dict, touched: set[str]) -> dict:
     return binds
 
 
+def _disabled_routes(loop: dict) -> dict:
+    """role → route name for this loop's own routes the registry has switched off.
+
+    The gateway answers 403 to every event on an explicit ``enabled: false`` (Hermes
+    ``webhook.py``), so a seat behind it is never woken. Only a route provably ours (its role's
+    gate and prompt) counts; rewriting it from the config drops the key, secret kept.
+    """
+    off: dict = {}
+    for role, name in _routes_of(loop).items():
+        entry = routes.route(name)
+        if (isinstance(entry, dict) and entry.get("enabled", True) is False
+                and entry.get("script") == GATE_SCRIPT[role]
+                and entry.get("prompt") == _ROUTE_PROMPT[role]):
+            off[role] = name
+    return off
+
+
 def _stale_scripts(loop: dict) -> dict:
     """role → (route name, installed script) for this loop's routes still on an older gate.
 
@@ -1250,7 +1267,8 @@ def cmd_apply(args) -> int:
     # A route installed by an older release (the pre-#21 breach route on gate_reviewer.py) is
     # repaired here too: `init` refuses an existing loop, so apply is the only reconcile path.
     repairs = _stale_scripts(updated)
-    rebinding = touched | set(binds) | set(repairs)
+    reenable = _disabled_routes(updated)
+    rebinding = touched | set(binds) | set(repairs) | set(reenable)
     try:
         # Validate what this apply would *write*: a loop that predates the seat checks keeps
         # loading, but a seat this push moves must be one that can actually run.
@@ -1298,7 +1316,7 @@ def cmd_apply(args) -> int:
     missing_routes = sorted(name for role, name in _routes_of(updated).items()
                             if role in touched and not routes.route(name))
 
-    if not changes and not identity and not binds and not repairs:
+    if not changes and not identity and not binds and not repairs and not reenable:
         print(f"[{loop['id']}] already matches the plugin settings")
         return 1 if _diverged(updated) else 0
     if not args.dry_run and updated.get("host") != loop.get("host") and loop.get("observer"):
@@ -1316,6 +1334,9 @@ def cmd_apply(args) -> int:
     for role, (name, current, target) in sorted(binds.items()):
         print(f"  route {name}: profile {current or '(blank)'} → {target}   (the URL carries "
               "the profile)")
+    for role, name in sorted(reenable.items()):
+        print(f"  route {name}: disabled (enabled: false) → enabled   (the gateway answers 403 "
+              "to every event while it is off)")
     for role, (name, script) in sorted(repairs.items()):
         print(f"  route {name}: script {script} → {GATE_SCRIPT[role]}   (installed by an older "
               "release)")
@@ -1328,7 +1349,8 @@ def cmd_apply(args) -> int:
         return 2
 
     if args.dry_run:
-        rewritten = {bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
+        rewritten = ({bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
+                     | set(reenable.values()))
         if getattr(args, "recreate_routes", False):
             rewritten |= set(missing.values())
         left = _diverged(updated, rewritten=rewritten)
@@ -1357,12 +1379,13 @@ def cmd_apply(args) -> int:
         print(f"refused: {exc}")
         return 2
     previous = {name: routes.route(name)
-                for name in {bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}}
+                for name in ({bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
+                             | set(reenable.values()))}
     config_path = config.config_dir() / f"{loop['id']}.json"
     previous_config = config_path.read_bytes()
     attempted_hooks = []
     try:
-        rewrite = tuple(set(binds) | set(repairs))
+        rewrite = tuple(set(binds) | set(repairs) | set(reenable))
         rebound = list(_install_routes(updated, roles=rewrite).items()) if rewrite else []
         for role, name in rebound:
             entry = routes.route(name)
@@ -1370,6 +1393,8 @@ def cmd_apply(args) -> int:
                 raise config.ConfigError(f"route {name} readback does not match requested profile")
             if entry.get("script") != GATE_SCRIPT[role]:
                 raise config.ConfigError(f"route {name} readback does not run {GATE_SCRIPT[role]}")
+            if entry.get("enabled", True) is False:
+                raise config.ConfigError(f"route {name} readback is still disabled")
         for hook_id, old, new in hook_moves:
             attempted_hooks.append((hook_id, old))
             _patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None)
@@ -1407,7 +1432,8 @@ def cmd_apply(args) -> int:
     print(f"loop config updated: {path}")
     for role, name in rebound:
         print(f"  route {name} rebound → profile {config.seat_profile(updated, role)}"
-              + (f", script {GATE_SCRIPT[role]}" if role in repairs else ""))
+              + (f", script {GATE_SCRIPT[role]}" if role in repairs else "")
+              + (", enabled" if role in reenable else ""))
     for hook_id, _, new in hook_moves:
         print(f"  hook {hook_id} → {new}")
     return 1 if _diverged(updated) else 0

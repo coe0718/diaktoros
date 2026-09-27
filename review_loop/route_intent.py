@@ -40,12 +40,13 @@ INTENT_FILE = "route-intent.json"
 VERSION = 1
 
 # The fields that decide whether a route still wakes the right seat and still authenticates.
-WATCHED = ("secret", "script", "prompt", "events", "profile", "deliver_only", "host")
+# ``enabled``: the plugin never writes the key, and an explicit ``false`` makes the gateway answer
+# 403 to every event — a switched-off seat, so heal drops it like any other drifted field.
+WATCHED = ("secret", "script", "prompt", "events", "profile", "deliver_only", "host", "enabled")
 # The observer route also carries where its notices go: the feed refuses a route whose
 # destination is not the one the loop authorized (``observer.route_contract``), so a changed
-# ``deliver``/``deliver_extra`` is a dead feed, and restoring the recorded one is the repair. So
-# is ``enabled: false``: the gateway answers 403, and the plugin never writes the key at all.
-OBSERVER_WATCHED = WATCHED + ("deliver", "deliver_extra", "enabled")
+# ``deliver``/``deliver_extra`` is a dead feed, and restoring the recorded one is the repair.
+OBSERVER_WATCHED = WATCHED + ("deliver", "deliver_extra")
 
 
 def watched(role: str) -> tuple[str, ...]:

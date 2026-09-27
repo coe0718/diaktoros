@@ -1142,6 +1142,45 @@ class ObserverStatusDoctor(Base):
                 self.assertEqual(self.observer_check().status, doctor.VERIFIED)
                 self.assertIsNotNone(self.feed_target())
 
+    def test_a_disabled_seat_route_is_red_and_the_named_remedy_reenables_it(self):
+        # `enabled: false` makes the gateway answer 403 to every event: a seat that is never woken.
+        for role, name, with_record in (("reviewer", "widgets-review", True),
+                                        ("reviewer", "widgets-review", False),
+                                        ("fixer", "widgets-fix", False),
+                                        ("adjudicator", "widgets-breach", True),
+                                        ("adjudicator", "widgets-breach", False)):
+            with self.subTest(route=name, with_record=with_record):
+                self.setUp()
+                self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
+                             "--adjudicator-profile", "tuck")
+                if not with_record:
+                    self.forget_intent()
+                self.edit_registry(name, lambda e: e.update(enabled=False))
+                checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"),
+                                                               offline=True)}
+                check = checks[f"route:{name}"]
+                self.assertEqual(check.status, doctor.MISMATCH, check.detail)
+                self.assertIn("enabled", check.detail)
+                self.assertIn("--repair" if with_record else "apply --loop widgets", check.fix)
+                if not with_record:
+                    rc, dry = self.run_cli(["apply", "--loop", "widgets", "--dry-run"])
+                    self.assertIn(f"route {name}: disabled", dry)
+                    self.assertFalse(routes.route(name).get("enabled", True), "dry run wrote")
+                self.follow(check.fix)
+                self.assertNotIn("enabled", routes.route(name))
+                checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"),
+                                                               offline=True)}
+                self.assertEqual(checks[f"route:{name}"].status, doctor.VERIFIED,
+                                 checks[f"route:{name}"].detail)
+
+    def test_the_watchdog_heal_reenables_a_disabled_seat_route(self):
+        from review_loop import route_intent
+        self.install()
+        self.edit_registry("widgets-fix", lambda e: e.update(enabled=False))
+        lines = route_intent.heal(config.load_id("widgets"))
+        self.assertTrue(any("widgets-fix: had changed enabled" in line for line in lines), lines)
+        self.assertNotIn("enabled", routes.route("widgets-fix"))
+
 
 if __name__ == "__main__":
     unittest.main()
