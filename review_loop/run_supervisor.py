@@ -84,6 +84,11 @@ RULINGS = ("ACCEPT", "REJECT", "RESPEC")
 # reported as uncertain and never replayed.
 COMMENT_STATES = ("pending", "none", "denied", "posting", "posted", "uncertain")
 _WORKERS: list[subprocess.Popen] = []
+# Host limits the operator sets in the supervisor's environment. The detached worker starts from a
+# scratch environment, so each is forwarded by name (and only these): without it an override would
+# silently never reach the process that enforces it.
+HOST_LIMIT_ENV = ("REVIEW_LOOP_CRATE_CACHE_GIB",)
+DEPS_MAX = 600                  # the ledger's dependencies line (``deps.LEDGER_MAX``)
 # Why a fixer row is cancelled at claim instead of launched. A run admitted while pushes were
 # off can never publish (a later opt-in does not authorize it, #22); a run whose loop was opted
 # out after admission would be refused at the broker. Either way the turn would only spend a
@@ -557,9 +562,13 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     if pr is not None:
         where += ' AND r.pr=?'
         args.append(pr)
+    # The dependency prefetch line (#51) is read when the ledger has it; a read-only view
+    # never migrates.
+    deps = ('r.deps' if 'deps' in {c[1] for c in con.execute('PRAGMA table_info(runs)')}
+            else 'NULL AS deps')
     rows = [dict(row) for row in con.execute(
         "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.turn_key,r.state,r.pid,r.error,"
-        "r.detail,r.retries,r.retry_at,r.outcome,n.state AS notice FROM runs r "
+        f"r.detail,r.retries,r.retry_at,r.outcome,{deps},n.state AS notice FROM runs r "
         "LEFT JOIN operator_notices n ON n.run_id=r.id WHERE " + where +
         " ORDER BY r.created,r.id LIMIT 100", args)]
     for row in rows:
@@ -567,22 +576,56 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     return rows
 
 
-def read_only_view(db: str | Path, repo: str, pr: int | None = None) -> list[dict] | None:
-    """``runs_view`` without writing anything — no schema migration, no WAL creation — for
-    ``status``/``explain``. None when the ledger is absent or unreadable."""
+def _read_only(db: str | Path):
+    """A connection that writes nothing — no migration, no WAL creation — or None when the ledger
+    is absent. With no live WAL, ``immutable`` keeps even a read-only connection from creating
+    -wal/-shm files; with one, those files already exist."""
     path = Path(db)
     if not path.is_file():
         return None
-    # With no live WAL there is nothing uncheckpointed to miss, and ``immutable`` keeps even a
-    # read-only connection from creating -wal/-shm files; with one, those files already exist.
+    from urllib.parse import quote
     live = Path(f'{path}-wal').exists()
+    con = sqlite3.connect(f"file:{quote(str(path))}?{'mode=ro' if live else 'immutable=1'}",
+                          uri=True, timeout=5)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def read_only_view(db: str | Path, repo: str, pr: int | None = None) -> list[dict] | None:
+    """``runs_view`` without writing anything — no schema migration, no WAL creation — for
+    ``status``/``explain``. None when the ledger is absent or unreadable."""
     try:
-        from urllib.parse import quote
-        con = sqlite3.connect(f"file:{quote(str(path))}?{'mode=ro' if live else 'immutable=1'}",
-                              uri=True, timeout=5)
+        con = _read_only(db)
+        if con is None:
+            return None
         try:
-            con.row_factory = sqlite3.Row
             return runs_view(con, repo, pr)
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+def dependency_view(db: str | Path, repo: str, pr: int | None = None,
+                    limit: int = 5) -> list[dict] | None:
+    """The newest runs that recorded a dependency prefetch, for ``status``/``explain`` (#51).
+
+    Read-only; None when the ledger is absent or unreadable, [] when nothing was recorded.
+    """
+    try:
+        con = _read_only(db)
+        if con is None:
+            return None
+        try:
+            if 'deps' not in {c[1] for c in con.execute('PRAGMA table_info(runs)')}:
+                return []
+            where, args = "repo=? AND deps IS NOT NULL", [repo]
+            if pr is not None:
+                where += " AND pr=?"
+                args.append(pr)
+            return [dict(row) for row in con.execute(
+                "SELECT id,repo,pr,head,seat,state,deps,updated FROM runs WHERE " + where
+                + " ORDER BY updated DESC, id LIMIT ?", (*args, max(1, min(limit, 20))))]
         finally:
             con.close()
     except sqlite3.Error:
@@ -611,6 +654,11 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
     return (f"may have written ({row['write']}) — inspect the PR, then "
             f"python -m review_loop.run_supervisor reconcile DB {row['id']} --reason "
             "REASON --acknowledge-no-live-worker")
+
+
+def describe_dependencies(row: dict) -> str:
+    return (f"{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']} — "
+            f"{row['deps']}")
 
 
 class Supervisor:
@@ -666,6 +714,10 @@ class Supervisor:
                 con.execute('ALTER TABLE runs ADD COLUMN retry_at REAL')
             if 'detail' not in columns:
                 con.execute('ALTER TABLE runs ADD COLUMN detail TEXT')
+            if 'deps' not in columns:
+                # The host dependency prefetch (#51): "fetching …" while it runs, then each
+                # ecosystem's outcome. Host-written, one bounded line, never tool output.
+                con.execute('ALTER TABLE runs ADD COLUMN deps TEXT')
             con.execute('COMMIT')
 
     def _connect(self):
@@ -685,6 +737,18 @@ class Supervisor:
         """Read-only, bounded operator view; no lease or worker is altered."""
         with self._connect() as con:
             return runs_view(con, repo, pr)
+
+    def record_dependencies(self, run_id: str, owner: str, text: str) -> None:
+        """The owning worker's note of its turn's dependency prefetch (#51), bounded and printable.
+
+        Only a live run's owner writes it, so a lost worker cannot overwrite a newer attempt.
+        """
+        text = "".join(ch if ch.isprintable() else " " for ch in str(text))
+        if len(text) > DEPS_MAX:
+            text = text[:DEPS_MAX - 1] + "…"
+        with self._connect() as con:
+            con.execute("UPDATE runs SET deps=?, updated=? WHERE id=? AND owner=? "
+                        "AND state IN ('launching','running')", (text, time.time(), run_id, owner))
 
     def quarantine_push(self, run_id: str, repo: str, pr: int, head: str,
                         outcome: str) -> None:
@@ -1123,6 +1187,9 @@ class Supervisor:
                "REVIEW_LOOP_TEST_FIXTURE": "1" if self.fixture_mode else "0"}
         if os.environ.get("REVIEW_LOOP_GH_STUB") and self.fixture_mode:
             env["REVIEW_LOOP_GH_STUB"] = os.environ["REVIEW_LOOP_GH_STUB"]
+        for name in HOST_LIMIT_ENV:
+            if os.environ.get(name):
+                env[name] = os.environ[name]
         _WORKERS[:] = [worker for worker in _WORKERS if worker.poll() is None]
         _WORKERS.append(subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1557,7 +1624,10 @@ class Supervisor:
                   proxy_model=inference.proxy_model, client_identity=inference.client_identity,
                   prompt=prompt, review_diff=change.diff if change else None,
                   timeout=int(self.child_timeout),
-                  work_root=Path(loop["state_dir"]) / "isolated-runs", observed=observed)
+                  work_root=Path(loop["state_dir"]) / "isolated-runs", observed=observed,
+                  # The prefetch phase lands in the ledger as it happens (#51): a slow one shows
+                  # as "fetching", not as a silent turn, and its outcome outlives the run.
+                  progress=lambda text: self.record_dependencies(run_id, owner, text))
             # A non-zero sandbox exit with nothing on the write-ahead record is the model or
             # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
             retry = rc != 0

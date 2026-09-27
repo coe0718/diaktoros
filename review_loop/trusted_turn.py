@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 
 from . import (broker_client, broker_ipc, contained, deps, gh, inference_proxy, safe_push,
                trusted_fetch)
@@ -21,6 +22,16 @@ from . import (broker_client, broker_ipc, contained, deps, gh, inference_proxy, 
 
 class TurnDenied(Exception):
     pass
+
+
+def _report(progress, text: str) -> None:
+    """Tell the run ledger what phase the turn is in; a failing sink never fails the turn."""
+    if progress is None:
+        return
+    try:
+        progress(text)
+    except Exception:
+        pass
 
 
 def _safe_code_snapshot(source: Path, destination: Path) -> None:
@@ -241,7 +252,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
              no_write: bool = False, observed: dict | None = None,
              api_mode: str = 'chat_completions', credential=None, proxy_model: str = '',
              client_identity: str = '', review_diff: str | None = None,
-             prefetch_timeout: int = deps.FETCH_TIMEOUT) -> int:
+             prefetch_timeout: int = deps.FETCH_TIMEOUT, progress=None) -> int:
     """Stage a live PR head, start host capabilities, execute Hermes within bwrap.
 
     ``api_mode`` picks the proxy contract and the sandbox's provider config; ``credential`` (a
@@ -260,7 +271,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
 
     Before launch the host prefetches the staged head's pinned dependencies (``deps``) into the
     loop's private cache, mounted read-only; the seat's query says whether that worked, so an
-    unavailable build is judged by reading rather than counted against the PR.
+    unavailable build is judged by reading rather than counted against the PR. The prefetch is
+    bounded by ``prefetch_timeout`` and runs *before* the sandbox's own ``timeout`` starts, so it
+    never shortens the seat's turn. ``progress``, when given (the worker's ledger writer), is told
+    when the prefetch starts and how it ended, so a slow one is visible as what it is.
     """
     if scope.repo != loop.get('repo') or scope.role not in TOOLS:
         raise TurnDenied('scope mismatch')
@@ -307,16 +321,25 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             cache: Path | None = deps.cache_root(loop)
         except OSError:  # includes a non-private cache: never fetched into, never mounted
             cache = None
+        _report(progress, time.strftime('fetching — started %H:%M:%SZ', time.gmtime())
+                + f', bounded at {int(prefetch_timeout)}s, before the turn budget starts')
         prefetched = deps.prepare(checkout, cache, Path(rust), timeout=prefetch_timeout)
-        if observed is not None:
-            observed['dependencies'] = [(r.ecosystem, r.status, r.reason) for r in prefetched]
-        note = deps.seat_note(prefetched, scope.role)
-        query = root / 'query.txt'
-        # The note leads the message: the prompt ends with PR records (data a PR author can shape),
-        # so a host fact placed after them could be imitated there.
-        query.write_text((note + '\n\n' if note else '') + prompt + '\n\n'
-                         + tool_instructions(scope.role) + '\n')
+        try:
+            _report(progress, deps.ledger_text(prefetched))
+            if observed is not None:
+                observed['dependencies'] = [(r.ecosystem, r.status, r.reason) for r in prefetched]
+            note = deps.seat_note(prefetched, scope.role)
+            query = root / 'query.txt'
+            # The note leads the message: the prompt ends with PR records (data a PR author can
+            # shape), so a host fact placed after them could be imitated there.
+            query.write_text((note + '\n\n' if note else '') + prompt + '\n\n'
+                             + tool_instructions(scope.role) + '\n')
+        except BaseException:
+            deps.release(prefetched)
+            raise
         with ExitStack() as stack:
+            # The cache generation stays held until the sandbox that mounts it has exited.
+            stack.callback(deps.release, prefetched)
             sockets = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='rl-', dir=tempfile.gettempdir())))
             # AF_UNIX has a ~108-byte pathname limit, independent of work_root.
             if len(os.fsencode(sockets)) > 50:
