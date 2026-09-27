@@ -82,6 +82,16 @@ FIXER_PUSH_REVOKED = ("fixer push revoked: unattended fixer pushes were disabled
                       "run was admitted — no turn launched")
 
 
+def _forward_leak_guard(env: dict) -> dict:
+    """Fixture children only: carry tests/leakguard.py's child-leak recorder through a scrubbed
+    environment. Both variables exist only under that guard; production never sets them."""
+    log, site = os.environ.get("REVIEW_LOOP_LEAK_LOG"), os.environ.get("REVIEW_LOOP_LEAK_SITE")
+    if log and site:
+        env["REVIEW_LOOP_LEAK_LOG"], env["REVIEW_LOOP_LEAK_SITE"] = log, site
+        env["PYTHONPATH"] = site + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return env
+
+
 class FixerPushDisabled(ValueError):
     """The host policy does not admit an unattended fixer turn for this repository."""
 
@@ -864,6 +874,8 @@ class Supervisor:
                "REVIEW_LOOP_TEST_FIXTURE": "1" if self.fixture_mode else "0"}
         if os.environ.get("REVIEW_LOOP_GH_STUB") and self.fixture_mode:
             env["REVIEW_LOOP_GH_STUB"] = os.environ["REVIEW_LOOP_GH_STUB"]
+        if self.fixture_mode:
+            _forward_leak_guard(env)
         _WORKERS[:] = [worker for worker in _WORKERS if worker.poll() is None]
         _WORKERS.append(subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1120,8 +1132,9 @@ class Supervisor:
         stopped = True
         try:
             child = subprocess.Popen(self.fixture_command,
-                                     env={"PATH": "/usr/bin:/bin", "HOME": os.environ["HOME"],
-                                          "HERMES_HOME": os.environ["HERMES_HOME"]},
+                                     env=_forward_leak_guard(
+                                         {"PATH": "/usr/bin:/bin", "HOME": os.environ["HOME"],
+                                          "HERMES_HOME": os.environ["HERMES_HOME"]}),
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL, close_fds=True,
                                      start_new_session=True)

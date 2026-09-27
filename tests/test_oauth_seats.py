@@ -583,12 +583,12 @@ class OAuthRefresh(OAuthBase):
         with seat_model.profile_lock("codex"):
             (lock,) = lockdir.iterdir()
             probe = subprocess.run([sys.executable, "-c",
-                                    "import fcntl,sys; f=open(sys.argv[1]);"
+                                    "import fcntl,sys\nwith open(sys.argv[1]) as f: "
                                     "fcntl.flock(f.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB)", str(lock)],
                                    capture_output=True)
             self.assertNotEqual(probe.returncode, 0, "another process could take the lock")
         probe = subprocess.run([sys.executable, "-c",
-                                "import fcntl,sys; f=open(sys.argv[1]);"
+                                "import fcntl,sys\nwith open(sys.argv[1]) as f: "
                                 "fcntl.flock(f.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB)", str(lock)])
         self.assertEqual(probe.returncode, 0)
 

@@ -108,10 +108,10 @@ def review(login: str, state: str = "changes_requested", head: str = HEAD_A, rid
 
 STUB_SRC = '''#!/usr/bin/env python3
 """Answers GitHub REST paths from a JSON world. Unknown paths print null (= unknown)."""
-import json, os, re, sys
+import json, os, pathlib, re, sys
 
 path = sys.argv[1]
-world = json.loads(open(os.environ["GH_WORLD"]).read())
+world = json.loads(pathlib.Path(os.environ["GH_WORLD"]).read_text())
 method = os.environ.get("GH_METHOD", "GET")
 repo = world.get("repo")
 body = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -126,7 +126,7 @@ if re.search(r"/hooks\\?per_page=100(?:&page=\\d+)?$", path):
     print(json.dumps(hooks[(page-1)*100:page*100] if isinstance(hooks, list) else hooks))
 elif "/requested_reviewers" in path:
     world.setdefault("requested_reviewers", []).append([n_of(path), json.loads(body or "{}")])
-    open(os.environ["GH_WORLD"], "w").write(json.dumps(world))
+    pathlib.Path(os.environ["GH_WORLD"]).write_text(json.dumps(world))
     print("{}")
 elif path.endswith("/reviews?per_page=100"):
     print(json.dumps((world["prs"].get(str(n_of(path))) or {}).get("reviews", [])))
