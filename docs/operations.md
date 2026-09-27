@@ -498,7 +498,7 @@ pending ──claim──► claimed ──► launching/running ──► succe
    │                         │  timeout, network, staging read): waiting, backoff 2m, 4m, 8m
    ├──── backoff elapsed ────┘     … the 4th failure: failed (with a notice)
    │                         │ killed at its turn budget: failed at once (raise turn_budget_s)
-   ├──── redelivered event (≤8 failures) or `retry` ◄── failed / cancelled / waiting
+   ├──── redelivered event (≤8 failures) or `retry` ◄── failed / waiting / push-policy cancelled
    │                         │ may have written, or a worker lost/still alive: uncertain
    └─ never ◄────────────────┘   (operator `reconcile` only; never replayed)
 ```
@@ -513,9 +513,11 @@ watchdog sweep. A failed run's notice carries the real reason (the exception tex
 exit status) and the tail of the turn's stdout/stderr; `status` and `explain` print the same with
 the next step, and `explain` reports a waiting, write-free failed, cancelled-by-push-policy or
 uncertain run at the PR's head as a `blocked:` line with that step as `next:`.
-`hermes review-loop retry --loop name --pr 123 [--seat reviewer]` re-arms the PR's failed,
-waiting or cancelled runs at its newest head, resets their retry budget and starts the worker;
-it refuses a run that may have written and prints the `reconcile` command instead.
+`hermes review-loop retry --loop name --pr 123 [--seat reviewer]` re-arms the PR's failed and
+waiting runs, and its fixer runs cancelled by the push policy, at its newest head (the head of its
+most recently active run), resets their retry budget and starts the worker. It refuses a run that
+may have written and prints the `reconcile` command instead. Any other cancellation (head moved,
+PR closed) is not offered: a new head gets its own turn.
 
 A fixer run the push policy cancelled at claim (pushes were off when its verdict was enqueued, or
 were turned off before it started) is listed by `status` and `explain` with that reason and what

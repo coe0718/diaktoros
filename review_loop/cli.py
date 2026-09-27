@@ -1503,7 +1503,9 @@ def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> l
 def cmd_retry(args) -> int:
     """Re-arm a PR's isolated run that failed before any external write (issue #53).
 
-    Only runs at the PR's newest ledgered head are considered. A run that may have written —
+    Only runs at the PR's newest ledgered head are considered: the head of the most recently
+    active run (``updated``), which is where the PR is after a backwards force-push re-armed an
+    older head's run. A run that may have written —
     uncertain, quarantined, reconciled, or with a receipt claim, push intent or ruling on
     record — is refused with the reconcile instructions; it is never replayed.
     """
@@ -1521,7 +1523,7 @@ def cmd_retry(args) -> int:
     sup = Supervisor(ledger)
     with sup._connect() as con:
         rows = [dict(row) for row in con.execute(
-            "SELECT id,seat,head,turn_key,state,error FROM runs WHERE repo=? AND pr=? "
+            "SELECT id,seat,head,turn_key,state,error,updated FROM runs WHERE repo=? AND pr=? "
             "ORDER BY created,id", (loop["repo"], args.pr))]
     if args.seat:
         rows = [row for row in rows if row["seat"] == args.seat]
@@ -1529,7 +1531,9 @@ def cmd_retry(args) -> int:
         print(f"[{loop['id']}] #{args.pr}: no isolated run on record"
               + (f" for the {args.seat} seat" if args.seat else ""))
         return 2
-    head = rows[-1]["head"]
+    # Not the last-created row's head: a backwards force-push re-arms an older head's row rather
+    # than creating one, so creation order would name a head the PR has since left (Tuck, #97).
+    head = max(rows, key=lambda row: (row["updated"] or 0, row["id"]))["head"]
     # A fixer run the push policy cancelled at claim is recovered here, under the policy in
     # force now; any other cancellation is superseded and is not offered (runs_view draws the
     # same line: a new head gets its own turn).

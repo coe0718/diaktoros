@@ -190,6 +190,68 @@ class CancelledFixer(unittest.TestCase):
                       "acme/widgets is unusable (duplicate loop configs", out)
         self.assertIn("reviewer #7 @ aaaaaaa re-armed", out)      # the other candidate still ran
 
+    def test_one_predicate_for_the_view_the_step_and_retry(self):
+        # Tuck on #97: runs_view kept its own SQL copy (LIKE, case-insensitive) of the Python
+        # prefix test, so a "Fixer push revoked: …" row was listed with a retry remedy that
+        # retry then refused. One definition, keyed off the constants, decides all three.
+        from review_loop.run_supervisor import (POLICY_CANCELLATIONS, next_step,
+                                                policy_cancelled)
+        self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
+        with sqlite3.connect(self.db) as con:
+            run_id = con.execute("SELECT id FROM runs").fetchone()[0]
+        samples = list(POLICY_CANCELLATIONS) + [
+            "Fixer push revoked: unattended fixer pushes were disabled after this run was "
+            "admitted — no turn launched", "fixer push something else entirely",
+            "PR head moved before the review started"]
+        self.pushes(True)
+        for error in samples:
+            with self.subTest(error=error[:30]):
+                with sqlite3.connect(self.db) as con:
+                    con.execute("UPDATE runs SET state='cancelled', error=?, retries=0",
+                                (error,))
+                listed = read_only_view(self.db, REPO, 7)
+                self.assertEqual(bool(listed), policy_cancelled(error))
+                if listed:
+                    self.assertIn("retry --loop widgets --pr 7 --seat fixer",
+                                  next_step(listed[0], "widgets"))
+                    self.assertEqual(self.sup.retry(run_id), "pending")
+                else:
+                    with self.assertRaises(ValueError):
+                        self.sup.retry(run_id)
+        # The pre-#97 wording of the not-admitted cancellation, on an existing ledger, still counts.
+        self.assertTrue(policy_cancelled(
+            "fixer push not admitted: unattended fixer pushes were off when this verdict was "
+            "enqueued, and a later opt-in cannot authorize this run — no turn launched; this "
+            "head needs a manual fix or a new commit"))
+
+    def test_bare_retry_uses_the_head_the_pr_is_at_after_a_backwards_force_push(self):
+        # Tuck on #97: `retry` took the head of the last-*created* row. Head A, then B, then a
+        # force-push back to A: A's old row is re-armed (not a new row) and fails again, so the
+        # newest head is A even though B's row was created later.
+        a, b = HEAD, "b" * 40
+        self.sup.submit("rev-a", REPO, 7, a, "reviewer")
+        self.sup.submit("rev-b", REPO, 7, b, "reviewer")
+        with sqlite3.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='succeeded', updated=100 WHERE head=?", (b,))
+            con.execute("UPDATE runs SET state='failed', error='turn exited with status 3', "
+                        "updated=200, created=1 WHERE head=?", (a,))
+        [view] = read_only_view(self.db, REPO, 7)                     # what status/explain list
+        self.assertEqual(view["head"], a)
+        with mock.patch.object(gate, "resume_isolated", return_value=True):
+            code, out = self.cli(cli.cmd_retry, loop="widgets", pr=7, seat=None)
+        self.assertEqual(code, 0, out)
+        self.assertIn("reviewer #7 @ aaaaaaa re-armed", out)                # the same run
+
+    def test_the_docs_state_the_retry_rule_this_code_enforces(self):
+        root = Path(__file__).resolve().parents[1]
+        ops = (root / "docs/operations.md").read_text()
+        self.assertNotIn("re-arms the PR's failed,\nwaiting or cancelled runs", ops)
+        self.assertNotIn("failed, waiting or cancelled runs at its newest head", " ".join(ops.split()))
+        self.assertIn("cancelled by the push policy", " ".join(ops.split()))
+        doc = Supervisor.retry.__doc__
+        self.assertNotIn("a failed, waiting or cancelled run", " ".join(doc.split()))
+        self.assertIn("push policy", " ".join(doc.split()))
+
     def row_of(self, seat):
         with sqlite3.connect(self.db) as con:
             con.row_factory = sqlite3.Row
