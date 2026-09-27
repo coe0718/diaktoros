@@ -360,6 +360,22 @@ class ReaderIdentityTests(_Loop):
         self.assertIn("skipping alpha:beta.json: ", out)
         self.assertIn("2 loops are configured (clean, alpha:beta) — name one with --loop", out)
 
+    def test_explain_exit_2_is_one_closed_list_in_both_copies(self):
+        # Every way explain exits 2, in its docstring and in docs/operations.md alike.
+        rc, out = self.run_cli(["explain", "--pr", "5"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("no loops configured in", out)
+        doc = " ".join(cli.cmd_explain.__doc__.split())
+        ops = " ".join((ROOT / "docs" / "operations.md").read_text().split())
+        for case in ("an unknown loop", "a loop file the loader refuses", "no `--loop`",
+                     "no loop files at all"):
+            self.assertIn(case.replace("`", "``"), doc, case)
+            self.assertIn(case, ops, case)
+        # and the formatter's docstring names only its real callers
+        self.assertNotIn("``explain``):", cli._readable_loops.__doc__)
+        self.assertIn("``explain`` calls ``config.readable_loops``", " ".join(
+            cli._readable_loops.__doc__.split()))
+
     def test_apply_refuses_a_reader_with_no_token_file(self):
         rc, out = self.run_cli(self.init_argv())
         self.assertEqual(rc, 0, out)

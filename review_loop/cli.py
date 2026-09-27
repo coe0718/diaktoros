@@ -1871,9 +1871,10 @@ def cmd_settings(args) -> int:
 def _readable_loops() -> tuple[list[dict], list[str]]:
     """Every loop that loads, plus one ``skipping <file>: <reason>`` line per one that does not.
 
-    For the verbs that answer about loops without acting on them (``list``, ``status``,
-    ``explain``): one broken file must not hide every healthy loop's state. Verbs that act on
-    loops keep ``all_loops``'s all-or-nothing refusal.
+    The formatted form of ``config.readable_loops`` for ``list`` and ``status``: one broken file
+    must not hide every healthy loop's state. (``explain`` calls ``config.readable_loops``
+    itself — it needs the ids, not these lines.) Verbs that act on loops keep ``all_loops``'s
+    all-or-nothing refusal.
     """
     loops, skipped = config.readable_loops()
     return loops, [f"skipping {loop_id}.json: {reason}" for loop_id, reason in skipped]
@@ -1893,6 +1894,17 @@ def cmd_list(args) -> int:
         print(f"{loop['id']:<20} {loop['repo']:<30} cap={loop['cap']} {seats} "
               f"fixers={','.join(loop['fixers'])} reviewers={','.join(loop['reviewers'])}")
     return 2 if skipped else 0
+
+
+def _dependency_lines(loop: dict, pr: int | None = None, limit: int = 5) -> list[str]:
+    """What the host dependency prefetch did for this loop's newest turns (#51), from the ledger.
+
+    Read-only; an absent or unreadable ledger is simply no lines (status/explain say the rest).
+    """
+    from .run_supervisor import dependency_view, describe_dependencies
+    rows = dependency_view(config.home() / "state" / "review-loop-runs.sqlite", loop["repo"], pr,
+                           limit)
+    return [describe_dependencies(row) for row in rows or []]
 
 
 def cmd_status(args) -> int:
@@ -1950,6 +1962,8 @@ def cmd_status(args) -> int:
             for key, entry in (entries or {}).items():
                 held = (time.time() - entry.get("at", time.time())) / 60
                 print(f"  running:    {seat} on {key} for {held:.0f}m")
+        for line in _dependency_lines(loop):
+            print(f"  deps:       {line}")
         for seat in ("reviewer", "fixer"):
             queued = len(st.queue_items(seat))
             if queued:
@@ -1995,9 +2009,10 @@ def cmd_explain(args) -> int:
     opinion about them.
 
     Exit 2 only when the question cannot be asked at all: an unknown loop, a loop file the loader
-    refuses (without ``--loop`` each is named on a ``skipping <file>: <reason>`` line), or several
-    loops — refused ones included — and no ``--loop``. A PR GitHub does not have, or cannot be read, is an *answer*: it is reported as
-    unknown, with the read to retry.
+    refuses (without ``--loop`` each is named on a ``skipping <file>: <reason>`` line), several
+    loops — refused ones included — and no ``--loop``, or no loop files at all. A PR GitHub does
+    not have, or cannot be read, is an *answer*: it is reported as unknown, with the read to
+    retry.
     """
     from . import state as state_mod
 
@@ -2039,6 +2054,8 @@ def cmd_explain(args) -> int:
         print(f"  {'seat:':<12}{report['seat']}")
         print(f"  {'queue:':<12}{report['queue']}")
         print(f"  {'in-flight:':<12}{report['inflight']}")
+        for line in _dependency_lines(loop, args.pr, limit=3):
+            print(f"  {'deps:':<12}{line}")
         print(f"  {'escalation:':<12}{report['escalation']}")
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")

@@ -787,6 +787,9 @@ def main() -> None:
         return
 
     if args.drain:
+        for loop_id, reason in refused:
+            # Drain prints nothing else, but a refused file must not go quiet: stderr.
+            print(f"⚠️ Review loop [{loop_id}] not drained: ConfigError: {reason}", file=sys.stderr)
         for loop in loops:
             st = state_mod.state_for(loop)
             armed, armed_error = (True, "") if TEST else gate.hooks_read(loop)
