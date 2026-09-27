@@ -451,7 +451,10 @@ def _intent_overlay(loop: dict, data: dict, checks: list[Check]) -> list[Check]:
             check.status, check.detail = MISMATCH, what
         else:
             check.detail += f" ({what})"
-        check.fix = REPAIR_FIX
+        # The observer check already chose between repair and a rebuild: repair only restores
+        # the record, which is no fix when the record itself breaks the feed's contract.
+        if not (check.fix and name == (loop.get("observer") or {}).get("route")):
+            check.fix = REPAIR_FIX
     return checks
 
 
@@ -466,7 +469,7 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
                      f"re-run init for this loop (it writes {name!r} with a generated secret), "
                      f"or `hermes webhook subscribe {name}`")
-    if str(entry.get("profile") or "") != profile:
+    if routes.route_profile(entry) != profile:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but seats.{seat}.profile is "
                      f"{profile!r} — the wake would run the wrong agent",
@@ -529,7 +532,7 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
                      f"re-run init with --adjudicator-route {name}: the breach marker is the only "
                      f"record of an escalation nobody is woken for")
-    if str(entry.get("profile") or "") != profile:
+    if routes.route_profile(entry) != profile:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but adjudicator.profile is "
                      f"{profile!r}",
@@ -585,34 +588,35 @@ def check_observer_route(loop: dict, data: dict) -> Check | None:
                      "(or --observer-disable): the feed delivers nothing as configured")
     name = str(cfg.get("route") or "")
     profile = config.seat_profile(loop, "observer")
+    remedy = observer.route_remedy(loop)
     entry = _route_entry(data, name)
     if entry is None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
-                     f"`hermes review-loop doctor --loop {loop['id']} --repair` restores it from "
-                     "the plugin's intent record; with no record, `hermes review-loop set --loop "
-                     f"{loop['id']} --observer-disable` then `--observer-profile {profile}` "
-                     "writes it again")
-    if str(entry.get("profile") or "default") != profile:
+                     f"{remedy} writes it again")
+    served = routes.route_profile(entry)
+    if served is None:
         return Check(f"route:{name}", MISMATCH,
-                     f"wakes profile {entry.get('profile')!r}, but observer.profile is "
-                     f"{profile!r} — the notice would go out through the wrong profile",
+                     f"profile {entry.get('profile')!r} is blank or not a name — the gateway "
+                     f"refuses every request for it, and the feed refuses to deliver through it",
                      f"run `hermes review-loop apply --loop {loop['id']}` to rebind it to "
                      f"{profile} (its secret is kept)")
+    if served != profile:
+        return Check(f"route:{name}", MISMATCH,
+                     f"wakes profile {served!r}, but observer.profile is {profile!r} — the "
+                     "feed refuses to deliver through it",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to rebind it to "
+                     f"{profile} (its secret is kept)")
+    # The very comparison the feed makes before every notice (routes.target): a route this
+    # passes is one the feed delivers through, and the other way round.
     contract = observer.route_contract(loop)
-    wrong = sorted(key for key, value in contract.items() if key != "profile"
-                   and ((entry.get(key) or {}) != value if key == "deliver_extra"
-                        else entry.get(key) != value))
+    wrong = [key for key in routes.contract_mismatch(entry, contract) if key != "profile"]
     if wrong:
         return Check(f"route:{name}", MISMATCH,
                      "does not match the observer delivery-only contract: " + ", ".join(wrong)
-                     + " — the feed refuses to deliver through it",
-                     f"`hermes review-loop doctor --loop {loop['id']} --repair` restores the "
-                     "recorded route; if it was changed on purpose, make the change with "
-                     "`hermes review-loop set` instead")
+                     + " — the feed refuses to deliver through it", f"{remedy} restores it")
     if not str(entry.get("secret") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a secret",
-                     f"`hermes review-loop doctor --loop {loop['id']} --repair`: a notice without "
-                     "a secret cannot be signed")
+                     f"{remedy}: a notice without a secret cannot be signed")
     host = str(loop.get("host") or "")
     stored = str(entry.get("host") or "").removesuffix("/")
     if not host:
@@ -622,9 +626,7 @@ def check_observer_route(loop: dict, data: dict) -> Check | None:
     if stored and stored != host:
         return Check(f"route:{name}", MISMATCH,
                      "registered gateway origin differs from the loop's configured origin "
-                     "(URLs withheld)",
-                     f"`hermes review-loop doctor --loop {loop['id']} --repair`, or change the "
-                     "host with `hermes review-loop set`")
+                     "(URLs withheld)", f"{remedy} rewrites it at the loop's origin")
     muted = " · muted" if cfg.get("mute") else ""
     return Check(f"route:{name}", VERIFIED,
                  f"{profile} · observer feed → {contract['deliver']} · deliver-only{muted}")

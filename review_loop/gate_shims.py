@@ -165,9 +165,7 @@ def divergence(loop: dict) -> dict:
                          repair if restorable else f"re-run `hermes review-loop init` for this "
                          "loop (no intent record to restore it from)", "absent")
             continue
-        profile = entry.get("profile", "default")
-        have = (profile if isinstance(profile, str) and profile.strip() else "default",
-                entry.get("script"))
+        have = (routes.route_profile(entry) or "", entry.get("script"))
         if have == want:
             continue
         detail = f"registry runs {_side(*have)}, loop config says {_side(*want)}"
@@ -190,10 +188,10 @@ def live(loop: dict) -> set[tuple[str, str]]:
     out = set()
     for name in route_intent.routes_of(loop).values():
         entry = registry.get(name) if isinstance(registry, dict) else None
-        if isinstance(entry, dict) and route_intent.owned(entry):
-            profile = entry.get("profile", "default")
-            out.add((profile if isinstance(profile, str) and profile.strip() else "default",
-                     entry["script"]))
+        # A blank or invalid profile is a route the gateway refuses outright: no script runs.
+        if (isinstance(entry, dict) and route_intent.owned(entry)
+                and routes.route_profile(entry) is not None):
+            out.add((routes.route_profile(entry), entry["script"]))
     return out
 
 
@@ -307,7 +305,7 @@ def live_checks(loop: dict) -> list[tuple[str, str, str, str]]:
             continue
         profile = entry.get("profile", "default")
         script = entry.get("script")
-        home = home_for(profile if isinstance(profile, str) and profile.strip() else "default")
+        home = home_for(routes.route_profile(entry) or "default")
         label = f"gateway-script:{name}"
         found, error = resolve(home, script)
         if error or found is None:

@@ -640,7 +640,7 @@ class ObserverStatusDoctor(Base):
         routes.remove_route("widgets-observe")
         check = self.route_check()
         self.assertEqual(check.status, doctor.ABSENT)
-        self.assertIn("doctor --repair", check.fix)
+        self.assertIn("hermes review-loop doctor --loop widgets --repair", check.fix)
         rc, out = self.run_cli(["doctor", "--loop", "widgets", "--offline", "--repair"])
         self.assertIn("widgets-observe", out)
         self.assertEqual(self.route_check().status, doctor.VERIFIED)
@@ -665,6 +665,143 @@ class ObserverStatusDoctor(Base):
         rc, out = self.run_cli(["set", "--loop", "widgets", "--observer-mute"])
         self.assertEqual(rc, 0, out)
         self.assertIn("observer widgets-observe → tuck (ok, muted)", self.status())
+
+    # -- review of #112: doctor and the feed read a route's profile the way the gateway does ----
+
+    def forget_intent(self):
+        from review_loop import route_intent
+        route_intent.path(config.load_id("widgets")).unlink()
+
+    def edit_registry(self, name, mutate):
+        path = pathlib.Path(self.env["REVIEW_LOOP_SUBS"])
+        data = json.loads(path.read_text())
+        mutate(data[name])
+        path.write_text(json.dumps(data, indent=2))
+
+    def feed_target(self):
+        from review_loop import observer
+        return observer._target(config.load_id("widgets"))
+
+    def follow(self, fix):
+        """Run the first `hermes review-loop …` command a fix line names, as printed."""
+        import re
+        import shlex
+        commands = re.findall(r"`hermes review-loop ([^`]+)`", fix)
+        self.assertTrue(commands, f"no runnable command in: {fix}")
+        rc, out = self.run_cli(shlex.split(commands[0]))
+        self.assertEqual(rc, 0, out)
+        return out
+
+    def observer_check(self):
+        name = config.load_id("widgets")["observer"]["route"]
+        checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
+        return checks.get(f"route:{name}")
+
+    def test_a_route_without_a_profile_key_serves_default_for_doctor_and_feed(self):
+        # The gateway binds a route with no `profile` key to default (_route_allows_profile).
+        self.install("acme/widgets", "--observer-profile", "default")
+        self.forget_intent()
+        self.edit_registry("widgets-observe", lambda e: e.pop("profile"))
+        check = self.route_check()
+        target = self.feed_target()
+        self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+        self.assertIsNotNone(target, "the feed refuses a route the gateway serves as default")
+        self.assertEqual(target[0], "https://gateway.example/webhooks/widgets-observe")
+        self.assertIn("observer widgets-observe → default (ok)", self.status())
+
+    def test_a_blank_or_null_profile_fails_closed_in_doctor_and_feed(self):
+        # The gateway refuses every request for an explicit null/blank/non-string profile.
+        self.install("acme/widgets", "--observer-profile", "default")
+        self.forget_intent()
+        for bad in ("", "  ", None, 7):
+            self.edit_registry("widgets-observe", lambda e: e.update(profile=bad))
+            check = self.route_check()
+            self.assertEqual(check.status, doctor.MISMATCH, f"{bad!r}: {check.detail}")
+            self.assertIsNone(self.feed_target(), repr(bad))
+            self.assertIn("MISMATCH", self.status())
+        self.follow(check.fix)
+        self.assertEqual(self.route_check().status, doctor.VERIFIED)
+        self.assertIsNotNone(self.feed_target())
+
+    def test_seat_route_checks_read_the_profile_the_same_way(self):
+        self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
+                     "--adjudicator-profile", "default")
+        self.forget_intent()
+        self.edit_registry("widgets-breach", lambda e: e.pop("profile"))
+        checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
+        self.assertEqual(checks["route:widgets-breach"].status, doctor.VERIFIED,
+                         checks["route:widgets-breach"].detail)
+        self.edit_registry("widgets-breach", lambda e: e.update(profile=""))
+        checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
+        self.assertEqual(checks["route:widgets-breach"].status, doctor.MISMATCH)
+
+    def test_route_profile_matches_the_gateway_rule(self):
+        cases = [{}, {"profile": "default"}, {"profile": "tuck"}, {"profile": " tuck "},
+                 {"profile": ""}, {"profile": "  "}, {"profile": None}, {"profile": 7}]
+        expected = ["default", "default", "tuck", "tuck", None, None, None, None]
+        self.assertEqual([routes.route_profile(c) for c in cases], expected)
+        source = SOURCE / "gateway" / "platforms" / "webhook.py"
+        if not source.exists():
+            if REQUIRED:
+                raise AssertionError(f"no Hermes gateway source at {source}")
+            self.skipTest(f"no Hermes source at {SOURCE}")
+        import ast
+        tree = ast.parse(source.read_text())
+        func = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                    and node.name == "_route_allows_profile")
+        func.decorator_list = []
+        func.args.args[1].annotation = None
+        func.returns = None
+        scope: dict = {}
+        exec(compile(ast.Module([func], []), str(source), "exec"), scope)
+        allows = scope["_route_allows_profile"]
+        for case, ours in zip(cases, expected):
+            for requested in (None, "tuck"):
+                self.assertEqual(allows(case, requested),
+                                 ours is not None and ours == (requested or "default"),
+                                 f"{case} for /p/{requested}")
+
+    def test_deliver_drift_is_healed_by_the_repair_doctor_names(self):
+        self.observer_install()
+        self.edit_registry("widgets-observe", lambda e: e.update(deliver="discord",
+                                                                 deliver_extra={"chat": "x"}))
+        check = self.route_check()
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIsNone(self.feed_target())
+        self.assertIn("--repair", check.fix)
+        rc, out = self.run_cli(["doctor", "--loop", "widgets", "--offline", "--repair"])
+        self.assertIn("widgets-observe: had changed deliver, deliver_extra", out)
+        self.assertEqual(self.route_check().status, doctor.VERIFIED)
+        self.assertIsNotNone(self.feed_target())
+
+    def test_deliver_drift_without_a_record_names_a_remedy_that_works(self):
+        self.observer_install()
+        self.forget_intent()
+        self.edit_registry("widgets-observe", lambda e: e.update(deliver="discord"))
+        check = self.route_check()
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertNotIn("--repair", check.fix)
+        self.follow(check.fix)
+        check = self.observer_check()
+        self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+        self.assertIsNotNone(self.feed_target())
+
+    def test_a_missing_route_without_a_record_names_a_remedy_that_works(self):
+        self.observer_install()
+        self.forget_intent()
+        routes.remove_route("widgets-observe")
+        check = self.route_check()
+        self.assertEqual(check.status, doctor.ABSENT)
+        self.assertNotIn("--repair", check.fix)
+        line = self.status()
+        self.assertIn("observer widgets-observe: not installed — ", line)
+        self.assertNotIn("--repair", line)
+        import re
+        command = re.search(r"not installed — (hermes review-loop [^·]+?)(?: ·|$)", line).group(1)
+        self.follow(f"`{command.strip()}`")
+        self.assertEqual(self.observer_check().status, doctor.VERIFIED)
+        self.assertIsNotNone(self.feed_target())
+        self.assertIn(" (ok)", self.status())
 
 
 if __name__ == "__main__":

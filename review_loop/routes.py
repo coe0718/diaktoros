@@ -202,6 +202,40 @@ def route(name: str) -> dict | None:
     return entry if isinstance(entry, dict) else None
 
 
+def route_profile(entry: dict) -> str | None:
+    """The profile a registry entry is served under, read exactly the way the gateway reads it.
+
+    Hermes's ``WebhookAdapter._route_allows_profile``: a route with no ``profile`` key is bound to
+    ``default``; an explicit null, blank or non-string profile matches no request at all (it
+    fails closed), which is ``None`` here. Everything that compares a route's profile — the
+    feed's delivery contract, doctor, status, apply's readback — goes through this, so none of
+    them can call a route healthy that the gateway refuses, or refuse one it serves.
+    """
+    profile = entry.get("profile") if "profile" in entry else "default"
+    if not isinstance(profile, str) or not profile.strip():
+        return None
+    return profile.strip()
+
+
+def contract_mismatch(entry: dict, expected: dict) -> list[str]:
+    """The ``expected`` keys a registry entry does not honour (``[]`` when it matches).
+
+    ``profile`` goes through :func:`route_profile`; an absent ``deliver_extra`` is ``{}``;
+    every other key must be equal as stored.
+    """
+    wrong = []
+    for key, value in expected.items():
+        if key == "profile":
+            ok = route_profile(entry) == value
+        elif key == "deliver_extra":
+            ok = (entry.get(key) or {}) == value
+        else:
+            ok = entry.get(key) == value
+        if not ok:
+            wrong.append(key)
+    return wrong
+
+
 def url_for_profile(name: str, profile: str | None, host: str | None = None) -> str | None:
     """The URL a route *has* under a profile — the same shape the gateway serves.
 
@@ -227,7 +261,10 @@ def url_for(name: str, host: str | None = None) -> str | None:
     base = config.webhook_host(host or entry.get("host")) or ""
     if not base:
         return None
-    return url_for_profile(name, entry.get("profile", "default"), base)
+    profile = route_profile(entry)
+    if profile is None:
+        return None                   # the gateway serves this route under no URL at all
+    return url_for_profile(name, profile, base)
 
 
 def target(name: str, host: str | None = None, *, expected: dict | None = None):
@@ -236,14 +273,16 @@ def target(name: str, host: str | None = None, *, expected: dict | None = None):
     if not entry:
         log(f"route {name!r} not found in {subs_path().name}")
         return None
-    if expected is not None and any((entry.get(k) or {}) != value if k == "deliver_extra"
-                                    else entry.get(k) != value for k, value in expected.items()):
+    if expected is not None and contract_mismatch(entry, expected):
         log(f"route {name!r} no longer matches its delivery contract")
         return None
     secret = entry.get("secret") or ""
+    profile = route_profile(entry)
+    if profile is None:
+        log(f"route {name!r} has a blank or invalid profile: the gateway refuses it")
+        return None
     try:
         base = config.webhook_host(host or entry.get("host"))
-        profile = entry.get("profile", "default")
         url = (f"{base}/webhooks/{name}" if profile == "default"
                else f"{base}/p/{profile}/webhooks/{name}") if base else None
     except config.ConfigError as exc:
@@ -355,10 +394,11 @@ def restore_entries(entries: dict[str, dict | None]) -> None:
     _transact(subs_path(), edit)
 
 
-def heal_entries(expected: dict[str, dict], fields: tuple[str, ...], owned) -> tuple[dict, dict]:
+def heal_entries(expected: dict[str, dict], fields, owned) -> tuple[dict, dict]:
     """Put back the plugin's own routes a non-cooperating writer erased or rewrote.
 
-    ``expected`` is the plugin's intent record (name → full entry). Under the lock, against the
+    ``expected`` is the plugin's intent record (name → full entry); ``fields`` is the watched
+    keys, one tuple for every name or a name → tuple map. Under the lock, against the
     live bytes, each name is: left alone when every watched ``field`` already matches; restored
     when missing, or present and still ``owned(entry)`` (one of this plugin's gate scripts);
     reported as a conflict — never overwritten — when something else now holds the name.
@@ -380,7 +420,8 @@ def heal_entries(expected: dict[str, dict], fields: tuple[str, ...], owned) -> t
             if not isinstance(live, dict):
                 conflicts[name] = "registry entry is not a JSON object"
                 continue
-            diff = [key for key in fields if live.get(key) != want.get(key)]
+            watched = fields.get(name, ()) if isinstance(fields, dict) else fields
+            diff = [key for key in watched if live.get(key) != want.get(key)]
             if not diff:
                 continue
             if not owned(live):
@@ -388,7 +429,7 @@ def heal_entries(expected: dict[str, dict], fields: tuple[str, ...], owned) -> t
                                    "something else holds this name")
                 continue
             merged = {**live, **want}
-            for key in fields:          # a watched key the plugin never wrote is not kept either
+            for key in watched:         # a watched key the plugin never wrote is not kept either
                 if key not in want:
                     merged.pop(key, None)
             data[name] = merged

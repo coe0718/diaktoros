@@ -279,10 +279,12 @@ def _route_state(loop: dict, role: str) -> str:
     if not entry:
         if role == "observer":
             # init refuses an existing loop, so "run init" would be a dead end for the feed.
-            return (f"{role} {name}: not installed — hermes review-loop doctor --loop "
-                    f"{loop['id']} --repair")
+            return f"{role} {name}: not installed — {observer.route_remedy(loop).strip('`')}"
         return f"{role} {name}: not installed — run init"
-    got = str(entry.get("profile") or "default")
+    got = routes.route_profile(entry)
+    if got is None:
+        return (f"{role} {name} → {entry.get('profile')!r} (blank — the gateway refuses it), "
+                f"not {want}: MISMATCH — hermes review-loop apply --loop {loop['id']}")
     if got == want:
         muted = role == "observer" and (loop.get("observer") or {}).get("mute")
         return f"{role} {name} → {got} (ok{', muted' if muted else ''})"
@@ -348,7 +350,7 @@ def _route_binds(loop: dict, touched: set[str]) -> dict:
         entry = routes.route(name)
         if not entry:
             continue
-        current = str(entry.get("profile") or "default")
+        current = routes.route_profile(entry) or ""   # "" = blank: the gateway refuses it
         target = config.seat_profile(loop, role)
         if current != target:
             binds[role] = (name, current, target)
@@ -1229,7 +1231,8 @@ def cmd_apply(args) -> int:
     for name, was, now in list(changes) + list(identity):
         print(f"  {name}: {was} → {now}")
     for role, (name, current, target) in sorted(binds.items()):
-        print(f"  route {name}: profile {current} → {target}   (the URL carries the profile)")
+        print(f"  route {name}: profile {current or '(blank)'} → {target}   (the URL carries "
+              "the profile)")
     for role, (name, script) in sorted(repairs.items()):
         print(f"  route {name}: script {script} → {GATE_SCRIPT[role]}   (installed by an older "
               "release)")
@@ -1273,7 +1276,7 @@ def cmd_apply(args) -> int:
         rebound = list(_install_routes(updated, roles=rewrite).items()) if rewrite else []
         for role, name in rebound:
             entry = routes.route(name)
-            if not entry or str(entry.get("profile") or "") != config.seat_profile(updated, role):
+            if not entry or routes.route_profile(entry) != config.seat_profile(updated, role):
                 raise config.ConfigError(f"route {name} readback does not match requested profile")
             if entry.get("script") != GATE_SCRIPT[role]:
                 raise config.ConfigError(f"route {name} readback does not run {GATE_SCRIPT[role]}")
