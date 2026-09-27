@@ -492,6 +492,12 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
                      f"{profile!r} — the wake would run the wrong agent",
                      f"re-run init with --{seat}-profile {profile or '<name>'} so the route and "
                      f"the loop config agree")
+    if entry.get("deliver_only"):
+        return Check(f"route:{name}", MISMATCH,
+                     "deliver_only is set — the gateway delivers the rendered prompt and runs no "
+                     "agent, so this seat is never woken",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to rewrite it from the "
+                     "loop config (its secret is kept)")
     if entry.get("enabled", True) is False:
         return Check(f"route:{name}", MISMATCH,
                      "disabled in the registry (enabled: false) — the gateway answers 403 to "
@@ -561,6 +567,12 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
                      f"{profile!r}",
                      f"re-run init with --adjudicator-profile {profile}: the ruling must not "
                      f"happen as one of the two seats that just stalled")
+    if entry.get("deliver_only"):
+        return Check(f"route:{name}", MISMATCH,
+                     "deliver_only is set — the gateway delivers the rendered prompt and runs no "
+                     "agent, so no adjudicator is woken",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to rewrite it from the "
+                     "loop config (its secret is kept)")
     if entry.get("enabled", True) is False:
         return Check(f"route:{name}", MISMATCH,
                      "disabled in the registry (enabled: false) — the gateway answers 403 to "

@@ -315,7 +315,11 @@ def group_plugin_settings() -> None:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         rc = cli.cmd_apply(ns(loop="widgets", dry_run=False))
-    check("a second apply is a no-op", "already matches" in buf.getvalue(), True)
+    # Nothing left to write — but the fixture's script-less breach route still is not what the
+    # config installs, so apply says the config matches and the registry does not (#112 review).
+    check("a second apply is a no-op", ("loop config updated" in buf.getvalue(),
+          "the loop config matches the plugin settings, but the route registry does not"
+          in buf.getvalue(), rc), (False, True, 1))
 
     # the rails still hold: two reviews at once with nowhere to isolate them is refused
     cfg = json.loads((LOOPS_DIR / "widgets.json").read_text())

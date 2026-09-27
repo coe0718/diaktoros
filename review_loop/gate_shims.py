@@ -145,7 +145,37 @@ def recreate_fix(loop: dict) -> str:
             "it from the loop config with a new secret and re-keys the repo hook that points at it)")
 
 
-def divergence(loop: dict, *, include_missing: bool = True) -> dict:
+_GATE_EVENT = {"reviewer": "pull_request", "fixer": "pull_request_review",
+               "adjudicator": "pull_request"}
+
+
+def contract_drift(loop: dict, role: str, entry: dict) -> list[str]:
+    """The fields besides ``profile`` and ``script`` where a registry entry is not what this
+    plugin writes for the role — each one a way the gateway stops serving the loop.
+
+    The observer is held to its full delivery contract (``observer.route_contract``, the same
+    comparison the feed makes before every notice). A seat or adjudicator route must carry its
+    role's prompt, subscribe to its gate's event, run an agent (no ``deliver_only``) and not be
+    switched off (``enabled: false`` is a 403). A seat's ``deliver`` is left alone on purpose.
+    """
+    if role == "observer":
+        from . import observer
+        return [key for key in routes.contract_mismatch(entry, observer.route_contract(loop))
+                if key not in ("profile", "script")]
+    wrong = []
+    if entry.get("prompt") != route_intent.ROUTE_PROMPT[role]:
+        wrong.append("prompt")
+    events = entry.get("events")
+    if not isinstance(events, list) or _GATE_EVENT[role] not in events:
+        wrong.append("events")
+    if entry.get("deliver_only"):
+        wrong.append("deliver_only")
+    if entry.get("enabled", True) is False:
+        wrong.append("enabled")
+    return wrong
+
+
+def divergence(loop: dict, *, include_missing: bool = True, contract: bool = False) -> dict:
     """route name → (detail, fix, status) for each loop route whose registry entry is not what the
     loop config would install: another profile or gate, no profile in the config, or no route.
 
@@ -172,8 +202,35 @@ def divergence(loop: dict, *, include_missing: bool = True) -> dict:
                              f"{name!r} — the gateway 404s this seat",
                              repair if restorable else recreate_fix(loop), "absent")
             continue
-        have = (routes.route_profile(entry) or "", entry.get("script"))
+        served = routes.route_profile(entry)
+        if served is None:
+            # An explicit null/blank/non-string profile is not "no profile": the gateway refuses
+            # every request for the route (``_route_allows_profile``), whatever the config says.
+            fix = (f"`hermes review-loop apply --loop {lid}` (rebinds the route to the config)"
+                   if want[0] and route_intent.owned(entry) else
+                   f"name the {role} profile in the loop config, then `hermes review-loop apply "
+                   f"--loop {lid}`" if route_intent.owned(entry) else
+                   f"remove or rename that entry, then {repair if restorable else recreate_fix(loop)}")
+            out[name] = (f"registry route has profile {entry.get('profile')!r}, which the gateway "
+                         f"refuses (blank or not a name) — every event is turned away; loop config "
+                         f"says {_side(*want)}", fix, "mismatch")
+            continue
+        have = (served, entry.get("script"))
         if have == want:
+            drift = contract_drift(loop, role, entry) if contract else []
+            if drift:
+                # Without the role's prompt the route is not provably ours, so apply will not
+                # rewrite it; every other field it rewrites from the config (secret kept).
+                if "prompt" not in drift:
+                    fix = (f"`hermes review-loop apply --loop {lid}` (rewrites it from the loop "
+                           "config, secret kept)")
+                elif recorded is not None and recorded.get("prompt") == route_intent.ROUTE_PROMPT[role]:
+                    fix = repair
+                else:
+                    fix = (f"remove that entry (its prompt no longer proves it is this plugin's), "
+                           f"then {recreate_fix(loop)}")
+                out[name] = ("registry route differs from what the plugin writes: "
+                             + ", ".join(drift), fix, "mismatch")
             continue
         detail = f"registry runs {_side(*have)}, loop config says {_side(*want)}"
         if not route_intent.owned(entry):

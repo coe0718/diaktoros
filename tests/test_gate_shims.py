@@ -16,6 +16,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -1285,6 +1286,96 @@ class ObserverStatusDoctor(Base):
         lines = route_intent.heal(config.load_id("widgets"))
         self.assertTrue(any("widgets-fix: had changed enabled" in line for line in lines), lines)
         self.assertNotIn("enabled", routes.route("widgets-fix"))
+
+    # -- third review of #112: apply sees contract drift; a refused profile is not "none" --------
+
+    def apply_until_quiet(self):
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertNotIn("already matches the plugin settings", out)
+        return rc, out
+
+    def test_apply_repairs_observer_contract_drift_it_can_prove_is_ours(self):
+        drifts = {"deliver_only removed": lambda e: e.pop("deliver_only"),
+                  "deliver changed": lambda e: e.update(deliver="discord"),
+                  "deliver_extra added": lambda e: e.update(deliver_extra={"chat_id": "x"}),
+                  "events changed": lambda e: e.update(events=["push"]),
+                  "disabled": lambda e: e.update(enabled=False)}
+        for label, mutate in drifts.items():
+            for with_record in (True, False):
+                with self.subTest(label, with_record=with_record):
+                    self.setUp()
+                    self.observer_install()
+                    if not with_record:
+                        self.forget_intent()
+                    self.edit_registry("widgets-observe", mutate)
+                    self.assertIsNone(self.feed_target())
+                    rc, dry = self.run_cli(["apply", "--loop", "widgets", "--dry-run"])
+                    self.assertIn("route widgets-observe:", dry)
+                    self.assertIsNone(self.feed_target(), "a dry run wrote")
+                    rc, out = self.apply_until_quiet()
+                    self.assertEqual(rc, 0, out)
+                    self.assertIn("route widgets-observe:", out)
+                    self.assertEqual(self.route_check().status, doctor.VERIFIED)
+                    self.assertIsNotNone(self.feed_target())
+                    rc, out = self.run_cli(["apply", "--loop", "widgets"])
+                    self.assertEqual((rc, "already matches" in out), (0, True), out)
+
+    def test_apply_repairs_seat_contract_drift(self):
+        drifts = {"events changed": lambda e: e.update(events=["push"]),
+                  "deliver_only set": lambda e: e.update(deliver_only=True),
+                  "disabled": lambda e: e.update(enabled=False)}
+        for label, mutate in drifts.items():
+            with self.subTest(label):
+                self.setUp()
+                self.install()
+                self.forget_intent()
+                self.edit_registry("widgets-fix", mutate)
+                checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"),
+                                                               offline=True)}
+                self.assertTrue(checks["route:widgets-fix"].failed, label)
+                rc, out = self.apply_until_quiet()
+                self.assertEqual(rc, 0, out)
+                self.assertIn("route widgets-fix:", out)
+                checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"),
+                                                               offline=True)}
+                self.assertEqual(checks["route:widgets-fix"].status, doctor.VERIFIED,
+                                 checks["route:widgets-fix"].detail)
+
+    def test_apply_reports_drift_it_cannot_prove_is_ours(self):
+        # A changed prompt breaks the ownership proof, so apply must not rewrite the route — but
+        # it must not call the loop clean either.
+        for role, name in (("fixer", "widgets-fix"), ("observer", "widgets-observe")):
+            with self.subTest(name):
+                self.setUp()
+                self.observer_install()
+                self.edit_registry(name, lambda e: e.update(prompt="something else"))
+                rc, out = self.apply_until_quiet()
+                self.assertEqual(rc, 1, out)
+                self.assertIn(f"⚠️ route {name}:", out)
+                self.assertIn("prompt", out)
+                self.assertEqual(routes.route(name)["prompt"], "something else")
+                command = re.search(rf"⚠️ route {name}:.*?fix: .*?`hermes review-loop ([^`]+)`",
+                                    out).group(1)
+                self.follow(f"`hermes review-loop {command}`")
+                rc, out = self.run_cli(["apply", "--loop", "widgets"])
+                self.assertEqual((rc, "already matches" in out), (0, True), out)
+
+    def test_a_refused_registry_profile_is_not_no_profile(self):
+        from review_loop import gate_shims
+        self.install()
+        for bad in ("", "  ", None, 7):
+            with self.subTest(profile=bad):
+                self.edit_registry("widgets-review", lambda e: e.update(profile=bad))
+                detail, fix, status = gate_shims.divergence(config.load_id("widgets"))["widgets-review"]
+                self.assertIn("the gateway refuses", detail)
+                self.assertIn("apply --loop widgets", fix)
+                # Even against a config with no profile (normalize refuses one; a hand-built loop
+                # does not): blank in the registry is refused, not "none configured".
+                loop = config.load_id("widgets")
+                loop["seats"]["reviewer"]["profile"] = ""
+                self.assertIn("widgets-review", gate_shims.divergence(loop))
+                rc, out = self.run_cli(["apply", "--loop", "widgets", "--dry-run"])
+                self.assertIn("route widgets-review:", out)
 
 
 if __name__ == "__main__":

@@ -357,21 +357,23 @@ def _route_binds(loop: dict, touched: set[str]) -> dict:
     return binds
 
 
-def _disabled_routes(loop: dict) -> dict:
-    """role → route name for this loop's own routes the registry has switched off.
+def _drifted_routes(loop: dict) -> dict:
+    """role → (route name, fields) for this loop's own routes whose registry entry differs from
+    what the plugin writes (``gate_shims.contract_drift``) in a way apply can repair.
 
-    The gateway answers 403 to every event on an explicit ``enabled: false`` (Hermes
-    ``webhook.py``), so a seat behind it is never woken. Only a route provably ours (its role's
-    gate and prompt) counts; rewriting it from the config drops the key, secret kept.
+    Only a route provably ours (its role's gate *and* prompt) counts; rewriting it from the config
+    keeps its secret. That covers the gateway's 403 on ``enabled: false``, an observer that lost
+    ``deliver_only`` (which would wake an agent) or its destination, and a seat off its event.
     """
-    off: dict = {}
+    out: dict = {}
     for role, name in _routes_of(loop).items():
         entry = routes.route(name)
-        if (isinstance(entry, dict) and entry.get("enabled", True) is False
-                and entry.get("script") == GATE_SCRIPT[role]
+        if (isinstance(entry, dict) and entry.get("script") == GATE_SCRIPT[role]
                 and entry.get("prompt") == _ROUTE_PROMPT[role]):
-            off[role] = name
-    return off
+            fields = gate_shims.contract_drift(loop, role, entry)
+            if fields:
+                out[role] = (name, fields)
+    return out
 
 
 def _stale_scripts(loop: dict) -> dict:
@@ -733,14 +735,16 @@ def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
     return (0 if _install_shims(loop, report=False) else 2), len(redundant)
 
 
-def _diverged(loop: dict, *, rewritten=()) -> bool:
+def _diverged(loop: dict, *, rewritten=(), header: str = "") -> bool:
     """Say so when a route still is not what the config installs, even after a push: never
     report success over a route the gateway runs under another profile or gate.
 
     ``rewritten`` names the routes this apply is about to write from the config: a dry run passes
     them, so it prints exactly what the real apply will still find afterwards."""
-    left = {name: value for name, value in gate_shims.divergence(loop).items()
+    left = {name: value for name, value in gate_shims.divergence(loop, contract=True).items()
             if name not in set(rewritten)}
+    if left and header:
+        print(header)
     for name, (detail, fix, _status) in left.items():
         print(f"  ⚠️ route {name}: {detail} — fix: {fix}")
     return bool(left)
@@ -1305,8 +1309,8 @@ def cmd_apply(args) -> int:
     # A route installed by an older release (the pre-#21 breach route on gate_reviewer.py) is
     # repaired here too: `init` refuses an existing loop, so apply is the only reconcile path.
     repairs = _stale_scripts(updated)
-    reenable = _disabled_routes(updated)
-    rebinding = touched | set(binds) | set(repairs) | set(reenable)
+    drifted = _drifted_routes(updated)
+    rebinding = touched | set(binds) | set(repairs) | set(drifted)
     try:
         # Validate what this apply would *write*: a loop that predates the seat checks keeps
         # loading, but a seat this push moves must be one that can actually run.
@@ -1355,9 +1359,14 @@ def cmd_apply(args) -> int:
     missing_routes = sorted(name for role, name in _routes_of(updated).items()
                             if role in touched and not routes.route(name))
 
-    if not changes and not identity and not binds and not repairs and not reenable:
-        print(f"[{loop['id']}] already matches the plugin settings")
-        return 1 if _diverged(updated) or leftover_hooks else 0
+    if not changes and not identity and not binds and not repairs and not drifted:
+        # Never "matches" over a route the registry holds differently (#112 review): the loop
+        # config can agree with the settings while the gateway serves something else.
+        left = _diverged(updated, header=f"[{loop['id']}] the loop config matches the plugin "
+                                         "settings, but the route registry does not:")
+        if not left:
+            print(f"[{loop['id']}] already matches the plugin settings")
+        return 1 if left or leftover_hooks else 0
     if not args.dry_run and updated.get("host") != loop.get("host") and loop.get("observer"):
         try:
             outstanding = observer.unsettled(state_mod.state_for(loop))
@@ -1373,9 +1382,13 @@ def cmd_apply(args) -> int:
     for role, (name, current, target) in sorted(binds.items()):
         print(f"  route {name}: profile {current or '(blank)'} → {target}   (the URL carries "
               "the profile)")
-    for role, name in sorted(reenable.items()):
-        print(f"  route {name}: disabled (enabled: false) → enabled   (the gateway answers 403 "
-              "to every event while it is off)")
+    for role, (name, fields) in sorted(drifted.items()):
+        if fields == ["enabled"]:
+            print(f"  route {name}: disabled (enabled: false) → enabled   (the gateway answers 403 "
+                  "to every event while it is off)")
+        else:
+            print(f"  route {name}: {', '.join(fields)} differ from what the plugin writes → "
+                  "rewritten from the loop config   (secret kept)")
     for role, (name, script) in sorted(repairs.items()):
         print(f"  route {name}: script {script} → {GATE_SCRIPT[role]}   (installed by an older "
               "release)")
@@ -1389,7 +1402,7 @@ def cmd_apply(args) -> int:
 
     if args.dry_run:
         rewritten = ({bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
-                     | set(reenable.values()))
+                     | {n for n, _ in drifted.values()})
         if getattr(args, "recreate_routes", False):
             rewritten |= set(missing.values())
         left = _diverged(updated, rewritten=rewritten)
@@ -1419,12 +1432,12 @@ def cmd_apply(args) -> int:
         return 2
     previous = {name: routes.route(name)
                 for name in ({bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
-                             | set(reenable.values()))}
+                             | {n for n, _ in drifted.values()})}
     config_path = config.config_dir() / f"{loop['id']}.json"
     previous_config = config_path.read_bytes()
     attempted_hooks = []
     try:
-        rewrite = tuple(set(binds) | set(repairs) | set(reenable))
+        rewrite = tuple(set(binds) | set(repairs) | set(drifted))
         rebound = list(_install_routes(updated, roles=rewrite).items()) if rewrite else []
         for role, name in rebound:
             entry = routes.route(name)
@@ -1432,8 +1445,10 @@ def cmd_apply(args) -> int:
                 raise config.ConfigError(f"route {name} readback does not match requested profile")
             if entry.get("script") != GATE_SCRIPT[role]:
                 raise config.ConfigError(f"route {name} readback does not run {GATE_SCRIPT[role]}")
-            if entry.get("enabled", True) is False:
-                raise config.ConfigError(f"route {name} readback is still disabled")
+            if gate_shims.contract_drift(updated, role, entry):
+                raise config.ConfigError(f"route {name} readback still differs from what the "
+                                         "plugin writes: "
+                                         + ", ".join(gate_shims.contract_drift(updated, role, entry)))
         for hook_id, old, new, ssl in hook_moves:
             attempted_hooks.append((hook_id, old, ssl))
             _patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None,
@@ -1474,7 +1489,7 @@ def cmd_apply(args) -> int:
     for role, name in rebound:
         print(f"  route {name} rebound → profile {config.seat_profile(updated, role)}"
               + (f", script {GATE_SCRIPT[role]}" if role in repairs else "")
-              + (", enabled" if role in reenable else ""))
+              + (f", {', '.join(drifted[role][1])} restored" if role in drifted else ""))
     for hook_id, _, new, _ssl in hook_moves:
         print(f"  hook {hook_id} → {new}")
     for hook_id, old, keep in redundant_hooks:
