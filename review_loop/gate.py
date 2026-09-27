@@ -527,7 +527,7 @@ def gate_failure_line(entry: dict) -> str:
     redrives = int(entry.get("redrives") or 0)
     status = (f"{redrives} watchdog re-drive(s) so far; the next sweep retries it"
               if entry.get("redrivable") and entry.get("payload_kept")
-              and redrives < gate_failures.MAX_REDRIVES
+              and not entry.get("payload_missing") and redrives < gate_failures.MAX_REDRIVES
               else gate_failures.not_driven(entry))
     return (f"gate failure {entry.get('id')}: {entry.get('gate')} {entry.get('kind')} at head "
             f"{str(entry.get('head') or '?')[:7]} ({entry.get('action') or '?'}), last "

@@ -284,10 +284,10 @@ class Ledger:
     """``gate-failures.json`` plus one payload file per entry, under one flock.
 
     Every writer loads through :meth:`_load_for_write` under the lock. A file that exists but
-    cannot be read is never overwritten: it is renamed to ``gate-failures.json.corrupt-<when>``
-    (once — afterwards the path is free), and the fresh ledger starts with one ``kind: ledger``
-    entry naming the copy, which the watchdog alerts once and ``explain`` shows until the
-    operator has salvaged and deleted it.
+    is not a ledger (unparseable, or the wrong shape) is never overwritten in place: its bytes
+    are kept as ``gate-failures.json.corrupt-<when>`` (once), and the fresh ledger starts with
+    one ``kind: ledger`` entry naming the copy — never pruned — which the watchdog alerts once
+    and ``explain`` shows until the operator has salvaged and deleted it.
     """
 
     def __init__(self, directory: pathlib.Path):
@@ -303,7 +303,13 @@ class Ledger:
             yield
 
     def _read(self) -> tuple[dict | None, str]:
-        """``(entries, "")``, or ``(None, why)`` when the file exists but is not a JSON object."""
+        """``(entries, "")``, or ``(None, why)`` when the file exists but is not a ledger.
+
+        The shape is checked, not just the JSON: an object of entry objects under ordinary
+        keys. A file that parses but holds anything else — the ``_unreadable`` stand-in an early
+        build of this module could persist, a list, an entry that is not an object — is as
+        unreadable as a torn write, so a writer moves it aside instead of failing on it forever.
+        """
         try:
             if not self.path.exists():
                 return {}, ""
@@ -312,6 +318,11 @@ class Ledger:
             return None, f"{type(exc).__name__}: {_bounded(exc, 160)}"
         if not isinstance(data, dict):
             return None, f"not a JSON object ({type(data).__name__})"
+        for key, value in data.items():
+            if not key or key.startswith("_"):
+                return None, f"holds {key!r}, which is not a gate-failure entry"
+            if not isinstance(value, dict):
+                return None, f"entry {key[:40]!r} is not an object ({type(value).__name__})"
         return data, ""
 
     def entries(self) -> dict:
@@ -326,30 +337,39 @@ class Ledger:
 
     def _load_for_write(self) -> dict:
         """The entries to modify — call with the lock held. An unreadable file is moved aside
-        first (raising :class:`LedgerUnreadable`, and writing nothing, if it cannot be)."""
+        first (raising :class:`LedgerUnreadable`, and writing nothing, if it cannot be).
+
+        Crash-safe order: the corrupt bytes are first given a second name (a hard link, or a
+        fsynced copy), and only then is the fresh ledger published over the original path by an
+        atomic replace. A crash before the replace leaves the original where it was, and the
+        next writer finds the copy it already made (same bytes) and reuses it — one copy, never
+        a lost file; after the replace the move is complete.
+        """
         data, why = self._read()
         if data is not None:
             return data
-        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        copy = self.dir / f"{LEDGER}.corrupt-{stamp}"
-        n = 1
-        while copy.exists():
-            n += 1
-            copy = self.dir / f"{LEDGER}.corrupt-{stamp}-{n}"
         try:
-            os.rename(self.path, copy)
+            raw = self.path.read_bytes()
+            copy = _existing_copy(self.dir, raw)
+            if copy is None:
+                copy = _new_copy_name(self.dir)
+                try:
+                    os.link(self.path, copy)
+                except OSError:
+                    _write_copy(copy, raw)
+                _fsync_dir(self.dir)
         except OSError as exc:
-            raise LedgerUnreadable(f"{self.path} is unreadable ({why}) and could not be moved "
+            raise LedgerUnreadable(f"{self.path} is unreadable ({why}) and could not be copied "
                                    f"aside: {type(exc).__name__}: {exc}") from exc
         now = time.time()
         key = "ledger-" + hashlib.sha256(str(copy).encode()).hexdigest()[:12]
-        log(f"gate-failure ledger {self.path} was unreadable ({why}); moved aside to {copy}")
         data = {key: {"id": key, "gate": "ledger", "kind": CORRUPT, "resolved": False,
                       "error_type": "LedgerUnreadable", "error": why, "path": str(self.path),
                       "corrupt_copy": str(copy), "attempts": 1, "redrives": 0,
                       "redrivable": False, "payload_kept": False,
                       "first_at": now, "last_at": now}}
-        self._save(data)
+        self._save(data)                  # atomic replace: the original is gone only now
+        log(f"gate-failure ledger {self.path} was unreadable ({why}); moved aside to {copy}")
         return data
 
     def _save(self, data: dict) -> None:
@@ -382,8 +402,12 @@ class Ledger:
             data[key] = merged
             # Bounded: drop the oldest resolved entries first, then the oldest of all.
             if len(data) > MAX_ENTRIES:
-                order = sorted(data, key=lambda k: (not data[k].get("resolved"),
-                                                    data[k].get("last_at") or 0))
+                # The pointer to a corrupt copy is never pruned while unresolved: it is the
+                # operator's only way to the failures recorded before the copy was made.
+                order = sorted((k for k in data
+                                if data[k].get("resolved") or data[k].get("kind") != CORRUPT),
+                               key=lambda k: (not data[k].get("resolved"),
+                                              data[k].get("last_at") or 0))
                 for stale in order[:len(data) - MAX_ENTRIES]:
                     data.pop(stale, None)
                     with contextlib.suppress(OSError):
@@ -479,12 +503,62 @@ class Ledger:
                 self._save(data)
             return dict(entry)
 
+    def with_payload_state(self, key: str, entry: dict) -> dict:
+        """``entry`` plus ``payload_missing`` when its kept payload file is no longer there."""
+        missing = (bool(entry.get("payload_kept"))
+                   and not (self.payload_dir / f"{key}.json").is_file())
+        return {**entry, "payload_missing": True} if missing else entry
+
     def open_for(self, number: int) -> list[dict]:
         """Unresolved failures for one PR — and an unreadable or moved-aside ledger, which may
         be hiding this PR's failures."""
-        return [e for e in self.entries().values()
+        return [self.with_payload_state(str(e.get("id") or k), e)
+                for k, e in self.entries().items()
                 if isinstance(e, dict) and not e.get("resolved")
                 and (e.get("pr") == number or e.get("kind") == CORRUPT)]
+
+
+def _existing_copy(directory: pathlib.Path, raw: bytes) -> pathlib.Path | None:
+    """A ``.corrupt-*`` copy already holding exactly these bytes (a move-aside that crashed
+    before publishing the fresh ledger), so a retry does not make a second one."""
+    for candidate in sorted(directory.glob(f"{LEDGER}.corrupt-*")):
+        try:
+            if candidate.stat().st_size == len(raw) and candidate.read_bytes() == raw:
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _new_copy_name(directory: pathlib.Path) -> pathlib.Path:
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    copy, n = directory / f"{LEDGER}.corrupt-{stamp}", 1
+    while copy.exists():
+        n += 1
+        copy = directory / f"{LEDGER}.corrupt-{stamp}-{n}"
+    return copy
+
+
+def _write_copy(copy: pathlib.Path, raw: bytes) -> None:
+    """A durable copy where no hard link can be made; a partial one is removed."""
+    fd = os.open(copy, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(raw)
+            out.flush()
+            os.fsync(out.fileno())
+    except BaseException:
+        with contextlib.suppress(OSError):
+            copy.unlink()
+        raise
+
+
+def _fsync_dir(directory: pathlib.Path) -> None:
+    fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _number(value) -> float:
@@ -692,6 +766,9 @@ def not_driven(entry: dict, scripts_dir: pathlib.Path | None = None) -> str:
                 f"re-driven — " + redeliver_hint(entry))
     if int(entry.get("redrives") or 0) >= MAX_REDRIVES:
         return f"gave up after {MAX_REDRIVES} re-drives — needs you"
+    if entry.get("payload_missing"):
+        return ("stored payload is missing (deleted from the gate-failures directory), so it "
+                "cannot be re-driven — " + redeliver_hint(entry))
     if scripts_dir is not None and not (scripts_dir / f"{entry.get('gate')}.py").is_file():
         return f"{entry.get('gate')}.py not found — cannot re-drive"
     return "not re-driven this sweep (GitHub is not answering); a later sweep retries it"
@@ -703,7 +780,7 @@ def redrive(ledger: Ledger, key: str, gate: str, scripts_dir: pathlib.Path) -> s
     import subprocess
     raw = ledger.payload(key)
     if raw is None:
-        return "stored payload is gone — cannot re-drive"
+        return not_driven({**(ledger.entries().get(key) or {}), "payload_missing": True})
     try:
         left = gh.remaining()
         proc = subprocess.run([sys.executable, str(scripts_dir / f"{gate}.py")], input=raw,
@@ -762,7 +839,7 @@ def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s:
             finally:
                 entry = ledger.release(key, me) or entry
         else:
-            outcome = not_driven(entry, scripts_dir)
+            outcome = not_driven(ledger.with_payload_state(key, entry), scripts_dir)
         pr = f"#{entry['pr']}" if entry.get("pr") else "no PR"
         head = str(entry.get("head") or "")[:7] or "?"
         lines.append(f"⚠️ Review loop {header} — gate failure {key}: {entry.get('gate')} "

@@ -496,12 +496,19 @@ own record instead:
   that entry cannot be re-driven: the alert and `explain` say so and name the route whose hook
   to open in GitHub (Settings → Webhooks → Recent Deliveries → Redeliver).
 * **An unreadable ledger is kept, not overwritten.** If `gate-failures.json` exists but is not a
-  JSON object (a torn write, a bad hand edit), the next gate failure or watchdog sweep renames
-  it to `gate-failures.json.corrupt-<UTC time>` in the same directory, once, and starts a fresh
-  ledger. The fresh ledger holds one entry that names the copy. The watchdog alerts on it once,
-  and `explain` lists it for every PR of the loop, because that PR's earlier failures may only be
-  in the copy. Salvage what you need from the copy and delete it; the next sweep then clears the
-  entry. If the file cannot be renamed, nothing is written to it, and the sweep reports why.
+  ledger, the next gate failure or watchdog sweep moves it aside once, to
+  `gate-failures.json.corrupt-<UTC time>` in the same directory, and starts a fresh ledger. "Not a
+  ledger" covers a torn write or a bad hand edit, and also a file that parses but has the wrong
+  shape: not an object of entry objects, or holding a key starting with `_`. The move is
+  crash-safe. The corrupt bytes get their second name first, and only then does the fresh ledger
+  replace the original path atomically. A crash in between leaves the original in place, and the
+  next writer reuses the copy it already made. The fresh ledger holds one entry that names the
+  copy. That entry is never pruned by the 200-entry bound while the copy exists. The watchdog
+  alerts on it once, and `explain` lists it for every PR of the loop, because that PR's earlier
+  failures may only be in the copy. Salvage what you need from the copy and delete it; the next
+  sweep then clears the entry. If no copy can be made, nothing is written, and the sweep reports
+  why. An entry whose stored payload has since been deleted says so, and gives the same GitHub
+  redelivery steps as a payload that was never kept.
 * **Watchdog.** Each sweep alerts on unresolved entries, once per new failure and again after the
   cooldown. It re-drives reviewer and fixer events by running the gate again on the stored
   payload. This is safe because those gates re-read the live PR and the run ledger dedups a second

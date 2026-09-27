@@ -332,6 +332,90 @@ class GateFailureTest(unittest.TestCase):
         watchdog()
         self.assertFalse([e for e in gate_failures.open_for(loop, 7) if e.get("kind") == "ledger"])
 
+    # A file that parses but is not a ledger — the stand-in a run at <= 07b0b01 could persist,
+    # a list, an entry that is not an object — is as unreadable as a torn write.
+    POISONED = {
+        "stand-in": json.dumps({"_unreadable": {"gate": "?", "kind": "ledger", "resolved": False,
+                                                "error": "x is unreadable", "attempts": 1}}),
+        "list": "[]",
+        "entry not an object": json.dumps({"k0": 5}),
+    }
+
+    def test_a_readable_but_invalid_ledger_is_moved_aside_not_bricked(self):
+        writers = {
+            "record": lambda ledger: ledger.record("k9", {"gate": "gate_fixer", "pr": 8}, "{}"),
+            "resolve": lambda ledger: ledger.resolve("k0", "done"),
+            "update": lambda ledger: ledger.update("k0", {"alerted_at": 1.0}),
+            "sweep": lambda ledger: gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=0),
+        }
+        for shape, text in self.POISONED.items():
+            for name, write in writers.items():
+                with self.subTest(shape=shape, writer=name):
+                    ledger = self.corrupt_ledger()
+                    ledger.path.write_text(text)
+                    write(ledger)
+                    write(ledger)
+                    (copy,) = self.corrupt_copies()
+                    self.assertEqual(copy.read_text(), text)
+                    data = json.loads(ledger.path.read_text())
+                    self.assertFalse([k for k in data if k.startswith("_")], data)
+                    self.assertNotIn(gate_failures.UNREADABLE, ledger.entries())
+                    (stand_in,) = [e for e in data.values() if e.get("kind") == "ledger"]
+                    self.assertEqual(stand_in["corrupt_copy"], str(copy))
+
+    def test_the_pointer_to_a_corrupt_copy_survives_the_entry_bound(self):
+        ledger = self.corrupt_ledger()
+        ledger.snapshot()                                   # moved aside; the pointer is written
+        for i in range(gate_failures.MAX_ENTRIES + 5):
+            ledger.record(f"k{i}", {"gate": "gate_reviewer", "pr": 7}, "{}")
+        pointers = [e for e in ledger.entries().values() if e.get("kind") == "ledger"]
+        self.assertEqual(len(pointers), 1)
+        self.assertLessEqual(len(ledger.entries()), gate_failures.MAX_ENTRIES)
+
+    def test_a_crash_between_move_aside_steps_leaves_it_recoverable(self):
+        from unittest import mock
+        from review_loop import state as st
+        real = st._atomic_write
+        for step in ("fresh save", "copy"):
+            with self.subTest(step=step):
+                ledger = self.corrupt_ledger()
+                boom = OSError(f"crash during {step}")
+                patch = (mock.patch.object(st, "_atomic_write", side_effect=boom) if step == "fresh save"
+                         else mock.patch.object(gate_failures.os, "link", side_effect=boom))
+                if step == "copy":           # no hard link and no room for a copy either
+                    patch2 = mock.patch.object(gate_failures, "_write_copy", side_effect=boom)
+                else:
+                    patch2 = mock.patch.object(gate_failures, "_noop", create=True)
+                with patch, patch2, self.assertRaises(Exception):
+                    ledger.record("k1", {"gate": "gate_reviewer", "pr": 7}, "{}")
+                # Nothing lost: the original still sits where it was, byte for byte.
+                self.assertEqual(ledger.path.read_text(), self.GARBAGE)
+                self.assertLessEqual(len(self.corrupt_copies()), 1)
+                # The next writer finishes the job — one copy, a fresh ledger that points to it.
+                self.assertIs(st._atomic_write, real)
+                ledger.record("k1", {"gate": "gate_reviewer", "pr": 7}, "{}")
+                (copy,) = self.corrupt_copies()
+                self.assertEqual(copy.read_text(), self.GARBAGE)
+                data = json.loads(ledger.path.read_text())
+                self.assertIn("k1", data)
+                self.assertEqual([e["corrupt_copy"] for e in data.values()
+                                  if e.get("kind") == "ledger"], [str(copy)])
+
+    def test_a_missing_kept_payload_says_so_and_how_to_redeliver(self):
+        ledger = self.redrivable_entry()
+        (ledger.payload_dir / "k1.json").unlink()
+        scripts, launches = self.slow_gate_dir(0)
+        (line,) = gate_failures.sweep(ledger, "[w]", scripts, cooldown_s=0)
+        shown = gate.gate_failure_line(ledger.open_for(7)[0])
+        for said in (line, shown):
+            self.assertNotIn("GitHub is not answering", said)
+            self.assertNotIn("retries it", said)
+            self.assertIn("stored payload is missing", said)
+            self.assertIn("cannot be re-driven", said)
+            self.assertIn("Redeliver", said)
+        self.assertEqual(launches.read_text(), "")
+        self.assertEqual(ledger.entries()["k1"]["redrives"], 0)
+
     # -- a payload that was not kept is never promised a retry ---------------------------------
 
     def test_a_payload_not_kept_says_how_to_redeliver_it(self):
