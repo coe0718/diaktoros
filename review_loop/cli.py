@@ -1317,6 +1317,14 @@ def cmd_apply(args) -> int:
         print(f"settings refused: {updated['id']}: {problem} — {config.FOUR_IDENTITY_RULE}")
         print(f"fix: {config.reader_fix(updated)}")
         return 2
+    reader = str(updated.get("read_token") or "")
+    if reader.casefold() not in {str(k).casefold() for k in updated.get("tokens") or {}}:
+        # doctor fails this loop; apply must not report success over it either.
+        print(f"settings refused: {updated['id']}: read_token {reader!r} has no entry in "
+              "'tokens' — the gates read GitHub as that login and have no file to read it from")
+        print(f"fix: hermes review-loop set --loop {updated['id']} --read-token {reader} "
+              f"--token {reader}=/path/to/pat")
+        return 2
 
     identity, touched = _seat_diffs(loop, updated)
     # The installed registry can drift independently of the loop and the form. Repair those
@@ -1909,12 +1917,22 @@ def _cmd_fixer_push_locked(args) -> int:
 
 
 def cmd_drain(args) -> int:
+    try:
+        config.load_id(args.loop)          # the watchdog reports a bad file but exits 0 (cron)
+    except config.ConfigError as exc:
+        print(f"cannot drain: {exc}")
+        return 2
     watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
     cmd = [sys.executable, str(watchdog), "--loop", args.loop, "--drain", "--seat", args.seat]
     return subprocess.run(cmd).returncode
 
 
 def cmd_cleanup(args) -> int:
+    try:
+        config.load_id(args.loop)          # refuse a loop that will not load here, by name
+    except config.ConfigError as exc:
+        print(f"cannot clean up: {exc}")
+        return 2
     cleanup = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "cleanup.py"
     cmd = [sys.executable, str(cleanup), "--loop", args.loop]
     cmd += ["--pr", str(args.pr)] if args.pr else ["--sweep"]
@@ -1924,7 +1942,11 @@ def cmd_cleanup(args) -> int:
 
 
 def cmd_uninstall(args) -> int:
-    loop = config.load_id(args.loop)
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"cannot uninstall: {exc}")
+        return 2
     # Forget first: a route the operator removed must not be put back by the next watchdog
     # sweep's self-heal (which only ever restores routes still in the intent record).
     try:

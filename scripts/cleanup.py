@@ -459,7 +459,12 @@ def main() -> None:
     if not args.loop and not args.all:
         ap.error("pass --loop <id> (or --all with --sweep)")
 
-    loops = config.all_loops() if args.all else [config.load_id(args.loop)]
+    try:
+        loops = config.all_loops() if args.all else [config.load_id(args.loop)]
+    except config.ConfigError as exc:
+        # A loop file the loader refuses (hand-edited, say) is a reason, not a traceback.
+        print(f"cannot clean up: {exc}")
+        sys.exit(2)
     total = 0
     for loop in loops:
         tag = f"[{loop['id']}]"
