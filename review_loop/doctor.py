@@ -236,7 +236,11 @@ def check_seat_models(loop: dict) -> list[Check]:
                             "seats.<seat> as an explicit per-seat override"))
     status_of = {"ok": VERIFIED, "warn": UNKNOWN, "fail": ABSENT}
     for seat in seat_model.seats_for(loop):
-        status, detail, fix = seat_model.describe_seat(loop, seat, settings)
+        try:
+            status, detail, fix = seat_model.describe_seat(loop, seat, settings)
+        except Exception as exc:        # e.g. a malformed base_url: undecided, never a crash
+            status, detail, fix = ("warn", f"could not describe this seat ({type(exc).__name__}: "
+                                           f"{exc})", "run `hermes review-loop selftest`")
         checks.append(Check(f"model:{seat}", status_of[status], detail, fix))
     return checks
 
@@ -286,10 +290,16 @@ def check_seat_extras(loop: dict) -> list[Check]:
                                 "mounts is not known; its provider package was not checked",
                                 f"write {runtime} naming source/venv/runtime/rust"))
             continue
+        needed = maybe = None
         try:
             status, _, _, wire = seat_model.describe_seat_wire(loop, seat, settings)
-        except Exception as exc:                        # a description that broke is undecided
-            status, wire, reason = "warn", None, f" ({type(exc).__name__})"
+            if wire is not None and status != "fail":
+                needed, maybe = seat_model.extras_for(
+                    wire["provider"], wire["api_mode"], wire["base_url"],
+                    model=wire.get("model") or "", configured=wire.get("configured") or "",
+                    facts=wire.get("facts"))
+        except Exception as exc:        # a malformed URL, a broken description: undecided
+            status, wire, reason = "warn", None, f" ({type(exc).__name__}: {exc})"
         else:
             reason = ""
         if status == "fail":
@@ -302,8 +312,6 @@ def check_seat_extras(loop: dict) -> list[Check]:
                                 f"fix model:{seat} first, then re-run doctor"))
             continue
         provider, mode, model = wire["provider"], wire["api_mode"], wire.get("model") or ""
-        needed, maybe = seat_model.extras_for(provider, mode, wire["base_url"], model=model,
-                                              facts=wire.get("facts"))
         if not needed and not maybe:
             checks.append(Check(name, VERIFIED, f"{provider} [{mode}] needs no optional Hermes "
                                 "package"))

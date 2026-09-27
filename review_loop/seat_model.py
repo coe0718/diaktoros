@@ -78,45 +78,59 @@ REFUSED_API_MODES = frozenset({"bedrock_converse", "codex_app_server"})
 
 # Optional Hermes extras a seat's sandboxed Hermes imports to talk to its provider (#118). Keyed
 # by the extra's name in Hermes's ``pyproject.toml`` ``[project.optional-dependencies]``; every
-# fact is from the pinned Hermes source:
+# fact is from the pinned Hermes source. The sandbox runs on the wire (``api_mode``) the host's
+# Hermes resolves for the seat, so the table predicts that resolution:
 #
 # * ``module`` — the import that proves the extra is installed (Hermes's own anchor for it,
 #   ``pm/extras.py`` ``ANCHORS``), checked with ``find_spec`` by the runtime venv's python;
 # * ``wires`` — the proxied ``api_mode``s whose Hermes client imports it (``anthropic_messages``:
 #   ``agent/agent_init.py`` → ``anthropic_adapter.build_anthropic_client`` → ``import anthropic``,
 #   for every provider on that wire, the Claude subscription included);
-# * ``providers`` — providers Hermes always puts on such a wire (``hermes_cli/providers.py``
-#   ``transport="anthropic_messages"``), for a profile whose config names no ``api_mode``;
-# * ``hosts`` / ``url_suffixes`` / ``host_paths`` — base URLs Hermes maps onto that wire
-#   (``runtime_provider._detect_api_mode_for_url``, ``providers.host_mandated_api_mode``);
+# * ``pinned`` — providers whose wire Hermes fixes whatever ``model.api_mode`` says:
+#   ``anthropic`` (``runtime_provider``: ``provider == "anthropic"`` → ``anthropic_messages``) and
+#   ``minimax-oauth`` (``_minimax_oauth_runtime``);
+# * ``providers`` / ``hosts`` / ``url_suffixes`` / ``host_paths`` — providers whose overlay
+#   transport is that wire (``hermes_cli/providers.py``) and base URLs Hermes maps onto it
+#   (``runtime_provider._detect_api_mode_for_url``). These are *fallbacks*: a configured
+#   ``model.api_mode`` wins over both (``_configured_or_fallback_api_mode``: configured, else
+#   ``_fallback_api_mode``; ``_custom_runtime``: ``api_mode or _detect_api_mode_for_url``), so an
+#   explicit non-Messages ``api_mode`` means the package is never imported;
 # * ``models`` — provider families whose *model* picks the wire, by model-id prefix
-#   (``hermes_cli/models.py`` ``_OPENCODE_API_MODE_PREFIXES``): required, like the above;
-# * ``possible`` — providers Hermes *can* put on that wire depending on what doctor does not read
-#   (a credential's shape, a per-session decision): ``models`` prefixes (empty: any model),
-#   ``required_if`` a profile setting that makes it certain, ``unless_base_url`` when a configured
-#   base URL decides instead, and ``why``. Without the package such a seat is ⚠️, never ✅.
+#   (``hermes_cli/models.py`` ``_OPENCODE_API_MODE_PREFIXES``). For the built-in providers
+#   (``builtin_models``) the model wins over a configured ``api_mode`` (``opencode_by_model``); a
+#   custom provider named after a family keeps its own ``api_mode``;
+# * ``possible`` — providers Hermes *can* put on that wire depending on what doctor does not read:
+#   ``models`` prefixes (empty: any model), ``required_if`` / ``possible_if`` the profile settings
+#   that make it certain / possible (neither matching: never), ``unless_configured`` when an
+#   explicit ``base_url`` or ``api_mode`` decides instead, ``ignores_api_mode`` when Hermes derives
+#   the wire itself (``nous``: ``nous_api_mode``), and ``why``. Without the package such a
+#   seat is ⚠️, never ✅.
 #
 # The fix is Hermes's own command for a missing extra (``pm/extras.py`` ``install_hint``).
 HERMES_EXTRAS = {
     "anthropic": {
         "module": "anthropic",
         "wires": frozenset({"anthropic_messages"}),
-        "providers": ANTHROPIC_ALIASES | {"minimax", "minimax-cn", "minimax-oauth",
-                                          "tencent-tokenplan"},
+        "pinned": ANTHROPIC_ALIASES | {"minimax-oauth"},
+        "providers": frozenset({"minimax", "minimax-cn", "tencent-tokenplan"}),
         "hosts": frozenset({"api.anthropic.com"}),
         "url_suffixes": ("/anthropic", "/anthropic/v1"),
         "host_paths": (("api.kimi.com", "/coding"),),
         "models": {"opencode-zen": ("claude-", "union-alpha", "qwen"),
                    "opencode-go": ("minimax-", "qwen", "union-alpha")},
+        "builtin_models": frozenset({"opencode-zen", "opencode", "zen", "opencode-go", "go",
+                                     "opencode-go-sub"}),
         "possible": {
-            # hermes_cli/providers.py nous_api_mode + agent/nous_wire.py: anthropic/* rides the
-            # native Messages wire with nous.anthropic_wire: native, and `auto` may promote to it.
+            # hermes_cli/providers.py nous_api_mode: anthropic/* is on the Messages wire only with
+            # nous.anthropic_wire: native; agent/nous_wire.py may promote a session to it only on
+            # `auto`. Unset or `chat` never reaches it. nous ignores model.api_mode.
             "nous": {"models": ("anthropic/",),
                      "required_if": {"nous_anthropic_wire": "native"},
-                     "why": "with nous.anthropic_wire native (or auto's promotion)"},
+                     "possible_if": {"nous_anthropic_wire": "auto"}, "ignores_api_mode": True,
+                     "why": "when nous.anthropic_wire: auto promotes the session"},
             # hermes_cli/auth_zai_kimi.py _resolve_kimi_base_url: a Kimi Code (sk-kimi-) key is
             # redirected to api.kimi.com/coding, which Hermes speaks on the Messages wire.
-            "kimi-coding": {"models": (), "unless_base_url": True,
+            "kimi-coding": {"models": (), "unless_configured": True,
                             "why": "with a Kimi Code key (redirected to api.kimi.com/coding)"},
         },
     },
@@ -129,6 +143,14 @@ PROVIDER_FAMILIES = {
     "nous-portal": "nous", "nousresearch": "nous",
     "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
     "kimi-coding-cn": "kimi-coding", "kimi-cn": "kimi-coding", "moonshot-cn": "kimi-coding",
+}
+# Hermes's spellings of a configured api_mode (hermes_cli/config_providers.py _API_MODE_ALIASES).
+API_MODE_ALIASES = {
+    "openai": "chat_completions", "openai_chat": "chat_completions",
+    "openai-chat": "chat_completions", "chat-completions": "chat_completions",
+    "chatcompletions": "chat_completions", "responses": "codex_responses",
+    "openai_responses": "codex_responses", "openai-responses": "codex_responses",
+    "anthropic": "anthropic_messages",
 }
 
 
@@ -148,34 +170,50 @@ def _bare_model(provider: str, family: str, model: str) -> str:
     return model
 
 
+def _matches(facts: dict, wanted: dict) -> bool:
+    return bool(wanted) and all(str(facts.get(k) or "").strip().lower() == v
+                                for k, v in wanted.items())
+
+
 def extras_for(provider: str, api_mode: str = "", base_url: str = "", *, model: str = "",
-               facts: dict | None = None) -> tuple[list[str], list[str]]:
-    """``(required, possible)`` optional Hermes extras (``HERMES_EXTRAS`` keys) for a seat on this
-    provider, wire, endpoint and model. ``facts`` carries profile settings the table's
-    ``required_if`` reads (``nous_anthropic_wire``); never a credential."""
+               configured: str = "", facts: dict | None = None) -> tuple[list[str], list[str]]:
+    """``(required, possible)`` optional Hermes extras (``HERMES_EXTRAS`` keys) for a seat.
+
+    ``api_mode`` is the wire the seat is expected on; ``configured`` the profile's own
+    ``model.api_mode`` (empty when unset), which beats provider and URL fallbacks as it does in
+    Hermes; ``facts`` carries profile settings ``required_if``/``possible_if`` read
+    (``nous_anthropic_wire``) — never a credential. Raises ValueError on a malformed URL.
+    """
     provider = (provider or "").strip().lower()
     family = provider_family(provider)
     bare = _bare_model(provider, family, model)
     url = (base_url or "").strip().rstrip("/").lower()
     host = urlsplit(url).hostname or ""
+    configured = (configured or "").strip().lower()
+    configured = API_MODE_ALIASES.get(configured, configured)
     facts = facts or {}
     required, possible = [], []
     for extra, spec in HERMES_EXTRAS.items():
-        if (api_mode in spec["wires"] or provider in spec["providers"] or host in spec["hosts"]
-                or (url and url.endswith(spec["url_suffixes"]))
-                or any(host == h and path in url for h, path in spec["host_paths"])
-                or (family in spec["models"] and bare.startswith(spec["models"][family]))):
+        maybe = spec["possible"].get(family)
+        # Hermes derives some providers' wire itself (nous), whatever model.api_mode says.
+        mode, conf = ("", "") if maybe and maybe.get("ignores_api_mode") else (api_mode, configured)
+        overridden = bool(conf) and conf not in spec["wires"]
+        fallback = (provider in spec["providers"] or host in spec["hosts"]
+                    or (url and url.endswith(spec["url_suffixes"]))
+                    or any(host == h and path in url for h, path in spec["host_paths"]))
+        by_model = (family in spec["models"] and bare.startswith(spec["models"][family])
+                    and (provider in spec["builtin_models"] or not overridden))
+        if (mode in spec["wires"] or conf in spec["wires"] or provider in spec["pinned"]
+                or (fallback and not overridden) or by_model):
             required.append(extra)
             continue
-        maybe = spec["possible"].get(family)
-        if (maybe and (not maybe["models"] or bare.startswith(maybe["models"]))
-                and not (maybe.get("unless_base_url") and url)):
-            wanted = maybe.get("required_if") or {}
-            if wanted and all(str(facts.get(k) or "").strip().lower() == v
-                              for k, v in wanted.items()):
-                required.append(extra)
-            else:
-                possible.append(extra)
+        if (not maybe or (maybe["models"] and not bare.startswith(maybe["models"]))
+                or (maybe.get("unless_configured") and (url or overridden))):
+            continue
+        if _matches(facts, maybe.get("required_if") or {}):
+            required.append(extra)
+        elif "possible_if" not in maybe or _matches(facts, maybe["possible_if"]):
+            possible.append(extra)
     return required, possible
 
 
@@ -915,7 +953,7 @@ def describe_seat_wire(loop: dict, seat: str,
                           + (f" via {urlsplit(base).hostname}" if base else "")
                           + f" [{mode}, {label}] (credential checked by selftest)", "",
                     {"provider": requested, "api_mode": mode, "base_url": str(base),
-                     "model": model,
+                     "model": model, "configured": configured,
                      "facts": {"nous_anthropic_wire": str(answer.get("nous_anthropic_wire") or "")}})
     fix = (f"set a supported provider in profile {profile or '<name>'} (see `docs/configuration.md`), "
            f"or add seats.{seat} to the runtime file")

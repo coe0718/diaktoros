@@ -256,67 +256,90 @@ $ hermes review-loop doctor --loop widgets
 [widgets] acme/widgets — preflight (read-only: it writes nothing and fires nothing)
   ✅ config               doctor-demo/loops/widgets.json (repo acme/widgets, cap 3, base main)
   ✅ profile:reviewer     reviewer-profile → doctor-demo/hermes-home/profiles/reviewer-profile
-  ✅ credential:reviewer  rev-coach → a nonempty token file (identity and API access not checked)
+  ✅ credential:reviewer  rev-coach → doctor-demo/rev.pat (exists: yes, private: yes), nonempty (identity and API access not checked)
   ✅ profile:fixer        fixer-profile → doctor-demo/hermes-home/profiles/fixer-profile
-  ✅ credential:fixer     dev-fixer → a tokens entry
+  ✅ credential:fixer     dev-fixer → doctor-demo/fix.pat (exists: yes, private: yes), nonempty (identity and API access not checked)
+  ✅ profile:adjudicator  default → doctor-demo/hermes-home
+  ✅ model:reviewer       profile reviewer-profile: openrouter / test-model [chat_completions, API key] (credential checked by selftest)
+  ✅ model:fixer          profile fixer-profile: openrouter / test-model [chat_completions, API key] (credential checked by selftest)
+  ✅ model:adjudicator    profile default: openrouter / test-model [chat_completions, API key] (credential checked by selftest)
+  ✅ extras:reviewer      openrouter [chat_completions] needs no optional Hermes package
+  ✅ extras:fixer         openrouter [chat_completions] needs no optional Hermes package
+  ✅ extras:adjudicator   openrouter [chat_completions] needs no optional Hermes package
+  ✅ fixer-push           enabled — a changes-requested verdict starts an isolated fixer turn that can publish one push and re-request review
   ✅ token:dev-fixer      doctor-demo/fix.pat (mode 600, non-empty)
   ✅ token:rev-coach      doctor-demo/rev.pat (mode 600, non-empty)
   ✅ read_token           rev-coach (mapped in tokens)
-  ✅ route:widgets-review reviewer-profile · pull_request · http://127.0.0.1:43651/p/reviewer-profile/webhooks/widgets-review
-  ✅ route:widgets-fix    fixer-profile · pull_request_review · http://127.0.0.1:43651/p/fixer-profile/webhooks/widgets-fix
+  ✅ route:widgets-review reviewer-profile · pull_request · [webhook URL redacted]
+  ✅ route:widgets-fix    fixer-profile · pull_request_review · [webhook URL redacted]
   ✅ route:widgets-breach default · adjudication wake
-  ✅ scripts              /home/jeremy/projects/rl-15-doctor/scripts (watchdog, both gates, cleanup)
-  ✅ cron:shim            doctor-demo/hermes-home/scripts/review-loop-watchdog.py → /home/jeremy/projects/rl-15-doctor/scripts/watchdog.py
-  ✅ cron:job             8f21c0 every 15m, next 2026-09-23T22:15:00Z
+  ✅ scripts              /path/to/hermes-review-loop/scripts (watchdog, three gates, cleanup)
+  ✅ cron:shim            doctor-demo/hermes-home/scripts/review-loop-watchdog.py → /path/to/hermes-review-loop/scripts/watchdog.py
+  ✅ cron:job             watchdog-job every 15m, next 2026-01-01T00:00:00Z
   ✅ clone                doctor-demo/clone (git checkout)
   ✅ state_dir            doctor-demo/state (created under doctor-demo on the first run)
-  ✅ roots                1 configured: doctor-demo/reviews
-  ✅ gateway              127.0.0.1:43651 accepts a connection
-  ✅ hook:widgets-review  hook 41 → http://127.0.0.1:43651/p/reviewer-profile/webhooks/widgets-review (pull_request, active)
-  ✅ hook:widgets-fix     hook 42 → http://127.0.0.1:43651/p/fixer-profile/webhooks/widgets-fix (pull_request_review, active)
+  ✅ roots                2 configured: doctor-demo/reviews, doctor-demo/scratch
+  ✅ gateway              configured gateway accepts a TCP connection (URL withheld)
+  ✅ hook:widgets-review  hook 41 → [webhook URL redacted] (pull_request, active)
+  ✅ hook:widgets-fix     hook 42 → [webhook URL redacted] (pull_request_review, active)
 
-widgets: 20 verified, 0 failed, 0 unknown (of 20 checks)
+widgets: 28 verified, 0 failed, 0 unknown (of 28 checks)
   every check passed — this loop can wake a seat and post a verdict.
 ```
 
-and the same loop with six of the ways it really breaks:
+and the same loop with the ways it really breaks — a missing fixer profile (so its model is
+unresolved and its `extras:` line is skipped), a reviewer on a Claude provider whose venv lacks
+the `anthropic` package, a route registered at an old gateway, a route waking the wrong profile
+(and the hook that no longer matches it), a stale shim and a paused watchdog job:
 
 ```
 $ hermes review-loop doctor --loop widgets
 [widgets] acme/widgets — preflight (read-only: it writes nothing and fires nothing)
   ✅ config               doctor-demo/loops/widgets.json (repo acme/widgets, cap 3, base main)
   ✅ profile:reviewer     reviewer-profile → doctor-demo/hermes-home/profiles/reviewer-profile
-  ✅ credential:reviewer  rev-coach → a nonempty token file (identity and API access not checked)
+  ✅ credential:reviewer  rev-coach → doctor-demo/rev.pat (exists: yes, private: yes), nonempty (identity and API access not checked)
   ❌ profile:fixer        no profile home at doctor-demo/hermes-home/profiles/fixer-profile
       fix: `hermes profile create fixer-profile`, or re-run init with --fixer-profile pointing at a profile that exists: the run happens as this profile
-  ✅ credential:fixer     dev-fixer → a tokens entry
-  ❌ token:dev-fixer      no file at doctor-demo/fix.pat
-      fix: write the PAT for dev-fixer to doctor-demo/fix.pat (chmod 600), or re-run init with --token dev-fixer=<a path that exists>
+  ✅ credential:fixer     dev-fixer → doctor-demo/fix.pat (exists: yes, private: yes), nonempty (identity and API access not checked)
+  ✅ profile:adjudicator  default → doctor-demo/hermes-home
+  ✅ model:reviewer       profile reviewer-profile: anthropic / claude-sonnet-4-6 [anthropic_messages, API key, or Claude subscription OAuth (host-refreshed)] (credential checked by selftest)
+  ❌ model:fixer          profile fixer-profile does not exist at doctor-demo/hermes-home/profiles/fixer-profile (or has no config.yaml); the fixer turn will be held
+      fix: set a supported provider in profile fixer-profile (see `docs/configuration.md`), or add seats.fixer to the runtime file
+  ✅ model:adjudicator    profile default: openrouter / test-model [chat_completions, API key] (credential checked by selftest)
+  ❌ extras:reviewer      anthropic [anthropic_messages] needs the Hermes extra `anthropic` (import anthropic), which doctor-demo/doctor-venv/bin/python cannot import; the reviewer turn would fail at model setup
+      fix: `hermes pm install --extra anthropic` (Hermes's own command for a missing extra) — it installs into the venv Hermes selects, so if that is not doctor-demo/doctor-venv, install the extra into doctor-demo/doctor-venv or point `venv` in doctor-demo/hermes-home/review-loop-runtime.json at the venv that has it; then re-run doctor
+  ➖ extras:fixer         skipped: model unresolved (see model:fixer)
+  ✅ extras:adjudicator   openrouter [chat_completions] needs no optional Hermes package
+  ✅ fixer-push           enabled — a changes-requested verdict starts an isolated fixer turn that can publish one push and re-request review
+  ✅ token:dev-fixer      doctor-demo/fix.pat (mode 600, non-empty)
   ✅ token:rev-coach      doctor-demo/rev.pat (mode 600, non-empty)
   ✅ read_token           rev-coach (mapped in tokens)
-  ❌ route:widgets-review registered at https://old-gateway.example, but the loop is armed at http://127.0.0.1:43651
-      fix: re-run init to rewrite the route for http://127.0.0.1:43651: a hook or a manual POST still goes to the recorded origin
+  ❌ route:widgets-review registered gateway origin differs from the loop's configured origin (URLs withheld)
+      fix: re-run init to rewrite the route: a hook or a manual POST still goes to the recorded origin
   ❌ route:widgets-fix    wakes profile 'some-other-agent', but seats.fixer.profile is 'fixer-profile' — the wake would run the wrong agent
       fix: re-run init with --fixer-profile fixer-profile so the route and the loop config agree
   ✅ route:widgets-breach default · adjudication wake
-  ✅ scripts              /home/jeremy/projects/rl-15-doctor/scripts (watchdog, both gates, cleanup)
-  ❌ cron:shim            pinned to /opt/old/plugins/hermes-review-loop/scripts/watchdog.py, this install runs /home/jeremy/projects/rl-15-doctor/scripts/watchdog.py
-      fix: re-run init --schedule 15m for this loop: the shim was written by a different plugin install, and the scheduler keeps running that path
-  ❌ cron:job             8f21c0 (review loop watchdog (widgets)) is paused
-      fix: `hermes cron resume 8f21c0`: a paused watchdog never reports a stall
+  ✅ scripts              /path/to/hermes-review-loop/scripts (watchdog, three gates, cleanup)
+  ❌ cron:shim            doctor-demo/hermes-home/scripts/review-loop-watchdog.py differs from init's executable shim for /path/to/hermes-review-loop/scripts/watchdog.py
+      fix: re-run init --schedule 15m to rewrite the shim
+  ❌ cron:job             watchdog-job (review loop watchdog (widgets)) is paused or disabled
+      fix: `hermes cron resume watchdog-job`: the scheduler skips a disabled watchdog
   ✅ clone                doctor-demo/clone (git checkout)
   ✅ state_dir            doctor-demo/state (created under doctor-demo on the first run)
-  ✅ roots                1 configured: doctor-demo/reviews
-  ✅ gateway              127.0.0.1:43651 accepts a connection
-  ⚠️ hooks                could not read /repos/acme/widgets/hooks — nothing was proved about 2 hook(s) (a token without hook read access — `repo`, or the narrower `read:repo_hook` — reads as denied)
+  ✅ roots                2 configured: doctor-demo/reviews, doctor-demo/scratch
+  ✅ gateway              configured gateway accepts a TCP connection (URL withheld)
+  ✅ hook:widgets-review  hook 41 → [webhook URL redacted] (pull_request, active)
+  ❌ hook:widgets-fix     hook 42 posts to another origin, not [webhook URL redacted]
+      fix: re-run init --hooks, or repoint hook 42 at the route's URL: this loop cannot be woken through the old origin
 
-widgets: 12 verified, 6 failed, 1 unknown (of 19 checks)
-  6 failed: profile:fixer, token:dev-fixer, route:widgets-review, route:widgets-fix, cron:shim, cron:job — fix the ❌ lines above before this loop is armed.
+widgets: 19 verified, 8 failed, 0 unknown, 1 skipped (of 28 checks)
+  8 failed: profile:fixer, model:fixer, extras:reviewer, route:widgets-review, route:widgets-fix, cron:shim, cron:job, hook:widgets-fix — fix the ❌ lines above before this loop is armed.
 ```
 
 (Both transcripts are real output from the suite's isolated demo home — a loopback gateway
-sink for the probe, a stubbed GitHub, short relative paths. A run against a live install
-prints the same lines with absolute paths and the real hook list.)
+sink for the probe, a stubbed GitHub, a runtime venv without the `anthropic` package — with the
+demo home shortened to `doctor-demo` and the plugin checkout to `/path/to/hermes-review-loop`. A
+run against a live install prints the same lines with absolute paths and the real hook list.)
 
 Each seat needs its own GitHub token, and that is deliberate: the token that reviews, the token
 that pushes and the token that reads are separate and revocable one at a time

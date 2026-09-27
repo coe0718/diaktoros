@@ -149,6 +149,16 @@ class SelftestBase(unittest.TestCase):
         self.assertEqual({method for method, _, _ in self.fx.calls}, {"GET"})
 
 
+class DoctorStateBridge(unittest.TestCase):
+    def test_every_doctor_state_maps_to_a_selftest_state(self):
+        from review_loop import doctor
+        states = {value for name, value in vars(doctor).items()
+                  if name.isupper() and isinstance(value, str) and value in doctor.MARKS}
+        self.assertEqual(states, set(doctor.MARKS))
+        self.assertEqual(set(selftest._DOCTOR), states)
+        self.assertEqual(selftest._DOCTOR[doctor.SKIPPED], selftest.SKIP)
+
+
 class ChecklistTests(SelftestBase):
     def test_all_green_exits_zero_with_checkmarks(self):
         rc, text = self.run_selftest(pr=7)

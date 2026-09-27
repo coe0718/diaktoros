@@ -250,6 +250,20 @@ def group_doctor() -> None:
                  "extras:reviewer", "extras:fixer", "extras:adjudicator"):
         check(f"  ✅ {name}", f"✅ {name}" in out, True)
     check("  it writes nothing", tree_digest(TMP), before_files)
+
+    # #118: nous on an anthropic/* model with nous.anthropic_wire unset (Hermes's "chat") never
+    # reaches the Messages wire, so a venv without the anthropic package is healthy — even --strict.
+    fixer_config = TMP / "hermes-home" / "profiles" / "fixer-profile" / "config.yaml"
+    original = fixer_config.read_text()
+    if seat_config_style() == "yaml":
+        fixer_config.write_text("model:\n  default: anthropic/claude-sonnet-4.6\n  provider: nous\n")
+    else:
+        fixer_config.write_text(json.dumps({"model": {"default": "anthropic/claude-sonnet-4.6",
+                                                      "provider": "nous"}}) + "\n")
+    rc, out = run_doctor("--loop", "widgets", "--strict")
+    check("a nous anthropic/* seat on the chat wire passes --strict without the package", rc, 0)
+    check("  its extras line is verified", "✅ extras:fixer" in out, True)
+    fixer_config.write_text(original)
     for path in added:   # the model check reads profiles through the runtime's Hermes (#32)
         path.unlink()
     check("  it fires no webhook", len(RECEIVED), before_posts)

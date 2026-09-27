@@ -292,13 +292,18 @@ per seat:
   anthropic`, Hermes's own command for a missing extra, which installs into the venv Hermes
   selects, so this `venv` must be that one (or have the extra installed itself);
 * ⚠️ the seat *may* need it — Hermes can move it onto the Messages wire depending on something
-  doctor does not read (`nous` with an `anthropic/*` model and `nous.anthropic_wire` other than
-  `native`; `kimi-coding` with a Kimi Code key) — and the package is missing, with the same
-  install command; or the provider could not be read, or the probe could not answer;
+  doctor does not read (`nous` with an `anthropic/*` model and `nous.anthropic_wire: auto`, whose
+  session may be promoted; `kimi-coding` with a Kimi Code key and no `base_url`/`api_mode` of its
+  own) — and the package is missing, with the same install command; or the provider could not be
+  read (a malformed `base_url` included), or the probe could not answer;
 * ➖ skipped when `model:<seat>` is already ❌ (the model is unresolved, so there is no provider
   to check).
 
-The provider→extra table, including those "possible" entries, is `HERMES_EXTRAS` in
+`nous` with `nous.anthropic_wire: native` needs it outright; unset or `chat` never reaches the
+Messages wire. An explicit `model.api_mode` other than `anthropic_messages` wins over a Messages
+provider's default or an Anthropic-looking URL, as it does in Hermes — except for `anthropic`,
+`minimax-oauth`, `nous` and the built-in OpenCode providers, whose wire Hermes fixes itself. The
+provider→extra table, including those "possible" entries, is `HERMES_EXTRAS` in
 `review_loop/seat_model.py`.
 
 **Each seat runs its own Hermes profile's model.** Before a turn, the host resolves the seat's

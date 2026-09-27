@@ -127,7 +127,7 @@ class Report:
 
 
 _DOCTOR = {doctor.VERIFIED: PASS, doctor.ABSENT: FAIL, doctor.MISMATCH: FAIL,
-           doctor.UNKNOWN: WARN}
+           doctor.UNKNOWN: WARN, doctor.SKIPPED: SKIP}
 
 
 def _from_doctor(report: Report, step: str, check) -> None:

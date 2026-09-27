@@ -560,30 +560,80 @@ class ProviderExtras(Base):
         self.assertEqual(need("opencode-go", "deepseek-v4-flash"), ([], []))
 
     def test_a_provider_that_can_switch_wire_is_possible(self):
-        got = seat_model.extras_for("nous", "chat_completions", "", model="anthropic/claude-x")
-        self.assertEqual(got[0], [])
-        self.assertEqual(got[1], ["anthropic"])
-        self.assertEqual(seat_model.extras_for("nous", "chat_completions", "",
-                                               model="anthropic/claude-x",
-                                               facts={"nous_anthropic_wire": "native"})[0],
-                         ["anthropic"])
-        self.assertEqual(seat_model.extras_for("nous", "chat_completions", "", model="openai/gpt-5"),
-                         ([], []))
+        # hermes_cli/providers.py nous_api_mode: Messages only with nous.anthropic_wire native;
+        # agent/nous_wire.py promotes only on auto. Unset/chat never reaches it: no extra at all.
+        nous = lambda **facts: seat_model.extras_for("nous", "chat_completions", "",
+                                                     model="anthropic/claude-x", facts=facts)
+        self.assertEqual(nous(), ([], []))
+        self.assertEqual(nous(nous_anthropic_wire="chat"), ([], []))
+        self.assertEqual(nous(nous_anthropic_wire="auto"), ([], ["anthropic"]))
+        self.assertEqual(nous(nous_anthropic_wire="native"), (["anthropic"], []))
+        self.assertEqual(seat_model.extras_for("nous", "chat_completions", "", model="openai/gpt-5",
+                                               facts={"nous_anthropic_wire": "native"}), ([], []))
         self.assertEqual(seat_model.extras_for("kimi-coding", "", "", model="kimi-k2.6"),
                          ([], ["anthropic"]))
         self.assertEqual(seat_model.extras_for("kimi", "", "https://api.moonshot.ai/v1",
                                                model="kimi-k2.6"), ([], []))
 
+    def test_an_explicit_api_mode_beats_a_provider_or_host_match(self):
+        # runtime_provider: a configured model.api_mode beats URL detection and the overlay's
+        # transport (_configured_or_fallback_api_mode, _custom_runtime) ...
+        need = lambda *a, **k: seat_model.extras_for(*a, **k)
+        self.assertEqual(need("custom:acme", "chat_completions", "https://api.anthropic.com",
+                              configured="chat_completions"), ([], []))
+        self.assertEqual(need("custom:acme", "chat_completions", "https://gw.test/anthropic",
+                              configured="openai"), ([], []))            # Hermes's alias for chat
+        self.assertEqual(need("minimax", "chat_completions", "", configured="chat_completions"),
+                         ([], []))
+        self.assertEqual(need("kimi-coding", "chat_completions", "", model="kimi-k2.6",
+                              configured="chat_completions"), ([], []))
+        self.assertEqual(need("custom:acme", "chat_completions", "https://api.anthropic.com"),
+                         (["anthropic"], []))                            # nothing configured
+        # ... except where Hermes pins the wire itself: anthropic (runtime_provider.py: provider
+        # anthropic → anthropic_messages), minimax-oauth (_minimax_oauth_runtime), nous
+        # (nous_api_mode) and the built-in OpenCode families (opencode_by_model).
+        self.assertEqual(need("anthropic", "anthropic_messages", "", configured="chat_completions"),
+                         (["anthropic"], []))
+        self.assertEqual(need("minimax-oauth", "anthropic_messages", "",
+                              configured="chat_completions"), (["anthropic"], []))
+        self.assertEqual(need("opencode-zen", "chat_completions", "", model="claude-sonnet-4-6",
+                              configured="chat_completions"), (["anthropic"], []))
+        self.assertEqual(need("opencode-go-bridge", "chat_completions", "", model="minimax-m2",
+                              configured="chat_completions"), ([], []))  # custom: its api_mode wins
+
     def test_a_possible_switch_without_the_package_is_a_warning_with_the_fix(self):
-        write_profile(self.home, "rev", {"default": "anthropic/claude-x", "provider": "nous"})
+        write_profile(self.home, "rev", {"default": "anthropic/claude-x", "provider": "nous"},
+                      extra={"nous": {"anthropic_wire": "auto"}})
         check = self.extras(self.bare)["extras:reviewer"]
         self.assertEqual(check.status, doctor.UNKNOWN)
         self.assertIn("may need the anthropic extra: nous can use Anthropic's native wire for "
                       "anthropic/claude-x", check.detail)
         self.assertIn("hermes pm install --extra anthropic", check.detail)
         self.assertEqual(self.extras(self.full)["extras:reviewer"].status, doctor.VERIFIED)
-        write_profile(self.home, "rev", {"default": "openai/gpt-5", "provider": "nous"})
-        self.assertEqual(self.extras(self.bare)["extras:reviewer"].status, doctor.VERIFIED)
+        for config in ({}, {"nous": {"anthropic_wire": "chat"}}):       # never the Messages wire
+            write_profile(self.home, "rev", {"default": "anthropic/claude-x", "provider": "nous"},
+                          extra=config)
+            check = self.extras(self.bare)["extras:reviewer"]
+            self.assertEqual(check.status, doctor.VERIFIED, config)
+            self.assertIn("needs no optional", check.detail)
+
+    def test_a_malformed_url_is_unknown_and_never_escapes_the_preflight(self):
+        write_profile(self.home, "rev", {"default": "m", "provider": "custom:acme",
+                                         "base_url": "https://[::1"})
+        check = self.extras(self.full)["extras:reviewer"]
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("ValueError", check.detail)
+        wire = ("ok", "", "", {"provider": "custom:acme", "api_mode": "chat_completions",
+                               "base_url": "https://[::1", "model": "m", "facts": {}})
+        with mock.patch.object(seat_model, "describe_seat_wire", return_value=wire):
+            check = self.extras(self.full)["extras:reviewer"]
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("ValueError", check.detail)
+        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        self.assertEqual(models["model:reviewer"].status, doctor.UNKNOWN)
+        self.assertIn("ValueError", models["model:reviewer"].detail)
+        names = [c.name for c in doctor.check_loop(self.loop, offline=True)]
+        self.assertIn("extras:reviewer", names)
 
     def test_nous_native_wire_in_the_profile_is_required(self):
         write_profile(self.home, "rev", {"default": "anthropic/claude-x", "provider": "nous"},
