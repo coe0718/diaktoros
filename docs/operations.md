@@ -124,7 +124,11 @@ route to its profile by that URL and answers any other profile's URL 404, so a h
 profile, another path or another origin (a retired gateway, another install) is listed with that
 cause, never flipped, and leaves its seat ABSENT; so does a seat whose route is missing from the
 registry, or bound to another profile ("the wake would run the wrong agent"), in `doctor`'s
-words. The `fix:` advice is per hook: a
+words — and `arm` will not arm a hook at the seat's URL that subscribes to the wrong event or does
+not post JSON (`doctor`'s MISMATCH), since it would never wake the seat. Pausing is stricter about
+*whose* hook it is and looser about the route: `arm --pause` stops every hook this install made —
+at the route's registry URL, or the URL the loop config gives it — even once the route is gone
+from the registry (as `uninstall` leaves it), and still never touches another install's. The `fix:` advice is per hook: a
 failed PATCH that looks transient (a timeout, a 5xx) gets "retry `arm`" first, a refusal (401,
 403, 404, or a PATCH that did not stick) the token-scope line, each naming its hooks. Without `--admin-token` the PATCH
 goes out as the loop's `read_token`; the `fix:` line names the scope that login's file needs
