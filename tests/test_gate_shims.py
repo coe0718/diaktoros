@@ -559,18 +559,20 @@ class DoctorApplyUninstall(Base):
 
     def github_with_hook(self, url: str, secret: str = "placeholder-old-hook-key", *,
                          patch_fails: bool = False, hook_id: int = 51,
-                         insecure_ssl: str = "0", more=()) -> pathlib.Path:
+                         insecure_ssl: str = "0", active: bool = True,
+                         more=()) -> pathlib.Path:
         """A stateful gh stub holding one repo hook, with GitHub's worst-case PATCH semantics: the
         body's ``config`` REPLACES the hook's config wholesale, so a key left out is gone. Reads
         mask the secret as GitHub does. Every value here is a placeholder, never a real key."""
         world = self.tmp / "world.json"
-        hooks = [{"id": hook_id, "active": True, "events": ["pull_request_review"],
+        hooks = [{"id": hook_id, "active": active, "events": ["pull_request_review"],
                   "config": {"url": url, "content_type": "json", "insecure_ssl": insecure_ssl,
                              "secret": secret}}]
-        hooks += [{"id": other_id, "active": True, "events": ["pull_request_review"],
-                   "config": {"url": other_url, "content_type": "json", "insecure_ssl": "0",
+        hooks += [{"id": other[0], "active": other[2] if len(other) > 2 else True,
+                   "events": ["pull_request_review"],
+                   "config": {"url": other[1], "content_type": "json", "insecure_ssl": "0",
                               "secret": "placeholder-other-hook-key"}}
-                  for other_id, other_url in more]
+                  for other in more]
         world.write_text(json.dumps({"hooks": hooks, "patches": 0}))
         stub = self.tmp / "gh-hooks"
         stub.write_text(textwrap.dedent(f"""\
@@ -771,8 +773,59 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(routes.route("widgets-review")["profile"], "tuck")
         self.assertEqual(self.hook_config(world, 41)["url"], old, "the redundant hook is not moved")
         self.assertEqual(self.hook_config(world, 42)["url"], new)
-        self.assertIn("hook 42 already posts there", out)
+        self.assertIn("hook 42 (active) is the one kept", out)
         self.assertIn("gh api -X DELETE repos/acme/widgets/hooks/41", out)
+
+    def hooks_on(self, world, url):
+        return sorted((h["id"], h["active"]) for h in json.loads(world.read_text())["hooks"]
+                      if h["config"]["url"] == url)
+
+    def test_a_paused_hook_at_the_target_never_beats_the_live_one(self):
+        """Tuck's probe: 41 live on the old URL, 42 paused on the target. The route must end with
+        its live hook on its URL, and the paused one named — never the other way round."""
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
+        old = "https://gateway.example/p/vex/webhooks/widgets-review"
+        new = "https://gateway.example/p/tuck/webhooks/widgets-review"
+        world = self.github_with_hook(old, secret=REVIEW_KEY, hook_id=41,
+                                      more=[(42, new, False)])
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual([h for h in self.hooks_on(world, new) if h[1]], [(41, True)],
+                         "exactly one ACTIVE hook on the route URL: the live one")
+        self.assertEqual(self.hook_config(world, 41)["secret"], REVIEW_KEY)
+        self.assertIn("hook 42 (paused)", out)
+        self.assertIn("gh api -X DELETE repos/acme/widgets/hooks/42", out)
+        self.assertNotIn("hooks/41`", out)
+
+    def test_when_every_hook_is_on_the_old_url_exactly_one_moves(self):
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
+        old = "https://gateway.example/p/vex/webhooks/widgets-review"
+        new = "https://gateway.example/p/tuck/webhooks/widgets-review"
+        world = self.github_with_hook(old, secret=REVIEW_KEY, hook_id=43, more=[(41, old)])
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(self.hooks_on(world, new), [(41, True)], "the lowest id moves, alone")
+        self.assertEqual(self.hooks_on(world, old), [(43, True)])
+        self.assertIn("gh api -X DELETE repos/acme/widgets/hooks/43", out)
+
+    def test_plain_apply_names_a_duplicate_already_on_the_current_url(self):
+        self.install()
+        url = "https://gateway.example/p/vex/webhooks/widgets-review"
+        world = self.github_with_hook(url, hook_id=43, more=[(41, url)])
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("already matches the plugin settings", out)
+        self.assertIn("gh api -X DELETE repos/acme/widgets/hooks/43", out)
+        self.assertEqual(self.hooks_on(world, url), [(41, True), (43, True)], "reads only")
+        self.assertEqual(json.loads(world.read_text())["patches"], 0)
+        # One hook per route: nothing to say, rc 0.
+        self.github_with_hook(url, hook_id=41)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
 
     def test_recreate_routes_refuses_when_the_hook_listing_cannot_be_read(self):
         from review_loop import route_intent

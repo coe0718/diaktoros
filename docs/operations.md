@@ -250,12 +250,15 @@ with no intent record to restore it from (an install older than the record) is w
 hermes review-loop apply --loop attest --recreate-routes
 ```
 
-from the loop config, with a new secret — the old one left with the route — and the loop's repo hook
-for that route is re-keyed to it in the same step: the one already at the route's URL, or else one
-left at the loop's previous URL (another profile or host), which is moved there too. A second hook
-for the same route is never duplicated onto its URL; apply names it with the `gh api -X DELETE`
-command that removes it and exits 1. (The same holds when `apply` moves hooks after a profile
-change and one already posts to the new URL.) `init` refuses a loop that exists, so it is
+from the loop config, with a new secret — the old one left with the route — and one repo hook for
+that route is re-keyed to it in the same step, moved to the route's URL if it was left at the loop's
+previous one (another profile or host).
+
+Whenever `apply` re-keys or moves a route's hooks, and on every plain `apply`, it keeps exactly one
+hook per route: an **active** hook first (a route never ends with fewer armed hooks than it had),
+then one already at the route's URL, then the oldest (lowest id). Every other hook for that route is
+left where it is — never duplicated onto the route's URL, never deleted by the plugin — and named
+with the `gh api -X DELETE repos/<repo>/hooks/<id>` command that removes it; `apply` then exits 1. `init` refuses a loop that exists, so it is
 never the way back. `doctor` never fires a
 route, because a synthetic POST at a seat's route is a real agent run with a real budget. The
 network side is a TCP connect to the gateway (is anything listening?) and, when the token is
