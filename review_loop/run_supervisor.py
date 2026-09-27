@@ -99,13 +99,14 @@ class LedgerMissing(HostStateGone):
     """A worker found no usable ledger (missing, empty or not SQLite); it creates none."""
 
 
-_SQLITE_HEADER = b"SQLite format 3\x00"
+def _has_content(path: Path) -> bool:
+    """A non-empty regular file at ``path``, by stat alone.
 
-
-def _is_sqlite(path: Path) -> bool:
+    Never open(): closing any descriptor on a database file drops every POSIX lock this
+    process holds on it, including those of its live SQLite connections.
+    """
     try:
-        with path.open("rb") as stream:
-            return stream.read(len(_SQLITE_HEADER)) == _SQLITE_HEADER
+        return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
 
@@ -517,17 +518,17 @@ class Supervisor:
         Hardening: a worker must never create host state. Only host-side callers (gate
         enqueue, CLI, init, watchdog) create, schema or migrate the ledger and its directory;
         the host did so before it enqueued the run. A worker never runs SCHEMA or a migration.
-        Every worker connection (``_connect``) first checks that the file is SQLite and
-        carries this plugin's full schema, and opens with ``mode=rw``; anything else — gone,
-        empty, foreign, corrupt, replaced mid-run — is ``LedgerMissing``, before anything is
-        written to it.
+        Every worker connection (``_connect``) requires a non-empty file, opens it with
+        ``mode=rw`` and checks this plugin's full schema before any pragma; anything else —
+        gone, empty, not SQLite, corrupt, foreign, replaced mid-run — is ``LedgerMissing``,
+        before anything is written to it.
 
         The host reports a ledger that vanished since it last opened one (its sibling
         ``.present`` marker survives): one stderr line and one operator notice.
         """
         db = Path(db)
         # First, before any other check: no ledger at all is a quiet exit, not an error.
-        if not create and not _is_sqlite(db):
+        if not create and not _has_content(db):
             raise LedgerMissing(f"run ledger {db} is gone, empty or not SQLite")
         vanished = False
         if create:
@@ -610,8 +611,10 @@ class Supervisor:
         """Open the host's ledger, or raise LedgerMissing having written nothing to the file.
 
         Checked on every connection, not once: the file can be removed or replaced mid-run.
+        SQLite itself tells a non-database ("file is not a database") from a ledger; the schema
+        check runs before any pragma or write, so a refused file is left as it was.
         """
-        if not _is_sqlite(self.db):
+        if not _has_content(self.db):
             raise LedgerMissing(f"run ledger {self.db} is gone, empty or not SQLite")
         # mode=rw: a ledger removed after the check above is an error, never a new file.
         uri = "file:" + urllib.request.pathname2url(str(self.db.resolve())) + "?mode=rw"
