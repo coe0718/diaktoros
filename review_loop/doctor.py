@@ -872,7 +872,9 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
         cfg = hook.get("config")
         return str(cfg.get("url") or "") if isinstance(cfg, dict) else ""
 
-    exact = [hook for hook in hooks if posted_url(hook).rstrip("/") == url.rstrip("/")]
+    # Exact: the gateway serves only the exact URL, so a trailing slash is not "this hook" — it is
+    # found below by route name and judged a mismatch, which `apply` repairs.
+    exact = [hook for hook in hooks if posted_url(hook) == url]
     # A wrong origin/profile for the same webhook route is a mismatch, not an absent hook.
     candidates = exact or [hook for hook in hooks if
                            routes.route_name_of(posted_url(hook)) == name]
@@ -885,7 +887,13 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                      f"hand with that URL and the route's secret")
     hook_id = match.get("id")
     posted = posted_url(match)
-    if posted.removesuffix("/") != url.removesuffix("/"):
+    if posted != url and routes.same_webhook_url(posted, url):
+        return Check(f"hook:{name}", MISMATCH,
+                     f"hook {hook_id} posts to the route's URL with a trailing slash, which the "
+                     f"gateway does not route (404) — this seat is never woken",
+                     f"`hermes review-loop apply --loop {loop['id']}` repoints hook {hook_id} at "
+                     f"the exact URL")
+    if posted != url:
         return Check(f"hook:{name}", MISMATCH,
                      f"hook {hook_id} posts to another origin, not [webhook URL redacted]",
                      f"re-run init --hooks, or repoint hook {hook_id} at the route's URL: this "

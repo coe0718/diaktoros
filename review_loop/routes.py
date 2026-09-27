@@ -211,6 +211,13 @@ def route_name_of(url: str) -> str:
     return path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
 
 
+def same_webhook_url(a: str, b: str) -> bool:
+    """Equal up to a trailing slash: the same route, by name — but NOT the same delivery target:
+    the gateway serves only the exact URL (a trailing slash is a 404). Callers use this to *find*
+    such a hook, and exact equality to decide whether it is correct."""
+    return str(a or "").rstrip("/") == str(b or "").rstrip("/")
+
+
 def url_for_profile(name: str, profile: str | None, host: str | None = None) -> str | None:
     """The URL a route *has* under a profile — the same shape the gateway serves.
 
