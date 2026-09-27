@@ -1349,13 +1349,22 @@ class ObserverStatusDoctor(Base):
                 self.setUp()
                 self.observer_install()
                 self.edit_registry(name, lambda e: e.update(prompt="something else"))
+                for with_record in (True, False):
+                    if not with_record:
+                        self.forget_intent()
+                    checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"),
+                                                                   offline=True)}
+                    self.assertTrue(checks[f"route:{name}"].failed,
+                                    f"doctor green over a foreign prompt (record: {with_record})")
                 rc, out = self.apply_until_quiet()
                 self.assertEqual(rc, 1, out)
                 self.assertIn(f"⚠️ route {name}:", out)
                 self.assertIn("prompt", out)
                 self.assertEqual(routes.route(name)["prompt"], "something else")
-                command = re.search(rf"⚠️ route {name}:.*?fix: .*?`hermes review-loop ([^`]+)`",
-                                    out).group(1)
+                fix = re.search(rf"⚠️ route {name}:.*?fix: (.*)", out).group(1)
+                self.assertTrue(fix.startswith("remove that entry"), fix)
+                routes.remove_route(name)            # the fix line's first step
+                command = re.search(r"`hermes review-loop ([^`]+)`", fix).group(1)
                 self.follow(f"`hermes review-loop {command}`")
                 rc, out = self.run_cli(["apply", "--loop", "widgets"])
                 self.assertEqual((rc, "already matches" in out), (0, True), out)

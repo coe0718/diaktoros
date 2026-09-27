@@ -1387,7 +1387,8 @@ def cmd_apply(args) -> int:
             print(f"  route {name}: disabled (enabled: false) → enabled   (the gateway answers 403 "
                   "to every event while it is off)")
         else:
-            print(f"  route {name}: {', '.join(fields)} differ from what the plugin writes → "
+            print(f"  route {name}: {', '.join(fields)} "
+                  f"{'differs' if len(fields) == 1 else 'differ'} from what the plugin writes → "
                   "rewritten from the loop config   (secret kept)")
     for role, (name, script) in sorted(repairs.items()):
         print(f"  route {name}: script {script} → {GATE_SCRIPT[role]}   (installed by an older "

@@ -476,6 +476,15 @@ def _missing_route_fix(loop: dict) -> str:
     return gate_shims.recreate_fix(loop)
 
 
+def _prompt_fix(loop: dict, name: str) -> str:
+    """The remedy for a route whose prompt no longer proves it is ours: the same one apply prints
+    (``gate_shims.divergence``) — repair from the record when it holds the real prompt, else
+    move the entry aside and recreate it."""
+    from . import gate_shims
+    found = gate_shims.divergence(loop, contract=True).get(name)
+    return found[1] if found else REPAIR_FIX
+
+
 def check_route(loop: dict, data: dict, seat: str) -> Check:
     name = str(loop["seats"][seat].get("route") or "")
     profile = str(loop["seats"][seat].get("profile") or "")
@@ -510,7 +519,12 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
                      f"verify, so every event would be rejected")
     if not str(entry.get("prompt") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a prompt",
-                     "re-run init for this loop: the wake would start an agent with no protocol")
+                     _prompt_fix(loop, name))
+    if entry.get("prompt") != route_intent.ROUTE_PROMPT[seat]:
+        return Check(f"route:{name}", MISMATCH,
+                     f"does not carry the {seat} gate's prompt — the wake would run an agent on "
+                     "another protocol, and nothing proves the route is this plugin's",
+                     _prompt_fix(loop, name))
     script = str(entry.get("script") or "")
     if script != GATE_SCRIPT[seat]:
         return Check(f"route:{name}", MISMATCH,
@@ -584,7 +598,12 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
                      "re-run init for this loop: a wake without a secret cannot be signed")
     if not str(entry.get("prompt") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a prompt",
-                     "re-run init for this loop: the adjudicator wake has no ruling protocol")
+                     _prompt_fix(loop, name))
+    if entry.get("prompt") != route_intent.ROUTE_PROMPT["adjudicator"]:
+        return Check(f"route:{name}", MISMATCH,
+                     "does not carry the adjudicator gate's prompt — the ruling would run on "
+                     "another protocol, and nothing proves the route is this plugin's",
+                     _prompt_fix(loop, name))
     events = entry.get("events")
     if not isinstance(events, list) or any(not isinstance(event, str) for event in events):
         return Check(f"route:{name}", MISMATCH, "events must be a list of event names",
