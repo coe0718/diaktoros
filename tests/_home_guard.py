@@ -16,8 +16,8 @@ import in a process it:
 * puts a ``hermes`` shim first on PATH that refuses to run (see ``FAKE_HERMES_ENV``);
 * arms the plugin's tripwire (``REVIEW_LOOP_TEST_HOME_GUARD`` plus the sentinel file named by
   ``REVIEW_LOOP_TEST_GUARD_SENTINEL``, which only this module creates — the variable alone arms
-  nothing): while armed, resolving the Hermes home, a ledger, a state dir or a cleanup root inside
-  the real home's ``.hermes`` raises ``config.RealHomeError`` — so a test that escapes this guard
+  nothing): while armed, resolving the Hermes home, a ledger, a state dir or a cleanup root
+  anywhere inside the real home raises ``config.RealHomeError`` — so a test that escapes this guard
   fails instead of writing.
 
 unittest's ``discover -s tests`` never imports ``tests/__init__.py`` (the start directory is the
@@ -234,8 +234,9 @@ def needs_real_hermes(*prerequisites: bool, reason: str = "real-Hermes test prer
 # Create both homes now, in a fresh guarded process and in a guarded child alike: run_supervisor
 # resolves HERMES_HOME strictly, so a guarded spawn must never depend on an earlier test (or the
 # parent) having happened to create it. Never anywhere under a protected home (the same test as
-# the shim's): a child that inherited one is an escape, which the plugin's tripwire refuses on
-# first use; the guard itself must not write there.
+# the shim's): a child that inherited one is an escape, and config.guard_real_home — which covers
+# the whole real home, not only its .hermes — refuses it on first use (config.home(), a state dir,
+# a ledger). The guard itself must not write there either.
 for _home in {os.environ.get("HOME"), os.environ.get("HERMES_HOME")} - {None, ""}:
     _home = pathlib.Path(_home)
     if _home.is_absolute() and not _under_a_home(_home):

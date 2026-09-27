@@ -276,7 +276,8 @@ def _lock(path: Path, deadline: float) -> int | None:
 
 def cache_root(loop: dict) -> Path:
     """The per-repository host cache: private, under the loop's own state directory."""
-    root = Path(loop["state_dir"]).expanduser() / "deps"
+    from .config import state_dir
+    root = state_dir(loop) / "deps"
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if root.is_symlink() or root.stat().st_mode & 0o077:
         raise PermissionError(f"{root} must be a private (0700) directory")

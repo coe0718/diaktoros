@@ -19,7 +19,7 @@ from unittest import mock
 
 TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent))
-from review_loop import (broker, cli, config, doctor, gh, isolation, route_intent,  # noqa: E402
+from review_loop import (broker, cli, config, deps, doctor, gh, isolation, route_intent,  # noqa: E402
                          routes, safe_push, selftest, state, trusted_fetch)
 from review_loop.run_supervisor import Supervisor  # noqa: E402
 
@@ -272,6 +272,21 @@ class GuardedWorker(unittest.TestCase):
             self.assertEqual(list(real.rglob("*")), [], result.stderr)
             self.assertTrue((root / "elsewhere/hermes").is_dir())   # the one outside still made
 
+    def test_a_home_under_the_real_one_is_refused_by_the_plugin_on_first_use(self):
+        # The guard declines to create an inherited HOME=<real>/projects/x; the plugin must then
+        # refuse the write the guard declined, not recreate that tree itself (Supervisor's mkdir).
+        with tempfile.TemporaryDirectory() as tmp:
+            real = pathlib.Path(tmp) / "real"
+            real.mkdir()
+            env = {k: v for k, v in os.environ.items() if k not in ("HERMES_HOME",)}
+            env.update({"HOME": str(real / "projects/x"), config.TEST_HOME_GUARD_ENV: "1",
+                        "REVIEW_LOOP_TEST_USER_HOME": str(real), config.TEST_REAL_HOME_ENV: str(real)})
+            result = subprocess.run([sys.executable, "-c", DEFAULT_HOME_WRITER, str(TESTS.parent)],
+                                    cwd=TESTS, env=env, text=True, capture_output=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn("RealHomeError", result.stderr)
+            self.assertEqual(list(real.rglob("*")), [])
+
     def test_guarded_child_never_creates_a_home_inside_the_real_one(self):
         with tempfile.TemporaryDirectory() as tmp:
             real = pathlib.Path(tmp) / "real"
@@ -312,9 +327,15 @@ class RealHomeWrites(unittest.TestCase):
                 ("config.artifacts_dir", lambda: config.artifacts_dir(loop, 7)),
                 ("isolation.ensure", lambda: isolation.ensure({**loop, "clone": str(self.source)}, 7,
                                                               "reviewer")),
-                ("selftest._work_root", lambda: selftest._work_root(loop))):
+                ("selftest._work_root", lambda: selftest._work_root(loop)),
+                ("deps.cache_root", lambda: deps.cache_root(loop))):
             with self.subTest(name):
                 self.assert_refused(write)
+
+    def test_anywhere_under_the_real_home_is_refused_not_only_its_hermes(self):
+        for where in ("projects/x/state", "projects/x/.hermes", "."):
+            with self.subTest(where):
+                self.assert_refused(lambda: config.state_dir({"state_dir": str(self.real / where)}))
 
     def test_env_overrides_of_hermes_home_paths_are_refused(self):
         for var, resolve, target in (

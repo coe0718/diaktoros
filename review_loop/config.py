@@ -840,7 +840,12 @@ def _real_homes() -> list[pathlib.Path]:
 
 
 def guard_real_home(path: pathlib.Path | str) -> pathlib.Path:
-    """Return ``path``; under the test guard, raise if it is the real home or inside its .hermes."""
+    """Return ``path``; under the test guard, raise if it is the real home or anywhere inside it.
+
+    The whole home, not only its ``.hermes``: the same scope as ``guard_real_hermes`` and as the
+    test guard's own ``_under_a_home``. A guarded process whose ``HOME`` was inherited as
+    ``<real home>/projects/x`` would otherwise write ``<real home>/projects/x/.hermes`` freely.
+    """
     path = pathlib.Path(path)
     if not test_guard_active():
         return path
@@ -851,8 +856,7 @@ def guard_real_home(path: pathlib.Path | str) -> pathlib.Path:
     for candidate in (lexical, None):
         candidate = candidate or path.expanduser().resolve()
         for real in homes:
-            hermes = real / ".hermes"
-            if candidate in (real, hermes) or hermes in candidate.parents:
+            if candidate == real or real in candidate.parents:
                 raise RealHomeError(f"{_ARMED}. Otherwise a test escaped tests/_home_guard.py: "
                                     f"{path} resolves into the real home {real}")
     return path
@@ -914,10 +918,10 @@ def guard_real_hermes(executable: str) -> str:
     The guard also shadows ``hermes`` on PATH with a shim that refuses to run; this is the second
     layer, for a PATH the shim is missing from.
 
-    Deliberately wider than ``guard_real_home`` (which protects ``<home>/.hermes``): a ``hermes``
-    anywhere under the real home — ``~/.local/bin/hermes`` included — is the operator's own. The
-    test guard therefore keeps its temp root outside every protected home, and never creates or
-    writes its shim under one: an inherited shim dir there is replaced by a temp dir outside.
+    The same scope as ``guard_real_home``, the whole real home: a ``hermes`` anywhere under it —
+    ``~/.local/bin/hermes`` included — is the operator's own. The test guard therefore keeps its
+    temp root outside every protected home, and never creates or writes its shim under one: an
+    inherited shim dir there is replaced by a temp dir outside.
     """
     if not test_guard_active() or not os.path.isabs(executable):
         return executable
