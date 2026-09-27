@@ -513,7 +513,8 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> list[str]:
     return out or ["no loop hooks found — run init --hooks first"]
 
 
-def _hook_moves(before: dict, after: dict, binds: dict) -> list[tuple[int, str, str]]:
+def _hook_moves(before: dict, after: dict, binds: dict,
+                token_login: str | None = None) -> list[tuple[int, str, str]]:
     """Preflight exact hook URLs against configured and installed owned route profiles."""
     names = _routes_of(after)
     expected: dict[str, tuple[str, str]] = {}
@@ -544,7 +545,7 @@ def _hook_moves(before: dict, after: dict, binds: dict) -> list[tuple[int, str, 
             unchanged[role] = new
     if not targets:
         return []
-    hooks = _hook_listing(before)  # Never repair a route if this listing cannot be trusted.
+    hooks = _hook_listing(before, token_login)  # Never repair a route if this listing cannot be trusted.
     moves = []
     route_names = {name: role for role, name in names.items() if role in ("reviewer", "fixer")}
     for hook in hooks:
@@ -566,15 +567,32 @@ def _hook_moves(before: dict, after: dict, binds: dict) -> list[tuple[int, str, 
     return moves
 
 
-def _patch_hook_url(loop: dict, hook_id: int, url: str) -> None:
+def _hook_config(url: str) -> dict:
+    """The complete config a loop hook for ``url`` must carry. Always sent whole: GitHub may treat
+    a PATCHed ``config`` as a replacement, and a url-only body would then drop the secret, leaving
+    a hook whose deliveries the route rejects. The secret is the route's own, from the registry;
+    it is never printed or logged."""
+    path = urlsplit(url).path
+    name = path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
+    secret = (routes.route(name) or {}).get("secret") or ""
+    if not name or not secret:
+        raise config.ConfigError(f"route {name or url!r} has no secret in the registry; "
+                                 "the hook was not changed")
+    return {"url": url, "content_type": "json", "insecure_ssl": "0", "secret": secret}
+
+
+def _patch_hook_url(loop: dict, hook_id: int, url: str, login: str | None = None,
+                    require_secret: bool = False) -> None:
     path = f"/repos/{loop['repo']}/hooks/{hook_id}"
-    result = gh.api(loop, path, method="PATCH", body={"config": {"url": url}},
-                    login=loop.get("read_token"))
+    login = login or loop.get("read_token")
+    result = gh.api(loop, path, method="PATCH", body={"config": _hook_config(url)}, login=login)
     # A lost response is ambiguous. Always read back and roll back if it does not agree.
-    actual = gh.api(loop, path, login=loop.get("read_token"))
-    if not isinstance(result, dict) or not isinstance(actual, dict) or \
-            (actual.get("config") or {}).get("url") != url:
-        raise config.ConfigError(f"hook {hook_id} URL update not confirmed as {url!r}")
+    actual = gh.api(loop, path, login=login)
+    got = (actual.get("config") or {}) if isinstance(actual, dict) else {}
+    if not isinstance(result, dict) or not isinstance(actual, dict) or got.get("url") != url \
+            or (require_secret and not got.get("secret")):
+        raise config.ConfigError(f"hook {hook_id} update not confirmed as {url!r} — "
+                                 f"{doctor.hook_write_need(loop['repo'])}")
 
 
 def _install_schedule(loop: dict, schedule: str, deliver: str) -> list[str]:
@@ -598,10 +616,10 @@ def _install_schedule(loop: dict, schedule: str, deliver: str) -> list[str]:
     return [f"scheduled the watchdog ({schedule}, deliver={deliver})", f"shim: {shim}"]
 
 
-def _install_shims(loop: dict, report: bool = True) -> bool:
+def _install_shims(loop: dict, report: bool = True, pairs=None) -> bool:
     """Write the loop's gate shims where the gateway resolves route scripts (issue #105)."""
     try:
-        for line in gate_shims.install(loop, report=report):
+        for line in gate_shims.install(loop, report=report, pairs=pairs):
             print(f"  {line}")
         return True
     except (OSError, config.ConfigError) as exc:
@@ -609,6 +627,56 @@ def _install_shims(loop: dict, report: bool = True) -> bool:
               f"{exc}")
         print(f"  fix it, then: hermes review-loop apply --loop {loop['id']}")
         return False
+
+
+def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
+                     token_login: str | None = None) -> int:
+    """``apply --recreate-routes``: write routes the registry lost when no intent record can
+    restore them. The old secret is gone with the route, so each gets a new one and the repo hook
+    that points at the route's URL is re-keyed to it — a route whose hook still signs with the old
+    secret would reject every delivery. Refuses, writing nothing, if the hooks cannot be read."""
+    roles = set(missing)
+    names = ", ".join(sorted(missing.values()))
+    try:
+        config.verify_seats(loop, roles & set(config.SEAT_KEYS))
+        _verify_routes(loop, roles)
+        hooks = _hook_listing(loop, token_login)
+    except config.ConfigError as exc:
+        print(f"refused: cannot recreate {names}: {exc}")
+        print(f"  fix: re-run with --admin-token <login> ({doctor.hook_write_need(loop['repo'])})")
+        return 2
+    urls = {name: routes.url_for_profile(name, config.seat_profile(loop, role), loop.get("host"))
+            for role, name in missing.items()}
+    rekey = [(hook, name) for hook in hooks for name, url in urls.items()
+             if url and hook["config"].get("url") == url]
+    for name in sorted(missing.values()):
+        hook_ids = [str(hook["id"]) for hook, hooked in rekey if hooked == name]
+        print(f"  route {name}: {'would recreate' if dry_run else 'recreating'} from the loop "
+              f"config (new secret)" + (f"; re-keys hook {', '.join(hook_ids)}" if hook_ids else
+                                        "; no repo hook points at it"))
+    if dry_run:
+        return 0
+    written: list[str] = []
+    try:
+        written = list(_install_routes(loop, roles=tuple(roles)).values())
+        for hook, name in rekey:
+            _patch_hook_url(loop, hook["id"], urls[name], token_login, require_secret=True)
+            print(f"  hook {hook['id']} re-keyed for {name}")
+        route_intent.record_live(loop, written)
+    except Exception as exc:
+        try:
+            routes.restore_entries({name: None for name in written})
+            route_intent.forget(loop, written)
+        except Exception as rollback_exc:
+            print(f"ROLLBACK FAILED: {rollback_exc} — inspect routes {names} manually")
+        print(f"route recreation FAILED: {exc}; the recreated routes were taken back out — a hook "
+              "already re-keyed now signs with a secret no route holds: re-run this command")
+        print(f"  fix: re-run with --admin-token <login> ({doctor.hook_write_need(loop['repo'])}; "
+              "the reader is usually read-only)")
+        return 2
+    for name in written:
+        print(f"  route {name} recreated")
+    return 0 if _install_shims(loop, report=False) else 2
 
 
 def _diverged(loop: dict) -> bool:
@@ -806,7 +874,10 @@ def cmd_init(args) -> int:
         config.verify_seats(loop, roles)
         _verify_routes(loop, roles)
         _observer_check(loop)
-        shim_lines = gate_shims.install(loop, dry_run=True)   # refuses a foreign file (#105)
+        # Refuses a foreign file (#105). Routes init is about to write are not "missing".
+        shim_lines = gate_shims.install(loop, dry_run=True, report=False) + [
+            f"⚠️ route {name}: {detail}" for name, (detail, _fix, _status)
+            in gate_shims.divergence(loop, include_missing=False).items()]
     except config.ConfigError as exc:
         print(f"config refused: {exc}")
         return 2
@@ -1187,9 +1258,11 @@ def cmd_apply(args) -> int:
             config.verify_credentials(updated)
         if rebinding:
             _verify_routes(updated, rebinding)
-        # Refuses a foreign file (#105). Config/registry disagreements are what this apply is
-        # about to reconcile, so they are reported after it (``_diverged``), not before.
-        shim_lines = gate_shims.install(updated, dry_run=True, report=False)
+        # Refuses a foreign file (#105) — only over what this apply writes: the config's pairs. A
+        # route the registry holds elsewhere is what apply is about to rebind away, so it never
+        # blocks; disagreements left afterwards are reported by ``_diverged``.
+        shim_pairs = gate_shims.wanted(updated)
+        shim_lines = gate_shims.install(updated, dry_run=True, report=False, pairs=shim_pairs)
     except config.ConfigError as exc:
         print(f"settings refused: {exc}")
         return 2
@@ -1198,8 +1271,14 @@ def cmd_apply(args) -> int:
     if shim_lines and args.dry_run:
         for line in shim_lines:
             print(f"  {line}")
-    elif shim_lines and not _install_shims(updated, report=False):
+    elif shim_lines and not _install_shims(updated, report=False, pairs=shim_pairs):
         return 2
+    missing = {role: name for role, name in _routes_of(updated).items() if not routes.route(name)}
+    if missing and getattr(args, "recreate_routes", False):
+        rc = _recreate_routes(updated, missing, dry_run=args.dry_run,
+                              token_login=getattr(args, "admin_token", "") or None)
+        if rc:
+            return rc
 
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min"):
@@ -1262,7 +1341,8 @@ def cmd_apply(args) -> int:
     # Preflight remote hooks before any local mutation. Snapshot each owned route and roll back
     # both surfaces on any failure; config is published only after route/hook readback agrees.
     try:
-        hook_moves = _hook_moves(loop, updated, binds)
+        hook_moves = _hook_moves(loop, updated, binds,
+                                 getattr(args, "admin_token", "") or None)
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
@@ -1282,7 +1362,7 @@ def cmd_apply(args) -> int:
                 raise config.ConfigError(f"route {name} readback does not run {GATE_SCRIPT[role]}")
         for hook_id, old, new in hook_moves:
             attempted_hooks.append((hook_id, old))
-            _patch_hook_url(loop, hook_id, new)
+            _patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None)
         path = _write_config(updated) if changes or identity else config_path
         if rebound:
             route_intent.record_live(updated, [name for _, name in rebound])
@@ -1290,7 +1370,7 @@ def cmd_apply(args) -> int:
         failed = []
         for hook_id, old in reversed(attempted_hooks):
             try:
-                _patch_hook_url(loop, hook_id, old)
+                _patch_hook_url(loop, hook_id, old, getattr(args, "admin_token", "") or None)
             except Exception as rollback_exc:
                 failed.append(f"hook {hook_id}: {rollback_exc}")
         if previous:
@@ -1965,6 +2045,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         apply_cmd.add_argument("--while-busy", action="store_true",
                                help="rebind a seat's profile/login even while a run is in flight "
                                     "(that run keeps the identity it started with)")
+        apply_cmd.add_argument("--admin-token", default="",
+                               help="login whose token can write the repo's hooks, for the hook "
+                                    "moves and re-keys apply makes (default: the reader)")
+        apply_cmd.add_argument("--recreate-routes", action="store_true",
+                               help="write this loop's routes the registry lost, from the loop "
+                                    "config, with a new secret, and re-key the repo hooks that "
+                                    "point at them (when no intent record can restore them)")
         apply_cmd.set_defaults(func=cmd_apply)
 
         settings_cmd = sub.add_parser("settings",

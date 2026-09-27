@@ -161,6 +161,12 @@ def _nearest_dir(path: pathlib.Path) -> pathlib.Path | None:
 # -- the checks ------------------------------------------------------------------
 
 
+def hook_write_need(repo: str, delete: bool = False) -> str:
+    """The token scope a hook write needs — one wording for every command that says so."""
+    what = "hook write and delete access" if delete else "hook write access"
+    return f"needs {what} on {repo}: `repo`, or the narrower `admin:repo_hook`"
+
+
 def check_config(loop: dict) -> Check:
     path = config.config_dir() / f"{loop['id']}.json"
     if not path.exists():
@@ -389,9 +395,7 @@ def check_routes(loop: dict) -> list[Check]:
     """Route/profile/secret correspondence, read from the gateway's own subscription file."""
     path = routes.subs_path()
     if not path.exists():
-        return [Check("routes", ABSENT, f"no route registry at {path}",
-                      "re-run init for this loop: it writes the routes into the subscription "
-                      "file the gateway already reads")]
+        return [Check("routes", ABSENT, f"no route registry at {path}", _missing_route_fix(loop))]
     try:
         data = json.loads(path.read_text())
     except Exception as exc:
@@ -458,6 +462,13 @@ def _intent_overlay(loop: dict, data: dict, checks: list[Check]) -> list[Check]:
     return checks
 
 
+def _missing_route_fix(loop: dict) -> str:
+    """``init`` refuses an existing loop, so a lost route is written back by ``apply``. (With an
+    intent record, ``_intent_overlay`` replaces this with ``doctor --repair``, same secret.)"""
+    from . import gate_shims
+    return gate_shims.recreate_fix(loop)
+
+
 def check_route(loop: dict, data: dict, seat: str) -> Check:
     name = str(loop["seats"][seat].get("route") or "")
     profile = str(loop["seats"][seat].get("profile") or "")
@@ -467,8 +478,7 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
     entry = _route_entry(data, name)
     if entry is None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
-                     f"re-run init for this loop (it writes {name!r} with a generated secret), "
-                     f"or `hermes webhook subscribe {name}`")
+                     _missing_route_fix(loop))
     if routes.route_profile(entry) != profile:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but seats.{seat}.profile is "
@@ -530,8 +540,8 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
     entry = _route_entry(data, name)
     if entry is None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
-                     f"re-run init with --adjudicator-route {name}: the breach marker is the only "
-                     f"record of an escalation nobody is woken for")
+                     _missing_route_fix(loop) + " — the breach marker is the only record of an "
+                     "escalation nobody is woken for")
     if routes.route_profile(entry) != profile:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but adjudicator.profile is "
@@ -937,8 +947,8 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                   event in (hook.get("events") or [])), None) or (candidates[0] if candidates else None)
     if match is None:
         return Check(f"hook:{name}", ABSENT, "no repo hook posts to [webhook URL redacted]",
-                     f"re-run init --hooks --admin-token <login> (needs hook write and delete access on "
-                     f"{loop['repo']}: `repo`, or the narrower `admin:repo_hook`), or add the hook by "
+                     f"re-run init --hooks --admin-token <login> "
+                     f"({hook_write_need(loop['repo'], delete=True)}), or add the hook by "
                      f"hand with that URL and the route's secret")
     hook_id = match.get("id")
     posted = posted_url(match)

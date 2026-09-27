@@ -243,7 +243,16 @@ a token without either shows ⚠️, not ❌).
 
 It writes nothing — no config, no route registry, no state, no GitHub hook — unless you pass
 `--repair`, whose one write is restoring this loop's own routes from the plugin's intent record
-(same secret) before the read-only checks run. It never fires a
+(same secret) before the read-only checks run, and the gate shims those routes run. A route
+with no intent record to restore it from (an install older than the record) is written back by
+
+```
+hermes review-loop apply --loop attest --recreate-routes
+```
+
+from the loop config, with a new secret — the old one left with the route — and the repo hook that
+points at the route is re-keyed to it in the same step. `init` refuses a loop that exists, so it is
+never the way back. `doctor` never fires a
 route, because a synthetic POST at a seat's route is a real agent run with a real budget. The
 network side is a TCP connect to the gateway (is anything listening?) and, when the token is
 allowed to, a read of the repo's hooks.
