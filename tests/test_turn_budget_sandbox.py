@@ -313,7 +313,12 @@ class SandboxedTurnBudget(unittest.TestCase):
         worker = subprocess.Popen([sys.executable, __file__, '--driver', str(spec)], env=env,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         seen: dict = {}
+        claims: list = []          # the loop's seat claims, as the worker writes them (#98)
         while worker.poll() is None:
+            try:
+                claims.append(json.loads((self.root / 'state' / 'locks.json').read_text()))
+            except (OSError, ValueError):
+                pass
             # bwrap's argv names this test's private root, so no other sandbox is mistaken for it.
             for pid, info in _tree(str(self.root)).items():
                 seen.setdefault((pid, info[1]), info[2])
@@ -335,7 +340,13 @@ class SandboxedTurnBudget(unittest.TestCase):
         self.assertEqual(survivors, [], 'sandbox processes outlived the turn')
         path = checkout / 'evidence.json'
         evidence = json.loads(path.read_text()) if path.exists() else {}
-        return json.loads(out), {cmd: 1 for cmd in seen.values()}, evidence
+        result = json.loads(out)
+        result['claims_during'] = [c for c in claims if c]
+        try:
+            result['claims_after'] = json.loads((self.root / 'state' / 'locks.json').read_text())
+        except (OSError, ValueError):
+            result['claims_after'] = {}
+        return result, {cmd: 1 for cmd in seen.values()}, evidence
 
     def test_a_seat_that_overruns_is_killed_with_its_whole_tree_and_releases_the_seat(self):
         result, seen, evidence = self.turn('overrun')
@@ -361,6 +372,13 @@ class SandboxedTurnBudget(unittest.TestCase):
         # same budget would run out again. It is re-armable (`retry`), which the text says.
         self.assertEqual((result['retries'], result['retry_at']), (0, None))
         self.assertEqual(result['writes'], [])
+        # While it ran, its worker held the reviewer's seat claim with the run's own budget;
+        # the kill released it (#98 review 4: the claim now has a production writer).
+        held = [c['reviewer']['acme/widgets#7'] for c in result['claims_during']
+                if 'acme/widgets#7' in c.get('reviewer', {})]
+        self.assertTrue(held)
+        self.assertEqual((held[-1]['head'], held[-1]['budget']), (HEAD7, BUDGET))
+        self.assertNotIn('acme/widgets#7', result['claims_after'].get('reviewer', {}))
         # The seat is released: nothing active, the worker re-armed for the waiting turn, and
         # that turn is the next one claimed.
         self.assertEqual(result['active_runs_after'], 0)

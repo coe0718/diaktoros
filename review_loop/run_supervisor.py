@@ -693,6 +693,43 @@ def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str 
         return None
 
 
+INFLIGHT_LABEL = {'reviewer': 'review', 'fixer': 'fix'}
+
+
+def claim_seat(loop: dict, row, budget: float):
+    """Claim ``row``'s seat in the loop's ``locks.json`` and mark its head in flight, for the
+    life of the run (#98). Best effort: the run ledger is what enforces capacity; these are
+    what ``explain``, ``status``, the queue drain and the watchdog's clocks read. Returns what
+    ``release_seat`` needs, or None when nothing was written."""
+    try:
+        from . import gate, state as state_mod
+        st = state_mod.state_for(loop)
+        key = gate.seat_key(loop, row['pr'])
+        st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}", budget=budget)
+        mark = (f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}"
+                if row['seat'] in INFLIGHT_LABEL else None)
+        if mark:
+            st.inflight(mark, record=True)
+        return st, row['seat'], key, row['head'], mark
+    except Exception:
+        return None
+
+
+def release_seat(claim, state: str | None) -> None:
+    """Free a run's claim and in-flight mark once it has ended — unless it ended ``uncertain``
+    (or its end could not be recorded): then the claim stays as the seat's visible occupancy
+    until an operator reconciles it, with its TTL and the "that run died" report as backstop."""
+    if claim is None or state in (None, 'uncertain'):
+        return
+    st, seat, key, head, mark = claim
+    try:
+        st.release_if(seat, key, head)
+        if mark:
+            st.inflight_clear(mark)
+    except Exception:
+        pass
+
+
 def dependency_view(db: str | Path, repo: str, pr: int | None = None,
                     limit: int = 5) -> list[dict] | None:
     """The newest runs that recorded a dependency prefetch, for ``status``/``explain`` (#51).
@@ -1788,7 +1825,7 @@ class Supervisor:
         from . import broker_ipc, config, gh, seat_model, trusted_turn
         rc, error = None, None
         budget = int(self.budget_of(run_id))
-        retry, stopped, observed, breach = False, True, {}, None
+        retry, stopped, observed, breach, claim = False, True, {}, None, None
         try:
             assert self.production_config is not None
             try:
@@ -1811,6 +1848,9 @@ class Supervisor:
                 # never started (the broker would refuse its push anyway).
                 error = FIXER_NOT_ADMITTED if row['push_admitted'] != 1 else FIXER_PUSH_REVOKED
                 return
+            # The seat claim and the head's in-flight mark, for as long as this run lives (#98):
+            # the worker is the one party that knows a turn is running, so it writes them.
+            claim = claim_seat(loop, row, budget)
             # The seat's own profile decides its model and account (#32). Resolved host-side,
             # before any GitHub read: an unresolvable seat is held here with the reason, and never
             # borrows another seat's model or key. The key lives only in this turn's proxy; an
@@ -1942,6 +1982,7 @@ class Supervisor:
                         breach[0].breach_resume(row['pr'], row['head'], breach[1])
                 except Exception:
                     pass
+            release_seat(claim, state)
             self.recover()
 
 

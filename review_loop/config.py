@@ -491,7 +491,25 @@ def turn_budget(loop: dict, seat: str) -> int:
     return int(value)
 
 
-def turn_parts(loop: dict, seat: str | None = None, recorded: float | None = None) -> dict:
+def _recorded_budget(recorded) -> int:
+    """A claim's recorded budget as whole seconds; None is "none recorded" (0). Anything that
+    is not a number is refused: a silently ignored value would be a silently wrong clock."""
+    if recorded is None:
+        return 0
+    if isinstance(recorded, bool) or not isinstance(recorded, (int, float)):
+        raise ValueError(f"recorded turn budget must be seconds, got {recorded!r}")
+    return int(recorded)
+
+
+def claim_budget(entry) -> float | None:
+    """The budget a seat claim (a ``locks.json`` entry) recorded, or None — for a legacy or
+    hand-edited claim whose value is missing or not a number, which then gets its seat's own
+    clock rather than an error in a read-only report."""
+    value = entry.get("budget") if isinstance(entry, dict) else None
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def turn_parts(loop: dict, seat: str | None = None, *, recorded: float | None = None) -> dict:
     """The pieces of one isolated turn's worst-case wall clock, launch to end, in seconds.
 
     Before the budget: the host dependency prefetch (``deps.FETCH_TIMEOUT``, #51). Then the
@@ -503,21 +521,17 @@ def turn_parts(loop: dict, seat: str | None = None, recorded: float | None = Non
     """
     from . import deps, trusted_turn   # imported late: both import this module
     seats = (seat,) if seat else (*SEAT_KEYS, "adjudicator")
-    budget = max(turn_budget(loop, name) for name in seats)
-    try:
-        budget = max(budget, int(float(recorded or 0)))
-    except (TypeError, ValueError):
-        pass
+    budget = max(max(turn_budget(loop, name) for name in seats), _recorded_budget(recorded))
     return {"prefetch": deps.FETCH_TIMEOUT, "budget": budget,
             "grace": trusted_turn.KILL_GRACE_S, "drain": trusted_turn.BROKER_DRAIN_S}
 
 
-def worst_turn_s(loop: dict, seat: str | None = None, recorded: float | None = None) -> int:
+def worst_turn_s(loop: dict, seat: str | None = None, *, recorded: float | None = None) -> int:
     """Seconds one isolated turn may take from launch to end (see ``turn_parts``)."""
-    return sum(turn_parts(loop, seat, recorded).values())
+    return sum(turn_parts(loop, seat, recorded=recorded).values())
 
 
-def seat_ttl_s(loop: dict, recorded: float | None = None, seat: str | None = None) -> int:
+def seat_ttl_s(loop: dict, *, seat: str | None = None, recorded: float | None = None) -> int:
     """How long a ``seat``'s claim lives: ``ttl_min``, or that seat's whole worst-case turn if
     that is longer (the longest seat's when no seat is named).
 
@@ -527,12 +541,16 @@ def seat_ttl_s(loop: dict, recorded: float | None = None, seat: str | None = Non
     was taken with, keeps a lowered ``turn_budget_s`` from shortening it.
     """
     return max(int(loop.get("ttl_min") or DEFAULTS["ttl_min"]) * 60,
-               worst_turn_s(loop, seat, recorded))
+               worst_turn_s(loop, seat, recorded=recorded))
 
 
-def seat_died_after_s(loop: dict, recorded: float | None = None, seat: str | None = None) -> int:
-    """Age past which the watchdog reports a seat claim as a run that died: twice its TTL."""
-    return 2 * seat_ttl_s(loop, recorded, seat)
+def seat_died_after_s(loop: dict, *, seat: str | None = None,
+                      recorded: float | None = None) -> int:
+    """Age past which the watchdog reports a seat claim as a run that died: twice its TTL.
+
+    ``seat`` and ``recorded`` are keyword-only (#98): positionally a seat name could land in
+    ``recorded`` and the clock would silently be the longest seat's."""
+    return 2 * seat_ttl_s(loop, seat=seat, recorded=recorded)
 
 
 def stall_grace_s(loop: dict, seat: str) -> int:

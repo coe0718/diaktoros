@@ -90,11 +90,19 @@ because the unsafe shape is the combination.
 
 Per-seat capacity answers *how many PRs a seat may hold*. A second, stricter rule sits under it:
 **one PR is held by one seat at a time.** A review must never run against a PR the fixer is mid-fix
-on, and a fix must not start on a PR under review — `held_by_other()` is that claim, and a gate that
-finds the other seat holding the PR queues itself instead of starting.
+on, and a fix must not start on a PR under review.
 
-Which raises the question the loop cannot answer directly: *when is a seat done with a PR?* The loop
-sees events, not process exits. So it uses the events that already mean the turn is over:
+Both rules are **enforced by the isolated run ledger**: a gate only enqueues a turn, and a worker
+claims a pending row only while its seat has capacity and no other run occupies the PR. The seat
+claim in `locks.json` (and the head's in-flight mark) is the *visible* copy of that occupancy: the
+isolated worker writes it when its run launches — with the run's own budget, so its TTL fits the
+turn — and removes it when the run ends. A run that ends `uncertain` keeps its claim until an
+operator reconciles it. `explain`, `status`, the queue drain and the watchdog's "that run died"
+report read the claim; none of them can start or stop a turn.
+
+The gates' release paths below also free a claim, and are what end the *PR's* turn for the other
+seat. The loop sees events, not process exits, so it uses the events that already mean a turn is
+over:
 
 | signal | what it ends |
 |---|---|
@@ -102,12 +110,11 @@ sees events, not process exits. So it uses the events that already mean the turn
 | a verdict at the current head (approve **or** changes-requested) | the reviewer's turn |
 | `ttl_min` | a run that died without either. The backstop, not the mechanism. |
 
-That is also why **order matters inside each gate**: the gate frees the other seat *before* it claims
-its own. Claim first and the two gates deadlock against each other — the reviewer waits for the fixer
-to hand off, the fixer waits for the reviewer to hand off. Both gates therefore look like:
+That is also why **order matters inside each gate**: the gate frees the other seat *before* it
+enqueues its own turn, so a handoff never waits on a claim the handoff itself ends:
 
 ```
-observe the peer's handoff → free the peer → claim own slot (queue if the peer still holds it)
+observe the peer's handoff → free the peer's claim → enqueue own turn (the worker claims at launch)
 ```
 
 An approval is the case worth naming: the fixer has nothing to do on an approved PR, but the

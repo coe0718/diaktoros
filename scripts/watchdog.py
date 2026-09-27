@@ -822,8 +822,9 @@ def died_locks(loop: dict, locks: dict, now: float) -> list[str]:
             age = now - entry.get("at", now)
             # On the budget the claim was taken with, if longer than the loop's now (#98).
             # This seat's own turn: another seat's longer budget never keeps it alive (#98).
-            if age > config.seat_died_after_s(loop, entry.get("budget"), seat):
-                ttl_m = -(-config.seat_ttl_s(loop, entry.get("budget"), seat) // 60)
+            recorded = config.claim_budget(entry)   # None: a legacy claim gets its seat's own
+            if age > config.seat_died_after_s(loop, seat=seat, recorded=recorded):
+                ttl_m = -(-config.seat_ttl_s(loop, seat=seat, recorded=recorded) // 60)
                 lines.append(f"  {seat} slot held {age / 60:.0f}m on {key} — that run died; the "
                              f"slot frees itself at {ttl_m}m")
     return lines

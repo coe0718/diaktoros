@@ -412,9 +412,9 @@ class PerSeatClocks(unittest.TestCase):
     def test_tucks_repro_a_reviewer_claim_uses_the_reviewers_turn(self):
         loop = self.loop()
         self.assertEqual(config.worst_turn_s(loop), 15330)            # the longest seat
-        self.assertEqual(config.seat_ttl_s(loop, 900, "reviewer"), 45 * 60)
-        self.assertEqual(config.seat_died_after_s(loop, 900, "reviewer"), 90 * 60)
-        self.assertEqual(config.seat_ttl_s(loop, None, "adjudicator"), 15330)
+        self.assertEqual(config.seat_ttl_s(loop, seat="reviewer", recorded=900), 45 * 60)
+        self.assertEqual(config.seat_died_after_s(loop, seat="reviewer", recorded=900), 90 * 60)
+        self.assertEqual(config.seat_ttl_s(loop, seat="adjudicator"), 15330)
 
     def test_live_locks_and_died_locks_use_the_claiming_seat(self):
         from review_loop import state as state_mod
@@ -490,6 +490,27 @@ class PerSeatClocks(unittest.TestCase):
         self.assertIn("fixer never pushed", line)
 
 
+class ClockSignatures(unittest.TestCase):
+    """#98 review 4, P3: a plausible call must not return a silently wrong clock."""
+
+    def test_seat_and_recorded_are_keyword_only(self):
+        loop = config.normalize(_loop())
+        for fn in (config.seat_ttl_s, config.seat_died_after_s):
+            with self.subTest(fn=fn.__name__), self.assertRaises(TypeError):
+                fn(loop, "reviewer")               # used to mean recorded='reviewer', seat=None
+        with self.assertRaises(TypeError):
+            config.worst_turn_s(loop, "reviewer", 900)
+
+    def test_a_non_numeric_recorded_budget_is_refused(self):
+        loop = config.normalize(_loop())
+        for bad in ("reviewer", "", [], True):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                config.seat_ttl_s(loop, seat="reviewer", recorded=bad)
+        # None is "no recorded budget", not an error.
+        self.assertEqual(config.seat_ttl_s(loop, seat="reviewer", recorded=None),
+                         config.seat_ttl_s(loop, seat="reviewer"))
+
+
 class SeatClockFollowsTheRecordedBudget(unittest.TestCase):
     """#98 review 2, item 2: lowering turn_budget_s mid-turn must not free a live seat early."""
 
@@ -508,15 +529,15 @@ class SeatClockFollowsTheRecordedBudget(unittest.TestCase):
             self.assertIn("acme/widgets#1", st.live_locks("reviewer"))
             self.assertIn("acme/widgets#1", st.active("reviewer"))
             entry = st._load(st.locks, {})["reviewer"]["acme/widgets#1"]
-            self.assertEqual(config.seat_ttl_s(loop, entry.get("budget")),
+            self.assertEqual(config.seat_ttl_s(loop, recorded=entry.get("budget")),
                              config.seat_ttl_s({**loop, "turn_budget_s": 14400}))
             # Nor is it reported dead on the lowered budget's clock.
             self.assertEqual(_watchdog().died_locks(loop, st._load(st.locks, {}), time.time()), [])
 
     def test_a_legacy_claim_without_a_budget_uses_the_loops(self):
         loop = config.normalize(_loop(turn_budget_s=900, ttl_min=45))
-        self.assertEqual(config.seat_ttl_s(loop, None), config.seat_ttl_s(loop))
-        self.assertEqual(config.seat_ttl_s(loop, 60), config.seat_ttl_s(loop))  # never shorter
+        self.assertEqual(config.seat_ttl_s(loop, recorded=None), config.seat_ttl_s(loop))
+        self.assertEqual(config.seat_ttl_s(loop, recorded=60), config.seat_ttl_s(loop))  # never shorter
 
 
 class LedgerAndWorker(unittest.TestCase):
@@ -660,6 +681,54 @@ class GateToProductionWorker(unittest.TestCase):
              mock.patch.object(sup, "recover"):
             sup._run_production(row["id"], "w")
         return sup.get(f"acme/widgets:8:{HEAD}:fixer")
+
+    def test_the_worker_holds_the_seat_claim_for_the_life_of_its_run(self):
+        # #98 review 4, P2: locks.json and inflight.json had no production writer, so every
+        # clock and explain line reading them described a mechanism that never ran. The
+        # isolated worker — the only thing that knows a turn is running — now claims its seat
+        # and marks the head in flight at launch, and releases both when the run ends.
+        from review_loop import state as state_mod
+        st = state_mod.state_for(self.loop)
+        key = gate.seat_key(self.loop, 8)
+        during = {}
+
+        def run_turn(_loop, scope, **kw):
+            during["locks"] = dict(st.live_locks("fixer"))
+            during["inflight"] = st.inflight(f"fix:8:{HEAD}")
+            return 0
+        row = self.run_production(run_turn)
+        self.assertEqual(row["state"], "succeeded")
+        self.assertEqual(set(during["locks"]), {key})
+        self.assertEqual(during["locks"][key]["head"], HEAD)
+        self.assertEqual(during["locks"][key]["budget"], 2700)
+        self.assertTrue(during["inflight"])
+        self.assertEqual(st.live_locks("fixer"), {})           # released at the end
+        self.assertFalse(st.inflight(f"fix:8:{HEAD}"))
+
+    def test_a_failed_run_frees_its_claim_and_an_uncertain_one_keeps_it(self):
+        from review_loop import state as state_mod
+        st = state_mod.state_for(self.loop)
+        key = gate.seat_key(self.loop, 8)
+
+        def killed(_loop, scope, **kw):
+            raise trusted_turn.TurnBudgetExceeded(["bwrap"], kw["timeout"], 30)
+        self.assertEqual(self.run_production(killed)["state"], "failed")
+        self.assertEqual(st.live_locks("fixer"), {})
+
+    def test_an_uncertain_run_keeps_its_claim(self):
+        from review_loop import state as state_mod
+        st = state_mod.state_for(self.loop)
+        key = gate.seat_key(self.loop, 8)
+
+        def stuck(_loop, scope, **kw):
+            try:
+                raise trusted_turn.TurnBudgetExceeded(["bwrap"], kw["timeout"], 30)
+            except trusted_turn.TurnBudgetExceeded as exc:
+                raise trusted_turn.TurnDenied(trusted_turn.drain_failure(exc)) from exc
+        self.assertEqual(self.run_production(stuck)["state"], "uncertain")
+        # Held until an operator reconciles: the claim is the seat's visible occupancy, and
+        # its TTL (then the "that run died" report) is the backstop.
+        self.assertIn(key, st.live_locks("fixer"))
 
     def test_the_worker_hands_the_rows_budget_to_the_turn(self):
         seen = {}

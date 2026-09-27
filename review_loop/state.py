@@ -150,7 +150,7 @@ class LoopState:
         now = time.time()
         return {k: v for k, v in entries.items()
                 if isinstance(v, dict) and now - v.get("at", 0) <= config.seat_ttl_s(
-                    self.loop, v.get("budget"), seat)}
+                    self.loop, seat=seat, recorded=config.claim_budget(v))}
 
     def active(self, seat: str) -> dict:
         """This seat's live runs, ``{key: entry}``, expired ones dropped and persisted away.
@@ -192,12 +192,15 @@ class LoopState:
                 return other
         return None
 
-    def acquire(self, seat: str, key: str, head: str = "", why: str = "") -> None:
+    def acquire(self, seat: str, key: str, head: str = "", why: str = "",
+                budget: float | None = None) -> None:
+        """Claim ``seat`` for ``key``. The isolated worker calls this at launch with its run's
+        own budget (#98); the claim's TTL never shrinks below the budget it was taken with."""
         with self.locked():
             data = self._load(self.locks, {}) or {}
-            # The budget the claim is taken with: its TTL never shrinks below it (#98).
-            data.setdefault(seat, {})[key] = {"at": time.time(), "head": head, "why": why,
-                                              "budget": config.turn_budget(self.loop, seat)}
+            data.setdefault(seat, {})[key] = {
+                "at": time.time(), "head": head, "why": why,
+                "budget": budget if budget is not None else config.turn_budget(self.loop, seat)}
             self._save(self.locks, data)
 
     def release_if(self, seat: str, key: str, head: str | None = None) -> bool:
@@ -327,6 +330,13 @@ class LoopState:
             return False
         data = self._load(self.inflight_file, {}) or {}
         return now - data.get(key, 0) < self.loop["inflight_ttl_min"] * 60
+
+    def inflight_clear(self, key: str) -> None:
+        """Drop one in-flight mark: its run has ended (the isolated worker's release, #98)."""
+        with self.locked():
+            data = self._load(self.inflight_file, {}) or {}
+            if data.pop(key, None) is not None:
+                self._save(self.inflight_file, data)
 
     def inflight_at(self, key: str) -> float:
         """When this head's in-flight mark was armed, or 0.0 — the mark's own clock, read-only.

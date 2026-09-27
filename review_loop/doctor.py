@@ -217,7 +217,7 @@ def check_turn_budget(loop: dict) -> Check:
         f"{seat} {minutes(config.stall_grace_s(loop, seat))}m"
         + ("" if minutes(config.stall_grace_s(loop, seat)) == grace_min
            else " (raised to fit its turn)") for seat in stall_seats)
-    lock = (per_seat("seat lock TTL", ttl_min, lambda seat: config.seat_ttl_s(loop, None, seat))
+    lock = (per_seat("seat lock TTL", ttl_min, lambda seat: config.seat_ttl_s(loop, seat=seat))
             + "; 'that run died' after twice that")
     text = (f"{detail} per isolated turn (sandbox killed past it); {whole} — grace_min "
             f"{grace_min}m, ttl_min {ttl_min}m; {stall}; {lock}")
