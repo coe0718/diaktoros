@@ -579,14 +579,20 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         name = doctor.hook_route_name(hook)
         matched.add(name)
         if active:
-            # At the seat's URL but subscribed to the wrong event (or not JSON): doctor calls it
-            # a MISMATCH, so arming it would report a loop live that the seat never hears.
-            problem = doctor.hook_wake_problem(hook, role_of.get(name, ""))
+            # At the seat's URL but subscribed to the wrong event (or not JSON), or with a
+            # trailing slash the gateway 404s: doctor calls each a MISMATCH, so arming it would
+            # report a loop live that the seat never hears. (Found by same_hook_url, judged by
+            # exact_hook_url — pausing still stops it.)
+            want = targets[name][0] or ""
+            problem = ("" if doctor.exact_hook_url(str(hook["config"].get("url") or ""), want)
+                       else doctor.SLASH_404)
+            problem = problem or doctor.hook_wake_problem(hook, role_of.get(name, ""))
             if problem:
                 ok = False
                 miswired.append(hook["id"])
-                out.append(f"hook {hook['id']} NOT armed: it {problem}, so it would not wake the "
-                           f"{role_of.get(name, '?')} seat — left as it is")
+                why = (problem if problem.endswith("never woken") else
+                       f"{problem}, so it would not wake the {role_of.get(name, '?')} seat")
+                out.append(f"hook {hook['id']} NOT armed: it {why} — left as it is")
                 continue
         # Only a real bool is a state: a hook with no `active` (or a non-bool one) is flipped and
         # read back like any other, never taken as already there.
@@ -631,8 +637,8 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
     if miswired:
         out.append(f"fix: hook{'s' if len(miswired) > 1 else ''} {', '.join(map(str, miswired))}:"
                    f" `hermes review-loop doctor --loop {loop.get('id')}` names what each needs "
-                   "(re-run init --hooks, or set the event / content_type on the hook), then "
-                   "run `arm` again")
+                   "(re-run init --hooks, or on GitHub set the event / content_type, or drop the "
+                   "URL's trailing slash), then run `arm` again")
     # The fix is per hook: one refused hook must not hide the retry advice another hook's 5xx
     # earned. Hooks that need the same fix share its line.
     advice: dict[str, list[int]] = {}

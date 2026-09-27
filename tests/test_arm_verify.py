@@ -339,6 +339,35 @@ class ArmVerifyTests(unittest.TestCase):
         rc, out = self.arm(FakeGitHub(listing), pause=True)
         self.assertEqual(rc, 0, out)
 
+    def test_a_trailing_slash_is_found_as_ours_but_never_armed(self):
+        # Pinned gateway source: /webhooks/{route_name} and /p/{profile}/webhooks/{route_name}
+        # only, so ".../widgets-review/" is a 404. Arming refuses it (and names why); pausing
+        # still finds it as this install's hook and stops it; doctor calls it a MISMATCH.
+        from review_loop import doctor
+        slashed = hooks(False)
+        slashed[1]["config"]["url"] = f"{HOST}/p/reviewer/webhooks/widgets-review/"
+        for start in (False, True):
+            for hook in slashed.values():
+                hook["active"] = start
+            fake = FakeGitHub(slashed)
+            rc, out = self.arm(fake)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("hook 1 NOT armed: it posts to the route's URL with a trailing slash — "
+                          "the gateway does not route it (404), so this seat is never woken", out)
+            self.assertNotIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls)
+            self.assertIn("drop the URL's trailing slash", out)
+        for hook in slashed.values():
+            hook["active"] = True
+        fake = FakeGitHub(slashed)
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("hook 1 → paused (read back)", out)
+        check = doctor.check_hook(config.load_id("widgets"), [slashed[1]], "reviewer",
+                                  "widgets-review", f"{HOST}/p/reviewer/webhooks/widgets-review")
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn("the gateway does not route it (404)", check.detail)
+        self.assertIn("drop the trailing slash", check.fix)
+
     def test_a_malformed_number_is_a_clean_refusal(self):
         for key, value in (("cap", "many"), ("concurrency", "two"), ("cap", None),
                            ("cap", float("inf")), ("concurrency", float("inf"))):
