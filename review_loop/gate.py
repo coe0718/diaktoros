@@ -511,12 +511,20 @@ def explain_facts(loop: dict, number: int) -> dict:
 
 
 def gate_failure_line(entry: dict) -> str:
+    if entry.get("kind") == gate_failures.CORRUPT:
+        if entry.get("corrupt_copy"):
+            return (f"gate-failure ledger {entry.get('path')} was unreadable ({entry.get('error')}) "
+                    f"and was moved aside to {entry.get('corrupt_copy')}; failures recorded before "
+                    f"then (this PR's too) are only in that copy — salvage what you need, then "
+                    f"delete it")
+        return (f"gate-failure ledger {entry.get('path')} is unreadable ({entry.get('error')}); "
+                f"the next gate failure or watchdog sweep moves it aside, unchanged, for you to "
+                f"salvage")
     redrives = int(entry.get("redrives") or 0)
-    status = ("not re-drivable — re-deliver the event from GitHub by hand"
-              if not entry.get("redrivable") else
-              f"gave up after {redrives} watchdog re-drive(s) — needs you"
-              if redrives >= gate_failures.MAX_REDRIVES else
-              f"{redrives} watchdog re-drive(s) so far; the next sweep retries it")
+    status = (f"{redrives} watchdog re-drive(s) so far; the next sweep retries it"
+              if entry.get("redrivable") and entry.get("payload_kept")
+              and redrives < gate_failures.MAX_REDRIVES
+              else gate_failures.not_driven(entry))
     return (f"gate failure {entry.get('id')}: {entry.get('gate')} {entry.get('kind')} at head "
             f"{str(entry.get('head') or '?')[:7]} ({entry.get('action') or '?'}), last "
             f"{iso_at(float(entry.get('last_at') or 0))}, {entry.get('attempts')} attempt(s): "

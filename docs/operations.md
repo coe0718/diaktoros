@@ -476,20 +476,40 @@ own record instead:
   `gate:timeout:<profile>` line for each profile hosting a loop route (reviewer, fixer,
   adjudicator, observer). Each line names the gateway and file, flags any limit below 28s, and
   says which file to fix.
-* **Seats.** Gates enqueue isolated turns and do not hold seat locks. Still, a gate that
-  crashes or times out releases any seat claim its own process made, so a failed delivery never
-  keeps a seat until `ttl_min`.
+* **Seats.** The reviewer and fixer gates do not claim seats: they enqueue an isolated turn in
+  the host run ledger (`gate.block_pr_agent` → `enqueue_isolated`), whose worker enforces each
+  seat's capacity. What a gate does with `locks.json` is release a legacy claim it finds for the
+  PR (`st.release_if`). `gate.take_seat` still claims a seat through `st.acquire`, but no gate
+  script calls it. Every `st.acquire` is also remembered by the process
+  that made it, so if any gate process ever claims a seat and then crashes or times out, it
+  releases that claim on its way out, and a failed delivery never keeps a seat until `ttl_min`.
 * **Ledger.** A crash (exit 2), a timeout (exit 3), or a `[SILENT]` that followed a failed GitHub
   read is written to `gate-failures.json` in the loop's state directory. The entry holds the gate,
   repo, PR, head, action, exception type and message, and a bounded traceback, and the payload is
   stored beside it. Failures that happen before a loop can be named go to
   `~/.hermes/state/review-loop-gate-failures/`. The same event delivered again (same payload)
-  bumps its attempt count instead of adding an entry.
+  bumps its attempt count instead of adding an entry. A payload over 1 MiB is not kept, and
+  that entry cannot be re-driven: the alert and `explain` say so and name the route whose hook
+  to open in GitHub (Settings → Webhooks → Recent Deliveries → Redeliver).
+* **An unreadable ledger is kept, not overwritten.** If `gate-failures.json` exists but is not a
+  JSON object (a torn write, a bad hand edit), the next gate failure or watchdog sweep renames
+  it to `gate-failures.json.corrupt-<UTC time>` in the same directory, once, and starts a fresh
+  ledger. The fresh ledger holds one entry that names the copy. The watchdog alerts on it once,
+  and `explain` lists it for every PR of the loop, because that PR's earlier failures may only be
+  in the copy. Salvage what you need from the copy and delete it; the next sweep then clears the
+  entry. If the file cannot be renamed, nothing is written to it, and the sweep reports why.
 * **Watchdog.** Each sweep alerts on unresolved entries, once per new failure and again after the
   cooldown. It re-drives reviewer and fixer events by running the gate again on the stored
   payload. This is safe because those gates re-read the live PR and the run ledger dedups a second
-  enqueue. It stops after 3 re-drives. Adjudicator failures are alerted but never re-driven,
-  because that gate's output is its dispatch. An entry resolves when the same event later
+  enqueue. It stops after 3 re-drives. Sweeps overlap (every loop's cron job sweeps all
+  loops), so each entry is claimed under the ledger's lock before anything is sent or run. The
+  claim records the alert, adds the re-drive to the count, and gives this sweep a 120-second
+  lease on the entry. Another sweep finds the entry already alerted or already being re-driven
+  and skips it. The owner records the outcome and drops the claim. If a sweep dies mid-re-drive,
+  its lease runs out and a later sweep takes the entry over. However many sweeps run, a failure
+  is alerted once per new attempt (and per cooldown) and re-driven at most 3 times in total.
+  Adjudicator failures are alerted but never re-driven, because that gate's output is its
+  dispatch. An entry resolves when the same event later
   completes cleanly, whether through a re-drive or a manual redelivery from GitHub.
 * **`explain`** lists unresolved gate failures for the PR as blockers.
 * **One owner per failed read.** When a gate's GitHub read fails, the event's

@@ -181,6 +181,182 @@ class GateFailureTest(unittest.TestCase):
         self.assertIn("not re-driven (its output is a dispatch)", out)
         self.assertEqual(ledger.entries()["k1"]["redrives"], 0)
 
+    # -- one sweep owns an entry's alert and re-drive ----------------------------------------
+    #
+    # ``init`` writes one cron job per loop and every job runs the same all-loops sweep, so two
+    # sweeps overlapping on one ledger is the documented install, not an edge case.
+
+    def slow_gate_dir(self, seconds: float = 1.0) -> tuple[pathlib.Path, pathlib.Path]:
+        """A stand-in gate that logs each launch, takes ``seconds`` and fails again."""
+        scripts = t.TMP / "slow-scripts"
+        scripts.mkdir(exist_ok=True)
+        launches = t.TMP / "launches.log"
+        launches.write_text("")
+        (scripts / "gate_reviewer.py").write_text(
+            f"import os, time\nwith open({str(launches)!r}, 'a') as f:\n"
+            "    f.write(str(os.getpid()) + '\\n')\n"
+            f"time.sleep({seconds})\nraise SystemExit(2)\n")
+        return scripts, launches
+
+    def overlapping_sweeps(self, ledger, scripts, n: int = 2, cooldown_s: float = 3600.0):
+        import threading
+        barrier = threading.Barrier(n)
+        out: list = [[] for _ in range(n)]
+
+        def one(i):
+            barrier.wait()
+            out[i] = gate_failures.sweep(ledger, "[widgets]", scripts, cooldown_s=cooldown_s)
+        threads = [threading.Thread(target=one, args=(i,)) for i in range(n)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(60)
+        return [line for lines in out for line in lines]
+
+    def redrivable_entry(self, key: str = "k1") -> gate_failures.Ledger:
+        ledger = gate_failures.Ledger(t.STATE_DIR)
+        ledger.record(key, {"gate": "gate_reviewer", "kind": "crash", "pr": 7, "redrivable": True,
+                            "error_type": "X", "error": "y"}, json.dumps(t.pr_payload(7)))
+        return ledger
+
+    def test_overlapping_sweeps_alert_and_redrive_an_entry_once(self):
+        ledger = self.redrivable_entry()
+        scripts, launches = self.slow_gate_dir()
+        lines = self.overlapping_sweeps(ledger, scripts)
+        self.assertEqual(len(launches.read_text().split()), 1)
+        self.assertEqual(len([line for line in lines if "gate failure k1" in line]), 1, lines)
+        self.assertEqual(ledger.entries()["k1"]["redrives"], 1)
+        self.assertNotIn("claim", ledger.entries()["k1"])          # released after the outcome
+        # Round after round of three overlapping sweeps: the cap holds across all of them.
+        for _ in range(gate_failures.MAX_REDRIVES + 1):
+            self.overlapping_sweeps(ledger, scripts, n=3)
+        self.assertEqual(len(launches.read_text().split()), gate_failures.MAX_REDRIVES)
+        self.assertEqual(ledger.entries()["k1"]["redrives"], gate_failures.MAX_REDRIVES)
+
+    def test_a_live_claim_is_respected_and_a_dead_sweeps_claim_expires(self):
+        ledger = self.redrivable_entry()
+        scripts, launches = self.slow_gate_dir(0)
+        ledger.update("k1", {"claim": {"sweep": "other", "until": time.time() + 60}})
+        self.assertEqual(gate_failures.sweep(ledger, "[w]", scripts, cooldown_s=0), [])
+        self.assertEqual(launches.read_text(), "")
+        # That sweep died holding it: once the lease runs out the entry is driven again.
+        ledger.update("k1", {"claim": {"sweep": "dead", "until": time.time() - 1}})
+        lines = gate_failures.sweep(ledger, "[w]", scripts, cooldown_s=0)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("failed again", lines[0])
+        self.assertEqual(len(launches.read_text().split()), 1)
+        self.assertNotIn("claim", ledger.entries()["k1"])
+
+    def test_two_real_watchdogs_redrive_and_alert_once(self):
+        broken = t.pr(7, requested=t.SEAT)
+        broken["head"] = "not-an-object"
+        t.set_prs({"7": broken})
+        gateway_run("gate_reviewer.py", t.pr_payload(7))
+        (key, _), = loop_entries().items()
+        t.set_prs({"7": t.pr(7, requested=t.SEAT)})
+        # GitHub answers the PR slowly, so the first watchdog's re-drive is still running when
+        # the second one reaches the ledger.
+        slow = t.TMP / "slow_pr_stub.py"
+        slow.write_text(f"#!{sys.executable}\nimport os, sys, time\n"
+                        "if sys.argv[1].endswith('/pulls/7'):\n    time.sleep(2)\n"
+                        f"os.execv({str(t.STUB)!r}, [{str(t.STUB)!r}, *sys.argv[1:]])\n")
+        slow.chmod(0o755)
+        env = {**t.env(), "REVIEW_LOOP_GH_STUB": str(slow)}
+        procs = [subprocess.Popen([sys.executable, str(SCRIPTS / "watchdog.py")], text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  cwd=str(SCRIPTS), env=env) for _ in range(2)]
+        outs = [proc.communicate(timeout=120)[0] for proc in procs]
+        said = [line for out in outs for line in out.splitlines() if f"gate failure {key}" in line]
+        self.assertEqual(len(said), 1, outs)
+        self.assertIn("re-driven — completed", said[0])
+        self.assertEqual(loop_entries()[key]["redrives"], 1)
+        self.assertTrue(loop_entries()[key]["resolved"])
+
+    # -- an unreadable ledger is kept for the operator, never overwritten ----------------------
+
+    GARBAGE = '{"k0": {"gate": "gate_reviewer", "pr": 7, "attempts": 2, "resol'   # a torn write
+
+    def corrupt_ledger(self) -> gate_failures.Ledger:
+        ledger = gate_failures.Ledger(t.STATE_DIR)
+        ledger.dir.mkdir(parents=True, exist_ok=True)
+        for old in ledger.dir.glob(gate_failures.LEDGER + ".corrupt-*"):
+            old.unlink()
+        ledger.path.write_text(self.GARBAGE)
+        return ledger
+
+    def corrupt_copies(self) -> list[pathlib.Path]:
+        return sorted(t.STATE_DIR.glob(gate_failures.LEDGER + ".corrupt-*"))
+
+    def test_no_writer_overwrites_a_corrupt_ledger_or_writes_the_sentinel(self):
+        writers = {
+            "update": lambda ledger: ledger.update("k0", {"alerted_at": 1.0}),
+            "resolve": lambda ledger: ledger.resolve("k0", "done"),
+            "record": lambda ledger: ledger.record("k9", {"gate": "gate_fixer", "pr": 8}, "{}"),
+            "sweep": lambda ledger: gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=0),
+        }
+        for name, write in writers.items():
+            with self.subTest(writer=name):
+                ledger = self.corrupt_ledger()
+                write(ledger)
+                write(ledger)                                 # a second write: still one copy
+                (copy,) = self.corrupt_copies()
+                self.assertEqual(copy.read_text(), self.GARBAGE)
+                data = json.loads(ledger.path.read_text())
+                self.assertFalse([k for k in data if k.startswith("_")], data)
+                self.assertNotIn("k0", data)                  # nothing invented from the wreck
+
+    def test_a_corrupt_ledger_is_alerted_once_shown_by_explain_and_clears_when_salvaged(self):
+        self.corrupt_ledger()
+        loop = config.load_id("widgets")
+        before = gate_failures.open_for(loop, 7)             # explain, before any sweep ran
+        self.assertEqual(len(before), 1)
+        self.assertIn("unreadable", gate.gate_failure_line(before[0]))
+        first, second = watchdog(), watchdog()
+        (copy,) = self.corrupt_copies()
+        alerts = [line for line in first.splitlines() if str(copy) in line]
+        self.assertEqual(len(alerts), 1, first)
+        self.assertIn("salvage", alerts[0])
+        self.assertNotIn(str(copy), second)                  # once, even with no cooldown
+        self.assertEqual(copy.read_text(), self.GARBAGE)
+        shown = [gate.gate_failure_line(e) for e in gate_failures.open_for(loop, 7)]
+        self.assertEqual(len(shown), 1)
+        self.assertIn(str(copy), shown[0])
+        # A real gate failure still records, beside the kept copy.
+        broken = t.pr(7, requested=t.SEAT)
+        broken["head"] = "not-an-object"
+        t.set_prs({"7": broken})
+        self.assertEqual(gateway_run("gate_reviewer.py", t.pr_payload(7))[0].returncode, 2)
+        self.assertEqual(len([e for e in loop_entries().values() if e.get("gate") == "gate_reviewer"]), 1)
+        # The operator salvages what they need and deletes the copy: the entry clears itself.
+        copy.unlink()
+        watchdog()
+        self.assertFalse([e for e in gate_failures.open_for(loop, 7) if e.get("kind") == "ledger"])
+
+    # -- a payload that was not kept is never promised a retry ---------------------------------
+
+    def test_a_payload_not_kept_says_how_to_redeliver_it(self):
+        broken = t.pr(7, requested=t.SEAT)
+        broken["head"] = "not-an-object"
+        t.set_prs({"7": broken})
+        payload = {**t.pr_payload(7), "padding": "x" * gate_failures.MAX_PAYLOAD_BYTES}
+        proc, _ = gateway_run("gate_reviewer.py", payload)
+        self.assertEqual(proc.returncode, 2)
+        self.assertNotIn("re-drives it", proc.stderr)
+        (key, entry), = loop_entries().items()
+        self.assertFalse(entry["payload_kept"])
+        route = config.load_id("widgets")["seats"]["reviewer"]["route"]
+        line = gate.gate_failure_line(gate_failures.open_for(config.load_id("widgets"), 7)[0])
+        out = [x for x in watchdog().splitlines() if f"gate failure {key}" in x]
+        self.assertEqual(len(out), 1)
+        for said in (line, out[0]):
+            self.assertNotIn("retries it", said)
+            self.assertNotIn("not re-driven this sweep", said)
+            self.assertIn("cannot be re-driven", said)
+            self.assertIn(f"webhooks/{route}", said)
+            self.assertIn("Recent Deliveries", said)
+            self.assertIn("Redeliver", said)
+        self.assertEqual(loop_entries()[key]["redrives"], 0)
+
     # -- the gate's budget fits the gateway's script timeout ---------------------------------
 
     def gateway_config(self, data: dict | None, legacy: dict | None = None) -> None:

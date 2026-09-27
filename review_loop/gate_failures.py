@@ -22,8 +22,8 @@ So every gate runs under :func:`run`, which
    anything else that hangs (a lock, a subprocess);
 2. records a crash, a timeout, or a silence that followed a failed GitHub read ("incomplete")
    durably in the loop's ``gate-failures.json`` — event fingerprint, repo, PR, head, action,
-   gate, exception type and message, a bounded traceback — with the payload kept beside it so
-   the watchdog can re-drive the event;
+   gate, exception type and message, a bounded traceback — with the payload (up to 1 MiB) kept
+   beside it so the watchdog can re-drive the event;
 3. marks the fingerprint's entry resolved the next time the same event completes cleanly
    (a watchdog re-drive, or a manual redelivery from GitHub's UI).
 
@@ -270,8 +270,25 @@ def describe(payload) -> dict:
 # -- the ledger -----------------------------------------------------------------------------
 
 
+UNREADABLE = "_unreadable"   # a read-only view's stand-in for an unreadable file; never written
+CORRUPT = "ledger"           # ``kind`` of the entry standing for a ledger that was moved aside
+CLAIM_LEASE_S = 120.0        # a re-drive runs at most 60s; a sweep that dies frees it after this
+
+
+class LedgerUnreadable(Exception):
+    """The ledger file is not a JSON object and could not be moved aside, so nothing is
+    written: the operator's only copy of the recorded failures stays where it is."""
+
+
 class Ledger:
-    """``gate-failures.json`` plus one payload file per entry, under one flock."""
+    """``gate-failures.json`` plus one payload file per entry, under one flock.
+
+    Every writer loads through :meth:`_load_for_write` under the lock. A file that exists but
+    cannot be read is never overwritten: it is renamed to ``gate-failures.json.corrupt-<when>``
+    (once — afterwards the path is free), and the fresh ledger starts with one ``kind: ledger``
+    entry naming the copy, which the watchdog alerts once and ``explain`` shows until the
+    operator has salvaged and deleted it.
+    """
 
     def __init__(self, directory: pathlib.Path):
         self.dir = pathlib.Path(directory)
@@ -285,17 +302,60 @@ class Ledger:
             fcntl.flock(lock, fcntl.LOCK_EX)
             yield
 
-    def entries(self) -> dict:
+    def _read(self) -> tuple[dict | None, str]:
+        """``(entries, "")``, or ``(None, why)`` when the file exists but is not a JSON object."""
         try:
-            data = json.loads(self.path.read_text()) if self.path.exists() else {}
-        except Exception:
-            # An unreadable ledger is itself a failure worth an alert, not "no failures".
-            return {"_unreadable": {"gate": "?", "kind": "ledger", "resolved": False,
-                                    "error": f"{self.path} is unreadable", "attempts": 1}}
-        return data if isinstance(data, dict) else {}
+            if not self.path.exists():
+                return {}, ""
+            data = json.loads(self.path.read_text())
+        except Exception as exc:  # noqa: BLE001 - any unreadable file is one answer
+            return None, f"{type(exc).__name__}: {_bounded(exc, 160)}"
+        if not isinstance(data, dict):
+            return None, f"not a JSON object ({type(data).__name__})"
+        return data, ""
+
+    def entries(self) -> dict:
+        """A read-only view. An unreadable file shows as one synthetic entry, so ``explain``
+        says so before any writer has moved it aside; no writer ever saves this view."""
+        data, why = self._read()
+        if data is None:
+            return {UNREADABLE: {"id": UNREADABLE, "gate": "ledger", "kind": CORRUPT,
+                                 "resolved": False, "error_type": "LedgerUnreadable",
+                                 "error": why, "path": str(self.path), "attempts": 1}}
+        return data
+
+    def _load_for_write(self) -> dict:
+        """The entries to modify — call with the lock held. An unreadable file is moved aside
+        first (raising :class:`LedgerUnreadable`, and writing nothing, if it cannot be)."""
+        data, why = self._read()
+        if data is not None:
+            return data
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        copy = self.dir / f"{LEDGER}.corrupt-{stamp}"
+        n = 1
+        while copy.exists():
+            n += 1
+            copy = self.dir / f"{LEDGER}.corrupt-{stamp}-{n}"
+        try:
+            os.rename(self.path, copy)
+        except OSError as exc:
+            raise LedgerUnreadable(f"{self.path} is unreadable ({why}) and could not be moved "
+                                   f"aside: {type(exc).__name__}: {exc}") from exc
+        now = time.time()
+        key = "ledger-" + hashlib.sha256(str(copy).encode()).hexdigest()[:12]
+        log(f"gate-failure ledger {self.path} was unreadable ({why}); moved aside to {copy}")
+        data = {key: {"id": key, "gate": "ledger", "kind": CORRUPT, "resolved": False,
+                      "error_type": "LedgerUnreadable", "error": why, "path": str(self.path),
+                      "corrupt_copy": str(copy), "attempts": 1, "redrives": 0,
+                      "redrivable": False, "payload_kept": False,
+                      "first_at": now, "last_at": now}}
+        self._save(data)
+        return data
 
     def _save(self, data: dict) -> None:
         from .state import _atomic_write
+        if UNREADABLE in data:
+            raise LedgerUnreadable("refusing to write the unreadable-ledger stand-in")
         _atomic_write(self.path, data)
 
     def payload(self, key: str) -> str | None:
@@ -304,11 +364,15 @@ class Ledger:
         except OSError:
             return None
 
+    def snapshot(self) -> dict:
+        """The entries as a writer sees them (moving an unreadable file aside first)."""
+        with self._locked():
+            return self._load_for_write()
+
     def record(self, key: str, entry: dict, raw: str) -> dict:
         now = time.time()
         with self._locked():
-            data = self.entries()
-            data.pop("_unreadable", None)
+            data = self._load_for_write()
             prior = data.get(key) if isinstance(data.get(key), dict) else {}
             merged = {**prior, **entry, "id": key, "last_at": now,
                       "first_at": prior.get("first_at") or now,
@@ -338,14 +402,14 @@ class Ledger:
 
     def update(self, key: str, fields: dict) -> None:
         with self._locked():
-            data = self.entries()
+            data = self._load_for_write()
             if isinstance(data.get(key), dict):
                 data[key] = {**data[key], **fields}
                 self._save(data)
 
     def resolve(self, key: str, how: str) -> bool:
         with self._locked():
-            data = self.entries()
+            data = self._load_for_write()
             entry = data.get(key)
             if not isinstance(entry, dict) or entry.get("resolved"):
                 return False
@@ -359,9 +423,75 @@ class Ledger:
             (self.payload_dir / f"{key}.json").unlink()
         return True
 
+    # -- one sweep owns an entry's alert and re-drive (the pattern of ``breach_deliver``) ------
+
+    def claim(self, key: str, sweep: str, *, now: float, cooldown_s: float,
+              may_redrive: bool, can_drive: Callable[[dict], bool]) -> tuple[dict, bool] | None:
+        """Decide, under the lock, whether *this* sweep alerts on ``key`` and re-drives it.
+
+        The decision is re-made against the entry as it is now, not as a sweep saw it earlier,
+        and committed before anything runs: the alert marker, and for a re-drive the
+        incremented ``redrives`` plus a ``claim`` leased to this sweep. A second, overlapping
+        sweep then finds the alert already made and the re-drive already owned (or the cap
+        reached) and does nothing. Returns ``(entry, drive)``, or ``None`` for "not yours".
+        """
+        with self._locked():
+            data = self._load_for_write()
+            entry = data.get(key)
+            if not isinstance(entry, dict) or entry.get("resolved"):
+                return None
+            held = entry.get("claim")
+            if (isinstance(held, dict) and held.get("sweep") != sweep
+                    and _number(held.get("until")) > now):
+                return None                      # another sweep is re-driving it right now
+            if entry.get("kind") == CORRUPT:     # said once; it clears when the copy is gone
+                fresh, drive = not entry.get("alerted_at"), False
+            else:
+                fresh = (entry.get("alerted_attempts") != entry.get("attempts")
+                         or now - _number(entry.get("alerted_at")) > cooldown_s)
+                drive = bool(may_redrive and entry.get("redrivable") and entry.get("payload_kept")
+                             and int(entry.get("redrives") or 0) < MAX_REDRIVES
+                             and can_drive(entry))
+            if not (fresh or drive):
+                return None
+            entry = {k: v for k, v in entry.items() if k != "claim"}
+            entry.update(alerted_at=now, alerted_attempts=entry.get("attempts"))
+            if drive:
+                entry.update(redrives=int(entry.get("redrives") or 0) + 1, last_redrive_at=now,
+                             claim={"sweep": sweep, "until": now + CLAIM_LEASE_S})
+            data[key] = entry
+            self._save(data)
+            return dict(entry), drive
+
+    def release(self, key: str, sweep: str) -> dict:
+        """Record a re-drive's outcome: drop this sweep's claim and mark the attempt the re-run
+        itself may have added as already reported (the alert about to go out names it)."""
+        with self._locked():
+            data = self._load_for_write()
+            entry = data.get(key)
+            if not isinstance(entry, dict):
+                return {}
+            if (entry.get("claim") or {}).get("sweep") == sweep:
+                entry = {k: v for k, v in entry.items() if k != "claim"}
+                if not entry.get("resolved"):
+                    entry["alerted_attempts"] = entry.get("attempts")
+                data[key] = entry
+                self._save(data)
+            return dict(entry)
+
     def open_for(self, number: int) -> list[dict]:
+        """Unresolved failures for one PR — and an unreadable or moved-aside ledger, which may
+        be hiding this PR's failures."""
         return [e for e in self.entries().values()
-                if isinstance(e, dict) and not e.get("resolved") and e.get("pr") == number]
+                if isinstance(e, dict) and not e.get("resolved")
+                and (e.get("pr") == number or e.get("kind") == CORRUPT)]
+
+
+def _number(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def loop_ledger(loop: dict) -> Ledger:
@@ -504,14 +634,21 @@ def run(gate: str, main: Callable[[], None]) -> None:
         error_type = type(exc).__name__
         message = str(exc) if not isinstance(exc, SystemExit) else f"exit code {code}"
         trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    entry = {"gate": gate, "kind": kind, **facts, "error_type": error_type,
+    route = ""
+    try:
+        from .route_intent import routes_of
+        loop = _loop_for(payload)
+        route = routes_of(loop).get(gate.removeprefix("gate_"), "") if loop else ""
+    except Exception:  # noqa: BLE001 - the hint then names the route generically
+        pass
+    entry = {"gate": gate, "kind": kind, **facts, "error_type": error_type, "route": route,
              "error": _bounded(message, 500), "traceback": _bounded(trace, 4000),
              "elapsed_s": round(elapsed, 2), "budget_s": budget,
              "redrivable": gate in REDRIVABLE, "released_claims": freed}
-    recorded = ""
+    recorded, kept = "", {}
     for ledger in _ledgers_for(payload):
         try:
-            ledger.record(key, entry, raw)
+            kept = ledger.record(key, entry, raw)
             recorded = str(ledger.path)
             break
         except Exception as err:  # noqa: BLE001 - fall through to the next ledger
@@ -519,9 +656,13 @@ def run(gate: str, main: Callable[[], None]) -> None:
     if recorded:
         _claim_github_read(payload, key, started_wall)
     where = f"#{facts['pr']}" if facts["pr"] else "an unnamed PR"
+    then = ("nothing can alert on or re-drive it — " + redeliver_hint(entry) if not recorded
+            else "the watchdog alerts and re-drives it"
+            if kept.get("payload_kept") and gate in REDRIVABLE
+            else "the watchdog alerts it; " + not_driven({**entry, **kept}))
     log(f"GATE FAILURE ({kind}) {gate} {facts['repo'] or '?'} {where}: {error_type}: "
         f"{_bounded(message, 200)} — recorded {key} in {recorded or 'NOWHERE (ledger unwritable)'}"
-        f"; the watchdog alerts and re-drives it")
+        f"; {then}")
     if alarm:
         signal.setitimer(signal.ITIMER_REAL, 0)
     if kind == "incomplete":
@@ -532,21 +673,41 @@ def run(gate: str, main: Callable[[], None]) -> None:
 # -- the watchdog's side --------------------------------------------------------------------
 
 
+def redeliver_hint(entry: dict) -> str:
+    """How the operator re-delivers this event from GitHub by hand, naming the gate's route."""
+    seat = str(entry.get("gate") or "").removeprefix("gate_") or "gate"
+    route = str(entry.get("route") or "") or f"<the loop's {seat} route>"
+    what = " ".join(x for x in (str(entry.get("action") or ""),
+                                f"#{entry['pr']}" if entry.get("pr") else "") if x)
+    return (f"re-deliver it from GitHub: the repo's Settings → Webhooks → the hook ending in "
+            f"/webhooks/{route} → Recent Deliveries → the {what or 'failed'} delivery → Redeliver")
+
+
+def not_driven(entry: dict, scripts_dir: pathlib.Path | None = None) -> str:
+    """Why an unresolved entry is not re-driven, as the operator should read it."""
+    if not entry.get("redrivable"):
+        return "not re-driven (its output is a dispatch) — " + redeliver_hint(entry)
+    if not entry.get("payload_kept"):
+        return (f"payload not kept (empty or over {MAX_PAYLOAD_BYTES >> 20} MiB), so it cannot be "
+                f"re-driven — " + redeliver_hint(entry))
+    if int(entry.get("redrives") or 0) >= MAX_REDRIVES:
+        return f"gave up after {MAX_REDRIVES} re-drives — needs you"
+    if scripts_dir is not None and not (scripts_dir / f"{entry.get('gate')}.py").is_file():
+        return f"{entry.get('gate')}.py not found — cannot re-drive"
+    return "not re-driven this sweep (GitHub is not answering); a later sweep retries it"
+
+
 def redrive(ledger: Ledger, key: str, gate: str, scripts_dir: pathlib.Path) -> str:
-    """Re-run the gate on the stored payload, the way the gateway runs it; return an outcome."""
+    """Re-run the gate on the stored payload, the way the gateway runs it; return an outcome.
+    The caller has already claimed the re-drive (:meth:`Ledger.claim`); this only runs it."""
     import subprocess
     raw = ledger.payload(key)
     if raw is None:
-        return "payload not kept — cannot re-drive"
-    script = scripts_dir / f"{gate}.py"
-    if not script.is_file():
-        return f"{script.name} not found — cannot re-drive"
-    ledger.update(key, {"redrives": int((ledger.entries().get(key) or {}).get("redrives") or 0) + 1,
-                        "last_redrive_at": time.time()})
+        return "stored payload is gone — cannot re-drive"
     try:
         left = gh.remaining()
-        proc = subprocess.run([sys.executable, str(script)], input=raw, capture_output=True,
-                              text=True, cwd=str(scripts_dir),
+        proc = subprocess.run([sys.executable, str(scripts_dir / f"{gate}.py")], input=raw,
+                              capture_output=True, text=True, cwd=str(scripts_dir),
                               timeout=60 if left is None else max(1.0, min(60.0, left)),
                               env={**os.environ, REDRIVE_ENV: key})
     except subprocess.TimeoutExpired:
@@ -557,37 +718,55 @@ def redrive(ledger: Ledger, key: str, gate: str, scripts_dir: pathlib.Path) -> s
     return f"re-driven — failed again (exit {proc.returncode})"
 
 
+def _corrupt_line(header: str, entry: dict) -> str:
+    return (f"⚠️ Review loop {header} — gate-failure ledger {entry.get('path')} was unreadable "
+            f"({entry.get('error')}); it was moved aside to {entry.get('corrupt_copy')}, not "
+            f"overwritten. Gate failures recorded before then are only in that copy: salvage what "
+            f"you need from it, then delete it (this clears itself).")
+
+
 def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s: float,
           may_redrive: bool = True) -> list[str]:
     """Alert on unresolved gate failures (once per new failure, then per cooldown) and re-drive
-    the re-drivable ones up to ``MAX_REDRIVES`` times."""
+    the re-drivable ones up to ``MAX_REDRIVES`` times.
+
+    Overlapping sweeps are normal (one cron job per loop, each sweeping every loop), so each
+    entry's decision is claimed under the ledger's lock first (:meth:`Ledger.claim`), acted on
+    outside it, and its outcome recorded after (:meth:`Ledger.release`)."""
+    import uuid
+    me = uuid.uuid4().hex
     lines: list[str] = []
-    now = time.time()
-    for key, entry in sorted(ledger.entries().items(), key=lambda kv: (kv[1] or {}).get("last_at") or 0):
-        if not isinstance(entry, dict) or entry.get("resolved"):
+    snapshot = ledger.snapshot()
+    def age(item) -> float:
+        return _number(item[1].get("last_at")) if isinstance(item[1], dict) else 0.0
+    for key, _ in sorted(snapshot.items(), key=age):
+        seen = snapshot.get(key)
+        if not isinstance(seen, dict) or seen.get("resolved"):
             continue
-        fresh = (entry.get("alerted_attempts") != entry.get("attempts")
-                 or now - float(entry.get("alerted_at") or 0) > cooldown_s)
-        outcome = ""
-        if (may_redrive and entry.get("redrivable") and entry.get("payload_kept")
-                and int(entry.get("redrives") or 0) < MAX_REDRIVES):
-            outcome = redrive(ledger, key, str(entry.get("gate")), scripts_dir)
-            entry = ledger.entries().get(key) or entry
-            fresh = True
-        elif not entry.get("redrivable"):
-            outcome = "not re-driven (its output is a dispatch) — re-deliver it from GitHub by hand"
-        elif int(entry.get("redrives") or 0) >= MAX_REDRIVES:
-            outcome = f"gave up after {MAX_REDRIVES} re-drives — needs you"
+        if seen.get("kind") == CORRUPT and not pathlib.Path(str(seen.get("corrupt_copy"))).exists():
+            ledger.resolve(key, f"corrupt copy removed by the operator; noticed at {iso_at(time.time())}")
+            continue
+        claimed = ledger.claim(
+            key, me, now=time.time(), cooldown_s=cooldown_s, may_redrive=may_redrive,
+            can_drive=lambda e: ((scripts_dir / f"{e.get('gate')}.py").is_file()
+                                 and (ledger.payload_dir / f"{key}.json").is_file()))
+        if claimed is None:
+            continue
+        entry, drive = claimed
+        if entry.get("kind") == CORRUPT:
+            lines.append(_corrupt_line(header, entry))
+            continue
+        if drive:
+            try:
+                outcome = redrive(ledger, key, str(entry.get("gate")), scripts_dir)
+            finally:
+                entry = ledger.release(key, me) or entry
         else:
-            outcome = "not re-driven this sweep"
-        if not fresh:
-            continue
+            outcome = not_driven(entry, scripts_dir)
         pr = f"#{entry['pr']}" if entry.get("pr") else "no PR"
         head = str(entry.get("head") or "")[:7] or "?"
         lines.append(f"⚠️ Review loop {header} — gate failure {key}: {entry.get('gate')} "
                      f"{entry.get('kind')} on {pr} @ {head} ({entry.get('action') or '?'}), "
                      f"{entry.get('attempts')} attempt(s): {entry.get('error_type')}: "
                      f"{_bounded(entry.get('error') or '', 160)} — {outcome}")
-        if not entry.get("resolved"):
-            ledger.update(key, {"alerted_at": now, "alerted_attempts": entry.get("attempts")})
     return lines
