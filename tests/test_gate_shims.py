@@ -560,16 +560,16 @@ class DoctorApplyUninstall(Base):
     def github_with_hook(self, url: str, secret: str = "placeholder-old-hook-key", *,
                          patch_fails: bool = False, hook_id: int = 51,
                          insecure_ssl: str = "0", active: bool = True,
-                         more=()) -> pathlib.Path:
+                         more=(), events=("pull_request_review",)) -> pathlib.Path:
         """A stateful gh stub holding one repo hook, with GitHub's worst-case PATCH semantics: the
         body's ``config`` REPLACES the hook's config wholesale, so a key left out is gone. Reads
         mask the secret as GitHub does. Every value here is a placeholder, never a real key."""
         world = self.tmp / "world.json"
-        hooks = [{"id": hook_id, "active": active, "events": ["pull_request_review"],
+        hooks = [{"id": hook_id, "active": active, "events": list(events),
                   "config": {"url": url, "content_type": "json", "insecure_ssl": insecure_ssl,
                              "secret": secret}}]
         hooks += [{"id": other[0], "active": other[2] if len(other) > 2 else True,
-                   "events": ["pull_request_review"],
+                   "events": list(events),
                    "config": {"url": other[1], "content_type": "json", "insecure_ssl": "0",
                               "secret": "placeholder-other-hook-key"}}
                   for other in more]
@@ -826,6 +826,54 @@ class DoctorApplyUninstall(Base):
         self.github_with_hook(url, hook_id=41)
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
+
+    # -- a trailing slash: the gateway 404s it, so every surface must say so (review of 1f1fe28)
+
+    REVIEW_URL = "https://gateway.example/p/vex/webhooks/widgets-review"
+
+    def hook_check(self):
+        loop = config.load_id("widgets")
+        return {c.name: c for c in doctor.check_hooks(loop, offline=False)}["hook:widgets-review"]
+
+    def test_doctor_does_not_verify_a_hook_whose_url_has_a_trailing_slash(self):
+        self.install()
+        self.github_with_hook(self.REVIEW_URL + "/", hook_id=41, events=("pull_request",))
+        check = self.hook_check()
+        self.assertEqual(check.status, doctor.MISMATCH, check.detail)
+        self.assertIn("trailing slash", check.detail)
+        self.assertIn("hermes review-loop apply --loop widgets", check.fix)
+
+    def test_plain_apply_repoints_a_trailing_slash_hook_and_doctor_then_verifies(self):
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
+        world = self.github_with_hook(self.REVIEW_URL + "/", secret=REVIEW_KEY, hook_id=41,
+                                      events=("pull_request",))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"hook 41 → {self.REVIEW_URL}", out)
+        self.assertEqual(self.hook_config(world, 41),
+                         {"url": self.REVIEW_URL, "content_type": "json", "insecure_ssl": "0",
+                          "secret": REVIEW_KEY})
+        self.assertEqual(self.hook_check().status, doctor.VERIFIED, self.hook_check().detail)
+
+    def test_plain_apply_names_a_trailing_slash_duplicate(self):
+        self.install()
+        world = self.github_with_hook(self.REVIEW_URL, hook_id=41,
+                                      more=[(43, self.REVIEW_URL + "/")])
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("gh api -X DELETE repos/acme/widgets/hooks/43", out)
+        self.assertEqual(json.loads(world.read_text())["patches"], 0)
+
+    def test_a_hook_move_accepts_the_old_url_with_a_trailing_slash(self):
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
+        new = "https://gateway.example/p/tuck/webhooks/widgets-review"
+        world = self.github_with_hook(self.REVIEW_URL + "/", secret=REVIEW_KEY, hook_id=41)
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.hook_config(world, 41)["url"], new)
 
     def test_recreate_routes_refuses_when_the_hook_listing_cannot_be_read(self):
         from review_loop import route_intent

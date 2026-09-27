@@ -592,12 +592,18 @@ def _hook_moves(before: dict, after: dict, binds: dict,
             dest = targets[role]
             for hook in mine:
                 old = hook["config"]["url"]
-                if old != dest and (old not in expected or expected[old][0] != role):
+                # A trailing slash on the target or a known old URL is the same route, spelled so
+                # the gateway 404s it: repairable by a move, never "unexpected".
+                known = routes.same_webhook_url(old, dest) or any(
+                    routes.same_webhook_url(old, url) and owner == role
+                    for url, (owner, _new) in expected.items())
+                if not known:
                     raise config.ConfigError(f"installed {role} hook {hook['id']} "
                                              f"points at unexpected URL {old!r}; no changes made")
         elif role in unchanged:
             dest = unchanged[role]
-            mine = [hook for hook in mine if hook["config"]["url"] == dest]   # doctor judges the rest
+            # Doctor judges hooks elsewhere; one at this URL with a trailing slash is this URL's.
+            mine = [hook for hook in mine if routes.same_webhook_url(hook["config"]["url"], dest)]
         else:
             continue
         if not mine:
@@ -1376,13 +1382,25 @@ def cmd_apply(args) -> int:
                                          "settings, but the route registry does not:")
         if not left:
             print(f"[{loop['id']}] already matches the plugin settings")
-        duplicates = []
+        duplicates, slashed = [], []
         if not args.dry_run:
-            try:        # nothing moves: this only reads, to name two hooks on one route URL
-                duplicates = _hook_moves(loop, updated, {},
-                                         getattr(args, "admin_token", "") or None)[1]
+            token = getattr(args, "admin_token", "") or None
+            try:        # nothing else moves: this reads, to name two hooks on one route URL and
+                        # find one whose URL differs only by a trailing slash (a gateway 404)
+                slashed, duplicates = _hook_moves(loop, updated, {}, token)
             except config.ConfigError as exc:
-                print(f"  (repo hooks not checked for duplicates: {exc})")
+                print(f"  (repo hooks not checked: {exc})")
+        for hook_id, old, new, ssl in slashed:
+            try:
+                _patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None,
+                                insecure_ssl=ssl)
+            except config.ConfigError as exc:
+                print(f"  hook {hook_id} NOT repointed from {old} to {new}: {exc}")
+                print(f"  fix: re-run with --admin-token <login> "
+                      f"({doctor.hook_write_need(loop['repo'])})")
+                return 2
+            print(f"  hook {hook_id} → {new}   (was {old}: the gateway does not route a trailing "
+                  "slash)")
         for hook, keep in duplicates:
             print(f"  {_redundant_hook_line(loop, hook, keep)}")
         return 1 if left or leftover_hooks or duplicates else 0

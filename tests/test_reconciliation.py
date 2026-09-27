@@ -147,13 +147,16 @@ def main():
             created.pop(int(path.rsplit('/', 1)[-1]), None)
             return None
         if path.endswith('/hooks?per_page=100'):
-            return [{'id': key, 'config': {'url': url}} for key, url in created.items()]
+            return [{'id': key, 'active': False, 'config': {'url': url}} for key, url in created.items()]
         return {'id': 100, 'config': {'url': created[100]}} if 100 in created else None
     with mock.patch.object(gh, 'api', side_effect=partial_create):
         rc, out = t.run_cli(new_init)
     assert rc == 2, (rc, out)
     assert not created and not (t.LOOPS_DIR / 'newloop.json').exists(), (created, out)
     assert not routes.route('newloop-review') and not routes.route('newloop-fix')
+    # The rollback must have taken the real path (a readable listing, a confirmed DELETE), not
+    # the "cannot identify newly created hooks" fallback a malformed mock listing would force.
+    assert 'ROLLBACK FAILED' not in out and 'cannot identify' not in out, out
     print('PASS init second hook failure removes first hook and local artifacts')
 
     multi = t.parser_for({'reviewer_profile': 'vex', 'fixer_profile': 'drey',
