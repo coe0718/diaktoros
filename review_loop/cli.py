@@ -548,10 +548,12 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         return [f"could not read the repo's hooks: {exc}",
                 f"fix: {_hook_write_fix(token_login, loop=loop)}"], False
     try:
-        # One matcher (doctor.split_route_hooks): a seat's hook posts to exactly its route's URL.
-        # Another profile's URL (the gateway answers it 404), another path, a retired gateway —
-        # or a route named inside another route's name — is not that seat's hook.
-        own, foreign = doctor.split_route_hooks(loop, hooks, wanted)
+        # One matcher (doctor.split_route_hooks). Arming credits a hook only at the registry's
+        # route URL bound to the seat's profile: another profile's URL (the gateway answers it
+        # 404), another path, a retired gateway — or a route named inside another route's name —
+        # is not that seat's hook. Pausing asks the ownership question instead: every hook this
+        # install made is stopped, even once `uninstall` has removed the route it posted to.
+        own, foreign = doctor.split_route_hooks(loop, hooks, wanted, ownership=not active)
     except config.ConfigError as exc:
         return [f"cannot tell this loop's hooks from anyone else's: {exc}",
                 f"fix: hermes review-loop set --loop {loop.get('id')} --host "
@@ -559,19 +561,33 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
     out, ok = [], True
     failed: list[tuple[int, list[str]]] = []      # (hook id, the errors that decide its fix)
     targets = {name: doctor.seat_route_target(loop, name) for name in wanted}
+    role_of = {name: role for role, name in seats}
     for hook in foreign:
         name = doctor.hook_route_name(hook)
         want, reason = targets[name]
-        if want is None:
+        if want is None and active:
             out.append(f"hook {hook['id']} posts to route {name!r}; {reason} — not armed, "
                        "left as it is")
             continue
-        why = doctor.hook_url_difference(str(hook["config"].get("url") or ""), want)
+        why = doctor.hook_url_difference(str(hook["config"].get("url") or ""),
+                                         want or (doctor.install_hook_urls(loop, name) or [""])[0])
         out.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this seat's hook "
                    "(nothing this loop serves receives it), left as it is")
     matched: set[str] = set()
+    miswired: list[int] = []
     for hook in own:
-        matched.add(doctor.hook_route_name(hook))
+        name = doctor.hook_route_name(hook)
+        matched.add(name)
+        if active:
+            # At the seat's URL but subscribed to the wrong event (or not JSON): doctor calls it
+            # a MISMATCH, so arming it would report a loop live that the seat never hears.
+            problem = doctor.hook_wake_problem(hook, role_of.get(name, ""))
+            if problem:
+                ok = False
+                miswired.append(hook["id"])
+                out.append(f"hook {hook['id']} NOT armed: it {problem}, so it would not wake the "
+                           f"{role_of.get(name, '?')} seat — left as it is")
+                continue
         # Only a real bool is a state: a hook with no `active` (or a non-bool one) is flipped and
         # read back like any other, never taken as already there.
         if isinstance(hook.get("active"), bool) and hook["active"] == active:
@@ -600,15 +616,23 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         # A PATCH GitHub accepted that did not stick is a refusal; a failed PATCH is judged by its
         # own code, so a timeout or a 5xx gets the retry advice, not the token-scope one.
         failed.append((hook["id"], [error or "refused"]))
-    unbound = [(role, name) for role, name in seats if targets[name][0] is None]
+    # Arming needs each seat's route bound in the registry; pausing only needs the hooks.
+    unbound = [(role, name) for role, name in seats
+               if active and targets[name][0] is None]
     if not matched and not unbound:
         return out + ["no loop hooks found at the routes' own URLs — run init --hooks first "
                       f"(looked for hooks posting to {', '.join(wanted) or 'a loop route'})"], False
     missing = [(role, name) for role, name in seats if name not in matched]
     for role, name in missing:
-        reason = targets[name][1] or ("no repo hook posts to this route's URL, so the loop "
-                                      f"cannot be {'armed' if active else 'paused'} as a whole")
+        reason = ((targets[name][1] if active else "") or
+                  ("no repo hook posts to this route's URL, so the loop cannot be "
+                   f"{'armed' if active else 'paused'} as a whole"))
         out.append(f"hook:{name} ABSENT ({role} seat) — {reason}")
+    if miswired:
+        out.append(f"fix: hook{'s' if len(miswired) > 1 else ''} {', '.join(map(str, miswired))}:"
+                   f" `hermes review-loop doctor --loop {loop.get('id')}` names what each needs "
+                   "(re-run init --hooks, or set the event / content_type on the hook), then "
+                   "run `arm` again")
     # The fix is per hook: one refused hook must not hide the retry advice another hook's 5xx
     # earned. Hooks that need the same fix share its line.
     advice: dict[str, list[int]] = {}
@@ -1830,19 +1854,12 @@ def cmd_settings(args) -> int:
 def _readable_loops() -> tuple[list[dict], list[str]]:
     """Every loop that loads, plus one ``skipping <file>: <reason>`` line per one that does not.
 
-    For the read-only listings only: one broken file must not hide every healthy loop's state.
-    Verbs that act on loops keep ``all_loops``'s all-or-nothing refusal.
+    For the verbs that answer about loops without acting on them (``list``, ``status``,
+    ``explain``): one broken file must not hide every healthy loop's state. Verbs that act on
+    loops keep ``all_loops``'s all-or-nothing refusal.
     """
-    directory = config.config_dir()
-    if not directory.exists():
-        return [], []
-    loops, skipped = [], []
-    for path in sorted(directory.glob("*.json")):
-        try:
-            loops.append(config.load_id(path.stem))
-        except config.ConfigError as exc:
-            skipped.append(f"skipping {path.name}: {exc}")
-    return loops, skipped
+    loops, skipped = config.readable_loops()
+    return loops, [f"skipping {loop_id}.json: {reason}" for loop_id, reason in skipped]
 
 
 def cmd_list(args) -> int:
@@ -1960,8 +1977,9 @@ def cmd_explain(args) -> int:
     from ``gate.explain``, so they are the predicates the live gates run rather than a second
     opinion about them.
 
-    Exit 2 only when the question cannot be asked at all (an unknown loop, or several loops and no
-    ``--loop``). A PR GitHub does not have, or cannot be read, is an *answer*: it is reported as
+    Exit 2 only when the question cannot be asked at all: an unknown loop, a loop file the loader
+    refuses (without ``--loop`` each is named on a ``skipping <file>: <reason>`` line), or several
+    loops — refused ones included — and no ``--loop``. A PR GitHub does not have, or cannot be read, is an *answer*: it is reported as
     unknown, with the read to retry.
     """
     from . import state as state_mod
@@ -1973,13 +1991,12 @@ def cmd_explain(args) -> int:
             print(f"no such loop: {exc}")
             return 2
     else:
-        loops, skipped = _readable_loops()
-        for line in skipped:
-            print(line)
+        loops, refused = config.readable_loops()
+        for loop_id, reason in refused:
+            print(f"skipping {loop_id}.json: {reason}")
+        skipped = [loop_id for loop_id, _ in refused]
         # A file that will not load is still a configured loop: the question may be about it.
-        names = [loop["id"] for loop in loops] + [
-            line.split(":", 1)[0].removeprefix("skipping ").removesuffix(".json")
-            for line in skipped]
+        names = [loop["id"] for loop in loops] + skipped
         if len(names) > 1:
             print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
             return 2

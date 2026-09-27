@@ -775,7 +775,13 @@ def main() -> None:
     ap.add_argument("--seat", default="reviewer", choices=["reviewer", "fixer"])
     args = ap.parse_args()
 
-    loops = [config.load_id(args.loop)] if args.loop else config.all_loops()
+    # The cron job runs this with no --loop: one loop file the loader refuses (for any repo)
+    # is reported by name, like any other per-loop failure, and every other loop still sweeps.
+    refused: list[tuple[str, str]] = []
+    if args.loop:
+        loops = [config.load_id(args.loop)]
+    else:
+        loops, refused = config.readable_loops()
     if not loops and args.loop:
         print(f"no loop config named {args.loop}")
         return
@@ -806,6 +812,8 @@ def main() -> None:
             sup.notify(lambda message: print(message, flush=True))
         except Exception as exc:
             out.append(f"⚠️ Review-loop operator notification sweep failed: {type(exc).__name__}: {exc}")
+    for loop_id, reason in refused:
+        out.append(f"⚠️ Review loop [{loop_id}] watchdog failed: ConfigError: {reason}")
     for loop in loops:
         try:
             out.extend(sweep_loop(loop, state_mod.state_for(loop)))

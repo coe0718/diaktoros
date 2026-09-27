@@ -353,6 +353,12 @@ class ReaderIdentityTests(_Loop):
         rc, out = self.run_cli(["explain", "--pr", "1"])
         self.assertEqual(rc, 2, out)
         self.assertIn("2 loops are configured (clean, widgets) — name one with --loop", out)
+        # The id comes from the file name, never re-parsed out of the printed line.
+        self.loop_file().rename(config.config_dir() / "alpha:beta.json")
+        rc, out = self.run_cli(["explain", "--pr", "1"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("skipping alpha:beta.json: ", out)
+        self.assertIn("2 loops are configured (clean, alpha:beta) — name one with --loop", out)
 
     def test_apply_refuses_a_reader_with_no_token_file(self):
         rc, out = self.run_cli(self.init_argv())
@@ -401,9 +407,11 @@ class HookWriteTests(_Loop):
             calls.append((method, path, login))
             if path.endswith("/hooks?per_page=100"):
                 # Each hook at its route's own URL (the seat's profile is part of it).
-                return [{"id": n, "active": state[n], "config": {
-                    "url": f"https://gateway.example/p/{profile}/webhooks/widgets-{r}"}}
-                    for n, r, profile in ((1, "review", "vex"), (2, "fix", "drey"))], ""
+                return [{"id": n, "active": state[n], "events": [event], "config": {
+                    "url": f"https://gateway.example/p/{profile}/webhooks/widgets-{r}",
+                    "content_type": "json"}}
+                    for n, r, profile, event in ((1, "review", "vex", "pull_request"),
+                                                 (2, "fix", "drey", "pull_request_review"))], ""
             hook_id = int(path.rsplit("/", 1)[-1])
             if method == "PATCH":
                 if patch_error:

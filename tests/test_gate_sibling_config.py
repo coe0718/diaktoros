@@ -56,6 +56,19 @@ class SiblingConfigTest(unittest.TestCase):
         self.assertIn("'read_token' is not set", err)
         self.assertEqual(err.count("skipping legacy.json"), 1)
 
+    def test_the_cron_watchdog_sweeps_every_loop_past_a_refused_file(self):
+        # Cron runs the watchdog with no --loop: the refused sibling is one named warning, and
+        # the healthy loop's sweep still runs (it stamps its last run).
+        self.sibling("acme/legacy")
+        swept = t.state_file("watchdog.log")        # the healthy loop's sweep writes here
+        swept.unlink(missing_ok=True)
+        out, _, err = t.run("watchdog.py", None)
+        self.assertNotIn("Traceback", err)
+        self.assertIn("⚠️ Review loop [legacy] watchdog failed: ConfigError: ", out)
+        self.assertIn("'read_token' is not set", out)
+        self.assertNotIn("⚠️ Review loop watchdog failed", out)   # not the whole sweep
+        self.assertTrue(swept.exists() and swept.read_text().strip(), out)
+
     def test_a_refused_file_that_may_own_this_repo_fails_closed_without_a_traceback(self):
         self.sibling(t.REPO)                       # same repo: ownership cannot be settled
         kind, out, err = t.run("gate_reviewer.py", t.pr_payload(7))

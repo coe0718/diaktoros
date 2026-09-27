@@ -936,24 +936,39 @@ def hook_url_difference(posted: str, expected: str) -> str:
 def install_hook_urls(loop: dict, name: str) -> list[str]:
     """Every URL a hook *this install* made (or is about to make) for route ``name`` posts to.
 
-    An ownership question, not a delivery one: ``uninstall`` deleting its hooks and ``init``'s
-    stale-hook guard ask "is this hook one of ours?", and the answer includes the URL the loop's
-    config gives the route when the registry no longer holds it (a route removed before its
-    hooks — or, for ``init``, not written yet). ``arm`` and ``selftest --ping`` never use this:
-    they ask whether a hook *wakes the seat*, which only the registry binding answers.
+    An ownership question, not a delivery one: pausing (``arm --pause``), ``uninstall`` and
+    ``init``'s stale-hook guard ask "is this hook one of ours?", and the answer includes the
+    route's registry URL whatever profile it binds, and the URL the loop's config gives it —
+    which is all there is once the registry entry is gone (``uninstall`` removes it, then tells
+    the operator to pause any hooks it left). Arming never uses this: whether a hook *wakes the
+    seat* is ``seat_route_target``'s question, and only the registry binding answers it.
     """
     urls = []
-    registered = seat_hook_url(loop, name)
-    if registered:
-        urls.append(registered)
+    host = str(loop.get("host") or "") or None
+    if routes.route(name) is not None:
+        registered = routes.url_for(name, host)
+        if registered:
+            urls.append(registered)
     role = next((role for role, route in route_intent.routes_of(loop).items() if route == name),
                 "")
-    if role and routes.route(name) is None:
-        planned = routes.url_for_profile(name, config.seat_profile(loop, role),
-                                         str(loop.get("host") or "") or None)
-        if planned:
+    if role:
+        planned = routes.url_for_profile(name, config.seat_profile(loop, role), host)
+        if planned and not any(same_hook_url(planned, url) for url in urls):
             urls.append(planned)
     return urls
+
+
+def hook_wake_problem(hook: dict, seat: str) -> str:
+    """Why a hook at the seat's own URL still would not wake it, in ``check_hook``'s words."""
+    event = GATE_EVENT.get(seat)
+    events = hook.get("events")
+    if not isinstance(events, list) or event not in [str(item) for item in events]:
+        return (f"subscribes to {events if isinstance(events, list) and events else '(no events)'}"
+                f", not {event!r}")
+    content_type = (hook.get("config") or {}).get("content_type")
+    if content_type != "json":
+        return f"has content_type {content_type!r}, expected 'json'"
+    return ""
 
 
 def split_route_hooks(loop: dict, listing: list, names, *,
@@ -966,8 +981,9 @@ def split_route_hooks(loop: dict, listing: list, names, *,
     the seat's profile (``seat_route_target``). Every other hook
     whose last ``/webhooks/<route>`` segment names one of the routes — another profile's URL, a
     retired gateway, another install — is *other*: reported, never flipped, deleted or pinged
-    as this loop's. ``ownership=True`` (uninstall, init's stale-hook guard) also counts the URLs
-    ``install_hook_urls`` names. Raises ``ConfigError`` when the loop has no usable host.
+    as this loop's. ``ownership=True`` (pausing, uninstall, init's stale-hook guard) counts the
+    URLs ``install_hook_urls`` names instead. Raises ``ConfigError`` when the loop has no usable
+    host.
     """
     config.webhook_host(loop.get("host"), required=True)
     if ownership:
