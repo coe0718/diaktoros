@@ -968,7 +968,8 @@ def load_file(path: pathlib.Path) -> dict:
 
 def _as_int(value, key: str, where: str) -> int:
     """An integer setting, or a ConfigError naming it (``int("many")`` must not escape)."""
-    if isinstance(value, bool):
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        # int(3.5) would quietly become 3: a hand-edited fraction is a mistake, not a setting.
         raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}")
     try:
         return int(value)

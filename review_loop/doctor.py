@@ -903,9 +903,9 @@ def same_hook_url(posted: str, expected: str) -> bool:
     """Is this hook *for* that route URL? Scheme and host case-insensitive, a trailing slash
     ignored. For finding a hook (whose is it, which one to pause or delete) — never for deciding
     it is correct: see ``exact_hook_url``."""
-    got, want = urlsplit(posted.rstrip("/")), urlsplit(expected.rstrip("/"))
-    return ((got.scheme.lower(), got.netloc.lower(), got.path, got.query)
-            == (want.scheme.lower(), want.netloc.lower(), want.path, want.query))
+    got, want = urlsplit(posted), urlsplit(expected)
+    return ((got.scheme.lower(), got.netloc.lower(), got.path.rstrip("/"))
+            == (want.scheme.lower(), want.netloc.lower(), want.path.rstrip("/")))
 
 
 def exact_hook_url(posted: str, expected: str) -> bool:
@@ -914,11 +914,13 @@ def exact_hook_url(posted: str, expected: str) -> bool:
     The gateway registers ``/webhooks/{route_name}`` and ``/p/{profile}/webhooks/{route_name}``
     only (``{route_name}`` cannot hold a ``/``, and no path normalizing is installed), so
     ``…/webhooks/<route>/`` falls through to the ``/p/{profile}/{tail}`` catch-all and is
-    answered 404. Scheme and host still compare case-insensitively (DNS and the Host header).
+    answered 404. Scheme and host still compare case-insensitively (DNS and the Host header),
+    and a query string is not part of the match: the router reads the path only, so
+    ``…/webhooks/<route>?x=1`` is delivered like the bare URL.
     """
     got, want = urlsplit(posted), urlsplit(expected)
-    return ((got.scheme.lower(), got.netloc.lower(), got.path, got.query)
-            == (want.scheme.lower(), want.netloc.lower(), want.path, want.query))
+    return ((got.scheme.lower(), got.netloc.lower(), got.path)
+            == (want.scheme.lower(), want.netloc.lower(), want.path))
 
 
 SLASH_404 = ("posts to the route's URL with a trailing slash — the gateway does not route it "
@@ -948,8 +950,8 @@ def hook_url_difference(posted: str, expected: str) -> str:
 def install_hook_urls(loop: dict, name: str) -> list[str]:
     """Every URL a hook *this install* made (or is about to make) for route ``name`` posts to.
 
-    An ownership question, not a delivery one: pausing (``arm --pause``), ``uninstall`` and
-    ``init``'s stale-hook guard ask "is this hook one of ours?", and the answer includes the
+    An ownership question, not a delivery one: pausing (``arm --pause``) asks "is this hook one
+    of ours?", and the answer includes the
     route's registry URL whatever profile it binds, and the URL the loop's config gives it —
     which is all there is once the registry entry is gone (``uninstall`` removes it, then tells
     the operator to pause any hooks it left). Arming never uses this: whether a hook *wakes the
@@ -987,14 +989,14 @@ def split_route_hooks(loop: dict, listing: list, names, *,
                       ownership: bool = False) -> tuple[list[dict], list[dict]]:
     """``(own, other)`` for the hooks posting to one of the route ``names``.
 
-    The one matcher every hook-owning command shares (``arm``, ``doctor``, and on later
-    releases ``uninstall``, ``init``'s stale-hook guard and ``selftest --ping``). A hook is a
+    The one matcher for hooks (``arm``, arming and pausing; ``doctor``'s helpers use the same
+    URL rules). A hook is a
     seat's only when it posts to exactly that route's registry URL, and the registry entry binds
     the seat's profile (``seat_route_target``). Every other hook
     whose last ``/webhooks/<route>`` segment names one of the routes — another profile's URL, a
     retired gateway, another install — is *other*: reported, never flipped, deleted or pinged
-    as this loop's. ``ownership=True`` (pausing, uninstall, init's stale-hook guard) counts the
-    URLs ``install_hook_urls`` names instead. Raises ``ConfigError`` when the loop has no usable
+    as this loop's. ``ownership=True`` (pausing) counts the URLs ``install_hook_urls`` names
+    instead. Raises ``ConfigError`` when the loop has no usable
     host.
     """
     config.webhook_host(loop.get("host"), required=True)

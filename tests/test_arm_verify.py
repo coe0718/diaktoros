@@ -368,9 +368,22 @@ class ArmVerifyTests(unittest.TestCase):
         self.assertIn("the gateway does not route it (404)", check.detail)
         self.assertIn("drop the trailing slash", check.fix)
 
+    def test_a_query_string_is_the_same_route_url(self):
+        # The gateway's router matches the path only, so "?x=1" is delivered like the bare URL.
+        from review_loop import doctor
+        listing = hooks(False)
+        listing[1]["config"]["url"] = f"{HOST}/p/reviewer/webhooks/widgets-review?x=1"
+        rc, out = self.arm(FakeGitHub(listing))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("hook 1 → active (read back)", out)
+        check = doctor.check_hook(config.load_id("widgets"), [listing[1]], "reviewer",
+                                  "widgets-review", f"{HOST}/p/reviewer/webhooks/widgets-review")
+        self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+
     def test_a_malformed_number_is_a_clean_refusal(self):
         for key, value in (("cap", "many"), ("concurrency", "two"), ("cap", None),
-                           ("cap", float("inf")), ("concurrency", float("inf"))):
+                           ("cap", float("inf")), ("concurrency", float("inf")),
+                           ("cap", 3.5), ("concurrency", 1.5)):
             loop = raw_loop("widgets")
             loop[key] = value
             (config.config_dir() / "widgets.json").write_text(json.dumps(loop))
