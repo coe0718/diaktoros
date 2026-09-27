@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -405,6 +406,99 @@ class TripwireOutsideTheHarness(unittest.TestCase):
         with self.assertRaises(config.RealNetworkError) as caught:
             config.guard_network("https://api.github.com/user")
         self.assertIn(f"unset {config.TEST_HOME_GUARD_ENV} if this is a real loop", str(caught.exception))
+
+
+class CratesIoAllowlist(unittest.TestCase):
+    """The one sanctioned network path under the guard: an anonymous, credential-free crates.io
+    fetch by deps._fetch (index.crates.io for the sparse index, static.crates.io for downloads).
+    cargo is a subprocess, so the check is its effective registry configuration before it runs:
+    anything that could point it elsewhere — a source replacement, another registry, a proxy —
+    is refused."""
+
+    LOCK = ('version = 4\n\n[[package]]\nname = "itoa"\nversion = "1.0.18"\n'
+            'source = "registry+https://github.com/rust-lang/crates.io-index"\n')
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = pathlib.Path(temp.name)
+        self.work, self.cache, self.home = root / "pkg", root / "cargo", root / "home"
+        for directory in (self.work, self.cache, self.home):
+            directory.mkdir()
+        self.env = deps.cargo_env(self.home, self.cache, root / "rustc", root / "cargo-bin")
+        self.manifest = deps.synthetic_manifest([("itoa", "1.0.18")])
+
+    def check(self, env=None, manifest=None, lock=None):
+        deps.guard_registry(self.env if env is None else env, self.work, self.cache,
+                            self.manifest if manifest is None else manifest,
+                            (self.LOCK if lock is None else lock).encode())
+
+    def test_the_canonical_crates_io_fetch_is_allowed(self):
+        self.assertTrue(config.test_guard_active())
+        self.check()
+        self.assertEqual(self.env["CARGO_REGISTRIES_CRATES_IO_PROTOCOL"], "sparse")
+        self.assertEqual(deps.CRATES_IO_HOSTS, frozenset({"index.crates.io", "static.crates.io"}))
+
+    def test_another_registry_is_refused(self):
+        cases = {
+            "config in the package": lambda: (self.work / ".cargo").mkdir()
+            or (self.work / ".cargo/config.toml").write_text(
+                '[source.crates-io]\nreplace-with = "mirror"\n'
+                '[source.mirror]\nregistry = "sparse+https://mirror.example/"\n'),
+            "config in CARGO_HOME": lambda: (self.cache / "config.toml").write_text(
+                '[registries.x]\nindex = "sparse+https://x.example/"\n'),
+        }
+        for name, plant in cases.items():
+            with self.subTest(name):
+                plant()
+                with self.assertRaises(config.RealNetworkError):
+                    self.check()
+                for leftover in (self.work / ".cargo/config.toml", self.cache / "config.toml"):
+                    leftover.unlink(missing_ok=True)
+        refusals = {
+            "registry env": dict(self.env, CARGO_REGISTRIES_X_INDEX="sparse+https://x.example/"),
+            "source replacement env": dict(self.env, CARGO_SOURCE_CRATES_IO_REPLACE_WITH="x"),
+            "git index protocol": dict(self.env, CARGO_REGISTRIES_CRATES_IO_PROTOCOL="git"),
+        }
+        for name, env in refusals.items():
+            with self.subTest(name), self.assertRaises(config.RealNetworkError):
+                self.check(env=env)
+        with self.subTest("manifest names a registry"), self.assertRaises(config.RealNetworkError):
+            self.check(manifest=self.manifest + 'x = { version = "1", registry = "x" }\n')
+        with self.subTest("lockfile names another source"), self.assertRaises(config.RealNetworkError):
+            self.check(lock=self.LOCK.replace("registry+https://github.com/rust-lang/crates.io-index",
+                                              "sparse+https://x.example/"))
+
+    def test_fetch_checks_before_cargo_runs(self):
+        # Through deps._fetch itself: a redirecting config refuses, and cargo never starts.
+        marker = self.home / "cargo-ran"
+        cargo = self.home / "cargo"
+        cargo.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        cargo.chmod(0o755)
+        (self.cache / "config.toml").write_text('[source.crates-io]\nreplace-with = "m"\n')
+        with self.assertRaises(config.RealNetworkError):
+            deps._fetch(self.cache, [("itoa", "1.0.18")], self.LOCK.encode(), cargo,
+                        self.home / "rustc", time.monotonic() + 30, 1 << 30, 30)
+        self.assertFalse(marker.exists())
+        (self.cache / "config.toml").unlink()          # the canonical fetch does reach cargo
+        deps._fetch(self.cache, [("itoa", "1.0.18")], self.LOCK.encode(), cargo,
+                    self.home / "rustc", time.monotonic() + 30, 1 << 30, 30)
+        self.assertTrue(marker.exists())
+
+    def test_a_proxy_is_refused(self):
+        for name in ("https_proxy", "HTTPS_PROXY", "http_proxy", "ALL_PROXY", "CARGO_HTTP_PROXY"):
+            with self.subTest(name), self.assertRaises(config.RealNetworkError):
+                self.check(env=dict(self.env, **{name: "http://proxy.example:3128"}))
+
+    def test_outside_the_guard_nothing_is_checked(self):
+        with mock.patch.dict(os.environ, {config.TEST_HOME_GUARD_ENV: ""}):
+            self.check(env=dict(self.env, https_proxy="http://proxy.example:3128"))
+
+    def test_every_other_host_stays_blocked(self):
+        for url in ("https://index.crates.io/", "https://static.crates.io/crates/itoa",
+                    "https://crates.io/api/v1/crates"):
+            with self.subTest(url), self.assertRaises(config.RealNetworkError):
+                config.guard_network(url)
 
 
 class HermesShim(unittest.TestCase):
