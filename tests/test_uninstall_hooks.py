@@ -151,18 +151,36 @@ class RoundTripTest(Base):
         rc, out = self.init("--hooks")
         self.assertEqual(rc, 0, out)
         self.assertIn("hook 8", out)
-        self.assertIn("another gateway", out)
+        self.assertIn("another origin (https://old-gateway.example", out)
         self.assertEqual(len(self.hooks()), 3)
 
-    def test_same_gateway_hook_on_the_route_still_refuses(self):
+    def test_a_hook_at_the_routes_own_url_refuses(self):
         rc, out = self.cli("uninstall", "--loop", "widgets")
         self.assertEqual(rc, 0, out)
-        same = {"id": 8, "active": True, "events": ["pull_request"],
-                "config": {"url": f"{t.HOST}/p/old-profile/webhooks/widgets-review"}}
-        self.world(hooks=[same])
+        stale = {"id": 8, "active": True, "events": ["pull_request"],
+                 "config": {"url": f"{t.HOST}/p/reviewer-profile/webhooks/widgets-review"}}
+        self.world(hooks=[stale])
         rc, out = self.init("--hooks")
         self.assertEqual(rc, 2, out)
         self.assertIn("gh api -X DELETE repos/acme/widgets/hooks/8", out)
+
+    def test_another_profile_on_the_same_gateway_is_info_not_a_collision(self):
+        # The gateway answers /p/<other profile>/webhooks/<route> 404: that hook never reaches
+        # these routes, so it is reported (with its cause) and never deleted or refused over.
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 0, out)
+        other = {"id": 8, "active": True, "events": ["pull_request"],
+                 "config": {"url": f"{t.HOST}/p/old-profile/webhooks/widgets-review"}}
+        self.world(hooks=[other])
+        rc, out = self.init("--hooks")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("info: hook 8 posts to route 'widgets-review' at another profile "
+                      "('old-profile'; the route is bound to 'reviewer-profile'", out)
+        self.assertEqual(len(self.hooks()), 3)
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.hooks(), [other])       # uninstall deletes only its own URLs
+        self.assertIn("hook 8 posts to route 'widgets-review' at another profile", out)
 
 
 class UninstallRefusalTest(Base):
@@ -218,7 +236,7 @@ class UninstallRefusalTest(Base):
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.hooks(), [foreign])
         self.assertIn("hook 9", out)
-        self.assertIn("another gateway", out)
+        self.assertIn("another origin (https://other.example", out)
 
 
 class HostlessTest(Base):
@@ -242,7 +260,7 @@ class HostlessTest(Base):
         self.assertIsNone(routes.route("widgets-review"))
 
     def test_a_blanked_host_never_leaves_its_own_hooks_live(self):
-        # The review's repro: install with hooks, arm, blank the host, uninstall. The hooks are
+        # The review's repro: install with hooks, arm, blank the host, uninstall. The hooks may be
         # this install's; skipping them would leave them live with routes and config gone.
         self.fresh_install()
         self.world(hooks=[{**hook, "active": True} for hook in self.hooks()])
@@ -251,12 +269,29 @@ class HostlessTest(Base):
         rc, out = self.cli("uninstall", "--loop", "widgets")
         self.assertEqual(rc, 2, out)
         self.assertIn(f"hooks {ids[0]}, {ids[1]} post to this loop's route names", out)
-        for hook_id in ids:
-            self.assertIn(f"  gh api -X DELETE repos/{t.REPO}/hooks/{hook_id}\n", out)
+        # Nothing ties them to this install (no host, so no route URL to compare): the
+        # remediation is to look, never a DELETE that might hit another install's live hook.
+        self.assertNotIn("gh api -X DELETE", out)
+        self.assertNotIn("still live. Delete them", out)
+        self.assertIn("another install's", out)
+        self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+        self.assertIn("--host https://your-gateway.example", out)
         self.assertEqual(sorted(hook["id"] for hook in self.hooks()), ids)
         self.assertTrue(LOOP_FILE.exists())
         self.assertIsNotNone(routes.route("widgets-review"))
         self.assertNotIn("route removed", out)
+
+    def test_a_host_less_listing_with_an_unidentifiable_entry_refuses(self):
+        # _classify_hooks' rule: a matching entry without an integer id makes the listing
+        # untrustworthy, never "no hooks" (which would remove routes and config over live hooks).
+        self.world(hooks=[{"id": "7", "active": True, "events": ["pull_request"],
+                           "config": {"url": "https://gw.example/p/x/webhooks/widgets-review"}}])
+        self.blank_host()
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("invalid hook listing", out)
+        self.assertTrue(LOOP_FILE.exists())
+        self.assertIsNotNone(routes.route("widgets-review"))
 
     def test_an_unreadable_listing_refuses_a_host_less_uninstall(self):
         self.world(hooks=None)
@@ -454,6 +489,46 @@ class PurgeTest(Base):
         self.assertIn(f"  rm -f -- {shlex.quote(str(LOOP_FILE))}\n", out)
         self.assertIn(f"  rm -rf -- {shlex.quote(str(target))}\n", out)
 
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                     "root ignores directory permissions")
+    def test_a_cron_shim_that_will_not_go_makes_the_run_incomplete(self):
+        self.cron_store([self.job("widgets", "job1")])
+        shim = config.home() / "scripts" / cli.SHIM_NAME
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text("#!/bin/sh\n")
+        shim.parent.chmod(0o500)                 # the shim cannot be unlinked
+        self.addCleanup(shim.parent.chmod, 0o700)
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"cron shim NOT removed: {shim}", out)
+        self.assertFalse(LOOP_FILE.exists())     # everything else still went
+        summary = next(line for line in out.splitlines() if line.startswith("uninstall INCOMPLETE"))
+        self.assertIn(f"left behind: the cron shim {shim}", summary)
+        self.assertNotIn("cron shim,", summary.split("; left behind")[0])
+        self.assertIn(f"  rm -- {shlex.quote(str(shim))}\n", out)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                     "root ignores directory permissions")
+    def test_a_shim_and_a_state_dir_that_will_not_go_are_both_left_behind(self):
+        self.cron_store([self.job("widgets", "job1")])
+        shim = config.home() / "scripts" / cli.SHIM_NAME
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text("#!/bin/sh\n")
+        target = self.default_state()
+        locked = target / "sub"
+        shim.parent.chmod(0o500)
+        self.addCleanup(shim.parent.chmod, 0o700)
+        locked.chmod(0o500)
+        self.addCleanup(lambda: locked.exists() and locked.chmod(0o700))
+        rc, out = self.cli("uninstall", "--loop", "widgets", "--purge")
+        self.assertEqual(rc, 2, out)
+        summary = next(line for line in out.splitlines() if line.startswith("uninstall INCOMPLETE"))
+        left = summary.split("; left behind: ", 1)[1]
+        self.assertIn(f"the cron shim {shim}", left)
+        self.assertIn(f"the state directory {target}", left)
+        self.assertIn(f"  rm -- {shlex.quote(str(shim))}\n", out)
+        self.assertIn(f"  rm -rf -- {shlex.quote(str(target))}\n", out)
+
     def test_without_purge_default_state_is_kept_and_named(self):
         self.default_state()
         rc, out = self.cli("uninstall", "--loop", "widgets")
@@ -638,8 +713,8 @@ class PingTest(Base):
         self.assertEqual(json.loads(t.WORLD_FILE.read_text())["pings"], [])
         self.assertEqual([r[2] for r in report.results], [selftest.FAIL])
         text = report.out.getvalue()
-        self.assertIn("no repo hook posts to this loop's routes on its gateway", text)
-        self.assertIn("https://other-gateway.example", text)
+        self.assertIn("no repo hook posts to this loop's route URLs", text)
+        self.assertIn("another origin (https://other-gateway.example", text)
         # Ours next to theirs (same route names): only ours is pinged.
         ours = [{**hook, "id": hook["id"] + 100, "config": {**hook["config"], "url": hook[
             "config"]["url"].replace("https://other-gateway.example", t.HOST)}} for hook in theirs]

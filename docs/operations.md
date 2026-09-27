@@ -131,15 +131,19 @@ owner case above.
 the config, and reads both back. If it cannot (a token without `admin:repo_hook`/`repo`, an API
 failure, a job the scheduler will not remove) it refuses, changes nothing else, and prints the
 exact `gh api -X DELETE …` / `hermes cron remove …` commands; `--keep-hooks` is the explicit
-opt-out. A loop with no `host` cannot tell its own hooks from another install's, so `uninstall`
-reads the listing first: it refuses (exit 2, with the delete commands) when any hook posts to the
-loop's route names — a host blanked by hand leaves its hooks behind — and goes on only when none
-does. `set --host` refuses a blank or invalid origin rather than blanking it. `--purge` refuses
+opt-out. `uninstall` deletes only hooks at the loop's own route URLs; a hook on the same route
+name at another origin, profile or path is reported with that cause and left alone. A loop with no
+`host` has no route URL to compare with, so `uninstall` reads the listing first: when any hook
+posts to the loop's route names (a host blanked by hand leaves its hooks behind — or they may be
+another install's on the same repo) it refuses with exit 2 and the commands to *look* at them,
+never DELETE commands it cannot justify; an entry without an integer id refuses too; it goes on
+only when none does. `set --host` refuses a blank or invalid origin rather than blanking it. `--purge` refuses
 up front, untouched, when the state directory cannot even be read for its in-flight check. It
 deletes the state directory last; if that delete — or removing the config before it — fails (a
 permission, a busy mount) it exits 2 with `uninstall INCOMPLETE — removed: …; left behind: …` and
 the exact `rm` commands that finish it — the config may already be gone by then, so a re-run
-cannot. `init --hooks` refuses when hooks from a previous install still post to the loop's
+cannot. A cron shim that cannot be removed does the same: the run ends INCOMPLETE (exit 2) with
+the shim under "left behind" and its `rm` command, alongside anything else that stayed. `init --hooks` refuses when hooks from a previous install still post to the loop's
 routes (they sign with a secret the new routes will not hold), and `doctor` fails a route with
 more than one hook, or whose latest delivery the gateway answered 401/403 (a secret that does not
 match) or any other non-2xx (a 5xx is the gateway erroring); a latest delivery with no HTTP answer
@@ -148,8 +152,9 @@ one and waits up to 10s for the delivery: `✅ … signature accepted`, `❌ …
 rejected` (exit 1), or `⚠️ no ping delivery seen` (nothing proven yet). A ping is harmless: the
 gateway checks its signature, then ignores it, because the loop's routes subscribe only to
 `pull_request` / `pull_request_review`. `doctor` never pings; `selftest` reads the recorded
-deliveries and pings only with `--ping` — only hooks on this loop's own gateway origin, matched
-the way `uninstall` matches them, never another install's hook on the same route name (its single
+deliveries and pings only with `--ping` — only hooks at the loop's own route URLs, matched the way
+`arm` and `uninstall` match them, never another install's or another profile's hook on the same
+route name (its single
 GitHub write, e.g.
 `hermes review-loop selftest --loop name --no-model --ping --admin-token LOGIN`).
 

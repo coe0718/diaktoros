@@ -961,10 +961,9 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
     # about which one that is.
     # Only this gateway's hooks can be duplicates: the same route name on another origin is
     # another install (or an old gateway) and never receives this route's deliveries.
-    wanted_origin = urlsplit(url)
-    wanted_origin = f"{wanted_origin.scheme}://{wanted_origin.netloc}".lower()
-    named = [hook for hook in hooks if hook in exact or
-             (hook_route_name(hook) == name and hook_origin(hook) == wanted_origin)]
+    # A duplicate is a second hook at the route's own URL; one at another profile, path or
+    # origin never reaches this route at all (the gateway answers it 404, or it goes elsewhere).
+    named = list(exact)
     if len(named) > 1:
         ids = sorted(hook.get("id") for hook in named if isinstance(hook.get("id"), int))
         active = sum(1 for hook in named if hook.get("active"))

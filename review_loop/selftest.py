@@ -928,11 +928,13 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
         return
     ours = [(names[doctor.hook_route_name(hook)], hook) for hook in own]
     if not ours:
-        elsewhere = (f"; {len(foreign)} hook(s) post to the same route names on another gateway "
-                     f"({', '.join(sorted({doctor.hook_origin(h) for h in foreign}))}) and were "
-                     "not touched" if foreign else "")
+        causes = sorted({doctor.hook_url_difference(str(h["config"].get("url") or ""),
+                                                    doctor.seat_hook_url(loop, doctor.hook_route_name(h)) or "")
+                         for h in foreign})
+        elsewhere = (f"; {len(foreign)} hook(s) post to the same route names at other URLs "
+                     f"({'; '.join(causes)}) and were not touched" if foreign else "")
         report.add(step, "hooks:signature", FAIL,
-                   f"no repo hook posts to this loop's routes on its gateway{elsewhere}",
+                   f"no repo hook posts to this loop's route URLs{elsewhere}",
                    "run init --hooks (see doctor)")
         return
     for seat, hook in ours:

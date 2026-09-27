@@ -702,10 +702,10 @@ _hook_origin = doctor.hook_origin
 def _classify_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, list[dict], str]:
     """``(own, foreign, error)`` for the hooks posting to this loop's route names.
 
-    *Own* hooks post to one of the routes on **this** loop's gateway origin (any profile prefix:
-    the gateway resolves a route by name). *Foreign* ones post to the same route name on another
-    origin — another machine's install, or an old gateway — and are only ever reported, never
-    deleted or counted as a collision. Every page is read; a partial or malformed listing is
+    *Own* hooks post to exactly one of the routes' URLs (``doctor.seat_hook_url``: the gateway
+    binds a route to its profile by URL and answers any other profile's URL 404). *Foreign* ones
+    post to the same route name at another origin, profile or path — another install, an old
+    gateway — and are only ever reported, never deleted or counted as a collision. Every page is read; a partial or malformed listing is
     ``(None, [], reason)``, never "no hooks".
     """
     listing, error = gh.hooks_read(loop, login or loop.get("read_token"))
@@ -728,8 +728,14 @@ def _loop_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, str]:
 
 
 def _foreign_lines(loop: dict, foreign: list[dict]) -> list[str]:
-    return [f"hook {hook['id']} posts to route {_hook_route_name(hook)!r} on another gateway "
-            f"({_hook_origin(hook)}) — not this install's, left alone" for hook in foreign]
+    lines = []
+    for hook in foreign:
+        name = _hook_route_name(hook)
+        why = doctor.hook_url_difference(str(hook["config"].get("url") or ""),
+                                         doctor.seat_hook_url(loop, name) or "")
+        lines.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this install's "
+                     "hook (not the route's URL), left alone")
+    return lines
 
 
 def _hook_delete_commands(loop: dict, hook_ids) -> list[str]:
@@ -975,8 +981,8 @@ def _restore_config_locked(path: pathlib.Path, data: bytes) -> None:
 def _stale_hooks_refusal(loop: dict, admin: str | None) -> str:
     """Why ``init --hooks`` must not create hooks yet, or ``""`` when the routes have none.
 
-    Only hooks on this loop's own gateway origin collide; the same route name on another gateway
-    is printed as information (it cannot be woken by, or confused with, this install).
+    Only hooks at this loop's route URLs collide; the same route name at another origin, profile
+    or path is printed as information (the gateway never delivers it to these routes).
 
     Refuse, never adopt. Adopting would mean PATCHing a new secret onto hooks this install did not
     create: GitHub never returns a hook's secret, so nothing can prove whose they are or which of
@@ -2252,14 +2258,23 @@ def _uninstall_incomplete(removed: list[str], left: list[str], keep_hooks: bool,
 
 
 def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
-                       args) -> int:
+                       args, unattributed: bool = False) -> int:
     """Refuse an uninstall with the exact commands that finish it. The config is still there."""
     lid = shlex.quote(loop["id"])
     print("refused: uninstall stopped before removing routes or config — nothing below the "
           "failure was touched:")
     for reason in reasons:
         print(f"  {reason}")
-    if any(reason.startswith(("hook", "could not")) for reason in reasons):
+    if unattributed:
+        print("they may be this install's or another install's (same repo, same route names): "
+              "look at each one's URL before deleting anything:")
+        print(f"  {_hook_find_command(loop)}   # the ids")
+        print(f"  gh api {shlex.quote(f'repos/' + loop['repo'] + '/hooks/<id>')} --jq .config.url"
+              "   # where each posts")
+        print("then either set this loop's host (`hermes review-loop set --loop "
+              f"{lid} --host https://your-gateway.example`) so uninstall can tell its own hooks "
+              "apart, or delete the ones that are this install's by hand")
+    elif any(reason.startswith(("hook", "could not")) for reason in reasons):
         print("the loop's repo hooks are still live. Delete them with a token that has "
               "`admin:repo_hook` (or classic `repo`):")
         if left_hooks:
@@ -2347,14 +2362,25 @@ def cmd_uninstall(args) -> int:
         listing, error = gh.hooks_read(loop, admin or loop.get("read_token"))
         if error:
             return _uninstall_refused(loop, [f"could not read the repo's hooks: {error}"], [], args)
-        named = sorted(hook["id"] for hook in listing
-                       if isinstance(hook, dict) and isinstance(hook.get("id"), int)
-                       and doctor.hook_route_name(hook) in _hook_route_names(loop))
+        matching = [hook for hook in listing
+                    if not isinstance(hook, dict) or doctor.hook_route_name(hook)
+                    in _hook_route_names(loop)]
+        if any(not isinstance(hook, dict) or not isinstance(hook.get("id"), int)
+               for hook in matching):
+            # _classify_hooks' rule: an entry that cannot be identified makes the listing
+            # untrustworthy — never "no hooks".
+            return _uninstall_refused(loop, ["could not read the repo's hooks: invalid hook "
+                                             "listing (an entry on the loop's route names has no "
+                                             "integer id)"], [], args)
+        named = sorted(hook["id"] for hook in matching)
         if named:
+            # Without a host there is no route URL to compare with, so none of these can be
+            # attributed to this install: never hand out DELETE commands for them.
             return _uninstall_refused(loop, [
                 f"hooks {', '.join(map(str, named))} post to this loop's route names, and the loop "
                 "has no host to tell whether they are this install's (a blanked host leaves its "
-                "hooks behind) — nothing was deleted"], named, args)
+                "hooks behind) or another install's on the same repo — nothing was deleted"],
+                [], args, unattributed=True)
         print("hooks: none — the loop has no host, and no repo hook posts to its route names")
     else:
         done, failures, left = _delete_loop_hooks(loop, admin or None)
@@ -2377,10 +2403,14 @@ def cmd_uninstall(args) -> int:
     if done:
         removed.append("watchdog job")
     shim_line = _remove_unused_shim()
+    leftovers: list[tuple[str, str]] = []          # (what, the command that removes it)
     if shim_line:
         print(shim_line)
         if shim_line.startswith("cron shim removed"):
             removed.append("cron shim")
+        else:
+            shim = config.home() / "scripts" / SHIM_NAME
+            leftovers.append((f"the cron shim {shim}", f"rm -- {shlex.quote(str(shim))}"))
     # 3. Forget first: a route the operator removed must not be put back by the next watchdog
     # sweep's self-heal (which only ever restores routes still in the intent record).
     try:
@@ -2402,13 +2432,12 @@ def cmd_uninstall(args) -> int:
                 # Hooks, cron and routes are already gone: report the half-done state and the
                 # one command that finishes it, never a traceback.
                 print(f"config NOT removed: {path} — {exc.strerror or exc}")
-                left = [f"the loop config {path}"]
+                left = [what for what, _ in leftovers] + [f"the loop config {path}"]
+                commands = [cmd for _, cmd in leftovers] + [f"rm -f -- {shlex.quote(str(path))}"]
                 if target is not None:
                     left.append(f"the state directory {target} (not attempted)")
-                return _uninstall_incomplete(removed, left, keep_hooks,
-                                             [f"rm -f -- {shlex.quote(str(path))}"]
-                                             + ([f"rm -rf -- {shlex.quote(str(target))}"]
-                                                if target is not None else []))
+                    commands.append(f"rm -rf -- {shlex.quote(str(target))}")
+                return _uninstall_incomplete(removed, left, keep_hooks, commands)
             print(f"config removed: {path}")
             removed.append("config")
     if target is not None:
@@ -2439,9 +2468,11 @@ def cmd_uninstall(args) -> int:
                 more = f" (and {len(refused) - 1} more)" if len(refused) > 1 else ""
                 print(f"state NOT removed: {target} — {why}: {path}{more}")
                 return _uninstall_incomplete(
-                    removed, [f"the state directory {target} (whatever the delete could remove "
-                              "is gone; the rest is still there)"],
-                    keep_hooks, [f"rm -rf -- {shlex.quote(str(target))}"])
+                    removed, [what for what, _ in leftovers]
+                    + [f"the state directory {target} (whatever the delete could remove "
+                       "is gone; the rest is still there)"],
+                    keep_hooks, [cmd for _, cmd in leftovers]
+                    + [f"rm -rf -- {shlex.quote(str(target))}"])
             print(f"state removed: {target}")
     elif not args.keep_config:
         _, why = _purge_target(loop)
@@ -2451,6 +2482,10 @@ def cmd_uninstall(args) -> int:
                   f"--purge would not remove it; check it, then: rm -rf -- {shlex.quote(str(raw))}")
         else:
             print(f"state kept: {raw} (pass --purge to remove it)")
+    if leftovers:
+        # Everything else went; the shim did not. That is not a clean uninstall.
+        return _uninstall_incomplete(removed, [what for what, _ in leftovers], keep_hooks,
+                                     [cmd for _, cmd in leftovers])
     return 0
 
 
