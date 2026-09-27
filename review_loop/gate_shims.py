@@ -124,16 +124,68 @@ def state(home: pathlib.Path, script: str) -> tuple[str, pathlib.Path, str]:
     return "ok", path, f"{path} → {plugin_script(script)}"
 
 
+def _config_profile(loop: dict, role: str) -> str:
+    if role == "observer":
+        return str((loop.get("observer") or {}).get("profile") or "default")
+    return config.seat_profile(loop, role)
+
+
 def wanted(loop: dict) -> set[tuple[str, str]]:
     """(profile, script) for each route this loop's config installs."""
     out = set()
     for role in route_intent.routes_of(loop):
-        if role == "observer":
-            profile = str((loop.get("observer") or {}).get("profile") or "default")
-        else:
-            profile = config.seat_profile(loop, role)
-        if profile:                     # a seat with no profile has no route to serve
+        profile = _config_profile(loop, role)
+        if profile:                     # a seat with no profile: see ``divergence``
             out.add((profile, GATE_SCRIPT[role]))
+    return out
+
+
+def _side(profile: str, script: str) -> str:
+    return f"{profile or '(no profile)'}/{script}"
+
+
+def divergence(loop: dict) -> dict:
+    """route name → (detail, fix, status) for each loop route whose registry entry is not what the
+    loop config would install: another profile or gate, no profile in the config, or no route.
+
+    The shim follows the registry (that is what the gateway runs), so a disagreement here is never
+    fixed by writing shims alone; each one names both sides and the command that reconciles them.
+    """
+    registry = routes.all_routes()
+    try:
+        intent = route_intent.load(loop) or {}
+    except route_intent.IntentError:
+        intent = {}
+    lid = loop.get("id", "?")
+    out = {}
+    for role, name in sorted(route_intent.routes_of(loop).items()):
+        want = (_config_profile(loop, role), GATE_SCRIPT[role])
+        entry = registry.get(name) if isinstance(registry, dict) else None
+        recorded = intent.get(name) if isinstance(intent.get(name), dict) else None
+        restorable = recorded is not None and (
+            str(recorded.get("profile") or "default"), recorded.get("script")) == want
+        repair = f"`hermes review-loop doctor --loop {lid} --repair` (restores the route the plugin wrote)"
+        if not isinstance(entry, dict):
+            out[name] = (f"loop config says {_side(*want)}, but the registry holds no route "
+                         f"{name!r} — the gateway 404s this seat",
+                         repair if restorable else f"re-run `hermes review-loop init` for this "
+                         "loop (no intent record to restore it from)", "absent")
+            continue
+        profile = entry.get("profile", "default")
+        have = (profile if isinstance(profile, str) and profile.strip() else "default",
+                entry.get("script"))
+        if have == want:
+            continue
+        detail = f"registry runs {_side(*have)}, loop config says {_side(*want)}"
+        if not want[0]:
+            fix = (f"name the {role} seat's profile (its `profile` under `seats.{role}` in the loop config, or "
+                   f"the plugin settings' {role} profile), then `hermes review-loop apply --loop "
+                   f"{lid}`")
+        elif restorable:
+            fix = f"{repair} — or, if the registry is right, change the config and apply"
+        else:
+            fix = f"`hermes review-loop apply --loop {lid}` (rebinds the route to the config)"
+        out[name] = (detail, fix, "mismatch")
     return out
 
 
@@ -193,16 +245,24 @@ def _write(path: pathlib.Path, text: str) -> None:
             os.unlink(temp)
 
 
-def install(loop: dict, *, dry_run: bool = False, pairs=None) -> list[str]:
-    """Write every missing or stale shim this loop needs; idempotent. Raises ShimError/OSError."""
+def install(loop: dict, *, dry_run: bool = False, pairs=None, report: bool = True) -> list[str]:
+    """Write every missing or stale shim this loop needs; idempotent. Raises ShimError/OSError.
+
+    By default that is what the config installs *and* what the registry runs now, and every route
+    where those disagree is reported (``divergence``) — never skipped in silence.
+    """
     lines = []
-    for status, path, script, _detail in _plan(wanted(loop) if pairs is None else pairs):
+    for status, path, script, _detail in _plan((wanted(loop) | live(loop)) if pairs is None
+                                               else pairs):
         if status == "ok":
             continue
         verb = "would write" if dry_run else ("rewrote" if status == "stale" else "wrote")
         if not dry_run:
             _write(path, render(script))
         lines.append(f"gate shim {verb}: {path}")
+    if pairs is None and report:
+        lines += [f"⚠️ route {name}: {detail} — fix: {fix}"
+                  for name, (detail, fix, _status) in divergence(loop).items()]
     return lines
 
 
@@ -236,13 +296,18 @@ def remove(loop: dict, keep_loops: list[dict]) -> list[str]:
 def live_checks(loop: dict) -> list[tuple[str, str, str, str]]:
     """(name, status, detail, fix) per installed loop route: resolve its script as the gateway does.
 
-    status is ``ok`` | ``absent`` | ``mismatch``. Routes missing from the registry are left to the
-    route checks, which already fail them.
+    status is ``ok`` | ``absent`` | ``mismatch``. A route whose registry entry and loop config
+    disagree (or that the registry lacks) is reported as that, with both sides named.
     """
     registry = routes.all_routes()
     fix = f"`hermes review-loop apply --loop {loop.get('id', '?')}` (writes the gate shims)"
+    diverged = divergence(loop)
     out = []
     for role, name in sorted(route_intent.routes_of(loop).items()):
+        if name in diverged:
+            detail, remedy, status = diverged[name]
+            out.append((f"gateway-script:{name}", status, detail, remedy))
+            continue
         entry = registry.get(name) if isinstance(registry, dict) else None
         if not isinstance(entry, dict):
             continue

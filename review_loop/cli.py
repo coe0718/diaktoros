@@ -591,10 +591,10 @@ def _install_schedule(loop: dict, schedule: str, deliver: str) -> list[str]:
     return [f"scheduled the watchdog ({schedule}, deliver={deliver})", f"shim: {shim}"]
 
 
-def _install_shims(loop: dict) -> bool:
+def _install_shims(loop: dict, report: bool = True) -> bool:
     """Write the loop's gate shims where the gateway resolves route scripts (issue #105)."""
     try:
-        for line in gate_shims.install(loop):
+        for line in gate_shims.install(loop, report=report):
             print(f"  {line}")
         return True
     except (OSError, config.ConfigError) as exc:
@@ -602,6 +602,15 @@ def _install_shims(loop: dict) -> bool:
               f"{exc}")
         print(f"  fix it, then: hermes review-loop apply --loop {loop['id']}")
         return False
+
+
+def _diverged(loop: dict) -> bool:
+    """Say so when a route still is not what the config installs, even after a push: never
+    report success over a route the gateway runs under another profile or gate."""
+    left = gate_shims.divergence(loop)
+    for name, (detail, fix, _status) in left.items():
+        print(f"  ⚠️ route {name}: {detail} — fix: {fix}")
+    return bool(left)
 
 
 # -- verbs ----------------------------------------------------------------------
@@ -1170,7 +1179,9 @@ def cmd_apply(args) -> int:
             config.verify_credentials(updated)
         if rebinding:
             _verify_routes(updated, rebinding)
-        shim_lines = gate_shims.install(updated, dry_run=True)   # refuses a foreign file (#105)
+        # Refuses a foreign file (#105). Config/registry disagreements are what this apply is
+        # about to reconcile, so they are reported after it (``_diverged``), not before.
+        shim_lines = gate_shims.install(updated, dry_run=True, report=False)
     except config.ConfigError as exc:
         print(f"settings refused: {exc}")
         return 2
@@ -1179,7 +1190,7 @@ def cmd_apply(args) -> int:
     if shim_lines and args.dry_run:
         for line in shim_lines:
             print(f"  {line}")
-    elif shim_lines and not _install_shims(updated):
+    elif shim_lines and not _install_shims(updated, report=False):
         return 2
 
     changes = []
@@ -1198,7 +1209,7 @@ def cmd_apply(args) -> int:
 
     if not changes and not identity and not binds and not repairs:
         print(f"[{loop['id']}] already matches the plugin settings")
-        return 0
+        return 1 if _diverged(updated) else 0
     if not args.dry_run and updated.get("host") != loop.get("host") and loop.get("observer"):
         try:
             outstanding = observer.unsettled(state_mod.state_for(loop))
@@ -1300,7 +1311,7 @@ def cmd_apply(args) -> int:
               + (f", script {GATE_SCRIPT[role]}" if role in repairs else ""))
     for hook_id, _, new in hook_moves:
         print(f"  hook {hook_id} → {new}")
-    return 0
+    return 1 if _diverged(updated) else 0
 
 
 def cmd_settings(args) -> int:
