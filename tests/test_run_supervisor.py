@@ -368,13 +368,12 @@ class Lifecycle(unittest.TestCase):
         log.write_bytes(b"x" * (run_supervisor.WORKER_LOG_MAX + 1))
         seen = []
         def popen(*args, stderr=None, **kwargs):
-            seen.append(stderr if stderr == subprocess.DEVNULL else os.readlink(
-                f"/proc/self/fd/{stderr.fileno()}") if Path("/proc/self/fd").is_dir()
-                else stderr.name)
+            # The inode the worker's stderr descriptor points at.
+            seen.append(stderr if stderr == subprocess.DEVNULL else os.fstat(stderr.fileno()).st_ino)
             return unittest.mock.MagicMock()
         with patch("review_loop.run_supervisor.subprocess.Popen", side_effect=popen):
             sup._spawn()
-        self.assertEqual(seen, [str(log)])
+        self.assertEqual(seen, [log.stat().st_ino])
         self.assertEqual(log.stat().st_size, 0)  # rotated, not grown without bound
         self.assertEqual((self.root / "ledger.sqlite.workers.log.1").stat().st_size,
                          run_supervisor.WORKER_LOG_MAX + 1)
