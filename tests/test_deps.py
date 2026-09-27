@@ -695,9 +695,12 @@ class LedgerTests(unittest.TestCase):
         from review_loop.run_supervisor import Supervisor
         # child_timeout matters: _run_one's launching lease is child_timeout + lease_seconds, and
         # with the 120 s default no sweep inside this test could ever reclaim the run, heartbeat
-        # or not. At 1 s each, only the heartbeat keeps a four-second pre-sandbox phase alive.
+        # or not. The lease (5 s) is five sweep periods and three heartbeat periods (5/3 s), so a
+        # live heartbeat has ~3.3 s of scheduling slack: what varies is whether it runs at all,
+        # never how promptly. The pre-sandbox phase lasts over two lease lengths (11 s), so a
+        # run nobody renews is reclaimed by the sweeps in it, deterministically.
         sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
-                         hermes_home=self.root, lease_seconds=1.0, child_timeout=1.0)
+                         hermes_home=self.root, lease_seconds=5.0, child_timeout=5.0)
         run_id = self.row(sup, state="claimed")
         seen = []
 
@@ -711,7 +714,7 @@ class LedgerTests(unittest.TestCase):
                 con.execute("UPDATE runs SET state='running', lease=? WHERE id=?",
                             (time.time() + sup.lease_seconds, rid))
             started = lease(rid)[1]
-            for _ in range(4):                  # 4 s of prefetch: four lease lengths
+            for _ in range(11):                 # 11 s of prefetch: over two lease lengths
                 time.sleep(1.0)
                 Supervisor(sup.db).recover()    # a concurrent sweep, as the watchdog runs one
                 state, until = lease(rid)
@@ -722,11 +725,13 @@ class LedgerTests(unittest.TestCase):
             sup._run_one()
         start, *sweeps = seen
         self.assertEqual({state for state, _, _ in sweeps}, {"running"}, seen)
-        # The lease was renewed during the pre-sandbox phase: each sweep saw a lease later than
-        # the last, and still in the future — never the one the turn started with.
+        # The lease was renewed during the pre-sandbox phase: it never went backwards, it was
+        # always in the future when a sweep looked, and by the end it had moved past the
+        # start's lease by more than a lease length (the start's own lease had expired).
         leases = [start[1]] + [until for _, until, _ in sweeps]
-        self.assertEqual(leases, sorted(set(leases)), seen)
+        self.assertEqual(leases, sorted(leases), seen)
         self.assertTrue(all(until > now for _, until, now in sweeps), seen)
+        self.assertGreater(leases[-1], start[1] + sup.lease_seconds, seen)
 
     def test_status_and_explain_lines_come_from_the_ledger(self):
         from review_loop import cli, config
