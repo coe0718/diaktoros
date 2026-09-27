@@ -1702,6 +1702,11 @@ def cmd_uninstall(args) -> int:
         if path.exists():
             path.unlink()
             print(f"config removed: {path}")
+        # The last loop gone: forget that a run ledger existed, so a later fresh install is
+        # not reported as a vanished ledger (run_supervisor.presence_marker).
+        from .run_supervisor import forget_ledger_presence, presence_marker
+        if not any(config.config_dir().glob("*.json")) and forget_ledger_presence():
+            print(f"ledger presence marker removed: {presence_marker()}")
     print("GitHub hooks and the cron job are NOT removed automatically:")
     print(f"  hooks: hermes review-loop arm --loop {loop['id']} --pause  # stops deliveries; "
           "delete them on GitHub to remove them")

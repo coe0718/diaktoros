@@ -410,6 +410,67 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(sent), 1, sent)
         self.assertIn("vanished", sent[0])
 
+    def test_a_wiped_state_dir_is_reported_once_and_a_fresh_install_is_silent(self):
+        # The beside-ledger marker goes with the state dir; the host-owned one in the loop
+        # config dir survives it (#108).
+        from scripts import watchdog
+        presence = self.root / "review-loops.d" / ".ledger-present"
+        state = self.root / "state"
+        db = state / "runs.sqlite"
+        err, sent = io.StringIO(), []
+        with contextlib.redirect_stderr(err):
+            Supervisor(db, presence=presence).notify(sent.append)  # fresh install
+        self.assertEqual((own_lines(err), sent), ([], []))
+        self.assertTrue(presence.is_file())
+        shutil.rmtree(state)
+        with contextlib.redirect_stderr(err):
+            sup = Supervisor(db, presence=presence)
+            sup.notify(sent.append)
+            sup.notify(sent.append)
+            Supervisor(db, presence=presence).notify(sent.append)  # reported once, not again
+        self.assertEqual(len(own_lines(err)), 1, err.getvalue())
+        self.assertIn("vanished", own_lines(err)[0])
+        self.assertEqual(len(sent), 1, sent)
+        # The watchdog finds it too, with no gate run in between.
+        shutil.rmtree(state)
+        with contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            watchdog.sweep_ledger(db, presence=presence)
+            watchdog.sweep_ledger(db, presence=presence)
+        self.assertEqual(out.getvalue().count("vanished"), 1, out.getvalue())
+
+    def test_forgetting_the_ledger_makes_the_next_install_fresh(self):
+        presence = self.root / "review-loops.d" / ".ledger-present"
+        state = self.root / "state"
+        Supervisor(state / "runs.sqlite", presence=presence)
+        shutil.rmtree(state)
+        with patch.object(config, "config_dir", return_value=presence.parent):
+            self.assertEqual(run_supervisor.presence_marker(), presence)
+            self.assertTrue(run_supervisor.forget_ledger_presence())
+            self.assertFalse(run_supervisor.forget_ledger_presence())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            Supervisor(state / "runs.sqlite", presence=presence)
+        self.assertEqual(own_lines(err), [])
+
+    def test_uninstalling_the_last_loop_forgets_the_ledger(self):
+        from argparse import Namespace
+        from review_loop import cli
+        cfg = self.root / "review-loops.d"
+        cfg.mkdir()
+        for name in ("a", "b"):
+            (cfg / f"{name}.json").write_text("{}")
+        (cfg / ".ledger-present").write_text("x")
+        with patch.object(config, "config_dir", return_value=cfg), \
+                patch.object(config, "load_id", side_effect=lambda name: {"id": name}), \
+                patch.object(cli, "_routes_of", return_value={}), \
+                patch.object(cli.route_intent, "forget"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_uninstall(Namespace(loop="a", keep_config=False))
+            self.assertTrue((cfg / ".ledger-present").exists())  # loop b still configured
+            cli.cmd_uninstall(Namespace(loop="b", keep_config=False))
+        self.assertFalse((cfg / ".ledger-present").exists())
+
     def test_watchdog_notices_a_vanished_ledger_once(self):
         from scripts import watchdog
         db = self.root / "wd" / "runs.sqlite"

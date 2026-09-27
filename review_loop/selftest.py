@@ -794,11 +794,11 @@ def check_authorization(report: Report, loop: dict, number: int | None) -> dict 
 
 def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict | None) -> None:
     from . import observer
-    from .run_supervisor import Supervisor
+    from .run_supervisor import Supervisor, presence_marker
     step = "supervisor"
     db = ledger_path()
     try:
-        supervisor = Supervisor(db)
+        supervisor = Supervisor(db, presence=presence_marker())
         rows = supervisor.status()
     except Exception as exc:
         report.add(step, "ledger", FAIL, f"{db}: {type(exc).__name__}: {exc}",

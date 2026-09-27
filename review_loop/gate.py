@@ -93,10 +93,10 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     redelivery re-arms it). The unique repo/PR/head/seat/turn index deduplicates redelivery.
     """
     from . import seat_model
-    from .run_supervisor import SEATS, Supervisor
+    from .run_supervisor import SEATS, Supervisor, presence_marker
 
     supervisor = Supervisor(
-        config.home() / "state" / "review-loop-runs.sqlite",
+        config.home() / "state" / "review-loop-runs.sqlite", presence=presence_marker(),
         production_config=config.home() / "review-loop-runtime.json", hermes_home=config.home(),
         # Every seat, always: a worker spawned by one seat's event claims any pending row, and
         # must know every seat's capacity to do so.

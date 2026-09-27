@@ -22,6 +22,7 @@ import urllib.request
 import uuid
 from contextlib import closing, nullcontext
 
+from . import hostdirs
 from .hostdirs import WORKER_ENV, HostStateGone, in_worker
 
 SILENT = "[SILENT]"
@@ -137,9 +138,40 @@ def _ledger_problem(con: sqlite3.Connection) -> str | None:
 
 
 def ledger_marker(db: str | Path) -> Path:
-    """The host's record that a ledger existed at ``db``: a vanished one is then reported."""
+    """The host's record, beside the ledger, that a ledger existed at ``db``."""
     db = Path(db)
     return db.with_name(db.name + ".present")
+
+
+def presence_marker() -> Path:
+    """The host's record, in the loop config dir, that the production ledger existed.
+
+    It survives a wipe of the whole state dir (which takes the beside-ledger marker with it),
+    so that loss is reported instead of looking like a first install. Only host-side callers
+    (gate enqueue, watchdog, selftest) pass it; a worker never writes it.
+    """
+    from . import config
+    return config.config_dir() / ".ledger-present"
+
+
+def forget_ledger_presence() -> bool:
+    """Forget that the production ledger existed; True if a marker was removed.
+
+    Call it when the last loop is uninstalled (``cli.cmd_uninstall`` does), so that a real
+    fresh install later is not reported as a vanished ledger.
+    """
+    try:
+        presence_marker().unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def _names(presence: Path | None, db: Path) -> bool:
+    try:
+        return presence is not None and presence.read_text().strip() == os.path.abspath(db)
+    except OSError:
+        return False
 
 
 class FixerPushDisabled(ValueError):
@@ -512,7 +544,8 @@ class Supervisor:
                  fixture_mode: bool = False, capacity: dict[str, int] | None = None,
                  lease_seconds: float = 60, child_timeout: float = 120,
                  production_config: str | Path | None = None,
-                 hermes_home: str | Path | None = None, create: bool = True):
+                 hermes_home: str | Path | None = None, create: bool = True,
+                 presence: str | Path | None = None):
         """``create=False`` is the detached worker's mode: it opens an existing ledger only.
 
         Hardening: a worker must never create host state. Only host-side callers (gate
@@ -523,8 +556,10 @@ class Supervisor:
         gone, empty, not SQLite, corrupt, foreign, replaced mid-run — is ``LedgerMissing``,
         before anything is written to it.
 
-        The host reports a ledger that vanished since it last opened one (its sibling
-        ``.present`` marker survives): one stderr line and one operator notice.
+        The host reports a ledger that vanished since it last opened one: one stderr line and
+        one operator notice. It knows one existed from ``<ledger>.present`` beside it, or, when
+        the caller passes ``presence`` (``presence_marker()``, in the loop config dir), from
+        that host-owned marker, which survives a wipe of the whole state dir.
         """
         db = Path(db)
         # First, before any other check: no ledger at all is a quiet exit, not an error.
@@ -533,7 +568,9 @@ class Supervisor:
         vanished = False
         if create:
             empty = db.is_file() and db.stat().st_size == 0
-            vanished = (not db.is_file() or empty) and ledger_marker(db).is_file()
+            presence = Path(presence) if presence is not None else None
+            vanished = (not db.is_file() or empty) and (ledger_marker(db).is_file()
+                                                        or _names(presence, db))
             if vanished:
                 print(f"review-loop: run ledger {db} vanished since it was last opened; creating "
                       f"a fresh, empty ledger. Earlier runs, holds and notices are not in it.",
@@ -595,6 +632,14 @@ class Supervisor:
         if not marker.is_file():
             os.close(os.open(marker, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
                              0o600))
+        if presence is not None and not _names(presence, self.db):
+            hostdirs.ensure(presence.parent)
+            temp = presence.with_name(presence.name + f".{os.getpid()}.tmp")
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                         0o600)
+            with os.fdopen(fd, "w") as out:
+                out.write(os.path.abspath(self.db) + "\n")
+            os.replace(temp, presence)
 
     def _connect(self):
         if self.create:

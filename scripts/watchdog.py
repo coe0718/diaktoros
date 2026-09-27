@@ -768,18 +768,19 @@ def sweep_loop(loop: dict, st: state_mod.LoopState) -> list[str]:
     return lines
 
 
-def sweep_ledger(ledger: pathlib.Path) -> list[str]:
+def sweep_ledger(ledger: pathlib.Path, presence: pathlib.Path | None = None) -> list[str]:
     """Deliver the run ledger's operator notices; return lines for a failed sweep.
 
-    A ledger that vanished since the host last opened it (its ``.present`` marker remains) is
+    A ledger that vanished since the host last opened it — its ``.present`` marker remains, or
+    ``presence`` (the loop config dir's marker, which survives a wiped state dir) names it — is
     recreated here, which records a one-time notice that this sweep then delivers. Where no
     ledger ever existed nothing is created.
     """
-    from review_loop.run_supervisor import Supervisor, ledger_marker
-    if not ledger.exists() and not ledger_marker(ledger).exists():
+    from review_loop.run_supervisor import Supervisor, _names, ledger_marker
+    if not ledger.exists() and not ledger_marker(ledger).exists() and not _names(presence, ledger):
         return []
     try:
-        sup = Supervisor(ledger)
+        sup = Supervisor(ledger, presence=presence)
         sup.recover()  # no runtime configured here: never launch a worker
         sup.notify(lambda message: print(message, flush=True))
     except Exception as exc:
@@ -816,7 +817,9 @@ def main() -> None:
     out: list[str] = []
     # The supervisor outbox is independent of GitHub listing availability or
     # paused hooks. It uses the existing cron stdout delivery path.
-    out.extend(sweep_ledger(config.home() / 'state' / 'review-loop-runs.sqlite'))
+    from review_loop.run_supervisor import presence_marker
+    out.extend(sweep_ledger(config.home() / 'state' / 'review-loop-runs.sqlite',
+                            presence=presence_marker()))
     for loop in loops:
         try:
             out.extend(sweep_loop(loop, state_mod.state_for(loop)))
