@@ -602,30 +602,59 @@ def read_config(raw):
 
 
 
+# What the describe step needs from Hermes. Checked by name before any is called, so a pin that
+# moves one reports which, instead of the check quietly deciding without Hermes.
+HERMES_WIRE_FUNCTIONS = (
+    ("hermes_cli.runtime_provider", "_parse_api_mode"),
+    ("hermes_cli.runtime_provider", "_detect_api_mode_for_url"),
+    ("hermes_cli.runtime_provider_custom", "_get_named_custom_provider"),
+    ("hermes_cli.runtime_provider_custom", "_opencode_family_for_custom"),
+    ("hermes_cli.runtime_provider_custom", "get_secret_str"),
+    ("hermes_cli.models", "opencode_model_api_mode"),
+    ("hermes_cli.auth", "resolve_provider"),
+)
+
+
 def hermes_facts(requested, block):
+    """Hermes's own answers, or ``{"unavailable": "missing"|"drift", "detail"}`` saying why
+    Hermes could not be asked — never a silent ``None``: the caller must say so on both lines."""
+    import importlib
+    try:
+        import hermes_cli  # noqa: F401
+    except Exception as exc:
+        return {"unavailable": "missing",
+                "detail": "Hermes is not importable from " + source + " (" + text(exc) + ")"}
+    missing = []
+    for module, name in HERMES_WIRE_FUNCTIONS:
+        try:
+            if not callable(getattr(importlib.import_module(module), name, None)):
+                missing.append(module + "." + name)
+        except Exception as exc:
+            missing.append(module + " (" + text(exc) + ")")
+    if missing:
+        return {"unavailable": "drift",
+                "detail": "the Hermes at " + source + " lacks " + ", ".join(missing)}
     try:
         return _hermes_facts(requested, block)
-    except AttributeError:          # a Hermes without these functions: decide without it
-        return None
+    except Exception as exc:
+        return {"unavailable": "drift",
+                "detail": "the Hermes at " + source + " failed to answer (" + text(exc) + ")"}
 
 
 def _hermes_facts(requested, block):
-    """Hermes's OWN answers for the wire questions doctor needs, or None when Hermes is not
-    importable here. Read-only and credential-free: ``load_config`` only reads config.yaml, and
-    the named-provider lookup's one secret read (a ``key_env``) is answered with "" before it runs.
-    Only endpoint and wire facts leave this process — never a key."""
-    try:
-        from hermes_cli import runtime_provider as rp
-        from hermes_cli import runtime_provider_custom as rpc
-        from hermes_cli.models import opencode_model_api_mode
-    except Exception:
-        return None
+    """Hermes's OWN answers for the wire questions doctor needs. Read-only and credential-free:
+    ``load_config`` only reads config.yaml, and the named-provider lookup's one secret read (a
+    ``key_env``) is answered with "" before it runs. Only endpoint and wire facts leave this
+    process — never a key."""
+    from hermes_cli import runtime_provider as rp
+    from hermes_cli import runtime_provider_custom as rpc
+    from hermes_cli.models import opencode_model_api_mode
     rpc.get_secret_str = lambda name, default="": default     # never read a credential
+    facts = {"configured": rp._parse_api_mode(block.get("api_mode")) or ""}
     try:
-        facts = {"configured": rp._parse_api_mode(block.get("api_mode")) or "",
-                 "url_wire": rp._detect_api_mode_for_url(str(block.get("base_url") or "")) or ""}
-    except Exception as exc:
-        return {"error": "Hermes could not read the model block (" + text(exc) + ")"}
+        facts["url_wire"] = rp._detect_api_mode_for_url(str(block.get("base_url") or "")) or ""
+    except Exception as exc:        # Hermes itself cannot read it (a named entry ignores it)
+        facts["url_wire"], facts["url_error"] = "", text(exc)
     name = requested.strip().lower()
     if not name or name == "auto":
         return facts
@@ -934,7 +963,7 @@ def run_resolver(profile: str, mode: str, settings: dict | None,
     locked = profile_lock(profile) if mode in ("resolve", "refresh") else contextlib.nullcontext()
     try:
         with locked:
-            process = subprocess.run([python, "-E", "-s", "-c", _RESOLVER, source, mode, policy],
+            process = subprocess.run([python, "-E", "-s", "-B", "-c", _RESOLVER, source, mode, policy],
                                      env=env, cwd=str(home), stdin=subprocess.DEVNULL,
                                      capture_output=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
@@ -1120,6 +1149,14 @@ def describe_seat_wire(loop: dict, seat: str,
         requested = str(answer.get("requested") or "auto")
         model = str(answer.get("model") or "")
         hermes = answer.get("hermes") if isinstance(answer.get("hermes"), dict) else None
+        # Hermes could not be asked: say so. "missing" means the turn itself cannot run (it
+        # resolves through the same import); "drift" means this Hermes lacks what doctor asks, so
+        # the verdicts below rest on doctor's own table and are at most warnings.
+        unavailable = str((hermes or {}).get("unavailable") or "")
+        not_asked = _redact(str((hermes or {}).get("detail") or "")) if unavailable else ""
+        if unavailable or hermes is None:
+            not_asked = not_asked or "the describe step did not report Hermes's answers"
+            hermes = None
         entry = (hermes or {}).get("entry") if isinstance((hermes or {}).get("entry"), dict) else None
         # Hermes's own reading of model.api_mode when it can be asked (every alias included);
         # a named custom provider ignores it — its entry decides.
@@ -1137,8 +1174,18 @@ def describe_seat_wire(loop: dict, seat: str,
                         "picked cannot read YAML at all (docs/configuration.md)", None)
         elif requested in ("", "auto"):
             reason = f"profile {profile} names no model.provider"
+        elif unavailable == "missing":
+            reason = (f"profile {profile}: {not_asked} — the turn resolves its model through that "
+                      "same import")
+            fix_missing = ("point source/venv in "
+                           f"{config.home() / 'review-loop-runtime.json'} at the Hermes install")
+            if legacy is None:
+                return ("fail", f"{reason}; the {seat} turn will be held", fix_missing, None)
         elif hermes is not None and hermes.get("error"):
             reason = f"profile {profile}: {_redact(str(hermes['error']))}"
+        elif hermes is not None and hermes.get("url_error") and not entry:
+            reason = (f"profile {profile}: Hermes cannot read model.base_url "
+                      f"({_redact(str(hermes['url_error']))})")
         elif requested in UNSUPPORTED_PROVIDERS:
             reason = (f"profile {profile} uses {requested}, which the inference proxy cannot "
                       "speak (token exchange, cloud signing or several models)")
@@ -1157,7 +1204,7 @@ def describe_seat_wire(loop: dict, seat: str,
             mode, label = expected_wire(requested, configured)
             wire = {"provider": requested, "api_mode": mode, "base_url": str(base),
                     "model": model, "configured": configured, "entry": entry, "hermes": hermes,
-                    "entry_hint": bool(answer.get("entry_hint")),
+                    "entry_hint": bool(answer.get("entry_hint")), "not_asked": not_asked,
                     "facts": {"nous_anthropic_wire": str(answer.get("nous_anthropic_wire") or "")}}
             explain: dict = {}
             extras_for(requested, mode, str(base), model=model, configured=configured,
@@ -1168,9 +1215,14 @@ def describe_seat_wire(loop: dict, seat: str,
             if entry:
                 label = "API key"
             shown = (entry or {}).get("url") or base
-            return ("ok", f"profile {profile}: {requested} / {model}"
-                          + (f" via {urlsplit(shown).hostname}" if shown else "")
-                          + f" [{mode}, {label}] (credential checked by selftest)", "", wire)
+            detail = (f"profile {profile}: {requested} / {model}"
+                      + (f" via {urlsplit(shown).hostname}" if shown else "")
+                      + f" [{mode}, {label}]")
+            if not_asked:
+                return ("warn", f"{detail} by doctor's own table, NOT by Hermes: {not_asked}",
+                        "point source/venv in the runtime file at the Hermes install the turn runs "
+                        "(then re-run doctor)", wire)
+            return ("ok", detail + " (credential checked by selftest)", "", wire)
     fix = (f"set a supported provider in profile {profile or '<name>'} (see `docs/configuration.md`), "
            f"or add seats.{seat} to the runtime file")
     if legacy is not None:

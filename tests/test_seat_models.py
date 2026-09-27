@@ -31,6 +31,37 @@ PARENT_LEAK = "parent-process-leak-9999"
 KEYS = {"rev": "REVIEWER-PROFILE-KEY-1111", "fix": "FIXER-PROFILE-KEY-2222",
         "adj": "ADJUDICATOR-PROFILE-KEY-3333"}
 
+# The wire functions doctor's describe step asks Hermes (seat_model.HERMES_WIRE_FUNCTIONS), in
+# miniature, appended to the fake modules below — and by test_oauth_seats.py to its own.
+FAKE_WIRE_AUTH = """
+BUILT_INS = {"openrouter", "custom", "deepseek", "nous", "anthropic", "claude", "claude-code",
+             "minimax", "minimax-oauth", "kimi-coding", "opencode-zen", "opencode-go",
+             "bedrock", "geminiish", "openai-codex", "xai-oauth", "qwen-oauth"}
+def resolve_provider(requested=None, **_):
+    name = (requested or "auto").strip().lower()
+    if name in BUILT_INS:
+        return name
+    raise ValueError("Unknown provider '" + name + "'.")
+"""
+FAKE_WIRE_RUNTIME = """
+_ALIASES = {"openai": "chat_completions", "chat-completions": "chat_completions",
+            "responses": "codex_responses", "anthropic": "anthropic_messages",
+            "anthropic-messages": "anthropic_messages", "messages": "anthropic_messages",
+            "bedrock": "bedrock_converse"}
+_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
+          "codex_app_server"}
+def _parse_api_mode(raw):
+    mode = _ALIASES.get(str(raw or "").strip().lower(), str(raw or "").strip().lower())
+    return mode if mode in _MODES else None
+def _detect_api_mode_for_url(base_url):
+    from urllib.parse import urlsplit
+    parts = urlsplit((base_url or "").strip().lower())
+    path = parts.path.rstrip("/")
+    if parts.hostname == "api.anthropic.com" or path.endswith(("/anthropic", "/anthropic/v1")):
+        return "anthropic_messages"
+    return None
+"""
+
 # A miniature of the Hermes entry points the resolver uses. Resolution reads only HERMES_HOME
 # and the environment load_hermes_dotenv fills from the profile's .env, like the real one.
 FAKE_HERMES = {
@@ -88,6 +119,36 @@ FAKE_HERMES = {
                                 "base_url": entry["base_url"], "api_key": entry["api_key"]}
             raise RuntimeError("Unknown provider " + provider)
     """,
+    # The functions doctor's describe step asks (seat_model.HERMES_WIRE_FUNCTIONS): a miniature of
+    # the pinned Hermes's own. HermesAgreement checks doctor against the real ones.
+    "hermes_cli/runtime_provider_custom.py": """
+        from hermes_cli.config import load_config
+        def get_secret_str(name, default=""):
+            raise AssertionError("doctor's describe step must never read a secret")
+        def _get_named_custom_provider(requested):
+            from hermes_cli.runtime_provider import _parse_api_mode
+            name = requested.strip().lower()
+            bare = name.split(":", 1)[1] if name.startswith("custom:") else name
+            cfg = load_config()
+            for key, entry in (cfg.get("providers") or {}).items():
+                if bare in (key.lower(), str(entry.get("name") or "").lower()):
+                    return {"name": entry.get("name", key), "provider_key": key,
+                            "base_url": entry.get("base_url") or entry.get("url") or "",
+                            "api_mode": _parse_api_mode(entry.get("api_mode") or entry.get("transport")),
+                            "model": entry.get("default_model", "")}
+            for entry in cfg.get("custom_providers") or []:
+                if bare == str(entry.get("name") or "").lower():
+                    return {"name": entry["name"], "base_url": entry.get("base_url") or "",
+                            "api_mode": _parse_api_mode(entry.get("api_mode")),
+                            "model": entry.get("model", "")}
+            return None
+        def _opencode_family_for_custom(requested, base_url):
+            return None
+    """,
+    "hermes_cli/models.py": """
+        def opencode_model_api_mode(family, model):
+            return "chat_completions"
+    """,
     "hermes_cli/model_catalog.py": """
         def _get_provider_block(provider):
             if provider == "openrouter":
@@ -97,6 +158,14 @@ FAKE_HERMES = {
             return [(m["id"], m) for m in (block or {}).get("models", [])]
     """,
 }
+
+
+def add_wire_functions(source: pathlib.Path) -> None:
+    """Append the miniature wire functions to a fake Hermes's auth and runtime_provider."""
+    for name, extra in (("hermes_cli/auth.py", FAKE_WIRE_AUTH),
+                        ("hermes_cli/runtime_provider.py", FAKE_WIRE_RUNTIME)):
+        path = source / name
+        path.write_text(path.read_text() + "\n" + extra)
 
 
 def write_profile(home: pathlib.Path, name: str, model: dict, env: dict | None = None,
@@ -191,6 +260,7 @@ class Base(unittest.TestCase):
         for name, body in FAKE_HERMES.items():
             (source / name).parent.mkdir(parents=True, exist_ok=True)
             (source / name).write_text(textwrap.dedent(body))
+        add_wire_functions(source)
         venv = self.root / "venv"
         (venv / "bin").mkdir(parents=True)
         (venv / "bin" / "python").symlink_to(sys.executable)
@@ -634,20 +704,36 @@ class ProviderExtras(Base):
             self.assertIn("needs no optional", check.detail)
 
     def test_a_malformed_url_is_unknown_and_never_escapes_the_preflight(self):
-        write_profile(self.home, "rev", {"default": "m", "provider": "custom:acme",
+        # Hermes itself raises on it (_detect_api_mode_for_url: "Invalid IPv6 URL"), so the
+        # turn is held: the model line fails with the reason, and the extras line is skipped.
+        write_profile(self.home, "rev", {"default": "m", "provider": "custom",
                                          "base_url": "https://[::1"})
+        self.extras(self.full)
+        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        self.assertEqual(models["model:reviewer"].status, doctor.ABSENT)
+        self.assertIn("Invalid IPv6 URL", models["model:reviewer"].detail)
         check = self.extras(self.full)["extras:reviewer"]
-        self.assertEqual(check.status, doctor.UNKNOWN)
-        self.assertIn("ValueError", check.detail)
+        self.assertEqual(check.status, doctor.SKIPPED)
+        # a named entry never reads model.base_url, as in Hermes
+        write_profile(self.home, "rev", {"default": "m", "provider": "custom:acme",
+                                         "base_url": "https://[::1"},
+                      extra={"custom_providers": [{"name": "Acme",
+                                                   "base_url": "https://acme.test/v1"}]})
+        self.assertEqual(self.extras(self.full)["extras:reviewer"].status, doctor.VERIFIED)
+        # and doctor's own reading of a malformed URL is a warning, never an escape
         wire = ("ok", "", "", {"provider": "custom:acme", "api_mode": "chat_completions",
                                "base_url": "https://[::1", "model": "m", "facts": {}})
         with mock.patch.object(seat_model, "describe_seat_wire", return_value=wire):
             check = self.extras(self.full)["extras:reviewer"]
         self.assertEqual(check.status, doctor.UNKNOWN)
         self.assertIn("ValueError", check.detail)
-        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        with mock.patch.object(seat_model, "describe_seat",
+                               side_effect=ValueError("Invalid IPv6 URL")):
+            models = {c.name: c for c in doctor.check_seat_models(self.loop)}
         self.assertEqual(models["model:reviewer"].status, doctor.UNKNOWN)
         self.assertIn("ValueError", models["model:reviewer"].detail)
+        write_profile(self.home, "rev", {"default": "m", "provider": "custom",
+                                         "base_url": "https://[::1"})
         names = [c.name for c in doctor.check_loop(self.loop, offline=True)]
         self.assertIn("extras:reviewer", names)
 
@@ -670,9 +756,46 @@ class ProviderExtras(Base):
         write_profile(self.home, "rev", block, extra=extra)
         return self.extras(self.bare)["extras:reviewer"]
 
+    def test_a_source_without_hermes_fails_the_model_line(self):
+        # Tuck, 255c875: the turn resolves through this same import, so it would be held.
+        empty = self.root / "no-hermes-here"
+        empty.mkdir()
+        settings = {**self.settings, "source": str(empty)}
+        self.extras(settings=settings)
+        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        extras = {c.name: c for c in doctor.check_seat_extras(self.loop)}
+        for seat in ("reviewer", "fixer", "adjudicator"):
+            self.assertEqual(models[f"model:{seat}"].status, doctor.ABSENT, seat)
+            self.assertIn("Hermes is not importable from", models[f"model:{seat}"].detail)
+            self.assertIn("will be held", models[f"model:{seat}"].detail)
+            self.assertEqual(extras[f"extras:{seat}"].status, doctor.SKIPPED, seat)
+
+    def test_a_hermes_that_cannot_answer_is_never_a_pass(self):
+        # A pin that moves one of the functions doctor asks: both lines say Hermes was not asked,
+        # and a "not needed" from doctor's own table is a warning, not a pass.
+        (self.root / "hermes-agent" / "hermes_cli" / "runtime_provider_custom.py").unlink()
+        self.extras(self.bare)
+        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        extras = {c.name: c for c in doctor.check_seat_extras(self.loop)}
+        for seat in ("fixer", "adjudicator"):
+            self.assertEqual(models[f"model:{seat}"].status, doctor.UNKNOWN, seat)
+            self.assertIn("NOT by Hermes", models[f"model:{seat}"].detail)
+            self.assertIn("runtime_provider_custom", models[f"model:{seat}"].detail)
+            self.assertEqual(extras[f"extras:{seat}"].status, doctor.UNKNOWN, seat)
+            self.assertNotIn("✅", extras[f"extras:{seat}"].detail)
+        self.assertIn("Hermes was not asked", extras["extras:adjudicator"].detail)
+        # a seat that certainly needs the package still fails when it is missing
+        self.assertEqual(extras["extras:reviewer"].status, doctor.ABSENT)
+        # and with the package present, only the "not needed" verdict stays a warning
+        self.extras(self.full)
+        extras = {c.name: c for c in doctor.check_seat_extras(self.loop)}
+        self.assertEqual(extras["extras:reviewer"].status, doctor.VERIFIED)
+        self.assertEqual(extras["extras:adjudicator"].status, doctor.UNKNOWN)
+
     def test_without_hermes_a_named_entry_is_never_verified(self):
-        # The fixture's "Hermes" cannot answer (no runtime_provider_custom): doctor must not guess
-        # an entry's wire, so every such seat is ⚠️ "may need" — never ✅ — until Hermes decides.
+        # Hermes present but unable to answer: doctor must not guess an entry's wire, so every
+        # such seat is ⚠️ — never ✅ — until Hermes decides.
+        (self.root / "hermes-agent" / "hermes_cli" / "runtime_provider_custom.py").unlink()
         for entry, api_mode in (({"base_url": "https://api.anthropic.com"}, "chat_completions"),
                                 ({"base_url": "https://api.anthropic.com",
                                   "api_mode": "chat_completions"}, ""),
@@ -788,8 +911,8 @@ class ProviderExtras(Base):
         self.assertEqual(checks["extras:reviewer"].status, doctor.VERIFIED)
         self.assertIn("anthropic", checks["extras:reviewer"].detail)
         self.assertIn(self.full, checks["extras:reviewer"].detail)
-        # custom:acme, a named entry the fixture's Hermes cannot resolve: "may use", importable
-        self.assertEqual(checks["extras:fixer"].status, doctor.VERIFIED)
+        self.assertEqual(checks["extras:fixer"].status, doctor.VERIFIED)       # custom:acme
+        self.assertIn("no optional", checks["extras:fixer"].detail)
 
     def test_a_venv_without_the_package_fails_with_the_install_command(self):
         checks = self.extras(self.bare)
@@ -800,8 +923,8 @@ class ProviderExtras(Base):
         self.assertIn(self.bare, check.detail)
         self.assertIn("hermes pm install --extra anthropic", check.fix)
         self.assertIn("review-loop-runtime.json", check.fix)
-        # custom:acme without a Hermes to resolve its entry: ⚠️ "may need", never ✅
-        self.assertEqual(checks["extras:fixer"].status, doctor.UNKNOWN)
+        # custom:acme: Hermes resolves its entry (acme.test/v1) to chat_completions
+        self.assertEqual(checks["extras:fixer"].status, doctor.VERIFIED)
         self.assertEqual(checks["extras:adjudicator"].status, doctor.VERIFIED)
 
     def test_a_messages_wire_provider_needs_it_too(self):
@@ -1033,7 +1156,7 @@ class HermesAgreement(unittest.TestCase):
     def truth(self, profile: pathlib.Path, env: dict) -> str:
         user = self.root / "user-home"
         user.mkdir(exist_ok=True)
-        run = subprocess.run([str(self.python), "-E", "-s", "-c", _TRUTH, str(self.source)],
+        run = subprocess.run([str(self.python), "-E", "-s", "-B", "-c", _TRUTH, str(self.source)],
                              env={"PATH": "/usr/bin:/bin", "HOME": str(user), "LANG": "C.UTF-8",
                                   "HERMES_HOME": str(profile), **env},
                              cwd=str(profile), capture_output=True, timeout=120, check=False)

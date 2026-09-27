@@ -312,12 +312,23 @@ credential is touched, and only endpoint and wire facts come back. A provider He
 enabled entry and not a built-in, a malformed entry, or an entry pinning a wire the proxy cannot
 speak) fails `model:<seat>`. An OpenCode-family entry with no `api_mode` of its own is ⚠️ "may
 need": Hermes derives its wire from the model unless the credential comes from a pool, which doctor
-does not read. When Hermes cannot be imported from the runtime's source, a seat whose provider a
-config entry might decide is ⚠️ "may need", never ✅. CI's `installed-mode` job runs
-`tests.test_seat_models.HermesAgreement` with `REVIEW_LOOP_REQUIRE_HERMES_SOURCE` set, comparing these
-verdicts with the pinned Hermes's own resolver on a table of profiles, and fails if it is skipped. The
-provider→extra table, including those "possible" entries, is `HERMES_EXTRAS` in
-`review_loop/seat_model.py`.
+does not read. When the runtime file's `source` has no importable Hermes, `model:<seat>` fails —
+the turn resolves its model through that same import, so it would be held — and `extras:<seat>` is
+skipped. When that Hermes lacks one of the functions doctor asks (a pin that moved them), both lines
+say Hermes was not asked: `model:<seat>` is ⚠️ with the missing names, and `extras:<seat>` is never
+✅ "needs no optional Hermes package" on doctor's own table (a seat whose provider a config entry
+might decide is ⚠️ "may need"). CI's `installed-mode` job compares these verdicts with the pinned
+Hermes's own resolver on a table of profiles, and fails if the comparison is skipped. To run it
+yourself against a Hermes checkout with its `venv/`:
+
+```bash
+REVIEW_LOOP_REQUIRE_HERMES_SOURCE=/path/to/hermes-agent \
+  python -m unittest discover -v -s tests -p test_seat_models.py -k HermesAgreement
+```
+
+(By discovery from `tests/`: a dotted `tests.test_seat_models…` name can resolve to Hermes's own
+`tests` package when Hermes is on the path.) The provider→extra table, including those "possible"
+entries, is `HERMES_EXTRAS` in `review_loop/seat_model.py`.
 
 **Each seat runs its own Hermes profile's model.** Before a turn, the host resolves the seat's
 profile (`seats.reviewer.profile`, `seats.fixer.profile`, `adjudicator.profile`) with Hermes's own

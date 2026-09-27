@@ -431,6 +431,7 @@ class OAuthBase(tsm.Base):
         for name, body in OAUTH_HERMES.items():
             (source / name).parent.mkdir(parents=True, exist_ok=True)
             (source / name).write_text(textwrap.dedent(body))
+        tsm.add_wire_functions(source)           # what doctor's describe step asks Hermes
         self.codex = self.write_codex_profile("codex", time.time() + 3600)
 
     def write_codex_profile(self, name, exp, extra=None):

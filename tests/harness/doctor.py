@@ -181,6 +181,47 @@ def resolver_venv(dest: pathlib.Path) -> str:
     return str(dest)
 
 
+# The functions doctor's describe step asks the runtime's Hermes (seat_model.HERMES_WIRE_FUNCTIONS),
+# as a miniature: this fixture's profiles use built-in providers only. A runtime `source` without
+# Hermes is a held turn, and doctor now says so (#118); the pinned Hermes's own answers are
+# checked by tests/test_seat_models.py HermesAgreement.
+FAKE_HERMES_SOURCE = {
+    "hermes_cli/__init__.py": "",
+    "hermes_cli/runtime_provider.py": (
+        "def _parse_api_mode(raw):\n"
+        "    mode = str(raw or '').strip().lower()\n"
+        "    return mode if mode in ('chat_completions', 'codex_responses', 'anthropic_messages') else None\n"
+        "def _detect_api_mode_for_url(base_url):\n"
+        "    from urllib.parse import urlsplit\n"
+        "    parts = urlsplit((base_url or '').strip().lower())\n"
+        "    if parts.hostname == 'api.anthropic.com' or parts.path.rstrip('/').endswith('/anthropic'):\n"
+        "        return 'anthropic_messages'\n"
+        "    return None\n"),
+    "hermes_cli/runtime_provider_custom.py": (
+        "def get_secret_str(name, default=''):\n"
+        "    raise AssertionError('doctor must never read a secret')\n"
+        "def _get_named_custom_provider(requested):\n"
+        "    return None\n"
+        "def _opencode_family_for_custom(requested, base_url):\n"
+        "    return None\n"),
+    "hermes_cli/models.py": ("def opencode_model_api_mode(family, model):\n"
+                             "    return 'chat_completions'\n"),
+    "hermes_cli/auth.py": ("def resolve_provider(requested=None, **_):\n"
+                           "    name = (requested or 'auto').strip().lower()\n"
+                           "    if name in ('openrouter', 'nous', 'anthropic', 'custom'):\n"
+                           "        return name\n"
+                           "    raise ValueError('Unknown provider ' + name)\n"),
+}
+
+
+def fake_hermes_source() -> str:
+    root = TMP / "hermes-source"
+    for name, body in FAKE_HERMES_SOURCE.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(body)
+    return str(root)
+
+
 def doctor_runtime_fixture() -> list[pathlib.Path]:
     """A runtime file whose "Hermes" is this interpreter, and a provider in each seat profile.
 
@@ -191,7 +232,7 @@ def doctor_runtime_fixture() -> list[pathlib.Path]:
     home = TMP / "hermes-home"
     venv = TMP / "doctor-venv"
     runtime = home / "review-loop-runtime.json"
-    runtime.write_text(json.dumps({"source": str(TMP), "venv": resolver_venv(venv),
+    runtime.write_text(json.dumps({"source": fake_hermes_source(), "venv": resolver_venv(venv),
                                    "runtime": str(TMP), "rust": str(TMP)}))
     runtime.chmod(0o600)
     return [runtime] + write_seat_models()

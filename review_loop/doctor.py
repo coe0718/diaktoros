@@ -317,9 +317,15 @@ def check_seat_extras(loop: dict) -> list[Check]:
         # The wire Hermes will use when it is decided (a named entry, nous native, ...), not
         # the profile's own spelling.
         mode = explain.get("wire") or wire["api_mode"]
+        not_asked = str(wire.get("not_asked") or "")
         if not needed and not maybe:
-            checks.append(Check(name, VERIFIED, f"{provider} [{mode}] needs no optional Hermes "
-                                "package"))
+            if not_asked:       # a "not needed" from doctor's own table is not a pass
+                checks.append(Check(name, UNKNOWN, f"{provider} [{mode}] needs no optional Hermes "
+                                    f"package by doctor's own table only — Hermes was not asked "
+                                    f"({not_asked})", f"fix model:{seat} first, then re-run doctor"))
+            else:
+                checks.append(Check(name, VERIFIED, f"{provider} [{mode}] needs no optional "
+                                    "Hermes package"))
             continue
         python = str(pathlib.Path(venv) / "bin" / "python")
 
