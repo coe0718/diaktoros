@@ -960,7 +960,7 @@ def load_file(path: pathlib.Path) -> dict:
         return normalize(raw, path)
     except ConfigError:
         raise
-    except (TypeError, ValueError, AttributeError, KeyError) as exc:
+    except (TypeError, ValueError, OverflowError, AttributeError, KeyError) as exc:
         # A hand-edited value of the wrong shape is a refusal with a reason, never a traceback
         # out of whichever verb happened to load it.
         raise ConfigError(f"{path}: malformed loop file ({type(exc).__name__}: {exc})") from exc
@@ -972,7 +972,7 @@ def _as_int(value, key: str, where: str) -> int:
         raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}")
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):     # int(float("inf")): JSON allows Infinity
         raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}") from None
 
 

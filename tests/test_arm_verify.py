@@ -59,12 +59,14 @@ class FakeGitHub:
 
 
 def hooks(active):
-    return {1: {"id": 1, "active": active,
-                "config": {"url": f"{HOST}/p/reviewer/webhooks/widgets-review"}},
-            2: {"id": 2, "active": active,
-                "config": {"url": f"{HOST}/p/fixer/webhooks/widgets-fix"}},
-            3: {"id": 3, "active": active,
-                "config": {"url": "https://elsewhere.example/ci"}}}
+    # As GitHub lists them: each seat's hook subscribes to its gate's event and posts JSON.
+    return {1: {"id": 1, "active": active, "events": ["pull_request"],
+                "config": {"url": f"{HOST}/p/reviewer/webhooks/widgets-review",
+                           "content_type": "json"}},
+            2: {"id": 2, "active": active, "events": ["pull_request_review"],
+                "config": {"url": f"{HOST}/p/fixer/webhooks/widgets-fix", "content_type": "json"}},
+            3: {"id": 3, "active": active, "events": ["push"],
+                "config": {"url": "https://elsewhere.example/ci", "content_type": "json"}}}
 
 
 class ArmVerifyTests(unittest.TestCase):
@@ -222,29 +224,49 @@ class ArmVerifyTests(unittest.TestCase):
     def test_a_seat_route_missing_from_the_registry_is_absent_not_armed(self):
         # No registry entry = no gateway binding: the hooks at the loop-file URL wake nothing.
         self.write_registry({"widgets-fix": "fixer"})
-        fake = FakeGitHub(hooks(True))
-        rc, out = self.arm(fake, pause=True)
+        fake = FakeGitHub(hooks(False))
+        rc, out = self.arm(fake)
         self.assertEqual(rc, 1, out)
         self.assertIn("hook:widgets-review ABSENT (reviewer seat) — route 'widgets-review' is "
                       "not in webhook_subscriptions.json", out)
         self.assertIn("hook 1 posts to route 'widgets-review'; route 'widgets-review' is not "
                       "in webhook_subscriptions.json", out)
         self.assertNotIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls)
-        self.assertIn("hook 2 → paused (read back)", out)
+        self.assertIn("hook 2 → active (read back)", out)
         self.assertIn("names what each route needs (its `route:` line and fix)", out)
-        # An empty registry: nothing is armed or paused, both seats named.
+        # An empty registry: nothing is armed, both seats named.
         self.write_registry({})
-        fake = FakeGitHub(hooks(True))
-        rc, out = self.arm(fake, pause=True)
+        fake = FakeGitHub(hooks(False))
+        rc, out = self.arm(fake)
         self.assertEqual(rc, 1, out)
         self.assertEqual([c for c in fake.calls if c[0] == "PATCH"], [])
         self.assertIn("hook:widgets-fix ABSENT (fixer seat) — route 'widgets-fix' is not in", out)
 
+    def test_pause_stops_the_loops_own_hooks_even_once_their_routes_are_gone(self):
+        # `uninstall` removes the routes, then prints `arm --pause` as the way to stop any hooks
+        # it left: pausing must not demand the route back. It stops every hook at a URL this
+        # install made (the loop config's route URL), and still never touches another's.
+        self.write_registry({})
+        listing = hooks(True)
+        listing[4] = {"id": 4, "active": True, "events": ["pull_request"],
+                      "config": {"url": "https://other-gw.example/p/reviewer/webhooks/"
+                                        "widgets-review", "content_type": "json"}}
+        fake = FakeGitHub(listing)
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("hook 1 → paused (read back)", out)
+        self.assertIn("hook 2 → paused (read back)", out)
+        self.assertEqual([c[1] for c in fake.calls if c[0] == "PATCH"],
+                         ["/repos/owner/widgets/hooks/1", "/repos/owner/widgets/hooks/2"])
+        self.assertTrue(fake.hooks[4]["active"])
+        self.assertIn("hook 4 posts to route 'widgets-review' at another origin", out)
+        self.assertNotIn("fix:", out)
+
     def test_a_route_binding_another_profile_is_the_wrong_agent_not_armed(self):
         from review_loop import doctor
         self.write_registry({"widgets-review": "someone-else", "widgets-fix": "fixer"})
-        fake = FakeGitHub(hooks(True))
-        rc, out = self.arm(fake, pause=True)
+        fake = FakeGitHub(hooks(False))
+        rc, out = self.arm(fake)
         self.assertEqual(rc, 1, out)
         self.assertIn("hook:widgets-review ABSENT (reviewer seat) — route 'widgets-review' wakes "
                       "profile 'someone-else', but seats.reviewer.profile is 'reviewer' — the "
@@ -252,13 +274,20 @@ class ArmVerifyTests(unittest.TestCase):
         self.assertNotIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls)
         # The review's case: the hook posts to the registry's (other-profile) URL itself. The
         # event would reach 'someone-else', not the reviewer seat — still not armed.
+        drifted = hooks(False)
+        drifted[1]["config"]["url"] = f"{HOST}/p/someone-else/webhooks/widgets-review"
+        fake = FakeGitHub(drifted)
+        rc, out = self.arm(fake)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the wake would run the wrong agent", out)
+        self.assertNotIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls)
+        # Pausing that hook is still allowed: it stops deliveries to the wrong agent.
         drifted = hooks(True)
         drifted[1]["config"]["url"] = f"{HOST}/p/someone-else/webhooks/widgets-review"
         fake = FakeGitHub(drifted)
         rc, out = self.arm(fake, pause=True)
-        self.assertEqual(rc, 1, out)
-        self.assertIn("the wake would run the wrong agent", out)
-        self.assertNotIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("hook 1 → paused (read back)", out)
         # doctor says the same thing about the same loop.
         from review_loop import routes
         check = doctor.check_route(config.load_id("widgets"), routes.all_routes(), "reviewer")
@@ -283,8 +312,36 @@ class ArmVerifyTests(unittest.TestCase):
         self.assertIn("hook 1 → paused (read back)", out)
         self.assertNotIn("another path", out)
 
+    def test_a_hook_that_would_not_wake_its_seat_is_not_armed(self):
+        # doctor.check_hook calls these MISMATCH; arm must not call the loop armed over them.
+        for change, problem in ((("events", ["push"]), "subscribes to ['push'], not 'pull_request'"),
+                                (("content_type", "form"), "has content_type 'form', expected 'json'")):
+            listing = hooks(False)
+            key, value = change
+            if key == "events":
+                listing[1]["events"] = value
+            else:
+                listing[1]["config"]["content_type"] = value
+            for start in (False, True):             # to flip, and "already active"
+                for hook in listing.values():
+                    hook["active"] = start
+                fake = FakeGitHub(listing)
+                rc, out = self.arm(fake)
+                self.assertEqual(rc, 1, out)
+                self.assertIn(f"hook 1 NOT armed: it {problem}, so it would not wake the "
+                              "reviewer seat", out)
+                self.assertNotIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls)
+                self.assertNotIn("hook 1 already active", out)
+                self.assertIn("fix: hook 1: `hermes review-loop doctor --loop widgets`", out)
+        # Pausing it is fine: that only stops deliveries.
+        listing = hooks(True)
+        listing[1]["events"] = ["push"]
+        rc, out = self.arm(FakeGitHub(listing), pause=True)
+        self.assertEqual(rc, 0, out)
+
     def test_a_malformed_number_is_a_clean_refusal(self):
-        for key, value in (("cap", "many"), ("concurrency", "two"), ("cap", None)):
+        for key, value in (("cap", "many"), ("concurrency", "two"), ("cap", None),
+                           ("cap", float("inf")), ("concurrency", float("inf"))):
             loop = raw_loop("widgets")
             loop[key] = value
             (config.config_dir() / "widgets.json").write_text(json.dumps(loop))
