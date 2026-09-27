@@ -187,15 +187,26 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(self.launches()), 1)
 
     def test_child_failure_and_timeout_release_seat(self):
+        # Three phases share one ledger, each with its own fixture child and timeout. A worker
+        # claims whatever row is pending with the config it was spawned with, so a phase's
+        # idle straggler (spawned by its worker's recover()) could claim the next phase's row
+        # under load (#108). Each phase therefore waits until its workers are gone.
         sup = self.supervisor(rc=7)
         sup.enqueue("bad", "o/r", 1, "a", "reviewer")
         self.assertEqual(self.wait(sup, "bad", "failed")["outcome"], 7)
-        slow = self.supervisor(delay=1, child_timeout=0.08)
+        wait_for_workers(self.root)
+        # The child sleeps far past its timeout, so only the timeout can end it, however
+        # slow the machine is; the timeout is still short enough to keep the test quick.
+        slow = self.supervisor(delay=60, child_timeout=1)
         slow.enqueue("slow", "o/r", 2, "b", "reviewer")
-        self.assertEqual(self.wait(slow, "slow", "failed")["error"], "child timeout")
+        row = self.wait(slow, "slow", "failed", timeout=20)
+        self.assertEqual((row["error"], row["outcome"]), ("child timeout", None))
+        wait_for_workers(self.root)
         ok = self.supervisor()
         ok.enqueue("ok", "o/r", 3, "c", "reviewer")
-        self.wait(ok, "ok", "succeeded")
+        row = self.wait(ok, "ok", "succeeded")
+        self.assertEqual((row["outcome"], row["error"]), (0, None))
+        self.assertEqual(len(self.launches()), 3)
 
     def test_spawn_failure_remains_recoverable_before_claim(self):
         sup = self.supervisor()
