@@ -245,12 +245,49 @@ class ClaimTimeReads(Base):
     def test_502_at_claim_is_a_read_retry_then_the_run_succeeds(self):
         self.assertIsNone(self.claim(None))           # gh.api answers None for an HTTP 502
         row = self.s.get('review')
-        self.assertEqual((row['state'], row['attempts'], row['error']), ('pending', 0, None))
+        # A counted, visible, backed-off retry — never an invisible pending row (Tuck on #97).
+        self.assertEqual((row['state'], row['attempts'], row['retries']), ('waiting', 0, 1))
+        self.assertIn('claim-time read failed', row['error'])
+        self.elapse()
+        self.s.recover()
         with patch('review_loop.config.by_repo', return_value=self.LOOP), \
              patch('review_loop.gh.api', return_value=self.pull()), \
              patch('review_loop.gh.reviews', return_value=[]):
             self.s._run_one()
         self.assertEqual(self.s.get('review')['state'], 'succeeded')
+
+    def test_a_read_github_keeps_refusing_is_bounded_visible_and_noticed(self):
+        for attempt in range(1, MAX_RETRIES + 1):
+            self.assertIsNone(self.claim(None))
+            row = self.s.get('review')
+            if attempt < MAX_RETRIES:
+                self.assertEqual((row['state'], row['retries']), ('waiting', attempt))
+                self.assertAlmostEqual(row['retry_at'] - time.time(),
+                                       run_supervisor.backoff(attempt), delta=5)
+                # status/explain show it, with the reason and when it is tried again.
+                [view] = run_supervisor.read_only_view(self.db, 'o/r', 1)
+                line = run_supervisor.describe_run(view, 'widgets')
+                self.assertIn('claim-time read failed: PR unreadable', line)
+                self.assertIn(f'attempt {attempt + 1} of {MAX_RETRIES} due in', line)
+                self.assertEqual(self.notices(self.s), [])
+                self.elapse()
+                self.s.recover()
+        row = self.s.get('review')
+        self.assertEqual(row['state'], 'failed')
+        self.assertIn(f'retry limit ({MAX_RETRIES} attempts): claim-time read failed: '
+                      'PR unreadable', row['error'])
+        [notice] = self.notices(self.s)
+        self.assertIn('claim-time read failed', notice)
+        self.assertIn('No external write was made', notice)
+        [view] = run_supervisor.read_only_view(self.db, 'o/r', 1)
+        self.assertIsNone(view['write'])                              # pre-write: re-armable
+        self.assertEqual(self.s.retry(row['id']), 'pending')          # the operator re-arms it
+
+    def test_a_raising_claim_read_names_the_exception(self):
+        with patch('review_loop.config.by_repo', return_value=self.LOOP), \
+             patch('review_loop.gh.api', side_effect=OSError('connection reset')):
+            self.assertIsNone(self.s._claim())
+        self.assertIn('OSError: connection reset', self.s.get('review')['error'])
 
     def test_draft_waits_like_the_fixer(self):
         self.assertIsNone(self.claim(self.pull(draft=True)))
@@ -357,8 +394,16 @@ class OperatorCommands(unittest.TestCase):
         loop = config.load_id('widgets')
         import contextlib
         import io
+        import gc
         out = io.StringIO()
+        # setUp's connections (Supervisor._connect's `with` commits but does not close) keep the
+        # ledger in WAL mode with -wal/-shm files beside it until the garbage collector closes
+        # them — at a moment that depends on everything that ran before this test. Close them
+        # now, so the snapshot below is the ledger at rest and only the read under test can
+        # change the directory (#97 CI: 3.13 collected them in the middle of the read).
+        gc.collect()
         before = sorted(p.name for p in self.db.parent.iterdir())
+        self.assertEqual(before, ['review-loop-runs.sqlite'])
         with contextlib.redirect_stdout(out):
             cli._print_ledger_runs(loop, 7, '  run: ', limit=6)
         text = out.getvalue()

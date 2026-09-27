@@ -307,12 +307,14 @@ class RouteSubprocess(unittest.TestCase):
                              result.stderr)
         db = Path(self.env["HERMES_HOME"]) / "state" / "review-loop-runs.sqlite"
         # The detached worker cannot read the PR (no token here): gh.api answers None, which
-        # is a read to retry — the row stays pending and unclaimed, never failed (#53).
+        # is a read to retry — a counted, backed-off, visible wait, never failed at once (#53)
+        # and never an invisible pending row.
         time.sleep(1.5)
         with sqlite3.connect(db) as conn:
-            rows = conn.execute("SELECT state, attempts, error FROM runs").fetchall()
+            rows = conn.execute("SELECT state, attempts, retries, error FROM runs").fetchall()
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0], ("pending", 0, None))
+        self.assertEqual(rows[0][:3], ("waiting", 0, 1))
+        self.assertIn("claim-time read failed: PR unreadable", rows[0][3])
         self.assertFalse((Path(self.loop["state_dir"]) / "pending.json").exists())
 
     def test_gate_reports_what_the_ledger_did_instead_of_enqueued(self):

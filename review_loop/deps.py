@@ -139,11 +139,13 @@ def refused_cap_override() -> str | None:
 
 
 def human_bytes(value: int) -> str:
-    if value % GIB == 0:
-        return f"{value // GIB} GiB"
-    if value % MiB == 0:
-        return f"{value // MiB} MiB"
-    return f"{value / GIB:.2f} GiB"
+    """A size in the largest binary unit it reaches, to at most two decimals ("16 KiB",
+    "263.21 MiB", "2 GiB"); under 1 KiB, in bytes."""
+    value = int(value)
+    for unit, name in ((GIB, "GiB"), (MiB, "MiB"), (1024, "KiB")):
+        if value >= unit:
+            return f"{value / unit:.2f}".rstrip("0").rstrip(".") + f" {name}"
+    return f"{value} byte{'' if value == 1 else 's'}"
 
 
 def hold(cache: Path) -> int:

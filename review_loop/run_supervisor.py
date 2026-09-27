@@ -193,7 +193,7 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
     if pr['head'].get('sha') != row['head'] or pr.get('state') == 'closed':
         return 'superseded', {}
     if pr.get('state') != 'open' or pr.get('draft') is not False:
-        return 'retry', {}
+        return 'wait', {}              # a draft (or not yet open) PR: a wait, not a failed read
     if (pr.get('base') or {}).get('ref') != loop.get('base'):
         return 'superseded', {}
     author = ((pr.get('user') or {}).get('login') or '') if isinstance(pr.get('user'), dict) else ''
@@ -292,9 +292,15 @@ GITHUB_FILES_CAP = 3000
 
 
 class PRChange(NamedTuple):
-    """The prompt section for the change, and the bounded unified diff staged beside it."""
+    """The prompt section for the change, and the bounded unified diff staged beside it.
+
+    ``partial`` is empty when the host could show the seat the whole change, else the host's own
+    words for what it could not show (#93, #110). The worker records it in the run ledger and the
+    run's scope before launch, and the broker refuses an approval while it is set.
+    """
     record: str
     diff: str
+    partial: str = ''
 
 
 def _line(text: object, limit: int) -> str:
@@ -383,7 +389,7 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
     if files_error:
         count = (f"unknown — the host could not read the PR's file list ({files_error})"
                  + (f"; GitHub reports {declared}" if type(declared) is int else ''))
-    if type(declared) is int and declared != len(files):
+    if type(declared) is int and declared != len(files) and not files_error:
         count += (f"; GitHub reports {declared} changed files but lists "
                   f"{len(files)}" + (f" (it lists at most {GITHUB_FILES_CAP})"
                                      if len(files) >= GITHUB_FILES_CAP else ''))
@@ -444,14 +450,29 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
         diff_total += len(part.encode())
     if len(unlisted) > len(unnamed):
         unnamed.append(f"- … and {len(unlisted) - len(unnamed)} more (see {REVIEW_DIFF})")
+    # The broker enforces the "do not approve" below (broker_ipc.PARTIAL_VIEW_REFUSAL): an
+    # approval from this run is refused, so the seat is told which verdict it can give.
+    partial = ''
+    # What a seat that cannot see the whole change may still do: the reviewer requests changes,
+    # the fixer answers instead of pushing (the broker enforces both).
+    fixer = row['seat'] == 'fixer'
+    instead = ("the broker refuses a push from this turn; publish your answers instead "
+               "(`request_review --answers-file <file>`, no push), saying what was unavailable "
+               "and what you could check in `/work`" if fixer else
+               "do not approve it (the broker refuses an approval from this turn); request "
+               "changes")
     if files_error:
+        partial = f"the PR's file list could not be read ({files_error})"
         listed = [f"The host could not read the PR's file list ({files_error}). You cannot see "
-                  f"the whole change: do not approve it; say that the file list was unavailable, "
-                  f"and review only what you can read in `/work` (the head's files, no history)."]
+                  f"the whole change: {instead}"
+                  + ("." if fixer else ", say that the file list was unavailable, and review "
+                     "only what you can read in `/work` (the head's files, no history).")]
     if unlisted_error:
+        partial = partial or (f"GitHub did not list every changed file and the host could not "
+                              f"name the rest ({unlisted_error})")
         unnamed = [f"GitHub did not list every changed file, and the host could not name the "
-                   f"rest ({unlisted_error}). You cannot see the whole change: do not approve "
-                   f"it; say that the PR is too large to review whole."]
+                   f"rest ({unlisted_error}). You cannot see the whole change: {instead}"
+                   + ("." if fixer else " and say that the PR is too large to review whole.")]
     elif unnamed:
         unnamed.insert(0, "Named by the host from the merge-base and head trees; they have no "
                           "patches here, so read them in `/work`.")
@@ -491,7 +512,7 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
         header += f"# {diff_cut} file(s) omitted: the diff is bounded to {DIFF_BYTES} bytes.\n"
     if files_error:
         header += f"# The file list could not be read ({files_error}): no files, no patches.\n"
-    return PRChange(record, header + ''.join(diff_parts))
+    return PRChange(record, header + ''.join(diff_parts), partial)
 
 
 def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
@@ -687,6 +708,41 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
             "REASON --acknowledge-no-live-worker")
 
 
+def view_view(db: str | Path, repo: str, pr: int | None = None,
+              limit: int = 5) -> list[dict] | None:
+    """The newest runs whose seat could not see the whole change (#93, #110), for ``explain``.
+
+    Read-only; None when the ledger is absent or unreadable, [] when every recorded view was whole.
+    """
+    try:
+        con = _read_only(db)
+        if con is None:
+            return None
+        try:
+            if 'partial_view' not in {c[1] for c in con.execute('PRAGMA table_info(runs)')}:
+                return []
+            where, args = "repo=? AND partial_view IS NOT NULL AND partial_view != ''", [repo]
+            if pr is not None:
+                where += " AND pr=?"
+                args.append(pr)
+            return [dict(row) for row in con.execute(
+                "SELECT id,repo,pr,head,seat,state,partial_view,updated FROM runs WHERE " + where
+                + " ORDER BY updated DESC, id LIMIT ?", (*args, max(1, min(limit, 20))))]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+def describe_view(row: dict) -> str:
+    """One ``explain`` line for a turn whose seat could not see the whole change."""
+    what = ("the broker refuses its approval, so this head can only get REQUEST_CHANGES: "
+            "review it by hand (or split the PR) — the loop cannot approve it"
+            if row['seat'] == 'reviewer' else "the seat worked from a partial view")
+    return (f"{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']} — could not see "
+            f"the whole change: {row['partial_view']}; {what}")
+
+
 def describe_dependencies(row: dict) -> str:
     return (f"{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']} — "
             f"{row['deps']}")
@@ -753,6 +809,11 @@ class Supervisor:
                 # The host dependency prefetch (#51): "fetching …" while it runs, then each
                 # ecosystem's outcome. Host-written, one bounded line, never tool output.
                 con.execute('ALTER TABLE runs ADD COLUMN deps TEXT')
+            if 'partial_view' not in columns:
+                # Whether the seat was shown the whole change (#93, #110): '' when it was, the
+                # host's reason when it was not, NULL before the change record was built. Written
+                # only by the owning worker; the broker refuses an approval while it is set.
+                con.execute('ALTER TABLE runs ADD COLUMN partial_view TEXT')
             con.execute('COMMIT')
 
     def _connect(self):
@@ -784,6 +845,21 @@ class Supervisor:
         with self._connect() as con:
             con.execute("UPDATE runs SET deps=?, updated=? WHERE id=? AND owner=? "
                         "AND state IN ('launching','running')", (text, time.time(), run_id, owner))
+
+    def record_view(self, run_id: str, owner: str, partial: str) -> None:
+        """The owning worker's record of whether this turn's seat sees the whole change.
+
+        ``partial`` is '' for a complete view, else the host's reason (bounded, printable). Only
+        a live run's owner writes it, before the seat starts; a write that lands nowhere raises,
+        so no turn launches without its view on record.
+        """
+        text = "".join(ch if ch.isprintable() else " " for ch in str(partial or ''))[:DEPS_MAX]
+        with self._connect() as con:
+            changed = con.execute("UPDATE runs SET partial_view=?, updated=? WHERE id=? AND owner=? "
+                                  "AND state IN ('launching','running')",
+                                  (text, time.time(), run_id, owner)).rowcount
+        if changed != 1:
+            raise ValueError("run ownership lost before the view was recorded")
 
     def quarantine_push(self, run_id: str, repo: str, pr: int, head: str,
                         outcome: str) -> None:
@@ -864,12 +940,15 @@ class Supervisor:
             raise ValueError('invalid answers record')
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
-            row = con.execute('SELECT repo,pr,head,seat,state,launch_intent,push_confirmed '
-                              'FROM runs WHERE id=?', (run_id,)).fetchone()
+            row = con.execute('SELECT repo,pr,head,seat,state,launch_intent,push_confirmed,'
+                              'partial_view FROM runs WHERE id=?', (run_id,)).fetchone()
+            # Answers follow a confirmed push — or, when the host recorded that this fixer could
+            # not see the whole change (#93, #110), replace it, at the head it was given.
+            answers_only = bool(row is not None and row['partial_view'] and head == base)
             if (row is None or (row['repo'], row['pr'], row['head'], row['seat']) !=
                     (repo, pr, base, 'fixer') or row['launch_intent'] is None
                     or row['state'] not in ('launching', 'running')
-                    or row['push_confirmed'] is None):
+                    or (row['push_confirmed'] is None and not answers_only)):
                 raise ValueError('answers run identity unavailable')
             if con.execute('SELECT 1 FROM fixer_answers WHERE run_id=?', (run_id,)).fetchone():
                 raise ValueError('answers already recorded')
@@ -1290,7 +1369,11 @@ class Supervisor:
         for row in candidates:
             generation = None
             unavailable = None
+            # retry_read: a legitimate wait (a draft), left pending. read_error: a read that
+            # failed — counted and backed off like a failed turn, then failed with its reason,
+            # so it can never sit pending and invisible (#53, Tuck on #97).
             retry_read = False
+            read_error = ""
             superseded = None
             if self.production_config and row['seat'] == 'reviewer':
                 from . import config, gh
@@ -1307,7 +1390,7 @@ class Supervisor:
                         # head retires this turn (a reopen/redelivery re-arms it); a draft waits
                         # for ready, as the fixer's claim does.
                         if not isinstance(pr, dict) or pr.get('number') != row['pr']:
-                            retry_read = True
+                            read_error = 'PR unreadable (GitHub read failed)'
                         elif pr.get('state') == 'closed':
                             superseded = 'PR closed before the review started'
                         elif (pr.get('head') or {}).get('sha') != row['head']:
@@ -1318,8 +1401,8 @@ class Supervisor:
                             generation = generation_for(pr, loop, row['pr'], row['head'])
                 except ReceiptDenied as exc:
                     unavailable = f'review generation unavailable: {exc}'
-                except Exception:
-                    retry_read = True
+                except Exception as exc:
+                    read_error = f'{type(exc).__name__}: {exc}'[:200]
             if row['seat'] not in self.capacity:
                 continue  # a worker spawned with another seat set never claims this row
             if self.production_config and row['seat'] == 'adjudicator':
@@ -1327,16 +1410,18 @@ class Supervisor:
                 try:
                     status, _ = adjudication_state(config.by_repo(row['repo']), row, self.db)
                     superseded = 'adjudication superseded' if status == 'superseded' else None
-                    retry_read = status == 'retry'
-                except Exception:
-                    retry_read = True
+                    if status == 'retry':
+                        read_error = 'adjudication facts unreadable (GitHub read failed)'
+                    retry_read = status == 'wait'
+                except Exception as exc:
+                    read_error = f'{type(exc).__name__}: {exc}'[:200]
             refused = ''
             if self.production_config and row['seat'] == 'fixer':
                 from . import config, gh, gate
                 try:
                     loop = config.by_repo(row['repo'])
                     if loop is None:
-                        retry_read = True
+                        read_error = 'loop not configured'
                     elif row['push_admitted'] != 1:
                         refused = FIXER_NOT_ADMITTED
                     elif not config.unattended_fixer_push_enabled(loop):
@@ -1345,7 +1430,7 @@ class Supervisor:
                         pr = gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}",
                                     login=loop['read_token'])
                         if not isinstance(pr, dict) or not isinstance(pr.get('head'), dict):
-                            retry_read = True
+                            read_error = 'PR unreadable (GitHub read failed)'
                         elif pr['head'].get('sha') != row['head'] or pr.get('state') == 'closed':
                             superseded = 'fixer verdict superseded'
                         elif pr.get('state') != 'open' or pr.get('draft') is not False:
@@ -1354,15 +1439,17 @@ class Supervisor:
                             reviews = effective_reviews(loop, row, gh.reviews(loop, row['pr']),
                                                         self.db)
                             if not isinstance(reviews, list):
-                                retry_read = True
+                                read_error = 'reviews or receipts unreadable (GitHub read failed)'
                             else:
                                 latest = gate.latest_effective_review_at_head(reviews, loop, row['head'])
                                 if latest is None:
+                                    # Read fine, and no effective verdict yet (a receipt still
+                                    # landing after a retarget): a wait, like a draft.
                                     retry_read = True
                                 elif gh.review_state(latest) != 'CHANGES_REQUESTED':
                                     superseded = 'fixer verdict superseded'
-                except Exception:
-                    retry_read = True
+                except Exception as exc:
+                    read_error = f'{type(exc).__name__}: {exc}'[:200]
             with self._connect() as con:
                 con.execute("BEGIN IMMEDIATE")
                 current = con.execute("SELECT * FROM runs WHERE id=?", (row['id'],)).fetchone()
@@ -1392,6 +1479,22 @@ class Supervisor:
                 if superseded:
                     con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
                                 (superseded, now, row['id']))
+                    con.execute('COMMIT')
+                    continue
+                if read_error:
+                    # Bounded like a failed turn (#53): back off, then fail with the reason and
+                    # a notice. Pre-write, so `retry` (or a new event) re-arms it.
+                    retries = (current['retries'] or 0) + 1
+                    reason = f'claim-time read failed: {read_error}'
+                    if retries < MAX_RETRIES:
+                        con.execute("UPDATE runs SET state='waiting', retries=?, retry_at=?, "
+                                    "error=?, updated=? WHERE id=?",
+                                    (retries, now + backoff(retries), reason, now, row['id']))
+                    else:
+                        con.execute("UPDATE runs SET state='failed', retries=?, retry_at=NULL, "
+                                    "error=?, updated=? WHERE id=?",
+                                    (retries, f'retry limit ({retries} attempts): {reason}'[:600],
+                                     now, row['id']))
                     con.execute('COMMIT')
                     continue
                 if retry_read:
@@ -1655,7 +1758,7 @@ class Supervisor:
                 # Same live checks as the claim, repeated right before launch: the claim's
                 # reads may be minutes old, and a ruling on a moved or approved head is noise.
                 status, facts = adjudication_state(loop, row, self.db)
-                if status == 'retry':
+                if status in ('retry', 'wait'):
                     raise RetryableError('adjudication facts unreadable before launch')
                 if status != 'ok':
                     raise ValueError('adjudication no longer current')
@@ -1664,9 +1767,6 @@ class Supervisor:
                 # A fresh review after a retarget starts from nothing: old verdicts are
                 # neither its round count nor its PR record.
                 reviews = effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
-            scope = broker_ipc.RunScope(row["repo"], row["pr"], row["head"],
-                                        row["seat"], head["ref"], row['id'],
-                                        str(self.db), row['generation'])
             # The reviewer and fixer see the change itself (#50); the adjudicator needs both
             # sides' comments. A read that failed is transient (retry); a moved head is not.
             try:
@@ -1681,6 +1781,14 @@ class Supervisor:
                         or str(exc).startswith('PR files unreadable'):
                     raise RetryableError(str(exc)) from None
                 raise
+            # Host-owned, before launch (#93, #110): whether this seat sees the whole change, in
+            # the ledger (explain, the receipt claim) and in the scope the broker is built from.
+            # Nothing inside the namespace can reach either.
+            partial = change.partial if change else ''
+            self.record_view(run_id, owner, partial)
+            scope = broker_ipc.RunScope(row["repo"], row["pr"], row["head"],
+                                        row["seat"], head["ref"], row['id'],
+                                        str(self.db), row['generation'], partial_view=partial)
             if row['seat'] == 'adjudicator':
                 from . import state as state_mod
                 # Last step before launch: mark the breach as being ruled on. Anyone else's
