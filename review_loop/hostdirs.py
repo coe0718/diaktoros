@@ -22,12 +22,13 @@ def in_worker() -> bool:
     return os.environ.get(WORKER_ENV) == "1"
 
 
-def ensure(path: str | os.PathLike) -> pathlib.Path:
-    """Create ``path`` on the host; in a worker, require that it already exists."""
+def ensure(path: str | os.PathLike, mode: int = 0o777) -> pathlib.Path:
+    """Create ``path`` on the host (``mode`` for the leaf, as ``mkdir``); in a worker,
+    require that it already exists."""
     path = pathlib.Path(path)
     if in_worker():
         if not path.is_dir():
             raise HostStateGone(f"{path} is gone; a worker never recreates host state")
         return path
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(mode=mode, parents=True, exist_ok=True)
     return path

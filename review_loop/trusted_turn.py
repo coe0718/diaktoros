@@ -15,7 +15,8 @@ import shutil
 import subprocess
 import tempfile
 
-from . import broker_client, broker_ipc, contained, gh, inference_proxy, safe_push, trusted_fetch
+from . import (broker_client, broker_ipc, contained, gh, hostdirs, inference_proxy, safe_push,
+               trusted_fetch)
 
 
 class TurnDenied(Exception):
@@ -263,7 +264,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
     if not model or not prompt or timeout < 1 or not key:
         raise TurnDenied('missing model, prompt or credential')
     parent = Path(work_root or loop['state_dir']).resolve()
-    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # The host (gate enqueue) creates the work root; a worker never recreates host state.
+    hostdirs.ensure(parent, mode=0o700)
     if parent.is_symlink() or parent.stat().st_mode & 0o077:
         raise TurnDenied('work root must be private')
     with tempfile.TemporaryDirectory(prefix='turn-', dir=parent) as tmp:

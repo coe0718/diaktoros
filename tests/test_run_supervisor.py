@@ -14,9 +14,11 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
-from review_loop import broker, run_supervisor
+from review_loop import broker, broker_ipc, config, gate, run_supervisor, seat_model, trusted_turn
+from review_loop.hostdirs import HostStateGone
 from review_loop.run_supervisor import (_WORKERS, MAX_ATTEMPTS, SILENT, LedgerMissing,
                                         Supervisor)
 
@@ -279,14 +281,149 @@ class Lifecycle(unittest.TestCase):
         worker._heartbeat("run", "owner", OneBeat())  # must not raise
         self.assertFalse(state.exists())
 
+    def foreign_ledgers(self):
+        """Files at a ledger path that are not a review-loop ledger, by shape."""
+        shapes = {"empty": b"", "not-sqlite": b"not a database at all\n" * 4,
+                  "corrupt": b"SQLite format 3\x00" + b"\xff" * 4080}
+        for name, build in (("foreign-sqlite", "CREATE TABLE someone_elses(x); "
+                                                "INSERT INTO someone_elses VALUES (1);"),
+                            # Only the plugin's runs table, with a claimable pending row.
+                            ("lookalike", run_supervisor.SCHEMA.split(";")[0] + "; INSERT INTO runs"
+                             "(id,delivery,repo,pr,head,seat,state,created,updated) VALUES "
+                             "('dead','d','o/r',1,'h','reviewer','pending',0,0);")):
+            path = self.root / f"build-{name}.sqlite"
+            with contextlib.closing(sqlite3.connect(path)) as con:
+                con.executescript(build)
+            shapes[name] = path.read_bytes()
+        return shapes
+
     def test_worker_refuses_an_empty_or_foreign_ledger_file(self):
-        for name, content in (("empty", b""), ("foreign", b"not a database at all\n" * 4)):
+        for name, content in self.foreign_ledgers().items():
             with self.subTest(name):
                 db = self.root / f"{name}.sqlite"
                 db.write_bytes(content)
                 with self.assertRaises(LedgerMissing):
                     Supervisor(db, create=False)
-                self.assertEqual(db.read_bytes(), content)  # never adopted or re-schema'd
+                # Never adopted, re-schema'd or claimed from.
+                self.assertEqual(db.read_bytes(), content)
+
+    def test_worker_exits_quietly_when_ledger_is_replaced_mid_run(self):
+        # The child has run; the ledger is swapped for something else before the worker
+        # records the outcome. The worker writes nothing into the replacement.
+        for name, content in self.foreign_ledgers().items():
+            with self.subTest(name):
+                state = self.root / f"swap-{name}"
+                self.pending_row(state)
+                db = state / "runs.sqlite"
+                complete = Supervisor.complete_uncertain
+                def swap(sup, *args, **kwargs):
+                    for path in state.iterdir():
+                        path.unlink()
+                    db.write_bytes(content)
+                    return complete(sup, *args, **kwargs)
+                lines = self.run_worker_main(db, complete_uncertain=swap)
+                self.assertEqual(len(lines), 1, lines)
+                self.assertEqual(db.read_bytes(), content)
+                self.assertEqual(sorted(p.name for p in state.iterdir()), ["runs.sqlite"])
+
+    def test_worker_turn_never_recreates_a_deleted_state_dir(self):
+        state = self.root / "turn-state"
+        loop = {"repo": "o/r", "state_dir": str(state)}
+        scope = broker_ipc.RunScope("o/r", 1, "a" * 40, "reviewer", "b")
+        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}), \
+                self.assertRaises(HostStateGone):
+            trusted_turn.run_turn(loop, scope, source=self.root / "none", venv=self.root,
+                                  runtime=self.root, rust=self.root, upstream="https://x",
+                                  key="k", model="m", prompt="p",
+                                  work_root=state / "isolated-runs")
+        self.assertFalse(state.exists())
+
+    def test_worker_seat_lock_never_creates_the_lock_dir(self):
+        home = self.root / "hermes-home"
+        locks = home / "state" / "review-loop-seat-locks"
+        with patch.object(config, "home", return_value=home):
+            with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}):
+                with seat_model.profile_lock("default"):
+                    pass  # the in-process lock still serializes this worker's threads
+            self.assertFalse(locks.exists())
+            with seat_model.profile_lock("default"):
+                pass
+            self.assertTrue(locks.is_dir())  # the host still creates it
+
+    def test_gate_creates_the_worker_dirs_before_enqueue(self):
+        home = self.root / "hermes-home"
+        state = self.root / "loop-state"
+        loop = {"repo": "o/r", "state_dir": str(state)}
+        with patch.object(config, "home", return_value=home), \
+                patch.object(config, "seat_concurrency", return_value=1), \
+                patch.object(run_supervisor, "Supervisor"):
+            gate.enqueue_isolated(loop, "reviewer", 1, "a" * 40)
+        self.assertTrue(state.is_dir())
+        self.assertEqual((state / "isolated-runs").stat().st_mode & 0o777, 0o700)
+        self.assertTrue((home / "state" / "review-loop-seat-locks").is_dir())
+
+    def test_worker_stderr_goes_to_a_bounded_log_beside_the_ledger(self):
+        sup = self.supervisor()
+        log = self.root / "ledger.sqlite.workers.log"
+        log.write_bytes(b"x" * (run_supervisor.WORKER_LOG_MAX + 1))
+        seen = []
+        def popen(*args, stderr=None, **kwargs):
+            seen.append(stderr if stderr == subprocess.DEVNULL else os.readlink(
+                f"/proc/self/fd/{stderr.fileno()}") if Path("/proc/self/fd").is_dir()
+                else stderr.name)
+            return unittest.mock.MagicMock()
+        with patch("review_loop.run_supervisor.subprocess.Popen", side_effect=popen):
+            sup._spawn()
+        self.assertEqual(seen, [str(log)])
+        self.assertEqual(log.stat().st_size, 0)  # rotated, not grown without bound
+        self.assertEqual((self.root / "ledger.sqlite.workers.log.1").stat().st_size,
+                         run_supervisor.WORKER_LOG_MAX + 1)
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+
+    def test_worker_that_finds_no_ledger_leaves_its_line_in_the_log(self):
+        sup = self.supervisor()
+        (self.root / "ledger.sqlite").write_bytes(b"")  # replaced: a worker must refuse it
+        sup._spawn()
+        self.assertEqual(_WORKERS[-1].wait(timeout=WORKER_EXIT_TIMEOUT), 0)
+        lines = own_lines(io.StringIO((self.root / "ledger.sqlite.workers.log").read_text()))
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("nothing to run", lines[0])
+        self.assertEqual((self.root / "ledger.sqlite").read_bytes(), b"")
+
+    def test_host_reports_a_vanished_ledger_loudly_and_once(self):
+        db = self.root / "watched" / "runs.sqlite"
+        for quiet in ("first creation", "reopen"):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                Supervisor(db)
+            self.assertEqual(own_lines(err), [], quiet)
+        for path in db.parent.glob("runs.sqlite*"):
+            if not path.name.endswith(".present"):
+                path.unlink()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            sup = Supervisor(db)
+        self.assertEqual(len(own_lines(err)), 1, err.getvalue())
+        self.assertIn("vanished", own_lines(err)[0])
+        sent = []
+        sup.notify(sent.append)
+        sup.notify(sent.append)
+        self.assertEqual(len(sent), 1, sent)
+        self.assertIn("vanished", sent[0])
+
+    def test_watchdog_notices_a_vanished_ledger_once(self):
+        from scripts import watchdog
+        db = self.root / "wd" / "runs.sqlite"
+        Supervisor(db)
+        db.unlink()
+        with contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            watchdog.sweep_ledger(db)
+            watchdog.sweep_ledger(db)
+        self.assertEqual(out.getvalue().count("vanished"), 1, out.getvalue())
+        missing = self.root / "never" / "runs.sqlite"
+        self.assertEqual(watchdog.sweep_ledger(missing), [])
+        self.assertFalse(missing.parent.exists())  # no ledger ever: nothing created
 
     def test_host_adopts_an_empty_ledger_file_with_a_diagnostic(self):
         db = self.root / "empty-host.sqlite"

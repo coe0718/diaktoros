@@ -92,11 +92,9 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     a ledger failure, or a spawn failure after the row committed (the row stays pending and a
     redelivery re-arms it). The unique repo/PR/head/seat/turn index deduplicates redelivery.
     """
+    from . import seat_model
     from .run_supervisor import SEATS, Supervisor
 
-    # Host-side: the worker writes the loop's state (broker audit, observer ledger) but never
-    # creates its directory, so the host makes sure it exists before the run is committed.
-    config._path(loop["state_dir"]).mkdir(parents=True, exist_ok=True)
     supervisor = Supervisor(
         config.home() / "state" / "review-loop-runs.sqlite",
         production_config=config.home() / "review-loop-runtime.json", hermes_home=config.home(),
@@ -104,6 +102,14 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
         # must know every seat's capacity to do so.
         capacity={s: config.seat_concurrency(loop, s) for s in SEATS},
     )
+    # Host-side, once the runtime is known to be valid (no state without one): a worker writes
+    # into the loop's state dir (broker audit, observer ledger), its private work root and the
+    # seat-lock dir, but never creates a host directory, so the host makes sure each exists
+    # before the run is committed or a worker is spawned.
+    state_dir = config._path(loop["state_dir"])
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "isolated-runs").mkdir(mode=0o700, exist_ok=True)
+    seat_model.lock_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
     supervisor.recover()
     delivery = f"{loop['repo']}:{number}:{head}:{seat}"
     supervisor.enqueue(delivery + (f':{turn_key}' if turn_key else ''),
