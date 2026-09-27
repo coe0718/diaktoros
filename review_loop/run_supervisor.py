@@ -98,6 +98,14 @@ FIXER_NOT_ADMITTED = ("fixer push not admitted: unattended fixer pushes were off
                       "no turn launched; after opting in, an operator `retry` re-admits it")
 FIXER_PUSH_REVOKED = ("fixer push revoked: unattended fixer pushes were disabled after this "
                       "run was admitted — no turn launched")
+# The exact reasons a push-policy cancellation is recorded with, the pre-#97 wording of the
+# not-admitted one included (rows on an existing ledger). The one definition runs_view,
+# next_step, cmd_retry and Supervisor.retry share: matched exactly, never by a prefix or LIKE.
+_FIXER_NOT_ADMITTED_BEFORE_97 = (
+    "fixer push not admitted: unattended fixer pushes were off when this verdict was enqueued, "
+    "and a later opt-in cannot authorize this run — no turn launched; this head needs a manual "
+    "fix or a new commit")
+POLICY_CANCELLATIONS = (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED, _FIXER_NOT_ADMITTED_BEFORE_97)
 
 
 class FixerPushDisabled(ValueError):
@@ -618,7 +626,7 @@ def policy_cancelled(error: object) -> bool:
     """Whether a cancelled run was cancelled by the fixer push policy (FIXER_NOT_ADMITTED /
     FIXER_PUSH_REVOKED) — the one cancellation an operator ``retry`` recovers. Any other
     cancellation is superseded (head moved, PR closed): a new head gets its own turn."""
-    return str(error or '').startswith('fixer push ')
+    return error in POLICY_CANCELLATIONS
 
 
 def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:
@@ -628,8 +636,9 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     # A fixer run cancelled at claim by the push policy is dead for its head until an operator
     # acts, so it is listed too (Tuck on #97); a superseded cancellation (head moved, PR
     # closed) is not, since a new head gets its own turn.
+    marks = ','.join('?' * len(POLICY_CANCELLATIONS))
     where, args = ("(r.state IN ('failed','uncertain','waiting') OR "
-                   "(r.state='cancelled' AND r.error LIKE 'fixer push %'))"), []
+                   f"(r.state='cancelled' AND r.error IN ({marks})))"), list(POLICY_CANCELLATIONS)
     if repo is not None:
         where += ' AND r.repo=?'
         args.append(repo)
@@ -1288,7 +1297,9 @@ class Supervisor:
         con.execute("DELETE FROM operator_notices WHERE run_id=?", (run_id,))
 
     def retry(self, run_id: str) -> str:
-        """Operator re-arm of a failed, waiting or cancelled run that never wrote (#53).
+        """Operator re-arm of a failed or waiting run that never wrote, or of a fixer run the
+        push policy cancelled at claim (#53; ``policy_cancelled``). Any other cancellation is
+        superseded (head moved, PR closed) and refused: a new head gets its own turn.
 
         Refuses anything that may have written — uncertain, quarantined, reconciled, or with
         a receipt claim, push intent or ruling on record — with the reconcile instructions.
