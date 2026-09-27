@@ -154,9 +154,11 @@ class GuardedWorker(unittest.TestCase):
             self.assertEqual(list((root / "home").rglob("*")), [])
 
     def _guarded_child(self, home: pathlib.Path, hermes_home: pathlib.Path, real: pathlib.Path):
-        env = {**os.environ, "HOME": str(home), "HERMES_HOME": str(hermes_home),
-               config.TEST_HOME_GUARD_ENV: "1", "REVIEW_LOOP_TEST_USER_HOME": str(real),
-               config.TEST_REAL_HOME_ENV: str(real)}
+        # No inherited shim dir: the child must place its own, as it would for a HOME it made.
+        env = {k: v for k, v in os.environ.items() if k != "REVIEW_LOOP_TEST_SHIM_DIR"}
+        env.update({"HOME": str(home), "HERMES_HOME": str(hermes_home),
+                    config.TEST_HOME_GUARD_ENV: "1", "REVIEW_LOOP_TEST_USER_HOME": str(real),
+                    config.TEST_REAL_HOME_ENV: str(real)})
         return subprocess.run([sys.executable, "-c", "import _home_guard"], cwd=TESTS, env=env,
                               text=True, capture_output=True, timeout=60)
 
@@ -175,8 +177,8 @@ class GuardedWorker(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             real = pathlib.Path(tmp) / "real"
             real.mkdir()
-            self._guarded_child(real / ".hermes/home", real / ".hermes/profiles/x", real)
-            self.assertEqual(list(real.rglob("*")), [])
+            result = self._guarded_child(real / ".hermes/home", real / ".hermes/profiles/x", real)
+            self.assertEqual(list(real.rglob("*")), [], result.stderr)
 
 
 class HermesShim(unittest.TestCase):
@@ -360,6 +362,21 @@ class NoRealGitHub(unittest.TestCase):
         clone = pathlib.Path(self.temp.name) / "clone"
         subprocess.run(["git", "clone", "-q", source, str(clone)], check=True, capture_output=True)
         self.assertEqual(isolation._fetch(clone).returncode, 0)
+
+    def test_isolation_fetch_fails_closed_when_git_cannot_name_the_remote(self):
+        clone = pathlib.Path(self.temp.name)
+        # A git without `ls-remote --get-url` (rc 129), and one that answers with nothing.
+        for probe in (subprocess.CompletedProcess([], 129, "", "usage: git ls-remote"),
+                      subprocess.CompletedProcess([], 0, "", "")):
+            ran = []
+
+            def stub_git(*args, **kwargs):
+                ran.append(args[0])
+                return probe if args[0] == "ls-remote" else subprocess.CompletedProcess(args, 0, "", "")
+            with mock.patch.object(isolation, "_git", stub_git):
+                with self.assertRaises(config.RealNetworkError):
+                    isolation._fetch(clone)
+            self.assertEqual(ran, ["ls-remote"], probe)
 
     def test_scp_style_remote_is_not_a_local_path(self):
         for url in ("git@github.com:acme/widgets.git", "github.com:acme/widgets.git"):

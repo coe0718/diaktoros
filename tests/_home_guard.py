@@ -38,9 +38,11 @@ _DROP = ("REVIEW_LOOP_CONFIG_DIR", "REVIEW_LOOP_SUBS", "REVIEW_LOOP_TOKEN_FILE")
 
 if os.environ.get(GUARD_ENV) == "1" and os.environ.get("REVIEW_LOOP_TEST_USER_HOME"):
     # Already guarded (a child of a guarded test): keep the parent's temp home.
+    _FRESH = False
     USER_HOME = pathlib.Path(os.environ["REVIEW_LOOP_TEST_USER_HOME"])
     TEST_HOME = pathlib.Path(os.environ["HOME"])
 else:
+    _FRESH = True
     USER_HOME = pathlib.Path.home()
     for _var, _default in (("RUSTUP_HOME", ".rustup"), ("CARGO_HOME", ".cargo")):
         if not os.environ.get(_var) and (USER_HOME / _default).is_dir():
@@ -51,6 +53,29 @@ else:
         os.environ.pop(_var, None)
     os.environ.update({"HOME": str(TEST_HOME), "HERMES_HOME": str(TEST_HOME / ".hermes"),
                        "REVIEW_LOOP_TEST_USER_HOME": str(USER_HOME), GUARD_ENV: "1"})
+
+def _protected_homes() -> list[pathlib.Path]:
+    homes = [USER_HOME]
+    try:
+        import pwd
+        homes.append(pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir))
+    except (ImportError, KeyError):
+        pass
+    if os.environ.get("REVIEW_LOOP_TEST_REAL_HOME"):     # the plugin's test-only fake real home
+        homes.append(pathlib.Path(os.environ["REVIEW_LOOP_TEST_REAL_HOME"]))
+    return homes
+
+
+def _inside_live(path: pathlib.Path) -> bool:
+    """Is ``path`` a protected home itself, or at or inside its ``.hermes``?"""
+    forms = {pathlib.Path(os.path.normpath(path.absolute())), path.resolve()}
+    for home in _protected_homes():
+        for base in {pathlib.Path(os.path.normpath(home.absolute())), home.resolve()}:
+            live = base / ".hermes"
+            if any(form == base or form == live or live in form.parents for form in forms):
+                return True
+    return False
+
 
 # No guarded test, nor any process it starts, may run the operator's real `hermes` CLI: it acts on
 # the real install (a bare `hermes` once resumed an interrupted source update and rebuilt the real
@@ -72,7 +97,13 @@ fi
 echo "{blocked}: set REVIEW_LOOP_TEST_FAKE_HERMES to a fake (tests/_home_guard.py)" >&2
 exit {code}
 """
+# Where the shim lives: the parent's (inherited), else inside a fresh process's own temp home,
+# else — a guarded child with no inherited shim dir, whose HOME it did not make — a temp dir of
+# its own. Never at a protected home or inside its .hermes, whatever was inherited.
 SHIM_DIR = pathlib.Path(os.environ.get("REVIEW_LOOP_TEST_SHIM_DIR") or TEST_HOME / ".review-loop-test-bin")
+if (not os.environ.get("REVIEW_LOOP_TEST_SHIM_DIR") and not _FRESH) or _inside_live(SHIM_DIR):
+    SHIM_DIR = pathlib.Path(tempfile.mkdtemp(prefix="review-loop-test-bin-")).resolve()
+    atexit.register(shutil.rmtree, SHIM_DIR, ignore_errors=True)
 if not (SHIM_DIR / "hermes").exists():
     import shlex
     _real = shutil.which("hermes") or ""
@@ -89,18 +120,6 @@ os.environ["REVIEW_LOOP_TEST_SHIM_DIR"] = str(SHIM_DIR)
 # operator's live install, whose `hermes` acts on the real ~/.hermes.
 HERMES_AGENT_SOURCE = (pathlib.Path(os.environ["HERMES_AGENT_SOURCE"])
                        if os.environ.get("HERMES_AGENT_SOURCE") else None)
-
-
-def _protected_homes() -> list[pathlib.Path]:
-    homes = [USER_HOME]
-    try:
-        import pwd
-        homes.append(pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir))
-    except (ImportError, KeyError):
-        pass
-    if os.environ.get("REVIEW_LOOP_TEST_REAL_HOME"):     # the plugin's test-only fake real home
-        homes.append(pathlib.Path(os.environ["REVIEW_LOOP_TEST_REAL_HOME"]))
-    return homes
 
 
 def source_refusal(source: pathlib.Path | None = None) -> str:
@@ -148,21 +167,11 @@ def needs_real_hermes(*prerequisites: bool, reason: str = "real-Hermes test prer
         return unittest.skipUnless(ready, reason)(target)
     return decorate
 
-def _inside_live(path: pathlib.Path) -> bool:
-    """Is ``path`` a protected home itself, or at or inside its ``.hermes``?"""
-    forms = {pathlib.Path(os.path.normpath(path.absolute())), path.resolve()}
-    for home in _protected_homes():
-        for base in {pathlib.Path(os.path.normpath(home.absolute())), home.resolve()}:
-            live = base / ".hermes"
-            if any(form == base or form == live or live in form.parents for form in forms):
-                return True
-    return False
-
-
 # Create both homes now, in a fresh guarded process and in a guarded child alike: run_supervisor
 # resolves HERMES_HOME strictly, so a guarded spawn must never depend on an earlier test (or the
-# parent) having happened to create it. Never inside a real home: a child that inherited one is
-# an escape, and the plugin's tripwire refuses it on first use; the guard must not write there.
+# parent) having happened to create it. Never at a protected home or inside its .hermes: a child
+# that inherited one is an escape, which the plugin's tripwire refuses on first use; the guard
+# itself must not write there.
 for _home in {os.environ.get("HOME"), os.environ.get("HERMES_HOME")} - {None, ""}:
     _home = pathlib.Path(_home)
     if _home.is_absolute() and not _inside_live(_home):

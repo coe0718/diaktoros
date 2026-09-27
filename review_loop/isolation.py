@@ -69,8 +69,20 @@ def _fetch(clone: pathlib.Path, *refs: str) -> subprocess.CompletedProcess:
     The URL is the one git will actually use (``ls-remote --get-url`` applies ``insteadOf``), and
     it is checked before git runs: ``RealNetworkError`` is a ``BaseException``, so the callers'
     best-effort ``except Exception`` cannot turn a refused fetch into a silent one.
+
+    Fails closed: when git cannot name that URL (a non-zero exit, or not exactly one line), there
+    is nothing to check, so nothing is fetched — refused under the test guard, and a failed
+    fetch (never a blind one) otherwise.
     """
-    remote = _git("ls-remote", "--get-url", "origin", cwd=clone).stdout.strip()
+    probe = _git("ls-remote", "--get-url", "origin", cwd=clone)
+    remote = (probe.stdout or "").strip()
+    if probe.returncode != 0 or not remote or "\n" in remote:
+        why = (f"git could not name origin's fetch URL (ls-remote --get-url rc={probe.returncode}); "
+               "not fetching")
+        if os.environ.get(config.TEST_HOME_GUARD_ENV):
+            raise config.RealNetworkError(f"test guard: {why}")
+        return subprocess.CompletedProcess(["git", "fetch", "origin", *refs], probe.returncode or 1,
+                                           "", why)
     config.guard_network(remote)
     return _git("fetch", "--quiet", *(("--prune",) if not refs else ()), "origin", *refs,
                 timeout=900, cwd=clone)
