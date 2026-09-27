@@ -904,7 +904,15 @@ class ObserverStatusDoctor(Base):
         import shlex
         commands = re.findall(r"`hermes review-loop ([^`]+)`", fix)
         self.assertTrue(commands, f"no runnable command in: {fix}")
-        rc, out = self.run_cli(shlex.split(commands[0]))
+        argv = shlex.split(commands[0])
+        if argv[0] == "doctor":
+            # Its --repair write is the remedy; --offline only keeps the read-only probes that
+            # follow it off the network. Its exit code is the whole preflight (this fixture has
+            # no cron job), so success is the repair line instead.
+            rc, out = self.run_cli([*argv, "--offline"])
+            self.assertIn("restored", out)
+            return out
+        rc, out = self.run_cli(argv)
         self.assertEqual(rc, 0, out)
         return out
 
@@ -1018,6 +1026,121 @@ class ObserverStatusDoctor(Base):
         self.assertEqual(self.observer_check().status, doctor.VERIFIED)
         self.assertIsNotNone(self.feed_target())
         self.assertIn(" (ok)", self.status())
+
+    # -- debt from the approval of #112 ---------------------------------------------------------
+
+    def test_a_route_another_writer_took_over_gets_an_honest_remedy(self):
+        self.install()
+        self.edit_registry("widgets-review", lambda e: e.update(script="someone_elses.py"))
+        checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
+        check = checks["gateway-script:widgets-review"]
+        self.assertTrue(check.failed, check.detail)
+        self.assertIn("not a review-loop gate", check.detail)
+        # Repair refuses a route something else holds: it may only come second, after the
+        # operator moves that entry out of the way.
+        self.assertTrue(check.fix.startswith("remove or rename that entry"), check.fix)
+        rc, out = self.run_cli(["doctor", "--loop", "widgets", "--offline", "--repair"])
+        self.assertIn("NOT restored", out)
+        routes.remove_route("widgets-review")
+        self.follow(check.fix)
+        checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
+        self.assertEqual(checks["gateway-script:widgets-review"].status, doctor.VERIFIED)
+        self.assertEqual(checks["route:widgets-review"].status, doctor.VERIFIED)
+
+    def test_apply_dry_run_reports_the_divergence_the_real_apply_reports(self):
+        self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
+                     "--adjudicator-profile", "tuck")
+        routes.remove_route("widgets-breach")
+        settings = {"cap": 5}              # another change in flight
+        rc_dry, dry = self.run_cli(["apply", "--loop", "widgets", "--dry-run"], settings=settings)
+        self.assertIn("cap: 3 → 5", dry)
+        self.assertEqual(config.load_id("widgets")["cap"], 3, "a dry run wrote the config")
+        rc, real = self.run_cli(["apply", "--loop", "widgets"], settings=settings)
+        self.assertEqual(rc, 1, real)
+        warned = [line for line in real.splitlines() if "⚠️ route" in line]
+        self.assertTrue(warned, real)
+        self.assertEqual([line for line in dry.splitlines() if "⚠️ route" in line], warned)
+        self.assertIn("apply would exit 1", dry)
+        self.assertEqual(rc_dry, 1, dry)
+
+    # One mutation per registry field the gateway or the feed reads. Each returns the entry.
+    MUTATIONS = {
+        "profile key removed": lambda e: e.pop("profile"),
+        "profile null": lambda e: e.update(profile=None),
+        "profile blank": lambda e: e.update(profile=""),
+        "profile whitespace": lambda e: e.update(profile="   "),
+        "profile padded": lambda e: e.update(profile=" tuck "),
+        "profile not a string": lambda e: e.update(profile=7),
+        "another profile": lambda e: e.update(profile="drey"),
+        "deliver changed": lambda e: e.update(deliver="discord"),
+        "deliver_extra added": lambda e: e.update(deliver_extra={"chat_id": "elsewhere"}),
+        "deliver_only false": lambda e: e.update(deliver_only=False),
+        "deliver_only removed": lambda e: e.pop("deliver_only"),
+        "prompt changed": lambda e: e.update(prompt="do something else"),
+        "script changed": lambda e: e.update(script="gate_reviewer.py"),
+        "events changed": lambda e: e.update(events=["push"]),
+        "secret removed": lambda e: e.pop("secret"),
+        "secret blank": lambda e: e.update(secret=""),
+        "host removed": lambda e: e.pop("host"),
+        "host elsewhere": lambda e: e.update(host="https://elsewhere.example"),
+        "enabled false": lambda e: e.update(enabled=False),
+        "enabled true": lambda e: e.update(enabled=True),
+        "route erased": None,
+    }
+
+    def sweep(self, with_record: bool):
+        from review_loop import route_intent
+        self.observer_install()
+        if not with_record:
+            self.forget_intent()
+        subs = pathlib.Path(self.env["REVIEW_LOOP_SUBS"])
+        pristine = subs.read_text()
+        results = {}
+        for label, mutate in self.MUTATIONS.items():
+            subs.write_text(pristine)
+            if mutate is None:
+                routes.remove_route("widgets-observe")
+            else:
+                self.edit_registry("widgets-observe", mutate)
+            check = self.route_check()
+            results[label] = (check.status, self.feed_target() is not None, check.fix)
+        return results
+
+    def test_doctor_and_the_feed_agree_on_every_mutation_without_a_record(self):
+        for label, (status, delivers, fix) in self.sweep(with_record=False).items():
+            with self.subTest(label):
+                self.assertEqual(status == doctor.VERIFIED, delivers,
+                                 f"doctor {status}, feed {'delivers' if delivers else 'refuses'}")
+                if status != doctor.VERIFIED:
+                    self.assertIn("`hermes review-loop ", fix)
+
+    def test_with_a_record_doctor_is_never_green_over_a_refusing_feed(self):
+        # The intent record makes doctor stricter on purpose: any drift from what the plugin
+        # wrote is red (and repaired), even a field the feed can live with.
+        for label, (status, delivers, fix) in self.sweep(with_record=True).items():
+            with self.subTest(label):
+                if status == doctor.VERIFIED:
+                    self.assertTrue(delivers, "green over a feed that refuses")
+                else:
+                    self.assertIn("`hermes review-loop ", fix)
+
+    def test_a_disabled_route_is_red_and_the_named_remedy_reenables_it(self):
+        # The gateway answers 403 for an explicit `enabled: false` (webhook.py), so neither
+        # doctor nor the feed may treat that route as a way to deliver.
+        for with_record in (True, False):
+            with self.subTest(with_record=with_record):
+                self.setUp()
+                self.observer_install()
+                if not with_record:
+                    self.forget_intent()
+                self.edit_registry("widgets-observe", lambda e: e.update(enabled=False))
+                check = self.route_check()
+                self.assertEqual(check.status, doctor.MISMATCH, check.detail)
+                self.assertIn("enabled", check.detail)
+                self.assertIsNone(self.feed_target())
+                self.follow(check.fix)
+                self.assertEqual(self.observer_check().status, doctor.VERIFIED)
+                self.assertIsNotNone(self.feed_target())
 
 
 if __name__ == "__main__":

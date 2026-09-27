@@ -43,8 +43,9 @@ VERSION = 1
 WATCHED = ("secret", "script", "prompt", "events", "profile", "deliver_only", "host")
 # The observer route also carries where its notices go: the feed refuses a route whose
 # destination is not the one the loop authorized (``observer.route_contract``), so a changed
-# ``deliver``/``deliver_extra`` is a dead feed, and restoring the recorded one is the repair.
-OBSERVER_WATCHED = WATCHED + ("deliver", "deliver_extra")
+# ``deliver``/``deliver_extra`` is a dead feed, and restoring the recorded one is the repair. So
+# is ``enabled: false``: the gateway answers 403, and the plugin never writes the key at all.
+OBSERVER_WATCHED = WATCHED + ("deliver", "deliver_extra", "enabled")
 
 
 def watched(role: str) -> tuple[str, ...]:

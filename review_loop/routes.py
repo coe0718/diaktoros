@@ -221,12 +221,15 @@ def contract_mismatch(entry: dict, expected: dict) -> list[str]:
     """The ``expected`` keys a registry entry does not honour (``[]`` when it matches).
 
     ``profile`` goes through :func:`route_profile`; an absent ``deliver_extra`` is ``{}``;
-    every other key must be equal as stored.
+    ``enabled`` is the gateway's reading (only an explicit ``false`` turns a route off, and it
+    then answers 403); every other key must be equal as stored.
     """
     wrong = []
     for key, value in expected.items():
         if key == "profile":
             ok = route_profile(entry) == value
+        elif key == "enabled":
+            ok = (entry.get("enabled", True) is not False) == value
         elif key == "deliver_extra":
             ok = (entry.get(key) or {}) == value
         else:

@@ -616,8 +616,10 @@ def check_observer_route(loop: dict, data: dict) -> Check | None:
                      "feed refuses to deliver through it",
                      f"run `hermes review-loop apply --loop {loop['id']}` to rebind it to "
                      f"{profile} (its secret is kept)")
-    # The very comparison the feed makes before every notice (routes.target): a route this
-    # passes is one the feed delivers through, and the other way round.
+    # The very comparison the feed makes before every notice (routes.target) — with the checks
+    # above and below, this is exactly observer._target(): doctor verifies the route if and only
+    # if the feed would deliver through it (tests sweep every registry field for that). Drift
+    # from the plugin's intent record is the one stricter case, reported by _intent_overlay.
     contract = observer.route_contract(loop)
     wrong = [key for key in routes.contract_mismatch(entry, contract) if key != "profile"]
     if wrong:
@@ -627,16 +629,13 @@ def check_observer_route(loop: dict, data: dict) -> Check | None:
     if not str(entry.get("secret") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a secret",
                      f"{remedy}: a notice without a secret cannot be signed")
-    host = str(loop.get("host") or "")
-    stored = str(entry.get("host") or "").removesuffix("/")
-    if not host:
+    # The registry's own `host` is not checked: the feed always posts to the loop's origin and
+    # never reads the registry's (a private PR link must not follow a registry edit), so a stale
+    # one changes nothing about delivery.
+    if not str(loop.get("host") or ""):
         return Check(f"route:{name}", ABSENT, "the loop names no gateway origin",
                      f"`hermes review-loop set --loop {loop['id']} --host "
                      "https://your-gateway.example`: the feed never borrows the registry's host")
-    if stored and stored != host:
-        return Check(f"route:{name}", MISMATCH,
-                     "registered gateway origin differs from the loop's configured origin "
-                     "(URLs withheld)", f"{remedy} rewrites it at the loop's origin")
     muted = " · muted" if cfg.get("mute") else ""
     return Check(f"route:{name}", VERIFIED,
                  f"{profile} · observer feed → {contract['deliver']} · deliver-only{muted}")

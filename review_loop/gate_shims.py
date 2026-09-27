@@ -164,7 +164,7 @@ def divergence(loop: dict, *, include_missing: bool = True) -> dict:
         entry = registry.get(name) if isinstance(registry, dict) else None
         recorded = intent.get(name) if isinstance(intent.get(name), dict) else None
         restorable = recorded is not None and (
-            str(recorded.get("profile") or "default"), recorded.get("script")) == want
+            routes.route_profile(recorded), recorded.get("script")) == want
         repair = f"`hermes review-loop doctor --loop {lid} --repair` (restores the route the plugin wrote)"
         if not isinstance(entry, dict):
             if include_missing:
@@ -176,6 +176,15 @@ def divergence(loop: dict, *, include_missing: bool = True) -> dict:
         if have == want:
             continue
         detail = f"registry runs {_side(*have)}, loop config says {_side(*want)}"
+        if not route_intent.owned(entry):
+            # Something else holds the name: repair reports it as a conflict and apply refuses
+            # to take it over, so neither may be named first. The entry has to move out of the way.
+            then = repair if restorable else recreate_fix(loop)
+            out[name] = (f"{detail} — {entry.get('script')!r} is not a review-loop gate: "
+                         "something else holds this route name",
+                         f"remove or rename that entry (it is not this plugin's, so repair and "
+                         f"apply leave it alone), then {then}", "mismatch")
+            continue
         if not want[0]:
             fix = (f"name the {role} seat's profile (its `profile` under `seats.{role}` in the loop config, or "
                    f"the plugin settings' {role} profile), then `hermes review-loop apply --loop "

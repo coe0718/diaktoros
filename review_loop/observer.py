@@ -139,7 +139,8 @@ def route_contract(loop: dict) -> dict:
     return {"profile": config.seat_profile(loop, "observer"),
             "deliver": cfg.get("deliver", "telegram"),
             "deliver_only": True, "prompt": prompts.OBSERVER, "script": "observe.py",
-            "events": ["pull_request"], "deliver_extra": cfg.get("deliver_extra") or {}}
+            "events": ["pull_request"], "deliver_extra": cfg.get("deliver_extra") or {},
+            "enabled": True}
 
 def route_remedy(loop: dict) -> str:
     """The command that puts this loop's observer route back to its contract, as a fix line.

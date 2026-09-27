@@ -679,10 +679,14 @@ def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
     return 0 if _install_shims(loop, report=False) else 2
 
 
-def _diverged(loop: dict) -> bool:
+def _diverged(loop: dict, *, rewritten=()) -> bool:
     """Say so when a route still is not what the config installs, even after a push: never
-    report success over a route the gateway runs under another profile or gate."""
-    left = gate_shims.divergence(loop)
+    report success over a route the gateway runs under another profile or gate.
+
+    ``rewritten`` names the routes this apply is about to write from the config: a dry run passes
+    them, so it prints exactly what the real apply will still find afterwards."""
+    left = {name: value for name, value in gate_shims.divergence(loop).items()
+            if name not in set(rewritten)}
     for name, (detail, fix, _status) in left.items():
         print(f"  ⚠️ route {name}: {detail} — fix: {fix}")
     return bool(left)
@@ -1324,8 +1328,14 @@ def cmd_apply(args) -> int:
         return 2
 
     if args.dry_run:
+        rewritten = {bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
+        if getattr(args, "recreate_routes", False):
+            rewritten |= set(missing.values())
+        left = _diverged(updated, rewritten=rewritten)
         print("(dry run — nothing written: no loop config, no routes touched)")
-        return 0
+        if left:
+            print("  apply would exit 1: the route(s) above still disagree with the config after it")
+        return 1 if left else 0
 
     busy = _busy_seats(loop, rebinding) if rebinding else []
     if busy and not getattr(args, "while_busy", False):
