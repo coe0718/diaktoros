@@ -69,6 +69,11 @@ RULINGS = ("ACCEPT", "REJECT", "RESPEC")
 # reported as uncertain and never replayed.
 COMMENT_STATES = ("pending", "none", "denied", "posting", "posted", "uncertain")
 _WORKERS: list[subprocess.Popen] = []
+# Host limits the operator sets in the supervisor's environment. The detached worker starts from a
+# scratch environment, so each is forwarded by name (and only these): without it an override would
+# silently never reach the process that enforces it.
+HOST_LIMIT_ENV = ("REVIEW_LOOP_CRATE_CACHE_GIB",)
+DEPS_MAX = 600                  # the ledger's dependencies line (``deps.LEDGER_MAX``)
 # Why a fixer row is cancelled at claim instead of launched. A run admitted while pushes were
 # off can never publish (a later opt-in does not authorize it, #22); a run whose loop was opted
 # out after admission would be refused at the broker. Either way the turn would only spend a
@@ -445,6 +450,52 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
             + pr_record(loop, row, reviews, comments) + note)
 
 
+def _read_only(db: str | Path):
+    """A connection that writes nothing — no migration, no WAL creation — or None when the ledger
+    is absent. With no live WAL, ``immutable`` keeps even a read-only connection from creating
+    -wal/-shm files; with one, those files already exist."""
+    path = Path(db)
+    if not path.is_file():
+        return None
+    from urllib.parse import quote
+    live = Path(f'{path}-wal').exists()
+    con = sqlite3.connect(f"file:{quote(str(path))}?{'mode=ro' if live else 'immutable=1'}",
+                          uri=True, timeout=5)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def dependency_view(db: str | Path, repo: str, pr: int | None = None,
+                    limit: int = 5) -> list[dict] | None:
+    """The newest runs that recorded a dependency prefetch, for ``status``/``explain`` (#51).
+
+    Read-only; None when the ledger is absent or unreadable, [] when nothing was recorded.
+    """
+    try:
+        con = _read_only(db)
+        if con is None:
+            return None
+        try:
+            if 'deps' not in {c[1] for c in con.execute('PRAGMA table_info(runs)')}:
+                return []
+            where, args = "repo=? AND deps IS NOT NULL", [repo]
+            if pr is not None:
+                where += " AND pr=?"
+                args.append(pr)
+            return [dict(row) for row in con.execute(
+                "SELECT id,repo,pr,head,seat,state,deps,updated FROM runs WHERE " + where
+                + " ORDER BY updated DESC, id LIMIT ?", (*args, max(1, min(limit, 20))))]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+def describe_dependencies(row: dict) -> str:
+    return (f"{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']} — "
+            f"{row['deps']}")
+
+
 class Supervisor:
     def __init__(self, db: str | Path, *, fixture_command: list[str] | None = None,
                  fixture_mode: bool = False, capacity: dict[str, int] | None = None,
@@ -493,6 +544,10 @@ class Supervisor:
                 con.execute('ALTER TABLE runs ADD COLUMN push_intent REAL')
             if 'push_confirmed' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
                 con.execute('ALTER TABLE runs ADD COLUMN push_confirmed REAL')
+            if 'deps' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
+                # The host dependency prefetch (#51): "fetching …" while it runs, then each
+                # ecosystem's outcome. Host-written, one bounded line, never tool output.
+                con.execute('ALTER TABLE runs ADD COLUMN deps TEXT')
             con.execute('COMMIT')
 
     def _connect(self):
@@ -513,9 +568,21 @@ class Supervisor:
         with self._connect() as con:
             return [dict(row) for row in con.execute(
                 "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.state,r.pid,r.error,"
-                "r.outcome,n.state AS notice FROM runs r LEFT JOIN operator_notices n "
+                "r.outcome,r.deps,n.state AS notice FROM runs r LEFT JOIN operator_notices n "
                 "ON n.run_id=r.id WHERE r.state IN ('failed','uncertain') "
                 "ORDER BY r.created,r.id LIMIT 100")]
+
+    def record_dependencies(self, run_id: str, owner: str, text: str) -> None:
+        """The owning worker's note of its turn's dependency prefetch (#51), bounded and printable.
+
+        Only a live run's owner writes it, so a lost worker cannot overwrite a newer attempt.
+        """
+        text = "".join(ch if ch.isprintable() else " " for ch in str(text))
+        if len(text) > DEPS_MAX:
+            text = text[:DEPS_MAX - 1] + "…"
+        with self._connect() as con:
+            con.execute("UPDATE runs SET deps=?, updated=? WHERE id=? AND owner=? "
+                        "AND state IN ('launching','running')", (text, time.time(), run_id, owner))
 
     def quarantine_push(self, run_id: str, repo: str, pr: int, head: str,
                         outcome: str) -> None:
@@ -874,6 +941,9 @@ class Supervisor:
                 env[name] = os.environ[name]
         if os.environ.get("REVIEW_LOOP_GH_STUB") and self.fixture_mode:
             env["REVIEW_LOOP_GH_STUB"] = os.environ["REVIEW_LOOP_GH_STUB"]
+        for name in HOST_LIMIT_ENV:
+            if os.environ.get(name):
+                env[name] = os.environ[name]
         _WORKERS[:] = [worker for worker in _WORKERS if worker.poll() is None]
         _WORKERS.append(subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1242,7 +1312,10 @@ class Supervisor:
                   proxy_model=inference.proxy_model, client_identity=inference.client_identity,
                   prompt=prompt, review_diff=change.diff if change else None,
                   timeout=int(self.child_timeout),
-                  work_root=config.state_dir(loop) / "isolated-runs")
+                  work_root=config.state_dir(loop) / "isolated-runs",
+                  # The prefetch phase lands in the ledger as it happens (#51): a slow one shows
+                  # as "fetching", not as a silent turn, and its outcome outlives the run.
+                  progress=lambda text: self.record_dependencies(run_id, owner, text))
         except Exception as exc:
             error = f"isolated turn failed: {type(exc).__name__}"
         finally:
