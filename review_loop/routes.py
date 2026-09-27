@@ -18,6 +18,7 @@ import os
 import pathlib
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 
@@ -200,6 +201,14 @@ def _write_registry(path: pathlib.Path, data: dict, expected=_UNCHECKED) -> None
 def route(name: str) -> dict | None:
     entry = all_routes().get(name)
     return entry if isinstance(entry, dict) else None
+
+
+def route_name_of(url: str) -> str:
+    """The route a webhook URL posts to: its complete last ``/webhooks/<name>`` segment ("" when
+    it has none). One spelling of the rule for every caller — a substring match would take
+    another route whose name merely contains this one."""
+    path = urllib.parse.urlsplit(str(url or "")).path.rstrip("/")
+    return path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
 
 
 def url_for_profile(name: str, profile: str | None, host: str | None = None) -> str | None:

@@ -29,7 +29,7 @@ def main():
 
     def api(loop, path, method='GET', body=None, login=None):
         if path.endswith('/hooks?per_page=100'):
-            return [{'id': key, 'config': {'url': url}} for key, url in hooks.items()]
+            return [{'id': key, 'active': True, 'config': {'url': url}} for key, url in hooks.items()]
         key = int(path.rsplit('/', 1)[-1])
         if method == 'PATCH':
             hooks[key] = body['config']['url']

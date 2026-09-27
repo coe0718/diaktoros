@@ -875,8 +875,7 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
     exact = [hook for hook in hooks if posted_url(hook).rstrip("/") == url.rstrip("/")]
     # A wrong origin/profile for the same webhook route is a mismatch, not an absent hook.
     candidates = exact or [hook for hook in hooks if
-                           urlsplit(posted_url(hook)).path.rstrip("/").endswith(
-                               "/webhooks/" + name)]
+                           routes.route_name_of(posted_url(hook)) == name]
     match = next((hook for hook in candidates if hook.get("active") and
                   event in (hook.get("events") or [])), None) or (candidates[0] if candidates else None)
     if match is None:
