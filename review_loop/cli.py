@@ -741,7 +741,14 @@ def _write_config_locked(loop: dict, *, policy_change: bool = False) -> pathlib.
     if path.exists() and not policy_change:
         # Set/apply snapshots never own this switch. Re-read under the same lock
         # used by explicit enable/disable and by the broker's ref operation.
-        current = config.load_id(loop['id'])
+        try:
+            current = config.load_id(loop['id'])
+        except config.ConfigError:
+            # `set --read-token` repairing a file whose only defect is its missing reader.
+            current = config.load_id_for_reader_repair(loop['id'],
+                                                       str(loop.get('read_token') or ''))
+            if current is None:
+                raise
         if current['repo'] != loop['repo']:
             raise config.ConfigError('repository changed during config update')
         loop = {**loop, 'unattended_fixer_push': current['unattended_fixer_push']}
@@ -1067,8 +1074,18 @@ def cmd_set(args) -> int:
     try:
         loop = config.load_id(args.loop)
     except config.ConfigError as exc:
-        print(f"no such loop: {exc}")
-        return 2
+        # The one repair a verb can make to a file the loader refuses: a missing reader, named
+        # here with --read-token (and its --token). Any other defect still refuses.
+        try:
+            loop = config.load_id_for_reader_repair(args.loop,
+                                                    str(getattr(args, "read_token", "") or "").strip())
+        except config.ConfigError as other:
+            exc = other
+            loop = None
+        if loop is None:
+            print(f"no such loop: {exc}")
+            return 2
+        print(f"repairing {args.loop}: it has no read_token; setting the reader named by --read-token")
 
     wanted = {"concurrency": args.concurrency, "cap": args.cap, "base": args.base,
               "clone": args.clone, "grace_min": args.grace_min,
@@ -1676,10 +1693,17 @@ def cmd_explain(args) -> int:
             print(f"no such loop: {exc}")
             return 2
     else:
-        loops = config.all_loops()
-        if len(loops) > 1:
-            print(f"{len(loops)} loops are configured "
-                  f"({', '.join(loop['id'] for loop in loops)}) — name one with --loop")
+        loops, skipped = _readable_loops()
+        for line in skipped:
+            print(line)
+        # A file that will not load is still a configured loop: the question may be about it.
+        names = [loop["id"] for loop in loops] + [
+            line.split(":", 1)[0].removeprefix("skipping ").removesuffix(".json")
+            for line in skipped]
+        if len(names) > 1:
+            print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
+            return 2
+        if skipped:
             return 2
         if not loops:
             print(f"no loops configured in {config.config_dir()}")
