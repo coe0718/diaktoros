@@ -253,8 +253,12 @@ class RouteWorkerVertical(unittest.TestCase):
 
     def test_a_file_list_github_refuses_still_runs_a_stated_partial_review(self):
         # #110: a 404 on pulls/7/files is GitHub's answer, not an outage. The turn runs, and the
-        # seat is told it cannot see the whole change and must not approve it.
+        # seat is told it cannot see the whole change and must not approve it — and the broker
+        # enforces that: the seat's APPROVE is refused unspent, its REQUEST_CHANGES is the write.
         self.world['files_status'] = 404
+        client = 'python -m review_loop.broker_client review --body-file /work/review.txt '
+        self.world['model_command'] = (client + '--verdict APPROVE; '
+                                       + client + '--verdict REQUEST_CHANGES')
         route = self.route()
         self.assertEqual((route.returncode, route.stdout.strip()), (0, '[SILENT]'), route.stderr)
         row = self.result('succeeded')
@@ -263,6 +267,14 @@ class RouteWorkerVertical(unittest.TestCase):
         query = '\n'.join(str(m.get('content')) for m in first if m.get('role') == 'user')
         self.assertIn("could not read the PR's file list (PR file page 1: HTTP 404", query)
         self.assertIn('You cannot see the whole change: do not approve it', query)
+        self.assertEqual([w['event'] for w in self.world['writes']], ['REQUEST_CHANGES'])
+        output = '\n'.join(str(m.get('content')) for _, request in self.world['model']
+                           for m in request.get('messages', []) if m.get('role') == 'tool')
+        self.assertIn('the host could not show you the whole change', output)
+        with sqlite3.connect(self.home / 'state/review-loop-runs.sqlite') as con:
+            self.assertEqual(con.execute('SELECT verdict FROM review_receipts').fetchone(),
+                             ('CHANGES_REQUESTED',))
+            self.assertIn('HTTP 404', con.execute('SELECT partial_view FROM runs').fetchone()[0])
 
     def test_the_change_under_review_reaches_the_seat(self):
         route = self.route()

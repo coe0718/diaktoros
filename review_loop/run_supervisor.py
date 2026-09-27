@@ -290,9 +290,15 @@ GITHUB_FILES_CAP = 3000
 
 
 class PRChange(NamedTuple):
-    """The prompt section for the change, and the bounded unified diff staged beside it."""
+    """The prompt section for the change, and the bounded unified diff staged beside it.
+
+    ``partial`` is empty when the host could show the seat the whole change, else the host's own
+    words for what it could not show (#93, #110). The worker records it in the run ledger and the
+    run's scope before launch, and the broker refuses an approval while it is set.
+    """
     record: str
     diff: str
+    partial: str = ''
 
 
 def _line(text: object, limit: int) -> str:
@@ -442,14 +448,22 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
         diff_total += len(part.encode())
     if len(unlisted) > len(unnamed):
         unnamed.append(f"- … and {len(unlisted) - len(unnamed)} more (see {REVIEW_DIFF})")
+    # The broker enforces the "do not approve" below (broker_ipc.PARTIAL_VIEW_REFUSAL): an
+    # approval from this run is refused, so the seat is told which verdict it can give.
+    partial = ''
     if files_error:
+        partial = f"the PR's file list could not be read ({files_error})"
         listed = [f"The host could not read the PR's file list ({files_error}). You cannot see "
-                  f"the whole change: do not approve it; say that the file list was unavailable, "
+                  f"the whole change: do not approve it (the broker refuses an approval from "
+                  f"this turn); request changes, say that the file list was unavailable, "
                   f"and review only what you can read in `/work` (the head's files, no history)."]
     if unlisted_error:
+        partial = partial or (f"GitHub did not list every changed file and the host could not "
+                              f"name the rest ({unlisted_error})")
         unnamed = [f"GitHub did not list every changed file, and the host could not name the "
                    f"rest ({unlisted_error}). You cannot see the whole change: do not approve "
-                   f"it; say that the PR is too large to review whole."]
+                   f"it (the broker refuses an approval from this turn); request changes and "
+                   f"say that the PR is too large to review whole."]
     elif unnamed:
         unnamed.insert(0, "Named by the host from the merge-base and head trees; they have no "
                           "patches here, so read them in `/work`.")
@@ -489,7 +503,7 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
         header += f"# {diff_cut} file(s) omitted: the diff is bounded to {DIFF_BYTES} bytes.\n"
     if files_error:
         header += f"# The file list could not be read ({files_error}): no files, no patches.\n"
-    return PRChange(record, header + ''.join(diff_parts))
+    return PRChange(record, header + ''.join(diff_parts), partial)
 
 
 def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
@@ -672,6 +686,41 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
             "REASON --acknowledge-no-live-worker")
 
 
+def view_view(db: str | Path, repo: str, pr: int | None = None,
+              limit: int = 5) -> list[dict] | None:
+    """The newest runs whose seat could not see the whole change (#93, #110), for ``explain``.
+
+    Read-only; None when the ledger is absent or unreadable, [] when every recorded view was whole.
+    """
+    try:
+        con = _read_only(db)
+        if con is None:
+            return None
+        try:
+            if 'partial_view' not in {c[1] for c in con.execute('PRAGMA table_info(runs)')}:
+                return []
+            where, args = "repo=? AND partial_view IS NOT NULL AND partial_view != ''", [repo]
+            if pr is not None:
+                where += " AND pr=?"
+                args.append(pr)
+            return [dict(row) for row in con.execute(
+                "SELECT id,repo,pr,head,seat,state,partial_view,updated FROM runs WHERE " + where
+                + " ORDER BY updated DESC, id LIMIT ?", (*args, max(1, min(limit, 20))))]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+def describe_view(row: dict) -> str:
+    """One ``explain`` line for a turn whose seat could not see the whole change."""
+    what = ("the broker refuses its approval, so this head can only get REQUEST_CHANGES: "
+            "review it by hand (or split the PR) — the loop cannot approve it"
+            if row['seat'] == 'reviewer' else "the seat worked from a partial view")
+    return (f"{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']} — could not see "
+            f"the whole change: {row['partial_view']}; {what}")
+
+
 def describe_dependencies(row: dict) -> str:
     return (f"{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']} — "
             f"{row['deps']}")
@@ -734,6 +783,11 @@ class Supervisor:
                 # The host dependency prefetch (#51): "fetching …" while it runs, then each
                 # ecosystem's outcome. Host-written, one bounded line, never tool output.
                 con.execute('ALTER TABLE runs ADD COLUMN deps TEXT')
+            if 'partial_view' not in columns:
+                # Whether the seat was shown the whole change (#93, #110): '' when it was, the
+                # host's reason when it was not, NULL before the change record was built. Written
+                # only by the owning worker; the broker refuses an approval while it is set.
+                con.execute('ALTER TABLE runs ADD COLUMN partial_view TEXT')
             con.execute('COMMIT')
 
     def _connect(self):
@@ -765,6 +819,21 @@ class Supervisor:
         with self._connect() as con:
             con.execute("UPDATE runs SET deps=?, updated=? WHERE id=? AND owner=? "
                         "AND state IN ('launching','running')", (text, time.time(), run_id, owner))
+
+    def record_view(self, run_id: str, owner: str, partial: str) -> None:
+        """The owning worker's record of whether this turn's seat sees the whole change.
+
+        ``partial`` is '' for a complete view, else the host's reason (bounded, printable). Only
+        a live run's owner writes it, before the seat starts; a write that lands nowhere raises,
+        so no turn launches without its view on record.
+        """
+        text = "".join(ch if ch.isprintable() else " " for ch in str(partial or ''))[:DEPS_MAX]
+        with self._connect() as con:
+            changed = con.execute("UPDATE runs SET partial_view=?, updated=? WHERE id=? AND owner=? "
+                                  "AND state IN ('launching','running')",
+                                  (text, time.time(), run_id, owner)).rowcount
+        if changed != 1:
+            raise ValueError("run ownership lost before the view was recorded")
 
     def quarantine_push(self, run_id: str, repo: str, pr: int, head: str,
                         outcome: str) -> None:
@@ -1611,9 +1680,6 @@ class Supervisor:
                 # A fresh review after a retarget starts from nothing: old verdicts are
                 # neither its round count nor its PR record.
                 reviews = effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
-            scope = broker_ipc.RunScope(row["repo"], row["pr"], row["head"],
-                                        row["seat"], head["ref"], row['id'],
-                                        str(self.db), row['generation'])
             # The reviewer and fixer see the change itself (#50); the adjudicator needs both
             # sides' comments. A read that failed is transient (retry); a moved head is not.
             try:
@@ -1628,6 +1694,14 @@ class Supervisor:
                         or str(exc).startswith('PR files unreadable'):
                     raise RetryableError(str(exc)) from None
                 raise
+            # Host-owned, before launch (#93, #110): whether this seat sees the whole change, in
+            # the ledger (explain, the receipt claim) and in the scope the broker is built from.
+            # Nothing inside the namespace can reach either.
+            partial = change.partial if change else ''
+            self.record_view(run_id, owner, partial)
+            scope = broker_ipc.RunScope(row["repo"], row["pr"], row["head"],
+                                        row["seat"], head["ref"], row['id'],
+                                        str(self.db), row['generation'], partial_view=partial)
             if row['seat'] == 'adjudicator':
                 from . import state as state_mod
                 # Last step before launch: mark the breach as being ruled on. Anyone else's

@@ -1348,6 +1348,17 @@ def _dependency_lines(loop: dict, pr: int | None = None, limit: int = 5) -> list
     return [describe_dependencies(row) for row in rows or []]
 
 
+def _view_lines(loop: dict, pr: int, head: str | None, limit: int = 3) -> list[str]:
+    """This PR's turns whose seat could not see the whole change (#93, #110), from the ledger.
+
+    Only the current head's: a new head gets a new change record. Read-only; an absent or
+    unreadable ledger is no lines.
+    """
+    from .run_supervisor import describe_view, view_view
+    rows = view_view(_ledger_path(), loop["repo"], pr, limit) or []
+    return [describe_view(row) for row in rows if head and row["head"] == head]
+
+
 def cmd_status(args) -> int:
     loops = [config.load_id(args.loop)] if args.loop else config.all_loops()
     for loop in loops:
@@ -1563,6 +1574,10 @@ def cmd_explain(args) -> int:
         print(f"  {'in-flight:':<12}{report['inflight']}")
         for line in _dependency_lines(loop, args.pr, limit=3):
             print(f"  {'deps:':<12}{line}")
+        # A head the host could not show whole cannot be approved by the loop (the broker refuses
+        # it); only an operator can end it, so it is said here rather than left to the cap.
+        for line in _view_lines(loop, args.pr, report.get("head")):
+            print(f"  {'view:':<12}{line}")
         print(f"  {'escalation:':<12}{report['escalation']}")
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")
