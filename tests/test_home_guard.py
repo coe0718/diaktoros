@@ -18,20 +18,30 @@ from unittest import mock
 
 TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent))
-from review_loop import cli, config, gh, safe_push, state, trusted_fetch  # noqa: E402
+from review_loop import cli, config, doctor, gh, isolation, safe_push, state, trusted_fetch  # noqa: E402
 from review_loop.run_supervisor import Supervisor  # noqa: E402
 
 LEAKING = "test_boundary.BoundaryTests.test_gate_blocks_before_workspace_or_gateway_payload"
 
 
 def first_import(path: pathlib.Path) -> str:
-    for node in ast.parse(path.read_text()).body:
+    """The module imported by the first statement after the docstring and ``__future__``.
+
+    ``""`` when that statement is not an import: an assignment, a call or a block before the
+    guard import means code ran before the guard did.
+    """
+    body = ast.parse(path.read_text()).body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        body = body[1:]
+    for node in body:
         if isinstance(node, ast.ImportFrom) and node.module == "__future__":
             continue
         if isinstance(node, ast.Import):
             return node.names[0].name
         if isinstance(node, ast.ImportFrom):
             return node.module or ""
+        return ""
     return ""
 
 
@@ -40,6 +50,22 @@ class HomeGuard(unittest.TestCase):
         files = [*sorted(TESTS.glob("test_*.py")), TESTS / "run_tests.py", TESTS / "harness/fixture.py"]
         late = [f.name for f in files if first_import(f) != "_home_guard"]
         self.assertEqual(late, [], "import _home_guard before anything else in these suites")
+
+    def test_first_import_means_the_first_statement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = pathlib.Path(tmp) / "test_x.py"
+            late = ("X = 1\nimport _home_guard\n",
+                    "import sys\nsys.path.insert(0, '.')\nimport _home_guard\n",
+                    "print('side effect')\nimport _home_guard\n",
+                    "if True:\n    import _home_guard\n")
+            for body in late:
+                module.write_text('"""doc"""\n' + body)
+                self.assertNotEqual(first_import(module), "_home_guard", body)
+            for body in ('"""doc"""\nimport _home_guard\nX = 1\n',
+                         '"""doc"""\nfrom __future__ import annotations\nimport _home_guard\n',
+                         'import _home_guard\n'):
+                module.write_text(body)
+                self.assertEqual(first_import(module), "_home_guard", body)
 
     def test_guard_is_armed_with_a_temp_home(self):
         real = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -127,6 +153,30 @@ class GuardedWorker(unittest.TestCase):
             self.assertEqual((root / "launched").read_text(), "launched")
             self.assertEqual(list((root / "home").rglob("*")), [])
 
+    def _guarded_child(self, home: pathlib.Path, hermes_home: pathlib.Path, real: pathlib.Path):
+        env = {**os.environ, "HOME": str(home), "HERMES_HOME": str(hermes_home),
+               config.TEST_HOME_GUARD_ENV: "1", "REVIEW_LOOP_TEST_USER_HOME": str(real),
+               config.TEST_REAL_HOME_ENV: str(real)}
+        return subprocess.run([sys.executable, "-c", "import _home_guard"], cwd=TESTS, env=env,
+                              text=True, capture_output=True, timeout=60)
+
+    def test_guarded_child_creates_the_homes_it_inherits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "real").mkdir()
+            home, hermes_home = root / "home", root / "elsewhere/hermes"
+            result = self._guarded_child(home, hermes_home, root / "real")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(home.is_dir())
+            self.assertTrue(hermes_home.is_dir())
+            self.assertEqual(list((root / "real").rglob("*")), [])
+
+    def test_guarded_child_never_creates_a_home_inside_the_real_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = pathlib.Path(tmp) / "real"
+            real.mkdir()
+            self._guarded_child(real / ".hermes/home", real / ".hermes/profiles/x", real)
+            self.assertEqual(list(real.rglob("*")), [])
 
 
 class HermesShim(unittest.TestCase):
@@ -280,6 +330,50 @@ class NoRealGitHub(unittest.TestCase):
         with self.assertRaises(config.RealNetworkError):
             safe_push._git_cas(self.loop, "acme/widgets", "fix-7", "a" * 40, [], "m", "reader",
                                {"name": "n", "email": "e@example.invalid"})
+
+    def _source_repo(self) -> str:
+        source = pathlib.Path(self.temp.name) / "source"
+        source.mkdir()
+        for args in (["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                                      "commit", "-q", "--allow-empty", "-m", "c"]):
+            subprocess.run(["git", *args], cwd=source, check=True, capture_output=True)
+        return str(source)
+
+    def test_isolation_fetch_from_github_is_refused_before_git_runs(self):
+        loop = {**self.loop, "id": "widgets", "clone": self._source_repo(),
+                "state_dir": str(pathlib.Path(self.temp.name) / "state")}
+        ran, real_git = [], isolation._git
+
+        def recording_git(*args, **kwargs):
+            ran.append(args)
+            if args[0] == "fetch":      # never let git itself reach the network, even when red
+                return subprocess.CompletedProcess(args, 128, "", "blocked by the test")
+            return real_git(*args, **kwargs)
+        with mock.patch.object(isolation, "_git", recording_git):
+            with self.assertRaises(config.RealNetworkError) as caught:
+                isolation.ensure(loop, 7, "reviewer")
+        self.assertIn("https://github.com/acme/widgets.git", str(caught.exception))
+        self.assertEqual([args for args in ran if args[0] == "fetch"], [])
+
+    def test_isolation_fetch_from_a_local_remote_still_runs(self):
+        source = self._source_repo()
+        clone = pathlib.Path(self.temp.name) / "clone"
+        subprocess.run(["git", "clone", "-q", source, str(clone)], check=True, capture_output=True)
+        self.assertEqual(isolation._fetch(clone).returncode, 0)
+
+    def test_scp_style_remote_is_not_a_local_path(self):
+        for url in ("git@github.com:acme/widgets.git", "github.com:acme/widgets.git"):
+            with self.assertRaises(config.RealNetworkError):
+                config.guard_network(url)
+        self.assertEqual(config.guard_network("./relative:path"), "./relative:path")
+
+    def test_doctor_gateway_probe_is_refused_for_a_real_host(self):
+        for host in ("https://gateway.example.invalid", "gateway.example.invalid"):
+            with mock.patch("socket.create_connection") as connect:
+                with self.assertRaises(config.RealNetworkError):
+                    doctor.gateway_reachable(host)
+            connect.assert_not_called()
+        self.assertFalse(doctor.gateway_reachable("http://127.0.0.1:1")[0])
 
     def test_loopback_fakes_keep_working(self):
         for url in ("http://127.0.0.1:8080/x", "http://localhost/x", "http://[::1]:9/x",

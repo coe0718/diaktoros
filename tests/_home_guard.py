@@ -8,10 +8,11 @@ import in a process it:
   ``USER_HOME`` below). The real-Hermes tests take their Hermes source only from an explicit
   ``HERMES_AGENT_SOURCE`` — a disposable checkout, never the live ``~/.hermes/hermes-agent``
   (``needs_real_hermes`` fails them loudly if it points there);
-* points ``HOME`` and ``HERMES_HOME`` at a fresh temp directory (creating both) and drops
+* points ``HOME`` and ``HERMES_HOME`` at a fresh temp directory and drops
   inherited overrides that could name real state, so ``config.home()``, ``Path.home()``, ``~``
   and every subprocess that inherits the environment (gate scripts, run_supervisor workers, the
-  watchdog) land there;
+  watchdog) land there. Both are created on import, in a guarded child too (never inside a
+  real home);
 * puts a ``hermes`` shim first on PATH that refuses to run (see ``FAKE_HERMES_ENV``);
 * arms the plugin's tripwire (``REVIEW_LOOP_TEST_HOME_GUARD``): while it is set, resolving the
   Hermes home, a ledger, a state dir or a cleanup root inside the real home's ``.hermes`` raises
@@ -50,9 +51,6 @@ else:
         os.environ.pop(_var, None)
     os.environ.update({"HOME": str(TEST_HOME), "HERMES_HOME": str(TEST_HOME / ".hermes"),
                        "REVIEW_LOOP_TEST_USER_HOME": str(USER_HOME), GUARD_ENV: "1"})
-    # Create it now: run_supervisor resolves HERMES_HOME strictly, so a guarded spawn must not
-    # depend on some earlier test having happened to create it.
-    (TEST_HOME / ".hermes").mkdir()
 
 # No guarded test, nor any process it starts, may run the operator's real `hermes` CLI: it acts on
 # the real install (a bare `hermes` once resumed an interrupted source update and rebuilt the real
@@ -149,6 +147,27 @@ def needs_real_hermes(*prerequisites: bool, reason: str = "real-Hermes test prer
                  and (HERMES_AGENT_SOURCE / "venv/bin/hermes").exists() and all(prerequisites))
         return unittest.skipUnless(ready, reason)(target)
     return decorate
+
+def _inside_live(path: pathlib.Path) -> bool:
+    """Is ``path`` a protected home itself, or at or inside its ``.hermes``?"""
+    forms = {pathlib.Path(os.path.normpath(path.absolute())), path.resolve()}
+    for home in _protected_homes():
+        for base in {pathlib.Path(os.path.normpath(home.absolute())), home.resolve()}:
+            live = base / ".hermes"
+            if any(form == base or form == live or live in form.parents for form in forms):
+                return True
+    return False
+
+
+# Create both homes now, in a fresh guarded process and in a guarded child alike: run_supervisor
+# resolves HERMES_HOME strictly, so a guarded spawn must never depend on an earlier test (or the
+# parent) having happened to create it. Never inside a real home: a child that inherited one is
+# an escape, and the plugin's tripwire refuses it on first use; the guard must not write there.
+for _home in {os.environ.get("HOME"), os.environ.get("HERMES_HOME")} - {None, ""}:
+    _home = pathlib.Path(_home)
+    if _home.is_absolute() and not _inside_live(_home):
+        _home.mkdir(parents=True, exist_ok=True)
+
 
 RUST = (pathlib.Path(os.environ.get("RUSTUP_HOME") or USER_HOME / ".rustup")
         / "toolchains/stable-x86_64-unknown-linux-gnu")

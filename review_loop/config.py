@@ -844,17 +844,23 @@ class RealNetworkError(BaseException):
     """
 
 
+# Git's scp-like remote syntax: [user@]host:path, with the colon before any slash.
+_SCP_REMOTE = re.compile(r"^(?:[^@/:]+@)?(\[[^\]/]+\]|[^/:]+):")
+
+
 def guard_network(url: str) -> str:
     """Return ``url``; under the test guard, raise unless it stays on this machine.
 
     Loopback hosts (127.0.0.0/8, ::1, localhost) and local paths/``file:`` URLs are the tests'
     own fakes and pass. Everything else — above all api.github.com and github.com — means a test
-    mocked one seam (say ``gh.api``) and not the one underneath (``gh.fetch``).
+    mocked one seam (say ``gh.api``) and not the one underneath (``gh.fetch``). Git's scp-style
+    ``[user@]host:path`` (a colon before any slash) names a host, not a local path.
     """
     if not os.environ.get(TEST_HOME_GUARD_ENV):
         return url
+    scp = None if "://" in url else _SCP_REMOTE.match(url)
     parts = urlsplit(url)
-    host = parts.hostname or ""
+    host = scp.group(1).strip("[]") if scp else parts.hostname or ""
     if not host and parts.scheme in ("", "file"):
         return url
     if host == "localhost":

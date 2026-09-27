@@ -63,6 +63,19 @@ def _git(*args: str, cwd=None, timeout: int = 300) -> subprocess.CompletedProces
                           text=True, timeout=timeout)
 
 
+def _fetch(clone: pathlib.Path, *refs: str) -> subprocess.CompletedProcess:
+    """``git fetch`` from origin; under the test guard, only from a local or loopback remote.
+
+    The URL is the one git will actually use (``ls-remote --get-url`` applies ``insteadOf``), and
+    it is checked before git runs: ``RealNetworkError`` is a ``BaseException``, so the callers'
+    best-effort ``except Exception`` cannot turn a refused fetch into a silent one.
+    """
+    remote = _git("ls-remote", "--get-url", "origin", cwd=clone).stdout.strip()
+    config.guard_network(remote)
+    return _git("fetch", "--quiet", *(("--prune",) if not refs else ()), "origin", *refs,
+                timeout=900, cwd=clone)
+
+
 def _configure(clone: pathlib.Path, loop: dict, login: str) -> None:
     """Point origin at GitHub with no credential helper; set commit identity."""
     remote = f"https://github.com/{loop['repo']}.git"
@@ -132,13 +145,13 @@ def ensure(loop: dict, number: int, seat: str, head: str = "", login: str = "") 
     # Best effort: bring in refs from GitHub so the head can be checked out. A failure here is
     # not fatal on its own — the source may already carry the ref — but an impossible checkout is.
     try:
-        _git("fetch", "--quiet", "--prune", "origin", timeout=900, cwd=clone)
+        _fetch(clone)
     except Exception as exc:
         log(f"isolation fetch failed for #{number}: {exc}")
 
     if head:
         if _git("checkout", "--quiet", "--detach", head, cwd=clone).returncode != 0:
-            _git("fetch", "--quiet", "origin", head, timeout=900, cwd=clone)
+            _fetch(clone, head)
             if _git("checkout", "--quiet", "--detach", head, cwd=clone).returncode != 0:
                 log(f"isolation cannot check out {head[:7]} for #{number} — no isolated run")
                 # Never leave a half-built sandbox behind: if this call created it, it goes too.
