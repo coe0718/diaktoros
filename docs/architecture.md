@@ -97,7 +97,7 @@ claims a pending row only while its seat has capacity and no other run occupies 
 claim in `locks.json` (and the head's in-flight mark) is the *visible* copy of that occupancy: the
 isolated worker writes it when its run launches — with the run's own budget, so its TTL fits the
 turn — and removes it when the run ends. A run that ends `uncertain` keeps its claim until an
-operator reconciles it. `explain`, `status`, the queue drain and the watchdog's "that run died"
+operator reconciles it; the reconciliation frees it. `explain`, `status`, the queue drain and the watchdog's "that run died"
 report read the claim; none of them can start or stop a turn.
 
 The gates' release paths below also free a claim, and are what end the *PR's* turn for the other

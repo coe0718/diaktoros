@@ -717,13 +717,18 @@ def claim_seat(loop: dict, row, budget: float):
         st = state_mod.state_for(loop)
         key = gate.seat_key(loop, row['pr'])
         st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}", budget=budget)
-        mark = (f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}"
-                if row['seat'] in INFLIGHT_LABEL else None)
-        if mark:
-            st.inflight(mark, record=True)
-        return st, row['seat'], key, row['head'], mark
     except Exception:
         return None
+    # The claim is written: from here on its release must stay reachable, whatever the mark
+    # does (a failed mark write must not orphan the claim).
+    mark = (f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}"
+            if row['seat'] in INFLIGHT_LABEL else None)
+    if mark:
+        try:
+            st.inflight(mark, record=True)
+        except Exception:
+            mark = None
+    return st, row['seat'], key, row['head'], mark
 
 
 def release_seat(claim, state: str | None) -> None:
@@ -1736,7 +1741,8 @@ class Supervisor:
             raise ValueError('explicit reconciliation acknowledgement and reason required')
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
-            row = con.execute("SELECT pid,state,launch_intent FROM runs WHERE id=?", (run_id,)).fetchone()
+            row = con.execute("SELECT pid,state,launch_intent,repo,pr,head,seat FROM runs WHERE id=?",
+                              (run_id,)).fetchone()
             if row is None or row['state'] != 'uncertain':
                 con.execute('COMMIT')
                 return False
@@ -1755,7 +1761,20 @@ class Supervisor:
                         "WHERE id=? AND state='uncertain'",
                         ('operator reconciliation: ' + reason, time.time(), run_id))
             con.execute('COMMIT')
-            return True
+        # The uncertain run kept its seat claim and in-flight mark until now (#98): the
+        # operator's reconciliation is what ends it, so it frees them too. Best effort — the
+        # ledger row above is the decision; a loop that is no longer configured has no claim.
+        try:
+            from . import config, gate, state as state_mod
+            loop = config.by_repo(row['repo'])
+            if loop is not None:
+                st = state_mod.state_for(loop)
+                st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'])
+                if row['seat'] in INFLIGHT_LABEL:
+                    st.inflight_clear(f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}")
+        except Exception:
+            pass
+        return True
 
     def budget_of(self, run_id: str) -> float:
         """The row's own turn budget; a legacy row without one gets this worker's child_timeout."""

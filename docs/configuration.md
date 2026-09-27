@@ -298,7 +298,7 @@ did not. Token values are never printed: only which login reads which file.
 
 | file | what it holds |
 |---|---|
-| `locks.json` | `{seat: {"repo#PR": {at, head, why, budget}}}` — the seat claim of each live isolated run, written by its worker at launch (with the run's budget) and removed when it ends; an `uncertain` run keeps it until reconciled. The run ledger enforces capacity; this is its visible copy |
+| `locks.json` | `{seat: {"repo#PR": {at, head, why, budget}}}` — the seat claim of each live isolated run, written by its worker at launch (with the run's budget) and removed when it ends; an `uncertain` run keeps it until `run_supervisor reconcile` frees it (with the head's in-flight mark). The run ledger enforces capacity; this is its visible copy |
 | `pending.json` | `{seat: {"repo#PR": {at, head, url, reason}}}` — held, not run: a turn the run ledger could not take (the private runtime was missing, say), or a changes-requested verdict held while unattended fixer pushes are off. The watchdog drains it |
 | `inflight.json` | `{"review:PR:sha" / "fix:PR:sha": ts}` — a reviewer/fixer run for this head is live: marked by its worker at launch, cleared when it ends (and after `inflight_ttl_min` regardless) |
 | `breach.json` | `{"repo#PR": {head, rounds, cap, reason, at, status}}` — `delivery-pending` retries on a current-head watchdog sweep; `awaiting-adjudication` means POST accepted; `adjudicating` means the ruling run was claimed |

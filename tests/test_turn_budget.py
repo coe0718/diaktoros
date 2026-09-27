@@ -501,6 +501,31 @@ class ClockSignatures(unittest.TestCase):
         with self.assertRaises(TypeError):
             config.worst_turn_s(loop, "reviewer", 900)
 
+    def test_a_non_finite_stored_budget_never_breaks_a_reader(self):
+        # #98 review 5, item 1: NaN/inf pass isinstance(float) and then died in int() out of
+        # live_locks, active, died_locks and explain — and the watchdog lost the whole loop.
+        from review_loop import state as state_mod
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(bad=bad):
+                self.assertIsNone(config.claim_budget({"budget": bad}))
+                with self.assertRaises(ValueError):
+                    config.seat_ttl_s(config.normalize(_loop()), seat="reviewer", recorded=bad)
+        with tempfile.TemporaryDirectory() as tmp:
+            loop = config.normalize(_loop(state_dir=tmp))
+            st = state_mod.state_for(loop)
+            now = time.time()
+            # Written as the JSON a hand edit (or another writer) can leave: NaN / Infinity.
+            st.locks.parent.mkdir(parents=True, exist_ok=True)
+            st.locks.write_text('{"reviewer": {"acme/widgets#1": {"at": %f, "head": "%s", '
+                                '"budget": NaN}, "acme/widgets#2": {"at": %f, "budget": '
+                                'Infinity}}}' % (now - 60, HEAD, now - 60))
+            self.assertEqual(set(st.live_locks("reviewer")), {"acme/widgets#1", "acme/widgets#2"})
+            self.assertEqual(set(st.active("reviewer")), {"acme/widgets#1", "acme/widgets#2"})
+            lines = _watchdog().died_locks(loop, st._load(st.locks, {}), now + 3 * 3600)
+            self.assertEqual(len(lines), 2)          # judged on the seat's own clock, not lost
+            local = gate._explain_state(loop, st, "acme/widgets#1", 1, HEAD, now)
+            self.assertIn("reviewer holds it", local["seat"])
+
     def test_a_non_numeric_recorded_budget_is_refused(self):
         loop = config.normalize(_loop())
         for bad in ("reviewer", "", [], True):
@@ -714,6 +739,52 @@ class GateToProductionWorker(unittest.TestCase):
             raise trusted_turn.TurnBudgetExceeded(["bwrap"], kw["timeout"], 30)
         self.assertEqual(self.run_production(killed)["state"], "failed")
         self.assertEqual(st.live_locks("fixer"), {})
+
+    def test_reconciling_an_uncertain_run_frees_its_claim(self):
+        # #98 review 5, item 2: the docs say the claim is kept "until an operator reconciles
+        # it" — so reconciliation is what frees it (and the head's in-flight mark).
+        from review_loop import state as state_mod
+        st = state_mod.state_for(self.loop)
+        key = gate.seat_key(self.loop, 8)
+
+        def stuck(_loop, scope, **kw):
+            try:
+                raise trusted_turn.TurnBudgetExceeded(["bwrap"], kw["timeout"], 30)
+            except trusted_turn.TurnBudgetExceeded as exc:
+                raise trusted_turn.TurnDenied(trusted_turn.drain_failure(exc)) from exc
+        row = self.run_production(stuck)
+        self.assertEqual(row["state"], "uncertain")
+        self.assertIn(key, st.live_locks("fixer"))
+        self.assertTrue(st.inflight(f"fix:8:{HEAD}"))
+        sup = self.ledger()
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET pid=NULL WHERE id=?", (row["id"],))   # worker gone
+        self.assertTrue(sup.reconcile_uncertain(row["id"], reason="inspected: no push landed",
+                                                acknowledge_no_live_worker=True))
+        self.assertEqual(st.live_locks("fixer"), {})
+        self.assertFalse(st.inflight(f"fix:8:{HEAD}"))
+
+    def test_a_failed_in_flight_mark_does_not_orphan_the_claim(self):
+        # #98 review 5, item 3: the claim was written, the mark write failed, and the whole
+        # claim was dropped from release's view — so nothing could ever clear it.
+        from review_loop import state as state_mod
+        st = state_mod.state_for(self.loop)
+        seen = {}
+
+        def run_turn(_loop, scope, **kw):
+            seen["locks"] = dict(st.live_locks("fixer"))
+            return 0
+        real = state_mod.LoopState.inflight
+
+        def failing(self_, key, record=False):
+            if record:
+                raise OSError("disk full")
+            return real(self_, key, record)
+        with mock.patch.object(state_mod.LoopState, "inflight", failing):
+            row = self.run_production(run_turn)
+        self.assertEqual(row["state"], "succeeded")
+        self.assertIn(gate.seat_key(self.loop, 8), seen["locks"])     # the claim was taken
+        self.assertEqual(st.live_locks("fixer"), {})                  # and released after all
 
     def test_an_uncertain_run_keeps_its_claim(self):
         from review_loop import state as state_mod

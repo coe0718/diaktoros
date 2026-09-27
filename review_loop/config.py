@@ -51,6 +51,7 @@ import contextlib
 
 import ipaddress
 import json
+import math
 import os
 import pathlib
 import re
@@ -496,8 +497,9 @@ def _recorded_budget(recorded) -> int:
     is not a number is refused: a silently ignored value would be a silently wrong clock."""
     if recorded is None:
         return 0
-    if isinstance(recorded, bool) or not isinstance(recorded, (int, float)):
-        raise ValueError(f"recorded turn budget must be seconds, got {recorded!r}")
+    if (isinstance(recorded, bool) or not isinstance(recorded, (int, float))
+            or not math.isfinite(recorded)):
+        raise ValueError(f"recorded turn budget must be finite seconds, got {recorded!r}")
     return int(recorded)
 
 
@@ -506,7 +508,10 @@ def claim_budget(entry) -> float | None:
     hand-edited claim whose value is missing or not a number, which then gets its seat's own
     clock rather than an error in a read-only report."""
     value = entry.get("budget") if isinstance(entry, dict) else None
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    # NaN and infinity are floats too: a claim holding one gets its seat's clock, like any
+    # other value that is not a number of seconds (#98).
+    return (value if isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) else None)
 
 
 def turn_parts(loop: dict, seat: str | None = None, *, recorded: float | None = None) -> dict:
