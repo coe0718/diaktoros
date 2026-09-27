@@ -110,30 +110,69 @@ BLOCKED = "real hermes blocked under test guard"
 SHIM_EXIT = 97
 _SHIM = """#!/bin/sh
 real={real}
+refuse() {{ echo "{blocked}: $1" >&2; exit {code}; }}
+inside() {{ case "$fake/" in "$1"/*) refuse "REVIEW_LOOP_TEST_FAKE_HERMES is inside a protected home ($1)";; esac; }}
 if [ -n "$REVIEW_LOOP_TEST_FAKE_HERMES" ]; then
   fake=$(readlink -f -- "$REVIEW_LOOP_TEST_FAKE_HERMES")
   if [ -n "$real" ] && [ "$fake" = "$(readlink -f -- "$real")" ]; then
-    echo "{blocked}: REVIEW_LOOP_TEST_FAKE_HERMES names the real binary" >&2
-    exit {code}
+    refuse "REVIEW_LOOP_TEST_FAKE_HERMES names the real binary"
   fi
+  {home_checks}
+  if [ -n "$REVIEW_LOOP_TEST_REAL_HOME" ]; then inside "$(readlink -f -- "$REVIEW_LOOP_TEST_REAL_HOME")"; fi
   exec "$REVIEW_LOOP_TEST_FAKE_HERMES" "$@"
 fi
-echo "{blocked}: set REVIEW_LOOP_TEST_FAKE_HERMES to a fake (tests/_home_guard.py)" >&2
-exit {code}
+refuse "set REVIEW_LOOP_TEST_FAKE_HERMES to a fake (tests/_home_guard.py)"
 """
+
+
+def shim_script(real: str, homes: list[pathlib.Path]) -> str:
+    """The shim's text: ``real`` is the operator's hermes (refused as a fake, like any fake that
+    resolves inside one of ``homes``)."""
+    import shlex
+    forms = sorted({str(form) for home in homes
+                    for form in (pathlib.Path(os.path.normpath(home.absolute())), home.resolve())})
+    checks = "\n  ".join(f"inside {shlex.quote(form)}" for form in forms) or ":"
+    return _SHIM.format(real=shlex.quote(real), blocked=BLOCKED, code=SHIM_EXIT, home_checks=checks)
+
+
+def _real_hermes(skip: set[pathlib.Path]) -> str:
+    """The operator's ``hermes``, resolved from PATH with every shim dir (``skip``) and the test
+    home stripped, and any guard shim ignored wherever it lives — never plain ``shutil.which``,
+    whose first hit may be an inherited shim that would stand in for the real binary."""
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        directory = pathlib.Path(entry)
+        try:
+            resolved = directory.resolve()
+        except OSError:
+            continue
+        if resolved in skip or TEST_HOME.resolve() in (resolved, *resolved.parents):
+            continue
+        candidate = directory / "hermes"
+        try:
+            if not (candidate.is_file() and os.access(candidate, os.X_OK)):
+                continue
+            with candidate.open("rb") as stream:
+                if BLOCKED.encode() in stream.read(4096):
+                    continue                      # another guard's shim, not a hermes
+        except OSError:
+            continue
+        return str(candidate)
+    return ""
 # Where the shim lives: the parent's (inherited), else inside a fresh process's own temp home,
 # else — a guarded child with no inherited shim dir, whose HOME it did not make — a temp dir of
-# its own. Never at a protected home or inside its .hermes, whatever was inherited.
-SHIM_DIR = pathlib.Path(os.environ.get("REVIEW_LOOP_TEST_SHIM_DIR") or TEST_HOME / ".review-loop-test-bin")
-if (not os.environ.get("REVIEW_LOOP_TEST_SHIM_DIR") and not _FRESH) or _inside_live(SHIM_DIR):
+# its own. Never anywhere under a protected home, whatever was inherited: an inherited shim dir
+# there is replaced, never created or written.
+_INHERITED_SHIM = os.environ.get("REVIEW_LOOP_TEST_SHIM_DIR")
+SHIM_DIR = pathlib.Path(_INHERITED_SHIM or TEST_HOME / ".review-loop-test-bin")
+if (not _INHERITED_SHIM and not _FRESH) or _under_a_home(SHIM_DIR):
     SHIM_DIR = pathlib.Path(tempfile.mkdtemp(prefix="review-loop-test-bin-")).resolve()
     atexit.register(shutil.rmtree, SHIM_DIR, ignore_errors=True)
 if not (SHIM_DIR / "hermes").exists():
-    import shlex
-    _real = shutil.which("hermes") or ""
+    _skip = {SHIM_DIR.resolve()} | ({pathlib.Path(_INHERITED_SHIM).resolve()} if _INHERITED_SHIM else set())
     SHIM_DIR.mkdir(parents=True, exist_ok=True)
-    (SHIM_DIR / "hermes").write_text(_SHIM.format(real=shlex.quote(_real), blocked=BLOCKED,
-                                                  code=SHIM_EXIT))
+    (SHIM_DIR / "hermes").write_text(shim_script(_real_hermes(_skip), _protected_homes()))
     (SHIM_DIR / "hermes").chmod(0o755)
 _path = os.environ.get("PATH", "/usr/bin:/bin").split(os.pathsep)
 os.environ["PATH"] = os.pathsep.join([str(SHIM_DIR), *(p for p in _path if p != str(SHIM_DIR))])

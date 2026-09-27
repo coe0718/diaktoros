@@ -858,14 +858,25 @@ def guard_network(url: str) -> str:
     own fakes and pass. Everything else — above all api.github.com and github.com — means a test
     mocked one seam (say ``gh.api``) and not the one underneath (``gh.fetch``). Git's scp-style
     ``[user@]host:path`` (a colon before any slash) names a host, not a local path.
+
+    Fails closed: only a schemed URL (``scheme://…``, ``file:`` included, ``tcp://host:port`` for
+    a raw connect), an scp-style remote, or an absolute or ``./``/``../`` local path is judged at
+    all. Anything else — a bare ``github.com``, ``gateway``, an empty string — is refused.
     """
     if not os.environ.get(TEST_HOME_GUARD_ENV):
         return url
+    if url.startswith(("/", "./", "../")):
+        return url                                        # a local path
     scp = None if "://" in url else _SCP_REMOTE.match(url)
     parts = urlsplit(url)
-    host = scp.group(1).strip("[]") if scp else parts.hostname or ""
-    if not host and parts.scheme in ("", "file"):
-        return url
+    if scp:
+        host = scp.group(1).strip("[]")
+    elif "://" in url or parts.scheme == "file":
+        host = parts.hostname or ""
+        if not host and parts.scheme == "file":
+            return url                                    # file:///path, file:/path
+    else:
+        host = ""                                         # a bare name: nothing to judge
     if host == "localhost":
         return url
     try:
@@ -886,7 +897,8 @@ def guard_real_hermes(executable: str) -> str:
 
     Deliberately wider than ``guard_real_home`` (which protects ``<home>/.hermes``): a ``hermes``
     anywhere under the real home — ``~/.local/bin/hermes`` included — is the operator's own. The
-    test guard therefore keeps its temp root, and the shim in it, outside the home entirely.
+    test guard therefore keeps its temp root outside every protected home, and never creates or
+    writes its shim under one: an inherited shim dir there is replaced by a temp dir outside.
     """
     if not os.environ.get(TEST_HOME_GUARD_ENV) or not os.path.isabs(executable):
         return executable

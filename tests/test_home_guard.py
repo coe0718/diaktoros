@@ -6,6 +6,7 @@ names a temp directory) so proving the tripwire never touches the operator's act
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import ast
+import json
 import os
 import pathlib
 import pwd
@@ -207,6 +208,60 @@ class GuardedWorker(unittest.TestCase):
             shim_dir = pathlib.Path(result.stdout.strip())
             self.assertNotIn(real, [shim_dir, *shim_dir.parents])
 
+    def test_guarded_child_relocates_an_inherited_shim_dir_anywhere_in_the_real_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            real = root / "real"
+            real.mkdir()
+            # Outside .hermes, but where config.guard_real_hermes calls a `hermes` the operator's.
+            result = self._guarded_child(root / "home", root / "home/.hermes", real,
+                                         shim_dir=real / ".local/bin")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(list(real.rglob("*")), [], result.stderr)
+            shim_dir = pathlib.Path(result.stdout.strip())
+            self.assertNotIn(real, [shim_dir, *shim_dir.parents])
+
+    def test_relocated_shim_still_refuses_the_real_hermes(self):
+        # The attack: a child inherits a shim dir inside the real home (so the shim is relocated)
+        # with that dir first on PATH, and names the operator's hermes as its "fake".
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            real, marker = root / "real", root / "RAN-THE-REAL-HERMES"
+            binaries = {}
+            for where in (".hermes/bin", ".local/bin"):
+                binary = real / where / "hermes"
+                binary.parent.mkdir(parents=True)
+                binary.write_text(f"#!/bin/sh\ntouch {marker}\necho THE REAL HERMES RAN\n")
+                binary.chmod(0o755)
+                binaries[where] = binary
+            probe = ("import _home_guard, json, re, shlex, subprocess\n"
+                     "text = (_home_guard.SHIM_DIR / 'hermes').read_text()\n"
+                     "real = shlex.split(re.search(r'^real=(.*)$', text, re.M).group(1) or \"''\")\n"
+                     "run = subprocess.run(['hermes', '--version'], capture_output=True, text=True)\n"
+                     "print(json.dumps({'shim': str(_home_guard.SHIM_DIR), 'real': real[0] if real else '',"
+                     " 'rc': run.returncode, 'out': run.stdout, 'err': run.stderr}))\n")
+            for fake in binaries.values():
+                with self.subTest(fake=str(fake.relative_to(real))):
+                    env = {k: v for k, v in os.environ.items() if k != "REVIEW_LOOP_TEST_SHIM_DIR"}
+                    env.update({"HOME": str(root / "home"), "HERMES_HOME": str(root / "home/.hermes"),
+                                config.TEST_HOME_GUARD_ENV: "1",
+                                "REVIEW_LOOP_TEST_USER_HOME": str(real),
+                                config.TEST_REAL_HOME_ENV: str(real),
+                                "REVIEW_LOOP_TEST_SHIM_DIR": str(real / ".hermes/bin"),
+                                "PATH": os.pathsep.join([str(real / ".hermes/bin"),
+                                                         str(real / ".local/bin"), "/usr/bin", "/bin"]),
+                                _home_guard.FAKE_HERMES_ENV: str(fake)})
+                    result = subprocess.run([sys.executable, "-c", probe], cwd=TESTS, env=env,
+                                            text=True, capture_output=True, timeout=60)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    seen = json.loads(result.stdout)
+                    self.assertEqual(seen["rc"], _home_guard.SHIM_EXIT, seen)
+                    self.assertIn(_home_guard.BLOCKED, seen["err"])
+                    self.assertNotIn("THE REAL HERMES RAN", seen["out"])
+                    self.assertFalse(marker.exists())
+                    # real= is the first non-shim hermes on the PATH with the shim dirs stripped.
+                    self.assertEqual(seen["real"], str(binaries[".local/bin"]))
+
     def test_guarded_child_never_creates_a_home_inside_the_real_one(self):
         with tempfile.TemporaryDirectory() as tmp:
             real = pathlib.Path(tmp) / "real"
@@ -322,8 +377,7 @@ class HermesShim(unittest.TestCase):
         real.write_text(f"#!/bin/sh\ntouch {marker}\n")
         real.chmod(0o755)
         shim = self.root / "hermes"
-        shim.write_text(_home_guard._SHIM.format(real=str(real), blocked=_home_guard.BLOCKED,
-                                                 code=_home_guard.SHIM_EXIT))
+        shim.write_text(_home_guard.shim_script(str(real), []))
         shim.chmod(0o755)
         result = subprocess.run([str(shim)], capture_output=True, text=True, timeout=10,
                                 env={**os.environ, _home_guard.FAKE_HERMES_ENV: str(real)})
@@ -477,6 +531,15 @@ class NoRealGitHub(unittest.TestCase):
                 with self.assertRaises(config.RealNetworkError):
                     isolation._fetch(clone)
             self.assertEqual(ran, ["ls-remote"], probe)
+
+    def test_bare_hostnames_fail_closed(self):
+        for url in ("github.com", "gateway", "api.github.com/user", "", "example.com/x.git"):
+            with self.subTest(url=url), self.assertRaises(config.RealNetworkError):
+                config.guard_network(url)
+        for url in ("/abs/remote.git", "./rel/remote.git", "../rel/remote.git",
+                    "file:///tmp/remote.git", "tcp://127.0.0.1:9", "http://localhost:8080/x"):
+            with self.subTest(url=url):
+                self.assertEqual(config.guard_network(url), url)
 
     def test_scp_style_remote_is_not_a_local_path(self):
         for url in ("git@github.com:acme/widgets.git", "github.com:acme/widgets.git"):
