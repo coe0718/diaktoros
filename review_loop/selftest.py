@@ -827,13 +827,26 @@ def check_build_fits(report: Report, loop: dict, number: int | None) -> None:
                    "REVIEW_LOOP_CHECKOUT_SIZE_GIB if a real target outgrows the cap")
         return
     size = _du(target)
-    if size <= contained.CHECKOUT_SIZE:
-        report.add(step, "sandbox:build-fits", PASS, f"{_gib(size)} in {target.name} fits {caps}")
+    # A FAIL has to mean a real seat's build will not fit. The clone's accumulated target cannot
+    # mean that: it holds every profile, incremental state and stale artifact, and a mature Rust
+    # workspace reaches tens of GB. So fail only against the measured floor for a scoped build, and
+    # report a bigger accumulated target as the upper bound it is.
+    if contained.CHECKOUT_SIZE < contained.SCOPED_BUILD_FLOOR:
+        report.add(step, "sandbox:build-fits", FAIL,
+                   f"/work is {_gib(contained.CHECKOUT_SIZE)}, under the "
+                   f"{_gib(contained.SCOPED_BUILD_FLOOR)} a scoped build needs "
+                   "(measured 2.4 GiB for attest-core)",
+                   "raise REVIEW_LOOP_CHECKOUT_SIZE_GIB in the environment the gateway runs in, "
+                   "restart it, and confirm with `doctor`")
         return
-    report.add(step, "sandbox:build-fits", FAIL,
-               f"{_gib(size)} in {target} does not fit /work ({_gib(contained.CHECKOUT_SIZE)})",
-               "raise REVIEW_LOOP_CHECKOUT_SIZE_GIB in the environment the gateway runs in, "
-               "restart it, and confirm with `doctor`")
+    if size > contained.CHECKOUT_SIZE:
+        report.add(step, "sandbox:build-fits", WARN,
+                   f"{_gib(size)} in {target} exceeds the cap ({_gib(contained.CHECKOUT_SIZE)}), but "
+                   "that is the clone's accumulated target — every profile, incremental and stale "
+                   "artifacts — not what a turn builds (a fresh scoped build is about 2.4 GiB)",
+                   "nothing to fix unless a scoped build in the sandbox exceeds the cap")
+        return
+    report.add(step, "sandbox:build-fits", PASS, f"{_gib(size)} in {target.name} fits {caps}")
 
 
 def check_authorization(report: Report, loop: dict, number: int | None) -> dict | None:

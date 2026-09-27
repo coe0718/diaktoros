@@ -182,6 +182,41 @@ class LauncherLimitTests(unittest.TestCase):
                 self.assertTrue(any(target == m or target.startswith(m + "/") for m in mounts),
                                 f"{target} is not backed by a sized tmpfs: {mounts}")
 
+    def test_an_accumulated_target_warns_where_a_small_cap_fails(self):
+        """A FAIL must mean a seat's real build will not fit — never the clone's own history."""
+        from review_loop import selftest
+
+        class Recorder(selftest.Report):
+            def __init__(self):
+                self.calls = []
+
+            def add(self, step, name, status, detail, fix=""):
+                self.calls.append((name, status, detail))
+                return status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = pathlib.Path(tmp) / "clone"
+            target = clone / "target"
+            target.mkdir(parents=True)
+            # A working clone's target really reaches this: 70 GB of every profile, incremental
+            # state and stale artifact. Sparse, so the test costs nothing on disk.
+            with open(target / "accumulated.bin", "wb") as fh:
+                fh.seek(12 * 1024 ** 3 - 1)
+                fh.write(b"\0")
+            loop = {"clone": str(clone)}
+
+            recorder = Recorder()
+            selftest.check_build_fits(recorder, loop, 1)
+            name, status, detail = recorder.calls[-1]
+            self.assertEqual(name, "sandbox:build-fits")
+            self.assertEqual(status, selftest.WARN, recorder.calls)
+            self.assertIn("accumulated", detail)
+
+            with mock.patch.object(contained, "CHECKOUT_SIZE", 1 * 1024 ** 3):
+                recorder = Recorder()
+                selftest.check_build_fits(recorder, loop, 1)
+                self.assertEqual(recorder.calls[-1][1], selftest.FAIL, recorder.calls)
+
 
 @unittest.skipUnless(bwrap_works(), "unprivileged bubblewrap unavailable")
 class SandboxLimitTests(unittest.TestCase):
@@ -239,11 +274,15 @@ class SandboxLimitTests(unittest.TestCase):
         self.assertEqual(facts["dev_write"], "EROFS")
 
     def test_the_caps_hold_a_real_rust_build(self):
-        """A cap under a real debug target turns every Rust review into "could not verify"."""
-        # Measured on this host: patchhive/attest's debug target is 2.2 GiB, two other real
-        # workspaces' are 3.3 GiB and 3.9 GiB. The floor is here so a later "optimization" cannot
-        # quietly shrink the bound back under a build the loop is expected to run.
+        """A cap under a real scoped build turns every Rust review into "could not verify"."""
+        # Measured on this host, each into a fresh target: a scoped `cargo test -p attest-core
+        # --no-run` is 2.4 GiB (154 rlibs; deps alone 1.8 GiB), a whole-workspace `cargo build`
+        # plus `cargo test --no-run` is 8.0 GiB, and a mature clone's *accumulated* target reaches
+        # 70 GB. The default is sized for the scoped build the prompt asks a seat to run; the floor
+        # is what `sandbox:build-fits` fails against, so a later "optimization" cannot quietly
+        # shrink the bound under a build the loop is expected to run.
         self.assertGreaterEqual(contained.CHECKOUT_SIZE, 8 * 1024 ** 3)
+        self.assertGreaterEqual(contained.CHECKOUT_SIZE, contained.SCOPED_BUILD_FLOOR)
         self.assertGreaterEqual(contained.SCRATCH_SIZE, 2 * 1024 ** 3)
 
     def test_a_cap_can_be_overridden_and_a_bad_one_is_ignored(self):

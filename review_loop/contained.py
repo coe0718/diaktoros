@@ -113,6 +113,14 @@ def _size_from_env(name: str, gib: int) -> int:
 SCRATCH_SIZE = _size_from_env("SCRATCH_SIZE", 2)
 CHECKOUT_SIZE = _size_from_env("CHECKOUT_SIZE", 8)
 
+# The smallest cap that still holds what a seat is told to build: a scoped `cargo test -p <crate>
+# --no-run` for the largest crate. Measured on this host, attest-core into a fresh target: 2.4 GiB
+# (154 rlibs; deps alone 1.8 GiB). For contrast, a whole-workspace `cargo build` plus
+# `cargo test --no-run` is 8.0 GiB, and a mature clone's *accumulated* target reaches tens of GB
+# (70 GB and 113 GB measured) — which is why a check that measures a working clone must not treat
+# that figure as a seat's build. Rounded up: a floor, not a measurement.
+SCOPED_BUILD_FLOOR = 3 * 1024 ** 3
+
 # Where a writable checkout's read-only source export is mounted, and the loader that stages it
 # into the sized tmpfs at /work before the seat runs. bubblewrap has no "copy this tree" mount, so
 # the copy happens inside the namespace, where it is also charged to the budget it fills. Its
