@@ -138,6 +138,7 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
             detail = one_line(exc.read().decode(errors="replace"), 120)
         finally:
             exc.close()
+        # Safe after close(): HTTPError.headers is a property over .hdrs, which close() leaves.
         headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
         return Response(None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, headers)
     except Exception as exc:

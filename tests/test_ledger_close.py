@@ -94,6 +94,14 @@ class LedgerConnectionsClose(unittest.TestCase):
         self.assertEqual(leaks, [])
 
 
+class CloseFails(sqlite3.Connection):
+    """A connection whose close() releases the handle and then reports a failure."""
+
+    def close(self):
+        super().close()
+        raise sqlite3.OperationalError('close failed')
+
+
 class ConnectHelper(unittest.TestCase):
     """``ledger.connect`` keeps ``with con:`` transaction semantics and adds the close."""
 
@@ -138,6 +146,23 @@ class ConnectHelper(unittest.TestCase):
             self.assertEqual(con.execute('PRAGMA busy_timeout').fetchone()[0], 1234)
             self.assertIsInstance(con.execute('SELECT 1 AS one').fetchone(), sqlite3.Row)
             self.assertRaises(sqlite3.OperationalError, con.execute, 'INSERT INTO t VALUES (3)')
+
+    def test_a_failing_close_never_replaces_the_error_in_flight(self):
+        with self.assertRaises(RuntimeError) as caught:
+            with self.connect(self.db, factory=CloseFails) as con:
+                con.execute('INSERT INTO t VALUES (1)')
+                raise RuntimeError('boom')
+        self.assertEqual(str(caught.exception), 'boom')
+        self.assertIn('closing the ledger connection also failed',
+                      ' '.join(getattr(caught.exception, '__notes__', [])))
+        self.assertRaises(sqlite3.ProgrammingError, con.execute, 'SELECT 1')
+        self.assertEqual(self.rows(), [])   # still rolled back
+
+    def test_a_failing_close_with_nothing_in_flight_is_raised(self):
+        with self.assertRaisesRegex(sqlite3.OperationalError, 'close failed'):
+            with self.connect(self.db, factory=CloseFails) as con:
+                con.execute('INSERT INTO t VALUES (1)')
+        self.assertEqual(self.rows(), [1])   # committed before the close
 
     def test_failed_pragma_still_closes(self):
         opened = []

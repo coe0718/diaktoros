@@ -11,7 +11,8 @@ the ``with con:`` transaction semantics exactly and closes the connection on the
 
 Any ``sqlite3.connect`` keyword passes through unchanged (``timeout``, ``isolation_level``,
 ``uri``, ...). ``row_factory`` and ``pragmas`` are applied before the body runs; if one of them
-fails, the connection is still closed.
+fails, the connection is still closed. A close() that fails while an exception is already on
+its way out is attached to that exception as a note instead of replacing it.
 """
 
 from __future__ import annotations
@@ -32,5 +33,12 @@ def connect(path, *, row_factory=None, pragmas: tuple[str, ...] = (),
             con.execute(f"PRAGMA {pragma}")
         with con:  # commit on success, roll back on an exception: sqlite3's own semantics
             yield con
-    finally:
-        con.close()
+    except BaseException as exc:
+        # The error in flight is the one the caller must see; a failing close() only adds a
+        # note to it, never replaces it.
+        try:
+            con.close()
+        except Exception as close_exc:
+            exc.add_note(f"closing the ledger connection also failed: {close_exc!r}")
+        raise
+    con.close()

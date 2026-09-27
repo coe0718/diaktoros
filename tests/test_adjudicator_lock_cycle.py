@@ -36,9 +36,16 @@ class AdjudicatorCycleTest(unittest.TestCase):
                                for seat in ("reviewer", "fixer")},
                      "state_dir": str(self.root / "state")}
         (self.config / "cycle.json").write_text(json.dumps(self.loop))
+        # Every GitHub read in this file goes to this stub, never the network, and is logged.
+        # The gate refuses before its first read today
+        # (test_adjudicator_is_refused_before_any_read); the stub is what it would get if that
+        # ever changed (test_the_stub_answers_this_files_gh).
         stub = self.root / "gh_stub.py"
-        stub.write_text("#!/usr/bin/env python3\nimport json, os, sys\n"
-                        "head = open(os.environ['TEST_HEAD']).read().strip()\n"
+        self.gh_calls = self.root / "gh_calls"
+        stub.write_text("#!/usr/bin/env python3\nimport json, os, pathlib, sys\n"
+                        "with open(os.environ['TEST_GH_CALLS'], 'a') as calls:\n"
+                        " calls.write(sys.argv[1] + '\\n')\n"
+                        "head = pathlib.Path(os.environ['TEST_HEAD']).read_text().strip()\n"
                         "if '/reviews' in sys.argv[1]:\n"
                         " print(json.dumps([{'id': i, 'state': 'CHANGES_REQUESTED', "
                         "'user': {'login': 'reviewer'}} for i in range(3)]))\n"
@@ -49,7 +56,9 @@ class AdjudicatorCycleTest(unittest.TestCase):
         self.head_file = self.root / "head"
         self.head_file.write_text(HEAD_A)
         self.env = {**os.environ, "REVIEW_LOOP_CONFIG_DIR": str(self.config),
-                    "REVIEW_LOOP_GH_STUB": str(stub), "TEST_HEAD": str(self.head_file)}
+                    "REVIEW_LOOP_GH_STUB": str(stub), "TEST_HEAD": str(self.head_file),
+                    "TEST_GH_CALLS": str(self.gh_calls)}
+        self.gate_stderr = []
         self.st = state.LoopState(self.loop)
         self.requests = []
         parent = self
@@ -66,6 +75,7 @@ class AdjudicatorCycleTest(unittest.TestCase):
                     self.send_response(504)
                 else:
                     output = result.stdout.decode().strip()
+                    parent.gate_stderr.append(result.stderr.decode())
                     parent.requests.append(output or result.stderr.decode().strip())
                     self.send_response(200 if result.returncode == 0 and output.startswith("{") else 422)
                 self.end_headers()
@@ -96,6 +106,25 @@ class AdjudicatorCycleTest(unittest.TestCase):
             except Exception:
                 return False
         return self.st.breach_deliver(7, entry, current or (lambda: self.head_file.read_text() == head), send)
+
+    def stub_calls(self) -> list[str]:
+        return self.gh_calls.read_text().splitlines() if self.gh_calls.exists() else []
+
+    def test_the_stub_answers_this_files_gh(self):
+        probe = ("import json, sys\nsys.path.insert(0, sys.argv[1])\n"
+                 "from review_loop import gh\n"
+                 "print(json.dumps(gh.api({'repo': 'acme/widgets'}, '/repos/acme/widgets/pulls/7')))")
+        result = subprocess.run([sys.executable, "-c", probe, str(ROOT)], env=self.env,
+                                capture_output=True, text=True, check=True, timeout=30)
+        self.assertEqual(json.loads(result.stdout)["head"]["sha"], HEAD_A)
+        self.assertEqual(self.stub_calls(), ["/repos/acme/widgets/pulls/7"])
+
+    def test_adjudicator_is_refused_before_any_read(self):
+        self.assertEqual(self.deliver(HEAD_A), "new")
+        self.assertEqual(self.requests, ["[SILENT]"])
+        self.assertIn("adjudicator disabled until whole-agent isolation is enforced",
+                      self.gate_stderr[0])
+        self.assertEqual(self.stub_calls(), [])   # no GitHub read, stubbed or real
 
     def test_synchronous_gateway_is_held_without_deadlock(self):
         self.assertEqual(self.deliver(HEAD_A), "new")
