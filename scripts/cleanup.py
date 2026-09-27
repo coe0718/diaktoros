@@ -366,7 +366,7 @@ def clean_pr(loop: dict, number: int, dry: bool, quiet: bool, force: bool = Fals
         cands.append(base)
     # The loop's own per-PR artifacts dir, only when it is a real directory under the loop's
     # real state dir: a symlinked state dir or artifacts path gets the ordinary checks.
-    state_dir = config._path(loop["state_dir"])
+    state_dir = config.state_dir(loop)
     loop_artifacts = (base.resolve() if base.is_dir() and not has_symlink_component(base)
                       and inside(base.resolve(), state_dir.resolve()) else None)
 

@@ -27,7 +27,8 @@ from .util import log
 
 def subs_path() -> pathlib.Path:
     override = os.environ.get("REVIEW_LOOP_SUBS")
-    return pathlib.Path(override).expanduser() if override else config.home() / "webhook_subscriptions.json"
+    return (config.guard_real_home(pathlib.Path(override).expanduser()) if override
+            else config.home() / "webhook_subscriptions.json")
 
 
 def all_routes() -> dict:

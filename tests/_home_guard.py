@@ -36,23 +36,9 @@ GUARD_ENV = "REVIEW_LOOP_TEST_HOME_GUARD"
 # Inherited settings that could point a test at real state; the fixtures set their own.
 _DROP = ("REVIEW_LOOP_CONFIG_DIR", "REVIEW_LOOP_SUBS", "REVIEW_LOOP_TOKEN_FILE")
 
-if os.environ.get(GUARD_ENV) == "1" and os.environ.get("REVIEW_LOOP_TEST_USER_HOME"):
-    # Already guarded (a child of a guarded test): keep the parent's temp home.
-    _FRESH = False
-    USER_HOME = pathlib.Path(os.environ["REVIEW_LOOP_TEST_USER_HOME"])
-    TEST_HOME = pathlib.Path(os.environ["HOME"])
-else:
-    _FRESH = True
-    USER_HOME = pathlib.Path.home()
-    for _var, _default in (("RUSTUP_HOME", ".rustup"), ("CARGO_HOME", ".cargo")):
-        if not os.environ.get(_var) and (USER_HOME / _default).is_dir():
-            os.environ[_var] = str(USER_HOME / _default)
-    TEST_HOME = pathlib.Path(tempfile.mkdtemp(prefix="review-loop-test-home-")).resolve()
-    atexit.register(shutil.rmtree, TEST_HOME, ignore_errors=True)
-    for _var in _DROP:
-        os.environ.pop(_var, None)
-    os.environ.update({"HOME": str(TEST_HOME), "HERMES_HOME": str(TEST_HOME / ".hermes"),
-                       "REVIEW_LOOP_TEST_USER_HOME": str(USER_HOME), GUARD_ENV: "1"})
+_FRESH = not (os.environ.get(GUARD_ENV) == "1" and os.environ.get("REVIEW_LOOP_TEST_USER_HOME"))
+USER_HOME = pathlib.Path.home() if _FRESH else pathlib.Path(os.environ["REVIEW_LOOP_TEST_USER_HOME"])
+
 
 def _protected_homes() -> list[pathlib.Path]:
     homes = [USER_HOME]
@@ -76,6 +62,44 @@ def _inside_live(path: pathlib.Path) -> bool:
                 return True
     return False
 
+
+def _under_a_home(path: pathlib.Path) -> bool:
+    """Is ``path`` anywhere inside a protected home (not only its .hermes)?"""
+    forms = {pathlib.Path(os.path.normpath(path.absolute())), path.resolve()}
+    homes = {form for home in _protected_homes()
+             for form in (pathlib.Path(os.path.normpath(home.absolute())), home.resolve())}
+    return any(home == form or home in form.parents for home in homes for form in forms)
+
+
+# The temp root must lie outside every protected home. config.guard_real_hermes refuses any
+# `hermes` anywhere under the real home (a ~/.local/bin/hermes is as real as the install), so a
+# TMPDIR under $HOME would put the temp home — and the shim in it — where the plugin refuses to
+# run it. Rather than make the caller get TMPDIR right, the guard picks a root outside, and every
+# process it starts inherits it.
+if _under_a_home(pathlib.Path(tempfile.gettempdir())):
+    for _root in ("/var/tmp", "/tmp"):
+        if os.path.isdir(_root) and os.access(_root, os.W_OK | os.X_OK) \
+                and not _under_a_home(pathlib.Path(_root)):
+            os.environ["TMPDIR"] = _root
+            tempfile.tempdir = None               # forget the cached, home-rooted choice
+            break
+    else:
+        raise RuntimeError(f"tests/_home_guard.py: TMPDIR {tempfile.gettempdir()} is inside the "
+                           "home and no temp root outside it is writable; set TMPDIR outside $HOME")
+
+if not _FRESH:
+    # Already guarded (a child of a guarded test): keep the parent's temp home.
+    TEST_HOME = pathlib.Path(os.environ["HOME"])
+else:
+    for _var, _default in (("RUSTUP_HOME", ".rustup"), ("CARGO_HOME", ".cargo")):
+        if not os.environ.get(_var) and (USER_HOME / _default).is_dir():
+            os.environ[_var] = str(USER_HOME / _default)
+    TEST_HOME = pathlib.Path(tempfile.mkdtemp(prefix="review-loop-test-home-")).resolve()
+    atexit.register(shutil.rmtree, TEST_HOME, ignore_errors=True)
+    for _var in _DROP:
+        os.environ.pop(_var, None)
+    os.environ.update({"HOME": str(TEST_HOME), "HERMES_HOME": str(TEST_HOME / ".hermes"),
+                       "REVIEW_LOOP_TEST_USER_HOME": str(USER_HOME), GUARD_ENV: "1"})
 
 # No guarded test, nor any process it starts, may run the operator's real `hermes` CLI: it acts on
 # the real install (a bare `hermes` once resumed an interrupted source update and rebuilt the real

@@ -18,7 +18,8 @@ from unittest import mock
 
 TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent))
-from review_loop import cli, config, doctor, gh, isolation, safe_push, state, trusted_fetch  # noqa: E402
+from review_loop import (broker, cli, config, doctor, gh, isolation, route_intent,  # noqa: E402
+                         routes, safe_push, selftest, state, trusted_fetch)
 from review_loop.run_supervisor import Supervisor  # noqa: E402
 
 LEAKING = "test_boundary.BoundaryTests.test_gate_blocks_before_workspace_or_gateway_payload"
@@ -169,14 +170,18 @@ class GuardedWorker(unittest.TestCase):
             self.assertEqual((root / "launched").read_text(), "launched")
             self.assertEqual(list((root / "home").rglob("*")), [])
 
-    def _guarded_child(self, home: pathlib.Path, hermes_home: pathlib.Path, real: pathlib.Path):
-        # No inherited shim dir: the child must place its own, as it would for a HOME it made.
+    def _guarded_child(self, home: pathlib.Path, hermes_home: pathlib.Path, real: pathlib.Path,
+                       shim_dir: pathlib.Path | None = None):
+        # By default no inherited shim dir: the child must place its own, as it would for a HOME
+        # it made. With ``shim_dir``, the child inherits that one instead.
         env = {k: v for k, v in os.environ.items() if k != "REVIEW_LOOP_TEST_SHIM_DIR"}
         env.update({"HOME": str(home), "HERMES_HOME": str(hermes_home),
                     config.TEST_HOME_GUARD_ENV: "1", "REVIEW_LOOP_TEST_USER_HOME": str(real),
                     config.TEST_REAL_HOME_ENV: str(real)})
-        return subprocess.run([sys.executable, "-c", "import _home_guard"], cwd=TESTS, env=env,
-                              text=True, capture_output=True, timeout=60)
+        if shim_dir is not None:
+            env["REVIEW_LOOP_TEST_SHIM_DIR"] = str(shim_dir)
+        return subprocess.run([sys.executable, "-c", "import _home_guard; print(_home_guard.SHIM_DIR)"],
+                              cwd=TESTS, env=env, text=True, capture_output=True, timeout=60)
 
     def test_guarded_child_creates_the_homes_it_inherits(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,12 +194,89 @@ class GuardedWorker(unittest.TestCase):
             self.assertTrue(hermes_home.is_dir())
             self.assertEqual(list((root / "real").rglob("*")), [])
 
+    def test_guarded_child_relocates_an_inherited_shim_dir_inside_the_real_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            real = root / "real"
+            real.mkdir()
+            # HOME outside the real home: only the inherited shim dir points into it.
+            result = self._guarded_child(root / "home", root / "home/.hermes", real,
+                                         shim_dir=real / ".hermes/bin")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(list(real.rglob("*")), [], result.stderr)
+            shim_dir = pathlib.Path(result.stdout.strip())
+            self.assertNotIn(real, [shim_dir, *shim_dir.parents])
+
     def test_guarded_child_never_creates_a_home_inside_the_real_one(self):
         with tempfile.TemporaryDirectory() as tmp:
             real = pathlib.Path(tmp) / "real"
             real.mkdir()
             result = self._guarded_child(real / ".hermes/home", real / ".hermes/profiles/x", real)
             self.assertEqual(list(real.rglob("*")), [], result.stderr)
+
+
+class RealHomeWrites(unittest.TestCase):
+    """Every write rooted in a loop's state_dir, or in an env-var override of a Hermes-home path,
+    refuses a path inside the (fake) real home's .hermes — before anything is created there."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.real = pathlib.Path(self.temp.name) / "real"      # a sentinel "real home"
+        self.real.mkdir()
+        patch = mock.patch.dict(os.environ, {config.TEST_REAL_HOME_ENV: str(self.real)})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.source = pathlib.Path(self.temp.name) / "source"   # a clone to isolate from
+        (self.source / ".git").mkdir(parents=True)
+        self.loop = {"id": "x", "repo": "acme/widgets",
+                     "state_dir": str(self.real / ".hermes/state/review-loops/x")}
+
+    def assert_refused(self, write):
+        with self.assertRaises(config.RealHomeError):
+            write()
+        self.assertEqual(list(self.real.rglob("*")), [])
+
+    def test_state_dir_writes_are_refused(self):
+        loop = self.loop
+        for name, write in (
+                ("route_intent.record", lambda: route_intent.record(loop, {})),
+                ("broker._audit", lambda: broker._audit(loop, "acme/widgets", 7, "a" * 40, "fix-7",
+                                                        "fixer", "push", "fixer")),
+                ("safe_push._audit", lambda: safe_push._audit(loop, {"operation": "push"})),
+                ("config.artifacts_dir", lambda: config.artifacts_dir(loop, 7)),
+                ("isolation.ensure", lambda: isolation.ensure({**loop, "clone": str(self.source)}, 7,
+                                                              "reviewer")),
+                ("selftest._work_root", lambda: selftest._work_root(loop))):
+            with self.subTest(name):
+                self.assert_refused(write)
+
+    def test_env_overrides_of_hermes_home_paths_are_refused(self):
+        for var, resolve, target in (
+                ("REVIEW_LOOP_CONFIG_DIR", config.config_dir, ".hermes/review-loops.d"),
+                ("REVIEW_LOOP_SUBS", routes.subs_path, ".hermes/webhook_subscriptions.json")):
+            with self.subTest(var), mock.patch.dict(os.environ, {var: str(self.real / target)}):
+                self.assert_refused(resolve)
+
+
+class TmpdirUnderHome(unittest.TestCase):
+    """A TMPDIR under the (fake) real home must not put the temp home, or the shim, under it:
+    guard_real_hermes refuses any `hermes` anywhere in the real home, so the shim would refuse
+    itself. The guard picks a temp root outside the home instead."""
+
+    def test_suite_runs_with_tmpdir_under_the_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            (home / "tmp").mkdir(parents=True)
+            env = {k: v for k, v in os.environ.items()
+                   if k not in (config.TEST_HOME_GUARD_ENV, "REVIEW_LOOP_TEST_USER_HOME",
+                                "HERMES_HOME", "REVIEW_LOOP_TEST_SHIM_DIR")}
+            env.update(HOME=str(home), TMPDIR=str(home / "tmp"),
+                       REVIEW_LOOP_TEST_REAL_HOME=str(home))
+            result = subprocess.run([sys.executable, "-m", "unittest", "test_home_guard.HermesShim"],
+                                    cwd=TESTS, env=env, text=True, capture_output=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(list((home / "tmp").iterdir()), [])
 
 
 class HermesShim(unittest.TestCase):
@@ -381,9 +463,11 @@ class NoRealGitHub(unittest.TestCase):
 
     def test_isolation_fetch_fails_closed_when_git_cannot_name_the_remote(self):
         clone = pathlib.Path(self.temp.name)
-        # A git without `ls-remote --get-url` (rc 129), and one that answers with nothing.
+        # A git without `ls-remote --get-url` (rc 129), one that answers with nothing, and one
+        # that fails yet prints a local, guard-approved URL: the exit status alone must refuse it.
         for probe in (subprocess.CompletedProcess([], 129, "", "usage: git ls-remote"),
-                      subprocess.CompletedProcess([], 0, "", "")):
+                      subprocess.CompletedProcess([], 0, "", ""),
+                      subprocess.CompletedProcess([], 128, f"{clone / 'remote.git'}\n", "fatal")):
             ran = []
 
             def stub_git(*args, **kwargs):

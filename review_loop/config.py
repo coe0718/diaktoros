@@ -788,9 +788,12 @@ def webhook_host(value: str | None, *, required: bool = False) -> str:
     return host.removesuffix("/")
 
 
-# Set by the test suites' home guard (tests/_home_guard.py). While it is set, every path the loop
-# would write state under is checked against the operator's real Hermes home, so a test that
-# escapes the guard fails loudly instead of writing to a real ledger or runtime file.
+# Set by the test suites' home guard (tests/_home_guard.py). While it is set, the roots the loop
+# writes state under are checked against the operator's real Hermes home — ``home()`` (and so
+# everything derived from it), ``state_dir(loop)`` (every write rooted in a loop's state_dir goes
+# through it), the ``REVIEW_LOOP_CONFIG_DIR``/``REVIEW_LOOP_SUBS`` overrides, the run ledger and
+# the supervisor's host home — so a test that escapes the guard fails loudly instead of writing
+# to a real ledger or runtime file.
 TEST_HOME_GUARD_ENV = "REVIEW_LOOP_TEST_HOME_GUARD"
 # Test-only: one more directory to treat as "the real home" while the guard is on, so the
 # tripwire itself can be proven against a fake home. It adds protection, never removes it.
@@ -880,6 +883,10 @@ def guard_real_hermes(executable: str) -> str:
 
     The guard also shadows ``hermes`` on PATH with a shim that refuses to run; this is the second
     layer, for a PATH the shim is missing from.
+
+    Deliberately wider than ``guard_real_home`` (which protects ``<home>/.hermes``): a ``hermes``
+    anywhere under the real home — ``~/.local/bin/hermes`` included — is the operator's own. The
+    test guard therefore keeps its temp root, and the shim in it, outside the home entirely.
     """
     if not os.environ.get(TEST_HOME_GUARD_ENV) or not os.path.isabs(executable):
         return executable
@@ -897,7 +904,7 @@ def home() -> pathlib.Path:
 
 def config_dir() -> pathlib.Path:
     override = os.environ.get("REVIEW_LOOP_CONFIG_DIR")
-    return pathlib.Path(override).expanduser() if override else home() / "review-loops.d"
+    return guard_real_home(pathlib.Path(override).expanduser()) if override else home() / "review-loops.d"
 
 
 @contextlib.contextmanager
@@ -1083,8 +1090,15 @@ def by_repo(full_name: str) -> dict | None:
     return matches[0] if matches else None
 
 
+def state_dir(loop: dict) -> pathlib.Path:
+    """The loop's state directory: the one root for every write under it (ledger-adjacent files,
+    audits, route intent, artifacts, turn directories). Under the test guard, never inside the
+    real Hermes home."""
+    return guard_real_home(_path(loop["state_dir"]))
+
+
 def artifacts_dir(loop: dict, number: int) -> pathlib.Path:
-    return _path(loop["state_dir"]) / "artifacts" / str(number)
+    return state_dir(loop) / "artifacts" / str(number)
 
 
 def clone_path(loop: dict) -> pathlib.Path | None:

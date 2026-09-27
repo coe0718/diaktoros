@@ -1241,7 +1241,7 @@ class Supervisor:
                   proxy_model=inference.proxy_model, client_identity=inference.client_identity,
                   prompt=prompt, review_diff=change.diff if change else None,
                   timeout=int(self.child_timeout),
-                  work_root=Path(loop["state_dir"]) / "isolated-runs")
+                  work_root=config.state_dir(loop) / "isolated-runs")
         except Exception as exc:
             error = f"isolated turn failed: {type(exc).__name__}"
         finally:

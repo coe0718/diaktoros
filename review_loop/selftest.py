@@ -384,7 +384,7 @@ _USERNS_FIX = ("enable unprivileged user namespaces: `sudo sysctl -w kernel.unpr
 
 def _work_root(loop: dict) -> Path:
     """The same private parent the production worker uses for its turn directories."""
-    root = Path(loop["state_dir"]).expanduser() / "isolated-runs"
+    root = config.state_dir(loop) / "isolated-runs"
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if root.is_symlink() or root.stat().st_mode & 0o077:
         raise PermissionError(f"{root} must be a private (0700) directory")
