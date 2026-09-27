@@ -1095,6 +1095,25 @@ def all_loops() -> list[dict]:
     return [load_id(p.stem) for p in sorted(directory.glob("*.json"))]
 
 
+def readable_loops() -> tuple[list[dict], list[tuple[str, str]]]:
+    """Every loop file that loads, and ``(loop id, reason)`` for each that does not.
+
+    For the callers that must keep working past one bad file — the read-only listings, the cron
+    watchdog's sweep of every loop. Callers that act on a whole set of loops keep ``all_loops``'s
+    all-or-nothing refusal.
+    """
+    directory = config_dir()
+    if not directory.exists():
+        return [], []
+    loops, skipped = [], []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            loops.append(load_id(path.stem))
+        except ConfigError as exc:
+            skipped.append((path.stem, str(exc)))
+    return loops, skipped
+
+
 def loop_for_repo(full_name: str, warn=None) -> dict | None:
     """The one loop that owns ``full_name``, loading each file on its own — for the wake path.
 

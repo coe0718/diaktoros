@@ -1574,19 +1574,12 @@ def cmd_settings(args) -> int:
 def _readable_loops() -> tuple[list[dict], list[str]]:
     """Every loop that loads, plus one ``skipping <file>: <reason>`` line per one that does not.
 
-    For the read-only listings only: one broken file must not hide every healthy loop's state.
-    Verbs that act on loops keep ``all_loops``'s all-or-nothing refusal.
+    For the verbs that answer about loops without acting on them (``list``, ``status``,
+    ``explain``): one broken file must not hide every healthy loop's state. Verbs that act on
+    loops keep ``all_loops``'s all-or-nothing refusal.
     """
-    directory = config.config_dir()
-    if not directory.exists():
-        return [], []
-    loops, skipped = [], []
-    for path in sorted(directory.glob("*.json")):
-        try:
-            loops.append(config.load_id(path.stem))
-        except config.ConfigError as exc:
-            skipped.append(f"skipping {path.name}: {exc}")
-    return loops, skipped
+    loops, skipped = config.readable_loops()
+    return loops, [f"skipping {loop_id}.json: {reason}" for loop_id, reason in skipped]
 
 
 def cmd_list(args) -> int:
@@ -1704,8 +1697,9 @@ def cmd_explain(args) -> int:
     from ``gate.explain``, so they are the predicates the live gates run rather than a second
     opinion about them.
 
-    Exit 2 only when the question cannot be asked at all (an unknown loop, or several loops and no
-    ``--loop``). A PR GitHub does not have, or cannot be read, is an *answer*: it is reported as
+    Exit 2 only when the question cannot be asked at all: an unknown loop, a loop file the loader
+    refuses (without ``--loop`` each is named on a ``skipping <file>: <reason>`` line), or several
+    loops — refused ones included — and no ``--loop``. A PR GitHub does not have, or cannot be read, is an *answer*: it is reported as
     unknown, with the read to retry.
     """
     from . import state as state_mod
@@ -1717,13 +1711,12 @@ def cmd_explain(args) -> int:
             print(f"no such loop: {exc}")
             return 2
     else:
-        loops, skipped = _readable_loops()
-        for line in skipped:
-            print(line)
+        loops, refused = config.readable_loops()
+        for loop_id, reason in refused:
+            print(f"skipping {loop_id}.json: {reason}")
+        skipped = [loop_id for loop_id, _ in refused]
         # A file that will not load is still a configured loop: the question may be about it.
-        names = [loop["id"] for loop in loops] + [
-            line.split(":", 1)[0].removeprefix("skipping ").removesuffix(".json")
-            for line in skipped]
+        names = [loop["id"] for loop in loops] + skipped
         if len(names) > 1:
             print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
             return 2
