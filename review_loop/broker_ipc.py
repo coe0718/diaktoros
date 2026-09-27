@@ -36,6 +36,19 @@ class RunScope:
     run_id: str | None = None
     ledger_db: str | None = None
     generation: str | None = None
+    # '' when the host showed the seat the whole change, else the host's reason it could not
+    # (#93, #110). Host-built, like every field here: requests carry exactly operation/verdict/
+    # body (or a manifest), so nothing inside the namespace can set, clear or observe it.
+    partial_view: str = ""
+
+
+# What a reviewer that could not see the whole change reads when it tries to approve (#93, #110).
+# Only APPROVE and REQUEST_CHANGES are verdicts (broker.REVIEW_VERDICTS), so it names the one
+# left; the capability is unspent, so that verdict goes through in the same turn.
+PARTIAL_VIEW_REFUSAL = (
+    "the host could not show you the whole change ({reason}); an approval is refused — submit "
+    "REQUEST_CHANGES and explain in the body what was unavailable (COMMENT is not a verdict); "
+    "nothing was written, resubmit")
 
 
 class ProtocolError(Exception):
@@ -284,6 +297,12 @@ class RunBroker:
             # verdict in the same turn. A COMMENT would neither wake the fixer nor cue a merge.
             raise ProtocolError("review verdict must be APPROVE or REQUEST_CHANGES with a non-empty "
                                 "body (COMMENT is not a verdict); nothing was written, resubmit")
+        if operation == "review" and verdict == "APPROVE":
+            reason = self._partial_view()
+            if reason:
+                # Before the capability is consumed and before any GitHub read or write: the seat
+                # was not shown the whole change, so it cannot approve it (#93, #110).
+                raise ProtocolError(PARTIAL_VIEW_REFUSAL.format(reason=reason[:300]))
         # Consume BEFORE an external write: a lost response cannot lead to a replay.
         self._used = True
         after_push = operation == "request_review" and bool(self._pushed_head)
@@ -311,6 +330,23 @@ class RunBroker:
                                     require_verdict=not after_push)
         self.completed = True
         return result
+
+    def _partial_view(self) -> str:
+        """Why this run's seat could not see the whole change, or '' — from host records only.
+
+        The scope the host built at launch, then the run ledger the worker wrote before the seat
+        started. An unreadable ledger adds nothing here; the receipt claim re-reads the same row
+        inside its transaction and refuses an approval there (review_receipt.ReceiptLedger).
+        """
+        if self.scope.partial_view:
+            return self.scope.partial_view
+        if not self.scope.run_id or not self.scope.ledger_db:
+            return ""
+        from .review_receipt import partial_view
+        try:
+            return partial_view(self.scope.ledger_db, self.scope.run_id)
+        except Exception:
+            return ""
 
     def _publish_answers(self, head: str, text: str) -> str:
         """Post the fixer's answers as ONE PR comment by the fixer identity; return the outcome.

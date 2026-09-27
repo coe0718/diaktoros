@@ -674,7 +674,7 @@ class LedgerTests(unittest.TestCase):
              mock.patch.object(gh, "reviews", return_value=[]), \
              mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
              mock.patch.object(run_supervisor, "pr_change",
-                               return_value=SimpleNamespace(diff="d", record="r")), \
+                               return_value=SimpleNamespace(diff="d", record="r", partial="")), \
              mock.patch.object(run_supervisor, "isolated_prompt", return_value="P"), \
              mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
              mock.patch.object(sup, "recover"):
