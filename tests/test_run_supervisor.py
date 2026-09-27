@@ -87,11 +87,32 @@ class Lifecycle(unittest.TestCase):
         self.child.write_text("import sys,time\nfrom pathlib import Path\n"
                               "with Path(sys.argv[1]).open('a') as f: f.write('launched\\n')\n"
                               "time.sleep(float(sys.argv[2]))\nsys.exit(int(sys.argv[3]))\n")
+        # A child that runs until the test releases it: "still running" is then a fact the
+        # test controls, not a race between a sleep and a loaded scheduler. It gives up
+        # (rc 3) after a minute so a failed test never strands it.
+        self.release_file = self.root / "release"
+        self.gate = self.root / "gate.py"
+        self.gate.write_text("import sys,time\nfrom pathlib import Path\n"
+                             "with Path(sys.argv[1]).open('a') as f: f.write('launched\\n')\n"
+                             "until = time.monotonic() + 60\n"
+                             "while not Path(sys.argv[2]).exists():\n"
+                             "    if time.monotonic() > until: sys.exit(3)\n"
+                             "    time.sleep(0.02)\n")
+        # Runs before wait_for_workers (last in, first out): a gated child always ends.
+        self.addCleanup(self.release)
 
     def supervisor(self, delay=0.05, rc=0, **kw):
         return Supervisor(self.db, fixture_mode=True,
                           fixture_command=[sys.executable, str(self.child),
                                            str(self.events), str(delay), str(rc)], **kw)
+
+    def gated_supervisor(self, **kw):
+        return Supervisor(self.db, fixture_mode=True,
+                          fixture_command=[sys.executable, str(self.gate),
+                                           str(self.events), str(self.release_file)], **kw)
+
+    def release(self):
+        self.release_file.touch()
 
     def wait(self, sup, delivery, state, timeout=8):
         until = time.monotonic() + timeout
@@ -122,19 +143,24 @@ class Lifecycle(unittest.TestCase):
         self.wait(sup, "d", "succeeded")
         sup.enqueue("other-delivery", "o/r", 1, "sha", "reviewer")
         sup.recover()
-        time.sleep(0.1)
+        # Every worker those calls could have started has exited: the count is final.
+        wait_for_workers(self.root)
         self.assertEqual(len(self.launches()), 1)
         with self.assertRaises(ValueError):
             sup.enqueue("d", "o/r", 2, "sha", "reviewer")
 
     def test_detached_seat_queue_and_release(self):
-        sup = self.supervisor(delay=0.3)
+        # "a" holds the only reviewer seat until released, so "b" must queue behind it.
+        sup = self.gated_supervisor()
         started = time.monotonic()
         self.assertEqual(sup.enqueue("a", "o/r", 1, "a", "reviewer"), SILENT)
-        self.assertLess(time.monotonic() - started, 1)
+        # Detached: enqueue does not wait on a child that runs until released (up to 60s).
+        self.assertLess(time.monotonic() - started, 5)
         self.wait(sup, "a", "running")
         sup.enqueue("b", "o/r", 2, "b", "reviewer")
         self.assertEqual(sup.get("b")["state"], "pending")
+        self.assertEqual(sup.get("a")["state"], "running")
+        self.release()
         self.wait(sup, "a", "succeeded")
         self.wait(sup, "b", "succeeded")
         self.assertEqual(len(self.launches()), 2)
@@ -231,15 +257,29 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(self.launches()), 1)
 
     def test_running_lease_heartbeats_and_completion_after_expiry(self):
-        # Sleep well past one lease: only heartbeats keep the run alive. The lease is wide
-        # enough that a slow CI runner's SQLite stall does not miss a whole beat.
-        sup = self.supervisor(delay=2.0, lease_seconds=0.6, child_timeout=5)
+        # The child runs until released, so the run is live for as long as the test needs.
+        # Heartbeats come every lease/3 = 1s; a 3s lease lets a beat be ~2s late (a loaded
+        # runner, a SQLite stall) before the run is really lost.
+        sup = self.gated_supervisor(lease_seconds=3, child_timeout=60)
         sup.enqueue("heartbeat", "o/r", 9, "head", "reviewer")
-        self.wait(sup, "heartbeat", "running")
-        time.sleep(1.0)
+        launched = self.wait(sup, "heartbeat", "running")
+        # Wait until the lease granted at launch has passed, so only a heartbeat can have
+        # kept the run alive, and the renewed lease has at least a second left to cover the
+        # recover() below. Observed ledger state, not a fixed sleep.
+        until = time.monotonic() + 20
+        while True:
+            row, now = sup.get("heartbeat"), time.time()
+            self.assertEqual(row["state"], "running")
+            if now > launched["lease"] and row["lease"] - now >= 1:
+                break
+            if time.monotonic() > until:
+                self.fail(f"no heartbeat renewed the lease past its launch grant: {row}")
+            time.sleep(0.05)
         sup.recover()
         self.assertEqual(sup.get("heartbeat")["state"], "running")
+        self.release()
         self.wait(sup, "heartbeat", "succeeded")
+        wait_for_workers(self.root)
         with sqlite3.connect(self.db) as db:
             db.execute("UPDATE runs SET state='running', lease=0 WHERE delivery='heartbeat'")
         sup.recover()
@@ -263,7 +303,8 @@ class Lifecycle(unittest.TestCase):
         sup.recover()
         self.assertEqual(sup.get("before")["state"], "uncertain")
         sup.enqueue("held", "o/r", 1, "new-head", "fixer")
-        time.sleep(0.15)
+        # The worker enqueue started has exited without claiming: "held" stays pending.
+        wait_for_workers(self.root)
         self.assertEqual(sup.get("held")["state"], "pending")
         self.assertEqual(len(self.launches()), 2)
         with sqlite3.connect(self.db) as db:
