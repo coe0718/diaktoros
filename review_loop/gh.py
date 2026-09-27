@@ -134,7 +134,7 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
             headers = {k.lower(): v for k, v in resp.headers.items()}
             return Response(json.loads(raw), "", resp.status, headers)
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode()[:120].strip()
+        detail = one_line(exc.read().decode(errors="replace"), 120)
         headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
         return Response(None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, headers)
     except Exception as exc:
@@ -152,6 +152,29 @@ def fetch(loop: dict, path: str, method: str = "GET", body=None,
     """
     response = request(loop, path, method, body, login)
     return response.data, response.error
+
+
+def one_line(text, limit: int = 200) -> str:
+    """``text`` as one bounded line: GitHub's error bodies are pretty-printed JSON, and an
+    operator alert (or an ``explain`` line) promised as one line must stay one."""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def write_outcome(method: str, path: str, status: int | None) -> str:
+    """What a failed write means for the operator. A 4xx is GitHub refusing it: nothing
+    happened. No answer, or a 5xx, leaves the outcome unknown — GitHub may have applied it
+    before failing to answer — so name what to look at before anyone retries it."""
+    if status is not None and 400 <= status < 500:
+        return "GitHub refused it, so it did not take effect"
+    number = re.search(r"/(?:pulls|issues)/(\d+)", path or "")
+    where = f"PR #{number.group(1)}" if number else "the repo"
+    what = ("the review request" if "requested_reviewers" in (path or "") else
+            "the comment" if (path or "").endswith("/comments") else
+            "the review" if (path or "").endswith("/reviews") else
+            "the change")
+    return (f"its outcome is unknown (GitHub may have applied it without answering) — check "
+            f"{where} on GitHub for {what} before re-sending it")
 
 
 def status_of(error: str) -> int | None:
@@ -205,7 +228,7 @@ def record_failure(loop: dict, method: str, path: str, error: str,
         from . import state as state_mod
         state_mod.state_for(loop).github_failure_record({
             "at": time.time(), "where": pathlib.Path(sys.argv[0] or "review-loop").name,
-            "method": method, "path": path.split("?", 1)[0], "error": error[:200],
+            "method": method, "path": path.split("?", 1)[0], "error": one_line(error, 200),
             "status": status_of(error), "login": login or loop.get("read_token") or ""})
     except Exception:
         pass
@@ -320,15 +343,18 @@ def open_prs_read(loop: dict) -> tuple[list[dict] | None, str]:
     return _read_pages(loop, path, "open PR", MAX_PR_PAGES)
 
 
-def open_prs(loop: dict):
+def open_prs(loop: dict, errors: list | None = None):
     """Every open PR, or ``None`` (unknown) when any page could not be read.
 
     The watchdog treats this as its scheduling view; a repository with more than 100 open PRs
-    read as "the first 100" would silently never scan or drain the rest.
+    read as "the first 100" would silently never scan or drain the rest. Pass ``errors`` to
+    receive why (the watchdog alerts on a failed listing like on any failed read).
     """
     result, error = open_prs_read(loop)
     if error:
-        log(f"gh open PR list failed: {error}")
+        log(f"gh open PR list failed: {one_line(error)}")
+        if errors is not None:
+            errors.append(error)
     return result
 
 

@@ -439,17 +439,21 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
     blind = watch.get("github_read")
     if isinstance(blind, dict) and blind.get("error"):
         github_bits.append(f"watchdog could not read GitHub as {blind.get('login') or '?'} for "
-                           f"{blind.get('sweeps', '?')} sweep(s): {blind.get('error')}")
+                           f"{blind.get('sweeps', '?')} sweep(s): {gh.one_line(blind.get('error'), 300)}")
     failure = st.github_failure()
     if failure.get("error"):
         at = failure.get("at")
         when = iso_at(float(at)) if isinstance(at, (int, float)) and not isinstance(at, bool) else "?"
         github_bits.append(f"last failed call: {failure.get('where') or '?'} "
                            f"{failure.get('method') or 'GET'} {failure.get('path') or '?'} at {when}: "
-                           f"{failure.get('error')} — "
+                           f"{gh.one_line(failure.get('error'), 300)} — "
                            + ("a gate that hit it treated the PR as unavailable and started nothing"
                               if (failure.get("method") or "GET") == "GET"
-                              else "that call did not take effect"))
+                              else gh.write_outcome(str(failure.get("method")),
+                                                    str(failure.get("path") or ""),
+                                                    failure.get("status")
+                                                    if type(failure.get("status")) is int
+                                                    else None)))
     github_line = " · ".join(github_bits) or "no failed GitHub call recorded"
 
     return {"seat": seat_line, "queue": queue_line, "inflight": inflight_line,

@@ -230,9 +230,14 @@ The "is this loop armed at all?" question is answered by `gate.hooks_read`, whic
 `read:repo_hook`) cannot see hooks that may well be active — so
 the watchdog neither drains nor scans there, but alerts with the read token's login and the HTTP
 status (a 401/403 at once, a 5xx or no answer after three failed sweeps in a row, re-raised every
-`cooldown_h`), and `explain` prints "unknown" rather than guessing in either direction. A gate that
-cannot read the current PR still answers `[SILENT]`, but leaves the failed call in
-`github-reads.json`: the next sweep reports it once, and `explain` shows it on its `github:` line.
+`cooldown_h`), and `explain` prints "unknown" rather than guessing in either direction. The
+open-PR listing counts the same way: a token that can see the hooks but is refused the pulls (a
+403) raises the same alert on the same cadence. A gate that cannot read the current PR still
+answers `[SILENT]`, but leaves the failed call in `github-reads.json`: the next sweep reports it
+once, and `explain` shows it on its `github:` line. A failed write is reported by what is known:
+a 4xx means GitHub refused it and nothing changed; no answer or a 5xx leaves the outcome unknown,
+and the line names what to check on the PR before re-sending it. GitHub's error bodies arrive as
+pretty-printed JSON; every alert and `explain` line folds them into one bounded line.
 
 ## Explain — why is this PR not moving?
 
