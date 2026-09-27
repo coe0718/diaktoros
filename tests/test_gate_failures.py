@@ -706,6 +706,18 @@ class GateFailureTest(unittest.TestCase):
             self.assertGreater(budget, 0)
         self.assertEqual(gate_failures.plan(30), (20.0, 3.0))
 
+    def test_doctor_and_plan_agree_on_the_full_budget_threshold(self):
+        from review_loop import doctor
+        for seconds in range(24, 31):
+            with self.subTest(timeout=seconds):
+                self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": seconds}}})
+                full = gate_failures.plan(seconds, gate_failures.DEFAULT_BUDGET_S) == (
+                    gate_failures.DEFAULT_BUDGET_S, gate_failures.BACKSTOP_S)
+                status = self.doctor_lines()["gate:timeout:default"].status
+                self.assertEqual(status == doctor.VERIFIED, full, (seconds, status))
+                self.assertEqual(full, seconds >= gate_failures.MIN_TIMEOUT_S)
+        self.assertEqual(gate_failures.MIN_TIMEOUT_S, 27)
+
     def test_doctor_says_when_a_timeout_is_too_small_to_record_a_failure(self):
         from review_loop import doctor
         self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 3}}})
@@ -824,8 +836,19 @@ class GateFailureTest(unittest.TestCase):
                                    "REVIEW_LOOP_WATCHDOG_BUDGET_S": "2"})
         self.assertLess(time.monotonic() - started, 15)
         self.assertEqual(proc.returncode, 0)
-        self.assertIn("watchdog stopped: GitHub did not answer within the sweep's 2s budget",
-                      proc.stdout)
+        # One sweep that ran out of time is not yet an outage (slow reads spend it too): like
+        # any failure short of a 401/403 it is said after READ_FAILURE_SWEEPS in a row.
+        from scripts import watchdog as wd
+        self.assertNotIn("watchdog stopped", proc.stdout)
+        for _ in range(wd.READ_FAILURE_SWEEPS - 1):
+            proc = subprocess.run([sys.executable, str(SCRIPTS / "watchdog.py")],
+                                  capture_output=True, text=True, cwd=str(SCRIPTS), timeout=60,
+                                  env={**t.env(), "REVIEW_LOOP_GH_STUB": str(hang),
+                                       "REVIEW_LOOP_WATCHDOG_BUDGET_S": "2"})
+        (line,) = [x for x in proc.stdout.splitlines() if "watchdog stopped" in x]
+        self.assertIn("the sweep ran out of its 2s budget", line)
+        self.assertIn("reads were slow or did not answer", line)
+        self.assertNotIn("no HTTP answer", line)
 
     # -- the real watchdog in its normal (non-test) mode -------------------------------------
 
@@ -864,18 +887,23 @@ class GateFailureTest(unittest.TestCase):
         self.assertEqual(first.returncode, 0)
         self.assertLess(took, 15)
         self.assertNotIn("Traceback", first.stdout + first.stderr)
-        stopped = [line for line in first.stdout.splitlines() if "watchdog stopped" in line]
-        self.assertEqual(len(stopped), 1, first.stdout)
+        self.assertEqual(first.stdout.strip(), "")          # one ran-out sweep: not yet said
+        second, _ = self.normal_watchdog(hang, "5")
+        self.assertEqual(second.stdout.strip(), "")
+        third, _ = self.normal_watchdog(hang, "5")
+        stopped = [line for line in third.stdout.splitlines() if "watchdog stopped" in line]
+        self.assertEqual(len(stopped), 1, third.stdout)
         self.assertIn("reading as rev-coach", stopped[0])
+        self.assertIn("(3 sweep(s) in a row since", stopped[0])
         again, _ = self.normal_watchdog(hang, "5")          # still hanging, inside the cooldown
         self.assertEqual((again.returncode, again.stdout.strip()), (0, ""))
         watch = t.load_state("watchdog.json")["github_read"]
-        self.assertEqual((watch["sweeps"], watch["status"]), (2, None))
+        self.assertEqual((watch["sweeps"], watch["status"]), (4, None))
         dead, _ = self.normal_watchdog(self.switch_stub("401"), "5")
         alert = [line for line in dead.stdout.splitlines() if "cannot read GitHub" in line]
         self.assertEqual(len(alert), 1, dead.stdout)
         self.assertIn("HTTP 401", alert[0])
-        self.assertIn("(3 sweep(s) since", alert[0])
+        self.assertIn("(5 sweep(s) since", alert[0])
         well, _ = self.normal_watchdog(self.switch_stub("world"))
         self.assertIn("GitHub reads work again", well.stdout)
 
@@ -969,6 +997,127 @@ class GateFailureTest(unittest.TestCase):
         ledger.update(key, {"alerted_at": time.time() - 7200})
         gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=3600, emit=said.append)
         self.assertEqual(len(said), 2)
+
+    # -- one event, one ledger (Tuck on faf21e9) ---------------------------------------------
+
+    def fault_gate(self, patch: str) -> subprocess.CompletedProcess:
+        """A gate that crashes, with ``patch`` applied inside its process first."""
+        script = t.TMP / "fault_gate.py"
+        script.write_text(
+            f"import sys\nsys.path.insert(0, {str(t.ROOT)!r})\n"
+            "from review_loop import gate_failures, state\n"
+            f"{patch}\n"
+            "def main():\n    raise RuntimeError('boom')\n"
+            "gate_failures.run('gate_reviewer', main)\n")
+        return subprocess.run([sys.executable, str(script)], input=json.dumps(t.pr_payload(7)),
+                              capture_output=True, text=True, timeout=30, env=t.env())
+
+    def both_ledgers(self) -> tuple[dict, dict]:
+        return (gate_failures.Ledger(t.STATE_DIR).entries(),
+                gate_failures.fallback_ledger().entries())
+
+    def test_a_write_that_landed_then_raised_is_not_recorded_twice(self):
+        # The directory fsync after os.replace fails: the entry is already published.
+        proc = self.fault_gate(
+            "import os, stat\nreal = os.fsync\n"
+            "def fsync(fd):\n"
+            "    if stat.S_ISDIR(os.fstat(fd).st_mode):\n"
+            "        raise OSError(5, 'Input/output error (injected)')\n"
+            "    return real(fd)\n"
+            "state.os.fsync = fsync\n")
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        loop, fallback = self.both_ledgers()
+        self.assertEqual(len(loop), 1, proc.stderr)
+        self.assertEqual(fallback, {}, proc.stderr)
+        self.assertIn(str(gate_failures.Ledger(t.STATE_DIR).path), proc.stderr)
+
+    def test_a_record_cut_off_by_the_record_alarm_after_landing_is_not_recorded_twice(self):
+        proc = self.fault_gate(
+            "import time\nreal = gate_failures.Ledger._save\n"
+            "def slow(self, data):\n    real(self, data)\n    time.sleep(gate_failures.RECORD_S + 1)\n"
+            "gate_failures.Ledger._save = slow\n")
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        loop, fallback = self.both_ledgers()
+        self.assertEqual(len(loop), 1, proc.stderr)
+        self.assertEqual(fallback, {}, proc.stderr)
+
+    def test_one_event_in_both_ledgers_is_alerted_and_redriven_by_one(self):
+        loop_ledger = self.redrivable_entry()
+        fallback = gate_failures.fallback_ledger()
+        fallback.record("k1", {"gate": "gate_reviewer", "kind": "crash", "pr": 7, "repo": t.REPO,
+                               "redrivable": True, "error_type": "X", "error": "y"},
+                        json.dumps(t.pr_payload(7)))
+        scripts, launches = self.slow_gate_dir(0)
+        said = gate_failures.sweep(fallback, "(no loop)", scripts, cooldown_s=3600)
+        self.assertEqual(said, [])
+        self.assertTrue(fallback.entries()["k1"]["resolved"])
+        self.assertIn(str(loop_ledger.path), fallback.entries()["k1"]["resolution"])
+        for _ in range(gate_failures.MAX_REDRIVES + 2):
+            gate_failures.sweep(loop_ledger, "[w]", scripts, cooldown_s=0)
+            gate_failures.sweep(fallback, "(no loop)", scripts, cooldown_s=0)
+        self.assertEqual(len(launches.read_text().split()), gate_failures.MAX_REDRIVES)
+
+    def test_a_failure_held_by_the_fallback_ledger_is_shown_and_owned_there(self):
+        import fcntl
+        failing = t.TMP / "fail_stub.py"
+        failing.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('HTTP 502')\nsys.exit(1)\n")
+        failing.chmod(0o755)
+        t.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(t.STATE_DIR / "gate-failures.lock", "a+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)            # the loop ledger is busy
+            gateway_run("gate_reviewer.py", t.pr_payload(7), {"REVIEW_LOOP_GH_STUB": str(failing)})
+        (key, _), = gate_failures.fallback_ledger().entries().items()
+        loop = config.load_id("widgets")
+        shown = gate_failures.open_for(loop, 7)
+        self.assertEqual([e["id"] for e in shown], [key])
+        self.assertIn(str(gate_failures.fallback_ledger().path), gate.gate_failure_line(shown[0]))
+        failure = state_mod.LoopState(loop).github_failure()
+        self.assertEqual(failure.get("owned_by"), f"gate-failures:{key}")
+        self.assertEqual(failure.get("owned_in"), str(gate_failures.fallback_ledger().path))
+        local = gate._explain_state(loop, state_mod.LoopState(loop), f"{t.REPO}#7", 7, "", time.time())
+        self.assertIn(str(gate_failures.fallback_ledger().path), local["github"])
+
+    def test_the_alert_marks_the_attempt_it_said_not_a_later_one(self):
+        ledger = self.redrivable_entry()
+        ledger.update("k1", {"redrivable": False})
+        said = []
+
+        def say(line):                     # another delivery lands while the line goes out
+            said.append(line)
+            ledger.record("k1", {"gate": "gate_reviewer", "kind": "crash", "pr": 7,
+                                 "redrivable": False, "error_type": "X", "error": "y"}, "{}")
+        gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=3600, emit=say)
+        entry = ledger.entries()["k1"]
+        self.assertEqual((entry["attempts"], entry["alerted_attempts"]), (2, 1))
+        gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=3600, emit=said.append)
+        self.assertEqual(len(said), 2)                 # the second delivery is said too
+        self.assertIn("2 attempt(s)", said[1])
+
+    def test_a_resolved_entry_gives_up_its_read(self):
+        from unittest import mock
+        from scripts import watchdog as wd
+        failing = t.TMP / "fail_stub.py"
+        failing.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('HTTP 502')\nsys.exit(1)\n")
+        failing.chmod(0o755)
+        t.set_prs({"7": t.pr(7, requested=t.SEAT)})
+        gateway_run("gate_reviewer.py", t.pr_payload(7), {"REVIEW_LOOP_GH_STUB": str(failing)})
+        (key, _), = loop_entries().items()
+        loop = config.load_id("widgets")
+        st = state_mod.LoopState(loop)
+        self.assertEqual(st.github_failure().get("owned_by"), f"gate-failures:{key}")
+        gateway_run("gate_reviewer.py", t.pr_payload(7))           # redelivered: completes
+        self.assertTrue(loop_entries()[key]["resolved"])
+        failure = st.github_failure()
+        self.assertNotIn("owned_by", failure)
+        self.assertIn(key, failure.get("resolved_by", ""))
+        local = gate._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
+        self.assertNotIn("tracked as", local["github"])
+        self.assertIn("resolved", local["github"])
+        ok = wd.gh.Response({"login": t.REVIEWER}, "", 200, {})
+        with mock.patch.object(wd, "TEST", False), \
+             mock.patch.object(wd.gh, "auth_probe", return_value=ok):
+            lines = wd.github_health(loop, st, {}, time.time(), True, "")
+        self.assertEqual([x for x in lines if "could not" in x], [])   # settled, not re-announced
 
     # -- per-PR review reads are visible, and "reads work again" means all of them (#99) ------
 

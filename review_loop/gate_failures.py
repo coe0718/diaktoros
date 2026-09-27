@@ -339,7 +339,8 @@ def plan(timeout: float, base: float | None = None) -> tuple[float, float]:
 
 # The lowest gateway timeout at which the full default budget, its backstop, the bookkeeping
 # after a failure and the interpreter's start-up all still fit.
-MIN_TIMEOUT_S = int(DEFAULT_BUDGET_S) + 8
+MIN_TIMEOUT_S = next(t for t in range(1, 601)
+                     if plan(t, DEFAULT_BUDGET_S) == (DEFAULT_BUDGET_S, BACKSTOP_S))
 # The lowest at which a gate can still record its own failure (a second of work at most).
 MIN_RECORDABLE_S = STARTUP_S + RECORD_S + 1.0
 
@@ -511,6 +512,15 @@ class Ledger:
 
     def record(self, key: str, entry: dict, raw: str, deadline: float | None = None) -> dict:
         now = time.time()
+        pruned: list[tuple] = []
+        try:
+            return self._record(key, entry, raw, deadline, now, pruned)
+        finally:
+            for repo, stale in pruned:        # an entry that leaves gives up its read too
+                _settle_github_read(repo, stale, "dropped by the ledger's 200-entry bound")
+
+    def _record(self, key: str, entry: dict, raw: str, deadline, now: float,
+                pruned: list) -> dict:
         with self._locked(deadline):
             data = self._load_for_write()
             prior = data.get(key) if isinstance(data.get(key), dict) else {}
@@ -529,7 +539,9 @@ class Ledger:
                                key=lambda k: (not data[k].get("resolved"),
                                               data[k].get("last_at") or 0))
                 for stale in order[:len(data) - MAX_ENTRIES]:
-                    data.pop(stale, None)
+                    dropped = data.pop(stale, None)
+                    if isinstance(dropped, dict) and not dropped.get("resolved"):
+                        pruned.append((dropped.get("repo"), stale))
                     with contextlib.suppress(OSError):
                         (self.payload_dir / f"{stale}.json").unlink()
             if raw and len(raw.encode()) <= MAX_PAYLOAD_BYTES:
@@ -565,6 +577,7 @@ class Ledger:
             self._save(data)
         with contextlib.suppress(OSError):
             (self.payload_dir / f"{key}.json").unlink()
+        _settle_github_read(entry.get("repo"), key, f"resolved — {how}")   # outside our lock
         return True
 
     # -- one sweep owns an entry's alert and re-drive (the pattern of ``breach_deliver``) ------
@@ -610,9 +623,10 @@ class Ledger:
         entry = self.entries().get(key)
         return dict(entry) if isinstance(entry, dict) else {}
 
-    def release(self, key: str, sweep: str, *, said: bool) -> dict:
-        """End this sweep's claim. ``said``: the alert line has been emitted, so mark it —
-        including any attempt a re-drive itself added, which that line reported."""
+    def release(self, key: str, sweep: str, *, said: bool, attempts=None) -> dict:
+        """End this sweep's claim. ``said``: the alert line has been emitted, so mark it with
+        ``attempts`` — the count that line reported (including any a re-drive added). A
+        delivery recorded after the line was made is not marked: the next sweep says it."""
         with self._locked():
             data = self._load_for_write()
             entry = data.get(key)
@@ -621,7 +635,9 @@ class Ledger:
             if (entry.get("claim") or {}).get("sweep") == sweep:
                 entry = {k: v for k, v in entry.items() if k != "claim"}
                 if said:
-                    entry.update(alerted_at=time.time(), alerted_attempts=entry.get("attempts"))
+                    entry.update(alerted_at=time.time(),
+                                 alerted_attempts=entry.get("attempts") if attempts is None
+                                 else attempts)
                 data[key] = entry
                 self._save(data)
             return dict(entry)
@@ -698,8 +714,60 @@ def loop_ledger(loop: dict) -> Ledger:
 
 
 def open_for(loop: dict, number: int) -> list[dict]:
-    """Unresolved failures recorded for one PR; nothing when the loop has no state directory."""
-    return loop_ledger(loop).open_for(number) if loop.get("state_dir") else []
+    """Unresolved failures for one PR: the loop's ledger, plus what the fallback ledger holds
+    for this loop's repo (a failure it took when the loop's ledger was busy or unwritable)."""
+    found = loop_ledger(loop).open_for(number) if loop.get("state_dir") else []
+    have = {e.get("id") for e in found}
+    try:
+        spare = fallback_ledger()
+        repo = str(loop.get("repo") or "").lower()
+        for e in spare.open_for(number):
+            if e.get("kind") != CORRUPT and e.get("repo") == repo and e.get("id") not in have:
+                found.append({**e, "held_in": str(spare.path)})
+    except Exception as err:  # noqa: BLE001 - explain reports what it can read
+        log(f"fallback gate-failure ledger unreadable: {type(err).__name__}: {err}")
+    return found
+
+
+def _landed(ledger: "Ledger", key: str, since: float) -> dict | None:
+    """``key``'s entry in ``ledger`` if it was written at or after ``since``; never raises."""
+    try:
+        data, _why = ledger._read()
+        entry = (data or {}).get(key)
+        return entry if isinstance(entry, dict) and _number(entry.get("last_at")) >= since else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _home_ledger(entry: dict) -> "Ledger | None":
+    """The ledger of the loop an entry's repo belongs to, if any."""
+    repo = entry.get("repo") if isinstance(entry, dict) else None
+    try:
+        loop = _loop_for({"repository": {"full_name": repo}}) if repo else None
+        return loop_ledger(loop) if loop and loop.get("state_dir") else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _settle_github_read(repo, key: str, how: str) -> None:
+    """The failed read an entry owned (``owned_by``) is settled when the entry leaves: marked
+    ``resolved_by`` instead, so ``explain`` stops promising a gate-failure line and the health
+    sweep knows why it need not announce it. Only the read this very entry owned is touched."""
+    if not repo:
+        return
+    try:
+        loop = _loop_for({"repository": {"full_name": repo}})
+        if not loop or not loop.get("state_dir"):
+            return
+        from . import state as state_mod
+        st = state_mod.state_for(loop)
+        failure = st.github_failure()
+        if failure.get("owned_by") != f"gate-failures:{key}":
+            return
+        settled = {k: v for k, v in failure.items() if k not in ("owned_by", "owned_in")}
+        st.github_failure_record({**settled, "resolved_by": f"gate-failures:{key} {how}"})
+    except Exception as err:  # noqa: BLE001 - diagnostic only
+        log(f"could not settle the owned failed read: {type(err).__name__}: {err}")
 
 
 def fallback_ledger() -> Ledger:
@@ -737,7 +805,7 @@ def _ledgers_for(payload) -> list[Ledger]:
 # -- the guard ------------------------------------------------------------------------------
 
 
-def _claim_github_read(payload, key: str, since: float) -> None:
+def _claim_github_read(payload, key: str, since: float, held_in: str = "") -> None:
     """One owner per failed GitHub read (#75 with #54). A read a gate made, and this ledger
     recorded as the event's failure, is alerted and re-driven from here; ``github-reads.json``
     keeps it only as the "last failed call" diagnostic (``explain``), marked ``owned_by`` so the
@@ -751,7 +819,8 @@ def _claim_github_read(payload, key: str, since: float) -> None:
         failure = st.github_failure()
         at = failure.get("at")
         if isinstance(at, (int, float)) and not isinstance(at, bool) and at >= since:
-            st.github_failure_record({**failure, "owned_by": f"gate-failures:{key}"})
+            st.github_failure_record({**failure, "owned_by": f"gate-failures:{key}",
+                                      "owned_in": held_in})
     except Exception as err:  # noqa: BLE001 - the health sweep then reports it; never silent
         log(f"could not mark the failed read as owned: {type(err).__name__}: {err}")
 
@@ -869,6 +938,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
     recorded, kept, used = "", {}, None
     ledgers = _ledgers_for(payload)
     why_here = ""
+    record_wall = time.time()
     for i, ledger in enumerate(ledgers):
         left = record_start + RECORD_S - 0.5 - time.monotonic()
         try:
@@ -877,7 +947,18 @@ def run(gate: str, main: Callable[[], None]) -> None:
                                  raw, deadline=time.monotonic() + max(0.05, left / (len(ledgers) - i)))
             recorded, used = str(ledger.path), ledger
             break
-        except Exception as err:  # noqa: BLE001 - fall through to the next ledger
+        except BaseException as err:  # noqa: BLE001 - refused, or took it and then raised?
+            # ``record`` can raise after its write has landed (the directory fsync after the
+            # atomic replace, or the record-phase alarm). Handing over then would put one event
+            # in two ledgers — two alerts, two re-drive budgets — so look before moving on.
+            landed = _landed(ledger, key, record_wall)
+            if landed is not None:
+                recorded, used, kept = str(ledger.path), ledger, landed
+                log(f"gate-failure ledger {ledger.path} took the record, then "
+                    f"{type(err).__name__}: {err} — kept there, not recorded twice")
+                break
+            if not isinstance(err, Exception):
+                raise
             why_here = (f"{ledger.path} was busy or unwritable when this gate recorded "
                         f"({type(err).__name__}: {err})")
             log(f"gate-failure ledger write failed ({ledger.path}): {type(err).__name__}: {err}")
@@ -897,7 +978,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
         except Exception as err:  # noqa: BLE001 - the claims are free; only the note is lost
             log(f"could not note the released claims: {type(err).__name__}: {err}")
     if recorded:
-        _claim_github_read(payload, key, started_wall)
+        _claim_github_read(payload, key, started_wall, recorded)
     where = f"#{facts['pr']}" if facts["pr"] else "an unnamed PR"
     then = ("nothing can alert on or re-drive it — " + redeliver_hint(entry) if not recorded
             else "the watchdog alerts and re-drives it"
@@ -1011,6 +1092,12 @@ def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s:
         if seen.get("kind") == CORRUPT and not pathlib.Path(str(seen.get("corrupt_copy"))).exists():
             ledger.resolve(key, f"corrupt copy removed by the operator; noticed at {iso_at(time.time())}")
             continue
+        home = _home_ledger(seen)
+        if home is not None and home.path != ledger.path and isinstance(home.entries().get(key), dict):
+            # One event, two ledgers (a handover that raced a landed write): the loop's own
+            # ledger owns it, so the alert and the re-drive budget are counted once, there.
+            ledger.resolve(key, f"duplicate of the same event in {home.path}; handled there")
+            continue
         claimed = ledger.claim(
             key, me, now=time.time(), cooldown_s=cooldown_s, may_redrive=may_redrive,
             can_drive=lambda e: ((scripts_dir / f"{e.get('gate')}.py").is_file()
@@ -1038,5 +1125,5 @@ def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s:
                     f"{entry.get('attempts')} attempt(s): {entry.get('error_type')}: "
                     f"{_bounded(entry.get('error') or '', 160)} — {outcome}")
         say(line)                          # a sweep killed here leaves the claim to expire
-        ledger.release(key, me, said=True)
+        ledger.release(key, me, said=True, attempts=entry.get("attempts"))
     return lines

@@ -491,7 +491,8 @@ own record instead:
   share of those 3s: it falls through to the no-loop ledger, which every watchdog run sweeps.
   `doctor` prints one `gate:timeout:<profile>` line for each profile hosting a loop route
   (reviewer, fixer, adjudicator, observer). Each line names the gateway and file, flags any
-  limit below 28s, flags a limit below 5s as too small for a gate even to record its own
+  limit below 27s (the lowest that fits the full 20s budget, the 3s backstop, start-up and
+  recording: `doctor` and the gate use the same arithmetic), flags a limit below 5s as too small for a gate even to record its own
   failure, and says which file to fix.
 * **Seats.** The reviewer and fixer gates do not claim seats: they enqueue an isolated turn in
   the host run ledger (`gate.block_pr_agent` → `enqueue_isolated`), whose worker enforces each
@@ -550,8 +551,19 @@ own record instead:
   announce it again. The watchdog's own reads (the `/user` probe and the hook list) and any
   failed read no gate-failure entry claims are still reported by the health check.
 * **The watchdog is budgeted too.** Its GitHub reads are capped at 20s each and the run at
-  600s (`REVIEW_LOOP_WATCHDOG_BUDGET_S`). When GitHub hangs, the sweep stops with one "watchdog
-  stopped" line and the next cron run starts fresh.
+  600s (`REVIEW_LOOP_WATCHDOG_BUDGET_S`). A sweep that runs out of budget stops, and the next cron
+  run starts fresh. Running out of time does not prove GitHub gave no answer, since slow answered
+  reads spend the budget too. So it counts as a failed-read sweep for the health check and is
+  said like any failure short of a 401/403: one "watchdog stopped: the sweep ran out of its …
+  budget" line after 3 such sweeps in a row, then once per cooldown.
+* **One event, one ledger.** If a gate's write to the loop's ledger raises *after* it landed (a
+  failed directory fsync, or the record-phase alarm), the gate keeps it there instead of also
+  writing it to the no-loop ledger. An event that is in both anyway is resolved in the no-loop
+  ledger as a duplicate, so it is alerted once and re-driven at most 3 times in total. A failure
+  the no-loop ledger had to take (the loop's ledger was busy) is still shown by `explain --pr N`
+  for that loop's PR, and its `github-reads.json` record names the ledger that holds it. When
+  the owning entry resolves or is pruned, that record is marked `resolved_by`, so `explain` stops
+  pointing at a gate-failure line and the health check does not announce the old read.
 
 ## How it handles a burst
 

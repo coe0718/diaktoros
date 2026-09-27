@@ -455,8 +455,12 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
                                                     failure.get("status")
                                                     if type(failure.get("status")) is int
                                                     else None))
-                           + (f" (tracked as {failure['owned_by']}: its gate-failure line says "
-                              f"what happens next)" if failure.get("owned_by") else ""))
+                           + (f" (tracked as {failure['owned_by']}"
+                              + (f" in {failure['owned_in']}" if failure.get("owned_in") else "")
+                              + ": its gate-failure line says what happens next)"
+                              if failure.get("owned_by") else
+                              f" (settled: {failure['resolved_by']})"
+                              if failure.get("resolved_by") else ""))
     github_line = " · ".join(github_bits) or "no failed GitHub call recorded"
 
     return {"seat": seat_line, "queue": queue_line, "inflight": inflight_line,
@@ -527,6 +531,9 @@ def gate_failure_line(entry: dict) -> str:
     status = gate_failures.explain_status(entry)
     if entry.get("pr") is None:
         status += " (its payload names no PR, so every PR's explain shows it)"
+    if entry.get("held_in"):
+        status += (f" (recorded in {entry['held_in']}, the no-loop ledger: this loop's ledger was "
+                   f"busy or unwritable when the gate recorded it)")
     return (f"gate failure {entry.get('id')}: {entry.get('gate')} {entry.get('kind')} at head "
             f"{str(entry.get('head') or '?')[:7]} ({entry.get('action') or '?'}), last "
             f"{iso_at(float(entry.get('last_at') or 0))}, {entry.get('attempts')} attempt(s): "

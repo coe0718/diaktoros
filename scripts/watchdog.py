@@ -70,19 +70,19 @@ def watchdog_budget() -> float:
 
 
 def budget_spent_line(where: str, budget: float, exc: BaseException) -> str:
-    return (f"⚠️ Review loop {where} watchdog stopped: GitHub did not answer within the "
-            f"sweep's {budget:g}s budget ({exc}) — the rest of this run was skipped; the next "
-            f"sweep starts fresh")
+    return (f"⚠️ Review loop {where} watchdog stopped: the sweep ran out of its {budget:g}s "
+            f"budget — GitHub reads were slow or did not answer ({exc}); the rest of this run "
+            f"was skipped, and the next sweep starts fresh")
 
 
 def sweep_budget_spent(loop: dict, st: state_mod.LoopState, budget: float,
                        exc: BaseException) -> list[str]:
-    """A sweep GitHub stalled until its budget ran out is a failed-read sweep in #54's sense.
-
-    It is counted in the same ``github_read`` record the health check keeps, and said under the
-    same alert key as a read that got no HTTP answer (``read:none``): once per cooldown, not every
-    cron tick. Its end is said once by the health check ("GitHub reads work again").
-    """
+    """A sweep that ran out of its budget is a failed-read sweep in #54's sense — but not proof
+    that GitHub gave no answer: thirty slow, answered reads spend it just as surely. So it is
+    counted in the health check's ``github_read`` record, described as what it is ("ran out of
+    time"), and said like any failure short of a 401/403: after ``READ_FAILURE_SWEEPS`` sweeps
+    in a row, then once per cooldown (alert key ``read:slow``). Its end is said once by the
+    health check ("GitHub reads work again")."""
     now = time.time()
     watch = st.watch()
     record = watch.get("github_read") if isinstance(watch.get("github_read"), dict) else {}
@@ -90,18 +90,19 @@ def sweep_budget_spent(loop: dict, st: state_mod.LoopState, budget: float,
     since = valid_clock(record.get("since"), now) or now
     login = str(loop.get("read_token") or "the read token")
     record = {**record, "sweeps": sweeps, "since": since, "status": None, "login": login,
-              "error": f"no answer within the sweep's {budget:g}s budget: {exc}"[:200]}
+              "error": gh.one_line(f"the sweep ran out of its {budget:g}s budget "
+                                   f"(reads slow or unanswered): {exc}", 200)}
     cooldown = 0.0 if TEST else float(loop.get("cooldown_h", 6)) * 3600
     lines = []
-    if alert_due(watch, "read:none", now, cooldown):
+    if sweeps >= READ_FAILURE_SWEEPS and alert_due(watch, "read:slow", now, cooldown):
         record["alerted"] = True
         lines.append(budget_spent_line(f"[{loop.get('id', '?')}] {loop.get('repo', '')}".rstrip(),
                                        budget, exc)
-                     + f" — reading as {login}, {gh.failure_hint(None)} ({sweeps} sweep(s) since "
+                     + f" — reading as {login} ({sweeps} sweep(s) in a row since "
                        f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(since))})")
     watch["github_read"] = record
     st.watch_save(watch)
-    st.note(f"run: stopped — GitHub did not answer within {budget:g}s ({sweeps} sweep(s))")
+    st.note(f"run: stopped — the sweep ran out of its {budget:g}s budget ({sweeps} sweep(s))")
     return lines
 
 
@@ -305,7 +306,10 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
     seen = valid_clock(watch.get("gate_failure_seen"), now) or 0.0
     # A gate's failed read that its gate-failure entry owns is alerted (and re-driven) by that
     # ledger's sweep; saying it here too would report one read twice.
-    if at is not None and at > seen and not failure.get("owned_by"):
+    settled = failure.get("owned_by") or failure.get("resolved_by")
+    if at is not None and at > seen and settled and failure.get("resolved_by"):
+        watch["gate_failure_seen"] = at      # its gate-failure entry said it, and it resolved
+    if at is not None and at > seen and not settled:
         watch["gate_failure_seen"] = at
         status = failure.get("status") if type(failure.get("status")) is int else None
         if alert_due(watch, f"gate:{failure.get('where')}:{status or 'none'}", now, cooldown):
