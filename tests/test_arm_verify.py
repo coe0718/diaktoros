@@ -4,6 +4,7 @@ Issue #55 / #84: a refused PATCH used to print "hook 1 → paused" and exit 0; a
 `cron create` printed an unquoted fallback and exited 0. Disposable config/state only.
 """
 import argparse
+import contextlib
 from contextlib import redirect_stdout
 import io
 import json
@@ -96,7 +97,12 @@ class ArmVerifyTests(unittest.TestCase):
     def arm(self, fake, pause=False, admin_token="", loop="widgets"):
         args = argparse.Namespace(loop=loop, pause=pause, admin_token=admin_token)
         out = io.StringIO()
-        with patch.object(gh, "fetch", fake.fetch), redirect_stdout(out):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(gh, "fetch", fake.fetch))
+            if hasattr(cli, "_ping_loop_hooks"):
+                # The post-arm ping (#57) has its own tests; this fake speaks hooks, not pings.
+                stack.enter_context(patch.object(cli, "_ping_loop_hooks", lambda *a, **k: True))
+            stack.enter_context(redirect_stdout(out))
             rc = cli.cmd_arm(args)
         return rc, out.getvalue()
 
