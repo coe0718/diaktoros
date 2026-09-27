@@ -18,6 +18,7 @@ import os
 import pathlib
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from contextlib import contextmanager
 
@@ -281,6 +282,8 @@ def fire(name: str, event: str, payload: dict, tag: str, host: str | None = None
             log(f"fired {name} for {tag} (HTTP {resp.status})")
             return 200 <= resp.status < 300
     except Exception as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()   # it holds the response open
         log(f"could not fire {name} for {tag}: {exc}")
         return False
 

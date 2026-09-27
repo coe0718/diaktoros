@@ -53,7 +53,9 @@ class ChildLeaksFailTheRun(unittest.TestCase):
 
     def test_traced_child_names_the_allocation(self):
         result = self.guard('import os\nf = open(os.devnull)\ndel f\n', PYTHONTRACEMALLOC='5')
-        self.assert_charged(result, 'unclosed file', where='allocated at:')
+        # 3.14 reports the raw FileIO with no object to trace; the release site still names it.
+        where = 'allocated at:' if sys.version_info < (3, 14) else 'released at:'
+        self.assert_charged(result, 'unclosed file', where=where)
 
     @unittest.skipIf(sys.version_info < (3, 13), 'sqlite3 warns about an unclosed database from 3.13')
     def test_child_leaking_a_sqlite_connection_fails(self):
