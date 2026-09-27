@@ -16,6 +16,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 HEAD = "a" * 40
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from worker_wait import wait_for_workers  # noqa: E402
 
 
 class RouteSubprocess(unittest.TestCase):
@@ -23,6 +25,9 @@ class RouteSubprocess(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # Cleanups run last in, first out: every detached worker a route spawned has exited
+        # before the temp dir is removed (a worker still writing made rmtree fail under load).
+        self.addCleanup(wait_for_workers, self.root)
         home = self.root / "home"
         home.mkdir()
         loops = home / "review-loops.d"
