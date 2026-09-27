@@ -64,6 +64,7 @@ def group_settings() -> None:
     # the rail that matters: no clone, so no parallel
     solo = config.normalize({"id": "solo", "repo": "acme/solo", "fixers": [FIXER],
                              "reviewers": [REVIEWER], "reviewer_seat": SEAT,
+                             "read_token": READ_LOGIN,
                              "seats": {"reviewer": {"profile": "r", "route": "solo-review"},
                                        "fixer": {"profile": "f", "route": "solo-fix"}},
                              "state_dir": str(STATE_DIR / "solo")})
@@ -81,7 +82,7 @@ def group_settings() -> None:
 
     # the round trip that a stranger's install depends on: what we write must read back
     rt = config.normalize({"id": "rt", "repo": "acme/rt", "fixers": [FIXER],
-                           "reviewers": [REVIEWER], "reviewer_seat": SEAT,
+                           "reviewers": [REVIEWER], "reviewer_seat": SEAT, "read_token": READ_LOGIN,
                            "seats": {"reviewer": {"profile": "r", "route": "rt-review"},
                                      "fixer": {"profile": "f", "route": "rt-fix"}}})
     (LOOPS_DIR / "rt.json").write_text(json.dumps(rt))

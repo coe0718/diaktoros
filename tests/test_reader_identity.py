@@ -73,9 +73,9 @@ class _Home(unittest.TestCase):
         path.chmod(mode)
         return path
 
-    def run_cli(self, argv):
+    def run_cli(self, argv, settings=None):
         ctx = _Ctx()
-        cli.register_cli(ctx, settings={})
+        cli.register_cli(ctx, settings=settings or {})
         parser = argparse.ArgumentParser(prog="hermes review-loop")
         ctx.setup(parser)
         out = io.StringIO()
@@ -205,6 +205,61 @@ class ReaderIdentityTests(_Loop):
         rc, out = self.run_cli(["set", "--loop", "widgets", "--read-token", READER])
         self.assertEqual(rc, 0, out)
 
+    def settings_matching(self, **changes):
+        """A settings form that matches the installed loop, plus ``changes``."""
+        return {"reviewer_profile": "vex", "fixer_profile": "drey",
+                "reviewer_login": REV, "fixer_login": FIX,
+                "host": "https://gateway.example", **changes}
+
+    def test_apply_refuses_a_legacy_reader_on_a_seat_even_when_no_identity_moves(self):
+        rc, out = self.run_cli(self.init_argv())
+        self.assertEqual(rc, 0, out)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"], self.settings_matching(cap=4))
+        self.assertEqual(rc, 0, out)            # control: a clean loop takes the cap push
+        self.assertIn("cap: 3 → 4", out)
+        data = json.loads(self.loop_file().read_text())
+        data["read_token"] = REV
+        self.loop_file().write_text(json.dumps(data))
+        before = self.loop_file().read_bytes()
+        for settings in (self.settings_matching(cap=5), self.settings_matching(cap=4)):
+            for dry in ([], ["--dry-run"]):
+                rc, out = self.run_cli(["apply", "--loop", "widgets", *dry], settings)
+                self.assertEqual(rc, 2, out)
+                self.assertIn(f"the reader {REV!r} is also the reviewer seat", out)
+                self.assertIn("four-identity rule", out)
+                self.assertIn("fix: hermes review-loop set --loop widgets --read-token", out)
+                self.assertNotIn("already matches", out)
+                self.assertEqual(self.loop_file().read_bytes(), before)
+
+    def test_status_flags_a_reader_on_a_seat(self):
+        self.install_legacy_shared_reader()
+        rc, out = self.run_cli(["status", "--loop", "widgets"])
+        self.assertIn(f"reader:  the reader {REV!r} is also the reviewer seat", out)
+        self.assertIn("four-identity rule", out)
+        self.assertIn("fix:        hermes review-loop set --loop widgets --read-token", out)
+        rc, out = self.run_cli(self.init_argv("--id", "clean", "--repo", "acme/clean"))
+        rc, out = self.run_cli(["status", "--loop", "clean"])
+        self.assertNotIn("reader:", out)
+
+    def test_a_loop_file_without_a_reader_is_refused_never_inferred(self):
+        rc, out = self.run_cli(self.init_argv())
+        self.assertEqual(rc, 0, out)
+        data = json.loads(self.loop_file().read_text())
+        del data["read_token"]                      # hand-edited; the first token is a seat's
+        self.assertIn(next(iter(data["tokens"])), (REV, FIX))
+        self.loop_file().write_text(json.dumps(data))
+        with self.assertRaisesRegex(config.ConfigError,
+                                    r"'read_token' is not set, and the reader is never inferred "
+                                    r"from 'tokens' — add \"read_token\": \"<login>\""):
+            config.load_id("widgets")
+        # Every verb answers with that reason and an exit code — never a traceback.
+        for argv in (["list"], ["status"], ["status", "--loop", "widgets"],
+                     ["doctor", "--loop", "widgets", "--offline"], ["arm", "--loop", "widgets"],
+                     ["set", "--loop", "widgets", "--cap", "4"], ["apply", "--loop", "widgets"]):
+            rc, out = self.run_cli(argv)
+            self.assertEqual(rc, 2, (argv, out))
+            self.assertIn("'read_token' is not set", out, argv)
+
     def test_set_read_token_refusals(self):
         rc, out = self.run_cli(self.init_argv())
         self.assertEqual(rc, 0, out)
@@ -249,7 +304,10 @@ class HookWriteTests(_Loop):
     def test_dry_run_states_who_edits_the_hooks_and_what_it_needs(self):
         rc, out = self.run_cli(self.init_argv("--hooks", "--dry-run"))
         self.assertEqual(rc, 0, out)
-        self.assertIn(f"hooks are created and armed as {READER}", out)
+        # Paused until `arm`: the line must not say "armed" under "paused until `arm`".
+        self.assertIn(f"hooks would be created paused as {READER}, and `arm` / `arm --pause` "
+                      f"edit them as {READER} too", out)
+        self.assertNotIn("created and armed", out)
         self.assertIn("repository_hooks: write", out)
         self.assertIn("that is the reader's file", out)
         self.pat("owner")
@@ -257,8 +315,26 @@ class HookWriteTests(_Loop):
                                               "--token", f"owner={self.keys / 'owner-pat'}",
                                               "--dry-run"))
         self.assertEqual(rc, 0, out)
-        self.assertIn("hooks are created and armed as owner", out)
+        self.assertIn("hooks would be created paused as owner", out)
         self.assertNotIn("that is the reader's file", out)
+        rc, out = self.run_cli(self.init_argv("--hooks", "--arm", "--dry-run"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"hooks would be created armed (--arm) as {READER}", out)
+
+    def test_a_successful_init_hooks_states_who_edits_them(self):
+        # README: "`init --hooks` prints the login and this need" — on the real path, not only
+        # in --dry-run or on failure.
+        def api(loop, path, method="GET", body=None, login=None):
+            if path.endswith("/hooks?per_page=100"):
+                return []
+            return {"id": 1 if body["events"] == ["pull_request"] else 2} if method == "POST" else None
+        with patch("review_loop.gh.api", side_effect=api):
+            rc, out = self.run_cli(self.init_argv("--hooks"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"hooks were created paused as {READER}, and `arm` / `arm --pause` edit "
+                      f"them as {READER} too", out)
+        self.assertIn("repository_hooks: write", out)
+        self.assertIn("that is the reader's file", out)
 
     def test_next_step_arms_as_the_admin_login(self):
         self.pat("owner")

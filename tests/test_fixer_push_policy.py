@@ -14,7 +14,7 @@ from review_loop import cli, config
 
 def raw_loop(loop_id):
     return {"id": loop_id, "repo": f"owner/{loop_id}", "fixers": ["fixer"],
-            "reviewers": ["reviewer"], "seats": {
+            "reviewers": ["reviewer"], "read_token": "reader", "seats": {
                 "reviewer": {"route": f"{loop_id}-review", "profile": "reviewer"},
                 "fixer": {"route": f"{loop_id}-fix", "profile": "fixer"}}}
 
