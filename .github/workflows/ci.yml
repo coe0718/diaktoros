@@ -124,7 +124,7 @@ jobs:
   # No credential is involved: every endpoint and token the tests touch is a fake.
   verticals:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     env:
       HERMES_AGENT_SOURCE: ${{ github.workspace }}/hermes
       REVIEW_LOOP_REQUIRE_HERMES_SOURCE: "1"
