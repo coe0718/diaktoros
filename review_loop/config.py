@@ -932,6 +932,11 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         seat_cfg.setdefault("agent", seat_cfg["profile"].capitalize())
         seats[seat] = seat_cfg
     loop["seats"] = seats
+    if str(seats["reviewer"]["route"]) == str(seats["fixer"]["route"]):
+        # One route for two seats: one hook would wake (and "arm") both, and the gate script
+        # bound to it can only be one of the two. Refused on load, not only at init/apply.
+        raise ConfigError(f"{where}: seats.reviewer.route and seats.fixer.route are both "
+                          f"{seats['reviewer']['route']!r} — each seat needs its own route")
 
     loop["reviewer_seat"] = str(loop.get("reviewer_seat")
                                or seats["reviewer"].get("login") or "").lower()
