@@ -531,7 +531,7 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> list[str]:
 
 
 def _hook_moves(before: dict, after: dict, binds: dict,
-                token_login: str | None = None) -> list[tuple[int, str, str]]:
+                token_login: str | None = None) -> list[tuple[int, str, str, object]]:
     """Preflight exact hook URLs against configured and installed owned route profiles."""
     names = _routes_of(after)
     expected: dict[str, tuple[str, str]] = {}
@@ -580,29 +580,31 @@ def _hook_moves(before: dict, after: dict, binds: dict,
         if role not in targets or old not in expected or expected[old][0] != role:
             raise config.ConfigError(f"installed {role} hook {hook['id']} "
                                      f"points at unexpected URL {old!r}; no changes made")
-        moves.append((hook["id"], old, targets[role]))
+        moves.append((hook["id"], old, targets[role], hook["config"].get("insecure_ssl")))
     return moves
 
 
-def _hook_config(url: str) -> dict:
+def _hook_config(url: str, insecure_ssl=None) -> dict:
     """The complete config a loop hook for ``url`` must carry. Always sent whole: GitHub may treat
     a PATCHed ``config`` as a replacement, and a url-only body would then drop the secret, leaving
     a hook whose deliveries the route rejects. The secret is the route's own, from the registry;
-    it is never printed or logged."""
+    it is never printed or logged. ``insecure_ssl`` is the hook's own (the operator's TLS choice,
+    read from the hook listing); ``"0"`` — verify TLS — only when the hook has none."""
     path = urlsplit(url).path
     name = path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
     secret = (routes.route(name) or {}).get("secret") or ""
     if not name or not secret:
         raise config.ConfigError(f"route {name or url!r} has no secret in the registry; "
                                  "the hook was not changed")
-    return {"url": url, "content_type": "json", "insecure_ssl": "0", "secret": secret}
+    ssl = "0" if insecure_ssl in (None, "") else str(insecure_ssl)
+    return {"url": url, "content_type": "json", "insecure_ssl": ssl, "secret": secret}
 
 
 def _patch_hook_url(loop: dict, hook_id: int, url: str, login: str | None = None,
-                    require_secret: bool = False) -> None:
+                    require_secret: bool = False, insecure_ssl=None) -> None:
     path = f"/repos/{loop['repo']}/hooks/{hook_id}"
     login = login or loop.get("read_token")
-    result = gh.api(loop, path, method="PATCH", body={"config": _hook_config(url)}, login=login)
+    result = gh.api(loop, path, method="PATCH", body={"config": _hook_config(url, insecure_ssl)}, login=login)
     # A lost response is ambiguous. Always read back and roll back if it does not agree.
     actual = gh.api(loop, path, login=login)
     got = (actual.get("config") or {}) if isinstance(actual, dict) else {}
@@ -640,8 +642,7 @@ def _install_shims(loop: dict, report: bool = True, pairs=None) -> bool:
             print(f"  {line}")
         return True
     except (OSError, config.ConfigError) as exc:
-        print(f"gate shim install FAILED — the gateway drops this loop's events until it lands: "
-              f"{exc}")
+        print(f"gate shim install FAILED: {exc}")
         print(f"  fix it, then: hermes review-loop apply --loop {loop['id']}")
         return False
 
@@ -677,7 +678,8 @@ def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
     try:
         written = list(_install_routes(loop, roles=tuple(roles)).values())
         for hook, name in rekey:
-            _patch_hook_url(loop, hook["id"], urls[name], token_login, require_secret=True)
+            _patch_hook_url(loop, hook["id"], urls[name], token_login, require_secret=True,
+                            insecure_ssl=hook["config"].get("insecure_ssl"))
             print(f"  hook {hook['id']} re-keyed for {name}")
         route_intent.record_live(loop, written)
     except Exception as exc:
@@ -1139,6 +1141,7 @@ def cmd_set(args) -> int:
         print(f"refused: {exc}")
         return 2
 
+    shims_ok = True
     before = loop.get("observer") or {}
     after = updated.get("observer") or {}
     # Disabling stops new notices and removes the route, but leaves the outbox intact.
@@ -1197,7 +1200,7 @@ def cmd_set(args) -> int:
                 print(f"ROLLBACK FAILED: {rollback_exc} — inspect route {name!r} manually")
             print(f"observer route intent could not be recorded; loop config unchanged: {exc}")
             return 2
-        _install_shims(updated)
+        shims_ok = _install_shims(updated)
     path = _write_config(updated)
     if destination_changed and before.get("route") and before["route"] != after.get("route"):
         try:
@@ -1232,7 +1235,7 @@ def cmd_set(args) -> int:
     print("  parallel now: " + " · ".join(
         f"{seat} {config.seat_concurrency(updated, seat)}" for seat in ("reviewer", "fixer"))
         + "   (1 = serialized; everything above the limit queues)")
-    return 0
+    return 0 if shims_ok else 1
 
 
 def cmd_apply(args) -> int:
@@ -1395,17 +1398,19 @@ def cmd_apply(args) -> int:
                 raise config.ConfigError(f"route {name} readback does not run {GATE_SCRIPT[role]}")
             if entry.get("enabled", True) is False:
                 raise config.ConfigError(f"route {name} readback is still disabled")
-        for hook_id, old, new in hook_moves:
-            attempted_hooks.append((hook_id, old))
-            _patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None)
+        for hook_id, old, new, ssl in hook_moves:
+            attempted_hooks.append((hook_id, old, ssl))
+            _patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None,
+                            insecure_ssl=ssl)
         path = _write_config(updated) if changes or identity else config_path
         if rebound:
             route_intent.record_live(updated, [name for _, name in rebound])
     except Exception as exc:
         failed = []
-        for hook_id, old in reversed(attempted_hooks):
+        for hook_id, old, ssl in reversed(attempted_hooks):
             try:
-                _patch_hook_url(loop, hook_id, old, getattr(args, "admin_token", "") or None)
+                _patch_hook_url(loop, hook_id, old, getattr(args, "admin_token", "") or None,
+                                insecure_ssl=ssl)
             except Exception as rollback_exc:
                 failed.append(f"hook {hook_id}: {rollback_exc}")
         if previous:
@@ -1434,7 +1439,7 @@ def cmd_apply(args) -> int:
         print(f"  route {name} rebound → profile {config.seat_profile(updated, role)}"
               + (f", script {GATE_SCRIPT[role]}" if role in repairs else "")
               + (", enabled" if role in reenable else ""))
-    for hook_id, _, new in hook_moves:
+    for hook_id, _, new, _ssl in hook_moves:
         print(f"  hook {hook_id} → {new}")
     return 1 if _diverged(updated) else 0
 
