@@ -60,6 +60,12 @@ class _Home(unittest.TestCase):
             "REVIEW_LOOP_SUBS": str(self.hermes / "webhook_subscriptions.json")})
         env.start()
         self.addCleanup(env.stop)
+        # No test here may reach GitHub: an unpatched call fails loudly instead of sending a
+        # fixture token to the real API.
+        offline = patch("urllib.request.urlopen",
+                        side_effect=AssertionError("test reached the network"))
+        offline.start()
+        self.addCleanup(offline.stop)
         for profile in ("vex", "drey", "tuck"):
             (self.hermes / "profiles" / profile).mkdir(parents=True)
             (self.hermes / "profiles" / profile / "config.yaml").write_text("model: {}\n")
@@ -328,7 +334,12 @@ class HookWriteTests(_Loop):
             if path.endswith("/hooks?per_page=100"):
                 return []
             return {"id": 1 if body["events"] == ["pull_request"] else 2} if method == "POST" else None
-        with patch("review_loop.gh.api", side_effect=api):
+        def fetch(loop, path, method="GET", body=None, login=None):
+            # #57's stale-hook preflight reads the listing this way; nothing else may go out.
+            self.assertEqual((method, path), ("GET", "/repos/acme/widgets/hooks?per_page=100"))
+            return [], ""
+        with patch("review_loop.gh.api", side_effect=api), \
+                patch("review_loop.gh.fetch", side_effect=fetch):
             rc, out = self.run_cli(self.init_argv("--hooks"))
         self.assertEqual(rc, 0, out)
         self.assertIn(f"hooks were created paused as {READER}, and `arm` / `arm --pause` edit "
