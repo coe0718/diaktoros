@@ -400,6 +400,15 @@ class ByteCapTests(FakeCargo):
         self.assertEqual(deps.human_bytes(2 * 1024 * MiB), "2 GiB")
         self.assertEqual(deps.human_bytes(4 * MiB), "4 MiB")
 
+    def test_human_bytes_reads_right_at_every_size(self):
+        for value, text in ((0, "0 bytes"), (1, "1 byte"), (512, "512 bytes"),
+                            (16 * 1024, "16 KiB"), (1536, "1.5 KiB"), (1023 * 1024, "1023 KiB"),
+                            (MiB, "1 MiB"), (int(1.25 * MiB), "1.25 MiB"),
+                            (276 * 1000 ** 2, "263.21 MiB"), (1024 * MiB, "1 GiB"),
+                            (int(2.5 * 1024 * MiB), "2.5 GiB"), (3 * 1024 ** 4, "3072 GiB")):
+            with self.subTest(value):
+                self.assertEqual(deps.human_bytes(value), text)
+
     def test_prepare_applies_the_configured_cap(self):
         self.write()
         self.mode("flood")
@@ -684,24 +693,40 @@ class LedgerTests(unittest.TestCase):
 
     def test_a_slow_prefetch_keeps_its_lease_and_is_never_taken_for_a_lost_worker(self):
         from review_loop.run_supervisor import Supervisor
+        # child_timeout matters: _run_one's launching lease is child_timeout + lease_seconds, and
+        # with the 120 s default no sweep inside this test could ever reclaim the run, heartbeat
+        # or not. At 1 s each, only the heartbeat keeps a four-second pre-sandbox phase alive.
         sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
-                         hermes_home=self.root, lease_seconds=1.0)
+                         hermes_home=self.root, lease_seconds=1.0, child_timeout=1.0)
         run_id = self.row(sup, state="claimed")
-        states = []
+        seen = []
+
+        def lease(rid):
+            with sqlite3.connect(sup.db) as con:
+                return con.execute("SELECT state, lease FROM runs WHERE id=?", (rid,)).fetchone()
 
         def slow_turn(rid, owner):
+            # What _run_production does before any GitHub read: running, on a one-lease lease.
             with sqlite3.connect(sup.db) as con:
-                con.execute("UPDATE runs SET state='running' WHERE id=?", (rid,))
+                con.execute("UPDATE runs SET state='running', lease=? WHERE id=?",
+                            (time.time() + sup.lease_seconds, rid))
+            started = lease(rid)[1]
             for _ in range(4):                  # 4 s of prefetch: four lease lengths
                 time.sleep(1.0)
                 Supervisor(sup.db).recover()    # a concurrent sweep, as the watchdog runs one
-                with sqlite3.connect(sup.db) as con:
-                    states.append(con.execute("SELECT state FROM runs WHERE id=?",
-                                              (rid,)).fetchone()[0])
+                state, until = lease(rid)
+                seen.append((state, until, time.time()))
+            seen.insert(0, ("start", started, None))
         with mock.patch.object(sup, "_claim", return_value=(run_id, "w")), \
              mock.patch.object(sup, "_run_production", side_effect=slow_turn):
             sup._run_one()
-        self.assertEqual(set(states), {"running"})
+        start, *sweeps = seen
+        self.assertEqual({state for state, _, _ in sweeps}, {"running"}, seen)
+        # The lease was renewed during the pre-sandbox phase: each sweep saw a lease later than
+        # the last, and still in the future — never the one the turn started with.
+        leases = [start[1]] + [until for _, until, _ in sweeps]
+        self.assertEqual(leases, sorted(set(leases)), seen)
+        self.assertTrue(all(until > now for _, until, now in sweeps), seen)
 
     def test_status_and_explain_lines_come_from_the_ledger(self):
         from review_loop import cli, config
