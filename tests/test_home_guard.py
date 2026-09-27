@@ -22,6 +22,16 @@ from review_loop import cli, config, doctor, gh, isolation, safe_push, state, tr
 from review_loop.run_supervisor import Supervisor  # noqa: E402
 
 LEAKING = "test_boundary.BoundaryTests.test_gate_blocks_before_workspace_or_gateway_payload"
+# A test that trusts the default home: it writes the run ledger wherever config.home() says. The
+# boundary test above used to be that test until #115 pinned its HERMES_HOME, so the escape
+# proof carries its own leak instead of depending on one still existing somewhere in the suite.
+DEFAULT_HOME_WRITER = """
+import _home_guard, sys
+sys.path.insert(0, sys.argv[1])
+from review_loop import config
+from review_loop.run_supervisor import Supervisor
+Supervisor(config.home() / "state" / "review-loop-runs.sqlite")
+"""
 
 
 def first_import(path: pathlib.Path) -> str:
@@ -88,7 +98,7 @@ class HomeGuard(unittest.TestCase):
         with mock.patch.dict(os.environ, {config.TEST_HOME_GUARD_ENV: ""}):
             self.assertEqual(config.home(), pathlib.Path(os.environ["HERMES_HOME"]))
 
-    def _run_leaking_test(self, fake_home: pathlib.Path, *, escaped: bool):
+    def _run_leaking_test(self, fake_home: pathlib.Path, *, escaped: bool, argv=None):
         env = {k: v for k, v in os.environ.items() if k not in ("HERMES_HOME", "HOME")}
         env.update(HOME=str(fake_home), REVIEW_LOOP_TEST_REAL_HOME=str(fake_home))
         if escaped:
@@ -98,15 +108,21 @@ class HomeGuard(unittest.TestCase):
         else:
             env.pop(config.TEST_HOME_GUARD_ENV, None)
             env.pop("REVIEW_LOOP_TEST_USER_HOME", None)
-        return subprocess.run([sys.executable, "-m", "unittest", "-v", LEAKING], cwd=TESTS, env=env,
+        argv = argv or ["-m", "unittest", "-v", LEAKING]
+        return subprocess.run([sys.executable, *argv], cwd=TESTS, env=env,
                               text=True, capture_output=True, timeout=120)
 
     def test_escaping_test_hits_the_tripwire_and_writes_nothing(self):
         with tempfile.TemporaryDirectory() as fake:
             fake_home = pathlib.Path(fake)
-            result = self._run_leaking_test(fake_home, escaped=True)
+            writer = ["-c", DEFAULT_HOME_WRITER, str(TESTS.parent)]
+            result = self._run_leaking_test(fake_home, escaped=True, argv=writer)
             self.assertNotEqual(result.returncode, 0, result.stderr)
             self.assertIn("RealHomeError", result.stderr)
+            self.assertEqual(list(fake_home.rglob("*")), [])
+            # The same writer, properly guarded, succeeds, and in the temp home.
+            result = self._run_leaking_test(fake_home, escaped=False, argv=writer)
+            self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(list(fake_home.rglob("*")), [])
 
     def test_previously_leaking_gate_test_uses_a_temp_home(self):

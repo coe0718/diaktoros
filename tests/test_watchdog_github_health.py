@@ -246,7 +246,10 @@ class Reads(unittest.TestCase):
         import urllib.error
         body = io.BytesIO(PRETTY_401.encode())
         err = urllib.error.HTTPError("https://api.github.com/user", 401, "Unauthorized", {}, body)
+        # A loopback API: under the test guard a request to api.github.com is refused before
+        # urlopen, mocked or not.
         with mock.patch.dict(os.environ, {"REVIEW_LOOP_GH_STUB": ""}), \
+             mock.patch.object(gh, "API", "http://127.0.0.1:9"), \
              mock.patch.object(gh, "token", return_value="t"), \
              mock.patch.object(gh.urllib.request, "urlopen", side_effect=err):
             response = gh.auth_probe(self.loop)
