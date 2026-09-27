@@ -59,6 +59,15 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             oid = self.path.rsplit('/', 1)[-1]
             blob = next((raw for blob_sha, raw in world['blobs'].values() if blob_sha == oid), None)
             self._send(200 if blob is not None else 404, blob if blob is not None else b'')
+        elif self.path.startswith('/repos/acme/widgets/pulls/7/files?per_page=100'):
+            # The change under review (#50, #110): every blob as an added file, one page — or the
+            # refusal the world asks for.
+            if world.get('files_status'):
+                self._send(world['files_status'], {'message': 'Not Found'})
+            else:
+                self._send(200, [{'filename': name, 'status': 'added', 'additions': 1,
+                                  'deletions': 0, 'patch': '@@ -0,0 +1 @@\n+' + name}
+                                 for name in world['blobs']])
         elif self.path == '/repos/acme/widgets/pulls/7/reviews?per_page=100':
             self._send(200, world['writes'])
         elif self.path.startswith('/repos/acme/widgets/pulls/7/reviews/'):
@@ -237,6 +246,29 @@ class RouteWorkerVertical(unittest.TestCase):
         self.assertEqual((duplicate.returncode, duplicate.stdout.strip()),
                          (0, '[SILENT]'), duplicate.stderr)
         self.assertEqual(len(self.world['writes']), 1)
+
+    def test_a_file_list_github_refuses_still_runs_a_stated_partial_review(self):
+        # #110: a 404 on pulls/7/files is GitHub's answer, not an outage. The turn runs, and the
+        # seat is told it cannot see the whole change and must not approve it.
+        self.world['files_status'] = 404
+        route = self.route()
+        self.assertEqual((route.returncode, route.stdout.strip()), (0, '[SILENT]'), route.stderr)
+        row = self.result('succeeded')
+        self.assertEqual(row[:3], ('succeeded', 1, 0))
+        first = self.world['model'][0][1]['messages']
+        query = '\n'.join(str(m.get('content')) for m in first if m.get('role') == 'user')
+        self.assertIn("could not read the PR's file list (PR file page 1: HTTP 404", query)
+        self.assertIn('You cannot see the whole change: do not approve it', query)
+
+    def test_the_change_under_review_reaches_the_seat(self):
+        route = self.route()
+        self.assertEqual((route.returncode, route.stdout.strip()), (0, '[SILENT]'), route.stderr)
+        self.result('succeeded')
+        first = self.world['model'][0][1]['messages']
+        query = '\n'.join(str(m.get('content')) for m in first if m.get('role') == 'user')
+        self.assertIn('- changed files: 3 (+3 -0)', query)
+        self.assertIn('- added +1/-0: src/lib.rs', query)
+        self.assertNotIn('do not approve', query)
 
     def test_stale_head_fails_before_export_or_write(self):
         self.world['pr']['head']['sha'] = 'c' * 40
