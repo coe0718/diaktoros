@@ -106,10 +106,13 @@ hermes review-loop uninstall --loop name
 
 `arm` and `arm --pause` never report what they asked for — after each PATCH they read the hook back
 and print the state GitHub shows (`hook 12 → paused (read back)`, or `hook 12 is still active, not
-paused: PATCH failed (HTTP 403 …)`), then one `fix:` line. They exit **0** only when every loop
-hook was observed in the requested state (a hook already there counts), **1** on a refused or
-unconfirmed PATCH, a read-back that disagrees, an unreadable hook listing, or no loop hooks on the
-repo, and **2** when the loop is unknown or none is configured. Without `--admin-token` the PATCH
+paused: PATCH failed (HTTP 403 …)`), then a `fix:` line. They exit **0** only when both seats'
+hooks (reviewer and fixer) exist and every one was observed in the requested state (a hook whose
+listing shows that state as a real true/false counts), **1** on a refused or unconfirmed PATCH, a
+read-back that disagrees, an unreadable hook listing, no loop hooks on the repo, or one seat's hook
+missing — named per seat as `hook:<route> ABSENT (fixer seat)`, the way `doctor` names it, since a
+loop armed halfway is not armed — and **2** when the loop is unknown or none is configured. A
+failed PATCH that looks transient (a timeout, a 5xx) gets "retry `arm`" first. Without `--admin-token` the PATCH
 goes out as the loop's `read_token`; the `fix:` line names the scope that login's file needs
 (`repository_hooks: write`, `admin:repo_hook` or classic `repo`) and, when it is the reader, the
 owner case above.

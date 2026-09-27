@@ -523,26 +523,31 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
 
     Returns ``(lines, ok)``. ``ok`` is true only when every loop hook was observed in the asked-for
     state: a refused PATCH, a read-back that disagrees or cannot be made, an unreadable listing,
-    and a repo with no loop hooks all make it false — ``arm`` must never say "paused" about a hook
-    GitHub still delivers to.
+    a repo with no loop hooks, and a repo missing either seat's hook all make it false — ``arm``
+    must never say "paused" about a hook GitHub still delivers to, nor "armed" about a loop that
+    only one seat can hear.
     """
     names = _routes_of(loop)
-    wanted = tuple(name for role, name in names.items() if role in ("reviewer", "fixer") and name)
+    seats = [(role, names[role]) for role in ("reviewer", "fixer") if names.get(role)]
+    wanted = tuple(name for _, name in seats)
     word = "active" if active else "paused"
     login = token_login or loop.get("read_token")
     try:
         hooks = _hook_listing(loop, token_login)
     except config.ConfigError as exc:
         return [f"could not read the repo's hooks: {exc}",
-                f"  fix: {_hook_write_fix(token_login, loop=loop)}"], False
+                f"fix: {_hook_write_fix(token_login, loop=loop)}"], False
     out, ok, errors = [], True, []
-    found = False
+    matched: set[str] = set()
     for hook in hooks:
         url = (hook.get("config") or {}).get("url", "")
-        if not any(name in url for name in wanted):
+        hit = [name for name in wanted if name in url]
+        if not hit:
             continue
-        found = True
-        if bool(hook.get("active")) == active:
+        matched.update(hit)
+        # Only a real bool is a state: a hook with no `active` (or a non-bool one) is flipped and
+        # read back like any other, never taken as already there.
+        if isinstance(hook.get("active"), bool) and hook["active"] == active:
             out.append(f"hook {hook['id']} already {word}")
             continue
         path = f"/repos/{loop['repo']}/hooks/{hook['id']}"
@@ -565,15 +570,28 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         out.append(f"hook {hook['id']} is still {seen}, not {word}"
                    + (f": PATCH failed ({error})" if error else ": GitHub accepted the PATCH "
                       "but the read-back disagrees"))
-        errors.append("refused")
-    if not found:
+        # A PATCH GitHub accepted that did not stick is a refusal; a failed PATCH is judged by its
+        # own code below, so a timeout or a 5xx gets the retry advice, not the token-scope one.
+        errors.append(error or "refused")
+    if not matched:
         return ["no loop hooks found — run init --hooks first "
                 f"(looked for hooks whose URL names {', '.join(wanted) or 'a loop route'})"], False
+    missing = [(role, name) for role, name in seats if name not in matched]
+    for role, name in missing:
+        out.append(f"hook:{name} ABSENT ({role} seat) — no repo hook posts to this route, so "
+                   f"the loop cannot be {'armed' if active else 'paused'} as a whole")
     if not ok:
         # GitHub answers 404 to a token that may not see hooks, so 404 counts as a refusal too.
         refused = any(e == "refused" or any(f"HTTP {code}" in e for code in (401, 403, 404))
                       for e in errors)
         out.append(f"fix: {_hook_write_fix(token_login, transient=not refused, loop=loop)}")
+    if missing:
+        ok = False
+        out.append(f"fix: `hermes review-loop doctor --loop {loop.get('id')}` shows the hook each "
+                   "seat needs; add the missing one (by hand with its route's URL and secret, or "
+                   "via `init --hooks` for a loop being set up — hook write on "
+                   f"{loop.get('repo')}, --admin-token <login>), then run "
+                   f"`arm{' --pause' if not active else ''}` again")
     return out, ok
 
 

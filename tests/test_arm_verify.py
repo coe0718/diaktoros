@@ -145,6 +145,57 @@ class ArmVerifyTests(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("no loop hooks found", out)
 
+    def test_one_seat_hook_missing_fails_and_names_it(self):
+        # Only the reviewer's hook exists: the loop would be armed halfway, which is not "armed".
+        fake = FakeGitHub({1: hooks(False)[1], 3: hooks(False)[3]})
+        rc, out = self.arm(fake)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("hook 1 → active (read back)", out)
+        self.assertIn("hook:widgets-fix ABSENT (fixer seat)", out)
+        self.assertNotIn("widgets-review ABSENT", out)
+        self.assertIn("init --hooks", out)
+        self.assertIn("doctor --loop widgets", out)
+        self.assertIn("arm NOT confirmed for: widgets", out)
+        # And the other way round, pausing with only the fixer's hook.
+        fake = FakeGitHub({2: hooks(True)[2]})
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("hook:widgets-review ABSENT (reviewer seat)", out)
+        self.assertNotIn("widgets-fix ABSENT", out)
+
+    def test_hook_without_a_real_active_bool_is_not_already_in_state(self):
+        # A listing entry with no `active` key is not proof the hook is paused: PATCH and read back.
+        listing = hooks(True)
+        del listing[1]["active"]
+        listing[2]["active"] = "false"
+        fake = FakeGitHub(listing)
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("already paused", out)
+        self.assertIn("hook 1 → paused (read back)", out)
+        self.assertIn("hook 2 → paused (read back)", out)
+        self.assertIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls)
+        self.assertIn(("PATCH", "/repos/owner/widgets/hooks/2", "reader"), fake.calls)
+
+    def test_transient_patch_failure_gets_the_retry_fix(self):
+        fake = FakeGitHub(hooks(True), patch_error="HTTP 502 Bad Gateway")
+        rc, out = self.arm(fake, pause=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("hook 1 is still active, not paused: PATCH failed (HTTP 502", out)
+        fix = [line for line in out.splitlines() if "fix:" in line]
+        self.assertEqual(len(fix), 1, out)
+        self.assertTrue(fix[0].startswith("[widgets] fix: retry `arm`"), fix)
+
+    def test_fix_lines_are_formatted_alike(self):
+        outs = [self.arm(FakeGitHub(hooks(True), list_error="HTTP 404"))[1],
+                self.arm(FakeGitHub(hooks(True), patch_error="HTTP 403"), pause=True)[1],
+                self.arm(FakeGitHub({1: hooks(False)[1]}))[1]]
+        for out in outs:
+            fix = [line for line in out.splitlines() if "fix:" in line]
+            self.assertTrue(fix, out)
+            for line in fix:
+                self.assertTrue(line.startswith("[widgets] fix: "), repr(line))
+
     def test_no_loops_or_unknown_loop_fail(self):
         (config.config_dir() / "widgets.json").unlink()
         rc, out = self.arm(FakeGitHub({}), loop=None)
