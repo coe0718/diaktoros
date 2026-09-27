@@ -472,6 +472,19 @@ def _install_hooks(loop: dict, token_login: str | None, active: bool = False) ->
                                  ("ROLLBACK FAILED: " + "; ".join(failures) if failures
                                   else "created hooks removed")) from exc
 
+class HookAccessError(config.ConfigError):
+    """GitHub did not let this token read or write the repo's hooks. Only this cause is fixed by
+    a different token; every other hook error names its own remedy."""
+
+
+def _hook_fix(loop: dict, exc: Exception) -> str:
+    """The remedy for a failed hook step, matched to its cause."""
+    if isinstance(exc, HookAccessError):
+        return (f"re-run with --admin-token <login> ({doctor.hook_write_need(loop['repo'])}; "
+                "the reader is usually read-only)")
+    return f"`hermes review-loop doctor --loop {loop['id']}` names what to repair first"
+
+
 def _hook_listing(loop: dict, token_login: str | None = None) -> list[dict]:
     hooks = gh.api(loop, f"/repos/{loop['repo']}/hooks?per_page=100",
                    login=token_login or loop.get("read_token"))
@@ -482,7 +495,7 @@ def _hook_listing(loop: dict, token_login: str | None = None) -> list[dict]:
         not isinstance(h.get("config"), dict) or
         not isinstance(h["config"].get("url"), str) for h in hooks
     ):
-        raise config.ConfigError("cannot read a complete, valid repo hook listing; no changes made")
+        raise HookAccessError("cannot read a complete, valid repo hook listing; no changes made")
     return hooks
 
 
@@ -495,25 +508,37 @@ def _keep_one(candidates: list[dict], dest: str) -> tuple[dict, list[dict]]:
     return ordered[0], ordered[1:]
 
 
-def _set_hooks(loop: dict, active: bool, token_login: str | None) -> list[str]:
+def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[str], bool]:
+    """Pause or arm the loop's hooks: ``(lines, ok)``. Not ok when a hook for a seat route posts
+    somewhere the gateway does not serve that route (a trailing slash, another profile): flipping
+    it changes nothing the gateway sees, so "armed" would be a false claim."""
     names = _routes_of(loop)
     wanted = tuple(name for role, name in names.items() if role in ("reviewer", "fixer"))
     try:
         hooks = _hook_listing(loop, token_login)
     except config.ConfigError as exc:
-        return [f"could not read the repo's hooks: {exc}"]
-    out = []
+        return [f"could not read the repo's hooks: {exc}"], False
+    out, ok = [], True
     for hook in hooks:
         url = (hook.get("config") or {}).get("url", "")
-        if routes.route_name_of(url) not in wanted:
+        name = routes.route_name_of(url)
+        if name not in wanted:
             continue
+        try:
+            exact = routes.url_for(name, loop.get("host") or None)
+        except config.ConfigError:
+            exact = None
+        if url != exact:
+            ok = False
+            out.append(f"⚠️ hook {hook['id']} posts to {url}, which the gateway does not route "
+                       f"for {name} — `hermes review-loop apply --loop {loop['id']}` repoints it")
         if bool(hook.get("active")) == active:
             out.append(f"hook {hook['id']} already {'active' if active else 'paused'}")
             continue
         gh.api(loop, f"/repos/{loop['repo']}/hooks/{hook['id']}", method="PATCH",
                body={"active": active}, login=token_login or loop.get("read_token"))
         out.append(f"hook {hook['id']} → {'active' if active else 'paused'}")
-    return out or ["no loop hooks found — run init --hooks first"]
+    return (out or ["no loop hooks found — run init --hooks first"]), ok
 
 
 def _hook_moves(before: dict, after: dict, binds: dict,
@@ -623,8 +648,8 @@ def _patch_hook_url(loop: dict, hook_id: int, url: str, login: str | None = None
     got = (actual.get("config") or {}) if isinstance(actual, dict) else {}
     if not isinstance(result, dict) or not isinstance(actual, dict) or got.get("url") != url \
             or (require_secret and not got.get("secret")):
-        raise config.ConfigError(f"hook {hook_id} update not confirmed as {url!r} — "
-                                 f"{doctor.hook_write_need(loop['repo'])}")
+        raise HookAccessError(f"hook {hook_id} update not confirmed as {url!r} — "
+                              f"{doctor.hook_write_need(loop['repo'])}")
 
 
 def _install_schedule(loop: dict, schedule: str, deliver: str) -> list[str]:
@@ -680,7 +705,8 @@ def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
         hooks = _hook_listing(loop, token_login)
     except config.ConfigError as exc:
         print(f"refused: cannot recreate {names}: {exc}")
-        print(f"  fix: re-run with --admin-token <login> ({doctor.hook_write_need(loop['repo'])})")
+        if isinstance(exc, HookAccessError):
+            print(f"  fix: {_hook_fix(loop, exc)}")
         return 2, 0
     urls = {name: routes.url_for_profile(name, gate_shims.config_profile(loop, role), loop.get("host"))
             for role, name in missing.items()}
@@ -717,8 +743,7 @@ def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
             print(f"ROLLBACK FAILED: {rollback_exc} — inspect routes {names} manually")
         print(f"route recreation FAILED: {exc}; the recreated routes were taken back out — a hook "
               "already re-keyed now signs with a secret no route holds: re-run this command")
-        print(f"  fix: re-run with --admin-token <login> ({doctor.hook_write_need(loop['repo'])}; "
-              "the reader is usually read-only)")
+        print(f"  fix: {_hook_fix(loop, exc)}")
         return 2, 0
     for name in written:
         print(f"  route {name} recreated")
@@ -1357,8 +1382,7 @@ def cmd_apply(args) -> int:
                                 insecure_ssl=ssl)
             except config.ConfigError as exc:
                 print(f"  hook {hook_id} NOT repointed from {old} to {new}: {exc}")
-                print(f"  fix: re-run with --admin-token <login> "
-                      f"({doctor.hook_write_need(loop['repo'])})")
+                print(f"  fix: {_hook_fix(loop, exc)}")
                 return 2
             print(f"  hook {hook_id} → {new}   (was {old}: the gateway does not route a trailing "
                   "slash)")
@@ -1800,10 +1824,13 @@ def cmd_models(args) -> int:
 
 
 def cmd_arm(args) -> int:
+    ok = True
     for loop in ([config.load_id(args.loop)] if args.loop else config.all_loops()):
-        for line in _set_hooks(loop, not args.pause, args.admin_token):
+        lines, loop_ok = _set_hooks(loop, not args.pause, args.admin_token)
+        ok = ok and loop_ok
+        for line in lines:
             print(f"[{loop['id']}] {line}")
-    return 0
+    return 0 if ok else 1
 
 def cmd_fixer_push(args) -> int:
     """Change only this repository's unattended push permission by explicit operator action."""
