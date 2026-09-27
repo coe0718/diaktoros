@@ -1,5 +1,8 @@
 """Fixture-only lifecycle tests: never invoke a real Hermes agent."""
 import concurrent.futures
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -13,6 +16,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+from review_loop import broker, run_supervisor
 from review_loop.run_supervisor import (_WORKERS, MAX_ATTEMPTS, SILENT, LedgerMissing,
                                         Supervisor)
 
@@ -166,9 +170,9 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(self.launches()), 2)
 
     def test_worker_never_recreates_a_deleted_ledger_dir(self):
-        # uninstall --purge can delete the state dir while an idle worker is still starting.
-        # That worker, spawned exactly as recover() spawns one, must exit cleanly and leave
-        # the dir deleted rather than recreate an empty ledger there.
+        # Hardening: a detached worker must never create host state. If the ledger's
+        # directory is gone when a worker (spawned exactly as recover() spawns one) starts,
+        # it exits cleanly and leaves the dir deleted rather than recreate an empty ledger.
         config = self.root / "runtime.json"
         config.write_text("{}")
         config.chmod(0o600)
@@ -202,6 +206,106 @@ class Lifecycle(unittest.TestCase):
         with self.assertRaises(LedgerMissing):
             Supervisor(state / "runs.sqlite", create=False)
         self.assertFalse(state.exists())
+
+    def run_worker_main(self, db, **patches):
+        """Run the fixture-worker entry in-process, as a spawned worker runs it."""
+        argv = ["run_supervisor", "_fixture-worker", str(db),
+                json.dumps([sys.executable, str(self.child), str(self.events), "0", "0"]),
+                json.dumps({"reviewer": 1, "fixer": 1, "adjudicator": 1}), "60", "120"]
+        err = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for name, value in patches.items():
+                stack.enter_context(patch.object(Supervisor, name, value))
+            stack.enter_context(patch.object(sys, "argv", argv))
+            stack.enter_context(patch.dict(os.environ, {"REVIEW_LOOP_TEST_FIXTURE": "1"}))
+            stack.enter_context(contextlib.redirect_stderr(err))
+            run_supervisor.main()  # returning normally is the worker's exit status 0
+        return err.getvalue().splitlines()
+
+    def pending_row(self, state):
+        host = Supervisor(state / "runs.sqlite", fixture_mode=True, fixture_command=[
+            sys.executable, str(self.child), str(self.events), "0", "0"])
+        with patch.object(Supervisor, "_spawn"):
+            host.enqueue("m", "o/r", 1, "a", "reviewer")
+        return host
+
+    def test_worker_exits_quietly_when_ledger_vanishes_before_claim(self):
+        state = self.root / "claim-state"
+        self.pending_row(state)
+        claim = Supervisor._claim
+        def vanish(sup):
+            shutil.rmtree(state)
+            return claim(sup)
+        lines = self.run_worker_main(state / "runs.sqlite", _claim=vanish)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("is gone", lines[0])
+        self.assertFalse(state.exists())
+        self.assertFalse(self.events.exists())
+
+    def test_worker_exits_quietly_when_ledger_vanishes_mid_run(self):
+        # The child has run; the ledger goes before the worker records the outcome, so both
+        # complete_uncertain() and recover() in _run_fixture's finally meet a missing ledger.
+        state = self.root / "run-state"
+        self.pending_row(state)
+        complete = Supervisor.complete_uncertain
+        def vanish(sup, *args, **kwargs):
+            shutil.rmtree(state, ignore_errors=True)
+            return complete(sup, *args, **kwargs)
+        lines = self.run_worker_main(state / "runs.sqlite", complete_uncertain=vanish)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertFalse(state.exists())
+        self.assertEqual(len(self.launches()), 1)
+
+    def test_heartbeat_tolerates_a_vanished_ledger(self):
+        state = self.root / "beat-state"
+        Supervisor(state / "runs.sqlite")
+        worker = Supervisor(state / "runs.sqlite", create=False)
+        shutil.rmtree(state)
+        class OneBeat:
+            calls = 0
+            def wait(self, _):
+                self.calls += 1
+                return self.calls > 1
+        worker._heartbeat("run", "owner", OneBeat())  # must not raise
+        self.assertFalse(state.exists())
+
+    def test_worker_refuses_an_empty_or_foreign_ledger_file(self):
+        for name, content in (("empty", b""), ("foreign", b"not a database at all\n" * 4)):
+            with self.subTest(name):
+                db = self.root / f"{name}.sqlite"
+                db.write_bytes(content)
+                with self.assertRaises(LedgerMissing):
+                    Supervisor(db, create=False)
+                self.assertEqual(db.read_bytes(), content)  # never adopted or re-schema'd
+
+    def test_host_adopts_an_empty_ledger_file_with_a_diagnostic(self):
+        db = self.root / "empty-host.sqlite"
+        db.write_bytes(b"")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            sup = Supervisor(db)
+        self.assertIn("empty", err.getvalue())
+        self.assertIn(str(db), err.getvalue())
+        self.assertEqual(sup.status(), [])
+
+    def test_worker_audit_never_recreates_a_deleted_state_dir(self):
+        state = self.root / "loop-state"
+        loop = {"state_dir": str(state)}
+        err = io.StringIO()
+        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}), contextlib.redirect_stderr(err):
+            broker._audit(loop, "o/r", 1, "a" * 40, "b", "reviewer", "review", "login")
+        self.assertFalse(state.exists())
+        self.assertEqual(len(err.getvalue().splitlines()), 1, err.getvalue())
+        # The host still creates it, as before.
+        broker._audit(loop, "o/r", 1, "a" * 40, "b", "reviewer", "review", "login")
+        self.assertTrue((state / "broker-audit.jsonl").is_file())
+
+    def test_spawned_worker_is_marked_as_a_worker(self):
+        # hostdirs.ensure refuses to create host state only in a process marked this way.
+        sup = self.supervisor()
+        with patch("review_loop.run_supervisor.subprocess.Popen") as popen:
+            sup._spawn()
+        self.assertEqual(popen.call_args.kwargs["env"].get("REVIEW_LOOP_WORKER"), "1")
 
     def test_host_enqueue_creates_a_missing_ledger_dir(self):
         state = self.root / "fresh-state"

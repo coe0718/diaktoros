@@ -12,9 +12,10 @@ import json
 import os
 import pathlib
 import re
+import sys
 import time
 
-from . import gh
+from . import gh, hostdirs
 from .wire import ANSWERS_MARKER  # one home, shared with the sandbox client
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -150,7 +151,13 @@ def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
            role: str, operation: str, login: str) -> None:
     # Metadata only; never token or model-produced body. Lock an append-only file.
     path = pathlib.Path(loop["state_dir"]) / "broker-audit.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        hostdirs.ensure(path.parent)
+    except hostdirs.HostStateGone as exc:
+        # The GitHub write already happened; a worker never recreates the loop's state dir
+        # to record it. One line, and the operation still reports its real outcome.
+        print(f"review-loop broker: audit record not written: {exc}", file=sys.stderr)
+        return
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)

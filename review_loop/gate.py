@@ -92,6 +92,9 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     """
     from .run_supervisor import SEATS, Supervisor
 
+    # Host-side: the worker writes the loop's state (broker audit, observer ledger) but never
+    # creates its directory, so the host makes sure it exists before the run is committed.
+    config._path(loop["state_dir"]).mkdir(parents=True, exist_ok=True)
     supervisor = Supervisor(
         config.home() / "state" / "review-loop-runs.sqlite",
         production_config=config.home() / "review-loop-runtime.json", hermes_home=config.home(),

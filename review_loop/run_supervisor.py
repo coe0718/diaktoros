@@ -22,6 +22,8 @@ import urllib.request
 import uuid
 from contextlib import nullcontext
 
+from .hostdirs import WORKER_ENV, HostStateGone
+
 SILENT = "[SILENT]"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -81,8 +83,19 @@ FIXER_PUSH_REVOKED = ("fixer push revoked: unattended fixer pushes were disabled
                       "run was admitted — no turn launched")
 
 
-class LedgerMissing(FileNotFoundError):
-    """A worker found no ledger: its state was removed (e.g. ``uninstall --purge``)."""
+class LedgerMissing(HostStateGone):
+    """A worker found no usable ledger (missing, empty or not SQLite); it creates none."""
+
+
+_SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+def _is_sqlite(path: Path) -> bool:
+    try:
+        with path.open("rb") as stream:
+            return stream.read(len(_SQLITE_HEADER)) == _SQLITE_HEADER
+    except OSError:
+        return False
 
 
 class FixerPushDisabled(ValueError):
@@ -458,14 +471,19 @@ class Supervisor:
                  hermes_home: str | Path | None = None, create: bool = True):
         """``create=False`` is the detached worker's mode: it opens an existing ledger only.
 
-        Only host-side callers (gate enqueue, CLI, init) create the ledger and its directory.
-        A worker can start after ``uninstall --purge`` removed the state dir; recreating it
-        would leave an empty ledger behind in a directory the operator just deleted, so it
-        raises ``LedgerMissing`` instead and every later connection refuses to create a file.
+        Hardening: a worker must never create host state. Only host-side callers (gate
+        enqueue, CLI, init) create the ledger and its directory; the host made both before it
+        enqueued the run. If the ledger is missing, empty or not SQLite when a worker opens
+        it, the worker raises ``LedgerMissing`` rather than create or adopt one, and every
+        later connection opens with ``mode=rw`` so it can never create a file either.
         """
-        # First, before any other check: a purged state dir is a quiet exit, not an error.
-        if not create and not Path(db).is_file():
-            raise LedgerMissing(f"run ledger {db} is gone")
+        # First, before any other check: no usable ledger is a quiet exit, not an error.
+        if not create and not _is_sqlite(Path(db)):
+            raise LedgerMissing(f"run ledger {db} is gone, empty or not SQLite")
+        if create and Path(db).is_file() and Path(db).stat().st_size == 0:
+            # SQLite treats an empty file as a new database; say so rather than adopt it silently.
+            print(f"review-loop: run ledger {db} was an empty file; initializing it as a new, "
+                  f"empty ledger", file=sys.stderr)
         if fixture_mode and production_config is not None:
             raise ValueError("fixture and production modes are exclusive")
         if production_config is not None and hermes_home is None:
@@ -519,7 +537,7 @@ class Supervisor:
                 con = sqlite3.connect(uri, uri=True, timeout=10, isolation_level=None)
             except sqlite3.OperationalError as exc:
                 if not self.db.exists():
-                    raise LedgerMissing(f"run ledger {self.db} is gone") from exc
+                    raise LedgerMissing(f"run ledger {self.db} is gone, empty or not SQLite") from exc
                 raise
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA busy_timeout=10000")
@@ -889,7 +907,8 @@ class Supervisor:
         host_home = self.hermes_home or Path(os.environ.get("HERMES_HOME", os.environ["HOME"])).resolve(strict=True)
         env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
                "HOME": str(host_home), "HERMES_HOME": str(host_home),
-               "REVIEW_LOOP_TEST_FIXTURE": "1" if self.fixture_mode else "0"}
+               "REVIEW_LOOP_TEST_FIXTURE": "1" if self.fixture_mode else "0",
+               WORKER_ENV: "1"}
         if os.environ.get("REVIEW_LOOP_GH_STUB") and self.fixture_mode:
             env["REVIEW_LOOP_GH_STUB"] = os.environ["REVIEW_LOOP_GH_STUB"]
         _WORKERS[:] = [worker for worker in _WORKERS if worker.poll() is None]
@@ -1049,8 +1068,9 @@ class Supervisor:
                     con.execute("UPDATE runs SET lease=?, updated=? WHERE id=? AND owner=? "
                                 "AND state IN ('launching','running') AND lease>=?",
                                 (now + self.lease_seconds, now, run_id, owner, now))
-            except sqlite3.Error:
-                # Recovery will quarantine this run if persistence stays down.
+            except (sqlite3.Error, LedgerMissing):
+                # Recovery will quarantine this run if persistence stays down; a worker whose
+                # ledger is gone never recreates it and ends when its run does.
                 pass
 
     def complete_uncertain(self, run_id: str, owner: str, rc: int | None,
@@ -1304,8 +1324,9 @@ def main():
         return
     if a.command is None or a.capacity is None or a.lease is None or a.timeout is None:
         p.error('worker requires command, capacity, lease and timeout')
-    # A worker never creates the ledger or its directory (create=False): if the state was
-    # purged before this worker got going, there is no work left for it.
+    # A worker never creates host state (create=False, hostdirs.ensure): if the ledger or a
+    # state dir is gone, before or during the run, it logs one line and exits 0.
+    os.environ[WORKER_ENV] = "1"
     try:
         if a.operation == "_fixture-worker":
             if os.environ.get("REVIEW_LOOP_TEST_FIXTURE") != "1":
@@ -1320,10 +1341,10 @@ def main():
             sup = Supervisor(a.db, production_config=a.command, hermes_home=home,
                              capacity=json.loads(a.capacity), lease_seconds=a.lease,
                              child_timeout=a.timeout, create=False)
-    except LedgerMissing as exc:
+        sup._run_one()
+    except HostStateGone as exc:
         print(f"review-loop worker: {exc}; nothing to run", file=sys.stderr)
         return
-    sup._run_one()
 
 
 if __name__ == "__main__":
