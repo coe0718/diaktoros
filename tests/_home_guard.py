@@ -14,9 +14,11 @@ import in a process it:
   watchdog) land there. Both are created on import, in a guarded child too (never inside a
   real home);
 * puts a ``hermes`` shim first on PATH that refuses to run (see ``FAKE_HERMES_ENV``);
-* arms the plugin's tripwire (``REVIEW_LOOP_TEST_HOME_GUARD``): while it is set, resolving the
-  Hermes home, a ledger, a state dir or a cleanup root inside the real home's ``.hermes`` raises
-  ``config.RealHomeError`` — so a test that escapes this guard fails instead of writing.
+* arms the plugin's tripwire (``REVIEW_LOOP_TEST_HOME_GUARD`` plus the sentinel file named by
+  ``REVIEW_LOOP_TEST_GUARD_SENTINEL``, which only this module creates — the variable alone arms
+  nothing): while armed, resolving the Hermes home, a ledger, a state dir or a cleanup root inside
+  the real home's ``.hermes`` raises ``config.RealHomeError`` — so a test that escapes this guard
+  fails instead of writing.
 
 unittest's ``discover -s tests`` never imports ``tests/__init__.py`` (the start directory is the
 top level, not a package), which is why this is an explicit first import rather than a package hook.
@@ -50,17 +52,6 @@ def _protected_homes() -> list[pathlib.Path]:
     if os.environ.get("REVIEW_LOOP_TEST_REAL_HOME"):     # the plugin's test-only fake real home
         homes.append(pathlib.Path(os.environ["REVIEW_LOOP_TEST_REAL_HOME"]))
     return homes
-
-
-def _inside_live(path: pathlib.Path) -> bool:
-    """Is ``path`` a protected home itself, or at or inside its ``.hermes``?"""
-    forms = {pathlib.Path(os.path.normpath(path.absolute())), path.resolve()}
-    for home in _protected_homes():
-        for base in {pathlib.Path(os.path.normpath(home.absolute())), home.resolve()}:
-            live = base / ".hermes"
-            if any(form == base or form == live or live in form.parents for form in forms):
-                return True
-    return False
 
 
 def _under_a_home(path: pathlib.Path) -> bool:
@@ -101,6 +92,16 @@ else:
     os.environ.update({"HOME": str(TEST_HOME), "HERMES_HOME": str(TEST_HOME / ".hermes"),
                        "REVIEW_LOOP_TEST_USER_HOME": str(USER_HOME), GUARD_ENV: "1"})
 
+# The plugin's tripwires arm only with GUARD_ENV *and* this sentinel (config.test_guard_active), so
+# the bare variable inherited by a real loop arms nothing. A guarded child keeps its parent's; one
+# whose sentinel is missing (or never inherited) makes its own. Empty: nothing secret in it.
+SENTINEL_ENV = "REVIEW_LOOP_TEST_GUARD_SENTINEL"
+if not (os.environ.get(SENTINEL_ENV) and os.path.isfile(os.environ[SENTINEL_ENV])):
+    _sentinel_dir = pathlib.Path(tempfile.mkdtemp(prefix="review-loop-test-guard-")).resolve()
+    atexit.register(shutil.rmtree, _sentinel_dir, ignore_errors=True)
+    (_sentinel_dir / "sentinel").touch()
+    os.environ[SENTINEL_ENV] = str(_sentinel_dir / "sentinel")
+
 # No guarded test, nor any process it starts, may run the operator's real `hermes` CLI: it acts on
 # the real install (a bare `hermes` once resumed an interrupted source update and rebuilt the real
 # hermes-agent's UI builds). A shim goes FIRST on PATH and fails loudly, unless a test names its
@@ -114,7 +115,7 @@ refuse() {{ echo "{blocked}: $1" >&2; exit {code}; }}
 inside() {{ case "$fake/" in "$1"/*) refuse "REVIEW_LOOP_TEST_FAKE_HERMES is inside a protected home ($1)";; esac; }}
 if [ -n "$REVIEW_LOOP_TEST_FAKE_HERMES" ]; then
   fake=$(readlink -f -- "$REVIEW_LOOP_TEST_FAKE_HERMES")
-  if [ -n "$real" ] && [ "$fake" = "$(readlink -f -- "$real")" ]; then
+  if [ -n "$real" ] && {{ [ "$fake" = "$(readlink -f -- "$real")" ] || [ "$fake" -ef "$real" ]; }}; then
     refuse "REVIEW_LOOP_TEST_FAKE_HERMES names the real binary"
   fi
   {home_checks}
@@ -232,12 +233,12 @@ def needs_real_hermes(*prerequisites: bool, reason: str = "real-Hermes test prer
 
 # Create both homes now, in a fresh guarded process and in a guarded child alike: run_supervisor
 # resolves HERMES_HOME strictly, so a guarded spawn must never depend on an earlier test (or the
-# parent) having happened to create it. Never at a protected home or inside its .hermes: a child
-# that inherited one is an escape, which the plugin's tripwire refuses on first use; the guard
-# itself must not write there.
+# parent) having happened to create it. Never anywhere under a protected home (the same test as
+# the shim's): a child that inherited one is an escape, which the plugin's tripwire refuses on
+# first use; the guard itself must not write there.
 for _home in {os.environ.get("HOME"), os.environ.get("HERMES_HOME")} - {None, ""}:
     _home = pathlib.Path(_home)
-    if _home.is_absolute() and not _inside_live(_home):
+    if _home.is_absolute() and not _under_a_home(_home):
         _home.mkdir(parents=True, exist_ok=True)
 
 

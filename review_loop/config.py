@@ -795,6 +795,13 @@ def webhook_host(value: str | None, *, required: bool = False) -> str:
 # the supervisor's host home — so a test that escapes the guard fails loudly instead of writing
 # to a real ledger or runtime file.
 TEST_HOME_GUARD_ENV = "REVIEW_LOOP_TEST_HOME_GUARD"
+# ...and the path of a sentinel file the guard creates in its own temp home. The tripwires arm only
+# with both: the variable alone — say inherited by a real loop's gateway — arms nothing. Only
+# tests/_home_guard.py creates the sentinel (an empty file, no secret in it).
+TEST_GUARD_SENTINEL_ENV = "REVIEW_LOOP_TEST_GUARD_SENTINEL"
+# Every tripwire message starts with this, so an operator who meets one knows what to clear.
+_ARMED = (f"test guard active ({TEST_HOME_GUARD_ENV}=1): unset {TEST_HOME_GUARD_ENV} if this is a "
+          "real loop (docs/operations.md#the-loop-stops-with-realhomeerror-or-realnetworkerror)")
 # Test-only: one more directory to treat as "the real home" while the guard is on, so the
 # tripwire itself can be proven against a fake home. It adds protection, never removes it.
 TEST_REAL_HOME_ENV = "REVIEW_LOOP_TEST_REAL_HOME"
@@ -806,6 +813,18 @@ class RealHomeError(BaseException):
     A ``BaseException``, like ``KeyboardInterrupt``: the loop fails closed with broad ``except
     Exception`` handlers, and a tripwire those handlers swallowed would let the test pass.
     """
+
+
+def test_guard_active() -> bool:
+    """Are the test tripwires armed? Only under the test harness: ``REVIEW_LOOP_TEST_HOME_GUARD=1``
+    *and* ``REVIEW_LOOP_TEST_GUARD_SENTINEL`` naming the sentinel file tests/_home_guard.py made."""
+    if os.environ.get(TEST_HOME_GUARD_ENV) != "1":
+        return False
+    sentinel = os.environ.get(TEST_GUARD_SENTINEL_ENV)
+    try:
+        return bool(sentinel) and pathlib.Path(sentinel).is_file()
+    except OSError:
+        return False
 
 
 def _real_homes() -> list[pathlib.Path]:
@@ -823,7 +842,7 @@ def _real_homes() -> list[pathlib.Path]:
 def guard_real_home(path: pathlib.Path | str) -> pathlib.Path:
     """Return ``path``; under the test guard, raise if it is the real home or inside its .hermes."""
     path = pathlib.Path(path)
-    if not os.environ.get(TEST_HOME_GUARD_ENV):
+    if not test_guard_active():
         return path
     homes = _real_homes()
     # The lexical form first, so the obvious escape is refused without touching the real home;
@@ -834,8 +853,8 @@ def guard_real_home(path: pathlib.Path | str) -> pathlib.Path:
         for real in homes:
             hermes = real / ".hermes"
             if candidate in (real, hermes) or hermes in candidate.parents:
-                raise RealHomeError(f"test home guard: {path} resolves into the real home "
-                                    f"{real}; a test escaped tests/_home_guard.py")
+                raise RealHomeError(f"{_ARMED}. Otherwise a test escaped tests/_home_guard.py: "
+                                    f"{path} resolves into the real home {real}")
     return path
 
 
@@ -863,7 +882,7 @@ def guard_network(url: str) -> str:
     a raw connect), an scp-style remote, or an absolute or ``./``/``../`` local path is judged at
     all. Anything else — a bare ``github.com``, ``gateway``, an empty string — is refused.
     """
-    if not os.environ.get(TEST_HOME_GUARD_ENV):
+    if not test_guard_active():
         return url
     if url.startswith(("/", "./", "../")):
         return url                                        # a local path
@@ -884,7 +903,7 @@ def guard_network(url: str) -> str:
             return url
     except ValueError:
         pass
-    raise RealNetworkError(f"test guard: real network call to {url} refused; mock the request "
+    raise RealNetworkError(f"{_ARMED}. Otherwise: real network call to {url} refused; mock the request "
                            "underneath (gh.fetch, not only gh.api), set REVIEW_LOOP_GH_STUB, or "
                            "point it at a 127.0.0.1 fake")
 
@@ -900,13 +919,14 @@ def guard_real_hermes(executable: str) -> str:
     test guard therefore keeps its temp root outside every protected home, and never creates or
     writes its shim under one: an inherited shim dir there is replaced by a temp dir outside.
     """
-    if not os.environ.get(TEST_HOME_GUARD_ENV) or not os.path.isabs(executable):
+    if not test_guard_active() or not os.path.isabs(executable):
         return executable
     found = pathlib.Path(executable)
     resolved = [pathlib.Path(os.path.normpath(found.absolute())), found.resolve()]
     for real in _real_homes():
         if any(real in path.parents for path in resolved):
-            raise RealHomeError(f"test home guard: refusing to run the real {executable}")
+            raise RealHomeError(f"{_ARMED}. Otherwise a test escaped tests/_home_guard.py: "
+                                f"refusing to run the real {executable}")
     return executable
 
 

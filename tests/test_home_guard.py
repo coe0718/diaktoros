@@ -262,6 +262,16 @@ class GuardedWorker(unittest.TestCase):
                     # real= is the first non-shim hermes on the PATH with the shim dirs stripped.
                     self.assertEqual(seen["real"], str(binaries[".local/bin"]))
 
+    def test_guarded_child_never_creates_a_home_anywhere_in_the_real_one(self):
+        # HOME inherited as a subdirectory of the real home, outside its .hermes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            real = root / "real"
+            real.mkdir()
+            result = self._guarded_child(real / "projects/x", root / "elsewhere/hermes", real)
+            self.assertEqual(list(real.rglob("*")), [], result.stderr)
+            self.assertTrue((root / "elsewhere/hermes").is_dir())   # the one outside still made
+
     def test_guarded_child_never_creates_a_home_inside_the_real_one(self):
         with tempfile.TemporaryDirectory() as tmp:
             real = pathlib.Path(tmp) / "real"
@@ -334,6 +344,48 @@ class TmpdirUnderHome(unittest.TestCase):
             self.assertEqual(list((home / "tmp").iterdir()), [])
 
 
+class TripwireOutsideTheHarness(unittest.TestCase):
+    """REVIEW_LOOP_TEST_HOME_GUARD alone — inherited by a real loop — must not brick it: the
+    tripwire arms only with the guard's own sentinel, which only tests/_home_guard.py creates."""
+
+    PROBE = ("import sys; sys.path.insert(0, sys.argv[1])\n"
+             "from review_loop import config\n"
+             "print(config.test_guard_active())\n"
+             "print(config.home())\n"
+             "print(config.guard_network('https://api.github.com/user'))\n")
+
+    def _production(self, **extra):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            (home / ".hermes").mkdir(parents=True)
+            env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
+                   config.TEST_HOME_GUARD_ENV: "1", config.TEST_REAL_HOME_ENV: str(home), **extra}
+            return home, subprocess.run([sys.executable, "-c", self.PROBE, str(TESTS.parent)],
+                                        cwd=tmp, env=env, text=True, capture_output=True, timeout=60)
+
+    def test_the_bare_variable_does_not_arm_the_tripwire(self):
+        home, result = self._production()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split("\n")[:3],
+                         ["False", str(home / ".hermes"), "https://api.github.com/user"])
+
+    def test_a_stale_sentinel_does_not_arm_it_either(self):
+        home, result = self._production(**{config.TEST_GUARD_SENTINEL_ENV: "/nonexistent/sentinel"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split("\n")[0], "False")
+
+    def test_under_the_harness_it_is_armed_and_says_how_to_disarm(self):
+        self.assertTrue(config.test_guard_active())
+        real = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
+        with self.assertRaises(config.RealHomeError) as caught:
+            config.guard_real_home(real / ".hermes")
+        self.assertIn(f"test guard active ({config.TEST_HOME_GUARD_ENV}=1)", str(caught.exception))
+        self.assertIn(f"unset {config.TEST_HOME_GUARD_ENV} if this is a real loop", str(caught.exception))
+        with self.assertRaises(config.RealNetworkError) as caught:
+            config.guard_network("https://api.github.com/user")
+        self.assertIn(f"unset {config.TEST_HOME_GUARD_ENV} if this is a real loop", str(caught.exception))
+
+
 class HermesShim(unittest.TestCase):
     """No guarded test may run the operator's real ``hermes``; plugin code gets the shim."""
 
@@ -382,6 +434,26 @@ class HermesShim(unittest.TestCase):
         result = subprocess.run([str(shim)], capture_output=True, text=True, timeout=10,
                                 env={**os.environ, _home_guard.FAKE_HERMES_ENV: str(real)})
         self.assertEqual(result.returncode, _home_guard.SHIM_EXIT)
+        self.assertIn("names the real binary", result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_a_hard_link_to_the_real_binary_is_refused(self):
+        # Same inode, different path, outside every protected home. (A *copy* is a different
+        # file: out of scope — the shim cannot tell a copied binary from a fake.)
+        marker = self.root / "ran"
+        real = self.root / "opt/bin/hermes"
+        real.parent.mkdir(parents=True)
+        real.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        real.chmod(0o755)
+        link = self.root / "fakes/hermes"
+        link.parent.mkdir()
+        os.link(real, link)
+        shim = self.root / "hermes"
+        shim.write_text(_home_guard.shim_script(str(real), []))
+        shim.chmod(0o755)
+        result = subprocess.run([str(shim)], capture_output=True, text=True, timeout=10,
+                                env={**os.environ, _home_guard.FAKE_HERMES_ENV: str(link)})
+        self.assertEqual(result.returncode, _home_guard.SHIM_EXIT, result.stderr)
         self.assertIn("names the real binary", result.stderr)
         self.assertFalse(marker.exists())
 

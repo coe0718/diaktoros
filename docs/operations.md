@@ -455,6 +455,38 @@ all — an unknown loop, or several loops and no `--loop`.
 The guard order `explain` walks is in
 [architecture: Explain](architecture.md#explain--why-is-this-pr-not-moving).
 
+### The loop stops with `RealHomeError` or `RealNetworkError`
+
+Those are the **test suite's** tripwires, not a loop failure. Under the test harness
+(`tests/_home_guard.py`), the plugin refuses to touch the real `~/.hermes`, run the real `hermes` or
+reach a real host. It raises a `BaseException`, so no handler swallows it. The message starts with
+`test guard active (REVIEW_LOOP_TEST_HOME_GUARD=1)`.
+
+The tripwires arm only when **both** of these are set, and only the test harness sets them:
+
+| Variable | Set by | Meaning |
+|---|---|---|
+| `REVIEW_LOOP_TEST_HOME_GUARD=1` | `tests/_home_guard.py` | "this process runs under the test guard" |
+| `REVIEW_LOOP_TEST_GUARD_SENTINEL` | `tests/_home_guard.py` | path to an empty sentinel file the guard creates in its temp dir |
+
+`REVIEW_LOOP_TEST_HOME_GUARD` on its own does nothing, so a real loop that inherits it keeps
+working. A real loop stops only if its gateway inherited **both** variables while the sentinel file
+still existed, for example because it was started from a shell that was running the test suite.
+To clear it:
+
+```bash
+systemctl --user show-environment | grep REVIEW_LOOP_TEST_     # or check the shell / unit that starts the gateway
+unset REVIEW_LOOP_TEST_HOME_GUARD REVIEW_LOOP_TEST_GUARD_SENTINEL REVIEW_LOOP_TEST_REAL_HOME
+```
+
+Then restart the gateway from the cleaned environment so it re-reads it (`hermes gateway status`
+shows whether it is running; `hermes gateway start` starts it).
+
+Remove them wherever the gateway gets its environment: the systemd unit's `Environment=`, the
+shell profile, or the launching terminal. `REVIEW_LOOP_TEST_REAL_HOME`, `REVIEW_LOOP_TEST_USER_HOME`,
+`REVIEW_LOOP_TEST_SHIM_DIR` and `REVIEW_LOOP_TEST_FAKE_HERMES` are test-only too. None of them is
+ever needed by a real loop.
+
 ## How it handles a burst
 
 Fifty PRs arrive in an hour. Ten of them wake the reviewer, and forty-one queue — the queue costs

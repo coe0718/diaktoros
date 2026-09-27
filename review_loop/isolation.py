@@ -79,8 +79,8 @@ def _fetch(clone: pathlib.Path, *refs: str) -> subprocess.CompletedProcess:
     if probe.returncode != 0 or not remote or "\n" in remote:
         why = (f"git could not name origin's fetch URL (ls-remote --get-url rc={probe.returncode}); "
                "not fetching")
-        if os.environ.get(config.TEST_HOME_GUARD_ENV):
-            raise config.RealNetworkError(f"test guard: {why}")
+        if config.test_guard_active():
+            raise config.RealNetworkError(f"{config._ARMED}. Otherwise: {why}")
         return subprocess.CompletedProcess(["git", "fetch", "origin", *refs], probe.returncode or 1,
                                            "", why)
     config.guard_network(remote)

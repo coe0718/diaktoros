@@ -862,13 +862,14 @@ class Supervisor:
         args = [sys.executable, "-m", "review_loop.run_supervisor", operation,
                 str(self.db), command, json.dumps(self.capacity),
                 str(self.lease_seconds), str(self.child_timeout)]
-        from .config import TEST_HOME_GUARD_ENV, TEST_REAL_HOME_ENV, guard_real_home
+        from .config import (TEST_GUARD_SENTINEL_ENV, TEST_HOME_GUARD_ENV, TEST_REAL_HOME_ENV,
+                             guard_real_home)
         host_home = guard_real_home(self.hermes_home or Path(os.environ.get("HERMES_HOME", os.environ["HOME"])).resolve(strict=True))
         env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
                "HOME": str(host_home), "HERMES_HOME": str(host_home),
                "REVIEW_LOOP_TEST_FIXTURE": "1" if self.fixture_mode else "0"}
         # The worker's environment is built from scratch; keep the test tripwire armed in it.
-        for name in (TEST_HOME_GUARD_ENV, TEST_REAL_HOME_ENV):
+        for name in (TEST_HOME_GUARD_ENV, TEST_GUARD_SENTINEL_ENV, TEST_REAL_HOME_ENV):
             if os.environ.get(name):
                 env[name] = os.environ[name]
         if os.environ.get("REVIEW_LOOP_GH_STUB") and self.fixture_mode:
