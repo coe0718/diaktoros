@@ -740,8 +740,11 @@ def group_seat_identity() -> None:
     fingerprint = (loop_bytes("two-seats"), SUBS.read_text())
     rc, out = run_cli(parser_for(form).parse_args(["apply", "--loop", "two-seats"]))
     check("two seats on one route → refused", rc, 2)
-    check("  and it says why", "routed to more than one seat" in out, True)
+    # Refused on load now (config.normalize), before apply's own route check could run.
+    check("  and it says why", "each seat needs its own route" in out, True)
     check("  nothing was written", (loop_bytes("two-seats"), SUBS.read_text()), fingerprint)
+    # A file the loader refuses stops every loop-wide command; take the probe back out.
+    (LOOPS_DIR / "two-seats.json").unlink()
 
     # `init` writes routes from scratch, so it must refuse a name another loop already owns too.
     fingerprint = (SUBS.read_text(), loop_bytes("north"))
