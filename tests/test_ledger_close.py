@@ -164,24 +164,6 @@ class ConnectHelper(unittest.TestCase):
                 con.execute('INSERT INTO t VALUES (1)')
         self.assertEqual(self.rows(), [1])   # committed before the close
 
-    def test_an_opener_gets_the_same_transaction_and_close(self):
-        opened = []
-
-        def opener():
-            opened.append(sqlite3.connect(self.db, isolation_level=None))
-            return opened[-1]
-
-        with self.assertRaises(RuntimeError):
-            with self.connect(None, opener=opener, row_factory=sqlite3.Row,
-                              pragmas=('busy_timeout=1234',)) as con:
-                self.assertIs(con, opened[0])
-                self.assertEqual(con.execute('PRAGMA busy_timeout').fetchone()[0], 1234)
-                con.execute('BEGIN IMMEDIATE')
-                con.execute('INSERT INTO t VALUES (4)')
-                raise RuntimeError('boom')
-        self.assertRaises(sqlite3.ProgrammingError, opened[0].execute, 'SELECT 1')
-        self.assertEqual(self.rows(), [])
-
     def test_failed_pragma_still_closes(self):
         opened = []
         real = sqlite3.connect

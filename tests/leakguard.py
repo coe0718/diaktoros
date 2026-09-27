@@ -126,6 +126,17 @@ def _child_leaks() -> list[str]:
     return found
 
 
+def rearm() -> list[str]:
+    """What had disarmed the guard (see ``disarmed``), after re-arming it so the rest of the run
+    is guarded again. Nothing can be re-armed before ``install()`` has run."""
+    problems = disarmed()
+    if problems and _installed and _child_log is not None:
+        warnings.simplefilter("error", ResourceWarning)
+        sys.unraisablehook = _hook
+        os.environ["REVIEW_LOOP_LEAK_LOG"] = str(_child_log)
+    return problems
+
+
 def drain() -> list[str]:
     """Collect garbage now and return (and forget) every leak reported since the last drain."""
     gc.collect()
@@ -147,6 +158,10 @@ class _LeakResult(unittest.TextTestResult):
         super().stopTest(test)
         for leak in drain():
             self.errors.append((test, f"resource leaked while this test ran:\n{leak}\n"))
+        # Checked per test, inside the run: the runner restores warning filters when the run
+        # ends, so a reset made by a test is invisible to any check after it.
+        for problem in rearm():
+            self.errors.append((test, f"leak guard was disarmed while this test ran: {problem}\n"))
 
 
 class _LeakRunner(unittest.TextTestRunner):
@@ -169,6 +184,7 @@ def main(argv: list[str]) -> int:
     program = unittest.main(module=None, argv=["leakguard", *argv], testRunner=_LeakRunner,
                             exit=False)
     late = drain() + running_children()
+    # After the last test: a module or class teardown can still replace the hook or the log.
     late += [f"leak guard is not armed after the run: {problem}" for problem in disarmed()]
     for leak in late:
         print(f"resource leaked after the last test:\n{leak}", file=sys.stderr)

@@ -103,10 +103,11 @@ class LanesRefuseToRunUnguarded(unittest.TestCase):
 
     DISARM = 'import leakguard; leakguard.install = lambda: None\n'
 
-    def lane(self, script: str, args: list[str], disarm: bool) -> subprocess.CompletedProcess:
+    def lane(self, script: str, args: list[str], disarm: bool,
+             setup: str = '') -> subprocess.CompletedProcess:
         program = ('import runpy, sys\n'
                    f'sys.path.insert(0, {str(GUARD.parent)!r})\n'
-                   + (self.DISARM if disarm else '') +
+                   + (self.DISARM if disarm else '') + setup +
                    f'sys.argv = [{script!r}, *{args!r}]\n'
                    f'runpy.run_path({script!r}, run_name="__main__")\n')
         return subprocess.run([sys.executable, '-c', program], cwd=str(GUARD.parents[1]),
@@ -130,6 +131,73 @@ class LanesRefuseToRunUnguarded(unittest.TestCase):
             unarmed = self.lane(str(GUARD), args, disarm=True)
         self.assertNotEqual(unarmed.returncode, 0)
         self.assertIn('leak guard is not armed: leakguard.install() never ran', unarmed.stderr)
+
+
+class LanesCatchADisarmMidRun(unittest.TestCase):
+    """A test or group that disarms the guard is charged for it, and the guard re-arms, so a
+    leak after it is still caught. The runner restores warning filters after the run, so only a
+    check while the run is under way can see a reset."""
+
+    lane = LanesRefuseToRunUnguarded.lane
+
+    def boundary(self, probe: str) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            Path(tmp, 'probe_disarm.py').write_text(textwrap.dedent(probe))
+            return self.lane(str(GUARD), ['discover', '-s', tmp, '-p', 'probe_*.py'],
+                             disarm=False)
+
+    def test_boundary_lane_charges_the_test_that_disarmed_it(self):
+        result = self.boundary('''
+            import os, sys, unittest, warnings
+
+            class P(unittest.TestCase):
+                def test_a_resets_filters(self):
+                    warnings.resetwarnings()
+
+                def test_b_leaks(self):
+                    f = open(os.devnull)
+                    del f
+
+                def test_c_replaces_the_hook(self):
+                    sys.unraisablehook = sys.__unraisablehook__
+            ''')
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        err = result.stderr
+        self.assertIn('ERROR: test_a_resets_filters', err)
+        self.assertIn('leak guard was disarmed while this test ran: ResourceWarning is not an error',
+                      err)
+        # Re-armed: the next test's leak is charged as a leak, and that test is not charged
+        # with a disarm it did not cause.
+        self.assertRegex(err, r'ERROR: test_b_leaks[^\n]*\n-+\nresource leaked while this test '
+                              r'ran:\nResourceWarning: unclosed file')
+        self.assertEqual(err.count('leak guard was disarmed while this test ran'), 2, err)
+        self.assertIn('ERROR: test_c_replaces_the_hook', err)
+        self.assertIn("sys.unraisablehook is not the guard's", err)
+
+    def test_boundary_lane_catches_a_disarm_after_the_last_test(self):
+        result = self.boundary('''
+            import sys, unittest
+
+            def tearDownModule():
+                sys.unraisablehook = sys.__unraisablehook__
+
+            class P(unittest.TestCase):
+                def test_ok(self):
+                    pass
+            ''')
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("leak guard is not armed after the run: sys.unraisablehook is not the guard's",
+                      result.stderr)
+
+    def test_harness_lane_charges_the_group_that_disarmed_it(self):
+        # run_tests.py builds its groups from the area modules, so swap the group in there.
+        setup = ('import warnings\nfrom harness import gates\n'
+                 'gates.GROUPS["config"] = lambda: warnings.resetwarnings()\n')
+        result = self.lane(str(GUARD.parent / 'run_tests.py'), ['config'], disarm=False,
+                           setup=setup)
+        self.assertNotEqual(result.returncode, 0, result.stdout[-2000:])
+        self.assertIn('config: leak guard was disarmed during this group: '
+                      'ResourceWarning is not an error', result.stdout)
 
 
 class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):

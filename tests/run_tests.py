@@ -96,10 +96,11 @@ def main() -> int:
         GROUPS[name]()
         for leak in leakguard.drain():        # a leak fails the group that left it behind
             fixture.results.append((False, f"{name}: resource leaked: {leak}"))
+        for problem in leakguard.rearm():      # so does disarming the guard, which re-arms
+            fixture.results.append((False, f"{name}: leak guard was disarmed during this group: "
+                                           f"{problem}"))
     for leak in leakguard.running_children():
         fixture.results.append((False, f"after the last group: {leak}"))
-    for problem in leakguard.disarmed():       # a group must not have disarmed it mid-run
-        fixture.results.append((False, f"leak guard is not armed after the run: {problem}"))
     results = fixture.results
     passed = sum(1 for ok, _ in results if ok)
     failed = [n for ok, n in results if not ok]
