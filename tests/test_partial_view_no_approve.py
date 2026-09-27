@@ -384,7 +384,7 @@ class ExplainShowsIt(unittest.TestCase):
         from review_loop import cli, gate
         report = {"url": "u", "read_at": "t", "state_line": "s", "chain": {"status": "direct"},
                   "budget": "b", "seat": "x", "queue": "q", "inflight": "i", "escalation": "e",
-                  "hooks": "h", "sweep": "w", "blockers": [], "next": {"action": "n"},
+                  "hooks": "h", "sweep": "w", "github": "g", "blockers": [], "next": {"action": "n"},
                   "head": HEAD}
         out = io.StringIO()
         import gc
