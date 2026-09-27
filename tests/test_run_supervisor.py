@@ -78,6 +78,12 @@ def wait_for_workers(root: Path, timeout: float = WORKER_EXIT_TIMEOUT) -> None:
         time.sleep(0.05)
 
 
+def own_lines(stream: io.StringIO) -> list[str]:
+    """The review-loop's own stderr lines. Python 3.13 also reports, whenever the collector
+    happens to run, ResourceWarnings for sqlite connections other tests left open."""
+    return [line for line in stream.getvalue().splitlines() if line.startswith("review-loop")]
+
+
 class Lifecycle(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -224,7 +230,7 @@ class Lifecycle(unittest.TestCase):
                                                         "HERMES_HOME": str(self.root)}))
             stack.enter_context(contextlib.redirect_stderr(err))
             run_supervisor.main()  # returning normally is the worker's exit status 0
-        return err.getvalue().splitlines()
+        return own_lines(err)
 
     def pending_row(self, state):
         host = Supervisor(state / "runs.sqlite", fixture_mode=True, fixture_command=[
@@ -299,7 +305,7 @@ class Lifecycle(unittest.TestCase):
         with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}), contextlib.redirect_stderr(err):
             broker._audit(loop, "o/r", 1, "a" * 40, "b", "reviewer", "review", "login")
         self.assertFalse(state.exists())
-        self.assertEqual(len(err.getvalue().splitlines()), 1, err.getvalue())
+        self.assertEqual(len(own_lines(err)), 1, err.getvalue())
         # The host still creates it, as before.
         broker._audit(loop, "o/r", 1, "a" * 40, "b", "reviewer", "review", "login")
         self.assertTrue((state / "broker-audit.jsonl").is_file())
