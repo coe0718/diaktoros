@@ -596,6 +596,50 @@ class PurgeTest(Base):
         self.assertIn("hermes cron remove job1", out)
         self.assertEqual(len(self.hooks()), 2)
 
+    def test_a_state_dir_swapped_for_a_symlink_mid_run_is_incomplete(self):
+        # The review's repro: the directory is swapped for a link after _purge_target vetted it
+        # (inside the in-flight check). By then hooks, job, routes and config are going; the
+        # run must end INCOMPLETE with its summary, not a bare "refused" and rc 2.
+        self.fresh_install()
+        self.cron_store([self.job("widgets", "job1")])
+        target = self.default_state()
+        real = t.TMP / "moved-state"
+
+        def swap(loop, roles):
+            target.rename(real)
+            target.symlink_to(real)
+            return []
+        original = cli._busy_seats
+        cli._busy_seats = swap
+        self.addCleanup(setattr, cli, "_busy_seats", original)
+        self.addCleanup(lambda: target.is_symlink() and target.unlink())
+        rc, out = self.cli("uninstall", "--loop", "widgets", "--purge")
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"state NOT removed: {target} became a symlink after it was checked", out)
+        summary = next(line for line in out.splitlines() if line.startswith("uninstall INCOMPLETE"))
+        self.assertIn("removed: repo hooks, watchdog job", summary)
+        self.assertIn(f"the state directory {target} (now a symlink", summary)
+        self.assertIn(f"  rm -- {shlex.quote(str(target))}   # the link itself", out)
+        self.assertTrue((real / "sub" / "x.json").exists())      # never followed
+        self.assertFalse(LOOP_FILE.exists())
+
+    def test_deletes_accepted_but_not_read_back_are_not_called_live(self):
+        self.fresh_install()
+        ids = sorted(hook["id"] for hook in self.hooks())
+        original = cli._loop_hooks
+        cli._loop_hooks = lambda loop, login: (None, "HTTP 502 Bad Gateway")
+        self.addCleanup(setattr, cli, "_loop_hooks", original)
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self.hooks(), [])                       # they really are gone
+        self.assertIn(f"could not confirm the deletion of hooks {ids[0]}, {ids[1]} (GitHub "
+                      "accepted each DELETE", out)
+        self.assertIn("every DELETE was accepted, but the hook listing could not be read back", out)
+        self.assertNotIn("still live", out)
+        self.assertNotIn("gh api -X DELETE", out)
+        self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+        self.assertTrue(LOOP_FILE.exists())
+
     def test_without_purge_default_state_is_kept_and_named(self):
         self.default_state()
         rc, out = self.cli("uninstall", "--loop", "widgets")

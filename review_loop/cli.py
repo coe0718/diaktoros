@@ -809,8 +809,19 @@ def _delete_loop_hooks(loop: dict, login: str | None) -> tuple[list[str], list[s
             failures.append(f"hook {hook['id']}: DELETE failed ({error})")
     after, error = _loop_hooks(loop, login)
     if after is None:
-        failures.append(f"could not confirm the deletion: {error}")
-        return done, failures, [hook["id"] for hook in hooks]
+        # Only the hooks whose DELETE failed are known to be live; the rest were accepted and
+        # merely not read back — say exactly that, never "still live" about ids that are gone.
+        refused = [hook["id"] for hook in hooks if any(
+            line.startswith(f"hook {hook['id']}: DELETE failed") for line in failures)]
+        accepted = [hook["id"] for hook in hooks if hook["id"] not in refused]
+        if accepted:
+            failures.append(f"could not confirm the deletion of hook"
+                            f"{'s' if len(accepted) > 1 else ''} "
+                            f"{', '.join(map(str, accepted))} (GitHub accepted each DELETE; the "
+                            f"listing read-back failed: {error})")
+        else:
+            failures.append(f"could not confirm the deletion: {error}")
+        return done, failures, refused
     left = {hook["id"] for hook in after}
     for hook in hooks:
         if hook["id"] not in left:
@@ -2383,6 +2394,11 @@ def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
         print("then either set this loop's host (`hermes review-loop set --loop "
               f"{lid} --host https://your-gateway.example`) so uninstall can tell its own hooks "
               "apart, or delete the ones that are this install's by hand")
+    elif any(reason.startswith("could not confirm the deletion of hook") for reason in reasons) \
+            and not left_hooks:
+        print("every DELETE was accepted, but the hook listing could not be read back to confirm "
+              "it — look before re-running (it lists any id that is somehow still there):")
+        print(f"  {_hook_find_command(loop)}")
     elif any(reason.startswith(("hook", "could not")) for reason in reasons):
         print("the loop's repo hooks are still live. Delete them with a token that has "
               "`admin:repo_hook` (or classic `repo`):")
@@ -2566,8 +2582,17 @@ def cmd_uninstall(args) -> int:
             removed.append("config")
     if target is not None:
         if target.is_symlink():
-            print(f"refused: {target} became a symlink; state left in place")
-            return 2
+            # Swapped for a link after the preflight vetted it: never followed. Everything above
+            # is already done, so this is a partial decommission, reported as one.
+            print(f"state NOT removed: {target} became a symlink after it was checked — never "
+                  "followed")
+            return _uninstall_incomplete(
+                removed, [what for what, _ in leftovers]
+                + [f"the state directory {target} (now a symlink: check where it points, "
+                   "remove the link, and that directory by hand if it is this loop's)"],
+                keep_hooks, [cmd for _, cmd in leftovers]
+                + [f"ls -ld -- {shlex.quote(str(target))}   # where it points",
+                   f"rm -- {shlex.quote(str(target))}   # the link itself"])
         if target.exists():
             refused: list[tuple[str, str]] = []
 
