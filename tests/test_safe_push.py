@@ -76,6 +76,12 @@ class SafePushTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
+        # A fixer push takes the host policy lock under $HERMES_HOME/review-loops.d: keep it in
+        # this fixture, never the operator's home (#109).
+        env = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.root),
+                                           "REVIEW_LOOP_CONFIG_DIR": str(self.root / "review-loops.d")})
+        env.start()
+        self.addCleanup(env.stop)
         tokens = {}
         for login in ("read", "review", "fix"):
             path = self.root / (login + ".pat")

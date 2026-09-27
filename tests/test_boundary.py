@@ -24,6 +24,15 @@ class BoundaryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(self.temp.cleanup)
         self.root = pathlib.Path(self.temp.name)
+        # The gate resolves its run ledger and runtime from $HERMES_HOME. Pin it to this fixture:
+        # an ambient home holding a review-loop-runtime.json (an installed host, or a shared test
+        # home another test wrote one into) turns the fail-closed hold into a real enqueue — a row
+        # in that home's ledger and a detached production worker (#109).
+        self.hermes = self.root / "hermes"
+        self.hermes.mkdir()
+        env = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.hermes)})
+        env.start()
+        self.addCleanup(env.stop)
         self.tokens = {}
         for role in ("read", "review", "fix"):
             path = self.root / (role + ".pat")
@@ -94,7 +103,10 @@ class BoundaryTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, 0)
                 self.assertEqual(stdout.getvalue().strip(), "[SILENT]")
             ensure.assert_not_called()
+        st.queue_pop_if.assert_not_called()
+        st.queue_replace_if.assert_called_once()
         self.assertIn("isolated worker unavailable", st.queue_replace_if.call_args.args[-1])
+        self.assertFalse((self.hermes / "state").exists(), "no ledger without a runtime")
 
     def test_clone_removes_inherited_credential_helper(self):
         repo = self.root / "repo"
