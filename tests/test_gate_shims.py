@@ -85,6 +85,7 @@ def real_python():
 
 # CI's installed-mode job sets this: there the Hermes checkout is the point, so a missing or
 # unimportable source is a failure, never a quiet skip.
+# TODO: move to #117's tests/hermes_prereqs.py (REQUIRED/needs/skip_or_fail) once it lands.
 REQUIRED = os.environ.get("REVIEW_LOOP_REQUIRE_HERMES_SOURCE") == "1"
 
 
@@ -553,7 +554,8 @@ class DoctorApplyUninstall(Base):
         self.assertNotIn("404", out)
 
     def github_with_hook(self, url: str, secret: str = "placeholder-old-hook-key", *,
-                         patch_fails: bool = False, hook_id: int = 51) -> pathlib.Path:
+                         patch_fails: bool = False, hook_id: int = 51,
+                         insecure_ssl: str = "0") -> pathlib.Path:
         """A stateful gh stub holding one repo hook, with GitHub's worst-case PATCH semantics: the
         body's ``config`` REPLACES the hook's config wholesale, so a key left out is gone. Reads
         mask the secret as GitHub does. Every value here is a placeholder, never a real key."""
@@ -561,7 +563,7 @@ class DoctorApplyUninstall(Base):
         world.write_text(json.dumps({"hooks": [{"id": hook_id, "active": True,
                                                 "events": ["pull_request_review"],
                                                 "config": {"url": url, "content_type": "json",
-                                                           "insecure_ssl": "0",
+                                                           "insecure_ssl": insecure_ssl,
                                                            "secret": secret}}],
                                      "patches": 0}))
         stub = self.tmp / "gh-hooks"
@@ -696,6 +698,27 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(rc, 0, out)
         self.assertEqual(seen, [("PATCH", "admin-acct")])
 
+    def test_a_hook_move_and_a_re_key_keep_the_hooks_own_insecure_ssl(self):
+        """The operator's TLS choice on a hook is theirs: a move or re-key never normalizes it."""
+        from review_loop import route_intent
+        self.install()
+        self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
+        world = self.github_with_hook("https://gateway.example/p/vex/webhooks/widgets-review",
+                                      secret=REVIEW_KEY, hook_id=41, insecure_ssl="1")
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.hook_config(world)["insecure_ssl"], "1")
+        # And the re-key of a recreated route.
+        route_intent.path(config.load_id("widgets")).unlink()
+        self.edit_registry(lambda d: d.pop("widgets-fix"))
+        world = self.github_with_hook("https://gateway.example/p/drey/webhooks/widgets-fix",
+                                      insecure_ssl="1")
+        with patch("secrets.token_hex", return_value="placeholder-recreated-key"):
+            rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.hook_config(world)["insecure_ssl"], "1")
+
     def test_recreate_routes_refuses_when_the_hook_listing_cannot_be_read(self):
         from review_loop import route_intent
         self.install()
@@ -741,6 +764,34 @@ class DoctorApplyUninstall(Base):
         shim.unlink()
         self.assertEqual(gate_shims.heal(config.load_id("widgets")), [])
         self.assertFalse(shim.exists())
+
+    def test_set_fails_loudly_when_the_observer_shim_cannot_be_written(self):
+        self.install()
+        foreign = self.hermes / "profiles/tuck/scripts/observe.py"
+        foreign.parent.mkdir(parents=True)
+        foreign.write_text("print('tuck owns this')\n")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--observer-profile", "tuck",
+                                "--observer-deliver", "telegram"])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("gate shim install FAILED", out)
+        self.assertIn("hermes review-loop apply --loop widgets", out)
+        self.assertEqual(foreign.read_text(), "print('tuck owns this')\n")
+
+    def test_heal_says_what_the_gateway_does_for_each_refusal(self):
+        from review_loop import gate_shims
+        self.install()
+        shim = self.hermes / "profiles/vex/scripts/gate_reviewer.py"
+        shim.write_text("print('someone else')\n")
+        lines = "\n".join(gate_shims.heal(config.load_id("widgets")))
+        self.assertIn("runs that instead of the gate", lines)
+        self.assertNotIn("drops", lines)
+        self.assertEqual(shim.read_text(), "print('someone else')\n")
+        shim.unlink()
+        self.edit_registry(lambda d: d["widgets-review"].update(profile="ghost"))
+        lines = "\n".join(gate_shims.heal(config.load_id("widgets")))
+        self.assertIn("the gateway drops", lines)
+        self.assertIn("ghost", lines)
+        self.assertNotIn("instead of the gate", lines)
 
     def test_gate_names_agree(self):
         from review_loop import gate_shims

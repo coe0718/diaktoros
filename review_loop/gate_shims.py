@@ -290,17 +290,35 @@ def install(loop: dict, *, dry_run: bool = False, pairs=None, report: bool = Tru
 
 
 def heal(loop: dict) -> list[str]:
-    """The watchdog's self-heal for shims, for the routes the registry holds: alert lines only."""
+    """The watchdog's self-heal for shims, for the routes the registry holds: alert lines only.
+
+    Each refusal says what the gateway does meanwhile, in doctor's words: with a foreign file of
+    the gate's name it *runs that instead of the gate*; with no profile home it runs nothing and
+    drops the route's events."""
     label = f"[{loop.get('id', '?')}] {loop.get('repo', '')}".rstrip()
+    lid = loop.get("id", "?")
+    alerts, pairs = [], set()
+    for profile, script in sorted(live(loop)):
+        status, path, detail = state(home_for(profile), script)
+        if status == "foreign":
+            alerts.append(f"⚠️ Review loop {label} — gate shim NOT restored: {detail}; the gateway "
+                          f"runs that instead of the gate for profile {profile!r}. Move it aside, "
+                          f"then `hermes review-loop apply --loop {lid}`.")
+        elif status == "nohome":
+            alerts.append(f"⚠️ Review loop {label} — gate shim NOT restored: {detail}, so the "
+                          f"gateway drops every event on the routes it serves as {profile!r}. "
+                          f"`hermes review-loop doctor --loop {lid}` names the fix.")
+        else:
+            pairs.add((profile, script))
     try:
-        written = install(loop, pairs=live(loop))
+        written = install(loop, pairs=pairs)
     except (OSError, config.ConfigError) as exc:
-        return [f"⚠️ Review loop {label} — gate shims NOT restored, so the gateway drops this "
-                f"loop's events: {exc}"]
-    if not written:
-        return []
-    return [f"🔧 Review loop {label} — restored {len(written)} gate shim(s) the gateway needs:",
-            *(f"  {line}" for line in written)]
+        return alerts + [f"⚠️ Review loop {label} — gate shims NOT restored ({exc}); the gateway "
+                         "drops this loop's events where a shim is missing"]
+    if written:
+        alerts += [f"🔧 Review loop {label} — restored {len(written)} gate shim(s) the gateway "
+                   "needs:", *(f"  {line}" for line in written)]
+    return alerts
 
 
 def remove(loop: dict, keep_loops: list[dict]) -> list[str]:
