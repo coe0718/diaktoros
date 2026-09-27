@@ -10,7 +10,6 @@ import io
 import json
 import os
 import pathlib
-import sqlite3
 import sys
 import tempfile
 import textwrap
@@ -20,6 +19,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from review_loop import ledger  # noqa: E402
 from review_loop import cli, config, doctor, gh, seat_model, trusted_turn  # noqa: E402
 from review_loop.run_supervisor import Supervisor  # noqa: E402
 
@@ -324,7 +324,7 @@ class Worker(Base):
         sup = Supervisor(self.root / "ledger.sqlite", production_config=runtime, hermes_home=self.home)
         with mock.patch.object(sup, "_spawn"):
             sup.enqueue(f"d-{seat}", "acme/widgets", 7, HEAD, seat)
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             # A fixer row is launched only when admitted with pushes on (the gate holds it otherwise).
             con.execute("UPDATE runs SET state='launching', owner='w', generation='g', "
                         "push_admitted=1 WHERE delivery=?", (f"d-{seat}",))
@@ -352,7 +352,7 @@ class Worker(Base):
             state_for.return_value.breach_start.return_value = {"ok": True}
             sup._run_production(run_id, "w")
             called_github = api.called
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             row = con.execute("SELECT state, error FROM runs WHERE id=?", (run_id,)).fetchone()
         return seen, row, called_github
 

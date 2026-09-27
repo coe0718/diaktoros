@@ -21,6 +21,8 @@ from typing import NamedTuple
 import uuid
 from contextlib import nullcontext
 
+from . import ledger
+
 SILENT = "[SILENT]"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -493,12 +495,9 @@ class Supervisor:
             con.execute('COMMIT')
 
     def _connect(self):
-        con = sqlite3.connect(self.db, timeout=10, isolation_level=None)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA busy_timeout=10000")
-        con.execute("PRAGMA journal_mode=WAL")
-        con.execute("PRAGMA synchronous=FULL")
-        return con
+        return ledger.connect(self.db, timeout=10, isolation_level=None, row_factory=sqlite3.Row,
+                              pragmas=("busy_timeout=10000", "journal_mode=WAL",
+                                       "synchronous=FULL"))
 
     def get(self, delivery: str) -> dict | None:
         with self._connect() as con:

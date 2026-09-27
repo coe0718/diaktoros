@@ -30,6 +30,7 @@ from __future__ import annotations
 import sys
 import types
 
+import leakguard
 from harness import (cleanup, docs, doctor, fixture, gates, observer, routes, seats, state,
                      watchdog)
 
@@ -81,6 +82,7 @@ def main() -> int:
     if wanted is None:
         print(f"unknown area or group; areas: {', '.join(AREAS)} (see --list)", file=sys.stderr)
         return 2
+    leakguard.install()
     sink = fixture.start_sink()
     fixture.set_host(sink)
     fixture.DATA["host"] = sink
@@ -88,6 +90,10 @@ def main() -> int:
     fixture.reset(prs={})                      # fixtures exist before any group runs
     for name in wanted:
         GROUPS[name]()
+        for leak in leakguard.drain():        # a leak fails the group that left it behind
+            fixture.results.append((False, f"{name}: resource leaked: {leak}"))
+    for leak in leakguard.running_children():
+        fixture.results.append((False, f"after the last group: {leak}"))
     results = fixture.results
     passed = sum(1 for ok, _ in results if ok)
     failed = [n for ok, n in results if not ok]

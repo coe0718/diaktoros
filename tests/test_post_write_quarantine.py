@@ -3,13 +3,12 @@ import json
 import contextlib
 import io
 from pathlib import Path
-import sqlite3
 
 import tempfile
 import unittest
 from unittest import mock
 
-from review_loop import broker, broker_ipc, safe_push
+from review_loop import broker, broker_ipc, ledger, safe_push
 from review_loop.run_supervisor import Supervisor
 from scripts import gate_fixer
 
@@ -31,7 +30,7 @@ class PostWriteQuarantine(unittest.TestCase):
         self.db = self.home / 'state' / 'review-loop-runs.sqlite'
         self.sup = Supervisor(self.db)
         self.sup.enqueue('fix', 'acme/widgets', 7, HEAD, 'fixer')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='running',owner='worker',launch_intent=1,push_admitted=1 "
                         "WHERE delivery='fix'")
         self.row = self.sup.get('fix')
@@ -160,7 +159,7 @@ class PostWriteQuarantine(unittest.TestCase):
 
     def test_lost_worker_recovery_preserves_push_intent(self):
         self.sup.begin_push(self.row['id'], self.scope.repo, 7, HEAD)
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute('UPDATE runs SET lease=1 WHERE id=?', (self.row['id'],))
         self.sup.recover()
         row = self.sup.get('fix')
@@ -184,7 +183,7 @@ class PostWriteQuarantine(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.sup.begin_push(self.row['id'], self.scope.repo, 7, HEAD)
         # A separate run whose completion commit fails must remain held.
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute('UPDATE runs SET push_intent=NULL,push_confirmed=NULL WHERE id=?',
                         (self.row['id'],))
         with mock.patch('review_loop.config.by_repo', return_value=loop), \

@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -19,6 +18,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from review_loop import ledger  # noqa: E402
 from review_loop import (broker, broker_ipc, config, contained, gate, gh, observer,  # noqa: E402
                          prompts, state as state_mod, trusted_turn)
 from review_loop import run_supervisor  # noqa: E402
@@ -71,7 +71,7 @@ class Base(unittest.TestCase):
         sup = Supervisor(self.db)
         sup.enqueue(f"{REPO}:7:{head}:adjudicator:{turn}", REPO, 7, head, "adjudicator",
                     turn_key=turn)
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state=? WHERE seat='adjudicator'", (state,))
             if state in ("launching", "running"):
                 con.execute("UPDATE runs SET launch_intent=? WHERE seat='adjudicator'",
@@ -97,7 +97,7 @@ class Enqueue(Base):
         path.chmod(0o600)
 
     def rows(self):
-        with sqlite3.connect(self.ledger) as con:
+        with ledger.connect(self.ledger) as con:
             return con.execute("SELECT delivery,head,seat,turn_key,state FROM runs").fetchall()
 
     def test_without_private_runtime_wake_is_false_and_writes_nothing(self):
@@ -186,7 +186,7 @@ class Claim(Base):
         }
         for name, kwargs in cases.items():
             with self.subTest(name):
-                with sqlite3.connect(self.db) as con:
+                with ledger.connect(self.db) as con:
                     con.execute("UPDATE runs SET state='pending',error=NULL")
                 result, row = self.claim(**kwargs)
                 self.assertIsNone(result)
@@ -195,7 +195,7 @@ class Claim(Base):
     def test_missing_or_mismatched_marker_cancels(self):
         for marker in ({}, {"head": "c" * 40}, {"rounds": 4}, {"status": "adjudicating"}):
             with self.subTest(marker):
-                with sqlite3.connect(self.db) as con:
+                with ledger.connect(self.db) as con:
                     con.execute("UPDATE runs SET state='pending',error=NULL")
                 if marker:
                     self.mark(**{"head": HEAD, "rounds": 3, **{k: v for k, v in marker.items()}})
@@ -333,7 +333,7 @@ class Ruling(Base):
                              branch="fix-7", operation="ruling")
 
     def test_ledger_failure_is_an_error_and_sends_nothing(self):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='succeeded'")
         server = self.start()
         self.assertEqual(self.send(server, self.ruling()), {"ok": False, "error": "write denied"})
@@ -383,7 +383,7 @@ class Ruling(Base):
                      return_value=[verdict(1), verdict(2, "APPROVED", minute=5)])}
         for name, mutate in cases.items():
             with self.subTest(name):
-                with sqlite3.connect(self.db) as con:
+                with ledger.connect(self.db) as con:
                     con.execute("DELETE FROM rulings")
                 self.configure_identity()
                 self.principals = dict(IDS)
@@ -419,10 +419,10 @@ class Ruling(Base):
         self.assertIn("POST outcome unknown", messages[0])
 
     def test_ruling_ledger_migrates_into_an_existing_database(self):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("DROP TABLE rulings")
         Supervisor(self.db)
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             self.assertEqual(con.execute("SELECT COUNT(*) FROM rulings").fetchone()[0], 0)
             self.assertEqual(con.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 1)
 

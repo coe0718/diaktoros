@@ -33,6 +33,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+from review_loop import ledger  # noqa: E402 - importable only once ROOT is on the path
 
 # Fixtures must not inherit the source checkout's Git owner: cleanup correctly
 # refuses to delete artifacts under an unrelated repository, even a test repo.
@@ -362,7 +363,7 @@ def no_ledger_run() -> bool:
     db = TMP / "hermes-home" / "state" / "review-loop-runs.sqlite"
     if not db.exists():
         return True
-    with sqlite3.connect(db) as con:
+    with ledger.connect(db) as con:
         return con.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
 
 

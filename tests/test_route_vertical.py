@@ -9,10 +9,11 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import sqlite3
 import time
 import unittest
 from unittest import mock
+
+from review_loop import ledger
 
 ROOT = Path(__file__).resolve().parents[1]
 HEAD = "a" * 40
@@ -303,7 +304,7 @@ class RouteSubprocess(unittest.TestCase):
         deadline = time.monotonic() + 10
         rows = []
         while time.monotonic() < deadline:
-            with sqlite3.connect(db) as conn:
+            with ledger.connect(db) as conn:
                 rows = conn.execute("SELECT state, attempts, error FROM runs").fetchall()
             if rows and rows[0][0] == "failed":
                 break
@@ -328,7 +329,7 @@ class RouteSubprocess(unittest.TestCase):
             result = self.route('gate_reviewer.py', payload)
             self.assertEqual((result.returncode, result.stdout.strip()),
                              (0, '[SILENT]'), result.stderr)
-        with sqlite3.connect(db) as conn:
+        with ledger.connect(db) as conn:
             keys = [row[0] for row in conn.execute('SELECT turn_key FROM runs ORDER BY turn_key')]
         self.assertEqual(keys, ['', 'dismissed:42'])
 

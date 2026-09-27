@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import socket
-import sqlite3
 import string
 import sys
 import tempfile
@@ -20,6 +19,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from review_loop import ledger
 from review_loop import broker, broker_client, broker_ipc, gh, prompts, review_receipt, trusted_turn
 from review_loop.run_supervisor import Supervisor
 from scripts import broker_client as script_client
@@ -87,7 +87,7 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
         sup = Supervisor(self.root / "runs.sqlite")
         sup.enqueue("d", REPO, 7, HEAD, "reviewer")
         generation = review_receipt.generation_for(self.pr, self.loop, 7, HEAD)
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             con.execute("UPDATE runs SET state='running', generation=?", (generation,))
             run_id = con.execute("SELECT id FROM runs").fetchone()[0]
         return sup, broker_ipc.RunScope(REPO, 7, HEAD, "reviewer", "fix-7", run_id,
@@ -110,11 +110,11 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
         sup, scope = self.receipt_scope()
         server = self.start(scope)
         self.assertIn(REFUSAL, self.send(server, "COMMENT")["error"])
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             self.assertIsNone(con.execute("SELECT * FROM review_receipts").fetchone())
         self.assertEqual(self.posts, [])
         self.assertTrue(self.send(server, "REQUEST_CHANGES")["ok"])
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             self.assertEqual(con.execute("SELECT state,review_id,verdict FROM review_receipts")
                              .fetchone(), ("confirmed", 19, "CHANGES_REQUESTED"))
 

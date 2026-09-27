@@ -244,7 +244,7 @@ def group_adjudicator() -> None:
     def adjudicator_rows() -> list:
         if not db.exists():
             return []
-        with sqlite3.connect(db) as con:
+        with ledger.connect(db) as con:
             return con.execute("SELECT head,turn_key,state FROM runs WHERE seat='adjudicator' "
                                "ORDER BY created").fetchall()
 

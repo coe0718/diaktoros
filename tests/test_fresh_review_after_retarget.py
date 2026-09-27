@@ -20,7 +20,7 @@ import unittest
 import uuid
 from unittest import mock
 
-from review_loop import gate, state as state_mod, transition
+from review_loop import gate, ledger, state as state_mod, transition
 from review_loop.run_supervisor import Supervisor
 from tests.test_stacked_reconciliation import fixer, reviewer, watchdog
 from tests.test_stacked_situation import A, B, C, D, pr
@@ -76,7 +76,7 @@ class FreshReviewTest(unittest.TestCase):
         self.ledger.enqueue(delivery, loop["repo"], number, head, seat, turn_key=turn_key)
 
     def ledger_rows(self, seat="reviewer"):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             return con.execute("SELECT head, turn_key FROM runs WHERE seat=? AND pr=184",
                                (seat,)).fetchall()
 
@@ -86,7 +86,7 @@ class FreshReviewTest(unittest.TestCase):
         generation = json.dumps({"head": head, "base_ref": base, "base_sha": A, "parents": [],
                                  "parent_chain_verified": False}, sort_keys=True, separators=(",", ":"))
         run_id = uuid.uuid4().hex
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,updated,"
                         "generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                         (run_id, run_id, REPO, 184, head, seat, f"t:{run_id}", "completed",
@@ -389,7 +389,7 @@ class FreshReviewTest(unittest.TestCase):
     def test_fixer_claim_needs_a_receipted_post_boundary_verdict(self):
         self.merge_parent_and_retarget()
         run_id = uuid.uuid4().hex
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,updated,"
                         "push_admitted) VALUES(?,?,?,?,?,?,?,?,?,?,1)",
                         (run_id, "fix-184", REPO, 184, C, "fixer", "", "pending", time.time(),

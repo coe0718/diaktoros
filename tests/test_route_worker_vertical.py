@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -20,6 +19,7 @@ import time
 import unittest
 
 from tests.test_turn_vertical import SOURCE, RUST
+from review_loop import ledger
 from review_loop.inference_proxy import PATH
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -198,7 +198,7 @@ class RouteWorkerVertical(unittest.TestCase):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             if db.exists():
-                with sqlite3.connect(db) as con:
+                with ledger.connect(db) as con:
                     rows = con.execute('SELECT state, attempts, outcome, error FROM runs').fetchall()
                 if rows and rows[0][0] in ('succeeded', 'failed', 'uncertain'):
                     break
@@ -216,7 +216,7 @@ class RouteWorkerVertical(unittest.TestCase):
         self.assertEqual(len(self.world['writes']), 1)
         self.assertEqual(self.world['writes'][0]['commit_id'], HEAD)
         self.assertEqual(self.world['write_auth'], ['token dummy-reviewer'])
-        with sqlite3.connect(self.home / 'state/review-loop-runs.sqlite') as con:
+        with ledger.connect(self.home / 'state/review-loop-runs.sqlite') as con:
             receipt = con.execute('SELECT state,review_id,verdict,principal_id,generation '
                                   'FROM review_receipts').fetchone()
         self.assertEqual(receipt[:4], ('confirmed', 1, 'APPROVED', 2))
