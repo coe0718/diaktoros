@@ -529,6 +529,73 @@ class PurgeTest(Base):
         self.assertIn(f"  rm -- {shlex.quote(str(shim))}\n", out)
         self.assertIn(f"  rm -rf -- {shlex.quote(str(target))}\n", out)
 
+    def test_an_unparseable_route_registry_refuses_before_anything_is_removed(self):
+        # The review's repro: the registry is rewritten by step 3, after hooks and the job are
+        # gone. It is read first now, so nothing is touched and there is no traceback.
+        self.fresh_install()
+        self.cron_store([self.job("widgets", "job1")])
+        shim = config.home() / "scripts" / cli.SHIM_NAME
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text("#!/bin/sh\n")
+        t.SUBS.write_text("{broken")
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"route registry {t.SUBS} cannot be read", out)
+        self.assertIn("nothing below the failure was touched", out)
+        self.assertEqual(len(self.hooks()), 2)
+        self.assertTrue(self.hermes_log.exists() is False or
+                        "remove" not in self.hermes_log.read_text())
+        self.assertTrue(shim.exists())
+        self.assertTrue(LOOP_FILE.exists())
+
+    def test_a_route_step_that_fails_late_is_incomplete_not_a_traceback(self):
+        self.fresh_install()
+        real = routes.remove_route
+
+        def refuse(name):
+            raise routes.RegistryConflictError("route registry kept changing under the edit")
+        routes.remove_route = refuse
+        self.addCleanup(setattr, routes, "remove_route", real)
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self.hooks(), [])
+        self.assertIn("routes NOT removed: route registry kept changing", out)
+        summary = next(line for line in out.splitlines() if line.startswith("uninstall INCOMPLETE"))
+        self.assertIn("removed: repo hooks", summary)
+        self.assertIn("left behind: the routes widgets-review, widgets-fix", summary)
+        self.assertIn("  hermes review-loop uninstall --loop widgets   # once", out)
+        self.assertTrue(LOOP_FILE.exists())
+
+    def test_a_symlinked_shim_is_named_as_left_behind(self):
+        self.cron_store([])
+        target = t.TMP / "real-shim.py"
+        target.write_text("#!/bin/sh\n")
+        shim = config.home() / "scripts" / cli.SHIM_NAME
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.symlink_to(target)
+        self.addCleanup(lambda: shim.is_symlink() and shim.unlink())
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"cron shim NOT removed: {shim} is a symlink", out)
+        summary = next(line for line in out.splitlines() if line.startswith("uninstall INCOMPLETE"))
+        self.assertIn(f"left behind: the cron shim {shim}", summary)
+        self.assertTrue(shim.is_symlink())
+        self.assertTrue(target.exists())
+
+    def test_a_config_the_loader_refuses_gets_the_lookup_advice(self):
+        self.fresh_install()
+        self.cron_store([self.job("widgets", "job1")])
+        cfg = json.loads(LOOP_FILE.read_text())
+        cfg["seats"]["fixer"]["route"] = cfg["seats"]["reviewer"]["route"]   # both seats, one route
+        LOOP_FILE.write_text(json.dumps(cfg))
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("each seat needs its own route", out)
+        self.assertIn("it may still have live repo hooks and a watchdog job; nothing was touched", out)
+        self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+        self.assertIn("hermes cron remove job1", out)
+        self.assertEqual(len(self.hooks()), 2)
+
     def test_without_purge_default_state_is_kept_and_named(self):
         self.default_state()
         rc, out = self.cli("uninstall", "--loop", "widgets")

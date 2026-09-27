@@ -147,8 +147,14 @@ up front, untouched, when the state directory cannot even be read for its in-fli
 deletes the state directory last; if that delete — or removing the config before it — fails (a
 permission, a busy mount) it exits 2 with `uninstall INCOMPLETE — removed: …; left behind: …` and
 the exact `rm` commands that finish it — the config may already be gone by then, so a re-run
-cannot. A cron shim that cannot be removed does the same: the run ends INCOMPLETE (exit 2) with
-the shim under "left behind" and its `rm` command, alongside anything else that stayed. `init --hooks` refuses when hooks from a previous install still post to the loop's
+cannot. A cron shim that cannot be removed (or is a symlink, which is never followed) does the
+same: the run ends INCOMPLETE (exit 2) with the shim under "left behind" and its `rm` command,
+alongside anything else that stayed. Every shared file a later step rewrites — the route
+registry — is read before the first hook is touched, so an unparseable one refuses with nothing
+removed; a route step that still fails later (a registry that changes or becomes unwritable
+mid-run) ends INCOMPLETE with the config kept, so re-running `uninstall` finishes it. A loop file
+the loader refuses is never torn down on a guess: `uninstall` exits 2 with the reason and the
+commands to look up what it may still have live (its hooks' ids, its watchdog job). `init --hooks` refuses when hooks from a previous install still post to the loop's
 routes (they sign with a secret the new routes will not hold), and `doctor` fails a route with
 more than one hook, or whose latest delivery the gateway answered 401/403 (a secret that does not
 match) or any other non-2xx (a 5xx is the gateway erroring); a latest delivery with no HTTP answer

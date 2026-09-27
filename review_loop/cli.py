@@ -705,8 +705,9 @@ def _hook_route_names(loop: dict) -> set[str]:
             if role in ("reviewer", "fixer") and name}
 
 
-# One matcher for every caller (uninstall, init's stale-hook guard, selftest --ping): a hook is
-# this install's only when it posts to one of the loop's route names on the loop's own origin.
+# One matcher for every caller (doctor.split_route_hooks): arm and selftest --ping credit a hook
+# only at the registry's route URL; uninstall and init's stale-hook guard (ownership) also count
+# the URL the loop's config gives a route the registry no longer holds.
 _hook_route_name = doctor.hook_route_name
 
 
@@ -726,7 +727,8 @@ def _classify_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, l
            or not isinstance(hook["config"].get("url"), str) for hook in listing):
         return None, [], "invalid hook listing"
     try:
-        own, foreign = doctor.split_route_hooks(loop, listing, _hook_route_names(loop))
+        own, foreign = doctor.split_route_hooks(loop, listing, _hook_route_names(loop),
+                                                ownership=True)
     except config.ConfigError as exc:
         return None, [], f"cannot resolve the loop's webhook host: {exc}"
     return own, foreign, ""
@@ -743,7 +745,7 @@ def _foreign_lines(loop: dict, foreign: list[dict]) -> list[str]:
     for hook in foreign:
         name = _hook_route_name(hook)
         why = doctor.hook_url_difference(str(hook["config"].get("url") or ""),
-                                         doctor.seat_hook_url(loop, name) or "")
+                                         (doctor.install_hook_urls(loop, name) or [""])[0])
         lines.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this install's "
                      "hook (not the route's URL), left alone")
     return lines
@@ -855,7 +857,7 @@ def _remove_cron(loop: dict) -> tuple[list[str], list[str]]:
 def _remove_unused_shim() -> str:
     """The cron shim is shared by every loop's job: remove it only when no job runs it any more."""
     shim = config.home() / "scripts" / SHIM_NAME
-    if shim.is_symlink() or not shim.is_file():
+    if not shim.is_symlink() and not shim.is_file():
         return ""
     try:
         data = json.loads(doctor.cron_store().read_text()) if doctor.cron_store().exists() else []
@@ -866,6 +868,10 @@ def _remove_unused_shim() -> str:
             isinstance(job, dict) and pathlib.Path(str(job.get("script") or "")).name == SHIM_NAME
             for job in jobs):
         return ""
+    if shim.is_symlink():
+        # Never followed or removed on its own authority — but named, like every other leftover.
+        return (f"cron shim NOT removed: {shim} is a symlink (never followed) — no job runs it; "
+                f"remove the link itself: rm -- {shlex.quote(str(shim))}")
     try:
         shim.unlink()
     except OSError as exc:
@@ -2277,6 +2283,56 @@ def cmd_cleanup(args) -> int:
     return subprocess.run(cmd).returncode
 
 
+def _uninstall_preflight(loop: dict) -> list[str]:
+    """Reasons a later uninstall step would fail on a shared file, read before anything is removed.
+
+    The route registry is rewritten by step 3, after the hooks and the watchdog job are already
+    gone; it must parse now. (The cron store was read just before this; the intent record's own
+    reader tolerates a bad file — it heals nothing then.)
+    """
+    problems = []
+    path = routes.subs_path()
+    if path.exists() or path.is_symlink():
+        try:
+            data = json.loads(path.read_text())
+        except Exception as exc:
+            problems.append(f"route registry {path} cannot be read ({type(exc).__name__}: "
+                            f"{exc}) — fix or restore it; nothing was removed")
+        else:
+            if not isinstance(data, dict):
+                problems.append(f"route registry {path} is not a JSON object — fix or restore "
+                                "it; nothing was removed")
+    return problems
+
+
+def _unloadable_teardown_advice(loop_id: str) -> None:
+    """For a loop file the loader refuses: what may still be live, and how to find it.
+
+    ``uninstall`` will not act on a config it cannot validate — deleting hooks or jobs on a
+    guess is the wrong way to fail — but it can still read the raw file for the repo, the route
+    names and the job name, and hand over the commands to look them up.
+    """
+    try:
+        raw = json.loads((config.config_dir() / f"{loop_id}.json").read_text())
+    except Exception:
+        return
+    if not isinstance(raw, dict) or str(raw.get("repo") or "").count("/") != 1:
+        return
+    raw = {**raw, "id": loop_id, "repo": str(raw["repo"]).strip().lower()}
+    print("it may still have live repo hooks and a watchdog job; nothing was touched. "
+          "Look them up with:")
+    if _hook_route_names(raw):
+        print(f"  {_hook_find_command(raw)}   # hook ids on its route names — check each URL "
+              "before deleting: `gh api -X DELETE repos/<owner>/<repo>/hooks/<id>`")
+    jobs, _ = _cron_jobs(raw)
+    for job in jobs or []:
+        print(f"  hermes cron remove {shlex.quote(str(job.get('id') or '<id>'))}   "
+              f"# {watchdog_job_name(raw)}")
+    print("then fix the file (the reason above) and re-run `hermes review-loop uninstall "
+          f"--loop {shlex.quote(loop_id)}`, or remove what is listed by hand and delete "
+          f"{config.config_dir() / (loop_id + '.json')}")
+
+
 def _uninstall_incomplete(removed: list[str], left: list[str], keep_hooks: bool,
                           commands: list[str]) -> int:
     """A late step failed after earlier ones were done: say which, and how to finish. Exit 2.
@@ -2347,6 +2403,7 @@ def cmd_uninstall(args) -> int:
         loop = config.load_id(args.loop)
     except config.ConfigError as exc:
         print(f"cannot uninstall: {exc}")
+        _unloadable_teardown_advice(args.loop)
         return 2
     keep_hooks = getattr(args, "keep_hooks", False)
     purge = getattr(args, "purge", False)
@@ -2383,6 +2440,11 @@ def cmd_uninstall(args) -> int:
     jobs, error = _cron_jobs(loop)
     if jobs is None:
         return _uninstall_refused(loop, [f"cron: {error}"], [], args)
+    # Every shared file a later step rewrites is read *now*, before a hook or a job is touched:
+    # a registry that will not parse must refuse here, not raise after the destructive steps.
+    problems = _uninstall_preflight(loop)
+    if problems:
+        return _uninstall_refused(loop, problems, [], args)
     # What is already gone, for the summary if a later step (the state purge) fails.
     removed: list[str] = []
     # 1. Stop deliveries: delete the repo hooks while the config still names their routes.
@@ -2449,16 +2511,25 @@ def cmd_uninstall(args) -> int:
             leftovers.append((f"the cron shim {shim}", f"rm -- {shlex.quote(str(shim))}"))
     # 3. Forget first: a route the operator removed must not be put back by the next watchdog
     # sweep's self-heal (which only ever restores routes still in the intent record).
+    lid = shlex.quote(loop["id"])
+    finish = f"hermes review-loop uninstall --loop {lid}"
     try:
         route_intent.forget(loop, _routes_of(loop).values())
-    except OSError as exc:
-        print(f"refused: route intent record could not be updated, routes left in place: {exc}")
-        return 2
-    for name in _routes_of(loop).values():
-        if name and routes.remove_route(name):
-            print(f"route removed: {name}")
-            if "routes" not in removed:
-                removed.append("routes")
+        for name in _routes_of(loop).values():
+            if name and routes.remove_route(name):
+                print(f"route removed: {name}")
+                if "routes" not in removed:
+                    removed.append("routes")
+    except (OSError, ValueError) as exc:
+        # Hooks and the job are already gone; the config is still here, so a re-run finishes
+        # once the registry (or intent record) can be written — say so, never a traceback.
+        print(f"routes NOT removed: {exc}")
+        left = [what for what, _ in leftovers] + [
+            f"the routes {', '.join(n for n in _routes_of(loop).values() if n)} in "
+            f"{routes.subs_path()}", f"the loop config (so `{finish}` can finish)"]
+        commands = [cmd for _, cmd in leftovers] + [f"{finish}   # once the file above is "
+                                                    "readable and writable again"]
+        return _uninstall_incomplete(removed, left, keep_hooks, commands)
     if not args.keep_config:
         path = config.config_dir() / f"{loop['id']}.json"
         if path.exists():
