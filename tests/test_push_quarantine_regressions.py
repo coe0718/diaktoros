@@ -1,4 +1,8 @@
 """Offline regressions for published push errors and late merge-notice holds."""
+try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
+    from tests import _home_guard  # noqa: F401
+except ImportError:
+    import _home_guard  # noqa: F401
 import json
 import os
 from pathlib import Path

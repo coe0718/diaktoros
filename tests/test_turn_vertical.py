@@ -3,6 +3,10 @@
 The route subprocess is tested separately; this is not proof of a route-to-worker
 link. No real token, GitHub endpoint, model endpoint, or credential HOME is used.
 """
+try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
+    from tests import _home_guard  # noqa: F401
+except ImportError:
+    import _home_guard  # noqa: F401
 import http.server
 import json
 import os

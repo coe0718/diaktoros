@@ -70,9 +70,18 @@ CREATE TABLE IF NOT EXISTS ledger_events (
  created REAL NOT NULL, delivered REAL
 );
 """
-# Columns the host adds to ``runs`` after SCHEMA (older ledgers are migrated in __init__).
-_MIGRATED_RUNS_COLUMNS = ("generation", "turn_key", "push_admitted", "push_intent",
-                          "push_confirmed")
+# The host's migrations of ``runs``, in order: (column, ALTER, follow-up statements). The one
+# source for both the host (which applies what a ledger lacks) and the worker's schema check.
+_MIGRATIONS = (
+    ("generation", "ALTER TABLE runs ADD COLUMN generation TEXT", ()),
+    ("turn_key", "ALTER TABLE runs ADD COLUMN turn_key TEXT NOT NULL DEFAULT ''",
+     ("DROP INDEX IF EXISTS runs_turn",
+      "CREATE UNIQUE INDEX runs_turn ON runs(repo,pr,head,seat,turn_key)")),
+    # Legacy rows cannot acquire permission from a later policy toggle.
+    ("push_admitted", "ALTER TABLE runs ADD COLUMN push_admitted INTEGER NOT NULL DEFAULT 0", ()),
+    ("push_intent", "ALTER TABLE runs ADD COLUMN push_intent REAL", ()),
+    ("push_confirmed", "ALTER TABLE runs ADD COLUMN push_confirmed REAL", ()),
+)
 # Worker stderr (one diagnostic line, or a traceback) goes to <ledger>.workers.log, rotated
 # once to .1 by the host when it passes this size.
 WORKER_LOG_MAX = 256 * 1024
@@ -122,7 +131,7 @@ def _expected_schema() -> dict[str, set[str]]:
             con.executescript(SCHEMA)
             for (name,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'"):
                 _EXPECTED[name] = {row[1] for row in con.execute(f"PRAGMA table_info({name})")}
-        _EXPECTED["runs"] |= set(_MIGRATED_RUNS_COLUMNS)
+        _EXPECTED["runs"] |= {column for column, _, _ in _MIGRATIONS}
     return _EXPECTED
 
 
@@ -143,12 +152,19 @@ def ledger_marker(db: str | Path) -> Path:
     return db.with_name(db.name + ".present")
 
 
+def production_ledger() -> Path:
+    """The run ledger every host caller uses: ``$HERMES_HOME/state/review-loop-runs.sqlite``."""
+    from . import config
+    return config.home() / "state" / "review-loop-runs.sqlite"
+
+
 def presence_marker() -> Path:
     """The host's record, in the loop config dir, that the production ledger existed.
 
     It survives a wipe of the whole state dir (which takes the beside-ledger marker with it),
-    so that loss is reported instead of looking like a first install. Only host-side callers
-    (gate enqueue, watchdog, selftest) pass it; a worker never writes it.
+    so that loss is reported instead of looking like a first install. Every host-side
+    ``Supervisor`` of the production ledger checks and keeps it by default, whoever opens it
+    first (gate, watchdog, selftest, the ``status`` CLI, observer…); a worker never writes it.
     """
     from . import config
     return config.config_dir() / ".ledger-present"
@@ -557,9 +573,11 @@ class Supervisor:
         before anything is written to it.
 
         The host reports a ledger that vanished since it last opened one: one stderr line and
-        one operator notice. It knows one existed from ``<ledger>.present`` beside it, or, when
-        the caller passes ``presence`` (``presence_marker()``, in the loop config dir), from
-        that host-owned marker, which survives a wipe of the whole state dir.
+        one operator notice, recorded before any marker is (re)written. It knows one existed
+        from ``<ledger>.present`` beside it, or from ``presence`` in the loop config dir, which
+        survives a wipe of the whole state dir. ``presence`` defaults to ``presence_marker()``
+        for the production ledger, so no host caller can forget it; other ledger paths use the
+        beside-ledger marker alone unless one is passed.
         """
         db = Path(db)
         # First, before any other check: no ledger at all is a quiet exit, not an error.
@@ -568,6 +586,8 @@ class Supervisor:
         vanished = False
         if create:
             empty = db.is_file() and db.stat().st_size == 0
+            if presence is None and os.path.abspath(db) == os.path.abspath(production_ledger()):
+                presence = presence_marker()
             presence = Path(presence) if presence is not None else None
             vanished = (not db.is_file() or empty) and (ledger_marker(db).is_file()
                                                         or _names(presence, db))
@@ -609,19 +629,11 @@ class Supervisor:
         with self._connect() as con:
             con.executescript(SCHEMA)
             con.execute('BEGIN IMMEDIATE')
-            if 'generation' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
-                con.execute('ALTER TABLE runs ADD COLUMN generation TEXT')
-            if 'turn_key' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
-                con.execute("ALTER TABLE runs ADD COLUMN turn_key TEXT NOT NULL DEFAULT ''")
-                con.execute('DROP INDEX IF EXISTS runs_turn')
-                con.execute('CREATE UNIQUE INDEX runs_turn ON runs(repo,pr,head,seat,turn_key)')
-            if 'push_admitted' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
-                # Legacy rows cannot acquire permission from a later policy toggle.
-                con.execute('ALTER TABLE runs ADD COLUMN push_admitted INTEGER NOT NULL DEFAULT 0')
-            if 'push_intent' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
-                con.execute('ALTER TABLE runs ADD COLUMN push_intent REAL')
-            if 'push_confirmed' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
-                con.execute('ALTER TABLE runs ADD COLUMN push_confirmed REAL')
+            for column, alter, follow in _MIGRATIONS:
+                if column not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
+                    con.execute(alter)
+                    for statement in follow:
+                        con.execute(statement)
             if vanished:
                 con.execute("INSERT INTO ledger_events(message,created) VALUES(?,?)",
                             (f"⚠️ Review-loop run ledger {self.db} vanished and was recreated "

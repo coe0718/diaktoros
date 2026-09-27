@@ -1,4 +1,8 @@
 """Safe push security tests: synthetic API plus real local bare Git receive-pack."""
+try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
+    from tests import _home_guard  # noqa: F401
+except ImportError:
+    import _home_guard  # noqa: F401
 import base64
 import hashlib
 import json

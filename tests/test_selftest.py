@@ -2,6 +2,10 @@
 
 GitHub, the model provider and bubblewrap are all mocked; nothing here needs a network.
 """
+try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
+    from tests import _home_guard  # noqa: F401
+except ImportError:
+    import _home_guard  # noqa: F401
 import argparse
 import io
 import json

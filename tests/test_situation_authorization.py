@@ -1,4 +1,8 @@
 """Fail-closed stacked approval tests; no GitHub network or live Hermes home."""
+try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
+    from tests import _home_guard  # noqa: F401
+except ImportError:
+    import _home_guard  # noqa: F401
 import pathlib
 import json
 import tempfile

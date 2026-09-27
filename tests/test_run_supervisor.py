@@ -1,4 +1,8 @@
 """Fixture-only lifecycle tests: never invoke a real Hermes agent."""
+try:  # refuses the operator's real ~/.hermes ledger (#108); run as a module or a script
+    from tests import _home_guard  # noqa: F401
+except ImportError:
+    import _home_guard  # noqa: F401
 import concurrent.futures
 import contextlib
 import io
@@ -470,6 +474,62 @@ class Lifecycle(unittest.TestCase):
             self.assertTrue((cfg / ".ledger-present").exists())  # loop b still configured
             cli.cmd_uninstall(Namespace(loop="b", keep_config=False))
         self.assertFalse((cfg / ".ledger-present").exists())
+
+    def pin_production_home(self):
+        home = self.root / "hermes-home"
+        env = patch.dict(os.environ, {"HERMES_HOME": str(home),
+                                      "REVIEW_LOOP_CONFIG_DIR": str(home / "review-loops.d")})
+        env.start()
+        self.addCleanup(env.stop)
+        return home
+
+    def test_status_after_a_wipe_does_not_swallow_the_report(self):
+        # Tuck's order: wipe the whole state dir, then the operator's own `status` command,
+        # then the watchdog. Every host open of the production ledger checks the config-dir
+        # marker by default, reports before rewriting any marker, and the report survives.
+        from scripts import watchdog
+        home = self.pin_production_home()
+        db = run_supervisor.production_ledger()
+        Supervisor(db)  # an armed install: ledger and both markers
+        self.assertTrue(run_supervisor.presence_marker().is_file())
+        shutil.rmtree(home / "state")
+        err, out = io.StringIO(), io.StringIO()
+        with patch.object(sys, "argv", ["run_supervisor", "status", str(db)]), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            run_supervisor.main()
+        self.assertEqual(len([line for line in own_lines(err) if "vanished" in line]), 1,
+                         err.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()) as swept:
+            watchdog.sweep_ledger(db, presence=run_supervisor.presence_marker())
+            watchdog.sweep_ledger(db, presence=run_supervisor.presence_marker())
+        self.assertEqual(swept.getvalue().count("vanished"), 1, swept.getvalue())
+
+    def test_a_ledger_one_migration_behind_is_migrated_then_accepted_by_a_worker(self):
+        db = self.root / "legacy" / "runs.sqlite"
+        Supervisor(db)
+        last = run_supervisor._MIGRATIONS[-1][0]
+        with contextlib.closing(sqlite3.connect(db)) as con:
+            con.execute(f"ALTER TABLE runs DROP COLUMN {last}")
+            con.commit()
+        with self.assertRaisesRegex(LedgerMissing, last):
+            Supervisor(db, create=False)  # a worker never migrates
+        Supervisor(db)  # the host does, from the same list the worker checks against
+        Supervisor(db, create=False)
+        self.assertEqual({c for c, _, _ in run_supervisor._MIGRATIONS} - run_supervisor
+                         ._expected_schema()["runs"], set())
+
+    def test_the_suite_guard_refuses_the_real_ledger(self):
+        from tests import _home_guard
+        real = _home_guard.REAL_HERMES
+        with self.assertRaises(_home_guard.RealHomeTouched):
+            Supervisor(real / "state" / "review-loop-runs.sqlite")
+        with patch.dict(os.environ, {"HERMES_HOME": str(real)}), \
+                self.assertRaises(_home_guard.RealHomeTouched):
+            Supervisor(run_supervisor.production_ledger())
+        missing = [p.name for p in Path(__file__).parent.glob("test_*.py")
+                   if "import _home_guard  # noqa: F401" not in p.read_text()]
+        self.assertEqual(missing, [], "every test module must import the guard")
 
     def test_watchdog_notices_a_vanished_ledger_once(self):
         from scripts import watchdog

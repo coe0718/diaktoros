@@ -30,6 +30,7 @@ from __future__ import annotations
 import sys
 import types
 
+import _home_guard  # noqa: F401  refuses the real ~/.hermes ledger (#108)
 from harness import (cleanup, docs, doctor, fixture, gates, observer, routes, seats, state,
                      watchdog)
 
