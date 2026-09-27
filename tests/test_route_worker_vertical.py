@@ -200,7 +200,7 @@ class RouteWorkerVertical(unittest.TestCase):
             if db.exists():
                 with sqlite3.connect(db) as con:
                     rows = con.execute('SELECT state, attempts, outcome, error FROM runs').fetchall()
-                if rows and rows[0][0] in ('succeeded', 'failed', 'uncertain'):
+                if rows and rows[0][0] in ('succeeded', 'failed', 'uncertain', 'waiting', 'cancelled'):
                     break
             time.sleep(0.1)
         self.assertEqual(len(rows), 1, rows)
@@ -242,7 +242,9 @@ class RouteWorkerVertical(unittest.TestCase):
         self.world['pr']['head']['sha'] = 'c' * 40
         result = self.route()
         self.assertEqual((result.returncode, result.stdout.strip()), (0, '[SILENT]'), result.stderr)
-        row = self.result('failed')
+        # The PR advertises a head GitHub then fails to serve: a transient read, so the pre-write
+        # run waits to retry (#53) rather than failing for good. Still no agent, still no write.
+        row = self.result('waiting')
         self.assertEqual(row[1], 1)
         self.assertEqual(self.world['model'], [])
         self.assertEqual(self.world['writes'], [])
@@ -255,13 +257,15 @@ class RouteWorkerVertical(unittest.TestCase):
         self.assertEqual(self.world['model'], [])
         self.assertEqual(self.world['writes'], [])
 
-    def test_out_of_scope_agent_write_fails_and_does_not_retry(self):
+    def test_out_of_scope_agent_write_fails_and_is_never_written(self):
         self.world['model_command'] = 'python -m review_loop.broker_client request_review'
         route = self.route()
         self.assertEqual((route.returncode, route.stdout.strip()), (0, '[SILENT]'), route.stderr)
         row = self.result('failed')
         self.assertEqual(row[1], 1)
         self.assertEqual(self.world['writes'], [])
+        # A redelivery re-arms the failed pre-write turn (#53): it runs once more, is denied
+        # the same way, and still writes nothing.
         again = self.route()
         self.assertEqual((again.returncode, again.stdout.strip()), (0, '[SILENT]'), again.stderr)
         self.assertEqual(self.result('failed')[1], 1)

@@ -45,8 +45,11 @@ start = time.time()
 evidence = {'mode': spec['mode'], 'argv_run_budget': budget}
 def save(**kw):
     evidence.update(kw)
-    with open('/work/evidence.json', 'w') as out:
-        json.dump(evidence, out)
+    try:
+        with open('/work/evidence.json', 'w') as out:
+            json.dump(evidence, out)
+    except OSError:        # the adjudicator's /work is read-only; its argv is read from ps
+        pass
 save()
 quiet = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 if spec['mode'] == 'overrun':
@@ -70,23 +73,34 @@ sys.exit(0 if write.returncode == 0 else 3)
 
 
 def driver(spec_path: str) -> None:
-    """The worker's host side, in its own process: claim, launch, and report the ledger."""
+    """The worker's host side, in its own process: claim, launch, and report the ledger.
+
+    ``seat`` is the turn under test (a reviewer, or an adjudicator ruling on a spent cap);
+    with ``retry_budget`` the operator then re-arms it (`retry`) on that budget and the worker
+    runs it again, so the second launch is observed too.
+    """
     from types import SimpleNamespace
     from unittest import mock
     from review_loop import config, gh, seat_model, trusted_fetch, trusted_turn
-    from review_loop.run_supervisor import Supervisor
+    from review_loop import state as state_mod
+    from review_loop.run_supervisor import Supervisor, describe_run
 
     spec = json.loads(Path(spec_path).read_text())
-    root = Path(spec['root'])
+    root, seat = Path(spec['root']), spec.get('seat', 'reviewer')
     loop = {'id': 'widgets', 'repo': 'acme/widgets', 'base': 'main', 'cap': 3,
             'state_dir': str(root / 'state'), 'fixers': ['fixer'], 'reviewers': ['reviewer'],
             'read_token': 'reader', 'turn_budget_s': spec['budget'],
+            'reviewer_seat': 'reviewer', 'ttl_min': 45, 'inflight_ttl_min': 10,
             'tokens': {name: str(root / f'{name}.pat') for name in ('reader', 'reviewer', 'fixer')},
             'seats': {'reviewer': {'login': 'reviewer'}, 'fixer': {'login': 'fixer'}}}
     heads = {7: HEAD7, 8: HEAD8}
+    # An adjudicator rules on a spent cap: three changes-requested verdicts at the head.
+    verdicts = [{'id': n, 'state': 'CHANGES_REQUESTED', 'commit_id': HEAD7, 'body': 'no',
+                 'submitted_at': f'2026-09-2{n}T00:00:00Z', 'user': {'id': 2, 'login': 'reviewer'}}
+                for n in (1, 2, 3)] if seat == 'adjudicator' else []
 
     def pr(number):
-        return {'number': number, 'state': 'open', 'draft': False,
+        return {'number': number, 'state': 'open', 'draft': False, 'user': {'login': 'fixer'},
                 'base': {'ref': 'main', 'sha': 'b' * 40, 'repo': {'full_name': loop['repo']}},
                 'head': {'sha': heads[number], 'ref': f'fix-{number}',
                          'repo': {'full_name': loop['repo']}}}
@@ -102,45 +116,72 @@ def driver(spec_path: str) -> None:
         if path.endswith('/reviews/42'):
             return {'id': 42, 'state': 'APPROVED', 'commit_id': HEAD7,
                     'user': {'id': 2, 'login': 'reviewer'}}
+        if '/comments' in path:
+            return []
         return pr(int(path.split('/pulls/')[1].split('/')[0]))
 
     inference = SimpleNamespace(upstream='http://127.0.0.1:9/v1/chat/completions', key='k',
                                 model='fixture-model', api_mode='chat_completions',
                                 credential_provider=lambda: None, proxy_model='',
                                 client_identity='')
-    sup = Supervisor(root / 'runs.sqlite', production_config=root / 'runtime.json',
+    # The ledger where `hermes review-loop status/explain` read it.
+    sup = Supervisor(Path(os.environ['HERMES_HOME']) / 'state' / 'review-loop-runs.sqlite',
+                     production_config=root / 'runtime.json',
                      hermes_home=os.environ['HERMES_HOME'], lease_seconds=5,
                      capacity={'reviewer': 1, 'fixer': 1, 'adjudicator': 1})
+    st = state_mod.state_for(loop)
     spawned = []
     trusted_turn.KILL_GRACE_S = spec['grace']
     with mock.patch.object(Supervisor, '_spawn', lambda self: spawned.append(time.time())), \
          mock.patch.object(config, 'by_repo', return_value=loop), \
          mock.patch.object(gh, 'api', side_effect=api), \
-         mock.patch.object(gh, 'reviews', return_value=[]), \
+         mock.patch.object(gh, 'reviews', return_value=verdicts), \
+         mock.patch.object(gh, 'pr_files_read', return_value=([{
+             'filename': 'src/lib.rs', 'status': 'modified', 'additions': 1, 'deletions': 0,
+             'patch': '@@ -1 +1 @@\n-old\n+new'}], '')), \
+         mock.patch.object(gh, 'issue_comments_read', return_value=([], '')), \
          mock.patch.object(trusted_fetch, 'stage', return_value=Path(spec['checkout'])), \
          mock.patch.object(seat_model, 'load_runtime', return_value=spec['runtime']), \
          mock.patch.object(seat_model, 'resolve_seat', return_value=inference):
+        if seat == 'adjudicator':
+            st.breach_set(7, {'pr': 7, 'head': HEAD7, 'rounds': 3,
+                              'status': 'awaiting-adjudication', 'reason': 'cap spent'})
         # The turn under test, and a second reviewer turn waiting for the seat (capacity 1).
-        sup.enqueue('turn-7', loop['repo'], 7, HEAD7, 'reviewer', budget=spec['budget'])
+        sup.enqueue('turn-7', loop['repo'], 7, HEAD7, seat, budget=spec['budget'],
+                    turn_key='breach:3' if seat == 'adjudicator' else '')
         sup.enqueue('turn-8', loop['repo'], 8, HEAD8, 'reviewer', budget=spec['budget'])
         spawned.clear()
-        started = time.monotonic()
-        sup._run_one()
-        elapsed = time.monotonic() - started
-        row = sup.get('turn-7')
-        with sup._connect() as con:
-            active = con.execute("SELECT COUNT(*) FROM runs WHERE seat='reviewer' AND state IN "
-                                 "('claimed','launching','running','uncertain')").fetchone()[0]
+
+        def run() -> dict:
+            started = time.monotonic()
+            sup._run_one()
+            elapsed = time.monotonic() - started
+            row = sup.get('turn-7')
+            with sup._connect() as con:
+                active = con.execute("SELECT COUNT(*) FROM runs WHERE seat=? AND state IN "
+                                     "('claimed','launching','running','uncertain')",
+                                     (seat,)).fetchone()[0]
+            return {'elapsed': round(elapsed, 2), 'state': row['state'], 'error': row['error'],
+                    'outcome': row['outcome'], 'budget': row['budget'], 'pid': row['pid'],
+                    'retries': row['retries'], 'retry_at': row['retry_at'],
+                    'active_runs_after': active,
+                    'marker': (st.breach_get(7) or {}).get('status')}
+
+        first = run()
         notices = []
         sup.notify(notices.append)
+        status = sup.status()
+        described = [describe_run(row, loop['id']) for row in status]
         # The seat is free again: the waiting turn is claimable right now.
         claimed = sup._claim()
-    print(json.dumps({
-        'elapsed': round(elapsed, 2), 'state': row['state'], 'error': row['error'],
-        'outcome': row['outcome'], 'budget': row['budget'], 'pid': row['pid'],
-        'active_reviewer_runs_after': active, 'worker_rearmed': len(spawned),
-        'next_claim_is_waiting_turn': bool(claimed) and claimed[0] == sup.get('turn-8')['id'],
-        'writes': writes, 'status': sup.status(), 'notices': notices}))
+        result = {**first, 'worker_rearmed': len(spawned), 'writes': list(writes),
+                  'next_claim_is_waiting_turn': bool(claimed) and claimed[0] == sup.get('turn-8')['id'],
+                  'status': status, 'described': described, 'notices': notices}
+        if spec.get('retry_budget'):
+            result['retry'] = sup.retry(sup.get('turn-7')['id'], budget=spec['retry_budget'])
+            result['retry_budget_on_row'] = sup.get('turn-7')['budget']
+            result['second'] = run()
+    print(json.dumps(result))
 
 
 def _proc(pid: int):
@@ -210,8 +251,8 @@ class SandboxedTurnBudget(unittest.TestCase):
         # The turn's socket directory must stay short (AF_UNIX path limit).
         self.tmpdir = (tempfile.gettempdir() if len(tempfile.gettempdir()) <= 30 else '/tmp')
 
-    def turn(self, mode: str, finish_after: float = 0.0,
-             budget: int = BUDGET) -> tuple[dict, dict, dict]:
+    def turn(self, mode: str, finish_after: float = 0.0, budget: int = BUDGET,
+             seat: str = 'reviewer', retry_budget: int = 0) -> tuple[dict, dict, dict]:
         marker = f'RLBUDGET-{uuid.uuid4().hex[:12]}'
         venv = self.root / f'venv-{mode}'
         (venv / 'bin').mkdir(parents=True)
@@ -225,6 +266,7 @@ class SandboxedTurnBudget(unittest.TestCase):
         spec = self.root / f'spec-{mode}.json'
         spec.write_text(json.dumps({
             'root': str(self.root), 'budget': budget, 'grace': GRACE, 'checkout': str(checkout),
+            'seat': seat, 'retry_budget': retry_budget,
             'runtime': {'source': str(self.source), 'venv': str(venv),
                         'runtime': str(self.python.parents[1]), 'rust': str(self.root / 'rust')}}))
         env = {'PATH': '/usr/bin:/bin', 'HOME': str(self.home),
@@ -253,7 +295,8 @@ class SandboxedTurnBudget(unittest.TestCase):
                 break
             time.sleep(0.2)
         self.assertEqual(survivors, [], 'sandbox processes outlived the turn')
-        evidence = json.loads((checkout / 'evidence.json').read_text())
+        path = checkout / 'evidence.json'
+        evidence = json.loads(path.read_text()) if path.exists() else {}
         return json.loads(out), {cmd: 1 for cmd in seen.values()}, evidence
 
     def test_a_seat_that_overruns_is_killed_with_its_whole_tree_and_releases_the_seat(self):
@@ -273,11 +316,16 @@ class SandboxedTurnBudget(unittest.TestCase):
         self.assertIsNone(result['outcome'])
         self.assertEqual(result['error'],
                          f'isolated turn failed: TimeoutExpired — killed at the {BUDGET}s turn '
-                         f'budget (sandbox stopped {GRACE}s past it; raise turn_budget_s)')
+                         f'budget (sandbox stopped {GRACE}s past it) — raise turn_budget_s '
+                         '(hermes review-loop set --loop widgets --reviewer-turn-budget N), '
+                         'then `retry`')
+        # #53 x #49: failed before any write, and not backed off for an automatic retry — the
+        # same budget would run out again. It is re-armable (`retry`), which the text says.
+        self.assertEqual((result['retries'], result['retry_at']), (0, None))
         self.assertEqual(result['writes'], [])
         # The seat is released: nothing active, the worker re-armed for the waiting turn, and
         # that turn is the next one claimed.
-        self.assertEqual(result['active_reviewer_runs_after'], 0)
+        self.assertEqual(result['active_runs_after'], 0)
         self.assertGreaterEqual(result['worker_rearmed'], 1)
         self.assertTrue(result['next_claim_is_waiting_turn'])
         # What the operator sees: the ledger status and the outbox notice name the budget.
@@ -286,6 +334,15 @@ class SandboxedTurnBudget(unittest.TestCase):
         [notice] = result['notices']
         self.assertIn(f'killed at the {BUDGET}s turn budget', notice)
         self.assertIn('seat=reviewer', notice)
+        self.assertIn('No external write was made', notice)
+        self.assertIn('hermes review-loop retry --loop widgets --pr 7 --seat reviewer', notice)
+        # The line `hermes review-loop status` and `explain` print for it.
+        [line] = [text for text in result['described'] if text.startswith('reviewer #7')]
+        self.assertIn(f'killed at the {BUDGET}s turn budget', line)
+        self.assertIn('raise turn_budget_s', line)
+        self.assertIn(f'no external write — raise the turn budget (now {BUDGET}s): hermes '
+                      'review-loop set --loop widgets --reviewer-turn-budget N, then re-arm: '
+                      'hermes review-loop retry --loop widgets --pr 7 --seat reviewer', line)
 
     def test_a_seat_that_finishes_just_under_the_budget_completes(self):
         result, _, evidence = self.turn('finish', finish_after=BUDGET - 1)
@@ -295,7 +352,7 @@ class SandboxedTurnBudget(unittest.TestCase):
                          ('succeeded', 0, None))
         self.assertEqual(len(result['writes']), 1)
         self.assertEqual(result['notices'], [])
-        self.assertEqual(result['active_reviewer_runs_after'], 0)
+        self.assertEqual(result['active_runs_after'], 0)
         self.assertTrue(result['next_claim_is_waiting_turn'])
 
     def test_a_clean_stop_inside_the_grace_is_not_killed(self):
@@ -304,6 +361,30 @@ class SandboxedTurnBudget(unittest.TestCase):
         result, _, evidence = self.turn('finish', finish_after=BUDGET + GRACE / 2)
         self.assertGreater(evidence['finished_after'], BUDGET)
         self.assertEqual((result['state'], result['error']), ('succeeded', None))
+
+    def test_a_timed_out_adjudicator_hands_its_marker_back_and_retry_rules_again(self):
+        # The breach marker goes 'adjudicating' just before launch. A budget kill made no
+        # ruling, so the marker is handed back, and `retry` on a raised budget launches the
+        # ruling again instead of being refused as "breach marker already claimed".
+        result, seen, _ = self.turn('overrun', seat='adjudicator', retry_budget=BUDGET + 2)
+        self.assertEqual((result['state'], result['retries'], result['writes']), ('failed', 0, []),
+                         result['error'])
+        self.assertIn(f'killed at the {BUDGET}s turn budget', result['error'])
+        self.assertIn('--turn-budget N), then `retry`', result['error'])
+        self.assertGreaterEqual(result['elapsed'], BUDGET + GRACE)
+        self.assertEqual(result['marker'], 'awaiting-adjudication')
+        self.assertEqual((result['retry'], result['retry_budget_on_row']), ('pending', BUDGET + 2))
+        second = result['second']
+        self.assertNotIn('breach marker', second['error'] or '')
+        self.assertEqual(second['state'], 'failed')
+        self.assertIn(f'killed at the {BUDGET + 2}s turn budget', second['error'])
+        self.assertGreaterEqual(second['elapsed'], BUDGET + 2 + GRACE)
+        self.assertEqual((second['marker'], second['active_runs_after']),
+                         ('awaiting-adjudication', 0))
+        # Both launches really ran in the sandbox, each handed its own budget.
+        argv = [cmd for cmd in seen if cmd.startswith('/opt/venv/bin/python /opt/venv/bin/hermes')]
+        self.assertEqual(sorted(cmd.split('--run-budget ')[1] for cmd in argv),
+                         sorted([str(BUDGET), str(BUDGET + 2)]))
 
     def test_the_ceiling_budget_reaches_the_sandbox_unclamped(self):
         # The largest budget a loop may set (4 h) is carried whole into the real sandbox's

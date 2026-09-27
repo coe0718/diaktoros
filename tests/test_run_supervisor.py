@@ -78,11 +78,15 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(self.launches()), 2)
 
     def test_child_failure_and_timeout_release_seat(self):
+        # Nothing on the write-ahead record: a failed exit waits for a backed-off retry (#53).
         sup = self.supervisor(rc=7)
         sup.enqueue("bad", "o/r", 1, "a", "reviewer")
-        self.assertEqual(self.wait(sup, "bad", "failed")["outcome"], 7)
+        bad = self.wait(sup, "bad", "waiting")
+        self.assertEqual((bad["outcome"], bad["retries"], bad["error"]),
+                         (7, 1, "turn exited with status 7"))
         slow = self.supervisor(delay=1, child_timeout=0.08)
         slow.enqueue("slow", "o/r", 2, "b", "reviewer")
+        # A timeout is the budget kill (#49): failed, re-armable, never auto-retried.
         self.assertEqual(self.wait(slow, "slow", "failed")["error"], "child timeout")
         ok = self.supervisor()
         ok.enqueue("ok", "o/r", 3, "c", "reviewer")
@@ -322,18 +326,19 @@ class ReviewerClaimConcurrency(unittest.TestCase):
     def test_queued_fixer_checks_latest_live_verdict_before_claim(self):
         self.sup.enqueue('fix', 'o/r', 3, 'a' * 40, 'fixer')
         with sqlite3.connect(self.db) as con:
-            con.execute("UPDATE runs SET state='pending' WHERE delivery='fix'")
+            con.execute("UPDATE runs SET state='pending',push_admitted=1 WHERE delivery='fix'")
             con.execute("UPDATE runs SET state='blocked' WHERE delivery='review'")
         reviews = [{'id': 41, 'state': 'CHANGES_REQUESTED', 'commit_id': 'a' * 40,
                     'submitted_at': '2026-01-01T00:00:00Z', 'user': {'login': 'review'}},
                    {'id': 42, 'state': 'APPROVED', 'commit_id': 'a' * 40,
                     'submitted_at': '2026-01-01T00:01:00Z', 'user': {'login': 'review'}}]
-        loop = {**self.loop, 'reviewers': ['review']}
+        loop = {**self.loop, 'reviewers': ['review'], 'unattended_fixer_push': True}
         with patch('review_loop.config.by_repo', return_value=loop), \
              patch('review_loop.gh.api', return_value=self.pull()), \
              patch('review_loop.gh.reviews', return_value=reviews):
             self.assertIsNone(self.sup._claim())
         self.assertEqual(self.sup.get('fix')['state'], 'cancelled')
+        self.assertEqual(self.sup.get('fix')['error'], 'fixer verdict superseded')
 
 
 if __name__ == "__main__":

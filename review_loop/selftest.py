@@ -18,7 +18,9 @@ exits 1 if anything failed:
    skips it);
 4. the read/reviewer/fixer (and optional adjudicator) tokens resolve via ``/user`` to distinct
    principals with the expected logins, and the repository is readable;
-5. with ``--pr N``: the broker's reviewer-write authorization, run with reads only;
+5. with ``--pr N``: the broker's reviewer-write authorization, run with reads only; then whether
+   the seat can build that head — the host prefetch of its pinned dependencies (issue #51) and an
+   offline ``cargo metadata`` inside the real sandbox layout with the cache mounted read-only;
 6. the supervisor ledger migrates and ``status`` works, plus ``doctor``'s cron/state/gateway checks
    and the observer route;
 7. with ``--live-turn --pr N``: one real isolated reviewer turn whose broker runs in its host-only
@@ -792,6 +794,89 @@ def check_authorization(report: Report, loop: dict, number: int | None) -> dict 
     return pr
 
 
+def check_build(report: Report, loop: dict, settings: dict | None, pr: dict | None) -> None:
+    """Step 5 (cont.): can the seat build this head? Host prefetch, then offline resolve in bwrap.
+
+    A prefetch that is refused or fails is a warning, not a failure: turns still run and the seat
+    is told to judge by reading. A prefetch that succeeded but still does not resolve offline in
+    the sandbox is a failure — the seat would be told it can build when it cannot.
+    """
+    from . import contained, deps, trusted_fetch
+    step = "authorization"
+    if settings is None or pr is None:
+        report.add(step, "build:deps", SKIP,
+                   "needs a usable runtime (step 1) and an authorized PR (--pr N)")
+        return
+    number, head, ref = pr["number"], pr["head"]["sha"], pr["head"]["ref"]
+    try:
+        parent = _work_root(loop)
+        cache = deps.cache_root(loop)
+    except Exception as exc:
+        report.add(step, "build:deps", FAIL, f"work root or dependency cache unusable: {exc}",
+                   f"`chmod 700 {Path(loop['state_dir']).expanduser()}/isolated-runs "
+                   f"{Path(loop['state_dir']).expanduser()}/deps`")
+        return
+    with tempfile.TemporaryDirectory(prefix="selftest-build-", dir=parent) as tmp:
+        root = Path(tmp)
+        try:
+            checkout = trusted_fetch.stage(loop, repo=loop["repo"], number=number, head=head,
+                                           ref=ref, role="reviewer", sandbox_root=root / "export")
+        except Exception as exc:
+            report.add(step, "build:deps", FAIL, f"could not stage head {head[:12]}: {exc}",
+                       "the turn stages the same export; check the read token and the PR")
+            return
+        results = deps.prepare(checkout, cache, Path(settings["rust"]))
+        if not results:
+            report.add(step, "build:deps", SKIP,
+                       "no Cargo.lock/Cargo.toml at the head's root: nothing to prefetch")
+            return
+        for result in results:
+            if result.ready:
+                report.add(step, f"build:{result.ecosystem}:fetch", PASS,
+                           f"host prefetch: {result.reason} (cache {result.cache}, read-only "
+                           "in the sandbox)")
+            else:
+                tail = [line for line in result.detail.splitlines() if line.strip()][-1:]
+                report.add(step, f"build:{result.ecosystem}:fetch", WARN,
+                           f"host prefetch unavailable: {result.reason}"
+                           + (f" — {tail[0][:160]}" if tail else ""),
+                           "turns still run; the seat is told dependencies are unavailable and "
+                           "judges by reading")
+        rust = next((r for r in results if r.ecosystem == "rust"), None)
+        if rust is None:
+            return
+        scratch = {name: root / name for name in ("code", "home")}
+        for directory in scratch.values():
+            directory.mkdir(mode=0o700)
+        query = root / "query.txt"
+        query.write_text("selftest\n")
+        try:
+            result = contained.run(code=scratch["code"], venv=Path(settings["venv"]),
+                                   runtime=Path(settings["runtime"]), home=scratch["home"],
+                                   checkout=checkout, rust=Path(settings["rust"]), query=query,
+                                   entry=["/bin/sh", "-c", "cargo metadata --format-version 1 "
+                                          "--locked --offline >/dev/null"],
+                                   dependency_caches={"rust": rust.cache} if rust.ready else {},
+                                   timeout=120)
+            rc, errors = result.returncode, result.stderr
+        except Exception as exc:
+            rc, errors = None, f"{type(exc).__name__}: {exc}"
+    last = ([line for line in errors.splitlines() if line.strip()] or ["no output"])[-1][:200]
+    if rc == 0:
+        report.add(step, "build:rust", PASS,
+                   "the seat can build: offline `cargo metadata` resolves every locked dependency "
+                   "inside the sandbox")
+    elif rust.ready:
+        report.add(step, "build:rust", FAIL,
+                   f"prefetched, but offline `cargo metadata` fails in the sandbox (rc={rc}): {last}",
+                   "the seat would be told it can build when it cannot; check the rust path and "
+                   f"the cache under {Path(loop['state_dir']).expanduser() / 'deps'}")
+    else:
+        report.add(step, "build:rust", WARN,
+                   f"the seat cannot build this head offline (rc={rc}): {last}",
+                   "turns still run; reviews judge by reading (see build:rust:fetch)")
+
+
 # -- step 6: ledger, cron, observer --------------------------------------------------------------
 
 def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict | None) -> None:
@@ -838,7 +923,7 @@ def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict 
 def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | None,
                   timeout: int, reviewer=None) -> None:
     from . import broker_ipc, gh as gh_mod, trusted_turn
-    from .run_supervisor import effective_reviews, isolated_prompt
+    from .run_supervisor import effective_reviews, isolated_prompt, pr_change
     step = "live-turn"
     if settings is None or pr is None or reviewer is None:
         report.add(step, "turn:reviewer", SKIP,
@@ -848,7 +933,8 @@ def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | 
     row = {"seat": "reviewer", "repo": loop["repo"], "pr": number, "head": head}
     try:
         reviews = effective_reviews(loop, row, gh_mod.reviews(loop, number), str(ledger_path()))
-        prompt = isolated_prompt(loop, row, reviews)
+        change = pr_change(loop, row)
+        prompt = isolated_prompt(loop, row, reviews, change=change)
         report.redact.add(reviewer.key)
     except Exception as exc:
         report.add(step, "turn:prompt", FAIL, f"could not build the reviewer prompt: {exc}",
@@ -863,6 +949,7 @@ def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | 
                                    venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
                                    rust=Path(settings["rust"]), upstream=reviewer.upstream,
                                    key=reviewer.key, model=reviewer.model, prompt=prompt,
+                                   review_diff=change.diff,
                                    api_mode=reviewer.api_mode,
                                    credential=reviewer.credential_provider(),
                                    proxy_model=reviewer.proxy_model,
@@ -938,8 +1025,9 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
             report.add("inference", "model:completion", SKIP, "--no-model")
         report.step("4. GitHub identities")
         check_identities(report, loop)
-        report.step("5. Broker authorization (dry run)")
+        report.step("5. Broker authorization (dry run) and seat build environment")
         live_pr = check_authorization(report, loop, pr)
+        check_build(report, loop, settings, live_pr)
         report.step("6. Supervisor ledger, watchdog, observer")
         check_ledger(report, loop, runtime_file, settings)
         report.step("7. Live isolated reviewer turn (no-write)")

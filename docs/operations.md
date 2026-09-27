@@ -51,6 +51,31 @@ If directory sync
 fails after replacement, the plugin raises `RegistryDurabilityError(published=True)`: the new
 registry is visible, but crash durability is unconfirmed; do not assume the operation rolled back.
 
+## First run
+
+1. `init` the loop (above), then give each seat's profile its token file.
+2. `hermes review-loop doctor --loop name` until every line is ✅ (or a ⚠️ you have decided on).
+3. **Decide the fix leg.** A new loop has unattended fixer pushes **off**, and while they are off a
+   changes-requested verdict starts **no** fixer turn — a turn that cannot publish would only spend
+   a model conversation and fail. The verdict is held for you instead: the fixer queue entry, the
+   observer's `verdict` notice (`next: you — fixer held …`), `explain` (next: `operator decision`),
+   `doctor` (`⚠️ fixer-push off — the fix leg cannot run`) and the watchdog (one `fixer held` stall
+   per head) all say so and name the command. To let the fixer answer verdicts:
+
+   ```bash
+   hermes review-loop fixer-push --loop name --enable --acknowledge-pr-race
+   ```
+
+   Read the PR-metadata/ref race it acknowledges ([README](../README.md), and
+   [issue-16-boundary](issue-16-boundary.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent))
+   first. A verdict that was held before you opted in needs no new review: the next watchdog sweep
+   (or `hermes review-loop drain --loop name --seat fixer`) re-checks that it is still the live
+   latest verdict at the PR's current head and starts a fix run, admitted under the policy as it
+   is *now*. Held verdicts never create a run-ledger row, so this is a fresh admission, not a later
+   opt-in upgrading an older run. Or keep pushes off and answer verdicts by hand: push the fix and
+   re-request review.
+4. `hermes review-loop arm --loop name`.
+
 ## Everyday commands
 
 ```bash
@@ -68,6 +93,8 @@ hermes review-loop set --loop name --fixer-turn-budget 1800   # let a fix run (b
 hermes review-loop arm --loop name      # arm/pause by flipping the repo hooks
 hermes review-loop arm --loop name --pause
 hermes review-loop drain --loop name --seat reviewer
+hermes review-loop fixer-push --loop name --enable --acknowledge-pr-race   # let the fixer publish (off by default)
+hermes review-loop retry --loop name --pr 123   # re-arm a run that failed before any GitHub write
 hermes review-loop cleanup --loop name --dry-run   # every closed PR; --pr N for one
 hermes review-loop uninstall --loop name
 ```
@@ -209,7 +236,7 @@ One line per check, in one of four states:
 | ✅ verified | checked, and correct |
 | ❌ absent | the thing is not there — a missing profile, token file, route, hook, job or script |
 | ❌ mismatch | present, but not what this loop needs — a route waking another profile, a hook on another gateway, a shim pinned to a stale plugin path, a world-readable PAT |
-| ⚠️ unknown | could not be decided *from here* — a hooks read the token was not allowed to make, or a probe skipped with `--offline` |
+| ⚠️ unknown | could not be decided *from here* — a hooks read the token was not allowed to make, or a probe skipped with `--offline` — or a decision still yours to make: `fixer-push` is ⚠️ while unattended fixer pushes are off, because the fix leg cannot run (verdicts are held for you) |
 
 Each failure is followed by the one command that fixes it, failures exit 1, and `unknown` is never
 reported as `absent`: "the API refused to tell me" and "there are no hooks" are different claims,
@@ -331,7 +358,7 @@ python -m review_loop.run_supervisor status ~/.hermes/state/review-loop-runs.sql
 | 2 bubblewrap | unprivileged user namespaces work; a probe in the real sandbox layout (committed source snapshot, configured venv/runtime/Rust) cannot read a dummy host secret, any model key file, each seat profile's `.env`/`auth.json`/`config.yaml`, the PATs, the runtime file, `~/.hermes/.env` or the loop config, and has no network or credential-like env |
 | 3 inference | one ~16-token request in the seat's own wire format (chat completion, Responses or Messages) through the host inference capability **per distinct seat resolution** (seats that share a profile's provider, model and credential share one call), each with that resolution's own credential; an OAuth seat's 401 is refreshed and retried once on the host before it is reported (`--no-model` skips it) |
 | 4 identities | read, reviewer, fixer (and optional adjudicator) PATs resolve via `/user` to the expected logins and distinct principals; the repo is readable |
-| 5 authorization | with `--pr N`: the broker's reviewer-write checks (`broker.authorize`, reads only) and the host receipt generation |
+| 5 authorization | with `--pr N`: the broker's reviewer-write checks (`broker.authorize`, reads only) and the host receipt generation; then whether the seat can build that head: `build:rust:fetch` is the host prefetch of its `Cargo.lock` crates.io dependencies (a warning when refused or failed, since turns still run and the seat judges by reading), and `build:rust` is an offline `cargo metadata --locked` inside the real sandbox layout with the cache mounted read-only ([dependency prefetch](issue-16-boundary.md#dependency-prefetch-issue-51-the-host-fetches-the-sandbox-builds-offline)) |
 | 6 supervisor | the ledger migrates and `status` reads; the route would accept the runtime file; `doctor`'s state dir, cron shim/job and gateway checks; the observer route |
 | 7 live turn | with `--live-turn --pr N`: a real isolated reviewer turn with the reviewer seat's resolved model, for the loop's reviewer `turn_budget_s` — the budget production enforces — unless `--timeout N` overrides it; the verdict and body the agent *would* submit are printed |
 
@@ -383,6 +410,15 @@ hermes review-loop explain --loop widgets --pr 7    # --loop may be omitted when
   next:       re-deliver the changes-requested review event for head aaaaaaa to the fixer gate after checking why its run did not start — no fixer is running to push a fix
 ```
 
+On a loop that has not opted in to unattended fixer pushes, the same PR is not broken — it is
+waiting for you, and the last line says exactly what to run:
+
+```
+  queue:      fixer 1 of 1 (waiting 3m) — fixer held: unattended fixer pushes are off for this loop — …
+  blocked:    fixer held: unattended fixer pushes are off for this loop: the changes-requested verdict at head aaaaaaa starts no fixer turn until the loop opts in — `hermes review-loop fixer-push --loop widgets --enable --acknowledge-pr-race`
+  next:       operator decision: unattended fixer pushes are off for this loop, so the changes-requested verdict at head aaaaaaa starts no fixer turn. To let the fixer answer it, run `hermes review-loop fixer-push --loop widgets --enable --acknowledge-pr-race` — the next watchdog sweep (or `hermes review-loop drain --loop widgets --seat fixer`) then starts the fix run for this head; or fix it by hand, push, and re-request review
+```
+
 A PR that is waiting rather than broken says so, instead of looking like a failure:
 
 ```
@@ -425,6 +461,39 @@ all — an unknown loop, or several loops and no `--loop`.
 
 The guard order `explain` walks is in
 [architecture: Explain](architecture.md#explain--why-is-this-pr-not-moving).
+
+## When an isolated run fails
+
+Every isolated turn is a row in the host run ledger (`~/.hermes/state/review-loop-runs.sqlite`).
+A failure is sorted by one question — *could it have written to GitHub?* — answered from the
+host's own write-ahead records, never from an exit code. The sandbox holds no GitHub credential;
+its only writes go through the run's broker, which commits a record keyed by the run ID *before*
+the external call: a review-receipt claim (reviewer), a push intent/confirmation (fixer; its
+review request needs a confirmed push first) or a ruling (adjudicator; its optional PR comment
+follows the ruling). A run with any of those, or one ever quarantined as `uncertain`, may have
+written. Anything else did not.
+
+```
+pending ──claim──► claimed ──► launching/running ──► succeeded
+   ▲  │ GitHub read failed (a 502), PR draft: stays pending, retried by the next event or sweep
+   │  └ PR closed / head moved: cancelled        (a reopen or redelivery re-arms it)
+   │                         │ failed, nothing on the write-ahead record
+   │                         ├─ transient (non-zero sandbox exit — model 429/5xx, OAuth refresh —,
+   │                         │  timeout, network, staging read): waiting, backoff 2m·2ⁿ⁻¹ (≤1h)
+   ├──── backoff elapsed ────┘     … after 4 attempts: failed
+   │                         │ killed at its turn budget: failed at once (raise turn_budget_s)
+   ├──── redelivered event (≤8 failures) or `retry` ◄── failed / cancelled
+   │                         │ may have written, or a worker lost/still alive: uncertain
+   └─ never ◄────────────────┘   (operator `reconcile` only; never replayed)
+```
+
+Due retries start on the next event for the PR, when another run finishes, or on the next armed
+watchdog sweep. A failed run's notice carries the real reason (the exception text, or the sandbox
+exit status) and the tail of the turn's stdout/stderr; `status` and `explain` print the same with
+the next step, and `explain` reports a waiting, write-free failed or uncertain run at the PR's head
+as a `blocked:` line with that step as `next:`. `hermes review-loop retry --loop name --pr 123 [--seat reviewer]` re-arms the
+PR's failed or waiting runs at its newest head, resets their retry budget and starts the worker;
+it refuses a run that may have written and prints the `reconcile` command instead.
 
 ## How it handles a burst
 

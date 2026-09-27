@@ -255,7 +255,12 @@ class GateToProductionWorker(unittest.TestCase):
         self.addCleanup(patch.stop)
         raw = _loop(turn_budget_s=1100, state_dir=str(self.home / "state"), read_token="reader")
         raw["seats"]["fixer"]["turn_budget_s"] = 2700
+        # A fixer row is only written for a loop that admits unattended pushes (#72).
+        raw["unattended_fixer_push"] = True
         self.loop = config.normalize(raw)
+        by_repo = mock.patch.object(config, "by_repo", return_value=self.loop)
+        by_repo.start()
+        self.addCleanup(by_repo.stop)
 
     def ledger(self):
         return Supervisor(self.home / "state" / "review-loop-runs.sqlite")
@@ -291,6 +296,7 @@ class GateToProductionWorker(unittest.TestCase):
              mock.patch.object(gh, "review_state", return_value="CHANGES_REQUESTED"), \
              mock.patch("review_loop.gate.latest_effective_review_at_head", return_value={}), \
              mock.patch.object(run_supervisor, "isolated_prompt", return_value="PROMPT"), \
+             mock.patch.object(run_supervisor, "pr_change", return_value=None), \
              mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
              mock.patch.object(sup, "recover"):
             sup._run_production(row["id"], "w")
@@ -306,8 +312,35 @@ class GateToProductionWorker(unittest.TestCase):
         def run_turn(_loop, scope, **kw):
             raise trusted_turn.TurnBudgetExceeded(["bwrap"], kw["timeout"], 30)
         row = self.run_production(run_turn)
-        self.assertEqual(row["state"], "failed")
-        self.assertIn("killed at the 2700s turn budget (sandbox stopped 30s past it", row["error"])
+        # Failed, not waiting (#53 x #49): the same budget would run out again. Re-armable.
+        self.assertEqual((row["state"], row["retries"], row["retry_at"]), ("failed", 0, None))
+        self.assertIn("killed at the 2700s turn budget (sandbox stopped 30s past it) — raise "
+                      "turn_budget_s (hermes review-loop set --loop widgets "
+                      "--fixer-turn-budget N), then `retry`", row["error"])
+        with run_supervisor.Supervisor(self.home / "state" / "review-loop-runs.sqlite")._connect() as con:
+            self.assertIsNone(run_supervisor.write_evidence(con, row["id"]))
+
+    def test_a_budget_kill_reruns_on_the_raised_budget(self):
+        # The operator raises the budget; a new event (or `retry`) re-arms the pre-write run
+        # on it, not on the budget recorded when it was first enqueued.
+        def run_turn(_loop, scope, **kw):
+            raise trusted_turn.TurnBudgetExceeded(["bwrap"], kw["timeout"], 30)
+        row = self.run_production(run_turn)
+        self.assertEqual((row["state"], row["budget"]), ("failed", 2700))
+        raised = config.normalize({**self.loop, "seats": {
+            **self.loop["seats"], "fixer": {**self.loop["seats"]["fixer"], "turn_budget_s": 3600}}})
+        with mock.patch.object(Supervisor, "_spawn"):
+            self.assertEqual(gate.enqueue_isolated(raised, "fixer", 8, HEAD), "rearmed")
+            again = self.ledger().get(f"acme/widgets:8:{HEAD}:fixer")
+            self.assertEqual((again["state"], again["budget"]), ("pending", 3600))
+            # A redelivery while it is pending does not change its terms.
+            self.assertEqual(gate.enqueue_isolated(self.loop, "fixer", 8, HEAD), "pending")
+        self.assertEqual(self.ledger().get(f"acme/widgets:8:{HEAD}:fixer")["budget"], 3600)
+        sup = self.ledger()
+        with sqlite3.connect(sup.db) as con:
+            con.execute("UPDATE runs SET state='failed'")
+        self.assertEqual(sup.retry(again["id"], budget=4000), "pending")
+        self.assertEqual(sup.get(f"acme/widgets:8:{HEAD}:fixer")["budget"], 4000)
 
     def test_another_timeout_is_not_blamed_on_the_budget(self):
         # Only the sandbox's own wall clock is the budget; a timeout elsewhere in the turn
@@ -315,7 +348,8 @@ class GateToProductionWorker(unittest.TestCase):
         def run_turn(_loop, scope, **kw):
             raise subprocess.TimeoutExpired(["git"], 15)
         row = self.run_production(run_turn)
-        self.assertEqual(row["state"], "failed")
+        # Any other pre-write timeout keeps #53's backed-off automatic retry.
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 1))
         self.assertNotIn("turn budget", row["error"])
         self.assertIn("TimeoutExpired", row["error"])
 
