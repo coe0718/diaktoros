@@ -691,17 +691,28 @@ def _hook_moves(before: dict, after: dict, binds: dict) -> list[tuple[int, str, 
     route_names = {name: role for role, name in names.items() if role in ("reviewer", "fixer")}
     for hook in hooks:
         old = hook["config"]["url"]
-        parts = urlsplit(old)
-        # Match a complete webhook route segment, not a substring of another route.
-        installed_name = parts.path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in parts.path else ""
-        role = route_names.get(installed_name)
+        # The same rules as arm/doctor (doctor.hook_route_name / same_hook_url / exact_hook_url):
+        # the complete route segment (a trailing slash or a query string does not hide it), a
+        # hook *found* loosely, and judged correct only at the exact path. Every hook on one of
+        # this loop's routes is either left because it is already right, moved, or refused —
+        # never skipped in silence while the push reports itself applied.
+        role = route_names.get(doctor.hook_route_name(hook))
         if role is None:
             continue
-        if role in unchanged and old == unchanged[role]:
-            continue
-        if role in targets and old == targets[role]:
+        if role in unchanged:
+            if doctor.exact_hook_url(old, unchanged[role]):
+                continue
+            if doctor.same_hook_url(old, unchanged[role]):
+                raise config.ConfigError(
+                    f"installed {role} hook {hook['id']} posts to its route's URL with a trailing "
+                    "slash, which the gateway does not route (404) — drop the slash on GitHub "
+                    "first; no changes made")
+        if role in targets and doctor.exact_hook_url(old, targets[role]):
             continue  # Already corrected independently; do not rewrite it.
-        if role not in targets or old not in expected or expected[old][0] != role:
+        known = next((url for url in expected if doctor.same_hook_url(old, url)), None)
+        if role in targets and known is None and doctor.same_hook_url(old, targets[role]):
+            known = targets[role]            # at the new URL but slashed: repair it to the exact one
+        elif role not in targets or known is None or expected[known][0] != role:
             raise config.ConfigError(f"installed {role} hook {hook['id']} "
                                      f"points at unexpected URL {old!r}; no changes made")
         moves.append((hook["id"], old, targets[role]))
