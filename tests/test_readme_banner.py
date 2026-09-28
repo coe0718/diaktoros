@@ -5,6 +5,7 @@ numbered "First run" steps told the operator to create that file — the one swi
 that turns a queued event into a real seat turn that posts a review. A reader could not tell
 from the front page whether seat turns post. These checks pin the two together.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 from pathlib import Path
 import re
 import unittest
