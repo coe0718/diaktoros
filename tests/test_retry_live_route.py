@@ -19,6 +19,7 @@ Two fakes, nothing else:
 No real Hermes, model, sandbox, GitHub, user HOME or credential is used. Set
 ``REVIEW_LOOP_TRANSCRIPT=/path`` to write the operator-visible transcript of each run.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import hashlib
 import http.server
 import json

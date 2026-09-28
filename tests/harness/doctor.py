@@ -71,7 +71,7 @@ def install_doctor_fixture() -> dict:
         (home / ".env").write_text("DISCORD_BOT_TOKEN=unused\nDISCORD_HOME_CHANNEL=0\n"
                                    "GH_TOKEN=unused\n")
     write_seat_models()
-    for pat in (TMP / "rev.pat", TMP / "fix.pat"):
+    for pat in (TMP / "rev.pat", TMP / "fix.pat", READ_PAT):
         pat.chmod(0o600)
     scripts = TMP / "hermes-home" / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
@@ -239,13 +239,13 @@ def group_doctor() -> None:
     before_posts = len(RECEIVED)
     rc, out = run_doctor("--loop", "widgets")
     check("a correct install passes", rc, 0)
-    check("  every check verified", "widgets: 28 verified, 0 failed, 0 unknown (of 28 checks)" in out,
+    check("  every check verified", "widgets: 29 verified, 0 failed, 0 unknown (of 29 checks)" in out,
           True)
     check("  nothing is marked failed", "❌" in out, False)
     check("  the header says it is read-only",
           "read-only: it writes nothing and fires nothing" in out, True)
     for name in ("config", "profile:reviewer", "profile:fixer", "profile:adjudicator", "credential:reviewer",
-                 "credential:fixer", "token:rev-coach", "token:dev-fixer", "read_token",
+                 "credential:fixer", "token:rev-coach", "token:dev-fixer", "token:read-acct", "read_token",
                  "route:widgets-review", "route:widgets-fix", "route:widgets-breach", "scripts",
                  "cron:shim", "cron:job", "clone", "state_dir", "roots", "gateway",
                  "hook:widgets-review", "hook:widgets-fix",
@@ -381,16 +381,36 @@ def group_doctor() -> None:
     check("  and says it is empty", "❌ token:rev-coach" in out and "is empty" in out, True)
 
     install_doctor_fixture()
-    edit_loop(tokens={}, read_token="")
+    edit_loop(tokens={})
     rc, out = run_doctor("--loop", "widgets")
     check("no credential mapping at all fails", rc, 1)
     check("  reported once, not per seat", "❌ tokens" in out and "❌ read_token" in out, True)
+
+    install_doctor_fixture()
+    edit_loop(tokens={}, read_token="")
+    rc, out = run_doctor("--loop", "widgets")
+    # The reader is never inferred (not from the first token either): a file without one is
+    # refused on load, with the key to add, before any check runs.
+    check("no reader named is refused on load", rc, 2)
+    check("  saying it is never inferred and what to add",
+          "'read_token' is not set, and the reader is never inferred" in out
+          and '"read_token": "<login>"' in out, True)
 
     install_doctor_fixture()
     edit_loop(read_token="who-is-that")
     rc, out = run_doctor("--loop", "widgets")
     check("a read_token with no file fails", rc, 1)
     check("  and names the login", "❌ read_token" in out and "who-is-that" in out, True)
+
+    # The shape the README once printed: the reader on the reviewer seat. The broker refuses
+    # every write in it, so a doctor that passed it would pass a loop that can never post.
+    install_doctor_fixture()
+    edit_loop(read_token=REVIEWER)
+    rc, out = run_doctor("--loop", "widgets")
+    check("a reader that is the reviewer seat fails", rc, 1)
+    check("  and states the four-identity rule",
+          "❌ read_token" in out and "four-identity rule" in out, True)
+    check("  and points at set --read-token", "--read-token" in out, True)
 
     install_doctor_fixture()
     cfg = load_loop()

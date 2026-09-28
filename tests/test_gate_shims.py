@@ -557,7 +557,7 @@ class DoctorApplyUninstall(Base):
                   "config": {"url": url, "content_type": "json", "insecure_ssl": insecure_ssl,
                              "secret": secret}}]
         hooks += [{"id": other[0], "active": other[2] if len(other) > 2 else True,
-                   "events": list(events),
+                   "events": list(other[3]) if len(other) > 3 else list(events),
                    "config": {"url": other[1], "content_type": "json", "insecure_ssl": "0",
                               "secret": "placeholder-other-hook-key"}}
                   for other in more]
@@ -870,7 +870,7 @@ class DoctorApplyUninstall(Base):
         from review_loop import gate
         self.install()
         self.github_with_hook(self.REVIEW_URL + "/", hook_id=41, events=("pull_request",),
-                              more=[(42, self.FIX_URL)])
+                              more=[(42, self.FIX_URL, True, ("pull_request_review",))])
         armed, missing = gate.hooks_read(config.load_id("widgets"))
         self.assertEqual((armed, missing), (False, "reviewer"))
         rc, out = self.run_cli(["arm", "--loop", "widgets"])
@@ -880,7 +880,7 @@ class DoctorApplyUninstall(Base):
         self.assertIn("hermes review-loop apply --loop widgets", out)
         # Exact URLs are armed, and `arm` says so with rc 0.
         self.github_with_hook(self.REVIEW_URL, hook_id=41, events=("pull_request",),
-                              more=[(42, self.FIX_URL)])
+                              more=[(42, self.FIX_URL, True, ("pull_request_review",))])
         self.assertEqual(gate.hooks_read(config.load_id("widgets")), (True, ""))
         rc, out = self.run_cli(["arm", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
@@ -892,7 +892,8 @@ class DoctorApplyUninstall(Base):
         from review_loop import gate
         self.install()
         world = self.github_with_hook(self.REVIEW_URL + "?x=1", hook_id=41,
-                                      events=("pull_request",), more=[(42, self.FIX_URL)])
+                                      events=("pull_request",),
+                              more=[(42, self.FIX_URL, True, ("pull_request_review",))])
         loop = config.load_id("widgets")
         self.assertEqual(gate.hooks_read(loop), (True, ""))
         self.assertIs(gate.hooks_armed(loop), True, "the watchdog must not park a working seat")
@@ -905,14 +906,16 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(json.loads(world.read_text())["patches"], 0, "a working hook is untouched")
         # Scheme and host compare case-insensitively; the path never does.
         self.github_with_hook("HTTPS://Gateway.Example/p/vex/webhooks/widgets-review",
-                              hook_id=41, events=("pull_request",), more=[(42, self.FIX_URL)])
+                              hook_id=41, events=("pull_request",),
+                              more=[(42, self.FIX_URL, True, ("pull_request_review",))])
         self.assertEqual(gate.hooks_read(loop), (True, ""))
         self.github_with_hook("https://gateway.example/p/vex/webhooks/Widgets-Review",
-                              hook_id=41, events=("pull_request",), more=[(42, self.FIX_URL)])
+                              hook_id=41, events=("pull_request",),
+                              more=[(42, self.FIX_URL, True, ("pull_request_review",))])
         self.assertEqual(gate.hooks_read(loop), (False, "reviewer"))
         # And the trailing slash is still a 404, with or without a query.
         self.github_with_hook(self.REVIEW_URL + "/?x=1", hook_id=41, events=("pull_request",),
-                              more=[(42, self.FIX_URL)])
+                              more=[(42, self.FIX_URL, True, ("pull_request_review",))])
         self.assertEqual(gate.hooks_read(loop), (False, "reviewer"))
 
     def test_recreate_re_keys_a_query_string_hook_in_place(self):

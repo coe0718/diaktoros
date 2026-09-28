@@ -128,6 +128,8 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
         f"{API}{path}", data=data, method=method,
         headers={"Accept": "application/vnd.github+json", "Authorization": f"token {tok}",
                  "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "hermes-review-loop"})
+    from .config import guard_network
+    guard_network(req.full_url)         # under the test guard: loopback fakes only
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode() or "null"
