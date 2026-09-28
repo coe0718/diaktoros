@@ -80,7 +80,7 @@ def routes_of(loop: dict) -> dict:
 
 
 def path(loop: dict) -> pathlib.Path:
-    return pathlib.Path(str(loop["state_dir"])).expanduser() / INTENT_FILE
+    return config.state_dir(loop) / INTENT_FILE
 
 
 def owned(entry: dict) -> bool:

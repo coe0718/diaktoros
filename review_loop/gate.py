@@ -38,7 +38,15 @@ from .util import iso_at, log, now_iso, silence
 
 def payload_loop(payload: dict) -> dict:
     full = ((payload.get("repository") or {}).get("full_name") or "")
-    loop = config.by_repo(full)
+    # Per-file: a sibling loop file the loader refuses is skipped with one log line instead of
+    # stopping this repo's gate (it still fails closed when that file might be this repo's).
+    try:
+        loop = config.loop_for_repo(full, warn=log)
+    except config.ConfigError as exc:
+        # This repo's ownership cannot be settled (its own file will not load, or two files
+        # claim it): fail closed — nothing runs — with the reason in the log, not a traceback.
+        log(f"loop config refused for {full or 'an unknown repository'}: {exc}")
+        silence(f"loop config refused for {full or 'an unknown repository'}")
     if not loop:
         silence(f"no loop configured for {full or 'an unknown repository'}")
     return loop
@@ -314,18 +322,21 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     hooks, error = gh.fetch(loop, gh.hooks_path(loop))
     if error or not isinstance(hooks, list):
         return None, error or "GitHub returned no hook list"
+    from . import doctor          # its matchers are arm's and apply's too; imported late (it is big)
     missing = []
     for seat in ("reviewer", "fixer"):
-        # The URL the gateway serves for this route, judged by the rule doctor and apply use
-        # (routes.serves_route_url: same origin, exact path, query ignored): a hook whose URL
-        # merely *contains* the route name (a trailing slash, another profile) is a 404 at the
+        # The seat's URL is the one `arm` credits (doctor.seat_route_target: the registry route,
+        # bound to the seat's profile), judged by the rule doctor and apply use
+        # (doctor.exact_hook_url: same origin, exact path, query ignored). A hook whose URL
+        # merely *contains* the route name — a trailing slash, another profile — is a 404 at the
         # gateway, and a seat woken only through it is not armed.
         try:
-            url = routes.url_for(loop["seats"][seat]["route"], loop.get("host") or None)
+            url = doctor.seat_hook_url(loop, loop["seats"][seat]["route"])
         except config.ConfigError:
             url = None
         if not url or not any(isinstance(h, dict) and h.get("active") is True
-                              and routes.serves_route_url((h.get("config") or {}).get("url"), url)
+                              and doctor.exact_hook_url(str((h.get("config") or {}).get("url")
+                                                            or ""), url)
                               for h in hooks):
             missing.append(seat)
     return not missing, ", ".join(missing)
@@ -1057,6 +1068,7 @@ def ping_start(loop: dict, seat: str, text: str) -> None:
             f"https://discord.com/api/v10/channels/{channel}/messages", data=body,
             headers={"Authorization": f"Bot {token}", "Content-Type": "application/json",
                      "User-Agent": "hermes-review-loop"})
+        config.guard_network(req.full_url)
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status not in (200, 201):
                 raise RuntimeError(f"Discord HTTP {resp.status}")

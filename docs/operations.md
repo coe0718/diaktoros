@@ -23,6 +23,9 @@ running loop.
    created **paused**, so nothing fires until `arm` (after `doctor` and `selftest`); `--arm` creates
    them live instead
 4. one cron job plus a 5-line shim in `~/.hermes/scripts/` that forwards to the plugin's watchdog
+   (`--schedule`). If `hermes cron create` fails, `init` prints the scheduler's error and the exact
+   command to run yourself (shell-quoted, pasteable as printed), skips the "Next:" list, and exits
+   **1** — the config, routes and hooks above are in place; only the job is missing
 
 Route edits are serialized only among cooperating review-loop plugin processes, using a sibling
 lock file and atomic replacement. Native Hermes CLI and dashboard subscription edits do **not**
@@ -74,7 +77,11 @@ registry is visible, but crash durability is unconfirmed; do not assume the oper
    is *now*. Held verdicts never create a run-ledger row, so this is a fresh admission, not a later
    opt-in upgrading an older run. Or keep pushes off and answer verdicts by hand: push the fix and
    re-request review.
-4. `hermes review-loop arm --loop name`.
+4. `hermes review-loop arm --loop name` — flipping a hook needs hook *write* access, as the
+   reader unless `--admin-token <login>` names another. On a user-owned repo only the owner can
+   manage hooks, and the reader is usually the owner, so give its file `repository_hooks: write`
+   (or leave hooks to the web UI and keep it read-only); on an org repo, `--admin-token` can name a
+   separate admin login mapped at `init`.
 
 ## Everyday commands
 
@@ -85,11 +92,11 @@ hermes review-loop explain --loop name --pr 123   # why that PR is not moving, a
 hermes review-loop doctor --loop name   # preflight the install: profiles, seat models, tokens, routes, hooks, cron
 hermes review-loop models --seat reviewer --loop name   # what that seat's profile's provider offers (read-only)
 hermes review-loop settings             # the plugin-level defaults, and where each came from
-hermes review-loop init --repo owner/name --dry-run   # preview a loop: seats, routes, nothing written
+hermes review-loop init --repo owner/name --read-token reader-bot --token reader-bot=~/.hermes/keys/reader-bot-pat --dry-run   # preview a loop: seats, routes, nothing written
 hermes review-loop apply --loop name    # push those defaults onto an existing loop (--dry-run)
 hermes review-loop apply --loop name --while-busy     # rebind even while a seat has a run out
 hermes review-loop set --loop name --reviewer-concurrency 2   # two reviews at once, one fix at a time
-hermes review-loop arm --loop name      # arm/pause by flipping the repo hooks
+hermes review-loop arm --loop name      # arm/pause by flipping the repo hooks (--admin-token LOGIN)
 hermes review-loop arm --loop name --pause
 hermes review-loop drain --loop name --seat reviewer
 hermes review-loop fixer-push --loop name --enable --acknowledge-pr-race   # let the fixer publish (off by default)
@@ -97,6 +104,39 @@ hermes review-loop retry --loop name --pr 123   # re-arm a run that failed befor
 hermes review-loop cleanup --loop name --dry-run   # every closed PR; --pr N for one
 hermes review-loop uninstall --loop name
 ```
+
+`arm` and `arm --pause` never report what they asked for — after each PATCH they read the hook back
+and print the state GitHub shows (`hook 12 → paused (read back)`, or `hook 12 is still active, not
+paused: PATCH failed (HTTP 403 …)`), and a `fix:` line for each thing that failed (a run that
+succeeds prints none). They exit **0** only when both seats'
+hooks (reviewer and fixer) exist and every one was observed in the requested state (a hook whose
+listing shows that state as a real true/false counts), **1** on a refused or unconfirmed PATCH, a
+read-back that disagrees, an unreadable hook listing, no loop hooks on the repo, or one seat's hook
+missing — named per seat as `hook:<route> ABSENT (fixer seat)`, the way `doctor` names it, since a
+loop armed halfway is not armed — and **2** when the loop cannot be loaded: no loop of that name,
+none configured, or a loop file `normalize` refuses (a `ConfigError` on load — a hand-edited file
+missing `seats.reviewer.route`, say, a `cap` that is not a whole number, or both seats on one
+route — printed as `cannot arm: …`).
+A hook is a seat's only when it posts to exactly that seat's route URL as the route registry
+(the gateway's subscription file) serves it — `/p/<profile>/webhooks/<route>`, or
+`/webhooks/<route>` for the default profile, on the loop's gateway (scheme and host compared
+case-insensitively, the path exactly: the gateway registers no other shape, so a trailing slash is
+a 404) — and that registry entry binds the seat's own profile. The gateway binds a
+route to its profile by that URL and answers any other profile's URL 404, so a hook at another
+profile, another path or another origin (a retired gateway, another install) is listed with that
+cause, never flipped, and leaves its seat ABSENT; so does a seat whose route is missing from the
+registry, or bound to another profile ("the wake would run the wrong agent"), in `doctor`'s
+words — and `arm` will not arm a hook at the seat's URL that subscribes to the wrong event, does
+not post JSON, or ends in a trailing slash (`doctor`'s MISMATCH), since it would never wake the
+seat; pausing still recognises such a hook as this install's and stops it. Pausing is stricter about
+*whose* hook it is and looser about the route: `arm --pause` stops every hook this install made —
+at the route's registry URL, or the URL the loop config gives it — even once the route is gone
+from the registry (as `uninstall` leaves it), and still never touches another install's. The `fix:` advice is per hook: a
+failed PATCH that looks transient (a timeout, a 5xx) gets "retry `arm`" first, a refusal (401,
+403, 404, or a PATCH that did not stick) the token-scope line, each naming its hooks. Without `--admin-token` the PATCH
+goes out as the loop's `read_token`; the `fix:` line names the scope that login's file needs
+(`repository_hooks: write`, `admin:repo_hook` or classic `repo`) and, when it is the reader, the
+owner case above.
 
 `set` is how you change the knobs after install — `--reviewer-concurrency`, `--fixer-concurrency`,
 `--concurrency` (the default for both seats), `--cap`, `--clone`, `--base`, `--grace-min`,
@@ -107,7 +147,9 @@ same way: `--observer-profile`, `--observer-route`, `--observer-deliver`, `--obs
 `--observer-digest-min`, and `--observer-mute` / `--observer-unmute` / `--observer-disable`.
 
 `set --adjudicator-login LOGIN --token LOGIN=/abs/path` names (or `--adjudicator-login ""`
-clears) the optional account a ruling is also posted as; `set --token` maps only that login.
+clears) the optional account a ruling is also posted as, and `set --read-token LOGIN
+[--token LOGIN=/abs/path]` moves the reader; `set --token` maps only those two logins. Both go
+through the [four-identity rule](#token-files-one-pat-per-account).
 
 Who serves each seat, and how the plugin-level defaults reach a loop, is covered in
 [Settings, in the desktop](settings.md).
@@ -152,7 +194,7 @@ makes.
 
 | role | account | what it does | token | why nothing narrower works |
 | --- | --- | --- | --- | --- |
-| reader (`read_token`) | the repo owner | reads PRs, refs and the repo's hooks | **fine-grained, read-only**: `contents: read`, `pull_requests: read`, `repository_hooks: read` (classic `repo` also works) | the owner *is* the fine-grained token's resource owner, so this is the one seat that can hold a read-only credential on a user-owned repo. `doctor` and `explain` read the hooks to tell *armed* from *paused*; without hook read access the line reports the state as unknown |
+| reader (`read_token`) | the repo owner | reads PRs, refs and the repo's hooks | **fine-grained, read-only**: `contents: read`, `pull_requests: read`, `repository_hooks: read` (classic `repo` also works). When the reader also creates and arms the hooks — `init --hooks` / `arm` without `--admin-token`, as in the README example — make that `repository_hooks: write` | the owner *is* the fine-grained token's resource owner, so this is the one seat that can hold a read-only credential on a user-owned repo. `doctor` and `explain` read the hooks to tell *armed* from *paused*; without hook read access the line reports the state as unknown |
 | reviewer | collaborator (write) | posts one review | classic, `repo` | a review POST needs pull-request write, and on a user-owned repo that is the same permission that can push code |
 | fixer | collaborator (write) | pushes a fix commit | classic, `repo` | the fix is a commit |
 | adjudicator login | collaborator (write) | posts one comment | classic, `repo` | a comment needs only read, but a user-owned repo refuses a read-only collaborator grant (`422`), so the account can write whatever its token says |
@@ -276,8 +318,9 @@ $ hermes review-loop doctor --loop widgets
   ✅ profile:fixer        fixer-profile → doctor-demo/hermes-home/profiles/fixer-profile
   ✅ credential:fixer     dev-fixer → a tokens entry
   ✅ token:dev-fixer      doctor-demo/fix.pat (mode 600, non-empty)
+  ✅ token:reader-bot     doctor-demo/read.pat (mode 600, non-empty)
   ✅ token:rev-coach      doctor-demo/rev.pat (mode 600, non-empty)
-  ✅ read_token           rev-coach (mapped in tokens)
+  ✅ read_token           reader-bot (mapped in tokens; its own account and file)
   ✅ route:widgets-review reviewer-profile · pull_request · http://127.0.0.1:43651/p/reviewer-profile/webhooks/widgets-review
   ✅ route:widgets-fix    fixer-profile · pull_request_review · http://127.0.0.1:43651/p/fixer-profile/webhooks/widgets-fix
   ✅ route:widgets-breach default · adjudication wake
@@ -291,7 +334,7 @@ $ hermes review-loop doctor --loop widgets
   ✅ hook:widgets-review  hook 41 → http://127.0.0.1:43651/p/reviewer-profile/webhooks/widgets-review (pull_request, active)
   ✅ hook:widgets-fix     hook 42 → http://127.0.0.1:43651/p/fixer-profile/webhooks/widgets-fix (pull_request_review, active)
 
-widgets: 20 verified, 0 failed, 0 unknown (of 20 checks)
+widgets: 21 verified, 0 failed, 0 unknown (of 21 checks)
   every check passed — this loop can wake a seat and post a verdict.
 ```
 
@@ -308,8 +351,9 @@ $ hermes review-loop doctor --loop widgets
   ✅ credential:fixer     dev-fixer → a tokens entry
   ❌ token:dev-fixer      no file at doctor-demo/fix.pat
       fix: write the PAT for dev-fixer to doctor-demo/fix.pat (chmod 600), or re-run init with --token dev-fixer=<a path that exists>
+  ✅ token:reader-bot     doctor-demo/read.pat (mode 600, non-empty)
   ✅ token:rev-coach      doctor-demo/rev.pat (mode 600, non-empty)
-  ✅ read_token           rev-coach (mapped in tokens)
+  ✅ read_token           reader-bot (mapped in tokens; its own account and file)
   ❌ route:widgets-review registered gateway origin differs from the loop's configured origin (URLs withheld)
       fix: run `hermes review-loop apply --loop widgets` to rewrite it at the loop's origin (its secret is kept)
   ❌ route:widgets-fix    wakes profile 'some-other-agent', but seats.fixer.profile is 'fixer-profile' — the wake would run the wrong agent
@@ -326,7 +370,7 @@ $ hermes review-loop doctor --loop widgets
   ✅ gateway              127.0.0.1:43651 accepts a connection
   ⚠️ hooks                could not read /repos/acme/widgets/hooks — nothing was proved about 2 hook(s) (a token without hook read access — `repo`, or the narrower `read:repo_hook` — reads as denied)
 
-widgets: 12 verified, 6 failed, 1 unknown (of 19 checks)
+widgets: 13 verified, 6 failed, 1 unknown (of 20 checks)
   6 failed: profile:fixer, token:dev-fixer, route:widgets-review, route:widgets-fix, cron:shim, cron:job — fix the ❌ lines above before this loop is armed.
 ```
 
@@ -488,10 +532,52 @@ Three rules keep it honest:
 It needs to read the repo's hooks to tell "paused" from "armed", so the read token wants enough
 scope to see them (`repo` is normally enough); if it cannot, the line says the hook state is unknown
 rather than claiming the loop is parked. `explain` exits 2 only when the question cannot be asked at
-all — an unknown loop, or several loops and no `--loop`.
+all — an unknown loop, a loop file the loader refuses (without `--loop` each such file is named on a
+`skipping <file>: <reason>` line), several loops (refused ones included) and no `--loop`, or no loop
+files at all (`no loops configured in <dir>`).
 
 The guard order `explain` walks is in
 [architecture: Explain](architecture.md#explain--why-is-this-pr-not-moving).
+
+### The loop stops with `RealHomeError` or `RealNetworkError`
+
+Those are the **test suite's** tripwires, not a loop failure. Under the test harness
+(`tests/_home_guard.py`), the plugin refuses to touch anything inside the real home (`~/.hermes`
+included), run the real `hermes`, or reach a real host. It raises a `BaseException`, so no handler
+swallows it. The message starts with `test guard active (REVIEW_LOOP_TEST_HOME_GUARD=1)`.
+
+There is one exception to "no real host": the dependency prefetch (`deps._fetch`) may make an
+anonymous, credential-free `cargo fetch` from crates.io's own hosts, `index.crates.io` (the sparse
+index) and `static.crates.io` (downloads), for the dependency tests. Before cargo starts,
+`deps.guard_registry` refuses the fetch if anything could send it elsewhere: a proxy variable,
+another registry or a source replacement, a cargo config file, a registry key or
+`[source]`/`[registries]`/`[patch]`/`[replace]` table in the manifest, or a non-crates.io source in
+the lockfile. A refusal names which of these it found. Every other host is refused.
+
+The tripwires arm only when **both** of these are set, and only the test harness sets them:
+
+| Variable | Set by | Meaning |
+|---|---|---|
+| `REVIEW_LOOP_TEST_HOME_GUARD=1` | `tests/_home_guard.py` | "this process runs under the test guard" |
+| `REVIEW_LOOP_TEST_GUARD_SENTINEL` | `tests/_home_guard.py` | path to an empty sentinel file the guard creates in its temp dir |
+
+`REVIEW_LOOP_TEST_HOME_GUARD` on its own does nothing, so a real loop that inherits it keeps
+working. A real loop stops only if its gateway inherited **both** variables while the sentinel file
+still existed, for example because it was started from a shell that was running the test suite.
+To clear it:
+
+```bash
+systemctl --user show-environment | grep REVIEW_LOOP_TEST_     # or check the shell / unit that starts the gateway
+unset REVIEW_LOOP_TEST_HOME_GUARD REVIEW_LOOP_TEST_GUARD_SENTINEL REVIEW_LOOP_TEST_REAL_HOME
+```
+
+Then restart the gateway from the cleaned environment so it re-reads it (`hermes gateway status`
+shows whether it is running; `hermes gateway start` starts it).
+
+Remove them wherever the gateway gets its environment: the systemd unit's `Environment=`, the
+shell profile, or the launching terminal. `REVIEW_LOOP_TEST_REAL_HOME`, `REVIEW_LOOP_TEST_USER_HOME`,
+`REVIEW_LOOP_TEST_SHIM_DIR` and `REVIEW_LOOP_TEST_FAKE_HERMES` are test-only too. None of them is
+ever needed by a real loop.
 
 ## When an isolated run fails
 
