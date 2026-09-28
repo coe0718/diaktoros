@@ -130,3 +130,102 @@ jobs:
           grep -q "^Ran 1 test" hermes-agreement.log
           grep -q "^OK$" hermes-agreement.log
           ! grep -q "skipped" hermes-agreement.log
+
+  # The vertical tests drive the real Hermes (pinned) inside bubblewrap against local fakes: the
+  # route script, the worker, the sandboxed turn, the inference proxy and each seat wire format.
+  # Everywhere else they skip for want of a Hermes checkout, so a green `tests` job never ran
+  # them — which is how #110 reached main. Here a missing prerequisite fails the job
+  # (REVIEW_LOOP_REQUIRE_HERMES_SOURCE), and a final step refuses any skip in these modules.
+  # No credential is involved: every endpoint and token the tests touch is a fake.
+  verticals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HERMES_AGENT_SOURCE: ${{ github.workspace }}/hermes
+      REVIEW_LOOP_REQUIRE_HERMES_SOURCE: "1"
+      # The venv's interpreter must be a uv-managed CPython: the sandbox mounts the directory it
+      # lives in, which must hold nothing but that runtime.
+      UV_PYTHON_PREFERENCE: only-managed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ env.HERMES_PINNED }}
+          path: hermes
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # Ubuntu 24.04 denies unprivileged user namespaces through AppArmor; bwrap needs them.
+      - name: Install bubblewrap and allow unprivileged user namespaces
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+      - name: Confirm bubblewrap can unshare everything
+        run: |
+          if ! bwrap --unshare-all --ro-bind / / true; then
+            echo "::error::bwrap --unshare-all fails on this runner; the vertical tests cannot run"
+            exit 1
+          fi
+      # The tests look for exactly ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo.
+      - name: Stable Rust toolchain at the path the tests read
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          test -x "$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo"
+          "$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo" --version
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.19"
+          # Cached below instead: the action saves only after a green job, and a red vertical
+          # must not cost the next run a cold dependency install.
+          enable-cache: false
+      - name: Point uv at a cache directory
+        run: echo "UV_CACHE_DIR=$RUNNER_TEMP/uv-cache" >> "$GITHUB_ENV"
+      - uses: actions/cache/restore@v4
+        id: uv-cache
+        with:
+          path: ${{ runner.temp }}/uv-cache
+          key: uv-verticals-${{ runner.os }}-${{ hashFiles('hermes/uv.lock', 'hermes/pm/lock.json') }}
+      # Hermes's own recipe: the CPython its lock pins, then its locked dependencies plus Hermes
+      # itself (editable) into hermes/venv, where the tests look for bin/hermes. The `anthropic`
+      # extra is the SDK a Claude seat's native Messages provider imports; without it Hermes
+      # refuses that seat's turn (and lazy installs are off inside the sandbox).
+      - name: Hermes venv at the pinned commit
+        run: |
+          py=$(jq -r '.packages.python.version | split("+")[0]' hermes/pm/lock.json)
+          echo "Hermes pins CPython $py"
+          uv venv --python "$py" hermes/venv
+          cd hermes && UV_PROJECT_ENVIRONMENT="$HERMES_AGENT_SOURCE/venv" uv sync --frozen --no-dev --extra anthropic
+          test -x "$HERMES_AGENT_SOURCE/venv/bin/hermes"
+      - uses: actions/cache/save@v4
+        if: steps.uv-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/uv-cache
+          key: ${{ steps.uv-cache.outputs.cache-primary-key }}
+      - name: Vertical tests (real Hermes in bubblewrap)
+        run: |
+          set -o pipefail
+          python -m unittest -v \
+            tests.test_route_vertical \
+            tests.test_turn_vertical \
+            tests.test_route_worker_vertical \
+            tests.test_contained_agent \
+            tests.test_inference_proxy \
+            tests.test_oauth_seats \
+            2>&1 | tee "$RUNNER_TEMP/verticals.log"
+      # REVIEW_LOOP_REQUIRE_HERMES_SOURCE already turns the known skips into failures; this catches
+      # any other skip a later change adds to these modules.
+      - name: Refuse any skipped vertical test
+        if: success() || failure()
+        run: |
+          log="$RUNNER_TEMP/verticals.log"
+          test -s "$log" || { echo "::error::no vertical test output"; exit 1; }
+          tail -n 3 "$log"
+          if grep -E "\.\.\. skipped|skipped=[0-9]" "$log"; then
+            echo "::error::vertical tests were skipped; this job exists to run them"
+            exit 1
+          fi
