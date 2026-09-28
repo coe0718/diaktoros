@@ -248,11 +248,27 @@ def route_name_of(url: str) -> str:
     return path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
 
 
+def _url_parts(url: str) -> tuple[str, str, str]:
+    parts = urllib.parse.urlsplit(str(url or ""))
+    return parts.scheme.lower(), parts.netloc.lower(), parts.path
+
+
+def serves_route_url(hook_url: str, route_url: str) -> bool:
+    """Does a hook posting to ``hook_url`` reach the route served at ``route_url``?
+
+    The gateway (aiohttp) routes on the exact PATH: scheme and host compare case-insensitively,
+    the path exactly, and a query string or fragment is ignored — ``?x=1`` reaches the handler,
+    while a trailing slash, a doubled slash or ``%2F`` is a 404. The one rule every surface uses
+    to decide whether a hook is *correct* (armed, verified, left alone)."""
+    route = _url_parts(route_url)
+    return bool(route[2]) and _url_parts(hook_url) == route
+
+
 def same_webhook_url(a: str, b: str) -> bool:
-    """Equal up to a trailing slash: the same route, by name — but NOT the same delivery target:
-    the gateway serves only the exact URL (a trailing slash is a 404). Callers use this to *find*
-    such a hook, and exact equality to decide whether it is correct."""
-    return str(a or "").rstrip("/") == str(b or "").rstrip("/")
+    """Same origin and the same path up to a trailing slash: how a hook the gateway would 404
+    only for that slash is *found* for its route. Whether it is *correct* is ``serves_route_url``."""
+    pa, pb = _url_parts(a), _url_parts(b)
+    return pa[:2] == pb[:2] and pa[2].rstrip("/") == pb[2].rstrip("/")
 
 
 def url_for_profile(name: str, profile: str | None, host: str | None = None) -> str | None:

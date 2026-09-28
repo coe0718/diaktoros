@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 from review_loop import contained
+from tests.hermes_prereqs import needs, skip_or_fail
 
 SOURCE = Path(os.environ.get('HERMES_AGENT_SOURCE') or Path.home() / '.hermes/hermes-agent')
 
@@ -31,8 +32,8 @@ class WholeAgentFixture(unittest.TestCase):
             self.assertEqual((result.returncode, result.stdout, result.stderr),
                              (0, 'ok\n', 'warning\n'))
 
-    @unittest.skipUnless(shutil.which('bwrap') and (SOURCE / 'venv/bin/hermes').exists(),
-                         'bubblewrap or Hermes checkout unavailable')
+    @needs(shutil.which('bwrap') and (SOURCE / 'venv/bin/hermes').exists(),
+           'bubblewrap or Hermes checkout unavailable')
     def test_real_agent_cannot_read_host_dummy_credentials(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
             root = Path(directory)
@@ -76,7 +77,7 @@ memory:
             runtime = Path(os.readlink(venv / 'bin/python')).parents[2]
             rust = Path.home() / '.rustup/toolchains/stable-x86_64-unknown-linux-gnu'
             if not (rust / 'bin/cargo').exists():
-                self.skipTest('offline stable Rust toolchain unavailable')
+                skip_or_fail(self, 'offline stable Rust toolchain unavailable')
             result = contained.run(code=code, venv=venv, runtime=runtime,
                                    home=home, checkout=checkout, rust=rust,
                                    query=Path(__file__).with_name('contained_fixture.py'),

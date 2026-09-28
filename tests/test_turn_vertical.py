@@ -19,14 +19,15 @@ from review_loop import contained, gh, review_receipt, trusted_fetch, trusted_tu
 from review_loop.broker_ipc import RunScope
 from review_loop.run_supervisor import Supervisor
 from review_loop.inference_proxy import PATH
+from tests.hermes_prereqs import needs
 
 SOURCE = Path(os.environ.get('HERMES_AGENT_SOURCE') or Path.home() / '.hermes/hermes-agent')
 RUST = Path.home() / '.rustup/toolchains/stable-x86_64-unknown-linux-gnu'
 HEAD = 'a' * 40
 
 
-@unittest.skipUnless(shutil.which('bwrap') and (SOURCE / 'venv/bin/hermes').exists()
-                     and (RUST / 'bin/cargo').exists(), 'offline sandbox prerequisites absent')
+@needs(shutil.which('bwrap') and (SOURCE / 'venv/bin/hermes').exists()
+       and (RUST / 'bin/cargo').exists(), 'offline sandbox prerequisites absent')
 class WholeTurn(unittest.TestCase):
     def test_real_agent_host_only_broker_and_model_key_with_rust(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
