@@ -507,6 +507,58 @@ class ArmVerifyTests(unittest.TestCase):
         self.assertEqual(rc, 2, out)
 
 
+class ApplyHookMoveTests(unittest.TestCase):
+    """`apply` repoints a seat's hook when its profile (so its URL) changes. It must use the same
+    URL rules as arm and doctor: a hook on one of the loop's routes is left (already right),
+    moved, or refused — never skipped while the push reports itself applied (#100 review)."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        env = patch.dict(os.environ, {"REVIEW_LOOP_CONFIG_DIR": str(Path(temp.name) / "configs"),
+                                      "HERMES_HOME": str(Path(temp.name) / "hermes")})
+        env.start()
+        self.addCleanup(env.stop)
+        self.before = config.normalize(raw_loop("widgets"))
+        moved = raw_loop("widgets")
+        moved["seats"]["reviewer"]["profile"] = "reviewer2"
+        self.after = config.normalize(moved)
+
+    def moves(self, reviewer_url, fixer_url=f"{HOST}/p/fixer/webhooks/widgets-fix"):
+        listing = [{"id": 1, "active": True, "events": ["pull_request"],
+                    "config": {"url": reviewer_url, "content_type": "json"}},
+                   {"id": 2, "active": True, "events": ["pull_request_review"],
+                    "config": {"url": fixer_url, "content_type": "json"}}]
+        with patch.object(gh, "api", return_value=listing):
+            return cli._hook_moves(self.before, self.after, {})
+
+    def test_the_old_url_moves_to_the_new_one(self):
+        self.assertEqual(self.moves(f"{HOST}/p/reviewer/webhooks/widgets-review"),
+                         [(1, f"{HOST}/p/reviewer/webhooks/widgets-review",
+                           f"{HOST}/p/reviewer2/webhooks/widgets-review")])
+
+    def test_a_slashed_old_url_is_moved_not_silently_skipped(self):
+        # Reported as applied while this seat's hook stayed put: the review's case.
+        slashed = f"{HOST}/p/reviewer/webhooks/widgets-review/"
+        self.assertEqual(self.moves(slashed),
+                         [(1, slashed, f"{HOST}/p/reviewer2/webhooks/widgets-review")])
+
+    def test_a_query_string_is_the_same_route(self):
+        with_query = f"{HOST}/p/reviewer/webhooks/widgets-review?x=1"
+        self.assertEqual(self.moves(with_query),
+                         [(1, with_query, f"{HOST}/p/reviewer2/webhooks/widgets-review")])
+
+    def test_a_slashed_hook_on_an_unchanged_seat_is_refused_by_name(self):
+        with self.assertRaisesRegex(config.ConfigError, r"installed fixer hook 2 posts to its "
+                                    r"route's URL with a trailing slash"):
+            self.moves(f"{HOST}/p/reviewer/webhooks/widgets-review",
+                       f"{HOST}/p/fixer/webhooks/widgets-fix/")
+
+    def test_an_unexpected_url_is_still_refused(self):
+        with self.assertRaisesRegex(config.ConfigError, r"points at unexpected URL"):
+            self.moves("https://old-gw.example/p/reviewer/webhooks/widgets-review")
+
+
 class ScheduleFailureTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
