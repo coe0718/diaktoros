@@ -115,24 +115,11 @@ jobs:
         run: python -c "import hermes_cli; print('installed mode:', hermes_cli.__file__)"
       - name: Loop tests (installed mode)
         run: python tests/run_tests.py
-      # #118: doctor's provider-extra verdict against the pinned Hermes's own resolver, on a table
-      # of profiles (placeholder credentials, throwaway homes, no network). The variable makes the
-      # test run rather than skip, and the grep fails the step if it was skipped anyway.
-      - name: Doctor agrees with the pinned Hermes resolver (HermesAgreement)
-        env:
-          REVIEW_LOOP_REQUIRE_HERMES_SOURCE: ${{ github.workspace }}/hermes
-          HERMES_AGENT_SOURCE: ${{ github.workspace }}/hermes
-        run: |
-          python -m venv --system-site-packages "$GITHUB_WORKSPACE/hermes/venv"
-          # discover from tests/: Hermes (on PYTHONPATH here) has a `tests` package of its own
-          python -m unittest discover -v -s tests -p test_seat_models.py -k HermesAgreement 2>&1 \
-            | tee hermes-agreement.log
-          grep -q "^Ran 1 test" hermes-agreement.log
-          grep -q "^OK$" hermes-agreement.log
-          ! grep -q "skipped" hermes-agreement.log
 
   # The vertical tests drive the real Hermes (pinned) inside bubblewrap against local fakes: the
-  # route script, the worker, the sandboxed turn, the inference proxy and each seat wire format.
+  # route script, the worker, the sandboxed turn, the inference proxy and each seat wire format —
+  # and, without bubblewrap, doctor's provider-extra verdicts against that Hermes's own resolver
+  # (test_seat_models.HermesAgreement, #118).
   # Everywhere else they skip for want of a Hermes checkout, so a green `tests` job never ran
   # them — which is how #110 reached main. Here a missing prerequisite fails the job
   # (REVIEW_LOOP_REQUIRE_HERMES_SOURCE), and a final step refuses any skip in these modules.
@@ -216,6 +203,7 @@ jobs:
             tests.test_contained_agent \
             tests.test_inference_proxy \
             tests.test_oauth_seats \
+            tests.test_seat_models.HermesAgreement \
             2>&1 | tee "$RUNNER_TEMP/verticals.log"
       # REVIEW_LOOP_REQUIRE_HERMES_SOURCE already turns the known skips into failures; this catches
       # any other skip a later change adds to these modules.

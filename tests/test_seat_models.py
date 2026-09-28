@@ -835,6 +835,25 @@ class ProviderExtras(Base):
         self.assertEqual(extras["extras:reviewer"].status, doctor.VERIFIED)
         self.assertEqual(extras["extras:adjudicator"].status, doctor.UNKNOWN)
 
+    def test_a_hermes_that_raises_fails_the_model_line(self):
+        # Tuck, bed4a28: Hermes WAS asked and raised reading the profile — the turn would fail the
+        # same way — so the model line is ❌ and the preflight exits 1, as before; ⚠️ is only for
+        # "doctor could not ask" (a Hermes missing the functions).
+        rt = self.root / "hermes-agent" / "hermes_cli" / "runtime_provider.py"
+        rt.write_text(rt.read_text() + "\ndef _parse_api_mode(raw):\n"
+                      "    raise ValueError('bad model.api_mode')\n")
+        self.extras(self.full)
+        models = {c.name: c for c in doctor.check_seat_models(self.loop)}
+        check = models["model:reviewer"]
+        self.assertEqual(check.status, doctor.ABSENT)
+        self.assertIn("bad model.api_mode", check.detail)
+        self.assertIn("will be held", check.detail)
+        self.assertNotIn("NOT by Hermes", check.detail)
+        self.assertEqual({c.name: c for c in doctor.check_seat_extras(self.loop)}[
+            "extras:reviewer"].status, doctor.SKIPPED)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(doctor.report(self.loop, list(models.values())), 1)
+
     def test_without_hermes_a_named_entry_is_never_verified(self):
         # Hermes present but unable to answer: doctor must not guess an entry's wire, so every
         # such seat is ⚠️ — never ✅ — until Hermes decides.
@@ -1049,7 +1068,13 @@ class ProviderExtras(Base):
         self.assertIn("extras:reviewer", [c.name for c in checks])
 
 
-HERMES_SOURCE = os.environ.get("REVIEW_LOOP_REQUIRE_HERMES_SOURCE", "")
+# The Hermes checkout to compare against: HERMES_AGENT_SOURCE only — never a default, so this can
+# never probe the operator's live install (its venv python can complete a pending source update).
+# Off a prepared host it skips; with REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1 (CI's `verticals` job) a
+# missing checkout fails instead (tests/hermes_prereqs.py).
+sys.path.insert(0, str(ROOT / "tests"))
+import hermes_prereqs  # noqa: E402
+HERMES_SOURCE = os.environ.get("HERMES_AGENT_SOURCE", "")
 _TRUTH = r"""
 import json, sys
 sys.path.insert(0, sys.argv[1])
@@ -1064,8 +1089,10 @@ except Exception as exc:
 _DUMMY = "placeholder-value-0000111122223333"
 
 
-@unittest.skipUnless(HERMES_SOURCE, "set REVIEW_LOOP_REQUIRE_HERMES_SOURCE to a Hermes checkout "
-                                    "with its venv/ to compare doctor with Hermes's own resolver")
+@hermes_prereqs.needs(bool(HERMES_SOURCE)
+                      and (pathlib.Path(HERMES_SOURCE) / "venv" / "bin" / "python").exists(),
+                      "set HERMES_AGENT_SOURCE to a hermes-agent checkout with its venv/ to compare "
+                      "doctor with Hermes's own resolver")
 class HermesAgreement(unittest.TestCase):
     """#118, differential: for each profile, the pinned Hermes resolver's api_mode against
     doctor's verdict. Hermes on the Messages wire ⇒ doctor lists the extra (required or possible);
@@ -1183,9 +1210,8 @@ class HermesAgreement(unittest.TestCase):
         self.source = pathlib.Path(HERMES_SOURCE)
         self.venv = self.source / "venv"
         self.python = self.venv / "bin" / "python"
-        self.assertTrue(self.python.exists(), f"{self.python}: REVIEW_LOOP_REQUIRE_HERMES_SOURCE "
-                                              "must name a Hermes checkout with a venv/ that can "
-                                              "import it")
+        self.assertTrue(self.python.exists(), f"{self.python}: HERMES_AGENT_SOURCE must name a "
+                                              "Hermes checkout with a venv/ that can import it")
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = pathlib.Path(temp.name)

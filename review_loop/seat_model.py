@@ -616,8 +616,10 @@ HERMES_WIRE_FUNCTIONS = (
 
 
 def hermes_facts(requested, block):
-    """Hermes's own answers, or ``{"unavailable": "missing"|"drift", "detail"}`` saying why
-    Hermes could not be asked — never a silent ``None``: the caller must say so on both lines."""
+    """Hermes's own answers; ``{"unavailable": "missing"|"drift", "detail"}`` when Hermes could
+    not be asked (not importable, or lacking a function doctor needs) — never a silent ``None``,
+    the caller says so on both lines; or ``{"error"}`` when Hermes was asked and raised, which
+    holds the seat exactly as the turn's own resolution would."""
     import importlib
     try:
         import hermes_cli  # noqa: F401
@@ -637,8 +639,10 @@ def hermes_facts(requested, block):
     try:
         return _hermes_facts(requested, block)
     except Exception as exc:
-        return {"unavailable": "drift",
-                "detail": "the Hermes at " + source + " failed to answer (" + text(exc) + ")"}
+        # Hermes WAS asked and raised on this profile: the turn resolves through the same code
+        # and would fail the same way, so this is a refusal (the seat is held), not "not asked".
+        return {"error": "the Hermes at " + source + " raised reading this profile ("
+                         + text(exc) + ")"}
 
 
 def _hermes_facts(requested, block):

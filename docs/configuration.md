@@ -317,12 +317,14 @@ the turn resolves its model through that same import, so it would be held — an
 skipped. When that Hermes lacks one of the functions doctor asks (a pin that moved them), both lines
 say Hermes was not asked: `model:<seat>` is ⚠️ with the missing names, and `extras:<seat>` is never
 ✅ "needs no optional Hermes package" on doctor's own table (a seat whose provider a config entry
-might decide is ⚠️ "may need"). CI's `installed-mode` job compares these verdicts with the pinned
-Hermes's own resolver on a table of profiles, and fails if the comparison is skipped. To run it
-yourself against a Hermes checkout with its `venv/`:
+might decide is ⚠️ "may need"). When Hermes *was* asked and raised — the turn would fail the same
+way — `model:<seat>` fails (❌, exit 1) with Hermes's reason. CI's `verticals` job compares these
+verdicts with the pinned Hermes's own resolver on a table of profiles, and fails if the comparison
+is skipped. To run it yourself against a Hermes checkout with its `venv/` (never point it at the
+install your gateway runs):
 
 ```bash
-REVIEW_LOOP_REQUIRE_HERMES_SOURCE=/path/to/hermes-agent \
+HERMES_AGENT_SOURCE=/path/to/hermes-agent \
   python -m unittest discover -v -s tests -p test_seat_models.py -k HermesAgreement
 ```
 
