@@ -106,15 +106,23 @@ jobs:
       # only when the pin moves: croniter for stored cron expressions, ruamel.yaml for a profile's
       # config.yaml. (Hermes declares both for 3.14 and above, which is why this job runs there; the
       # 3.11/3.13 standalone coverage lives in `tests`.)
+      # HERMES_AGENT_SOURCE points the tests that drive Hermes's own code (the gateway's route-script
+      # resolver, #105) at this checkout; REVIEW_LOOP_REQUIRE_HERMES_SOURCE turns their "no Hermes
+      # here" skip into a failure, so that check cannot quietly vanish from this lane.
       - name: Put the pinned Hermes on the interpreter's path
         run: |
           pip install -q "croniter==6.0.0" "ruamel.yaml==0.18.16"
           echo "PYTHONPATH=$GITHUB_WORKSPACE/hermes" >> "$GITHUB_ENV"
+          echo "HERMES_AGENT_SOURCE=$GITHUB_WORKSPACE/hermes" >> "$GITHUB_ENV"
+          echo "REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1" >> "$GITHUB_ENV"
       # Fail here rather than quietly re-running the standalone mode under a different name.
       - name: Confirm the suite will run in the installed mode
         run: python -c "import hermes_cli; print('installed mode:', hermes_cli.__file__)"
       - name: Loop tests (installed mode)
         run: python tests/run_tests.py
+      # `discover -s tests`, not `-m unittest tests.…`: Hermes's own `tests` package is on PYTHONPATH.
+      - name: Gateway resolver tests against the pinned Hermes (#105)
+        run: python -m unittest discover -v -s tests -p 'test_gate_shims.py'
 
   # The vertical tests drive the real Hermes (pinned) inside bubblewrap against local fakes: the
   # route script, the worker, the sandboxed turn, the inference proxy and each seat wire format.

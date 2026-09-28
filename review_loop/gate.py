@@ -98,15 +98,28 @@ def isolated_supervisor(loop: dict):
 
     Raises when the private runtime file is missing or invalid (a fail-closed hold).
     """
+    from . import seat_model
     from .run_supervisor import SEATS, Supervisor
 
-    return Supervisor(
+    # presence= defaults to the config-dir marker for this (the production) ledger path.
+    supervisor = Supervisor(
         config.home() / "state" / "review-loop-runs.sqlite",
         production_config=config.home() / "review-loop-runtime.json", hermes_home=config.home(),
         # Every seat, always: a worker spawned by one seat's event claims any pending row, and
         # must know every seat's capacity to do so.
         capacity={s: config.seat_concurrency(loop, s) for s in SEATS},
     )
+    # Host-side, once the runtime is known to be valid (no state without one): a worker writes
+    # into the loop's state dir (broker audit, observer ledger), its private work root, its
+    # crate cache root and the seat-lock dir, but never creates a host directory (#108), so the
+    # host makes sure each exists before any worker is spawned — for enqueue_isolated and
+    # resume_isolated alike, since both build their supervisor here.
+    state_dir = config._path(loop["state_dir"])
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "isolated-runs").mkdir(mode=0o700, exist_ok=True)
+    (state_dir / "deps").mkdir(mode=0o700, exist_ok=True)  # the worker's crate cache root
+    seat_model.lock_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
+    return supervisor
 
 
 def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key: str = '') -> str:
@@ -322,10 +335,23 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     hooks, error = gh.fetch(loop, gh.hooks_path(loop))
     if error or not isinstance(hooks, list):
         return None, error or "GitHub returned no hook list"
-    missing = [seat for seat in ("reviewer", "fixer")
-               if not any(isinstance(h, dict)
-                          and loop["seats"][seat]["route"] in (h.get("config") or {}).get("url", "")
-                          and h.get("active") is True for h in hooks)]
+    from . import doctor          # its matchers are arm's and apply's too; imported late (it is big)
+    missing = []
+    for seat in ("reviewer", "fixer"):
+        # The seat's URL is the one `arm` credits (doctor.seat_route_target: the registry route,
+        # bound to the seat's profile), judged by the rule doctor and apply use
+        # (doctor.exact_hook_url: same origin, exact path, query ignored). A hook whose URL
+        # merely *contains* the route name — a trailing slash, another profile — is a 404 at the
+        # gateway, and a seat woken only through it is not armed.
+        try:
+            url = doctor.seat_hook_url(loop, loop["seats"][seat]["route"])
+        except config.ConfigError:
+            url = None
+        if not url or not any(isinstance(h, dict) and h.get("active") is True
+                              and doctor.exact_hook_url(str((h.get("config") or {}).get("url")
+                                                            or ""), url)
+                              for h in hooks):
+            missing.append(seat)
     return not missing, ", ".join(missing)
 
 

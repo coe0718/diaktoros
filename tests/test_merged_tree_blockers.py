@@ -36,6 +36,12 @@ APPROVED = review(100, "APPROVED", "2026-01-01T00:00:00Z")
 REJECTED = review(101, "CHANGES_REQUESTED", "2026-01-01T00:01:00Z")
 
 
+# These tests reach code that reads config.home(): never the operator's (#108).
+import _ledger_guard  # noqa: E402
+
+setUpModule, tearDownModule = _ledger_guard.module_home()
+
+
 class ObserverInitCollisionTest(unittest.TestCase):
     def test_collision_refused_before_config_routes_or_hooks_are_written(self):
         args = SimpleNamespace(token=None, id="widgets", repo="acme/widgets", base="main", cap=3,

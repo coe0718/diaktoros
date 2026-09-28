@@ -726,6 +726,31 @@ class PurgeTest(Base):
         self.assertIn(f"  gh api -X DELETE repos/{t.REPO}/hooks/{first}\n", out)
         self.assertNotIn(f"hooks/{second}\n", out)
 
+    def test_purging_the_last_loop_forgets_the_ledger_presence(self):
+        # #113's contract: when the last loop is uninstalled, forget that a run ledger existed
+        # (run_supervisor.forget_ledger_presence), so a later fresh install is not reported as a
+        # vanished ledger. Through #57's full --purge path: state dir gone first, then the marker.
+        from review_loop import run_supervisor
+        self.fresh_install()
+        target = self.default_state()
+        marker = run_supervisor.presence_marker()
+        marker.write_text("ledger")
+        other = t.LOOPS_DIR / "other.json"
+        other.write_text(LOOP_FILE.read_text().replace('"widgets"', '"other"'))
+        rc, out = self.cli("uninstall", "--loop", "widgets", "--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(target.exists())
+        self.assertTrue(marker.exists(), "another loop is still configured")
+        other.unlink()
+        self.init("--hooks")
+        target = self.default_state()
+        rc, out = self.cli("uninstall", "--loop", "widgets", "--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(target.exists())
+        self.assertFalse(marker.exists())
+        self.assertIn(f"ledger presence marker removed: {marker}", out)
+        self.assertLess(out.index("state removed:"), out.index("ledger presence marker removed"))
+
     def test_without_purge_default_state_is_kept_and_named(self):
         self.default_state()
         rc, out = self.cli("uninstall", "--loop", "widgets")

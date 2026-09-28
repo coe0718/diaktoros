@@ -24,6 +24,12 @@ def pr(head=HEAD_A, state="open"):
                      "repo": {"full_name": "acme/widgets"}}, "user": {"login": "fixer"}}
 
 
+# These tests reach code that reads config.home(): never the operator's (#108).
+import _ledger_guard  # noqa: E402
+
+setUpModule, tearDownModule = _ledger_guard.module_home()
+
+
 class NotificationFreshnessTest(unittest.TestCase):
     def setUp(self):
         self.loop = {"repo": "acme/widgets", "id": "widgets", "base": "main",

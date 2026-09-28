@@ -1,18 +1,87 @@
 """Fixture-only lifecycle tests: never invoke a real Hermes agent."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import concurrent.futures
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
+import shutil
+import signal
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
-from review_loop.run_supervisor import MAX_ATTEMPTS, SILENT, Supervisor
+from review_loop import broker, broker_ipc, config, gate, run_supervisor, seat_model, trusted_turn
+from review_loop.hostdirs import HostStateGone
+import _ledger_guard  # noqa: E402  refuses the operator's real ledger (#108)
+from review_loop.run_supervisor import (_WORKERS, MAX_ATTEMPTS, SILENT, LedgerMissing,
+                                        Supervisor)
 
+# Longest a test waits for its detached workers after it ends. The slowest fixture child
+# sleeps 2s under a 5s child timeout; this leaves room for a loaded runner.
+WORKER_EXIT_TIMEOUT = 20
+
+
+def _processes_naming(marker: str) -> dict[int, str]:
+    """Live processes (other than this one) whose command line names ``marker``."""
+    found = {}
+    proc = Path('/proc')
+    if proc.is_dir():
+        for entry in proc.iterdir():
+            if not entry.name.isdigit() or int(entry.name) == os.getpid():
+                continue
+            try:
+                cmd = (entry / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
+            except OSError:
+                continue
+            if marker in cmd:  # a zombie's command line is empty: it is not writing
+                found[int(entry.name)] = cmd.strip()
+        return found
+    # Without /proc (not Linux) there is no scan: wait_for_workers then only reaps our own
+    # children, as the suite did before #108.
+    return found
+
+
+def wait_for_workers(root: Path, timeout: float = WORKER_EXIT_TIMEOUT) -> None:
+    """Block until no detached worker or fixture child still uses ``root`` (#108).
+
+    ``enqueue`` returns as soon as it has spawned a detached worker, and a finished worker's
+    ``recover`` can spawn another, which is not this process's child. A test that returns on
+    the ledger reaching a terminal state can therefore tear down its temp dir while a worker
+    still opens the ledger there (or recreates the dir). Every worker and child names a path
+    under ``root`` on its command line, and only a live worker spawns another, so an empty
+    scan means none is left.
+    """
+    marker = str(root)
+    until = time.monotonic() + timeout
+    while True:
+        for worker in list(_WORKERS):
+            worker.poll()  # reap our own exited children so they do not linger as zombies
+        live = _processes_naming(marker)
+        if not live:
+            return
+        if time.monotonic() >= until:
+            for pid in live:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            raise AssertionError(f"detached workers still running {timeout}s after the test "
+                                 f"under {marker} (killed): {live}")
+        time.sleep(0.05)
+
+
+def own_lines(stream: io.StringIO) -> list[str]:
+    """The review-loop's own stderr lines. Python 3.13 also reports, whenever the collector
+    happens to run, ResourceWarnings for sqlite connections other tests left open."""
+    return [line for line in stream.getvalue().splitlines() if line.startswith("review-loop")]
 
 
 class Lifecycle(unittest.TestCase):
@@ -20,17 +89,40 @@ class Lifecycle(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # Cleanups run last-in first-out: every worker is gone before the temp dir is removed.
+        self.addCleanup(wait_for_workers, self.root)
         self.db = self.root / "ledger.sqlite"
         self.events = self.root / "launches"
         self.child = self.root / "child.py"
         self.child.write_text("import sys,time\nfrom pathlib import Path\n"
                               "with Path(sys.argv[1]).open('a') as f: f.write('launched\\n')\n"
                               "time.sleep(float(sys.argv[2]))\nsys.exit(int(sys.argv[3]))\n")
+        # A child that runs until the test releases it: "still running" is then a fact the
+        # test controls, not a race between a sleep and a loaded scheduler. It gives up
+        # (rc 3) after a minute so a failed test never strands it.
+        self.release_file = self.root / "release"
+        self.gate = self.root / "gate.py"
+        self.gate.write_text("import sys,time\nfrom pathlib import Path\n"
+                             "with Path(sys.argv[1]).open('a') as f: f.write('launched\\n')\n"
+                             "until = time.monotonic() + 60\n"
+                             "while not Path(sys.argv[2]).exists():\n"
+                             "    if time.monotonic() > until: sys.exit(3)\n"
+                             "    time.sleep(0.02)\n")
+        # Runs before wait_for_workers (last in, first out): a gated child always ends.
+        self.addCleanup(self.release)
 
     def supervisor(self, delay=0.05, rc=0, **kw):
         return Supervisor(self.db, fixture_mode=True,
                           fixture_command=[sys.executable, str(self.child),
                                            str(self.events), str(delay), str(rc)], **kw)
+
+    def gated_supervisor(self, **kw):
+        return Supervisor(self.db, fixture_mode=True,
+                          fixture_command=[sys.executable, str(self.gate),
+                                           str(self.events), str(self.release_file)], **kw)
+
+    def release(self):
+        self.release_file.touch()
 
     def wait(self, sup, delivery, state, timeout=8):
         until = time.monotonic() + timeout
@@ -61,36 +153,541 @@ class Lifecycle(unittest.TestCase):
         self.wait(sup, "d", "succeeded")
         sup.enqueue("other-delivery", "o/r", 1, "sha", "reviewer")
         sup.recover()
-        time.sleep(0.1)
+        # Every worker those calls could have started has exited: the count is final.
+        wait_for_workers(self.root)
         self.assertEqual(len(self.launches()), 1)
         with self.assertRaises(ValueError):
             sup.enqueue("d", "o/r", 2, "sha", "reviewer")
 
     def test_detached_seat_queue_and_release(self):
-        sup = self.supervisor(delay=0.3)
+        # "a" holds the only reviewer seat until released, so "b" must queue behind it.
+        sup = self.gated_supervisor()
         started = time.monotonic()
         self.assertEqual(sup.enqueue("a", "o/r", 1, "a", "reviewer"), SILENT)
-        self.assertLess(time.monotonic() - started, 1)
+        # Detached: enqueue does not wait on a child that runs until released (up to 60s).
+        self.assertLess(time.monotonic() - started, 5)
         self.wait(sup, "a", "running")
         sup.enqueue("b", "o/r", 2, "b", "reviewer")
         self.assertEqual(sup.get("b")["state"], "pending")
+        self.assertEqual(sup.get("a")["state"], "running")
+        self.release()
         self.wait(sup, "a", "succeeded")
         self.wait(sup, "b", "succeeded")
         self.assertEqual(len(self.launches()), 2)
 
+    def test_worker_never_recreates_a_deleted_ledger_dir(self):
+        # Hardening: a detached worker must never create host state. If the ledger's
+        # directory is gone when a worker (spawned exactly as recover() spawns one) starts,
+        # it exits cleanly and leaves the dir deleted rather than recreate an empty ledger.
+        config = self.root / "runtime.json"
+        config.write_text("{}")
+        config.chmod(0o600)
+        hermes = self.root / "hermes-home"
+        hermes.mkdir()
+        modes = {
+            "fixture": lambda db: Supervisor(db, fixture_mode=True, fixture_command=[
+                sys.executable, str(self.child), str(self.events), "0", "0"]),
+            "production": lambda db: Supervisor(db, production_config=config, hermes_home=hermes),
+        }
+        for mode, make in modes.items():
+            with self.subTest(mode=mode):
+                state = self.root / f"{mode}-state"
+                sup = make(state / "runs.sqlite")
+                self.assertTrue(state.is_dir())
+                shutil.rmtree(state)
+                sup._spawn()
+                worker = _WORKERS[-1]
+                self.assertEqual(worker.wait(timeout=WORKER_EXIT_TIMEOUT), 0)
+                self.assertFalse(state.exists(), f"{mode} worker recreated {state}")
+        self.assertFalse(self.events.exists())
+
+    def test_worker_mode_ledger_removed_mid_life_is_never_recreated(self):
+        state = self.root / "late-state"
+        Supervisor(state / "runs.sqlite")  # the host creates it
+        worker = Supervisor(state / "runs.sqlite", create=False)
+        shutil.rmtree(state)
+        with self.assertRaises(LedgerMissing):
+            worker.get("anything")
+        self.assertFalse(state.exists())
+        with self.assertRaises(LedgerMissing):
+            Supervisor(state / "runs.sqlite", create=False)
+        self.assertFalse(state.exists())
+
+    def run_worker_main(self, db, **patches):
+        """Run the fixture-worker entry in-process, as a spawned worker runs it."""
+        argv = ["run_supervisor", "_fixture-worker", str(db),
+                json.dumps([sys.executable, str(self.child), str(self.events), "0", "0"]),
+                json.dumps({"reviewer": 1, "fixer": 1, "adjudicator": 1}), "60", "120"]
+        err = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for name, value in patches.items():
+                stack.enter_context(patch.object(Supervisor, name, value))
+            stack.enter_context(patch.object(sys, "argv", argv))
+            # A spawned worker always has HOME and HERMES_HOME (_spawn sets both); the fixture
+            # child's environment is built from them.
+            stack.enter_context(patch.dict(os.environ, {"REVIEW_LOOP_TEST_FIXTURE": "1",
+                                                        "HOME": str(self.root),
+                                                        "HERMES_HOME": str(self.root)}))
+            stack.enter_context(contextlib.redirect_stderr(err))
+            run_supervisor.main()  # returning normally is the worker's exit status 0
+        return own_lines(err)
+
+    def pending_row(self, state):
+        host = Supervisor(state / "runs.sqlite", fixture_mode=True, fixture_command=[
+            sys.executable, str(self.child), str(self.events), "0", "0"])
+        with patch.object(Supervisor, "_spawn"):
+            host.enqueue("m", "o/r", 1, "a", "reviewer")
+        return host
+
+    def test_worker_exits_quietly_when_ledger_vanishes_before_claim(self):
+        state = self.root / "claim-state"
+        self.pending_row(state)
+        claim = Supervisor._claim
+        def vanish(sup):
+            shutil.rmtree(state)
+            return claim(sup)
+        lines = self.run_worker_main(state / "runs.sqlite", _claim=vanish)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("is gone", lines[0])
+        self.assertFalse(state.exists())
+        self.assertFalse(self.events.exists())
+
+    def test_worker_exits_quietly_when_ledger_vanishes_mid_run(self):
+        # The child has run; the ledger goes before the worker records the outcome, so both
+        # complete_uncertain() and recover() in _run_fixture's finally meet a missing ledger.
+        state = self.root / "run-state"
+        self.pending_row(state)
+        complete = Supervisor.complete_uncertain
+        def vanish(sup, *args, **kwargs):
+            shutil.rmtree(state, ignore_errors=True)
+            return complete(sup, *args, **kwargs)
+        lines = self.run_worker_main(state / "runs.sqlite", complete_uncertain=vanish)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertFalse(state.exists())
+        self.assertEqual(len(self.launches()), 1)
+
+    def test_heartbeat_tolerates_a_vanished_ledger(self):
+        state = self.root / "beat-state"
+        Supervisor(state / "runs.sqlite")
+        worker = Supervisor(state / "runs.sqlite", create=False)
+        shutil.rmtree(state)
+        class OneBeat:
+            calls = 0
+            def wait(self, _):
+                self.calls += 1
+                return self.calls > 1
+        worker._heartbeat("run", "owner", OneBeat())  # must not raise
+        self.assertFalse(state.exists())
+
+    def foreign_ledgers(self):
+        """Files at a ledger path that are not a review-loop ledger, by shape."""
+        shapes = {"empty": b"", "not-sqlite": b"not a database at all\n" * 4,
+                  "corrupt": b"SQLite format 3\x00" + b"\xff" * 4080}
+        for name, build in (("foreign-sqlite", "CREATE TABLE someone_elses(x); "
+                                                "INSERT INTO someone_elses VALUES (1);"),
+                            # Only the plugin's runs table, with a claimable pending row.
+                            ("lookalike", run_supervisor.SCHEMA.split(";")[0] + "; INSERT INTO runs"
+                             "(id,delivery,repo,pr,head,seat,state,created,updated) VALUES "
+                             "('dead','d','o/r',1,'h','reviewer','pending',0,0);")):
+            path = self.root / f"build-{name}.sqlite"
+            with contextlib.closing(sqlite3.connect(path)) as con:
+                con.executescript(build)
+            shapes[name] = path.read_bytes()
+        return shapes
+
+    def test_worker_refuses_an_empty_or_foreign_ledger_file(self):
+        for name, content in self.foreign_ledgers().items():
+            with self.subTest(name):
+                db = self.root / f"{name}.sqlite"
+                db.write_bytes(content)
+                with self.assertRaises(LedgerMissing):
+                    Supervisor(db, create=False)
+                # Never adopted, re-schema'd or claimed from.
+                self.assertEqual(db.read_bytes(), content)
+
+    def test_worker_exits_quietly_when_ledger_is_replaced_mid_run(self):
+        # The child has run; the ledger is swapped for something else before the worker
+        # records the outcome. The worker writes nothing into the replacement.
+        for name, content in self.foreign_ledgers().items():
+            with self.subTest(name):
+                state = self.root / f"swap-{name}"
+                self.pending_row(state)
+                db = state / "runs.sqlite"
+                complete = Supervisor.complete_uncertain
+                def swap(sup, *args, **kwargs):
+                    for path in state.iterdir():
+                        path.unlink()
+                    db.write_bytes(content)
+                    return complete(sup, *args, **kwargs)
+                lines = self.run_worker_main(db, complete_uncertain=swap)
+                self.assertEqual(len(lines), 1, lines)
+                self.assertEqual(db.read_bytes(), content)
+                self.assertEqual(sorted(p.name for p in state.iterdir()), ["runs.sqlite"])
+
+    def test_worker_turn_never_recreates_a_deleted_state_dir(self):
+        state = self.root / "turn-state"
+        loop = {"repo": "o/r", "state_dir": str(state)}
+        scope = broker_ipc.RunScope("o/r", 1, "a" * 40, "reviewer", "b")
+        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}), \
+                self.assertRaises(HostStateGone):
+            trusted_turn.run_turn(loop, scope, source=self.root / "none", venv=self.root,
+                                  runtime=self.root, rust=self.root, upstream="https://x",
+                                  key="k", model="m", prompt="p",
+                                  work_root=state / "isolated-runs")
+        self.assertFalse(state.exists())
+
+    def test_worker_never_creates_the_crate_cache_root(self):
+        state = self.root / "cache-state"
+        state.mkdir()
+        loop = {"state_dir": str(state)}
+        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}):
+            self.assertIsNone(trusted_turn.dependency_cache(loop))  # runs without the cache
+        self.assertFalse((state / "deps").exists())
+        self.assertEqual(trusted_turn.dependency_cache(loop), state / "deps")  # host creates it
+        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}):
+            self.assertEqual(trusted_turn.dependency_cache(loop), state / "deps")
+
+    def test_worker_seat_lock_never_creates_the_lock_dir(self):
+        home = self.root / "hermes-home"
+        locks = home / "state" / "review-loop-seat-locks"
+        with patch.object(config, "home", return_value=home):
+            with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}):
+                with seat_model.profile_lock("default"):
+                    pass  # the in-process lock still serializes this worker's threads
+            self.assertFalse(locks.exists())
+            with seat_model.profile_lock("default"):
+                pass
+            self.assertTrue(locks.is_dir())  # the host still creates it
+
+    def test_gate_creates_the_worker_dirs_before_enqueue(self):
+        home = self.root / "hermes-home"
+        state = self.root / "loop-state"
+        loop = {"repo": "o/r", "state_dir": str(state)}
+        with patch.object(config, "home", return_value=home), \
+                patch.object(config, "seat_concurrency", return_value=1), \
+                patch.object(run_supervisor, "Supervisor"):
+            gate.enqueue_isolated(loop, "reviewer", 1, "a" * 40)
+        self.assertTrue(state.is_dir())
+        self.assertEqual((state / "isolated-runs").stat().st_mode & 0o777, 0o700)
+        self.assertEqual((state / "deps").stat().st_mode & 0o777, 0o700)
+        self.assertTrue((home / "state" / "review-loop-seat-locks").is_dir())
+
+    def test_worker_stderr_goes_to_a_bounded_log_beside_the_ledger(self):
+        sup = self.supervisor()
+        log = self.root / "ledger.sqlite.workers.log"
+        log.write_bytes(b"x" * (run_supervisor.WORKER_LOG_MAX + 1))
+        seen = []
+        def popen(*args, stderr=None, **kwargs):
+            # The inode the worker's stderr descriptor points at.
+            seen.append(stderr if stderr == subprocess.DEVNULL else os.fstat(stderr.fileno()).st_ino)
+            return unittest.mock.MagicMock()
+        with patch("review_loop.run_supervisor.subprocess.Popen", side_effect=popen):
+            sup._spawn()
+        self.assertEqual(seen, [log.stat().st_ino])
+        self.assertEqual(log.stat().st_size, 0)  # rotated, not grown without bound
+        self.assertEqual((self.root / "ledger.sqlite.workers.log.1").stat().st_size,
+                         run_supervisor.WORKER_LOG_MAX + 1)
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+
+    def test_worker_that_finds_no_ledger_leaves_its_line_in_the_log(self):
+        sup = self.supervisor()
+        (self.root / "ledger.sqlite").write_bytes(b"")  # replaced: a worker must refuse it
+        sup._spawn()
+        self.assertEqual(_WORKERS[-1].wait(timeout=WORKER_EXIT_TIMEOUT), 0)
+        lines = own_lines(io.StringIO((self.root / "ledger.sqlite.workers.log").read_text()))
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("nothing to run", lines[0])
+        self.assertEqual((self.root / "ledger.sqlite").read_bytes(), b"")
+
+    def test_host_reports_a_vanished_ledger_loudly_and_once(self):
+        db = self.root / "watched" / "runs.sqlite"
+        for quiet in ("first creation", "reopen"):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                Supervisor(db)
+            self.assertEqual(own_lines(err), [], quiet)
+        for path in db.parent.glob("runs.sqlite*"):
+            if not path.name.endswith(".present"):
+                path.unlink()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            sup = Supervisor(db)
+        self.assertEqual(len(own_lines(err)), 1, err.getvalue())
+        self.assertIn("vanished", own_lines(err)[0])
+        sent = []
+        sup.notify(sent.append)
+        sup.notify(sent.append)
+        self.assertEqual(len(sent), 1, sent)
+        self.assertIn("vanished", sent[0])
+
+    def test_a_wiped_state_dir_is_reported_once_and_a_fresh_install_is_silent(self):
+        # The beside-ledger marker goes with the state dir; the host-owned one in the loop
+        # config dir survives it (#108).
+        from scripts import watchdog
+        presence = self.root / "review-loops.d" / ".ledger-present"
+        state = self.root / "state"
+        db = state / "runs.sqlite"
+        err, sent = io.StringIO(), []
+        with contextlib.redirect_stderr(err):
+            Supervisor(db, presence=presence).notify(sent.append)  # fresh install
+        self.assertEqual((own_lines(err), sent), ([], []))
+        self.assertTrue(presence.is_file())
+        shutil.rmtree(state)
+        with contextlib.redirect_stderr(err):
+            sup = Supervisor(db, presence=presence)
+            sup.notify(sent.append)
+            sup.notify(sent.append)
+            Supervisor(db, presence=presence).notify(sent.append)  # reported once, not again
+        self.assertEqual(len(own_lines(err)), 1, err.getvalue())
+        self.assertIn("vanished", own_lines(err)[0])
+        self.assertEqual(len(sent), 1, sent)
+        # The watchdog finds it too, with no gate run in between.
+        shutil.rmtree(state)
+        with contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            watchdog.sweep_ledger(db, presence=presence)
+            watchdog.sweep_ledger(db, presence=presence)
+        self.assertEqual(out.getvalue().count("vanished"), 1, out.getvalue())
+
+    def test_forgetting_the_ledger_makes_the_next_install_fresh(self):
+        presence = self.root / "review-loops.d" / ".ledger-present"
+        state = self.root / "state"
+        Supervisor(state / "runs.sqlite", presence=presence)
+        shutil.rmtree(state)
+        with patch.object(config, "config_dir", return_value=presence.parent):
+            self.assertEqual(run_supervisor.presence_marker(), presence)
+            self.assertTrue(run_supervisor.forget_ledger_presence())
+            self.assertFalse(run_supervisor.forget_ledger_presence())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            Supervisor(state / "runs.sqlite", presence=presence)
+        self.assertEqual(own_lines(err), [])
+
+    def test_uninstalling_the_last_loop_forgets_the_ledger(self):
+        from argparse import Namespace
+        from review_loop import cli
+        cfg = self.root / "review-loops.d"
+        cfg.mkdir()
+        for name in ("a", "b"):
+            (cfg / f"{name}.json").write_text("{}")
+        (cfg / ".ledger-present").write_text("x")
+        with patch.object(config, "config_dir", return_value=cfg), \
+                patch.object(config, "load_id",
+                             side_effect=lambda name: {"id": name, "repo": f"acme/{name}"}), \
+                patch.object(cli, "_routes_of", return_value={}), \
+                patch.object(cli.route_intent, "forget"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            # --keep-hooks: this test is about the ledger marker, not the repo's hooks (#57).
+            cli.cmd_uninstall(Namespace(loop="a", keep_config=False, keep_hooks=True))
+            self.assertTrue((cfg / ".ledger-present").exists())  # loop b still configured
+            cli.cmd_uninstall(Namespace(loop="b", keep_config=False, keep_hooks=True))
+        self.assertFalse((cfg / ".ledger-present").exists())
+
+    def pin_production_home(self):
+        home = self.root / "hermes-home"
+        env = patch.dict(os.environ, {"HERMES_HOME": str(home),
+                                      "REVIEW_LOOP_CONFIG_DIR": str(home / "review-loops.d")})
+        env.start()
+        self.addCleanup(env.stop)
+        return home
+
+    def test_status_after_a_wipe_does_not_swallow_the_report(self):
+        # Tuck's order: wipe the whole state dir, then the operator's own `status` command,
+        # then the watchdog. Every host open of the production ledger checks the config-dir
+        # marker by default, reports before rewriting any marker, and the report survives.
+        from scripts import watchdog
+        home = self.pin_production_home()
+        db = run_supervisor.production_ledger()
+        Supervisor(db)  # an armed install: ledger and both markers
+        self.assertTrue(run_supervisor.presence_marker().is_file())
+        shutil.rmtree(home / "state")
+        err, out = io.StringIO(), io.StringIO()
+        with patch.object(sys, "argv", ["run_supervisor", "status", str(db)]), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            run_supervisor.main()
+        self.assertEqual(len([line for line in own_lines(err) if "vanished" in line]), 1,
+                         err.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()) as swept:
+            watchdog.sweep_ledger(db, presence=run_supervisor.presence_marker())
+            watchdog.sweep_ledger(db, presence=run_supervisor.presence_marker())
+        self.assertEqual(swept.getvalue().count("vanished"), 1, swept.getvalue())
+
+    def armed_then_wiped(self, home: Path) -> None:
+        """An armed install under ``home`` whose whole state dir is then removed."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(home),
+                                     "REVIEW_LOOP_CONFIG_DIR": str(home / "review-loops.d")}):
+            Supervisor(run_supervisor.production_ledger())
+        shutil.rmtree(home / "state")
+
+    def status_then_watchdog(self, db_arg: str, env: dict) -> tuple[list[str], str]:
+        from scripts import watchdog
+        err, swept = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, env), \
+                patch.object(sys, "argv", ["run_supervisor", "status", db_arg]), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            run_supervisor.main()
+        with patch.dict(os.environ, env), contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(swept):
+            for _ in range(2):
+                watchdog.sweep_ledger(run_supervisor.production_ledger(),
+                                      presence=run_supervisor.presence_marker())
+        return [line for line in own_lines(err) if "vanished" in line], swept.getvalue()
+
+    def test_a_wipe_is_reported_whatever_spelling_names_the_ledger(self):
+        # Identity is the file, not the string (Tuck, #113): a symlinked alias of the Hermes
+        # home, used by HERMES_HOME or by the status argument, is the same ledger.
+        real = self.root / "real-home"
+        alias = self.root / "alias-home"
+        alias.symlink_to(real, target_is_directory=True)
+        cases = {
+            "HERMES_HOME via the alias": (alias, alias / "state" / "review-loop-runs.sqlite"),
+            "argument via the alias": (real, alias / "state" / "review-loop-runs.sqlite"),
+            "argument via the real path, HERMES_HOME via the alias":
+                (alias, real / "state" / "review-loop-runs.sqlite"),
+        }
+        for name, (hermes_home, db_arg) in cases.items():
+            with self.subTest(name):
+                self.armed_then_wiped(real)
+                env = {"HERMES_HOME": str(hermes_home),
+                       "REVIEW_LOOP_CONFIG_DIR": str(hermes_home / "review-loops.d")}
+                lines, swept = self.status_then_watchdog(str(db_arg), env)
+                self.assertEqual(len(lines), 1, lines)
+                self.assertEqual(swept.count("vanished"), 1, swept)
+
+    def test_a_literal_tilde_argument_is_the_home_ledger(self):
+        # `status '~/.hermes/state/review-loop-runs.sqlite'` (no shell expansion) must open the
+        # home's ledger, not build ./~/.hermes under the working directory.
+        home = self.root / "tilde-home"
+        cwd = self.root / "cwd"
+        cwd.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(cwd)
+        self.armed_then_wiped(home / ".hermes")
+        env = {"HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
+               "REVIEW_LOOP_CONFIG_DIR": str(home / ".hermes" / "review-loops.d")}
+        lines, swept = self.status_then_watchdog("~/.hermes/state/review-loop-runs.sqlite", env)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertEqual(swept.count("vanished"), 1, swept)
+        self.assertFalse((cwd / "~").exists())
+
+    def test_the_ledger_guard_refuses_a_symlinked_way_into_the_real_home(self):
+        # Pointed at a throwaway "real" home: nothing real is ever named.
+        fake = self.root / "fake-real"
+        (fake / ".hermes" / "state").mkdir(parents=True)
+        alias = self.root / "way-in"
+        alias.symlink_to(fake, target_is_directory=True)
+        with patch.object(_ledger_guard, "REAL_HERMES", fake / ".hermes"):
+            for create in (True, False):
+                with self.subTest(create=create), \
+                        self.assertRaises(_ledger_guard.RealHomeTouched):
+                    Supervisor(alias / ".hermes" / "state" / "runs.sqlite", create=create)
+        self.assertEqual(list((fake / ".hermes" / "state").iterdir()), [])
+
+    def test_a_ledger_one_migration_behind_is_migrated_then_accepted_by_a_worker(self):
+        db = self.root / "legacy" / "runs.sqlite"
+        Supervisor(db)
+        last = run_supervisor._MIGRATIONS[-1][0]
+        with contextlib.closing(sqlite3.connect(db)) as con:
+            con.execute(f"ALTER TABLE runs DROP COLUMN {last}")
+            con.commit()
+        with self.assertRaisesRegex(LedgerMissing, last):
+            Supervisor(db, create=False)  # a worker never migrates
+        Supervisor(db)  # the host does, from the same list the worker checks against
+        Supervisor(db, create=False)
+        self.assertEqual({c for c, _, _ in run_supervisor._MIGRATIONS} - run_supervisor
+                         ._expected_schema()["runs"], set())
+
+    def test_the_suite_guard_refuses_the_real_ledger(self):
+        real = _ledger_guard.REAL_HERMES
+        # Installed process-wide by this module's import, so it covers the whole discover run.
+        self.assertTrue(getattr(Supervisor.__init__, "_ledger_guarded", False))
+        with self.assertRaises(_ledger_guard.RealHomeTouched):
+            Supervisor(real / "state" / "review-loop-runs.sqlite")
+        with patch.dict(os.environ, {"HERMES_HOME": str(real)}), \
+                self.assertRaises(_ledger_guard.REFUSED):
+            Supervisor(run_supervisor.production_ledger())
+        # REFUSED is this guard's class, plus #101's config.RealHomeError when that exists;
+        # never a bare RuntimeError, which any unrelated failure could satisfy.
+        self.assertNotIn(RuntimeError, _ledger_guard.REFUSED)
+
+    def test_watchdog_notices_a_vanished_ledger_once(self):
+        from scripts import watchdog
+        db = self.root / "wd" / "runs.sqlite"
+        Supervisor(db)
+        db.unlink()
+        with contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            watchdog.sweep_ledger(db)
+            watchdog.sweep_ledger(db)
+        self.assertEqual(out.getvalue().count("vanished"), 1, out.getvalue())
+        missing = self.root / "never" / "runs.sqlite"
+        self.assertEqual(watchdog.sweep_ledger(missing), [])
+        self.assertFalse(missing.parent.exists())  # no ledger ever: nothing created
+
+    def test_host_adopts_an_empty_ledger_file_with_a_diagnostic(self):
+        db = self.root / "empty-host.sqlite"
+        db.write_bytes(b"")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            sup = Supervisor(db)
+        self.assertIn("empty", err.getvalue())
+        self.assertIn(str(db), err.getvalue())
+        self.assertEqual(sup.status(), [])
+
+    def test_worker_audit_never_recreates_a_deleted_state_dir(self):
+        state = self.root / "loop-state"
+        loop = {"state_dir": str(state)}
+        err = io.StringIO()
+        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}), contextlib.redirect_stderr(err):
+            broker._audit(loop, "o/r", 1, "a" * 40, "b", "reviewer", "review", "login")
+        self.assertFalse(state.exists())
+        self.assertEqual(len(own_lines(err)), 1, err.getvalue())
+        # The host still creates it, as before.
+        broker._audit(loop, "o/r", 1, "a" * 40, "b", "reviewer", "review", "login")
+        self.assertTrue((state / "broker-audit.jsonl").is_file())
+
+    def test_spawned_worker_is_marked_as_a_worker(self):
+        # hostdirs.ensure refuses to create host state only in a process marked this way.
+        sup = self.supervisor()
+        with patch("review_loop.run_supervisor.subprocess.Popen") as popen:
+            sup._spawn()
+        self.assertEqual(popen.call_args.kwargs["env"].get("REVIEW_LOOP_WORKER"), "1")
+
+    def test_host_enqueue_creates_a_missing_ledger_dir(self):
+        state = self.root / "fresh-state"
+        sup = Supervisor(state / "runs.sqlite", fixture_mode=True, fixture_command=[
+            sys.executable, str(self.child), str(self.events), "0", "0"])
+        self.assertTrue((state / "runs.sqlite").is_file())
+        sup.enqueue("fresh", "o/r", 1, "a", "reviewer")
+        self.wait(sup, "fresh", "succeeded")
+        self.assertEqual(len(self.launches()), 1)
+
     def test_child_failure_and_timeout_release_seat(self):
-        # Nothing on the write-ahead record: both wait for a backed-off retry (#53).
+        # Three phases share one ledger, each with its own fixture child and timeout. A worker
+        # claims whatever row is pending with the config it was spawned with, so a phase's
+        # idle straggler (spawned by its worker's recover()) could claim the next phase's row
+        # under load (#108). Each phase therefore waits until its workers are gone.
+        # Nothing on the write-ahead record: both failures wait for a backed-off retry (#53),
+        # RETRY_BASE away, so neither is relaunched within this test.
         sup = self.supervisor(rc=7)
         sup.enqueue("bad", "o/r", 1, "a", "reviewer")
         bad = self.wait(sup, "bad", "waiting")
         self.assertEqual((bad["outcome"], bad["retries"], bad["error"]),
                          (7, 1, "turn exited with status 7"))
-        slow = self.supervisor(delay=1, child_timeout=0.08)
+        wait_for_workers(self.root)
+        # The child sleeps far past its timeout, so only the timeout can end it, however
+        # slow the machine is; the timeout is still short enough to keep the test quick.
+        slow = self.supervisor(delay=60, child_timeout=1)
         slow.enqueue("slow", "o/r", 2, "b", "reviewer")
-        self.assertEqual(self.wait(slow, "slow", "waiting")["error"], "child timeout")
+        row = self.wait(slow, "slow", "waiting", timeout=20)
+        self.assertEqual((row["error"], row["outcome"], row["retries"]), ("child timeout", None, 1))
+        wait_for_workers(self.root)
         ok = self.supervisor()
         ok.enqueue("ok", "o/r", 3, "c", "reviewer")
-        self.wait(ok, "ok", "succeeded")
+        row = self.wait(ok, "ok", "succeeded")
+        self.assertEqual((row["outcome"], row["error"]), (0, None))
+        self.assertEqual(len(self.launches()), 3)
 
     def test_spawn_failure_remains_recoverable_before_claim(self):
         sup = self.supervisor()
@@ -115,15 +712,31 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(self.launches()), 1)
 
     def test_running_lease_heartbeats_and_completion_after_expiry(self):
-        # Sleep well past one lease: only heartbeats keep the run alive. The lease is wide
-        # enough that a slow CI runner's SQLite stall does not miss a whole beat.
-        sup = self.supervisor(delay=2.0, lease_seconds=0.6, child_timeout=5)
+        # The child runs until released, so the run is live for as long as the test needs.
+        # Heartbeats come every lease/3 = 1s; a 3s lease lets a beat be ~2s late (a loaded
+        # runner, a SQLite stall) before the run is really lost.
+        sup = self.gated_supervisor(lease_seconds=3, child_timeout=60)
         sup.enqueue("heartbeat", "o/r", 9, "head", "reviewer")
-        self.wait(sup, "heartbeat", "running")
-        time.sleep(1.0)
+        launched = self.wait(sup, "heartbeat", "running")
+        # Wait until the lease granted at launch has passed, so only a heartbeat can have
+        # kept the run alive, and the renewed lease has at least a second left to cover the
+        # recover() below. Observed ledger state, not a fixed sleep.
+        until = time.monotonic() + 20
+        while True:
+            row, now = sup.get("heartbeat"), time.time()
+            self.assertEqual(row["state"], "running")
+            if now > launched["lease"] and row["lease"] - now >= 1:
+                break
+            if time.monotonic() > until:
+                log = self.root / "ledger.sqlite.workers.log"
+                self.fail(f"no heartbeat renewed the lease past its launch grant: {row}; "
+                          f"worker log: {log.read_text() if log.exists() else '(none)'}")
+            time.sleep(0.05)
         sup.recover()
         self.assertEqual(sup.get("heartbeat")["state"], "running")
+        self.release()
         self.wait(sup, "heartbeat", "succeeded")
+        wait_for_workers(self.root)
         with sqlite3.connect(self.db) as db:
             db.execute("UPDATE runs SET state='running', lease=0 WHERE delivery='heartbeat'")
         sup.recover()
@@ -147,7 +760,8 @@ class Lifecycle(unittest.TestCase):
         sup.recover()
         self.assertEqual(sup.get("before")["state"], "uncertain")
         sup.enqueue("held", "o/r", 1, "new-head", "fixer")
-        time.sleep(0.15)
+        # The worker enqueue started has exited without claiming: "held" stays pending.
+        wait_for_workers(self.root)
         self.assertEqual(sup.get("held")["state"], "pending")
         self.assertEqual(len(self.launches()), 2)
         with sqlite3.connect(self.db) as db:
@@ -186,6 +800,9 @@ class ReviewerClaimConcurrency(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # The tests below set production_config after the first enqueue, so a later enqueue
+        # spawns a (failing) detached production worker that names this temp dir.
+        self.addCleanup(wait_for_workers, Path(self.tmp.name))
         # A fixer claim takes the host policy lock under $HERMES_HOME/review-loops.d: keep it in
         # this fixture, never the operator's home (#109).
         env = patch.dict(os.environ, {'HERMES_HOME': self.tmp.name,

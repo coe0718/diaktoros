@@ -327,7 +327,23 @@ a token without either shows ⚠️, not ❌).
 
 It writes nothing — no config, no route registry, no state, no GitHub hook — unless you pass
 `--repair`, whose one write is restoring this loop's own routes from the plugin's intent record
-(same secret) before the read-only checks run. It never fires a
+(same secret) before the read-only checks run, and the gate shims those routes run. A route
+with no intent record to restore it from (an install older than the record) is written back by
+
+```
+hermes review-loop apply --loop attest --recreate-routes
+```
+
+from the loop config, with a new secret — the old one left with the route — and one repo hook for
+that route is re-keyed to it in the same step, moved to the route's URL if it was left at the loop's
+previous one (another profile or host).
+
+Whenever `apply` re-keys or moves a route's hooks, and on every plain `apply`, it keeps exactly one
+hook per route: an **active** hook first (a route never ends with fewer armed hooks than it had),
+then one already at the route's URL, then the oldest (lowest id). Every other hook for that route is
+left where it is — never duplicated onto the route's URL, never deleted by the plugin — and named
+with the `gh api -X DELETE repos/<repo>/hooks/<id>` command that removes it; `apply` then exits 1. `init` refuses a loop that exists, so it is
+never the way back. `doctor` never fires a
 route, because a synthetic POST at a seat's route is a real agent run with a real budget. The
 network side is a TCP connect to the gateway (is anything listening?) and, when the token is
 allowed to, a read of the repo's hooks.
@@ -432,6 +448,8 @@ hermes review-loop selftest --loop ID --pr N                # + one tiny complet
 hermes review-loop selftest --loop ID --pr N --live-turn    # + one real isolated reviewer turn, NOT posted
 python -m review_loop.run_supervisor status ~/.hermes/state/review-loop-runs.sqlite
 ```
+
+A detached worker's stderr goes to `~/.hermes/state/review-loop-runs.sqlite.workers.log`, which the host opens for it and rotates once to `.1` past 256 KiB. A worker never creates host state. If its ledger or a state directory is gone, replaced or unusable, it writes one `review-loop worker …: …; nothing to run` line there and exits. If the ledger vanishes, alone or with the whole state directory, the host's next open of it (a gate enqueue, the watchdog sweep, `selftest`, or `run_supervisor status`) recreates it empty, says so on stderr, and the watchdog delivers one ⚠️ notice about it. The host knows a ledger existed from `review-loop-runs.sqlite.present` beside it and from `~/.hermes/review-loops.d/.ledger-present`, which survives a wiped state directory. `uninstall` of the last loop removes the latter, so a later fresh install is not reported.
 
 | step | what it proves |
 |---|---|
