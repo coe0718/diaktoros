@@ -572,7 +572,8 @@ class DoctorApplyUninstall(Base):
             #!{sys.executable}
             import json, os, sys
             path = sys.argv[1]
-            world = json.load(open({str(world)!r}))
+            with open({str(world)!r}) as handle:
+                world = json.load(handle)
             method = os.environ.get("GH_METHOD", "GET")
             def masked(hook):
                 config = dict(hook["config"])
@@ -581,6 +582,20 @@ class DoctorApplyUninstall(Base):
                 return {{**hook, "config": config}}
             if path.endswith("/hooks?per_page=100"):
                 print(json.dumps([masked(h) for h in world["hooks"]]))
+            elif "/deliveries" in path or path.endswith("/pings"):
+                # #57: doctor reads each hook's latest delivery, and arm pings the hooks it arms.
+                # The gateway answers every one 200, as a hook with the route's secret would get.
+                hook_id = path.split("/hooks/", 1)[1].split("/", 1)[0]
+                seen = world.setdefault("deliveries", {{}}).setdefault(hook_id, [
+                    {{"id": 1, "event": "pull_request", "status_code": 200,
+                      "delivered_at": "2026-01-01T00:00:00Z"}}])
+                if path.endswith("/pings"):
+                    seen.insert(0, {{"id": len(seen) + 1, "event": "ping", "status_code": 200,
+                                     "delivered_at": "2026-01-01T00:%02d:00Z" % len(seen)}})
+                    with open({str(world)!r}, "w") as f: json.dump(world, f)
+                    print("null")
+                else:
+                    print(json.dumps(seen))
             elif "/hooks/" in path:
                 hook = next(h for h in world["hooks"] if str(h["id"]) == path.rsplit("/", 1)[1])
                 if method == "PATCH":
@@ -591,7 +606,8 @@ class DoctorApplyUninstall(Base):
                     if "config" in body:
                         hook["config"] = dict(body["config"])      # wholesale, worst case
                     world["patches"] += 1
-                    json.dump(world, open({str(world)!r}, "w"))
+                    with open({str(world)!r}, "w") as handle:
+                        json.dump(world, handle)
                 print(json.dumps(masked(hook)))
             else:
                 print("{{}}")

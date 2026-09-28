@@ -9,14 +9,13 @@ import json
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 import subprocess
 import tempfile
 import threading
 import unittest
 from unittest import mock
 
-from review_loop import contained, gh, review_receipt, trusted_fetch, trusted_turn
+from review_loop import contained, gh, ledger, review_receipt, trusted_fetch, trusted_turn
 from review_loop.broker_ipc import RunScope
 from review_loop.run_supervisor import Supervisor
 from review_loop.inference_proxy import PATH
@@ -51,7 +50,7 @@ class WholeTurn(unittest.TestCase):
             sup = Supervisor(root / 'runs.sqlite')
             sup.enqueue('turn', loop['repo'], 7, HEAD, 'reviewer')
             generation = review_receipt.generation_for(pr, loop, 7, HEAD)
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 con.execute("UPDATE runs SET state='running',generation=?", (generation,))
                 run_id = con.execute('SELECT id FROM runs').fetchone()[0]
             scope = RunScope(loop['repo'], 7, HEAD, 'reviewer', 'fix-7',

@@ -133,8 +133,8 @@ repairs a loop file that has no `read_token` at all.
 
 **Upgrading a loop whose reader is a seat** (the shape this rule now refuses — `doctor` and
 `status` flag it): give the reader its own account and PAT and move it with the `set` command
-above. If that loop's hooks are edited without `--admin-token` (the default), `arm` and
-`arm --pause` now act as the new reader, so its PAT needs hook write
+above. If that loop's hooks are edited without `--admin-token` (the default), `arm`,
+`arm --pause` and `uninstall` now act as the new reader, so its PAT needs hook write
 (`repository_hooks: write`, `admin:repo_hook` or classic `repo`) — a read-only reader PAT means
 passing `--admin-token <owner login>` to those commands instead.
 
@@ -270,8 +270,8 @@ Not proven, and worth knowing before you trust it:
 ## Running the tests
 
 ```bash
-python3 tests/run_tests.py                                # the offline harness
-python3 -m unittest discover -s tests -p 'test_*.py'      # the boundary suite (bubblewrap; skips without it)
+python3 tests/run_tests.py                                   # the offline harness
+python3 tests/leakguard.py discover -s tests -p 'test_*.py'  # the boundary suite (bubblewrap; skips without it)
 ```
 
 The plugin is stdlib-only and so are its tests: there is nothing to install. The harness runs in two

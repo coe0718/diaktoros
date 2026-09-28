@@ -18,11 +18,12 @@ import os
 import pathlib
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 
-from . import config
+from . import config, hostdirs
 from .util import log
 
 
@@ -135,7 +136,7 @@ def _registry_lock(path: pathlib.Path):
 
     Hermes CLI/dashboard subscription writers do not take this lock.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    hostdirs.ensure(path.parent)
     lock = path.with_name(path.name + ".lock")
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(lock, flags, 0o600)
@@ -357,6 +358,8 @@ def fire(name: str, event: str, payload: dict, tag: str, host: str | None = None
             log(f"fired {name} for {tag} (HTTP {resp.status})")
             return 200 <= resp.status < 300
     except Exception as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()   # it holds the response open
         log(f"could not fire {name} for {tag}: {exc}")
         return False
 

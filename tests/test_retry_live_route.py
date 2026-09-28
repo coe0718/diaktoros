@@ -35,7 +35,7 @@ import time
 import unittest
 from urllib.parse import parse_qs, urlsplit
 
-from review_loop import run_supervisor
+from review_loop import ledger, run_supervisor
 from review_loop.inference_proxy import PATH
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -363,7 +363,7 @@ class LiveRouteRetry(unittest.TestCase):
         return result.stdout
 
     def row(self):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.row_factory = sqlite3.Row
             rows = [dict(r) for r in con.execute('SELECT * FROM runs')]
         self.assertEqual(len(rows), 1, rows)
@@ -372,7 +372,7 @@ class LiveRouteRetry(unittest.TestCase):
     def _active(self):
         if not self.db.exists():
             return False
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             return con.execute("SELECT COUNT(*) FROM runs WHERE state IN "
                                "('claimed','launching','running')").fetchone()[0] > 0
 
@@ -394,7 +394,7 @@ class LiveRouteRetry(unittest.TestCase):
         self.assertEqual(row['state'], 'waiting')
         self.assertAlmostEqual(row['retry_at'] - row['updated'],
                                run_supervisor.backoff(row['retries']), delta=5)
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET retry_at=? WHERE state='waiting'", (time.time() - 1,))
         self.say(f"(clock: retry {row['retries']} backoff of "
                  f"{int(run_supervisor.backoff(row['retries']))}s elapses)")
@@ -413,7 +413,7 @@ class LiveRouteRetry(unittest.TestCase):
         self.assertIn('Error code: 429', row['detail'])
         self.assertIn('Rate limit reached for fixture-model', row['detail'])
         self.assertEqual(self.world['reviews'], [])
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             self.assertEqual(con.execute('SELECT COUNT(*) FROM review_receipts').fetchone()[0], 0)
 
         # The operator sees the real reason, not an exception type.
@@ -512,7 +512,7 @@ class LiveRouteRetry(unittest.TestCase):
         self.assertEqual(row['error'], 'turn exited with status 1')
         self.assertIn('agent crashed after its review', row['detail'])
         self.assertEqual([r['state'] for r in self.world['reviews']], ['APPROVED'])
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             self.assertEqual(con.execute('SELECT state FROM review_receipts').fetchall(),
                              [('confirmed',)])
         status = self.supervisor_status()

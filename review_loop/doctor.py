@@ -41,6 +41,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import socket
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -187,6 +188,61 @@ def check_config(loop: dict) -> Check:
                      "repair the file (or re-run init): every gate reads it on every event")
     return Check("config", VERIFIED,
                  f"{path} (repo {loop['repo']}, cap {loop['cap']}, base {loop['base']})")
+
+
+def check_turn_budget(loop: dict) -> Check:
+    """The wall clock each isolated seat turn gets (#49), and every clock that judges it.
+
+    A turn runs from launch to end for up to ``config.worst_turn_s``: the host dependency
+    prefetch (#51), the budget, the sandbox kill grace, and the broker drain that lets an
+    in-flight write finish (#98). Every age threshold the watchdog applies to a seat follows
+    *that seat's* whole turn by construction: its stall grace (``grace_min``, raised to the
+    turn — ``config.stall_grace_s``), its seat-lock TTL (``ttl_min``, raised the same way —
+    ``config.seat_ttl_s``), the "that run died" report at twice the TTL, and an
+    ``adjudicating`` breach marker's stall clock (``config.adjudicating_stall_s``). One seat's
+    long budget never lengthens another's. So there is nothing to warn about: doctor prints
+    each figure, and names every one the turn raised past the operator's setting.
+    """
+    seats = ["reviewer", "fixer"] + (["adjudicator"] if (loop.get("adjudicator") or {}).get("route")
+                                     else [])
+    budgets = {seat: config.turn_budget(loop, seat) for seat in seats}
+    detail = " · ".join(f"{seat} {value}s" for seat, value in budgets.items())
+    parts = config.turn_parts(loop)
+    worst = config.worst_turn_s(loop)
+    whole = (f"up to {worst}s launch to end ({parts['prefetch']}s dependency prefetch + "
+             f"{parts['budget']}s budget + {parts['grace']}s kill grace + {parts['drain']}s "
+             "broker drain)")
+    grace_min = int(loop.get("grace_min") or config.DEFAULTS["grace_min"])
+    ttl_min = int(loop.get("ttl_min") or config.DEFAULTS["ttl_min"])
+
+    def minutes(seconds: int) -> int:
+        return -(-seconds // 60)
+
+    def per_seat(name: str, setting: int, clock) -> str:
+        bits = []
+        for seat in seats:
+            value = minutes(clock(seat))
+            bits.append(f"{seat} {value}m" + ("" if value == setting else
+                                               " (raised to fit its turn)"))
+        return f"{name} " + " · ".join(bits)
+
+    stall_seats = [seat for seat in seats if seat != "adjudicator"]
+    stall = "stall grace " + " · ".join(
+        f"{seat} {minutes(config.stall_grace_s(loop, seat))}m"
+        + ("" if minutes(config.stall_grace_s(loop, seat)) == grace_min
+           else " (raised to fit its turn)") for seat in stall_seats)
+    lock = (per_seat("seat lock TTL", ttl_min, lambda seat: config.seat_ttl_s(loop, seat=seat))
+            + "; 'that run died' after twice that")
+    text = (f"{detail} per isolated turn (sandbox killed past it); {whole} — grace_min "
+            f"{grace_min}m, ttl_min {ttl_min}m; {stall}; {lock}")
+    if "adjudicator" in seats:
+        # The breach marker's stall clocks (#98): a ruling in flight is never a stall; one
+        # claimed with no live run is, only after the adjudicator's whole turn.
+        marker = int(loop.get("marker_grace_min") or config.DEFAULTS["marker_grace_min"])
+        text += (f"; breach marker: awaiting-adjudication stalls after {marker}m; adjudicating "
+                 "only with no live ruling run, after "
+                 f"{minutes(config.adjudicating_stall_s(loop))}m")
+    return Check("turn-budget", VERIFIED, text)
 
 
 def _check_profile(name: str, seat: str) -> Check:
@@ -734,6 +790,82 @@ def check_scripts() -> Check:
     return Check("scripts", VERIFIED, f"{scripts_dir()} (watchdog, three gates, cleanup)")
 
 
+def gate_timeout_profiles(loop: dict) -> dict[str, list[str]]:
+    """Every profile whose gateway runs one of this loop's route scripts → the routes it hosts."""
+    hosted: dict[str, list[str]] = {}
+    for role in ("reviewer", "fixer", "adjudicator"):
+        if role == "adjudicator" and not str((loop.get("adjudicator") or {}).get("route") or ""):
+            continue
+        profile = config.seat_profile(loop, role)
+        if profile:
+            hosted.setdefault(profile, []).append(role)
+    observer = loop.get("observer") if isinstance(loop.get("observer"), dict) else {}
+    if observer.get("route"):
+        hosted.setdefault(str(observer.get("profile") or "default"), []).append("observer")
+    return hosted
+
+
+def check_gate_timeouts(loop: dict) -> list[Check]:
+    """Does a route script's time budget fit inside its gateway's script timeout (#75)?
+
+    One line per profile that hosts a loop route. The gateway kills a route script at its webhook
+    ``script_timeout_seconds`` and answers the delivery 200 "ignored" either way. Gates read the
+    same setting (the smaller one, when either the host or the profile's own gateway may serve
+    the route) and shrink their budget to fit, so a low value is safe but starves them of time.
+    """
+    from . import gate_failures as gf
+    checks = []
+    for profile, roles in gate_timeout_profiles(loop).items():
+        name = f"gate:timeout:{profile}"
+        serves = f"serves {', '.join(roles)}"
+        try:
+            home = config.profile_dir(profile)
+            limit, rows = gf.effective_timeout(home)
+        except Exception as exc:  # noqa: BLE001 - one unreadable profile must not stop doctor
+            checks.append(Check(name, UNKNOWN,
+                                f"{serves}; the script timeout could not be worked out: "
+                                f"{type(exc).__name__}: {exc}"))
+            continue
+        hosts = "; ".join(f"{label}: {f'{sec}s' if sec is not None else 'unreadable'} ({where})"
+                          for label, _host, sec, where in rows)
+        unread = [row for row in rows if row[2] is None]
+        if unread:
+            checks.append(Check(name, UNKNOWN,
+                                f"{serves}; cannot read every gateway's script timeout — {hosts}; "
+                                f"gates fit the readable ones (or assume "
+                                f"{gf.GATEWAY_DEFAULT_TIMEOUT_S}s)"))
+            continue
+        budget, backstop = gf.plan(limit, gf.DEFAULT_BUDGET_S)
+        low = [row for row in rows if row[2] < gf.MIN_TIMEOUT_S]
+        tiny = [row for row in rows if row[2] < gf.MIN_RECORDABLE_S]
+        if tiny:
+            checks.append(Check(
+                name, MISMATCH,
+                f"{serves}; {hosts} — too small for a gate even to record its own failure (it "
+                f"needs at least {gf.MIN_RECORDABLE_S:g}s: {gf.STARTUP_S:g}s to start, "
+                f"{gf.RECORD_S:g}s to record, 1s of work); a hung gate is killed with no record",
+                "; ".join(f"set platforms.webhook.{gf.KEY}: {gf.GATEWAY_DEFAULT_TIMEOUT_S} (at "
+                          f"least {gf.MIN_TIMEOUT_S}) in {host / 'config.yaml'} for the {label}"
+                          for label, host, _sec, _where in tiny) + "; then restart that gateway"))
+            continue
+        if low:
+            fixes = "; ".join(
+                f"set platforms.webhook.{gf.KEY}: {gf.GATEWAY_DEFAULT_TIMEOUT_S} (at least "
+                f"{gf.MIN_TIMEOUT_S}) in {host / 'config.yaml'} for the {label}"
+                for label, host, _sec, _where in low)
+            checks.append(Check(name, MISMATCH,
+                                f"{serves}; {hosts} — gates get only {budget:g}s for GitHub reads "
+                                f"(they need {gf.DEFAULT_BUDGET_S:g}s, plus a {gf.BACKSTOP_S:g}s "
+                                f"backstop and time to record a failure)",
+                                f"{fixes}; then restart that gateway. Until then an overrun is "
+                                f"recorded as a gate timeout and re-driven by the watchdog"))
+            continue
+        checks.append(Check(name, VERIFIED,
+                            f"{serves}; {hosts}; gate budget {budget:g}s + {backstop:g}s "
+                            f"backstop fits"))
+    return checks
+
+
 _WATCHDOG_LINE = re.compile(r"WATCHDOG\s*=\s*pathlib\.Path\((['\"])(?P<path>.+?)\1\)")
 
 
@@ -1115,11 +1247,12 @@ def hook_url_difference(posted: str, expected: str) -> str:
 def install_hook_urls(loop: dict, name: str) -> list[str]:
     """Every URL a hook *this install* made (or is about to make) for route ``name`` posts to.
 
-    An ownership question, not a delivery one: pausing (``arm --pause``) asks "is this hook one
-    of ours?", and the answer includes the
-    route's registry URL whatever profile it binds, and the URL the loop's config gives it —
-    which is all there is once the registry entry is gone (``uninstall`` removes it, then tells
-    the operator to pause any hooks it left). Arming never uses this: whether a hook *wakes the
+    An ownership question, not a delivery one: pausing (``arm --pause``), ``uninstall``
+    deleting its hooks (``cli._classify_hooks``) and ``init``'s stale-hook guard (the same
+    function) ask "is this hook one of ours?", and the answer includes the route's registry URL
+    whatever profile it binds, and the URL the loop's config gives it — which is all there is
+    once the registry entry is gone (a route removed before its hooks, or for ``init`` not
+    written yet). Arming never uses this: whether a hook *wakes the
     seat* is ``seat_route_target``'s question, and only the registry binding answers it.
     """
     urls = []
@@ -1154,14 +1287,15 @@ def split_route_hooks(loop: dict, listing: list, names, *,
                       ownership: bool = False) -> tuple[list[dict], list[dict]]:
     """``(own, other)`` for the hooks posting to one of the route ``names``.
 
-    The one matcher for hooks (``arm``, arming and pausing; ``doctor``'s helpers use the same
-    URL rules). A hook is a
+    The one matcher for hooks: ``arm`` (arming and pausing), ``uninstall`` and ``init``'s
+    stale-hook guard (via ``cli._classify_hooks``) and ``selftest --ping``; ``doctor``'s helpers
+    use the same URL rules. A hook is a
     seat's only when it posts to exactly that route's registry URL, and the registry entry binds
     the seat's profile (``seat_route_target``). Every other hook
     whose last ``/webhooks/<route>`` segment names one of the routes — another profile's URL, a
     retired gateway, another install — is *other*: reported, never flipped, deleted or pinged
-    as this loop's. ``ownership=True`` (pausing) counts the URLs ``install_hook_urls`` names
-    instead. Raises ``ConfigError`` when the loop has no usable
+    as this loop's. ``ownership=True`` (pausing, uninstall, init's stale-hook guard) counts the
+    URLs ``install_hook_urls`` names instead. Raises ``ConfigError`` when the loop has no usable
     host.
     """
     config.webhook_host(loop.get("host"), required=True)
@@ -1193,6 +1327,29 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
     # A wrong origin/profile/path for the same webhook route is a mismatch (reported with its
     # cause), not an absent hook — "the same route" is the exact segment, never a substring.
     candidates = exact or [hook for hook in hooks if hook_route_name(hook) == name]
+    # Every hook posting to this route name, on any origin. More than one is a previous install
+    # left behind: GitHub never returns a secret, but a leftover signs with the secret the old
+    # route held, so at most one of them can authenticate — and "hook N active" says nothing
+    # about which one that is.
+    # Only this gateway's hooks can be duplicates: the same route name on another origin is
+    # another install (or an old gateway) and never receives this route's deliveries.
+    # A duplicate is a second hook at the route's own URL; one at another profile, path or
+    # origin never reaches this route at all (the gateway answers it 404, or it goes elsewhere).
+    named = list(exact)
+    if len(named) > 1:
+        ids = sorted(hook.get("id") for hook in named if isinstance(hook.get("id"), int))
+        active = sum(1 for hook in named if hook.get("active"))
+        repo = loop["repo"]
+        deletes = "; ".join(f"`gh api -X DELETE {shlex.quote(f'repos/{repo}/hooks/{i}')}`"
+                            for i in ids[:-1])
+        return Check(f"hook:{name}", MISMATCH,
+                     f"{len(named)} repo hooks post to this route (ids "
+                     f"{', '.join(str(i) for i in ids)}; {active} active) — duplicates from a "
+                     "previous install sign with a secret this route no longer holds, so their "
+                     "deliveries are refused",
+                     f"`hermes review-loop uninstall --loop {shlex.quote(loop['id'])}` deletes "
+                     "them all, then re-run init --hooks; or keep only the newest (GitHub ids "
+                     f"only grow, so {ids[-1]} is the latest init's) and delete the rest: {deletes}")
     match = next((hook for hook in candidates if hook.get("active") and
                   event in (hook.get("events") or [])), None) or (candidates[0] if candidates else None)
     if match is None:
@@ -1223,12 +1380,74 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                      f"hook {hook_id} has content_type {content_type!r}, expected 'json'",
                      hooks_fix(loop, f"sets hook {hook_id}'s content_type to json: the gate reads a "
                                      "JSON payload, not form-encoded data"))
+    delivery = check_deliveries(loop, hook_id, name)
+    if isinstance(delivery, Check):
+        return delivery
     if not match.get("active"):
         return Check(f"hook:{name}", VERIFIED,
                      f"hook {hook_id} → [webhook URL redacted] ({event}, PAUSED — nothing fires "
-                     f"until `hermes review-loop arm --loop {loop['id']}`)", paused=True)
+                     f"until `hermes review-loop arm --loop {loop['id']}`; {delivery})", paused=True)
     return Check(f"hook:{name}", VERIFIED,
-                 f"hook {hook_id} → [webhook URL redacted] ({event}, active)")
+                 f"hook {hook_id} → [webhook URL redacted] ({event}, active; {delivery})")
+
+
+# The gateway's answers to a delivery whose signature it would not accept: 401 is "Invalid
+# signature", 403 a route that is disabled or has no HMAC secret to check against.
+REJECTED = {401: "signature rejected — the hook's secret does not match the route's",
+            403: "refused — the route is disabled or holds no secret"}
+
+
+def check_deliveries(loop: dict, hook_id, name: str) -> "Check | str":
+    """How the gateway answered this hook's most recent delivery — GitHub's only secret evidence.
+
+    GitHub never returns a hook's secret, but it keeps each recent delivery with the status code
+    the gateway answered. A latest delivery answered 401/403 is a hook signing with a secret the
+    route does not hold (a previous install's, say): it looks armed and wakes nothing. Returns a
+    failing/unknown ``Check``, or a short phrase for the verified line.
+    """
+    path = f"/repos/{loop['repo']}/hooks/{hook_id}/deliveries?per_page=30"
+    data, error = gh.fetch(loop, path)
+    if error or not isinstance(data, list) or not all(isinstance(d, dict) for d in data):
+        reason = error or "no delivery list returned"
+        return Check(f"hook:{name}", UNKNOWN,
+                     f"hook {hook_id} found, but its recent deliveries could not be read ({reason}) "
+                     "— whether its secret matches the route is unproven",
+                     f"give the read token hook read access (`read:repo_hook`, or `repo`), or look "
+                     f"by hand: `gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`")
+    stamped = [d for d in data if isinstance(d.get("delivered_at"), str)]
+    if not stamped:
+        return "no deliveries yet — the secret is unproven until the first one arrives"
+    latest = max(stamped, key=lambda d: d["delivered_at"])
+    code = latest.get("status_code")
+    deliveries = f"`gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`"
+    ping = f"`hermes review-loop selftest --loop {shlex.quote(loop['id'])} --no-model --ping`"
+    if type(code) is not int or code <= 0:
+        # GitHub recorded the delivery but no HTTP answer (a timeout, a refused connection): the
+        # gateway never judged the signature, so nothing is proven — hook_ping refuses this too.
+        return Check(f"hook:{name}", UNKNOWN,
+                     f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got no HTTP "
+                     f"response from the gateway (GitHub recorded: "
+                     f"{latest.get('status') or 'no status'}) — it never answered, so whether "
+                     "its secret matches is unproven",
+                     f"check the gateway is running and reachable from GitHub (`hermes gateway "
+                     f"status`), then {ping}; the delivery log: {deliveries}")
+    if code in REJECTED:
+        return Check(f"hook:{name}", MISMATCH,
+                     f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got HTTP {code}: "
+                     f"{REJECTED[code]}, so the hook wakes nothing",
+                     f"`hermes review-loop uninstall --loop {shlex.quote(loop['id'])}` (deletes the "
+                     f"hook), then re-run init --hooks so the new hook and route share one fresh "
+                     f"secret; then `hermes review-loop arm --loop {shlex.quote(loop['id'])}`")
+    if not 200 <= code < 300:
+        # A 5xx is the gateway erroring on the delivery (and any other non-2xx is it refusing):
+        # either way nothing woke, and the signature was never shown to verify.
+        kind = "the gateway errored" if code >= 500 else "the gateway did not accept it"
+        return Check(f"hook:{name}", MISMATCH,
+                     f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got HTTP {code}: "
+                     f"{kind}, so the hook wakes nothing and its secret is unproven",
+                     f"read the gateway's log for that delivery ({deliveries}), fix what it "
+                     f"reports, then {ping}")
+    return f"latest delivery {code}"
 
 
 # -- the report ------------------------------------------------------------------
@@ -1253,7 +1472,7 @@ def check_gateway_scripts(loop: dict) -> list[Check]:
 def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     """Every check, in the order an operator reads an install: what it is, who runs it, what
     wakes it, what schedules it, and where it works."""
-    checks = [check_config(loop)]
+    checks = [check_config(loop), check_turn_budget(loop)]
     for seat in ("reviewer", "fixer"):
         checks.append(check_profile(loop, seat))
         checks.append(check_credential(loop, seat))
@@ -1269,6 +1488,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.extend(check_routes(loop))
     checks.extend(check_gateway_scripts(loop))
     checks.append(check_scripts())
+    checks.extend(check_gate_timeouts(loop))
     checks.append(check_shim(loop))
     checks.append(check_cron_job(loop))
     checks.append(check_clone(loop))

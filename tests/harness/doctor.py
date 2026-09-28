@@ -239,8 +239,13 @@ def group_doctor() -> None:
     before_posts = len(RECEIVED)
     rc, out = run_doctor("--loop", "widgets")
     check("a correct install passes", rc, 0)
-    check("  every check verified", "widgets: 29 verified, 0 failed, 0 unknown (of 29 checks)" in out,
-          True)
+    # The invariant, not a count: every check verified, none failed or unknown. A hard-coded
+    # total breaks each time a branch adds a check (#104's gate:timeout lines, main's own).
+    import re as _re
+    summary = _re.search(r"widgets: (\d+) verified, (\d+) failed, (\d+) unknown \(of (\d+) checks\)", out)
+    check("  every check verified",
+          bool(summary) and summary.group(1) == summary.group(4)
+          and summary.group(2) == summary.group(3) == "0", True)
     check("  nothing is marked failed", "❌" in out, False)
     check("  the header says it is read-only",
           "read-only: it writes nothing and fires nothing" in out, True)

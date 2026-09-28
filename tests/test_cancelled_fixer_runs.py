@@ -25,7 +25,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from review_loop import cli, config, gate, gh, run_supervisor  # noqa: E402
+from review_loop import cli, config, gate, gh, ledger, run_supervisor  # noqa: E402
 from review_loop.run_supervisor import (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED,  # noqa: E402
                                         Supervisor, describe_run, read_only_view)
 
@@ -73,7 +73,7 @@ class CancelledFixer(unittest.TestCase):
             return self.sup._claim()
 
     def row(self):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.row_factory = sqlite3.Row
             return dict(con.execute("SELECT * FROM runs WHERE seat='fixer'").fetchone())
 
@@ -119,7 +119,7 @@ class CancelledFixer(unittest.TestCase):
         # A legacy/raced row: on the ledger with push_admitted=0.
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
         self.assertEqual(self.row()["push_admitted"], 1)
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET push_admitted=0")
         self.assertIsNone(self.claim())
         self.assertEqual((self.row()["state"], self.row()["error"]),
@@ -158,7 +158,7 @@ class CancelledFixer(unittest.TestCase):
         # reported as success, and the claim cancelled it again. Only a push-policy cancellation
         # is the operator's to recover; a new head gets its own turn. The surfaces agree.
         self.sup.submit("rev-1", REPO, 7, HEAD, "reviewer")
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='cancelled', "
                         "error='PR head moved before the review started'")
         with mock.patch.object(gate, "resume_isolated") as resume:
@@ -168,7 +168,7 @@ class CancelledFixer(unittest.TestCase):
         self.assertNotIn("re-armed", out)
         resume.assert_not_called()
         self.assertEqual(read_only_view(self.db, REPO, 7), [])
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             run_id = con.execute("SELECT id FROM runs").fetchone()[0]
         with self.assertRaisesRegex(ValueError, "a new head gets its own turn"):
             self.sup.retry(run_id)
@@ -179,7 +179,7 @@ class CancelledFixer(unittest.TestCase):
         # for one repo — and cmd_retry aborted with a traceback, skipping the other candidates.
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
         self.sup.submit("rev-1", REPO, 7, HEAD, "reviewer")
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='failed', error='turn exited with status 3'")
         (self.loops / "widgets-copy.json").write_text(
             (self.loops / "widgets.json").read_text().replace('"widgets"', '"copy"'))
@@ -198,7 +198,7 @@ class CancelledFixer(unittest.TestCase):
         from review_loop.run_supervisor import (POLICY_CANCELLATIONS, next_step,
                                                 policy_cancelled)
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             run_id = con.execute("SELECT id FROM runs").fetchone()[0]
         samples = list(POLICY_CANCELLATIONS) + [
             "Fixer push revoked: unattended fixer pushes were disabled after this run was "
@@ -207,7 +207,7 @@ class CancelledFixer(unittest.TestCase):
         self.pushes(True)
         for error in samples:
             with self.subTest(error=error[:30]):
-                with sqlite3.connect(self.db) as con:
+                with ledger.connect(self.db) as con:
                     con.execute("UPDATE runs SET state='cancelled', error=?, retries=0",
                                 (error,))
                 listed = read_only_view(self.db, REPO, 7)
@@ -232,7 +232,7 @@ class CancelledFixer(unittest.TestCase):
         a, b = HEAD, "b" * 40
         self.sup.submit("rev-a", REPO, 7, a, "reviewer")
         self.sup.submit("rev-b", REPO, 7, b, "reviewer")
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='succeeded', updated=100 WHERE head=?", (b,))
             con.execute("UPDATE runs SET state='failed', error='turn exited with status 3', "
                         "updated=200, created=1 WHERE head=?", (a,))
@@ -254,13 +254,13 @@ class CancelledFixer(unittest.TestCase):
         self.assertIn("push policy", " ".join(doc.split()))
 
     def row_of(self, seat):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.row_factory = sqlite3.Row
             return dict(con.execute("SELECT * FROM runs WHERE seat=?", (seat,)).fetchone())
 
     def test_a_superseded_cancellation_stays_out_of_the_view(self):
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='cancelled', error='fixer verdict superseded'")
         self.assertEqual(read_only_view(self.db, REPO, 7), [])
 
