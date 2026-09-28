@@ -53,7 +53,7 @@ import sys
 import threading
 from urllib.parse import urlsplit
 
-from . import config, hostdirs
+from . import config, hostdirs, util
 
 SEATS = ("reviewer", "fixer", "adjudicator")
 HOST_KEYS = ("source", "venv", "runtime", "rust")
@@ -605,8 +605,9 @@ def run_resolver(profile: str, mode: str, settings: dict | None,
     locked = profile_lock(profile) if mode in ("resolve", "refresh") else contextlib.nullcontext()
     try:
         with locked:
-            process = subprocess.run([python, "-E", "-s", "-c", _RESOLVER, source, mode, policy],
-                                     env=env, cwd=str(home), stdin=subprocess.DEVNULL,
+            process = subprocess.run([python, "-E", "-s", "-c", util.leak_guard_code(_RESOLVER),
+                                      source, mode, policy],
+                                     env=util.leak_guard_env(env, pythonpath=False), cwd=str(home), stdin=subprocess.DEVNULL,
                                      capture_output=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
         raise SeatModelError(f"profile {profile}: Hermes did not resolve within {timeout}s") from None

@@ -3,13 +3,12 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import json
 import os
 from pathlib import Path
-import sqlite3
 import tempfile
 import threading
 import unittest
 from unittest.mock import patch
 
-from review_loop import broker_ipc, cli, config
+from review_loop import broker_ipc, cli, config, ledger
 from review_loop.run_supervisor import Supervisor
 from tests.test_fixer_push_policy import raw_loop
 
@@ -43,7 +42,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         sup = self.production_supervisor()
         with patch.object(sup, '_spawn'):
             sup.enqueue('run', 'owner/one', 3, 'a' * 40, 'fixer')
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             con.execute("UPDATE runs SET state='running',launch_intent=1 WHERE delivery='run'")
         return broker_ipc.RunScope('owner/one', 3, 'a' * 40, 'fixer', 'branch',
                                    sup.get('run')['id'], str(sup.db))
@@ -58,7 +57,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         with patch.object(sup, '_spawn'):
             sup.enqueue('old', 'owner/one', 3, 'a' * 40, 'fixer')
         self.assertEqual(sup.get('old')['push_admitted'], 0)
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             con.execute("UPDATE runs SET state='running',launch_intent=1 WHERE delivery='old'")
         scope = broker_ipc.RunScope('owner/one', 3, 'a' * 40, 'fixer', 'branch',
                                    sup.get('old')['id'], str(sup.db))
@@ -115,7 +114,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         db = config.home() / 'state' / 'review-loop-runs.sqlite'
         sup = Supervisor(db)
         sup.enqueue('run', 'owner/one', 3, 'a' * 40, 'fixer')
-        with sqlite3.connect(db) as con:
+        with ledger.connect(db) as con:
             con.execute("UPDATE runs SET state='running',launch_intent=1 WHERE delivery='run'")
         with patch.object(cli, '_busy_seats', return_value=[]):
             self.assertEqual(self.change(True), 2)

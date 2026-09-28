@@ -18,7 +18,8 @@ import unittest
 import unittest.mock
 from unittest.mock import patch
 
-from review_loop import broker, broker_ipc, config, gate, run_supervisor, seat_model, trusted_turn
+from review_loop import (broker, broker_ipc, config, gate, ledger, run_supervisor, seat_model,
+                         trusted_turn)
 from review_loop.hostdirs import HostStateGone
 import _ledger_guard  # noqa: E402  refuses the operator's real ledger (#108)
 from review_loop.run_supervisor import (_WORKERS, MAX_ATTEMPTS, SILENT, LedgerMissing,
@@ -82,7 +83,6 @@ def own_lines(stream: io.StringIO) -> list[str]:
     """The review-loop's own stderr lines. Python 3.13 also reports, whenever the collector
     happens to run, ResourceWarnings for sqlite connections other tests left open."""
     return [line for line in stream.getvalue().splitlines() if line.startswith("review-loop")]
-
 
 class Lifecycle(unittest.TestCase):
     def setUp(self):
@@ -739,7 +739,7 @@ class Lifecycle(unittest.TestCase):
         self.release()
         self.wait(sup, "heartbeat", "succeeded")
         wait_for_workers(self.root)
-        with sqlite3.connect(self.db) as db:
+        with ledger.connect(self.db) as db:
             db.execute("UPDATE runs SET state='running', lease=0 WHERE delivery='heartbeat'")
         sup.recover()
         self.assertEqual(sup.get("heartbeat")["state"], "uncertain")
@@ -752,12 +752,12 @@ class Lifecycle(unittest.TestCase):
         sup.enqueue("before", "o/r", 1, "a", "reviewer")
         self.wait(sup, "before", "succeeded")
         # Inject expired state transitions while preserving a real durable row.
-        with sqlite3.connect(self.db) as db:
+        with ledger.connect(self.db) as db:
             db.execute("UPDATE runs SET state='claimed', attempts=1, lease=0 WHERE delivery='before'")
         sup.recover()
         self.wait(sup, "before", "succeeded")
         self.assertEqual(len(self.launches()), 2)
-        with sqlite3.connect(self.db) as db:
+        with ledger.connect(self.db) as db:
             db.execute("UPDATE runs SET state='launching', lease=0 WHERE delivery='before'")
         sup.recover()
         self.assertEqual(sup.get("before")["state"], "uncertain")
@@ -766,7 +766,7 @@ class Lifecycle(unittest.TestCase):
         wait_for_workers(self.root)
         self.assertEqual(sup.get("held")["state"], "pending")
         self.assertEqual(len(self.launches()), 2)
-        with sqlite3.connect(self.db) as db:
+        with ledger.connect(self.db) as db:
             db.execute("UPDATE runs SET state='claimed', attempts=?, lease=0 WHERE delivery='held'",
                        (MAX_ATTEMPTS,))
         sup.recover()
@@ -776,7 +776,7 @@ class Lifecycle(unittest.TestCase):
         sup = self.supervisor()
         sup.enqueue("old", "o/r", 11, "head", "reviewer")
         self.wait(sup, "old", "succeeded")
-        with sqlite3.connect(self.db) as db:
+        with ledger.connect(self.db) as db:
             db.execute("UPDATE runs SET state='running', pid=?, lease=0 "
                        "WHERE delivery='old'", (os.getpid(),))
         sup.recover()
@@ -788,7 +788,7 @@ class Lifecycle(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'PID exists'):
             sup.reconcile_uncertain(old["id"], reason='inspected',
                                     acknowledge_no_live_worker=True)
-        with sqlite3.connect(self.db) as db:
+        with ledger.connect(self.db) as db:
             db.execute("UPDATE runs SET pid=NULL WHERE id=?", (old["id"],))
         self.assertTrue(sup.reconcile_uncertain(old["id"], reason='confirmed external state',
                         acknowledge_no_live_worker=True))
@@ -814,7 +814,7 @@ class ReviewerClaimConcurrency(unittest.TestCase):
         self.db = Path(self.tmp.name) / 'ledger.sqlite'
         self.sup = Supervisor(self.db)
         self.sup.enqueue('review', 'o/r', 1, 'a' * 40, 'reviewer')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='pending' WHERE delivery='review'")
         # Exercise the production generation gate without launching a worker.
         self.sup.production_config = Path(self.tmp.name) / 'unused-config'
@@ -859,7 +859,7 @@ class ReviewerClaimConcurrency(unittest.TestCase):
                     with patch.object(self.sup, '_spawn'):
                         self.sup.enqueue('unrelated', 'o/r', 2, 'c' * 40, 'fixer')
                     self.assertLess(time.monotonic() - start, 2)
-                    with sqlite3.connect(self.db, timeout=1) as con:
+                    with ledger.connect(self.db, timeout=1) as con:
                         con.execute("UPDATE runs SET state='blocked' WHERE delivery='unrelated'")
                     second = pool.submit(claim)
                     self.assertTrue(both_entered.wait(2))
@@ -884,7 +884,7 @@ class ReviewerClaimConcurrency(unittest.TestCase):
                 future = pool.submit(self.sup._claim)
                 try:
                     self.assertTrue(entered.wait(2))
-                    with sqlite3.connect(self.db, timeout=1) as con:
+                    with ledger.connect(self.db, timeout=1) as con:
                         con.execute("UPDATE runs SET generation='changed' WHERE delivery='review'")
                 finally:
                     release.set()
@@ -907,7 +907,7 @@ class ReviewerClaimConcurrency(unittest.TestCase):
             row = self.sup.get('review')
             self.assertEqual((row['state'], row['attempts'], row['retries']), ('waiting', 0, 1))
             self.assertIn('claim-time read failed: TimeoutError: temporary', row['error'])
-            with sqlite3.connect(self.db) as con:
+            with ledger.connect(self.db) as con:
                 con.execute("UPDATE runs SET retry_at=0 WHERE delivery='review'")
             with patch.object(self.sup, '_spawn'):
                 self.sup.recover()
@@ -923,7 +923,7 @@ class ReviewerClaimConcurrency(unittest.TestCase):
         with patch.object(self.sup, '_spawn') as spawn:
             self.sup.enqueue('review', 'o/r', 1, 'a' * 40, 'reviewer')
             spawn.assert_not_called()
-            with sqlite3.connect(self.db) as con:
+            with ledger.connect(self.db) as con:
                 con.execute("UPDATE runs SET retry_at=0 WHERE delivery='review'")
             self.sup.recover()
             spawn.assert_called_once_with()
@@ -932,18 +932,18 @@ class ReviewerClaimConcurrency(unittest.TestCase):
     def test_dismissed_same_head_uses_new_turn_but_redelivery_deduplicates(self):
         head = 'a' * 40
         self.sup.enqueue('first-delivery', 'o/r', 2, head, 'reviewer')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='succeeded' WHERE delivery='first-delivery'")
         self.sup.enqueue('dismissed-42', 'o/r', 2, head, 'reviewer', turn_key='dismissed:42')
         self.sup.enqueue('dismissed-42-replay', 'o/r', 2, head, 'reviewer', turn_key='dismissed:42')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             rows = con.execute('SELECT delivery,turn_key FROM runs WHERE pr=2 ORDER BY created,id').fetchall()
         self.assertEqual(len(rows), 2)
         self.assertEqual({key for _, key in rows}, {'', 'dismissed:42'})
 
     def test_new_turn_never_bypasses_active_same_pr_run(self):
         self.sup.enqueue('first-delivery', 'o/r', 2, 'a' * 40, 'reviewer')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='running' WHERE delivery='first-delivery'")
         self.sup.enqueue('dismissed-42', 'o/r', 2, 'a' * 40, 'reviewer', turn_key='dismissed:42')
         self.assertIsNone(self.sup._claim())
@@ -951,19 +951,19 @@ class ReviewerClaimConcurrency(unittest.TestCase):
 
     def test_legacy_unique_index_migrates_without_losing_existing_run(self):
         self.sup.enqueue('initial', 'o/r', 4, 'a' * 40, 'reviewer')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute('DROP INDEX runs_turn')
             con.execute('CREATE UNIQUE INDEX runs_turn ON runs(repo,pr,head,seat)')
             con.execute('ALTER TABLE runs DROP COLUMN turn_key')
         migrated = Supervisor(self.db)
         migrated.enqueue('dismissed', 'o/r', 4, 'a' * 40, 'reviewer', turn_key='dismissed:42')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             rows = con.execute('SELECT delivery,turn_key FROM runs WHERE pr=4 ORDER BY delivery').fetchall()
         self.assertEqual(rows, [('dismissed', 'dismissed:42'), ('initial', '')])
 
     def test_queued_fixer_checks_latest_live_verdict_before_claim(self):
         self.sup.enqueue('fix', 'o/r', 3, 'a' * 40, 'fixer')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='pending',push_admitted=1 WHERE delivery='fix'")
             con.execute("UPDATE runs SET state='blocked' WHERE delivery='review'")
         reviews = [{'id': 41, 'state': 'CHANGES_REQUESTED', 'commit_id': 'a' * 40,

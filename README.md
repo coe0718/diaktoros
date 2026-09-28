@@ -270,8 +270,8 @@ Not proven, and worth knowing before you trust it:
 ## Running the tests
 
 ```bash
-python3 tests/run_tests.py                                # the offline harness
-python3 -m unittest discover -s tests -p 'test_*.py'      # the boundary suite (bubblewrap; skips without it)
+python3 tests/run_tests.py                                   # the offline harness
+python3 tests/leakguard.py discover -s tests -p 'test_*.py'  # the boundary suite (bubblewrap; skips without it)
 ```
 
 The plugin is stdlib-only and so are its tests: there is nothing to install. The harness runs in two

@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from review_loop import run_supervisor
+from review_loop import ledger, run_supervisor
 from review_loop.run_supervisor import MAX_REARMS, MAX_RETRIES, Supervisor
 
 HEAD = 'a' * 40
@@ -22,8 +22,13 @@ CHILD = r'''
 import os, sqlite3, sys, time
 db, codes, mode = sys.argv[1], sys.argv[2].split(','), sys.argv[3]
 counter = db + '.launches'
-n = len(open(counter).read().splitlines()) if os.path.exists(counter) else 0
-open(counter, 'a').write('x\n')
+if os.path.exists(counter):
+    with open(counter) as f:
+        n = len(f.read().splitlines())
+else:
+    n = 0
+with open(counter, 'a') as f:
+    f.write('x\n')
 code = int(codes[min(n, len(codes) - 1)])
 con = sqlite3.connect(db, timeout=10)
 # The worker marks the run 'running' just *after* spawning this child; a loaded machine can
@@ -40,6 +45,7 @@ if mode in ('claimed', 'confirmed'):
     con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created) "
                 "VALUES(?,?,?,?,?)", (run, mode, 'g', 1, 0))
     con.commit()
+con.close()
 if code:
     print('hermes: provider error', flush=True)
     print('upstream HTTP 429: rate limited (attempt %d)' % (n + 1), file=sys.stderr)
@@ -73,7 +79,7 @@ class Base(unittest.TestCase):
         return len(path.read_text().splitlines()) if path.exists() else 0
 
     def elapse(self):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET retry_at=0 WHERE state='waiting'")
 
     def notices(self, sup):
@@ -136,7 +142,7 @@ class PreWriteTurnFailures(Base):
     def test_redelivery_rearm_is_bounded(self):
         sup = self.sup(codes='3')
         sup.submit('d', 'o/r', 1, HEAD, 'reviewer')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='failed', retries=?", (MAX_REARMS,))
         outcome = sup.submit('d', 'o/r', 1, HEAD, 'reviewer')
         self.assertTrue(outcome.startswith('duplicate failed:'), outcome)
@@ -182,7 +188,7 @@ class PostWriteStaysQuarantined(Base):
         self.assertIn('Do not replay', notice)
         self.assertIn('Possible external write (run is uncertain', notice)
         # Even after the operator reconciles it, the run is not re-armed.
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET pid=NULL WHERE id=?", (row['id'],))
         sup.reconcile_uncertain(row['id'], reason='inspected', acknowledge_no_live_worker=True)
         self.assertTrue(sup.submit('again', 'o/r', 1, HEAD, 'reviewer').startswith(
@@ -207,13 +213,13 @@ class PostWriteStaysQuarantined(Base):
         sup = self.sup()
         sup.submit('d', 'o/r', 1, HEAD, 'fixer')
         row = sup.get('d')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='failed', push_confirmed=1 WHERE id=?", (row['id'],))
         with self.assertRaisesRegex(ValueError, 'fixer push recorded'):
             sup.retry(row['id'])
         sup.submit('a', 'o/r', 2, HEAD, 'adjudicator', turn_key='breach:3')
         adj = sup.get('a')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='failed' WHERE id=?", (adj['id'],))
             con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,created,updated) "
                         "VALUES(?,?,?,?,?,?,?,?,?)", (adj['id'], 'o/r', 2, HEAD, 'breach:3',
@@ -359,7 +365,7 @@ class OperatorCommands(unittest.TestCase):
         self.sup._spawn = lambda: None
         self.sup.submit('r', 'acme/widgets', 7, HEAD, 'reviewer')
         self.sup.submit('f', 'acme/widgets', 7, HEAD, 'fixer')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='failed', retries=4, "
                         "error='retry limit (4 attempts): turn exited with status 3', "
                         "detail='stderr: upstream HTTP 429' WHERE delivery='r'")
@@ -421,7 +427,7 @@ class OperatorCommands(unittest.TestCase):
     def test_armed_sweep_schedules_due_retries_only_with_a_runtime(self):
         from review_loop import config, gate
         loop = config.load_id('widgets')
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='waiting', retry_at=0 WHERE delivery='r'")
         with patch.object(Supervisor, '_spawn') as spawn:
             self.assertFalse(gate.resume_isolated(loop))       # no private runtime: nothing

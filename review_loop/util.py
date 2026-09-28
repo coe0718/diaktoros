@@ -2,15 +2,57 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import sys
 import time
 from typing import NoReturn
+
+# The test suite's leak recorder for child processes (tests/leakguard.py). Only that guard sets
+# REVIEW_LOOP_LEAK_LOG, and only this checkout's own file is ever loaded: the variable is a
+# switch and a log path, never a code path. With it unset, every helper below returns its
+# input unchanged, so a production child's argv, script and environment are byte-identical.
+_LEAK_SITE = Path(__file__).resolve().parents[1] / "tests" / "leaksite" / "sitecustomize.py"
 
 
 def log(message: str, quiet: bool = False) -> None:
     """Diagnostics go to stderr always — a gate's stdout is a protocol, not a console."""
     if not quiet:
         print(f"[review-loop] {message}", file=sys.stderr)
+
+
+def leak_guard() -> str | None:
+    """The leak log when tests/leakguard.py runs this process, else None."""
+    log = os.environ.get("REVIEW_LOOP_LEAK_LOG")
+    return log if log and _LEAK_SITE.is_file() else None
+
+
+def leak_guard_env(env: dict, *, pythonpath: bool = True) -> dict:
+    """Under the guard only: carry the recorder into a child whose environment is scrubbed.
+
+    ``pythonpath`` puts the recorder's directory first on the child's ``PYTHONPATH``; a child
+    started with ``-E`` ignores that, and loads it through ``leak_guard_code`` instead.
+    """
+    log = leak_guard()
+    if log:
+        env["REVIEW_LOOP_LEAK_LOG"] = log
+        if pythonpath:
+            site = str(_LEAK_SITE.parent)
+            env["PYTHONPATH"] = site + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return env
+
+
+def leak_guard_code(code: str) -> str:
+    """Under the guard only: ``code`` (a ``-c`` program or a script body) loads the recorder
+    first, by absolute path, so it works under ``-E -s`` where no path variable is read."""
+    if not leak_guard():
+        return code
+    return ("import importlib.util as _lg\n"
+            f"_lg_s = _lg.spec_from_file_location('sitecustomize', {str(_LEAK_SITE)!r})\n"
+            "_lg_m = _lg.module_from_spec(_lg_s)\n"
+            "__import__('sys').modules['sitecustomize'] = _lg_m\n"
+            "_lg_s.loader.exec_module(_lg_m)\n"
+            "del _lg, _lg_s, _lg_m\n" + code)
 
 
 def silence(reason: str = "") -> NoReturn:

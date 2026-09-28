@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from review_loop import broker_ipc, gh, review_receipt
+from review_loop import broker_ipc, gh, ledger, review_receipt
 from review_loop.run_supervisor import Supervisor
 
 HEAD = 'a' * 40
@@ -36,7 +36,7 @@ class ReceiptTests(unittest.TestCase):
         self.sup = Supervisor(root / 'runs.sqlite')
         self.sup.enqueue('d', REPO, 7, HEAD, 'reviewer')
         self.generation = review_receipt.generation_for(self.pr, self.loop, 7, HEAD)
-        with sqlite3.connect(self.sup.db) as con:
+        with ledger.connect(self.sup.db) as con:
             con.execute("UPDATE runs SET state='running', generation=?", (self.generation,))
             self.run_id = con.execute('SELECT id FROM runs').fetchone()[0]
         self.scope = broker_ipc.RunScope(REPO, 7, HEAD, 'reviewer', 'fix-7',
@@ -74,7 +74,7 @@ class ReceiptTests(unittest.TestCase):
         raise AssertionError(path)
 
     def receipt(self):
-        with sqlite3.connect(self.sup.db) as con:
+        with ledger.connect(self.sup.db) as con:
             return con.execute('SELECT state,review_id FROM review_receipts').fetchone()
 
     def test_exact_id_confirmed_and_replay_rejected(self):
@@ -120,10 +120,10 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(self.receipt(), ('claimed', None))
         self.sup.complete_uncertain(self.run_id, '', 1, 'failed')
         # The real owner is required to complete; a replay cannot forge ownership.
-        with sqlite3.connect(self.sup.db) as con:
+        with ledger.connect(self.sup.db) as con:
             con.execute("UPDATE runs SET owner='owner' WHERE id=?", (self.run_id,))
         self.sup.complete_uncertain(self.run_id, 'owner', 1, 'failed')
-        with sqlite3.connect(self.sup.db) as con:
+        with ledger.connect(self.sup.db) as con:
             self.assertEqual(con.execute('SELECT state FROM runs').fetchone()[0], 'uncertain')
 
     def test_missing_base_sha_cannot_pin_generation(self):

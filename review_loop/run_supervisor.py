@@ -25,6 +25,7 @@ from contextlib import closing, nullcontext
 from . import hostdirs
 from .hostdirs import WORKER_ENV, HostStateGone, in_worker
 
+from . import ledger, util
 from .config import DEFAULT_TURN_BUDGET_S
 
 SILENT = "[SILENT]"
@@ -1073,7 +1074,8 @@ class Supervisor:
         self.child_timeout = child_timeout
         self.create = create
         if not create:
-            self._connect().close()  # validates; a worker never schemas or migrates
+            with self._connect():  # validates; a worker never schemas or migrates
+                pass
             return
         self.db.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as con:
@@ -1104,15 +1106,13 @@ class Supervisor:
             os.replace(temp, presence)
 
     def _connect(self):
+        pragmas = ("busy_timeout=10000", "journal_mode=WAL", "synchronous=FULL")
         if self.create:
-            con = sqlite3.connect(self.db, timeout=10, isolation_level=None)
-        else:
-            con = self._worker_connect()
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA busy_timeout=10000")
-        con.execute("PRAGMA journal_mode=WAL")
-        con.execute("PRAGMA synchronous=FULL")
-        return con
+            return ledger.connect(self.db, timeout=10, isolation_level=None,
+                                  row_factory=sqlite3.Row, pragmas=pragmas)
+        # A worker opens and vets the host's ledger itself; it closes what it refuses.
+        return ledger.connect(self.db, opener=self._worker_connect, row_factory=sqlite3.Row,
+                              pragmas=pragmas)
 
     def _worker_connect(self) -> sqlite3.Connection:
         """Open the host's ledger, or raise LedgerMissing having written nothing to the file.
@@ -1718,6 +1718,8 @@ class Supervisor:
         for name in HOST_LIMIT_ENV:
             if os.environ.get(name):
                 env[name] = os.environ[name]
+        if self.fixture_mode:
+            util.leak_guard_env(env)
 
         env[WORKER_ENV] = "1"  # hostdirs: a worker never creates host state (#108)
         _WORKERS[:] = [worker for worker in _WORKERS if worker.poll() is None]
@@ -2101,10 +2103,11 @@ class Supervisor:
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             try:
                 child = subprocess.Popen(self.fixture_command,
-                                         env={"PATH": "/usr/bin:/bin", "HOME": os.environ["HOME"],
+                                         env=util.leak_guard_env(
+                                             {"PATH": "/usr/bin:/bin", "HOME": os.environ["HOME"],
                                               "HERMES_HOME": os.environ["HERMES_HOME"],
                                               # What the production turn hands Hermes as --run-budget.
-                                              "REVIEW_LOOP_TURN_BUDGET": str(int(budget))},
+                                              "REVIEW_LOOP_TURN_BUDGET": str(int(budget))}),
                                          stdin=subprocess.DEVNULL, stdout=out,
                                          stderr=err, close_fds=True,
                                          start_new_session=True)

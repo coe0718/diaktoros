@@ -20,7 +20,6 @@ import os
 import pathlib
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -34,6 +33,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+from review_loop import ledger  # noqa: E402 - importable only once ROOT is on the path
 
 # Fixtures must not inherit the source checkout's Git owner: cleanup correctly
 # refuses to delete artifacts under an unrelated repository, even a test repo.
@@ -114,10 +114,10 @@ def review(login: str, state: str = "changes_requested", head: str = HEAD_A, rid
 
 STUB_SRC = '''#!/usr/bin/env python3
 """Answers GitHub REST paths from a JSON world. Unknown paths print null (= unknown)."""
-import json, os, re, sys
+import json, os, pathlib, re, sys
 
 path = sys.argv[1]
-world = json.loads(open(os.environ["GH_WORLD"]).read())
+world = json.loads(pathlib.Path(os.environ["GH_WORLD"]).read_text())
 method = os.environ.get("GH_METHOD", "GET")
 repo = world.get("repo")
 body = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -143,7 +143,7 @@ if hook_ping and method == "POST":
         log.insert(0, {"id": world["next_delivery_id"], "event": "ping",
                        "status_code": (world.get("ping_status") or {}).get(hid, 200),
                        "delivered_at": "2026-09-26T12:00:%02dZ" % (world["next_delivery_id"] % 60)})
-    open(os.environ["GH_WORLD"], "w").write(json.dumps(world))
+    with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
     print("null")
 elif hook_deliveries:
     # GitHub's recent-delivery log for a hook; none recorded reads as an empty list.
@@ -159,7 +159,7 @@ elif method == "POST" and path.endswith("/hooks"):
                        "insecure_ssl": "0", "secret": "********"}}
     hooks.append(hook)
     world["next_hook_id"] += 1
-    open(os.environ["GH_WORLD"], "w").write(json.dumps(world))
+    with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
     print(json.dumps(hook))
 elif hook_one and method in ("DELETE", "PATCH", "GET"):
     hooks = world.get("hooks") or []
@@ -168,14 +168,14 @@ elif hook_one and method in ("DELETE", "PATCH", "GET"):
         print("null")
     elif method == "DELETE":
         world["hooks"] = [h for h in hooks if h is not hook]
-        open(os.environ["GH_WORLD"], "w").write(json.dumps(world))
+        with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
         print("null")
     elif method == "PATCH":
         spec = json.loads(body or "{}")
         if "active" in spec:
             hook["active"] = spec["active"]
         hook["config"].update(spec.get("config") or {})
-        open(os.environ["GH_WORLD"], "w").write(json.dumps(world))
+        with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
         print(json.dumps(hook))
     else:
         print(json.dumps(hook))
@@ -185,7 +185,7 @@ elif re.search(r"/hooks\\?per_page=100(?:&page=\\d+)?$", path):
     print(json.dumps(hooks[(page-1)*100:page*100] if isinstance(hooks, list) else hooks))
 elif "/requested_reviewers" in path:
     world.setdefault("requested_reviewers", []).append([n_of(path), json.loads(body or "{}")])
-    open(os.environ["GH_WORLD"], "w").write(json.dumps(world))
+    pathlib.Path(os.environ["GH_WORLD"]).write_text(json.dumps(world))
     print("{}")
 elif path.endswith("/reviews?per_page=100"):
     print(json.dumps((world["prs"].get(str(n_of(path))) or {}).get("reviews", [])))
@@ -472,7 +472,7 @@ def no_ledger_run() -> bool:
     db = TMP / "hermes-home" / "state" / "review-loop-runs.sqlite"
     if not db.exists():
         return True
-    with sqlite3.connect(db) as con:
+    with ledger.connect(db) as con:
         return con.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
 
 

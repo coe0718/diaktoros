@@ -144,7 +144,7 @@ sys.path.insert(0, sys.argv[1])
 from review_loop.run_supervisor import SILENT, Supervisor
 root = pathlib.Path(sys.argv[2])
 child = root / "child.py"
-child.write_text("import sys\\nopen(sys.argv[1], 'a').write('launched')\\n")
+child.write_text("import sys\\nwith open(sys.argv[1], 'a') as f: f.write('launched')\\n")
 sup = Supervisor(root / "ledger.sqlite", fixture_mode=True,
                  fixture_command=[sys.executable, str(child), str(root / "launched")])
 assert sup.enqueue("d", "o/r", 1, "sha", "reviewer") == SILENT

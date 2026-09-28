@@ -567,7 +567,8 @@ class DoctorApplyUninstall(Base):
             #!{sys.executable}
             import json, os, sys
             path = sys.argv[1]
-            world = json.load(open({str(world)!r}))
+            with open({str(world)!r}) as handle:
+                world = json.load(handle)
             method = os.environ.get("GH_METHOD", "GET")
             def masked(hook):
                 config = dict(hook["config"])
@@ -586,7 +587,7 @@ class DoctorApplyUninstall(Base):
                 if path.endswith("/pings"):
                     seen.insert(0, {{"id": len(seen) + 1, "event": "ping", "status_code": 200,
                                      "delivered_at": "2026-01-01T00:%02d:00Z" % len(seen)}})
-                    json.dump(world, open({str(world)!r}, "w"))
+                    with open({str(world)!r}, "w") as f: json.dump(world, f)
                     print("null")
                 else:
                     print(json.dumps(seen))
@@ -600,7 +601,8 @@ class DoctorApplyUninstall(Base):
                     if "config" in body:
                         hook["config"] = dict(body["config"])      # wholesale, worst case
                     world["patches"] += 1
-                    json.dump(world, open({str(world)!r}, "w"))
+                    with open({str(world)!r}, "w") as handle:
+                        json.dump(world, handle)
                 print(json.dumps(masked(hook)))
             else:
                 print("{{}}")

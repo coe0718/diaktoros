@@ -147,7 +147,7 @@ def group_parallel() -> None:
     check("same delivery is deduplicated", supervisor.enqueue("delivery-7", REPO, 7, HEAD_A, "reviewer"), "[SILENT]")
     check("same head under another delivery is deduplicated",
           supervisor.enqueue("redelivery-7", REPO, 7, HEAD_A, "reviewer"), "[SILENT]")
-    with sqlite3.connect(db) as con:
+    with ledger.connect(db) as con:
         check("one ledger row for duplicate head",
               con.execute("SELECT COUNT(*) FROM runs WHERE pr=7 AND seat='reviewer'").fetchone()[0], 1)
         # A new head and the opposite seat cannot occupy this same PR while it is claimed.
@@ -157,7 +157,7 @@ def group_parallel() -> None:
     check("other seat same PR waits", supervisor.get("fix-7")["state"], "pending")
     check("no third claim while occupied", supervisor._claim(), None)
     # A finished turn releases precisely one slot. Another pending PR can then claim it.
-    with sqlite3.connect(db) as con:
+    with ledger.connect(db) as con:
         con.execute("UPDATE runs SET state='succeeded' WHERE id=?", (first[0],))
     third = supervisor._claim()
     check("completed reviewer frees one slot", third is not None, True)

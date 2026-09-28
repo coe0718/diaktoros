@@ -202,7 +202,11 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
             headers = {k.lower(): v for k, v in resp.headers.items()}
             return Response(json.loads(raw), "", resp.status, headers)
     except urllib.error.HTTPError as exc:
-        detail = one_line(exc.read().decode(errors="replace"), 120)
+        try:   # an HTTPError holds the response open: close it, not the collector
+            detail = one_line(exc.read().decode(errors="replace"), 120)
+        finally:
+            exc.close()
+        # Safe after close(): HTTPError.headers is a property over .hdrs, which close() leaves.
         headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
         return Response(None, f"HTTP {exc.code}{f' {detail}' if detail else ''}", exc.code, headers)
     except Exception as exc:
