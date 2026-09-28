@@ -587,7 +587,7 @@ class DoctorApplyUninstall(Base):
                 if path.endswith("/pings"):
                     seen.insert(0, {{"id": len(seen) + 1, "event": "ping", "status_code": 200,
                                      "delivered_at": "2026-01-01T00:%02d:00Z" % len(seen)}})
-                    json.dump(world, open({str(world)!r}, "w"))
+                    with open({str(world)!r}, "w") as f: json.dump(world, f)
                     print("null")
                 else:
                     print(json.dumps(seen))

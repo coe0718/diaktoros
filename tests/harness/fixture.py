@@ -143,7 +143,7 @@ if hook_ping and method == "POST":
         log.insert(0, {"id": world["next_delivery_id"], "event": "ping",
                        "status_code": (world.get("ping_status") or {}).get(hid, 200),
                        "delivered_at": "2026-09-26T12:00:%02dZ" % (world["next_delivery_id"] % 60)})
-    open(os.environ["GH_WORLD"], "w").write(json.dumps(world))
+    with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
     print("null")
 elif hook_deliveries:
     # GitHub's recent-delivery log for a hook; none recorded reads as an empty list.
@@ -159,7 +159,7 @@ elif method == "POST" and path.endswith("/hooks"):
                        "insecure_ssl": "0", "secret": "********"}}
     hooks.append(hook)
     world["next_hook_id"] += 1
-    open(os.environ["GH_WORLD"], "w").write(json.dumps(world))
+    with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
     print(json.dumps(hook))
 elif hook_one and method in ("DELETE", "PATCH", "GET"):
     hooks = world.get("hooks") or []
@@ -168,14 +168,14 @@ elif hook_one and method in ("DELETE", "PATCH", "GET"):
         print("null")
     elif method == "DELETE":
         world["hooks"] = [h for h in hooks if h is not hook]
-        open(os.environ["GH_WORLD"], "w").write(json.dumps(world))
+        with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
         print("null")
     elif method == "PATCH":
         spec = json.loads(body or "{}")
         if "active" in spec:
             hook["active"] = spec["active"]
         hook["config"].update(spec.get("config") or {})
-        open(os.environ["GH_WORLD"], "w").write(json.dumps(world))
+        with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
         print(json.dumps(hook))
     else:
         print(json.dumps(hook))

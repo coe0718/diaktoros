@@ -862,7 +862,7 @@ class GateFailureTest(unittest.TestCase):
         if not stub.exists():
             stub.write_text(
                 f"#!{sys.executable}\nimport json, os, sys, time\n"
-                f"mode = json.load(open({str(mode)!r}))\npath = sys.argv[1]\n"
+                f"with open({str(mode)!r}) as f:\n    mode = json.load(f)\npath = sys.argv[1]\n"
                 "status = next((v for k, v in mode['paths'].items() if path.endswith(k)),"
                 " mode['default'])\n"
                 "if status == 'hang':\n    time.sleep(60)\n"
