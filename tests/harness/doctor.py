@@ -239,14 +239,13 @@ def group_doctor() -> None:
     before_posts = len(RECEIVED)
     rc, out = run_doctor("--loop", "widgets")
     check("a correct install passes", rc, 0)
-    # The number of checks grows as `doctor` gains them, so assert the invariant rather than a
-    # literal that has to be kept in step in two files: every check ran, and none failed or was
-    # unknown. A pinned count silently stops testing the claim it names the moment doctor changes.
-    summary = next((ln for ln in out.splitlines() if ln.startswith("widgets: ") and "checks)" in ln), "")
-    parts = summary.split()   # "widgets: N verified, 0 failed, 0 unknown (of M checks)"
+    # The invariant, not a count: every check verified, none failed or unknown. A hard-coded
+    # total breaks each time a branch adds a check (#104's gate:timeout lines, main's own).
+    import re as _re
+    summary = _re.search(r"widgets: (\d+) verified, (\d+) failed, (\d+) unknown \(of (\d+) checks\)", out)
     check("  every check verified",
-          "0 failed, 0 unknown" in summary and len(parts) > 2 and parts[1] == parts[-2],
-          True)
+          bool(summary) and summary.group(1) == summary.group(4)
+          and summary.group(2) == summary.group(3) == "0", True)
     check("  nothing is marked failed", "❌" in out, False)
     check("  the header says it is read-only",
           "read-only: it writes nothing and fires nothing" in out, True)

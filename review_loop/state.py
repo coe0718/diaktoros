@@ -40,6 +40,24 @@ from .util import log, now_iso
 # against itself; nested sections (``take_seat`` queueing under its own claim) reuse the outer one.
 _HELD = threading.local()
 
+# Seat claims this process made, as ``(state, seat, key, at)``. A gate that crashes or runs out
+# of time after claiming a seat releases exactly these on its way out (#75, ``gate_failures``),
+# so a failed delivery never holds the seat until ``ttl_min`` expires.
+CLAIMS: list = []
+
+
+def release_process_claims() -> list[str]:
+    """Free every seat claim this process made that is still the one on disk; name them."""
+    freed = []
+    while CLAIMS:
+        st, seat, key, at = CLAIMS.pop()
+        try:
+            if st.release_exact(seat, key, at):
+                freed.append(f"{seat}:{key}")
+        except Exception as exc:  # noqa: BLE001 - best effort; the TTL remains the backstop
+            log(f"could not release {seat} claim on {key}: {type(exc).__name__}: {exc}")
+    return freed
+
 
 def _atomic_write(path: pathlib.Path, data) -> None:
     """Publish ``data`` to ``path`` whole or not at all, and durably before returning."""
@@ -199,12 +217,27 @@ class LoopState:
         with, and only a release naming the same ``run`` may free it."""
         with self.locked():
             data = self._load(self.locks, {}) or {}
-            entry = {"at": time.time(), "head": head, "why": why,
+            at = time.time()
+            entry = {"at": at, "head": head, "why": why,
                      "budget": budget if budget is not None else config.turn_budget(self.loop, seat)}
             if run is not None:
                 entry["run"] = run
             data.setdefault(seat, {})[key] = entry
             self._save(self.locks, data)
+            CLAIMS.append((self, seat, key, at))
+
+    def release_exact(self, seat: str, key: str, at: float) -> bool:
+        """Free one claim only if it is still the very claim made at ``at``."""
+        with self.locked():
+            data = self._load(self.locks, {}) or {}
+            entry = (data.get(seat) or {}).get(key)
+            if not isinstance(entry, dict) or entry.get("at") != at:
+                return False
+            data[seat].pop(key)
+            if not data[seat]:
+                data.pop(seat, None)
+            self._save(self.locks, data)
+            return True
 
     def release_if(self, seat: str, key: str, head: str | None = None,
                    run: str | None = None) -> bool:
