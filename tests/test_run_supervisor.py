@@ -472,13 +472,15 @@ class Lifecycle(unittest.TestCase):
             (cfg / f"{name}.json").write_text("{}")
         (cfg / ".ledger-present").write_text("x")
         with patch.object(config, "config_dir", return_value=cfg), \
-                patch.object(config, "load_id", side_effect=lambda name: {"id": name}), \
+                patch.object(config, "load_id",
+                             side_effect=lambda name: {"id": name, "repo": f"acme/{name}"}), \
                 patch.object(cli, "_routes_of", return_value={}), \
                 patch.object(cli.route_intent, "forget"), \
                 contextlib.redirect_stdout(io.StringIO()):
-            cli.cmd_uninstall(Namespace(loop="a", keep_config=False))
+            # --keep-hooks: this test is about the ledger marker, not the repo's hooks (#57).
+            cli.cmd_uninstall(Namespace(loop="a", keep_config=False, keep_hooks=True))
             self.assertTrue((cfg / ".ledger-present").exists())  # loop b still configured
-            cli.cmd_uninstall(Namespace(loop="b", keep_config=False))
+            cli.cmd_uninstall(Namespace(loop="b", keep_config=False, keep_hooks=True))
         self.assertFalse((cfg / ".ledger-present").exists())
 
     def pin_production_home(self):

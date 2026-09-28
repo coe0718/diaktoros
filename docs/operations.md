@@ -102,7 +102,8 @@ hermes review-loop drain --loop name --seat reviewer
 hermes review-loop fixer-push --loop name --enable --acknowledge-pr-race   # let the fixer publish (off by default)
 hermes review-loop retry --loop name --pr 123   # re-arm a run that failed before any GitHub write
 hermes review-loop cleanup --loop name --dry-run   # every closed PR; --pr N for one
-hermes review-loop uninstall --loop name
+hermes review-loop uninstall --loop name   # deletes its repo hooks and cron job first, then routes and config
+hermes review-loop uninstall --loop name --admin-token LOGIN --purge   # hook-admin token; also the default state dir
 ```
 
 `arm` and `arm --pause` never report what they asked for — after each PATCH they read the hook back
@@ -128,7 +129,7 @@ cause, never flipped, and leaves its seat ABSENT; so does a seat whose route is 
 registry, or bound to another profile ("the wake would run the wrong agent"), in `doctor`'s
 words — and `arm` will not arm a hook at the seat's URL that subscribes to the wrong event, does
 not post JSON, or ends in a trailing slash (`doctor`'s MISMATCH), since it would never wake the
-seat; pausing still recognises such a hook as this install's and stops it. Pausing is stricter about
+seat; pausing and `uninstall` still recognise such a hook as this install's (and stop or delete it). Pausing is stricter about
 *whose* hook it is and looser about the route: `arm --pause` stops every hook this install made —
 at the route's registry URL, or the URL the loop config gives it — even once the route is gone
 from the registry (as `uninstall` leaves it), and still never touches another install's. The `fix:` advice is per hook: a
@@ -137,6 +138,49 @@ failed PATCH that looks transient (a timeout, a 5xx) gets "retry `arm`" first, a
 goes out as the loop's `read_token`; the `fix:` line names the scope that login's file needs
 (`repository_hooks: write`, `admin:repo_hook` or classic `repo`) and, when it is the reader, the
 owner case above.
+
+`uninstall` deletes the loop's repo hooks and its watchdog job *before* it removes the routes and
+the config, and reads both back. If it cannot (a token without `admin:repo_hook`/`repo`, an API
+failure, a job the scheduler will not remove) it refuses, changes nothing else, and prints the
+exact `gh api -X DELETE …` / `hermes cron remove …` commands; `--keep-hooks` is the explicit
+opt-out. `uninstall` deletes only hooks at the loop's own route URLs; a hook on the same route
+name at another origin, profile or path is reported with that cause and left alone. It concludes
+"no hooks left" only from a listing read after its DELETEs (or after finding none), so a hook
+created meanwhile is caught and refused; when a listing cannot be read or confirmed it says so
+and prints commands to *look*, never DELETE commands for hooks it has not seen. A loop with no
+`host` has no route URL to compare with, so `uninstall` reads the listing first: when any hook
+posts to the loop's route names (a host blanked by hand leaves its hooks behind — or they may be
+another install's on the same repo) it refuses with exit 2 and the commands to *look* at them,
+never DELETE commands it cannot justify; an entry without an integer id refuses too; it goes on
+only when none does. `set --host` refuses a blank or invalid origin rather than blanking it. `--purge` refuses
+up front, untouched, when the state directory cannot even be read for its in-flight check. It
+deletes the state directory last; if that delete — or removing the config before it — fails (a
+permission, a busy mount) it exits 2 with `uninstall INCOMPLETE — removed: …; left behind: …` and
+the exact `rm` commands that finish it — the config may already be gone by then, so a re-run
+cannot. A cron shim that cannot be removed (or is a symlink, which is never followed) does the
+same: the run ends INCOMPLETE (exit 2) with the shim under "left behind" and its `rm` command,
+alongside anything else that stayed. Every shared file a later step rewrites — the route
+registry — is read before the first hook is touched, so an unparseable one refuses with nothing
+removed; a route step that still fails later (a registry that changes or becomes unwritable
+mid-run) ends INCOMPLETE with the config kept, so re-running `uninstall` finishes it. A loop file
+the loader refuses is never torn down on a guess: `uninstall` exits 2 with the reason and the
+commands to look up what it may still have live (its hooks' ids, its watchdog job). When the
+loop removed was the last one configured, `uninstall` also forgets the run ledger's presence
+marker (`review-loops.d/.ledger-present`, after `--purge` has removed the state directory), so a
+later fresh install is not reported as a vanished ledger. `init --hooks` refuses when hooks from a previous install still post to the loop's
+routes (they sign with a secret the new routes will not hold), and `doctor` fails a route with
+more than one hook, or whose latest delivery the gateway answered 401/403 (a secret that does not
+match) or any other non-2xx (a 5xx is the gateway erroring); a latest delivery with no HTTP answer
+at all (timed out, refused) is reported as unproven, never as green. After `arm` (and `init --hooks --arm`) activates the hooks it asks GitHub to **ping** each
+one and waits up to 10s for the delivery: `✅ … signature accepted`, `❌ … HTTP 401 — signature
+rejected` (exit 1), or `⚠️ no ping delivery seen` (nothing proven yet). A ping is harmless: the
+gateway checks its signature, then ignores it, because the loop's routes subscribe only to
+`pull_request` / `pull_request_review`. `doctor` never pings; `selftest` reads the recorded
+deliveries and pings only with `--ping` — only hooks at the loop's own route URLs, matched the way
+`arm` and `uninstall` match them, never another install's or another profile's hook on the same
+route name (its single
+GitHub write, e.g.
+`hermes review-loop selftest --loop name --no-model --ping --admin-token LOGIN`).
 
 `set` is how you change the knobs after install — `--reviewer-concurrency`, `--fixer-concurrency`,
 `--concurrency` (the default for both seats), `--cap`, `--clone`, `--base`, `--grace-min`,

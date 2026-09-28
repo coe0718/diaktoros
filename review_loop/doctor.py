@@ -41,6 +41,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import socket
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -957,11 +958,12 @@ def hook_url_difference(posted: str, expected: str) -> str:
 def install_hook_urls(loop: dict, name: str) -> list[str]:
     """Every URL a hook *this install* made (or is about to make) for route ``name`` posts to.
 
-    An ownership question, not a delivery one: pausing (``arm --pause``) asks "is this hook one
-    of ours?", and the answer includes the
-    route's registry URL whatever profile it binds, and the URL the loop's config gives it —
-    which is all there is once the registry entry is gone (``uninstall`` removes it, then tells
-    the operator to pause any hooks it left). Arming never uses this: whether a hook *wakes the
+    An ownership question, not a delivery one: pausing (``arm --pause``), ``uninstall``
+    deleting its hooks (``cli._classify_hooks``) and ``init``'s stale-hook guard (the same
+    function) ask "is this hook one of ours?", and the answer includes the route's registry URL
+    whatever profile it binds, and the URL the loop's config gives it — which is all there is
+    once the registry entry is gone (a route removed before its hooks, or for ``init`` not
+    written yet). Arming never uses this: whether a hook *wakes the
     seat* is ``seat_route_target``'s question, and only the registry binding answers it.
     """
     urls = []
@@ -996,14 +998,15 @@ def split_route_hooks(loop: dict, listing: list, names, *,
                       ownership: bool = False) -> tuple[list[dict], list[dict]]:
     """``(own, other)`` for the hooks posting to one of the route ``names``.
 
-    The one matcher for hooks (``arm``, arming and pausing; ``doctor``'s helpers use the same
-    URL rules). A hook is a
+    The one matcher for hooks: ``arm`` (arming and pausing), ``uninstall`` and ``init``'s
+    stale-hook guard (via ``cli._classify_hooks``) and ``selftest --ping``; ``doctor``'s helpers
+    use the same URL rules. A hook is a
     seat's only when it posts to exactly that route's registry URL, and the registry entry binds
     the seat's profile (``seat_route_target``). Every other hook
     whose last ``/webhooks/<route>`` segment names one of the routes — another profile's URL, a
     retired gateway, another install — is *other*: reported, never flipped, deleted or pinged
-    as this loop's. ``ownership=True`` (pausing) counts the URLs ``install_hook_urls`` names
-    instead. Raises ``ConfigError`` when the loop has no usable
+    as this loop's. ``ownership=True`` (pausing, uninstall, init's stale-hook guard) counts the
+    URLs ``install_hook_urls`` names instead. Raises ``ConfigError`` when the loop has no usable
     host.
     """
     config.webhook_host(loop.get("host"), required=True)
@@ -1035,6 +1038,29 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
     # A wrong origin/profile/path for the same webhook route is a mismatch (reported with its
     # cause), not an absent hook — "the same route" is the exact segment, never a substring.
     candidates = exact or [hook for hook in hooks if hook_route_name(hook) == name]
+    # Every hook posting to this route name, on any origin. More than one is a previous install
+    # left behind: GitHub never returns a secret, but a leftover signs with the secret the old
+    # route held, so at most one of them can authenticate — and "hook N active" says nothing
+    # about which one that is.
+    # Only this gateway's hooks can be duplicates: the same route name on another origin is
+    # another install (or an old gateway) and never receives this route's deliveries.
+    # A duplicate is a second hook at the route's own URL; one at another profile, path or
+    # origin never reaches this route at all (the gateway answers it 404, or it goes elsewhere).
+    named = list(exact)
+    if len(named) > 1:
+        ids = sorted(hook.get("id") for hook in named if isinstance(hook.get("id"), int))
+        active = sum(1 for hook in named if hook.get("active"))
+        repo = loop["repo"]
+        deletes = "; ".join(f"`gh api -X DELETE {shlex.quote(f'repos/{repo}/hooks/{i}')}`"
+                            for i in ids[:-1])
+        return Check(f"hook:{name}", MISMATCH,
+                     f"{len(named)} repo hooks post to this route (ids "
+                     f"{', '.join(str(i) for i in ids)}; {active} active) — duplicates from a "
+                     "previous install sign with a secret this route no longer holds, so their "
+                     "deliveries are refused",
+                     f"`hermes review-loop uninstall --loop {shlex.quote(loop['id'])}` deletes "
+                     "them all, then re-run init --hooks; or keep only the newest (GitHub ids "
+                     f"only grow, so {ids[-1]} is the latest init's) and delete the rest: {deletes}")
     match = next((hook for hook in candidates if hook.get("active") and
                   event in (hook.get("events") or [])), None) or (candidates[0] if candidates else None)
     if match is None:
@@ -1066,12 +1092,74 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                      f"hook {hook_id} has content_type {content_type!r}, expected 'json'",
                      f"re-run init --hooks, or set hook {hook_id}'s content_type to json: "
                      "the gate reads a JSON payload, not form-encoded data")
+    delivery = check_deliveries(loop, hook_id, name)
+    if isinstance(delivery, Check):
+        return delivery
     if not match.get("active"):
         return Check(f"hook:{name}", VERIFIED,
                      f"hook {hook_id} → [webhook URL redacted] ({event}, PAUSED — nothing fires "
-                     f"until `hermes review-loop arm --loop {loop['id']}`)", paused=True)
+                     f"until `hermes review-loop arm --loop {loop['id']}`; {delivery})", paused=True)
     return Check(f"hook:{name}", VERIFIED,
-                 f"hook {hook_id} → [webhook URL redacted] ({event}, active)")
+                 f"hook {hook_id} → [webhook URL redacted] ({event}, active; {delivery})")
+
+
+# The gateway's answers to a delivery whose signature it would not accept: 401 is "Invalid
+# signature", 403 a route that is disabled or has no HMAC secret to check against.
+REJECTED = {401: "signature rejected — the hook's secret does not match the route's",
+            403: "refused — the route is disabled or holds no secret"}
+
+
+def check_deliveries(loop: dict, hook_id, name: str) -> "Check | str":
+    """How the gateway answered this hook's most recent delivery — GitHub's only secret evidence.
+
+    GitHub never returns a hook's secret, but it keeps each recent delivery with the status code
+    the gateway answered. A latest delivery answered 401/403 is a hook signing with a secret the
+    route does not hold (a previous install's, say): it looks armed and wakes nothing. Returns a
+    failing/unknown ``Check``, or a short phrase for the verified line.
+    """
+    path = f"/repos/{loop['repo']}/hooks/{hook_id}/deliveries?per_page=30"
+    data, error = gh.fetch(loop, path)
+    if error or not isinstance(data, list) or not all(isinstance(d, dict) for d in data):
+        reason = error or "no delivery list returned"
+        return Check(f"hook:{name}", UNKNOWN,
+                     f"hook {hook_id} found, but its recent deliveries could not be read ({reason}) "
+                     "— whether its secret matches the route is unproven",
+                     f"give the read token hook read access (`read:repo_hook`, or `repo`), or look "
+                     f"by hand: `gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`")
+    stamped = [d for d in data if isinstance(d.get("delivered_at"), str)]
+    if not stamped:
+        return "no deliveries yet — the secret is unproven until the first one arrives"
+    latest = max(stamped, key=lambda d: d["delivered_at"])
+    code = latest.get("status_code")
+    deliveries = f"`gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`"
+    ping = f"`hermes review-loop selftest --loop {shlex.quote(loop['id'])} --no-model --ping`"
+    if type(code) is not int or code <= 0:
+        # GitHub recorded the delivery but no HTTP answer (a timeout, a refused connection): the
+        # gateway never judged the signature, so nothing is proven — hook_ping refuses this too.
+        return Check(f"hook:{name}", UNKNOWN,
+                     f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got no HTTP "
+                     f"response from the gateway (GitHub recorded: "
+                     f"{latest.get('status') or 'no status'}) — it never answered, so whether "
+                     "its secret matches is unproven",
+                     f"check the gateway is running and reachable from GitHub (`hermes gateway "
+                     f"status`), then {ping}; the delivery log: {deliveries}")
+    if code in REJECTED:
+        return Check(f"hook:{name}", MISMATCH,
+                     f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got HTTP {code}: "
+                     f"{REJECTED[code]}, so the hook wakes nothing",
+                     f"`hermes review-loop uninstall --loop {shlex.quote(loop['id'])}` (deletes the "
+                     f"hook), then re-run init --hooks so the new hook and route share one fresh "
+                     f"secret; then `hermes review-loop arm --loop {shlex.quote(loop['id'])}`")
+    if not 200 <= code < 300:
+        # A 5xx is the gateway erroring on the delivery (and any other non-2xx is it refusing):
+        # either way nothing woke, and the signature was never shown to verify.
+        kind = "the gateway errored" if code >= 500 else "the gateway did not accept it"
+        return Check(f"hook:{name}", MISMATCH,
+                     f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got HTTP {code}: "
+                     f"{kind}, so the hook wakes nothing and its secret is unproven",
+                     f"read the gateway's log for that delivery ({deliveries}), fix what it "
+                     f"reports, then {ping}")
+    return f"latest delivery {code}"
 
 
 # -- the report ------------------------------------------------------------------

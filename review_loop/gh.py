@@ -72,7 +72,7 @@ def token(loop: dict, login: str | None = None) -> str:
     return path.read_text().strip()
 
 
-def _stub(path: str, method: str, body) -> Response:
+def _stub(path: str, method: str, body, login: str = "") -> Response:
     """The stub executable's answer, shaped like a real one.
 
     ``(None, "")`` means the stub answered "no such resource" — the same shape ``api`` gives a
@@ -83,7 +83,9 @@ def _stub(path: str, method: str, body) -> Response:
     if not stub:
         return Response(None, "")
     argv = [stub, path] if not body else [stub, path, json.dumps(body)]
-    env = {**os.environ, "GH_METHOD": method}
+    # GH_LOGIN names the token login the call would use (never the token), so a stub can play
+    # a read token that GitHub refuses a hook write.
+    env = {**os.environ, "GH_METHOD": method, "GH_LOGIN": str(login or "")}
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=30, env=env)
     except Exception as exc:
@@ -118,7 +120,9 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
     things of the operator, and the token's expiry arrives only as a response header.
     """
     if os.environ.get("REVIEW_LOOP_GH_STUB"):
-        return _stub(path, method, body)
+        # The login travels to the stub (as GH_LOGIN, never a token) so a test can play a read
+        # token GitHub refuses a hook write.
+        return _stub(path, method, body, login or loop.get("read_token") or "")
     try:
         tok = token(loop, login)
     except GitHubError as exc:
@@ -267,6 +271,11 @@ def hooks_path(loop: dict) -> str:
     return f"/repos/{loop['repo']}/hooks?per_page=100"
 
 
+def hooks_read(loop: dict, login: str | None = None) -> tuple[list[dict] | None, str]:
+    """Every repo hook (all pages), or ``(None, reason)`` — never a prefix of the listing."""
+    return _read_pages(loop, hooks_path(loop), "hook", MAX_PR_PAGES, login=login)
+
+
 def pr(loop: dict, number: int):
     return api(loop, pr_path(loop, number))
 
@@ -290,7 +299,8 @@ def reviews_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
     return _read_pages(loop, reviews_path(loop, number), "review", MAX_REVIEW_PAGES)
 
 
-def _read_pages(loop: dict, path: str, what: str, max_pages: int) -> tuple[list[dict] | None, str]:
+def _read_pages(loop: dict, path: str, what: str, max_pages: int,
+                login: str | None = None) -> tuple[list[dict] | None, str]:
     """Every page of a ``per_page=100`` listing, or ``(None, reason)`` — never a prefix of it.
 
     A failed, malformed or oversized page anywhere makes the whole listing unknown: the caller
@@ -299,7 +309,7 @@ def _read_pages(loop: dict, path: str, what: str, max_pages: int) -> tuple[list[
     result: list[dict] = []
     for page in range(1, max_pages + 1):
         page_path = path if page == 1 else f"{path}&page={page}"
-        items, error = fetch(loop, page_path)
+        items, error = fetch(loop, page_path, login=login) if login else fetch(loop, page_path)
         if error:
             return None, f"{what} page {page}: {error}"
         if not isinstance(items, list) or len(items) > REVIEW_PAGE_SIZE or not all(
