@@ -72,8 +72,8 @@ def install_doctor_fixture() -> dict:
     `reset()` gives the loop, the clone and the three routes. The parts doctor exists to check
     beyond those are built here explicitly: the two profile homes (with the GH_TOKEN a seat
     pushes with, and the model doctor resolves as that profile), owner-only PAT files, the cron
-    shim pinned to *this* plugin install, the scheduler's job store, and two repo hooks pointing
-    at this loop's own gateway.
+    shim pinned to *this* plugin install, the scheduler's job store, two repo hooks pointing
+    at this loop's own gateway, and the gate shims in each serving profile's scripts/.
     """
     from review_loop import cli, config
 
@@ -88,7 +88,7 @@ def install_doctor_fixture() -> dict:
         (home / ".env").write_text("DISCORD_BOT_TOKEN=unused\nDISCORD_HOME_CHANNEL=0\n"
                                    "GH_TOKEN=unused\n")
     write_seat_models()
-    for pat in (TMP / "rev.pat", TMP / "fix.pat"):
+    for pat in (TMP / "rev.pat", TMP / "fix.pat", READ_PAT):
         pat.chmod(0o600)
     scripts = TMP / "hermes-home" / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
@@ -109,6 +109,9 @@ def install_doctor_fixture() -> dict:
                     "content_type": "json"}},
     ]
     save_world()
+    # The gate shims the gateway runs from each serving profile's scripts/ (issue #105).
+    from review_loop import gate_shims
+    gate_shims.install(config.load_id("widgets"))
     return config.load_id("widgets")
 
 
@@ -198,6 +201,47 @@ def resolver_venv(dest: pathlib.Path) -> str:
     return str(dest)
 
 
+# The functions doctor's describe step asks the runtime's Hermes (seat_model.HERMES_WIRE_FUNCTIONS),
+# as a miniature: this fixture's profiles use built-in providers only. A runtime `source` without
+# Hermes is a held turn, and doctor now says so (#118); the pinned Hermes's own answers are
+# checked by tests/test_seat_models.py HermesAgreement.
+FAKE_HERMES_SOURCE = {
+    "hermes_cli/__init__.py": "",
+    "hermes_cli/runtime_provider.py": (
+        "def _parse_api_mode(raw):\n"
+        "    mode = str(raw or '').strip().lower()\n"
+        "    return mode if mode in ('chat_completions', 'codex_responses', 'anthropic_messages') else None\n"
+        "def _detect_api_mode_for_url(base_url):\n"
+        "    from urllib.parse import urlsplit\n"
+        "    parts = urlsplit((base_url or '').strip().lower())\n"
+        "    if parts.hostname == 'api.anthropic.com' or parts.path.rstrip('/').endswith('/anthropic'):\n"
+        "        return 'anthropic_messages'\n"
+        "    return None\n"),
+    "hermes_cli/runtime_provider_custom.py": (
+        "def get_secret_str(name, default=''):\n"
+        "    raise AssertionError('doctor must never read a secret')\n"
+        "def _get_named_custom_provider(requested):\n"
+        "    return None\n"
+        "def _opencode_family_for_custom(requested, base_url):\n"
+        "    return None\n"),
+    "hermes_cli/models.py": ("def opencode_model_api_mode(family, model):\n"
+                             "    return 'chat_completions'\n"),
+    "hermes_cli/auth.py": ("def resolve_provider(requested=None, **_):\n"
+                           "    name = (requested or 'auto').strip().lower()\n"
+                           "    if name in ('openrouter', 'nous', 'anthropic', 'custom'):\n"
+                           "        return name\n"
+                           "    raise ValueError('Unknown provider ' + name)\n"),
+}
+
+
+def fake_hermes_source() -> str:
+    root = TMP / "hermes-source"
+    for name, body in FAKE_HERMES_SOURCE.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(body)
+    return str(root)
+
+
 def doctor_runtime_fixture() -> list[pathlib.Path]:
     """A runtime file whose "Hermes" is this interpreter, and a provider in each seat profile.
 
@@ -208,7 +252,7 @@ def doctor_runtime_fixture() -> list[pathlib.Path]:
     home = TMP / "hermes-home"
     venv = TMP / "doctor-venv"
     runtime = home / "review-loop-runtime.json"
-    runtime.write_text(json.dumps({"source": str(TMP), "venv": resolver_venv(venv),
+    runtime.write_text(json.dumps({"source": fake_hermes_source(), "venv": resolver_venv(venv),
                                    "runtime": str(TMP), "rust": str(TMP)}))
     runtime.chmod(0o600)
     return [runtime] + write_seat_models()
@@ -253,25 +297,40 @@ def group_doctor() -> None:
     before_posts = len(RECEIVED)
     rc, out = run_doctor("--loop", "widgets")   # host memory is pinned at module scope
     check("a correct install passes", rc, 0)
-    # The number of checks grows as `doctor` gains them, so assert the invariant rather than a
-    # literal that has to be kept in step in two files: every check ran, and none failed or was
-    # unknown. A pinned count silently stops testing the claim it names the moment doctor changes.
-    summary = next((ln for ln in out.splitlines() if ln.startswith("widgets: ") and "checks)" in ln), "")
-    parts = summary.split()   # "widgets: N verified, 0 failed, 0 unknown (of M checks)"
+    # The invariant, not a count: every check verified, none failed or unknown. A hard-coded
+    # total breaks each time a branch adds a check (#104's gate:timeout lines, main's own).
+    import re as _re
+    summary = _re.search(r"widgets: (\d+) verified, (\d+) failed, (\d+) unknown \(of (\d+) checks\)", out)
     check("  every check verified",
-          "0 failed, 0 unknown" in summary and len(parts) > 2 and parts[1] == parts[-2], True)
+          bool(summary) and summary.group(1) == summary.group(4)
+          and summary.group(2) == summary.group(3) == "0", True)
     check("  nothing is marked failed", "❌" in out, False)
     check("  the header says it is read-only",
           "read-only: it writes nothing and fires nothing" in out, True)
     for name in ("config", "profile:reviewer", "profile:fixer", "profile:adjudicator", "credential:reviewer",
-                 "credential:fixer", "token:rev-coach", "token:dev-fixer", "read_token",
+                 "credential:fixer", "token:rev-coach", "token:dev-fixer", "token:read-acct", "read_token",
                  "route:widgets-review", "route:widgets-fix", "route:widgets-breach", "scripts",
                  "cron:shim", "cron:job", "clone", "state_dir", "roots", "gateway",
                  "sandbox:caps",
                  "hook:widgets-review", "hook:widgets-fix",
-                 "model:reviewer", "model:fixer", "model:adjudicator"):
+                 "model:reviewer", "model:fixer", "model:adjudicator",
+                 "extras:reviewer", "extras:fixer", "extras:adjudicator"):
         check(f"  ✅ {name}", f"✅ {name}" in out, True)
     check("  it writes nothing", tree_digest(TMP), before_files)
+
+    # #118: nous on an anthropic/* model with nous.anthropic_wire unset (Hermes's "chat") never
+    # reaches the Messages wire, so a venv without the anthropic package is healthy — even --strict.
+    fixer_config = TMP / "hermes-home" / "profiles" / "fixer-profile" / "config.yaml"
+    original = fixer_config.read_text()
+    if seat_config_style() == "yaml":
+        fixer_config.write_text("model:\n  default: anthropic/claude-sonnet-4.6\n  provider: nous\n")
+    else:
+        fixer_config.write_text(json.dumps({"model": {"default": "anthropic/claude-sonnet-4.6",
+                                                      "provider": "nous"}}) + "\n")
+    rc, out = run_doctor("--loop", "widgets", "--strict")
+    check("a nous anthropic/* seat on the chat wire passes --strict without the package", rc, 0)
+    check("  its extras line is verified", "✅ extras:fixer" in out, True)
+    fixer_config.write_text(original)
     for path in added:   # the model check reads profiles through the runtime's Hermes (#32)
         path.unlink()
     check("  it fires no webhook", len(RECEIVED), before_posts)
@@ -295,7 +354,9 @@ def group_doctor() -> None:
     check("a route waking another profile fails", rc, 1)
     check("  and it names the route", "❌ route:widgets-fix" in out, True)
     check("  and both profiles", "someone-else" in out and "fixer-profile" in out, True)
-    check("  with a remediation", "re-run init" in out, True)
+    # A command that works on an existing loop (init refuses one): apply rebinds the route.
+    check("  with a remediation", "hermes review-loop apply --loop widgets" in out
+          and "re-run init" not in out, True)
 
     install_doctor_fixture()
     edit_subs(lambda subs: subs.pop("widgets-fix"))
@@ -410,16 +471,36 @@ def group_doctor() -> None:
     check("  and says it is empty", "❌ token:rev-coach" in out and "is empty" in out, True)
 
     install_doctor_fixture()
-    edit_loop(tokens={}, read_token="")
+    edit_loop(tokens={})
     rc, out = run_doctor("--loop", "widgets")
     check("no credential mapping at all fails", rc, 1)
     check("  reported once, not per seat", "❌ tokens" in out and "❌ read_token" in out, True)
+
+    install_doctor_fixture()
+    edit_loop(tokens={}, read_token="")
+    rc, out = run_doctor("--loop", "widgets")
+    # The reader is never inferred (not from the first token either): a file without one is
+    # refused on load, with the key to add, before any check runs.
+    check("no reader named is refused on load", rc, 2)
+    check("  saying it is never inferred and what to add",
+          "'read_token' is not set, and the reader is never inferred" in out
+          and '"read_token": "<login>"' in out, True)
 
     install_doctor_fixture()
     edit_loop(read_token="who-is-that")
     rc, out = run_doctor("--loop", "widgets")
     check("a read_token with no file fails", rc, 1)
     check("  and names the login", "❌ read_token" in out and "who-is-that" in out, True)
+
+    # The shape the README once printed: the reader on the reviewer seat. The broker refuses
+    # every write in it, so a doctor that passed it would pass a loop that can never post.
+    install_doctor_fixture()
+    edit_loop(read_token=REVIEWER)
+    rc, out = run_doctor("--loop", "widgets")
+    check("a reader that is the reviewer seat fails", rc, 1)
+    check("  and states the four-identity rule",
+          "❌ read_token" in out and "four-identity rule" in out, True)
+    check("  and points at set --read-token", "--read-token" in out, True)
 
     install_doctor_fixture()
     cfg = load_loop()
@@ -451,7 +532,8 @@ def group_doctor() -> None:
     (TMP / "hermes-home" / "scripts" / cli.SHIM_NAME).unlink()
     rc, out = run_doctor("--loop", "widgets")
     check("a missing cron shim fails", rc, 1)
-    check("  and says how to write it", "❌ cron:shim" in out and "--schedule" in out, True)
+    check("  and says how to write it", "❌ cron:shim" in out
+          and "hermes review-loop apply --loop widgets --watchdog-shim" in out, True)
 
     install_doctor_fixture()
     shim = TMP / "hermes-home" / "scripts" / cli.SHIM_NAME

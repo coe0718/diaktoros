@@ -388,13 +388,15 @@ def group_observer_cli() -> None:
         return rc, buf.getvalue()
 
     reset(prs={})
-    write_profiles("rv", "fx")
+    # The observer profiles `set` moves the feed to below must exist: `set` writes the feed's gate
+    # shim into that profile's scripts/ and fails loudly (rc 1) when it cannot (#105).
+    write_profiles("rv", "fx", "another", "fresh-profile")
     parser = parser_for()
     args = parser.parse_args(["init", "--repo", "acme/feed", "--fixer", FIXER,
                               "--reviewer", REVIEWER, "--reviewer-profile", "rv",
                               "--fixer-profile", "fx", "--host", HOST,
                               "--token", f"{REVIEWER}={SEAT_PATS[0]}",
-                              "--token", f"{FIXER}={SEAT_PATS[1]}",
+                              "--token", f"{FIXER}={SEAT_PATS[1]}", *READER_ARGS,
                               "--observer-profile", "tuck"])
     init_output = io.StringIO()
     with contextlib.redirect_stdout(init_output):
@@ -586,7 +588,10 @@ def group_observer_cli() -> None:
     observer_route()
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        cli.cmd_uninstall(ns(loop="widgets", keep_config=True))
+        # --keep-hooks: this checks the routes; hook and cron removal have their own suite
+        # (tests/test_uninstall_hooks.py).
+        rc = cli.cmd_uninstall(ns(loop="widgets", keep_config=True, keep_hooks=True))
+    check("uninstall with --keep-config succeeds", rc, 0)
     check("uninstall removes the observer route",
           "route removed: widgets-observe" in buf.getvalue(), True)
     check("  and it is gone from the registry", "widgets-observe" in SUBS.read_text(), False)

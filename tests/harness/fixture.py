@@ -7,6 +7,7 @@ webhook sink and rebinds ``HOST`` in every area module. Named without a ``test_`
 
 from __future__ import annotations
 
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 import atexit
 import contextlib
@@ -19,7 +20,6 @@ import os
 import pathlib
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -33,6 +33,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+from review_loop import ledger  # noqa: E402 - importable only once ROOT is on the path
 
 # Fixtures must not inherit the source checkout's Git owner: cleanup correctly
 # refuses to delete artifacts under an unrelated repository, even a test repo.
@@ -47,6 +48,10 @@ CLONE = TMP / "clone"
 SUBS = TMP / "webhook_subscriptions.json"
 WORLD_FILE = TMP / "world.json"
 STUB = TMP / "gh_stub.py"
+# A fake `hermes` first on every child's PATH (and named by REVIEW_LOOP_HERMES): `uninstall` and
+# `init --schedule` drive the scheduler through it, and a test must never reach the real install.
+FAKE_BIN = TMP / "bin"
+FAKE_HERMES = FAKE_BIN / "hermes"
 
 REPO = "acme/widgets"
 FIXER, REVIEWER, SEAT = "dev-fixer", "rev-coach", "rev-seat"
@@ -73,12 +78,14 @@ def section(title: str) -> None:
 
 
 def world(prs: dict | None = None, hooks_active: bool = True) -> dict:
-    routes = ("widgets-review", "widgets-fix")
+    # Each hook posts to its route's exact URL (the host and profile ``write_subs`` registers):
+    # the gateway serves nothing else, so "armed" is judged against exactly that URL.
+    routes = (("widgets-review", "reviewer-profile"), ("widgets-fix", "fixer-profile"))
     return {
         "prs": prs or {},
         "hooks": [{"id": n, "active": hooks_active,
-                   "config": {"url": f"http://127.0.0.1:9/p/seat/webhooks/{name}"}}
-                  for n, name in enumerate(routes, 1)],
+                   "config": {"url": f"{HOST}/p/{profile}/webhooks/{name}"}}
+                  for n, (name, profile) in enumerate(routes, 1)],
         "requested_reviewers": [],
     }
 
@@ -107,10 +114,10 @@ def review(login: str, state: str = "changes_requested", head: str = HEAD_A, rid
 
 STUB_SRC = '''#!/usr/bin/env python3
 """Answers GitHub REST paths from a JSON world. Unknown paths print null (= unknown)."""
-import json, os, re, sys
+import json, os, pathlib, re, sys
 
 path = sys.argv[1]
-world = json.loads(open(os.environ["GH_WORLD"]).read())
+world = json.loads(pathlib.Path(os.environ["GH_WORLD"]).read_text())
 method = os.environ.get("GH_METHOD", "GET")
 repo = world.get("repo")
 body = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -119,13 +126,66 @@ def n_of(p):
     m = re.search(r"/pulls/(\\d+)", p)
     return int(m.group(1)) if m else None
 
-if re.search(r"/hooks\\?per_page=100(?:&page=\\d+)?$", path):
+hook_one = re.search(r"/hooks/(\\d+)$", path)
+hook_deliveries = re.search(r"/hooks/(\\d+)/deliveries", path)
+if method != "GET" and ("/hooks" in path) and os.environ.get("GH_LOGIN", "") in world.get("hook_write_denied", []):
+    sys.stderr.write("HTTP 403 Resource not accessible by personal access token")
+    sys.exit(1)
+hook_ping = re.search(r"/hooks/(\\d+)/pings$", path)
+if hook_ping and method == "POST":
+    # GitHub signs and sends a `ping`; its delivery lands in the hook's log with the status the
+    # gateway answered (world "ping_status" per hook id, default 200). "ping_silent" records none.
+    hid = hook_ping.group(1)
+    world.setdefault("pings", []).append(int(hid))
+    if not world.get("ping_silent"):
+        log = world.setdefault("deliveries", {}).setdefault(hid, [])
+        world["next_delivery_id"] = world.get("next_delivery_id", 5000) + 1
+        log.insert(0, {"id": world["next_delivery_id"], "event": "ping",
+                       "status_code": (world.get("ping_status") or {}).get(hid, 200),
+                       "delivered_at": "2026-09-26T12:00:%02dZ" % (world["next_delivery_id"] % 60)})
+    with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
+    print("null")
+elif hook_deliveries:
+    # GitHub's recent-delivery log for a hook; none recorded reads as an empty list.
+    print(json.dumps((world.get("deliveries") or {}).get(hook_deliveries.group(1), [])))
+elif method == "POST" and path.endswith("/hooks"):
+    spec = json.loads(body or "{}")
+    hooks = world.setdefault("hooks", [])
+    # GitHub never reuses a hook id: a counter, not max(existing) + 1.
+    world["next_hook_id"] = max([world.get("next_hook_id", 101)] + [h["id"] + 1 for h in hooks])
+    hook = {"id": world["next_hook_id"], "active": spec.get("active", True),
+            "events": spec.get("events", []),
+            "config": {"url": spec["config"]["url"], "content_type": spec["config"].get("content_type"),
+                       "insecure_ssl": "0", "secret": "********"}}
+    hooks.append(hook)
+    world["next_hook_id"] += 1
+    with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
+    print(json.dumps(hook))
+elif hook_one and method in ("DELETE", "PATCH", "GET"):
+    hooks = world.get("hooks") or []
+    hook = next((h for h in hooks if h["id"] == int(hook_one.group(1))), None)
+    if hook is None:
+        print("null")
+    elif method == "DELETE":
+        world["hooks"] = [h for h in hooks if h is not hook]
+        with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
+        print("null")
+    elif method == "PATCH":
+        spec = json.loads(body or "{}")
+        if "active" in spec:
+            hook["active"] = spec["active"]
+        hook["config"].update(spec.get("config") or {})
+        with open(os.environ["GH_WORLD"], "w") as f: f.write(json.dumps(world))
+        print(json.dumps(hook))
+    else:
+        print(json.dumps(hook))
+elif re.search(r"/hooks\\?per_page=100(?:&page=\\d+)?$", path):
     page = int(re.search(r"[?&]page=(\\d+)", path).group(1)) if "&page=" in path else 1
     hooks = world.get("hooks", [])
     print(json.dumps(hooks[(page-1)*100:page*100] if isinstance(hooks, list) else hooks))
 elif "/requested_reviewers" in path:
     world.setdefault("requested_reviewers", []).append([n_of(path), json.loads(body or "{}")])
-    open(os.environ["GH_WORLD"], "w").write(json.dumps(world))
+    pathlib.Path(os.environ["GH_WORLD"]).write_text(json.dumps(world))
     print("{}")
 elif path.endswith("/reviews?per_page=100"):
     print(json.dumps((world["prs"].get(str(n_of(path))) or {}).get("reviews", [])))
@@ -142,6 +202,52 @@ elif n_of(path) is not None:
 else:
     print("null")
 '''
+
+
+FAKE_HERMES_SRC = '''#!/usr/bin/env python3
+"""A stand-in `hermes`: only `cron create` / `cron remove`, on $HERMES_HOME/cron/jobs.json."""
+import json, os, pathlib, sys
+
+store = pathlib.Path(os.environ["HERMES_HOME"]) / "cron" / "jobs.json"
+args = sys.argv[1:]
+log = os.environ.get("FAKE_HERMES_LOG")
+if log:
+    with open(log, "a") as stream:
+        stream.write(json.dumps(args) + "\\n")
+if args[:1] != ["cron"] or len(args) < 3:
+    sys.stderr.write("fake hermes: unsupported command")
+    sys.exit(2)
+data = json.loads(store.read_text()) if store.exists() else {"jobs": []}
+jobs = data["jobs"]
+if args[1] == "remove":
+    kept = [job for job in jobs if job.get("id") != args[2]]
+    if len(kept) == len(jobs):
+        sys.stderr.write(f"Job {args[2]} not found")
+        sys.exit(1)
+    data["jobs"] = kept
+elif args[1] == "create":
+    name = args[args.index("--name") + 1]
+    script = args[args.index("--script") + 1]
+    jobs.append({"id": f"job{len(jobs) + 1}", "name": name, "script": script, "no_agent": True,
+                 "enabled": True, "state": "scheduled",
+                 "schedule": {"kind": "interval", "minutes": 15},
+                 "next_run_at": "2030-01-01T00:00:00+00:00"})
+else:
+    sys.stderr.write("fake hermes: unsupported cron command")
+    sys.exit(2)
+store.parent.mkdir(parents=True, exist_ok=True)
+store.write_text(json.dumps(data))
+print("ok")
+'''
+
+
+def install_fake_hermes() -> None:
+    FAKE_BIN.mkdir(parents=True, exist_ok=True)
+    FAKE_HERMES.write_text(FAKE_HERMES_SRC)
+    os.chmod(FAKE_HERMES, 0o755)
+
+
+install_fake_hermes()
 
 
 class Sink(BaseHTTPRequestHandler):
@@ -221,8 +327,9 @@ def write_loop() -> dict:
         "adjudicator": {"route": "widgets-breach", "profile": "default"},
         "state_dir": str(STATE_DIR), "clone": str(CLONE),
         "roots": [str(REVIEWS), str(SCRATCH)],
-        "tokens": {REVIEWER: str(TMP / "rev.pat"), FIXER: str(TMP / "fix.pat")},
-        "read_token": REVIEWER,
+        "tokens": {REVIEWER: str(TMP / "rev.pat"), FIXER: str(TMP / "fix.pat"),
+                   READ_LOGIN: str(READ_PAT)},
+        "read_token": READ_LOGIN,
         "host": HOST,
         "grace_min": 35, "marker_grace_min": 60, "cooldown_h": 6,
         "ttl_min": 45, "inflight_ttl_min": 10,
@@ -233,18 +340,22 @@ def write_loop() -> dict:
     (LOOPS_DIR / "widgets.json").write_text(json.dumps(cfg, indent=2))
     (TMP / "rev.pat").write_text("token-reviewer\n")
     (TMP / "fix.pat").write_text("token-fixer\n")
+    READ_PAT.write_text("token-reader\n")
     return cfg
 
 
 def write_subs() -> dict:
+    from review_loop import prompts
     subs = {}
-    for name, profile, script, events in (
-        ("widgets-review", "reviewer-profile", "gate_reviewer.py", ["pull_request"]),
-        ("widgets-fix", "fixer-profile", "gate_fixer.py", ["pull_request_review"]),
-        ("widgets-breach", "default", None, ["pull_request"]),
+    # Each route carries its role's real prompt, as `init` writes it: the prompt is half of the
+    # proof a route is this plugin's, and apply reports a route that has lost it (#112 review).
+    for name, profile, script, events, prompt in (
+        ("widgets-review", "reviewer-profile", "gate_reviewer.py", ["pull_request"], prompts.REVIEWER),
+        ("widgets-fix", "fixer-profile", "gate_fixer.py", ["pull_request_review"], prompts.FIXER),
+        ("widgets-breach", "default", None, ["pull_request"], prompts.ADJUDICATOR),
     ):
         subs[name] = {"description": name, "events": events, "secret": hashlib.sha256(name.encode()).hexdigest(),
-                      "prompt": "Review-loop event", "skills": [], "deliver": "discord", "profile": profile,
+                      "prompt": prompt, "skills": [], "deliver": "discord", "profile": profile,
                       "created_at": PAST, "script": script, "host": HOST}
     SUBS.write_text(json.dumps(subs, indent=2))
     return subs
@@ -335,7 +446,9 @@ def env() -> dict:
     return {**os.environ, "HERMES_HOME": str(TMP / "hermes-home"),
             "REVIEW_LOOP_CONFIG_DIR": str(LOOPS_DIR),
             "REVIEW_LOOP_SUBS": str(SUBS), "REVIEW_LOOP_GH_STUB": str(STUB),
-            "GH_WORLD": str(WORLD_FILE), "REVIEW_LOOP_TEST": "1"}
+            "GH_WORLD": str(WORLD_FILE), "REVIEW_LOOP_TEST": "1",
+            "REVIEW_LOOP_HERMES": str(FAKE_HERMES),
+            "PATH": f"{FAKE_BIN}{os.pathsep}{os.environ.get('PATH', '')}".rstrip(os.pathsep)}
 
 
 def run(script: str, payload: dict | None = None, *args: str,
@@ -362,7 +475,7 @@ def no_ledger_run() -> bool:
     db = TMP / "hermes-home" / "state" / "review-loop-runs.sqlite"
     if not db.exists():
         return True
-    with sqlite3.connect(db) as con:
+    with ledger.connect(db) as con:
         return con.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
 
 
@@ -471,6 +584,10 @@ def run_cli(parsed) -> tuple[int, str]:
 
 
 SEAT_PATS = (TMP / "rev.pat", TMP / "fix.pat")     # written by ``write_loop`` for both seats
+# The reader is its own account with its own file (the four-identity rule): every `init` the
+# harness drives names it, since init no longer borrows the reviewer seat for reads.
+READ_LOGIN, READ_PAT = "read-acct", TMP / "read.pat"
+READER_ARGS = ["--read-token", READ_LOGIN, "--token", f"{READ_LOGIN}={READ_PAT}"]
 
 
 def verify_sig(request: dict, route: str) -> bool:

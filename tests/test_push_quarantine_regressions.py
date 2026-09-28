@@ -1,13 +1,13 @@
 """Offline regressions for published push errors and late merge-notice holds."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import os
 from pathlib import Path
-import sqlite3
 import tempfile
 import unittest
 from unittest import mock
 
-from review_loop import broker, broker_ipc, config, gh, observer, safe_push
+from review_loop import broker, broker_ipc, config, gh, ledger, observer, safe_push
 from review_loop.run_supervisor import Supervisor
 from review_loop.state import LoopState
 from tests.test_safe_push import FakeGitHub, HEAD, NEW_HEAD, REPO, manifest
@@ -27,7 +27,7 @@ class PostWriteRegressions(unittest.TestCase):
         self.db = self.root / "state" / "review-loop-runs.sqlite"
         self.sup = Supervisor(self.db)
         self.sup.enqueue("fix", REPO, 7, HEAD, "fixer")
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='running',owner='worker',launch_intent=1,push_admitted=1 WHERE delivery='fix'")
         self.run_id = self.sup.get("fix")["id"]
         tokens = {}

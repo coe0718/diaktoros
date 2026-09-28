@@ -3,6 +3,7 @@
 The real RunBroker serves a real Unix socket; GitHub is an in-memory fake and the Git push is a
 stub (the safe_push tests cover the ref write). No real GitHub, model, Hermes or ~/.hermes.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import base64
 import contextlib
 import hashlib
@@ -11,7 +12,6 @@ import json
 import os
 from pathlib import Path
 import socket
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -19,6 +19,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from review_loop import ledger  # noqa: E402
 from review_loop import broker, broker_client, broker_ipc, config, gh, run_supervisor, safe_push  # noqa: E402
 from review_loop.run_supervisor import Supervisor  # noqa: E402
 
@@ -112,7 +113,7 @@ class Base(unittest.TestCase):
         self.db = self.root / "runs.sqlite"
         sup = Supervisor(self.db)
         sup.enqueue("fix", REPO, 7, HEAD, "fixer")
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='running',launch_intent=1,push_admitted=1")
         self.run_id = sup.get("fix")["id"]
         self.scope = broker_ipc.RunScope(REPO, 7, HEAD, "fixer", "fix-7", self.run_id, str(self.db))

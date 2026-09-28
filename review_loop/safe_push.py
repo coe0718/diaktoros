@@ -18,7 +18,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
-from . import broker, config, gh
+from . import broker, config, gh, util
 
 MAX_FILES = 24
 MAX_CONTENT = 128 * 1024
@@ -113,7 +113,7 @@ def _api(loop: dict, path: str, *, login: str, method: str = "GET", body=None) -
 
 def _audit(loop: dict, record: dict) -> None:
     """Durable metadata journal; failure aborts the write."""
-    audit = Path(loop["state_dir"]) / "broker-audit.jsonl"
+    audit = config.state_dir(loop) / "broker-audit.jsonl"
     if not audit.parent.is_dir() or audit.parent.is_symlink():
         raise broker.BrokerDenied("durable audit directory unavailable")
     dirfd = os.open(audit.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -133,6 +133,12 @@ def _audit(loop: dict, record: dict) -> None:
         os.close(dirfd)
 
 
+# Git's credential prompt: the login for "Username", the token file's contents for "Password".
+_ASKPASS = ("import os,sys\nfrom pathlib import Path\n"
+            "print('x-access-token' if 'Username' in sys.argv[1] "
+            "else Path(os.environ['REVIEW_LOOP_TOKEN_FILE']).read_text().strip())\n")
+
+
 def _git_cas(loop: dict, repo: str, branch: str, head: str,
              files: list[tuple[str, bytes]], message: str, login: str,
              identity: dict, *, before_push=None, remote: str | None = None) -> str:
@@ -141,16 +147,14 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
     `remote` is a private local-fixture seam, never sourced from IPC or config.
     Only validated manifest paths/bytes reach Git's temporary private bare repo.
     """
-    url = remote if remote is not None else f"https://github.com/{repo}.git"
+    url = config.guard_network(remote if remote is not None else f"https://github.com/{repo}.git")
     protocol = "file" if remote is not None else "https"
     with tempfile.TemporaryDirectory(prefix="review-loop-git-") as temp:
         root = Path(temp)
         os.chmod(root, 0o700)
         bare = root / "objects.git"
         askpass = root / "askpass.py"
-        askpass.write_text("#!/usr/bin/python3\nimport os,sys\nfrom pathlib import Path\n"
-                           "print('x-access-token' if 'Username' in sys.argv[1] "
-                           "else Path(os.environ['REVIEW_LOOP_TOKEN_FILE']).read_text().strip())\n")
+        askpass.write_text("#!/usr/bin/python3\n" + util.leak_guard_code(_ASKPASS))
         askpass.chmod(0o700)
         env = {"PATH": "/usr/bin:/bin", "HOME": temp, "XDG_CONFIG_HOME": temp,
                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -159,6 +163,7 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
                "REVIEW_LOOP_TOKEN_FILE": str(gh.token_path(loop, login)), "LC_ALL": "C",
                "GIT_AUTHOR_NAME": identity["name"], "GIT_AUTHOR_EMAIL": identity["email"],
                "GIT_COMMITTER_NAME": identity["name"], "GIT_COMMITTER_EMAIL": identity["email"]}
+        util.leak_guard_env(env, pythonpath=False)   # the askpass loads it by path
 
         def run(*args: str, input: bytes | None = None) -> bytes:
             cmd = ["/usr/bin/git", "-c", "credential.helper=", "-c", "core.hooksPath=/dev/null",

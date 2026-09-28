@@ -12,9 +12,10 @@ import json
 import os
 import pathlib
 import re
+import sys
 import time
 
-from . import gh
+from . import gh, hostdirs
 from .wire import ANSWERS_MARKER  # one home, shared with the sandbox client
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -148,8 +149,17 @@ def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
 
 def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
            role: str, operation: str, login: str) -> None:
+    # The GitHub write already happened; a worker never recreates the loop's state dir to
+    # record it (hostdirs, #108). One line, and the operation still reports its real outcome.
+    # Checks only: on the host, the mkdir below creates it as before.
+    if hostdirs.in_worker() and not pathlib.Path(loop["state_dir"]).expanduser().is_dir():
+        print(f"review-loop broker: audit record not written: {loop['state_dir']} is gone; "
+              "a worker never recreates host state", file=sys.stderr)
+        return
+
     # Metadata only; never token or model-produced body. Lock an append-only file.
-    path = pathlib.Path(loop["state_dir"]) / "broker-audit.jsonl"
+    from .config import state_dir
+    path = state_dir(loop) / "broker-audit.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:

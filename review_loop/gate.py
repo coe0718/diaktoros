@@ -26,19 +26,29 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 import pathlib
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
-from . import config, gh, isolation, observer, routes, situation, transition, state as state_mod
+from . import config, gate_failures, gh, isolation, observer, routes, situation, transition, state as state_mod
 from .util import iso_at, log, now_iso, silence
 
 
 def payload_loop(payload: dict) -> dict:
     full = ((payload.get("repository") or {}).get("full_name") or "")
-    loop = config.by_repo(full)
+    # Per-file: a sibling loop file the loader refuses is skipped with one log line instead of
+    # stopping this repo's gate (it still fails closed when that file might be this repo's).
+    try:
+        loop = config.loop_for_repo(full, warn=log)
+    except config.ConfigError as exc:
+        # This repo's ownership cannot be settled (its own file will not load, or two files
+        # claim it): fail closed — nothing runs — with the reason in the log, not a traceback.
+        log(f"loop config refused for {full or 'an unknown repository'}: {exc}")
+        silence(f"loop config refused for {full or 'an unknown repository'}")
     if not loop:
         silence(f"no loop configured for {full or 'an unknown repository'}")
     return loop
@@ -90,15 +100,28 @@ def isolated_supervisor(loop: dict):
 
     Raises when the private runtime file is missing or invalid (a fail-closed hold).
     """
+    from . import seat_model
     from .run_supervisor import SEATS, Supervisor
 
-    return Supervisor(
+    # presence= defaults to the config-dir marker for this (the production) ledger path.
+    supervisor = Supervisor(
         config.home() / "state" / "review-loop-runs.sqlite",
         production_config=config.home() / "review-loop-runtime.json", hermes_home=config.home(),
         # Every seat, always: a worker spawned by one seat's event claims any pending row, and
         # must know every seat's capacity to do so.
         capacity={s: config.seat_concurrency(loop, s) for s in SEATS},
     )
+    # Host-side, once the runtime is known to be valid (no state without one): a worker writes
+    # into the loop's state dir (broker audit, observer ledger), its private work root, its
+    # crate cache root and the seat-lock dir, but never creates a host directory (#108), so the
+    # host makes sure each exists before any worker is spawned — for enqueue_isolated and
+    # resume_isolated alike, since both build their supervisor here.
+    state_dir = config._path(loop["state_dir"])
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "isolated-runs").mkdir(mode=0o700, exist_ok=True)
+    (state_dir / "deps").mkdir(mode=0o700, exist_ok=True)  # the worker's crate cache root
+    seat_model.lock_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
+    return supervisor
 
 
 def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key: str = '') -> str:
@@ -317,10 +340,23 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     hooks, error = gh.fetch(loop, gh.hooks_path(loop))
     if error or not isinstance(hooks, list):
         return None, error or "GitHub returned no hook list"
-    missing = [seat for seat in ("reviewer", "fixer")
-               if not any(isinstance(h, dict)
-                          and loop["seats"][seat]["route"] in (h.get("config") or {}).get("url", "")
-                          and h.get("active") is True for h in hooks)]
+    from . import doctor          # its matchers are arm's and apply's too; imported late (it is big)
+    missing = []
+    for seat in ("reviewer", "fixer"):
+        # The seat's URL is the one `arm` credits (doctor.seat_route_target: the registry route,
+        # bound to the seat's profile), judged by the rule doctor and apply use
+        # (doctor.exact_hook_url: same origin, exact path, query ignored). A hook whose URL
+        # merely *contains* the route name — a trailing slash, another profile — is a 404 at the
+        # gateway, and a seat woken only through it is not armed.
+        try:
+            url = doctor.seat_hook_url(loop, loop["seats"][seat]["route"])
+        except config.ConfigError:
+            url = None
+        if not url or not any(isinstance(h, dict) and h.get("active") is True
+                              and doctor.exact_hook_url(str((h.get("config") or {}).get("url")
+                                                            or ""), url)
+                              for h in hooks):
+            missing.append(seat)
     return not missing, ", ".join(missing)
 
 
@@ -406,7 +442,7 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
             held[seat] = entry
     seat_line = " · ".join(
         f"{seat} holds it ({_minutes_since(_mark_time(entry, 0.0), now)}m of ttl "
-        f"{-(-config.seat_ttl_s(loop) // 60)}m, since {iso_at(_mark_time(entry, 0.0)) or 'an unrecorded time'})"
+        f"{-(-config.seat_ttl_s(loop, seat=seat, recorded=config.claim_budget(entry)) // 60)}m, since {iso_at(_mark_time(entry, 0.0)) or 'an unrecorded time'})"
         for seat, entry in sorted(held.items())) or "nobody holds it"
 
     queue_bits: list[str] = []
@@ -482,7 +518,8 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
                                                     str(failure.get("path") or ""),
                                                     failure.get("status")
                                                     if type(failure.get("status")) is int
-                                                    else None)))
+                                                    else None))
+                           + _owner_note(loop, failure))
     github_line = " · ".join(github_bits) or "no failed GitHub call recorded"
 
     return {"seat": seat_line, "queue": queue_line, "inflight": inflight_line,
@@ -540,6 +577,54 @@ def explain_facts(loop: dict, number: int) -> dict:
             "receipts": receipts, "receipts_error": receipts_error}
 
 
+def _owner_note(loop: dict, failure: dict) -> str:
+    """How ``explain`` names who handles a failed read — only what a ledger still backs."""
+    if failure.get("resolved_by"):
+        return f" (settled: {failure['resolved_by']})"
+    owner = failure.get("owned_by")
+    if not owner:
+        return ""
+    where = f" in {failure['owned_in']}" if failure.get("owned_in") else ""
+    state = gate_failures.owner_state(loop, failure)
+    if state == "open":
+        return f" (tracked as {owner}{where}: its gate-failure line says what happens next)"
+    if state == "resolved":
+        return f" (tracked as {owner}{where}, which has resolved)"
+    if state == "unreadable":
+        return (f" (owned by {owner}, but a gate-failure ledger that may hold it cannot be read, "
+                f"so no line about it can come from there; the watchdog reports this read "
+                f"itself)")
+    return (f" (was owned by {owner}, which is no longer in any gate-failure ledger — the ledger "
+            f"was moved aside or the entry dropped; the watchdog reports this read itself)")
+
+
+def gate_failure_line(entry: dict) -> str:
+    if entry.get("kind") == gate_failures.CORRUPT:
+        if entry.get("corrupt_copy"):
+            return (f"gate-failure ledger {entry.get('path')} was unreadable ({entry.get('error')}) "
+                    f"and was moved aside to {entry.get('corrupt_copy')}; failures recorded before "
+                    f"then (this PR's too) are only in that copy — salvage what you need, then "
+                    f"delete it")
+        if entry.get("movable", True):
+            return (f"gate-failure ledger {entry.get('path')} is unreadable "
+                    f"({entry.get('error')}); the next gate failure or watchdog sweep moves it "
+                    f"aside, unchanged, for you to salvage")
+        return (f"gate-failure ledger {entry.get('path')} is unreadable ({entry.get('error')}) "
+                f"and cannot be moved aside automatically ({entry.get('why_not')}): nothing is "
+                f"recorded there until you repair or move it yourself, and the failures in it are "
+                f"unknown — the watchdog reports failed reads it would have owned itself")
+    status = gate_failures.explain_status(entry)
+    if entry.get("pr") is None:
+        status += " (its payload names no PR, so every PR's explain shows it)"
+    if entry.get("held_in"):
+        status += (f" (recorded in {entry['held_in']}, the no-loop ledger: this loop's ledger was "
+                   f"busy or unwritable when the gate recorded it)")
+    return (f"gate failure {entry.get('id')}: {entry.get('gate')} {entry.get('kind')} at head "
+            f"{str(entry.get('head') or '?')[:7]} ({entry.get('action') or '?'}), last "
+            f"{iso_at(float(entry.get('last_at') or 0))}, {entry.get('attempts')} attempt(s): "
+            f"{entry.get('error_type')}: {str(entry.get('error') or '')[:160]} — {status}")
+
+
 def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> dict:
     """Why one PR is not moving, and the single event that would move it. Reads nothing itself.
 
@@ -580,6 +665,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                  if isinstance(entry, dict)}
     request_pending = bool(loop["reviewer_seat"]) and loop["reviewer_seat"] in requested
     blockers: list[str] = []
+    # A gate that crashed, overran or silenced after a failed read (#75) is not a decision.
+    gate_failed = [gate_failure_line(entry) for entry in gate_failures.open_for(loop, number)]
+    blockers.extend(gate_failed)
 
     # -- what the gates conclude about this head (their predicates, not new ones) -------------
     spent: int | None = None
@@ -869,7 +957,8 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif queued_seat:
         kind = "release"
         action = (f"a {queued_seat} slot frees — the queued run starts then (a verdict or a handoff "
-                  f"ends the run holding it; the lock expiry at {-(-config.seat_ttl_s(loop) // 60)}m is "
+                  f"ends the run holding it; the lock expiry at "
+                  f"{-(-config.seat_ttl_s(loop, seat=queued_seat) // 60)}m is "
                   "the backstop)")
     elif full_seat:
         kind = "retry"
@@ -926,7 +1015,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         "inflight": local["inflight"], "escalation": local["escalation"], "hooks": hooks_line,
         "sweep": local["sweep"],
         "github": local.get("github", "no failed GitHub call recorded"),
-        "blockers": blockers, "next": {"kind": kind, "action": action},
+        "gate_failures": gate_failed, "blockers": blockers, "next": {"kind": kind, "action": action},
     }
 
 
@@ -934,12 +1023,23 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
 
 
 def drain_seat(loop: dict, seat: str) -> None:
-    """Start whatever queued for a seat now that its turn is over. Best effort, never fatal."""
+    """Start whatever queued for a seat now that its turn is over. Best effort, never fatal.
+
+    Inside a gate this runs on the gate's clock (#75): the drain gets at most half of what is
+    left, and its own GitHub reads are budgeted to that, so a slow drain cannot spend the
+    gateway's script timeout. The watchdog's sweep drains whatever this one had to leave.
+    """
+    left = gh.remaining()
+    timeout = 180.0 if left is None else left / 2
+    if timeout < 1:
+        log(f"drain {seat} deferred to the watchdog — the gate's time budget is nearly spent")
+        return
+    env = {**os.environ, "REVIEW_LOOP_WATCHDOG_BUDGET_S": f"{max(0.5, timeout - 0.5):.1f}"}
     try:
         subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve().parents[1]
                                             / "scripts" / "watchdog.py"),
                         "--loop", loop["id"], "--drain", "--seat", seat],
-                       capture_output=True, text=True, timeout=180)
+                       capture_output=True, text=True, timeout=timeout, env=env)
     except Exception as exc:
         log(f"drain {seat} failed: {exc}")
 
@@ -1051,10 +1151,13 @@ def ping_start(loop: dict, seat: str, text: str) -> None:
             f"https://discord.com/api/v10/channels/{channel}/messages", data=body,
             headers={"Authorization": f"Bot {token}", "Content-Type": "application/json",
                      "User-Agent": "hermes-review-loop"})
+        config.guard_network(req.full_url)
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status not in (200, 201):
                 raise RuntimeError(f"Discord HTTP {resp.status}")
     except Exception as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()   # it holds the response open
         log(f"start-ping failed: {exc}")
 
 

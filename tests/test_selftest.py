@@ -2,6 +2,7 @@
 
 GitHub, the model provider and bubblewrap are all mocked; nothing here needs a network.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 import io
 import json
@@ -159,6 +160,16 @@ class SelftestBase(unittest.TestCase):
     def assert_reads_only(self):
         self.assertTrue(self.fx.calls)
         self.assertEqual({method for method, _, _ in self.fx.calls}, {"GET"})
+
+
+class DoctorStateBridge(unittest.TestCase):
+    def test_every_doctor_state_maps_to_a_selftest_state(self):
+        from review_loop import doctor
+        states = {value for name, value in vars(doctor).items()
+                  if name.isupper() and isinstance(value, str) and value in doctor.MARKS}
+        self.assertEqual(states, set(doctor.MARKS))
+        self.assertEqual(set(selftest._DOCTOR), states)
+        self.assertEqual(selftest._DOCTOR[doctor.SKIPPED], selftest.SKIP)
 
 
 class ChecklistTests(SelftestBase):

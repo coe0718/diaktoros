@@ -17,6 +17,7 @@ positive budget), and the kill grace is shortened to match, so the whole file ru
 ``REVIEW_LOOP_SANDBOX_BUDGET``/``REVIEW_LOOP_SANDBOX_GRACE`` override both for a longer demo.
 """
 from __future__ import annotations
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 
 import json
 import os
@@ -305,7 +306,12 @@ class SandboxedTurnBudget(unittest.TestCase):
         worker = subprocess.Popen([sys.executable, __file__, '--driver', str(spec)], env=env,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         seen: dict = {}
+        claims: list = []          # the loop's seat claims, as the worker writes them (#98)
         while worker.poll() is None:
+            try:
+                claims.append(json.loads((self.root / 'state' / 'locks.json').read_text()))
+            except (OSError, ValueError):
+                pass
             # bwrap's argv names this test's private root, so no other sandbox is mistaken for it.
             for pid, info in _tree(str(self.root)).items():
                 seen.setdefault((pid, info[1]), info[2])
@@ -331,6 +337,12 @@ class SandboxedTurnBudget(unittest.TestCase):
         # the surfaces the host really has -- the seat's own argv as seen in /proc, and the result the
         # worker just reported -- rather than from a write that isolation is built to keep local.
         driver = json.loads(out)
+        # The loop's seat claims, as the worker wrote them during and after the turn (#98).
+        driver['claims_during'] = [c for c in claims if c]
+        try:
+            driver['claims_after'] = json.loads((self.root / 'state' / 'locks.json').read_text())
+        except (OSError, ValueError):
+            driver['claims_after'] = {}
         seat = [cmd for cmd in seen.values() if '/opt/venv/bin/hermes' in cmd]
         handed = None
         for cmd in seat:
@@ -374,6 +386,13 @@ class SandboxedTurnBudget(unittest.TestCase):
         # same budget would run out again. It is re-armable (`retry`), which the text says.
         self.assertEqual((result['retries'], result['retry_at']), (0, None))
         self.assertEqual(result['writes'], [])
+        # While it ran, its worker held the reviewer's seat claim with the run's own budget;
+        # the kill released it (#98 review 4: the claim now has a production writer).
+        held = [c['reviewer']['acme/widgets#7'] for c in result['claims_during']
+                if 'acme/widgets#7' in c.get('reviewer', {})]
+        self.assertTrue(held)
+        self.assertEqual((held[-1]['head'], held[-1]['budget']), (HEAD7, BUDGET))
+        self.assertNotIn('acme/widgets#7', result['claims_after'].get('reviewer', {}))
         # The seat is released: nothing active, the worker re-armed for the waiting turn, and
         # that turn is the next one claimed.
         self.assertEqual(result['active_runs_after'], 0)

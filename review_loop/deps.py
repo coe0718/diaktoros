@@ -56,6 +56,10 @@ READY, UNAVAILABLE = "ready", "unavailable"
 
 CRATES_IO = frozenset({"registry+https://github.com/rust-lang/crates.io-index",
                        "sparse+https://index.crates.io/"})
+# The hosts an anonymous sparse crates.io fetch contacts: the index, and the download host that
+# the index's own config.json names ("dl": "https://static.crates.io/crates"). Under the test
+# guard these are the only hosts any test may reach, and only through ``_fetch`` (guard_registry).
+CRATES_IO_HOSTS = frozenset({"index.crates.io", "static.crates.io"})
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 _VERSION = re.compile(r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})"
                       r"(-[0-9A-Za-z.-]{1,64})?(\+[0-9A-Za-z.-]{1,64})?\Z")
@@ -276,7 +280,8 @@ def _lock(path: Path, deadline: float) -> int | None:
 
 def cache_root(loop: dict) -> Path:
     """The per-repository host cache: private, under the loop's own state directory."""
-    root = Path(loop["state_dir"]).expanduser() / "deps"
+    from .config import state_dir
+    root = state_dir(loop) / "deps"
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if root.is_symlink() or root.stat().st_mode & 0o077:
         raise PermissionError(f"{root} must be a private (0700) directory")
@@ -357,6 +362,65 @@ def synthetic_manifest(crates: list[tuple[str, str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def cargo_env(home: Path, cache: Path, rustc: Path, cargo: Path) -> dict:
+    """The fetch's whole environment, built from scratch: nothing the PR or the host set leaks in."""
+    return {"PATH": "/usr/bin:/bin", "HOME": str(home), "CARGO_HOME": str(cache),
+            "RUSTC": str(rustc), "CARGO": str(cargo), "CARGO_TERM_COLOR": "never",
+            "CARGO_TERM_PROGRESS_WHEN": "never", "CARGO_NET_RETRY": "2",
+            "CARGO_HTTP_TIMEOUT": "60", "CARGO_REGISTRIES_CRATES_IO_PROTOCOL": "sparse",
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_TERMINAL_PROMPT": "0", "LANG": "C.UTF-8"}
+
+
+_CARGO_ENV_KEYS = frozenset(cargo_env(Path("/"), Path("/"), Path("/"), Path("/")))
+
+
+def guard_registry(env: dict, work: Path, cache: Path, manifest: str, locked: bytes) -> None:
+    """Under the test guard, refuse a fetch that could reach anything but crates.io's own hosts.
+
+    The prefetch is the one network path the test guard allows: an anonymous, credential-free
+    fetch from ``CRATES_IO_HOSTS``. cargo is a subprocess, so this checks its effective registry
+    configuration before it runs, not its sockets: the environment is exactly ``cargo_env`` (no
+    proxy, no other registry, no source replacement) with the sparse crates.io index; no cargo
+    config file can apply (the package's ancestors, ``CARGO_HOME``, the scratch ``HOME``); the
+    manifest names no registry, source or patch; and every lockfile source is crates.io.
+    Outside the guard it does nothing: production already builds exactly this configuration.
+    """
+    from .config import _ARMED, RealNetworkError, test_guard_active
+    if not test_guard_active():
+        return
+    why = []
+    proxies = sorted(name for name in env if "proxy" in name.lower())
+    if proxies:
+        why.append(f"a proxy is configured ({', '.join(proxies)})")
+    extra = sorted(set(env) - _CARGO_ENV_KEYS - set(proxies))
+    if extra:
+        why.append(f"the environment sets {', '.join(extra)} (another registry or a source "
+                   "replacement)")
+    if env.get("CARGO_REGISTRIES_CRATES_IO_PROTOCOL") != "sparse":
+        why.append("crates.io must be read through its sparse index (index.crates.io)")
+    configs = [str(path) for base in (work, *work.parents)
+               for path in (base / ".cargo/config.toml", base / ".cargo/config") if path.exists()]
+    configs += [str(path) for path in (cache / "config.toml", cache / "config",
+                                       Path(env.get("HOME", "/nonexistent")) / ".cargo/config.toml")
+                if path.exists()]
+    if configs:
+        why.append(f"a cargo config file could redirect it ({', '.join(configs)})")
+    # TOML structure only — a `registry`/`registry-index` key, or a [source], [registries], [patch]
+    # or [replace] table — never a crate name that merely contains the word (signal-hook-registry).
+    if (re.search(r"(?:^|[{,])\s*registry(?:-index)?\s*=", manifest, re.M)
+            or re.search(r"^\s*\[\s*(?:source|registries|patch|replace)\b", manifest, re.M)):
+        why.append("the manifest names a registry, source, patch or replace table")
+    sources = set(re.findall(r'^source = "([^"]*)"', locked.decode("utf-8", "replace"), re.M))
+    if sources - CRATES_IO:
+        why.append(f"the lockfile names other sources ({', '.join(sorted(sources - CRATES_IO))})")
+    if why:
+        raise RealNetworkError(
+            f"{_ARMED}. Otherwise: the only network fetch allowed under the test guard is an "
+            f"anonymous crates.io fetch ({', '.join(sorted(CRATES_IO_HOSTS))}), and this one "
+            f"could go elsewhere: {'; '.join(why)}")
+
+
 def bounded_run(argv: list[str], *, env: dict, cwd: Path, timeout: float,
                 limit: int = MAX_OUTPUT, stop=None,
                 poll: float = POLL) -> tuple[int | str | None, str]:
@@ -435,16 +499,14 @@ def _fetch(cache: Path, crates: list[tuple[str, str]], locked: bytes, cargo: Pat
         (work / "src").mkdir(parents=True)
         home.mkdir()
         (work / "src" / "lib.rs").write_text("")
-        (work / "Cargo.toml").write_text(synthetic_manifest(crates))
+        manifest = synthetic_manifest(crates)
+        (work / "Cargo.toml").write_text(manifest)
         # Seed the resolver with the PR's lockfile *as data*: it keeps each locked version even if
         # it was yanked since. Cargo re-derives the root; this file never reaches the sandbox.
         (work / "Cargo.lock").write_bytes(locked)
-        env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "CARGO_HOME": str(cache),
-               "RUSTC": str(rustc), "CARGO": str(cargo), "CARGO_TERM_COLOR": "never",
-               "CARGO_TERM_PROGRESS_WHEN": "never", "CARGO_NET_RETRY": "2",
-               "CARGO_HTTP_TIMEOUT": "60", "CARGO_REGISTRIES_CRATES_IO_PROTOCOL": "sparse",
-               "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
-               "GIT_TERMINAL_PROMPT": "0", "LANG": "C.UTF-8"}
+        env = cargo_env(home, cache, rustc, cargo)
+        # Under the test guard, the one allowed network path — and only to crates.io's hosts.
+        guard_registry(env, work, cache, manifest, locked)
         try:
             rc, tail = bounded_run([str(cargo), "fetch"], env=env, cwd=work,
                                    timeout=max(deadline - time.monotonic(), 0.1),

@@ -1,14 +1,15 @@
 """Real SQLite operator outbox and no-replay recovery tests."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import os
 from pathlib import Path
-import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
 
+from review_loop import ledger
 from review_loop.run_supervisor import Supervisor
 
 
@@ -26,7 +27,7 @@ class OperatorReconciliation(unittest.TestCase):
         assert self.row is not None
 
     def crash(self, state='running', pid=None):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute('UPDATE runs SET state=?,owner=?,attempts=1,lease=0, '
                         'launch_intent=1,pid=? WHERE id=?',
                         (state, 'lost-owner', pid, self.row['id']))
@@ -71,7 +72,7 @@ class OperatorReconciliation(unittest.TestCase):
         self.assertEqual(self.sup.get('d')['state'], 'uncertain')
 
     def test_failed_worker_alert_is_single_per_run(self):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='failed', error='child exit 7' WHERE id=?",
                         (self.row['id'],))
         notices = []
@@ -88,13 +89,13 @@ class OperatorReconciliation(unittest.TestCase):
         notices = []
         self.assertEqual(self.sup.notify(notices.append), 0)
         self.assertEqual(notices, [])
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             state = con.execute('SELECT state FROM operator_notices WHERE run_id=?',
                                 (self.row['id'],)).fetchone()[0]
         self.assertEqual(state, 'resolved')
 
     def test_slow_notice_does_not_hold_sqlite_writer_or_duplicate_delivery(self):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='failed' WHERE id=?", (self.row['id'],))
         entered, release = threading.Event(), threading.Event()
         messages, errors = [], []
@@ -107,7 +108,7 @@ class OperatorReconciliation(unittest.TestCase):
         thread.start()
         try:
             self.assertTrue(entered.wait(2))
-            with sqlite3.connect(self.db, timeout=0.3) as con:
+            with ledger.connect(self.db, timeout=0.3) as con:
                 con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,state,created,updated) "
                             "VALUES('other','other','o/r',2,'head','reviewer','pending',1,1)")
             self.assertEqual(self.sup.notify(messages.append), 0)

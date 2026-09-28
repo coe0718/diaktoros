@@ -1,4 +1,5 @@
 """Observer destination and legacy receipt safety regressions."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import pathlib
 import tempfile
@@ -8,6 +9,12 @@ from unittest.mock import patch
 
 from review_loop import observer, routes
 from review_loop.state import LoopState
+
+
+# These tests reach code that reads config.home(): never the operator's (#108).
+import _ledger_guard  # noqa: E402
+
+setUpModule, tearDownModule = _ledger_guard.module_home()
 
 
 class ObserverSafetyTests(unittest.TestCase):

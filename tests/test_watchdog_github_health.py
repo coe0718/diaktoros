@@ -7,6 +7,8 @@ that is now left on disk for the next sweep and ``explain`` instead of only the 
 """
 from __future__ import annotations
 
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+
 import os
 import pathlib
 import sys
@@ -177,6 +179,14 @@ class Health(unittest.TestCase):
         back, *_ = self.sweep(hooks=(True, ""), probe=OK, at=self.now + 1800)
         self.assertTrue(any("GitHub reads work again as rev-coach" in line for line in back), back)
 
+    def test_the_listing_line_dedupe_does_not_depend_on_the_alert_wording(self):
+        denied = "open PR page 1: HTTP 403 " + PRETTY_403
+        with mock.patch.object(watchdog, "READ_ALERT", "GitHub refuses reads by {who}"):
+            lines, *_ = self.sweep(hooks=(True, ""), probe=OK, listing_error=denied)
+        self.assertEqual(len([x for x in lines if "GitHub refuses reads by rev-coach" in x]), 1,
+                         lines)
+        self.assertFalse(any("could not list open PRs" in x for x in lines), lines)
+
     def post_failure(self, error: str, status):
         self.st.github_failure_record({
             "at": self.now - 60, "where": "gate_fixer.py", "method": "POST",
@@ -244,7 +254,10 @@ class Reads(unittest.TestCase):
         import urllib.error
         body = io.BytesIO(PRETTY_401.encode())
         err = urllib.error.HTTPError("https://api.github.com/user", 401, "Unauthorized", {}, body)
+        # A loopback API: under the test guard a request to api.github.com is refused before
+        # urlopen, mocked or not.
         with mock.patch.dict(os.environ, {"REVIEW_LOOP_GH_STUB": ""}), \
+             mock.patch.object(gh, "API", "http://127.0.0.1:9"), \
              mock.patch.object(gh, "token", return_value="t"), \
              mock.patch.object(gh.urllib.request, "urlopen", side_effect=err):
             response = gh.auth_probe(self.loop)

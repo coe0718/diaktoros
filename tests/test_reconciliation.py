@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Failure injection across profile-bound routes, GitHub hooks, and loop config."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import pathlib
 import sys
@@ -29,7 +30,7 @@ def main():
 
     def api(loop, path, method='GET', body=None, login=None):
         if path.endswith('/hooks?per_page=100'):
-            return [{'id': key, 'config': {'url': url}} for key, url in hooks.items()]
+            return [{'id': key, 'active': True, 'config': {'url': url}} for key, url in hooks.items()]
         key = int(path.rsplit('/', 1)[-1])
         if method == 'PATCH':
             hooks[key] = body['config']['url']
@@ -123,7 +124,7 @@ def main():
     print('PASS empty profile directory is not an installed profile')
 
     init = t.parser_for({'reviewer_profile': 'vex', 'fixer_profile': 'drey'}).parse_args([
-        'init', '--repo', 'acme/reconcile', '--id', 'reconcile', '--host', t.HOST,
+        'init', '--repo', 'acme/reconcile', '--id', 'reconcile', '--host', t.HOST, *t.READER_ARGS,
         '--reviewer', t.REVIEWER, '--fixer', t.FIXER,
         '--token', f'{t.REVIEWER}={t.SEAT_PATS[0]}', '--token', f'{t.FIXER}={t.SEAT_PATS[1]}'])
     count = 0
@@ -132,7 +133,7 @@ def main():
     assert_old('init retry restores preexisting config and routes', rc)
 
     new_init = t.parser_for({'reviewer_profile': 'vex', 'fixer_profile': 'drey'}).parse_args([
-        'init', '--repo', 'acme/newloop', '--id', 'newloop', '--host', t.HOST,
+        'init', '--repo', 'acme/newloop', '--id', 'newloop', '--host', t.HOST, *t.READER_ARGS,
         '--reviewer', t.REVIEWER, '--fixer', t.FIXER,
         '--token', f'{t.REVIEWER}={t.SEAT_PATS[0]}',
         '--token', f'{t.FIXER}={t.SEAT_PATS[1]}', '--hooks'])
@@ -147,18 +148,21 @@ def main():
             created.pop(int(path.rsplit('/', 1)[-1]), None)
             return None
         if path.endswith('/hooks?per_page=100'):
-            return [{'id': key, 'config': {'url': url}} for key, url in created.items()]
+            return [{'id': key, 'active': False, 'config': {'url': url}} for key, url in created.items()]
         return {'id': 100, 'config': {'url': created[100]}} if 100 in created else None
     with mock.patch.object(gh, 'api', side_effect=partial_create):
         rc, out = t.run_cli(new_init)
     assert rc == 2, (rc, out)
     assert not created and not (t.LOOPS_DIR / 'newloop.json').exists(), (created, out)
     assert not routes.route('newloop-review') and not routes.route('newloop-fix')
+    # The rollback must have taken the real path (a readable listing, a confirmed DELETE), not
+    # the "cannot identify newly created hooks" fallback a malformed mock listing would force.
+    assert 'ROLLBACK FAILED' not in out and 'cannot identify' not in out, out
     print('PASS init second hook failure removes first hook and local artifacts')
 
     multi = t.parser_for({'reviewer_profile': 'vex', 'fixer_profile': 'drey',
                           'reviewer_login': t.REVIEWER}).parse_args([
-        'init', '--repo', 'acme/multi', '--host', t.HOST,
+        'init', '--repo', 'acme/multi', '--host', t.HOST, *t.READER_ARGS,
         '--reviewer', 'backup-reviewer', '--reviewer', t.REVIEWER, '--fixer', t.FIXER,
         '--token', f'{t.REVIEWER}={t.SEAT_PATS[0]}', '--token', f'{t.FIXER}={t.SEAT_PATS[1]}'])
     rc, out = t.run_cli(multi)
@@ -236,7 +240,7 @@ def main():
     # The configured fixer is the selected login, not merely one of the allowed fixers.
     fixer_form = {'reviewer_profile': 'vex', 'fixer_profile': 'drey',
                   'reviewer_login': t.REVIEWER, 'fixer_login': t.FIXER}
-    fixer_args = ['init', '--repo', 'acme/multifix', '--host', t.HOST,
+    fixer_args = ['init', '--repo', 'acme/multifix', '--host', t.HOST, *t.READER_ARGS,
                   '--reviewer', t.REVIEWER, '--fixer', 'backup-fixer', '--fixer', t.FIXER,
                   '--token', f'{t.REVIEWER}={t.SEAT_PATS[0]}',
                   '--token', f'{t.FIXER}={t.SEAT_PATS[1]}']

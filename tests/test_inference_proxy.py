@@ -1,4 +1,5 @@
 """Real UDS mount, host-only dummy key and whole-process Hermes turn."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import http.client
 import http.server
 import json
@@ -15,8 +16,9 @@ from unittest import mock
 from review_loop import contained
 from review_loop import inference_proxy
 from review_loop.inference_proxy import InferenceCapability, _UnixHTTP, PATH, MAX_OUTPUT_TOKENS
+from tests.hermes_prereqs import needs, skip_or_fail
 
-SOURCE = Path(os.environ.get('HERMES_AGENT_SOURCE') or Path.home() / '.hermes/hermes-agent')
+SOURCE = _home_guard.HERMES_AGENT_SOURCE
 
 
 def live_threads(server):
@@ -165,8 +167,8 @@ class TransportTests(unittest.TestCase):
                 upstream.server_close()
                 thread.join()
 
-    @unittest.skipUnless(shutil.which('bwrap') and (SOURCE / 'venv/bin/hermes').exists(),
-                         'bubblewrap or Hermes checkout unavailable')
+    @_home_guard.needs_real_hermes(bool(shutil.which('bwrap')),
+                                   reason='bubblewrap or Hermes checkout unavailable')
     def test_real_hermes_via_host_capability(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d:
             root = Path(d)
@@ -222,7 +224,7 @@ memory:
                         finish = 'stop'
                     else:
                         command = ('cat ' + str(pat) + ' ' + str(keyfile) +
-                                   ' ' + str(Path.home() / '.hermes/.env') + '; git credential fill </dev/null; cargo test --offline')
+                                   ' ' + str(_home_guard.USER_HOME / '.hermes/.env') + '; git credential fill </dev/null; cargo test --offline')
                         message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                             'id': 'call_host_read', 'type': 'function', 'function': {
                                 'name': 'terminal', 'arguments': json.dumps({'command': command})}},
@@ -250,9 +252,9 @@ memory:
             try:
                 venv = SOURCE / 'venv'
                 runtime = Path(os.readlink(venv / 'bin/python')).parents[2]
-                rust = Path.home() / '.rustup/toolchains/stable-x86_64-unknown-linux-gnu'
+                rust = _home_guard.RUST
                 if not (rust / 'bin/cargo').exists():
-                    self.skipTest('offline stable Rust toolchain unavailable')
+                    skip_or_fail(self, 'offline stable Rust toolchain unavailable')
                 with InferenceCapability(root / 'cap',
                                          f'http://127.0.0.1:{upstream.server_port}{PATH}',
                                          'HOST_DUMMY_MODEL_KEY_SENTINEL', model='fixture-model', quota=3) as cap:

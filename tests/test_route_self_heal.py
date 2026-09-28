@@ -5,6 +5,7 @@ tests play that native writer: plain ``write_text`` calls that ignore the lock e
 """
 from __future__ import annotations
 
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import contextlib
 import io
 import json
@@ -168,7 +169,7 @@ class SelfHealTest(Fixture):
 class OperatorIntentTest(Fixture):
     def test_uninstall_through_the_plugin_is_not_undone(self):
         self.install()
-        args = SimpleNamespace(loop="widgets", keep_config=True)
+        args = SimpleNamespace(loop="widgets", keep_config=True, keep_hooks=True)
         with mock.patch.object(cli.config, "load_id", return_value=self.loop), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(cli.cmd_uninstall(args), 0)

@@ -1,14 +1,14 @@
 # Architecture
 
-> **Current status:** the diagrams below describe the intended operational loop,
-> not a safely running one. Gates presently queue eligible PR events and return
-> `[SILENT]` before gateway dispatch; a breach enqueues an isolated adjudicator
-> turn instead of waking the legacy gateway route. This is a
-> deliberate safety hold pending an enforced, credentialless whole-agent runner.
-> `review_loop/broker.py` contains trusted REST authorization primitives and
-> `review_loop/broker_ipc.py` a scoped Unix-socket service; an offline worker
-> exercises a bubblewrapped Hermes turn. This is NOT production authorization
-> for unattended fixer pushes.
+> **Current status:** gates never dispatch to a gateway agent — they queue an eligible PR
+> event as an isolated turn in the host run ledger and return `[SILENT]`. A worker runs that
+> turn credentialless in a bubblewrap sandbox, and its only way out is the host broker
+> (`review_loop/broker.py`, `review_loop/broker_ipc.py`). Nothing runs until the private
+> runtime file exists (without it a turn is held with its reason) and the repo hooks are
+> armed; with both, a reviewer turn posts a real review and a breach runs the isolated
+> adjudicator. Unattended fixer pushes stay off per loop until
+> `fixer-push --enable --acknowledge-pr-race` — that is not atomic PR authorization. The
+> diagrams below show the gate logic; the "agent" boxes are those isolated turns.
 
 Five processes, four state files, one rule: **the control plane never guesses.**
 
@@ -90,11 +90,19 @@ because the unsafe shape is the combination.
 
 Per-seat capacity answers *how many PRs a seat may hold*. A second, stricter rule sits under it:
 **one PR is held by one seat at a time.** A review must never run against a PR the fixer is mid-fix
-on, and a fix must not start on a PR under review — `held_by_other()` is that claim, and a gate that
-finds the other seat holding the PR queues itself instead of starting.
+on, and a fix must not start on a PR under review.
 
-Which raises the question the loop cannot answer directly: *when is a seat done with a PR?* The loop
-sees events, not process exits. So it uses the events that already mean the turn is over:
+Both rules are **enforced by the isolated run ledger**: a gate only enqueues a turn, and a worker
+claims a pending row only while its seat has capacity and no other run occupies the PR. The seat
+claim in `locks.json` (and the head's in-flight mark) is the *visible* copy of that occupancy: the
+isolated worker writes it when its run launches — with the run's own budget, so its TTL fits the
+turn — and removes it when the run ends. A run that ends `uncertain` keeps its claim until an
+operator reconciles it; the reconciliation frees it. `explain`, `status`, the queue drain and the watchdog's "that run died"
+report read the claim; none of them can start or stop a turn.
+
+The gates' release paths below also free a claim, and are what end the *PR's* turn for the other
+seat. The loop sees events, not process exits, so it uses the events that already mean a turn is
+over:
 
 | signal | what it ends |
 |---|---|
@@ -102,12 +110,11 @@ sees events, not process exits. So it uses the events that already mean the turn
 | a verdict at the current head (approve **or** changes-requested) | the reviewer's turn |
 | `ttl_min` | a run that died without either. The backstop, not the mechanism. |
 
-That is also why **order matters inside each gate**: the gate frees the other seat *before* it claims
-its own. Claim first and the two gates deadlock against each other — the reviewer waits for the fixer
-to hand off, the fixer waits for the reviewer to hand off. Both gates therefore look like:
+That is also why **order matters inside each gate**: the gate frees the other seat *before* it
+enqueues its own turn, so a handoff never waits on a claim the handoff itself ends:
 
 ```
-observe the peer's handoff → free the peer → claim own slot (queue if the peer still holds it)
+observe the peer's handoff → free the peer's claim → enqueue own turn (the worker claims at launch)
 ```
 
 An approval is the case worth naming: the fixer has nothing to do on an approved PR, but the
@@ -232,9 +239,18 @@ the watchdog neither drains nor scans there, but alerts with the read token's lo
 status (a 401/403 at once, a 5xx or no answer after three failed sweeps in a row, re-raised every
 `cooldown_h`), and `explain` prints "unknown" rather than guessing in either direction. The
 open-PR listing counts the same way: a token that can see the hooks but is refused the pulls (a
-403) raises the same alert on the same cadence. A gate that cannot read the current PR still
-answers `[SILENT]`, but leaves the failed call in `github-reads.json`: the next sweep reports it
-once, and `explain` shows it on its `github:` line. A failed write is reported by what is known:
+403) raises the same alert on the same cadence. The stall scan's per-PR review reads are not silent either:
+a PR whose reviews cannot be read is skipped without a guessed verdict, but the sweep names it
+in one bounded line (`could not read reviews for N PR(s) — #7: …`). If the failure looks like an
+outage (a 401/403, a 5xx, or no answer), it also counts toward the read alert. "GitHub reads work
+again" is said only after a sweep in which every read it made succeeded. When the read alert
+fires, it names every PR whose failure looks like an outage, and every other failed PR stays in
+the per-PR line, so no failed PR goes unmentioned. A gate that cannot read the current PR still
+answers `[SILENT]`, and leaves the failed call in `github-reads.json`, which `explain` shows on its
+`github:` line. The read is reported once, by one owner: the gate-failure entry the gate recorded
+for that event (its alert, and its re-drive), with the `github-reads.json` record marked
+`owned_by` so the health check does not report it again. Only a failed call that no gate-failure
+entry owns is reported by the health check. A failed write is reported by what is known:
 a 4xx means GitHub refused it and nothing changed; no answer or a 5xx leaves the outcome unknown,
 and the line names what to check on the PR before re-sending it. GitHub's error bodies arrive as
 pretty-printed JSON; every alert and `explain` line folds them into one bounded line.
@@ -379,9 +395,12 @@ Example transcripts are in [Operating a loop](operations.md#preflight-doctor).
 | `config` | the loop file is there and parses |
 | `profile:reviewer` / `profile:fixer` | each seat's Hermes profile home exists (`~/.hermes/profiles/<name>`, or `~/.hermes` itself for `default`) |
 | `credential:<seat>` | a nonempty token file is mapped for that seat's login through `gh.token_path`; profile `GH_TOKEN` alone is not used by the gates |
+| `model:<seat>` | the seat's profile names a provider and model the inference proxy can carry — read from the profile's `config.yaml` by the runtime's Hermes interpreter, without resolving any credential |
+| `extras:<seat>` | the optional Hermes package that seat's provider needs (the `anthropic` extra for the Messages wire) is importable by the runtime file's `venv` — the interpreter the sandbox mounts; a provider Hermes only *may* move onto that wire is ⚠️ without it, and the line is skipped when `model:<seat>` already fails |
 | `token:<login>` | every credential file named in the config exists, is non-empty, and is not readable by group or other users |
-| `read_token` | the login the gates read GitHub as is one of those mappings |
-| `route:<name>` | the gateway's registry holds the route, it wakes *this* seat's profile, it carries a secret and a prompt, it runs the right gate script for the right event, and it resolves to this loop's own gateway origin — and, when the plugin has an intent record for it, still matches that record (a rotated secret looks well-formed but no longer matches GitHub's hook) |
+| `read_token` | the login the gates read GitHub as is one of those mappings, and is its own account: not a seat, not the adjudicator login, no shared token file (the four-identity rule) |
+| `route:<name>` | the gateway's registry holds the route, it wakes *this* seat's profile, it carries a secret and a prompt, it runs the right gate script for the right event, it is not switched off (`enabled: false` makes the gateway answer 403 to every event; `apply` or `doctor --repair` re-enables it), and it resolves to this loop's own gateway origin — and, when the plugin has an intent record for it, still matches that record (a rotated secret looks well-formed but no longer matches GitHub's hook). A loop with an observer gets the same check for its feed route: present, serving `observer.profile`, and exactly the delivery-only contract the feed checks before every notice |
+| `gateway-script:<route>` | the route's `script` resolves the way the gateway resolves it — under the **serving profile's** `scripts/` (`~/.hermes/scripts` for `default`, `~/.hermes/profiles/<name>/scripts` otherwise), as a real file inside that directory — and it is the plugin's gate shim pinned to this install. `init`/`apply` write those shims (a symlink would be refused by the gateway); `uninstall` removes the ones no other loop needs; a same-named file the plugin did not write is never touched |
 | `scripts` | the plugin's `watchdog.py`, both gates and `cleanup.py` are on disk |
 | `cron:shim` | `~/.hermes/scripts/review-loop-watchdog.py` exists **and is pinned to the plugin install that is here now** — an upgrade that moves the directory leaves the scheduler running an old path |
 | `cron:job` | the scheduler's own store holds this loop's watchdog job and it is not paused |
@@ -390,7 +409,7 @@ Example transcripts are in [Operating a loop](operations.md#preflight-doctor).
 | `gateway` | a TCP connect to the loop's webhook origin is accepted |
 | `hook:<route>` | the repo hook posts at the route's URL, subscribes to that seat's event, and is active |
 
-Four states, and the difference between the last two is the point:
+Five states, and the difference between absent/mismatch and unknown is the point:
 
 * ✅ **verified** — checked, and correct;
 * ❌ **absent** — not there at all;
@@ -398,7 +417,10 @@ Four states, and the difference between the last two is the point:
   another gateway, a shim pinned to a stale plugin path, a world-readable PAT;
 * ⚠️ **unknown** — could not be decided from here: a hooks read the token was not allowed to make
   (reading a repo's hooks needs hook read access: classic `repo`, or the narrower `read:repo_hook`),
-  or a probe skipped with `--offline`.
+  or a probe skipped with `--offline`;
+* ➖ **skipped** — not checked, because another line already fails for the same cause:
+  `extras:<seat>` while `model:<seat>` is ❌ (no provider to check). Neither a pass nor a second
+  warning, and not counted as unknown by `--strict`.
 
 **Unknown is never folded into absent.** "The API refused to tell me" and "there are no hooks" are
 different claims, and printing the second when the first is true sends the operator hunting for a

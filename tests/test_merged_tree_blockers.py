@@ -1,6 +1,7 @@
 """Regressions for observer installation, first-sweep notices, and effective verdicts."""
 from __future__ import annotations
 
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import contextlib
 import io
 import pathlib
@@ -33,6 +34,12 @@ def review(rid, state, when):
 
 APPROVED = review(100, "APPROVED", "2026-01-01T00:00:00Z")
 REJECTED = review(101, "CHANGES_REQUESTED", "2026-01-01T00:01:00Z")
+
+
+# These tests reach code that reads config.home(): never the operator's (#108).
+import _ledger_guard  # noqa: E402
+
+setUpModule, tearDownModule = _ledger_guard.module_home()
 
 
 class ObserverInitCollisionTest(unittest.TestCase):

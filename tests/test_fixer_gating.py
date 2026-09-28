@@ -7,13 +7,13 @@
 """
 from __future__ import annotations
 
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 import contextlib
 import io
 import json
 import os
 from pathlib import Path
-import sqlite3
 import sys
 import tempfile
 import time
@@ -23,6 +23,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from review_loop import ledger  # noqa: E402
 from review_loop import cli, config, doctor, gate, gh, run_supervisor, state as state_mod  # noqa: E402
 from review_loop.run_supervisor import FixerPushDisabled, Supervisor  # noqa: E402
 from scripts import gate_fixer, watchdog  # noqa: E402
@@ -74,7 +75,7 @@ class Base(unittest.TestCase):
         db = self.root / "home" / "state" / "review-loop-runs.sqlite"
         if not db.exists():
             return []
-        with sqlite3.connect(db) as con:
+        with ledger.connect(db) as con:
             return con.execute("SELECT seat, push_admitted, state FROM runs").fetchall()
 
 

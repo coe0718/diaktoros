@@ -1,6 +1,7 @@
 """Adversarial webhook snapshots must not claim stale heads or reclaimed disk."""
 from __future__ import annotations
 
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import contextlib
 import io
 import json
@@ -21,6 +22,12 @@ def pr(head=HEAD_A, state="open"):
     return {"number": 7, "state": state, "head": {"sha": head},
             "base": {"ref": "main", "sha": HEAD_B,
                      "repo": {"full_name": "acme/widgets"}}, "user": {"login": "fixer"}}
+
+
+# These tests reach code that reads config.home(): never the operator's (#108).
+import _ledger_guard  # noqa: E402
+
+setUpModule, tearDownModule = _ledger_guard.module_home()
 
 
 class NotificationFreshnessTest(unittest.TestCase):

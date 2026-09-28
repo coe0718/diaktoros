@@ -51,6 +51,7 @@ import contextlib
 
 import ipaddress
 import json
+import math
 import os
 import pathlib
 import re
@@ -264,9 +265,21 @@ def seat_mapping(settings: dict | None) -> dict:
 
 
 def seat_profile(loop: dict, role: str) -> str:
-    """What a seat (or the adjudicator) runs as, from the config it is actually driving with."""
+    """What a seat (or the adjudicator, or the observer feed) runs as, from the config it is
+    actually driving with.
+
+    This is the one answer to "which profile does this role's route serve": ``init`` and ``set``
+    write the route with it, and ``apply``/``doctor``/the gate shims check the route against it.
+    The observer is not a seat, but its route still carries a profile; a loop with no observer
+    route has none (``""``).
+    """
     if role == "adjudicator":
         return str((loop.get("adjudicator") or {}).get("profile") or "default")
+    if role == "observer":
+        observer = loop.get("observer") or {}
+        if not str(observer.get("route") or "").strip():
+            return ""
+        return str(observer.get("profile") or "default").strip() or "default"
     return str(((loop.get("seats") or {}).get(role) or {}).get("profile") or "")
 
 
@@ -491,7 +504,29 @@ def turn_budget(loop: dict, seat: str) -> int:
     return int(value)
 
 
-def turn_parts(loop: dict, seat: str | None = None, recorded: float | None = None) -> dict:
+def _recorded_budget(recorded) -> int:
+    """A claim's recorded budget as whole seconds; None is "none recorded" (0). Anything that
+    is not a number is refused: a silently ignored value would be a silently wrong clock."""
+    if recorded is None:
+        return 0
+    if (isinstance(recorded, bool) or not isinstance(recorded, (int, float))
+            or not math.isfinite(recorded)):
+        raise ValueError(f"recorded turn budget must be finite seconds, got {recorded!r}")
+    return int(recorded)
+
+
+def claim_budget(entry) -> float | None:
+    """The budget a seat claim (a ``locks.json`` entry) recorded, or None — for a legacy or
+    hand-edited claim whose value is missing or not a number, which then gets its seat's own
+    clock rather than an error in a read-only report."""
+    value = entry.get("budget") if isinstance(entry, dict) else None
+    # NaN and infinity are floats too: a claim holding one gets its seat's clock, like any
+    # other value that is not a number of seconds (#98).
+    return (value if isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) else None)
+
+
+def turn_parts(loop: dict, seat: str | None = None, *, recorded: float | None = None) -> dict:
     """The pieces of one isolated turn's worst-case wall clock, launch to end, in seconds.
 
     Before the budget: the host dependency prefetch (``deps.FETCH_TIMEOUT``, #51). Then the
@@ -503,34 +538,44 @@ def turn_parts(loop: dict, seat: str | None = None, recorded: float | None = Non
     """
     from . import deps, trusted_turn   # imported late: both import this module
     seats = (seat,) if seat else (*SEAT_KEYS, "adjudicator")
-    budget = max(turn_budget(loop, name) for name in seats)
-    try:
-        budget = max(budget, int(float(recorded or 0)))
-    except (TypeError, ValueError):
-        pass
+    budget = max(max(turn_budget(loop, name) for name in seats), _recorded_budget(recorded))
     return {"prefetch": deps.FETCH_TIMEOUT, "budget": budget,
             "grace": trusted_turn.KILL_GRACE_S, "drain": trusted_turn.BROKER_DRAIN_S}
 
 
-def worst_turn_s(loop: dict, seat: str | None = None, recorded: float | None = None) -> int:
+def worst_turn_s(loop: dict, seat: str | None = None, *, recorded: float | None = None) -> int:
     """Seconds one isolated turn may take from launch to end (see ``turn_parts``)."""
-    return sum(turn_parts(loop, seat, recorded).values())
+    return sum(turn_parts(loop, seat, recorded=recorded).values())
 
 
-def seat_ttl_s(loop: dict, recorded: float | None = None) -> int:
-    """How long a seat claim lives: ``ttl_min``, or the whole worst-case turn if that is longer.
+def seat_ttl_s(loop: dict, *, seat: str | None = None, recorded: float | None = None) -> int:
+    """How long a ``seat``'s claim lives: ``ttl_min``, or that seat's whole worst-case turn if
+    that is longer (the longest seat's when no seat is named).
 
     ``ttl_min`` is the backstop for a run that died without a verdict; it must never be what
-    takes a slot from a turn that is still inside its own budget (#98). ``recorded``, the
-    budget the claim was taken with, keeps a lowered ``turn_budget_s`` from shortening it.
+    takes a slot from a turn that is still inside its own budget (#98) — and another seat's
+    longer budget must not keep a dead claim alive either. ``recorded``, the budget the claim
+    was taken with, keeps a lowered ``turn_budget_s`` from shortening it.
     """
     return max(int(loop.get("ttl_min") or DEFAULTS["ttl_min"]) * 60,
-               worst_turn_s(loop, recorded=recorded))
+               worst_turn_s(loop, seat, recorded=recorded))
 
 
-def seat_died_after_s(loop: dict, recorded: float | None = None) -> int:
-    """Age past which the watchdog reports a seat claim as a run that died: twice its TTL."""
-    return 2 * seat_ttl_s(loop, recorded)
+def seat_died_after_s(loop: dict, *, seat: str | None = None,
+                      recorded: float | None = None) -> int:
+    """Age past which the watchdog reports a seat claim as a run that died: twice its TTL.
+
+    ``seat`` and ``recorded`` are keyword-only (#98): positionally a seat name could land in
+    ``recorded`` and the clock would silently be the longest seat's."""
+    return 2 * seat_ttl_s(loop, seat=seat, recorded=recorded)
+
+
+def stall_grace_s(loop: dict, seat: str) -> int:
+    """How long the watchdog lets ``seat``'s part of a PR sit quiet before calling it a stall:
+    ``grace_min``, or that seat's whole worst-case turn if longer (#98). Per seat, so one
+    seat's long budget never delays the stall report of another."""
+    grace = int(loop.get("grace_min") or DEFAULTS["grace_min"]) * 60
+    return max(grace, worst_turn_s(loop, seat))
 
 
 def adjudicating_stall_s(loop: dict) -> int:
@@ -598,7 +643,8 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
         seat["turn_budget_s"] = _check_budget(raw["turn_budget_s"],
                                               "seats.adjudicator.turn_budget_s", where)
     if raw.get("concurrency") not in (None, ""):
-        seat["concurrency"] = int(raw["concurrency"])
+        seat["concurrency"] = _as_int(raw["concurrency"], "seats.adjudicator.concurrency",
+                                      where)
         if seat["concurrency"] < 1:
             raise ConfigError(f"{where}: seats.adjudicator.concurrency must be >= 1 (1 = serialized)")
     login = raw.get("login")
@@ -613,8 +659,7 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
         *loop["reviewers"], *loop["fixers"]) if x}
     if login.casefold() in others:
         raise ConfigError(f"{where}: seats.adjudicator.login {login!r} is also the reader, a seat "
-                          "or an allowlisted reviewer/fixer — the ruling identity must be its own "
-                          "account")
+                          f"or an allowlisted reviewer/fixer — {FOUR_IDENTITY_RULE}")
     tokens = loop.get("tokens") or {}
     if not tokens.get(login):
         raise ConfigError(f"{where}: seats.adjudicator.login {login!r} has no entry in 'tokens' — "
@@ -633,7 +678,7 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
                                   f"{exc}") from exc
         if same:
             raise ConfigError(f"{where}: the adjudicator and {other!r} read the same token file "
-                              "— the ruling identity needs its own credential")
+                              f"— {FOUR_IDENTITY_RULE}")
     seat["login"] = login
     return seat
 
@@ -682,6 +727,64 @@ class ConfigError(Exception):
     """A loop file that cannot be trusted to drive a run."""
 
 
+FOUR_IDENTITY_RULE = ("the four-identity rule: the reader, the reviewer, the fixer and (if set) "
+                      "the adjudicator comment login must be four different accounts with four "
+                      "different token files (docs/operations.md#token-files-one-pat-per-account)")
+
+
+def _same_token_file(first, second) -> bool:
+    """Whether two token-file references name one file. Metadata only; the PAT is never read."""
+    mine, theirs = _path(first), _path(second)
+    if os.path.realpath(mine) == os.path.realpath(theirs):
+        return True
+    try:
+        return mine.exists() and theirs.exists() and mine.samefile(theirs)
+    except OSError:
+        return True                        # cannot tell them apart: treat as shared, never as safe
+
+
+def reader_problem(loop: dict) -> str:
+    """Why the reader is not its own identity, or ``""`` when it is (or no reader is named).
+
+    The reader reads every PR state the gates act on; the broker refuses every write when it is
+    also a seat, so a loop that installs that way passes init and fails at its first review. The
+    offline part of the rule is checked here — distinct logins, distinct token files; distinct
+    ``/user`` principals need the network, and ``selftest`` and the broker check those.
+    """
+    reader = str(loop.get("read_token") or "").strip()
+    if not reader:
+        return ""
+    others = [(f"{seat} seat", seat_login(loop, seat)) for seat in SEAT_KEYS]
+    others.append(("adjudicator comment login", adjudicator_login(loop)))
+    for role, login in others:
+        if login and login.casefold() == reader.casefold():
+            return f"the reader {reader!r} is also the {role}"
+    tokens = {str(k).casefold(): str(v or "") for k, v in (loop.get("tokens") or {}).items()}
+    mine = tokens.get(reader.casefold())
+    if not mine:
+        return ""
+    for role, login in others:
+        theirs = tokens.get(login.casefold()) if login else ""
+        if theirs and _same_token_file(mine, theirs):
+            return (f"the reader {reader!r} and the {role} {login!r} read the same token file — "
+                    "one account wearing two hats")
+    return ""
+
+
+def reader_fix(loop: dict) -> str:
+    """The command that moves a loop's reader onto its own account."""
+    return (f"hermes review-loop set --loop {loop.get('id') or '<id>'} --read-token "
+            "<its own login> --token <that login>=/path/to/pat")
+
+
+def verify_reader(loop: dict) -> None:
+    """Refuse a reader that is not its own account, naming the four-identity rule."""
+    problem = reader_problem(loop)
+    if problem:
+        where = loop.get("id") or loop.get("repo") or "<inline>"
+        raise ConfigError(f"{where}: {problem} — {FOUR_IDENTITY_RULE}")
+
+
 def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
     """Check the loop's token *references* — never their values.
 
@@ -723,7 +826,10 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
         login = seat_login(loop, seat).lower()
         if login and login not in tokens:
             raise ConfigError(f"{where}: no token mapped for the {seat} login {login!r} — add "
-                              f"--token {login}=/path/to/pat, or the {seat} acts as {read_token!r}")
+                              f"--token {login}=/path/to/pat (its own PAT file, never the "
+                              "reader's)")
+    if roles & {"read", "adjudicator", *SEAT_KEYS}:
+        verify_reader(loop)
     if roles & set(SEAT_KEYS):
         # Distinct role credentials: two seats sharing one PAT is one account wearing two hats, and
         # the loop's whole point is that a different account reviews the fixer's work.
@@ -885,13 +991,159 @@ def webhook_host(value: str | None, *, required: bool = False) -> str:
     return host.removesuffix("/")
 
 
+# Set by the test suites' home guard (tests/_home_guard.py). While it is set, the roots the loop
+# writes state under are checked against the operator's real Hermes home — ``home()`` (and so
+# everything derived from it), ``state_dir(loop)`` (every write rooted in a loop's state_dir goes
+# through it), the ``REVIEW_LOOP_CONFIG_DIR``/``REVIEW_LOOP_SUBS`` overrides, the run ledger and
+# the supervisor's host home — so a test that escapes the guard fails loudly instead of writing
+# to a real ledger or runtime file.
+TEST_HOME_GUARD_ENV = "REVIEW_LOOP_TEST_HOME_GUARD"
+# ...and the path of a sentinel file the guard creates in its own temp home. The tripwires arm only
+# with both: the variable alone — say inherited by a real loop's gateway — arms nothing. Only
+# tests/_home_guard.py creates the sentinel (an empty file, no secret in it).
+TEST_GUARD_SENTINEL_ENV = "REVIEW_LOOP_TEST_GUARD_SENTINEL"
+# Every tripwire message starts with this, so an operator who meets one knows what to clear.
+_ARMED = (f"test guard active ({TEST_HOME_GUARD_ENV}=1): unset {TEST_HOME_GUARD_ENV} if this is a "
+          "real loop (docs/operations.md#the-loop-stops-with-realhomeerror-or-realnetworkerror)")
+# Test-only: one more directory to treat as "the real home" while the guard is on, so the
+# tripwire itself can be proven against a fake home. It adds protection, never removes it.
+TEST_REAL_HOME_ENV = "REVIEW_LOOP_TEST_REAL_HOME"
+
+
+class RealHomeError(BaseException):
+    """A guarded test resolved a path inside the operator's real Hermes home.
+
+    A ``BaseException``, like ``KeyboardInterrupt``: the loop fails closed with broad ``except
+    Exception`` handlers, and a tripwire those handlers swallowed would let the test pass.
+    """
+
+
+def test_guard_active() -> bool:
+    """Are the test tripwires armed? Only under the test harness: ``REVIEW_LOOP_TEST_HOME_GUARD=1``
+    *and* ``REVIEW_LOOP_TEST_GUARD_SENTINEL`` naming the sentinel file tests/_home_guard.py made."""
+    if os.environ.get(TEST_HOME_GUARD_ENV) != "1":
+        return False
+    sentinel = os.environ.get(TEST_GUARD_SENTINEL_ENV)
+    try:
+        return bool(sentinel) and pathlib.Path(sentinel).is_file()
+    except OSError:
+        return False
+
+
+def _real_homes() -> list[pathlib.Path]:
+    homes = []
+    try:
+        import pwd
+        homes.append(pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir))
+    except (ImportError, KeyError):
+        pass
+    if os.environ.get(TEST_REAL_HOME_ENV):
+        homes.append(pathlib.Path(os.environ[TEST_REAL_HOME_ENV]))
+    return [pathlib.Path(os.path.normpath(h.absolute())) for h in homes] + [h.resolve() for h in homes]
+
+
+def guard_real_home(path: pathlib.Path | str) -> pathlib.Path:
+    """Return ``path``; under the test guard, raise if it is the real home or anywhere inside it.
+
+    The whole home, not only its ``.hermes``: the same scope as ``guard_real_hermes`` and as the
+    test guard's own ``_under_a_home``. A guarded process whose ``HOME`` was inherited as
+    ``<real home>/projects/x`` would otherwise write ``<real home>/projects/x/.hermes`` freely.
+    """
+    path = pathlib.Path(path)
+    if not test_guard_active():
+        return path
+    homes = _real_homes()
+    # The lexical form first, so the obvious escape is refused without touching the real home;
+    # then the resolved form, so a symlink into it is refused too.
+    lexical = pathlib.Path(os.path.normpath(path.expanduser().absolute()))
+    for candidate in (lexical, None):
+        candidate = candidate or path.expanduser().resolve()
+        for real in homes:
+            if candidate == real or real in candidate.parents:
+                raise RealHomeError(f"{_ARMED}. Otherwise a test escaped tests/_home_guard.py: "
+                                    f"{path} resolves into the real home {real}")
+    return path
+
+
+class RealNetworkError(BaseException):
+    """A guarded test tried to reach a real host (GitHub, Discord, a model upstream).
+
+    A ``BaseException`` for the same reason as ``RealHomeError``: the loop's broad ``except
+    Exception`` would otherwise turn the escape into an ordinary "network failed" and a pass.
+    """
+
+
+# Git's scp-like remote syntax: [user@]host:path, with the colon before any slash.
+_SCP_REMOTE = re.compile(r"^(?:[^@/:]+@)?(\[[^\]/]+\]|[^/:]+):")
+
+
+def guard_network(url: str) -> str:
+    """Return ``url``; under the test guard, raise unless it stays on this machine.
+
+    Loopback hosts (127.0.0.0/8, ::1, localhost) and local paths/``file:`` URLs are the tests'
+    own fakes and pass. Everything else — above all api.github.com and github.com — means a test
+    mocked one seam (say ``gh.api``) and not the one underneath (``gh.fetch``). Git's scp-style
+    ``[user@]host:path`` (a colon before any slash) names a host, not a local path.
+
+    Fails closed: only a schemed URL (``scheme://…``, ``file:`` included, ``tcp://host:port`` for
+    a raw connect), an scp-style remote, or an absolute or ``./``/``../`` local path is judged at
+    all. Anything else — a bare ``github.com``, ``gateway``, an empty string — is refused.
+    """
+    if not test_guard_active():
+        return url
+    if url.startswith(("/", "./", "../")):
+        return url                                        # a local path
+    scp = None if "://" in url else _SCP_REMOTE.match(url)
+    parts = urlsplit(url)
+    if scp:
+        host = scp.group(1).strip("[]")
+    elif "://" in url or parts.scheme == "file":
+        host = parts.hostname or ""
+        if not host and parts.scheme == "file":
+            return url                                    # file:///path, file:/path
+    else:
+        host = ""                                         # a bare name: nothing to judge
+    if host == "localhost":
+        return url
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return url
+    except ValueError:
+        pass
+    raise RealNetworkError(f"{_ARMED}. Otherwise: real network call to {url} refused; mock the request "
+                           "underneath (gh.fetch, not only gh.api), set REVIEW_LOOP_GH_STUB, or "
+                           "point it at a 127.0.0.1 fake")
+
+
+def guard_real_hermes(executable: str) -> str:
+    """Return ``executable``; under the test guard, raise if it is a ``hermes`` in the real home.
+
+    The guard also shadows ``hermes`` on PATH with a shim that refuses to run; this is the second
+    layer, for a PATH the shim is missing from.
+
+    The same scope as ``guard_real_home``, the whole real home: a ``hermes`` anywhere under it —
+    ``~/.local/bin/hermes`` included — is the operator's own. The test guard therefore keeps its
+    temp root outside every protected home, and never creates or writes its shim under one: an
+    inherited shim dir there is replaced by a temp dir outside.
+    """
+    if not test_guard_active() or not os.path.isabs(executable):
+        return executable
+    found = pathlib.Path(executable)
+    resolved = [pathlib.Path(os.path.normpath(found.absolute())), found.resolve()]
+    for real in _real_homes():
+        if any(real in path.parents for path in resolved):
+            raise RealHomeError(f"{_ARMED}. Otherwise a test escaped tests/_home_guard.py: "
+                                f"refusing to run the real {executable}")
+    return executable
+
+
 def home() -> pathlib.Path:
-    return pathlib.Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
+    return guard_real_home(pathlib.Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser())
 
 
 def config_dir() -> pathlib.Path:
     override = os.environ.get("REVIEW_LOOP_CONFIG_DIR")
-    return pathlib.Path(override).expanduser() if override else home() / "review-loops.d"
+    return guard_real_home(pathlib.Path(override).expanduser()) if override else home() / "review-loops.d"
 
 
 @contextlib.contextmanager
@@ -901,8 +1153,8 @@ def push_policy_lock():
     Manual config edits outside this lock are not an authorization mechanism.
     """
     import fcntl
-    directory = config_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    from . import hostdirs
+    directory = hostdirs.ensure(config_dir())
     with (directory / '.fixer-push-policy.lock').open('a+b') as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
         try:
@@ -958,8 +1210,12 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
 
     raw_seats = loop.get("seats") if isinstance(loop.get("seats"), dict) else {}
     seats = {}
+    if not isinstance(loop.get("seats"), dict):
+        raise ConfigError(f"{where}: 'seats' must be an object with reviewer and fixer")
     for seat in SEAT_KEYS:
-        seat_cfg = dict((loop.get("seats") or {}).get(seat) or {})
+        if not isinstance(loop["seats"].get(seat) or {}, dict):
+            raise ConfigError(f"{where}: seats.{seat} must be an object")
+        seat_cfg = dict(loop["seats"].get(seat) or {})
         if not seat_cfg.get("route"):
             raise ConfigError(f"{where}: seats.{seat}.route is required")
         if not seat_cfg.get("profile"):
@@ -969,6 +1225,11 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         seat_cfg.setdefault("agent", seat_cfg["profile"].capitalize())
         seats[seat] = seat_cfg
     loop["seats"] = seats
+    if str(seats["reviewer"]["route"]) == str(seats["fixer"]["route"]):
+        # One route for two seats: one hook would wake (and "arm") both, and the gate script
+        # bound to it can only be one of the two. Refused on load, not only at init/apply.
+        raise ConfigError(f"{where}: seats.reviewer.route and seats.fixer.route are both "
+                          f"{seats['reviewer']['route']!r} — each seat needs its own route")
 
     loop["reviewer_seat"] = str(loop.get("reviewer_seat")
                                or seats["reviewer"].get("login") or "").lower()
@@ -989,12 +1250,20 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
 
     loop["observer"] = normalize_observer(loop.get("observer"))
 
-    loop["cap"] = int(loop["cap"])
+    loop["cap"] = _as_int(loop["cap"], "cap", where)
     if loop["cap"] < 2:
         raise ConfigError(f"{where}: 'cap' is the number of verdicts allowed; must be >= 2")
 
     loop["tokens"] = {k: str(v) for k, v in (loop.get("tokens") or {}).items()}
-    loop["read_token"] = str(loop.get("read_token") or (next(iter(loop["tokens"]), "")))
+    # The reader is named, never inferred: taking "the first token" would make whichever seat
+    # happens to be listed first the account every gate reads GitHub as.
+    loop["read_token"] = str(loop.get("read_token") or "").strip()
+    if not loop["read_token"]:
+        raise ConfigError(f"{where}: 'read_token' is not set, and the reader is never inferred "
+                          "from 'tokens' — add \"read_token\": \"<login>\" naming the reader's "
+                          "own account, with its own entry in 'tokens': `hermes review-loop set "
+                          f"--loop {loop.get('id') or '<id>'} --read-token LOGIN --token "
+                          f"LOGIN=/abs/path/to/pat` writes both; {FOUR_IDENTITY_RULE}")
     adjudicator_seat = _adjudicator_seat(raw_seats.get("adjudicator"), loop, where)
     if adjudicator_seat:
         seats["adjudicator"] = adjudicator_seat
@@ -1010,7 +1279,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     raw_capacity = loop.get("concurrency")
     if raw_capacity is None or raw_capacity == "":
         raw_capacity = 1
-    loop["concurrency"] = int(raw_capacity)
+    loop["concurrency"] = _as_int(raw_capacity, "concurrency", where)
     if loop["concurrency"] < 1:
         raise ConfigError(f"{where}: 'concurrency' must be >= 1 (1 = serialized)")
 
@@ -1018,7 +1287,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         raw = seats[seat].get("concurrency")
         if raw is None or raw == "":
             continue
-        seats[seat]["concurrency"] = int(raw)
+        seats[seat]["concurrency"] = _as_int(raw, f"seats.{seat}.concurrency", where)
         if seats[seat]["concurrency"] < 1:
             raise ConfigError(f"{where}: seats.{seat}.concurrency must be >= 1 (1 = serialized)")
 
@@ -1051,7 +1320,53 @@ def load_file(path: pathlib.Path) -> dict:
         raw = json.loads(path.read_text())
     except Exception as exc:
         raise ConfigError(f"{path}: {exc}") from exc
-    return normalize(raw, path)
+    try:
+        return normalize(raw, path)
+    except ConfigError:
+        raise
+    except (TypeError, ValueError, OverflowError, AttributeError, KeyError) as exc:
+        # A hand-edited value of the wrong shape is a refusal with a reason, never a traceback
+        # out of whichever verb happened to load it.
+        raise ConfigError(f"{path}: malformed loop file ({type(exc).__name__}: {exc})") from exc
+
+
+def _as_int(value, key: str, where: str) -> int:
+    """An integer setting, or a ConfigError naming it (``int("many")`` must not escape)."""
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        # int(3.5) would quietly become 3: a hand-edited fraction is a mistake, not a setting.
+        raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):     # int(float("inf")): JSON allows Infinity
+        raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}") from None
+
+
+def load_id_for_reader_repair(loop_id: str, reader: str) -> dict | None:
+    """The loop ``set --read-token`` may repair: one whose *only* defect is a missing reader.
+
+    Normalized as if ``reader`` were set (every other rule still applies — any other defect
+    raises), then handed back with ``read_token`` empty so the caller records and validates the
+    change like any other. ``None`` when the file does have a reader (nothing to repair here).
+    """
+    path = config_dir() / f"{loop_id}.json"
+    if not loop_id or pathlib.Path(loop_id).name != loop_id or path.is_symlink() or not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not isinstance(raw, dict) or str(raw.get("read_token") or "").strip() or not reader:
+        return None
+    try:
+        loop = normalize({**raw, "read_token": reader}, path)
+    except ConfigError:
+        raise
+    except (TypeError, ValueError, AttributeError, KeyError) as exc:
+        raise ConfigError(f"{path}: malformed loop file ({type(exc).__name__}: {exc})") from exc
+    if loop["id"] != loop_id:
+        raise ConfigError(f"{path}: loop ID does not match filename")
+    loop["read_token"] = ""
+    return loop
 
 
 def load_id(loop_id: str) -> dict:
@@ -1077,6 +1392,60 @@ def all_loops() -> list[dict]:
     return [load_id(p.stem) for p in sorted(directory.glob("*.json"))]
 
 
+def readable_loops() -> tuple[list[dict], list[tuple[str, str]]]:
+    """Every loop file that loads, and ``(loop id, reason)`` for each that does not.
+
+    For the callers that must keep working past one bad file — the read-only listings, the cron
+    watchdog's sweep of every loop. Callers that act on a whole set of loops keep ``all_loops``'s
+    all-or-nothing refusal.
+    """
+    directory = config_dir()
+    if not directory.exists():
+        return [], []
+    loops, skipped = [], []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            loops.append(load_id(path.stem))
+        except ConfigError as exc:
+            skipped.append((path.stem, str(exc)))
+    return loops, skipped
+
+
+def loop_for_repo(full_name: str, warn=None) -> dict | None:
+    """The one loop that owns ``full_name``, loading each file on its own — for the wake path.
+
+    ``by_repo`` is all-or-nothing, which is right for the verbs that act on every loop but wrong
+    for a gate: one hand-edited sibling file the loader refuses must not stop a healthy loop's
+    events. A file that will not load is skipped (``warn`` gets one line) — unless it might be
+    this repo's own: when its raw ``repo`` names this repo, or cannot be read at all, the
+    ownership question has no safe answer and this raises, exactly as ``by_repo`` would.
+    """
+    want = str(full_name or "").lower()
+    directory = config_dir()
+    if not directory.exists():
+        return None
+    matches = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            loop = load_id(path.stem)
+        except ConfigError as exc:
+            try:
+                raw_repo = str(json.loads(path.read_text()).get("repo") or "").strip().lower()
+            except Exception:
+                raw_repo = None
+            if raw_repo is None or not raw_repo or raw_repo == want:
+                raise ConfigError(f"{exc} (it may own {want or 'this repository'}; "
+                                  "unattended writes denied until it loads)") from exc
+            if warn:
+                warn(f"skipping {path.name} (loop for {raw_repo}): {exc}")
+            continue
+        if loop["repo"] == want:
+            matches.append(loop)
+    if len(matches) > 1:
+        raise ConfigError(f"duplicate loop configs for {want}: unattended writes denied")
+    return matches[0] if matches else None
+
+
 def by_repo(full_name: str) -> dict | None:
     want = str(full_name or "").lower()
     matches = [loop for loop in all_loops() if loop['repo'] == want]
@@ -1085,8 +1454,15 @@ def by_repo(full_name: str) -> dict | None:
     return matches[0] if matches else None
 
 
+def state_dir(loop: dict) -> pathlib.Path:
+    """The loop's state directory: the one root for every write under it (ledger-adjacent files,
+    audits, route intent, artifacts, turn directories). Under the test guard, never inside the
+    real Hermes home."""
+    return guard_real_home(_path(loop["state_dir"]))
+
+
 def artifacts_dir(loop: dict, number: int) -> pathlib.Path:
-    return _path(loop["state_dir"]) / "artifacts" / str(number)
+    return state_dir(loop) / "artifacts" / str(number)
 
 
 def clone_path(loop: dict) -> pathlib.Path | None:

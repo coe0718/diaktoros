@@ -1,11 +1,11 @@
 """Safe push security tests: synthetic API plus real local bare Git receive-pack."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import base64
 import hashlib
 import json
 import os
 from pathlib import Path
 import socket
-import sqlite3
 import stat
 import subprocess
 import sys
@@ -15,7 +15,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import broker, broker_ipc, config, gh, safe_push
+from review_loop import broker, broker_ipc, config, gh, ledger, safe_push
 from review_loop.run_supervisor import Supervisor
 
 HEAD = "a" * 40
@@ -66,7 +66,7 @@ class SafePushTests(unittest.TestCase):
         db = self.root / 'runs.sqlite'
         sup = Supervisor(db)
         sup.enqueue('fix', REPO, 7, HEAD, 'fixer')
-        with sqlite3.connect(db) as con:
+        with ledger.connect(db) as con:
             con.execute("UPDATE runs SET state='running',launch_intent=1,push_admitted=1")
         return broker_ipc.RunScope(REPO, 7, HEAD, 'fixer', 'fix-7',
                                    sup.get('fix')['id'], str(db))

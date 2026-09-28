@@ -5,6 +5,7 @@ throwaway HERMES_HOME, a fake ``hermes_cli``/``agent`` tree (the entry points th
 from the real Hermes source) resolves them — including a fake Codex-style ``auth.json`` with a
 refresh token that rotates under a fake ``auth.lock`` — and every upstream is a local HTTP fake.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import base64
 import http.client
 import http.server
@@ -28,6 +29,7 @@ from review_loop import broker_ipc, contained, doctor, inference_proxy, seat_mod
 from review_loop.inference_proxy import (CONTRACTS, Credential, InferenceCapability,  # noqa: E402
                                          RefreshingCredential, StaticCredential, _UnixHTTP)
 import test_seat_models as tsm  # noqa: E402
+from hermes_prereqs import needs  # noqa: E402
 
 HEAD = "a" * 40
 REFRESH_TOKEN = "RT-FAKE-REFRESH-TOKEN-never-leaves-the-host-0001"
@@ -353,7 +355,8 @@ OAUTH_HERMES = {
             path = os.path.join(HOME(), "auth.json")
             with open(os.path.join(HOME(), "auth.lock"), "a") as lock:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-                store = json.load(open(path))
+                with open(path) as handle:
+                    store = json.load(handle)
                 tokens = store["tokens"]
                 if force_refresh or _exp(tokens["access_token"]) - time.time() < 120:
                     with open(os.path.join(HOME(), "refresh.count"), "a") as c:
@@ -362,7 +365,8 @@ OAUTH_HERMES = {
                     n = store.get("n", 0) + 1
                     tokens = {"access_token": _jwt(time.time() + 3600) + str(n),
                               "refresh_token": "RT-rotated-%d" % n}
-                    json.dump({"tokens": tokens, "n": n}, open(path, "w"))
+                    with open(path, "w") as handle:
+                        json.dump({"tokens": tokens, "n": n}, handle)
             return {"api_key": tokens["access_token"], "base_url": "https://chatgpt.com/backend-api/codex",
                     "last_refresh": "2026-01-01T00:00:00Z"}
 
@@ -431,6 +435,7 @@ class OAuthBase(tsm.Base):
         for name, body in OAUTH_HERMES.items():
             (source / name).parent.mkdir(parents=True, exist_ok=True)
             (source / name).write_text(textwrap.dedent(body))
+        tsm.add_wire_functions(source)           # what doctor's describe step asks Hermes
         self.codex = self.write_codex_profile("codex", time.time() + 3600)
 
     def write_codex_profile(self, name, exp, extra=None):
@@ -583,12 +588,12 @@ class OAuthRefresh(OAuthBase):
         with seat_model.profile_lock("codex"):
             (lock,) = lockdir.iterdir()
             probe = subprocess.run([sys.executable, "-c",
-                                    "import fcntl,sys; f=open(sys.argv[1]);"
+                                    "import fcntl,sys\nwith open(sys.argv[1]) as f: "
                                     "fcntl.flock(f.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB)", str(lock)],
                                    capture_output=True)
             self.assertNotEqual(probe.returncode, 0, "another process could take the lock")
         probe = subprocess.run([sys.executable, "-c",
-                                "import fcntl,sys; f=open(sys.argv[1]);"
+                                "import fcntl,sys\nwith open(sys.argv[1]) as f: "
                                 "fcntl.flock(f.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB)", str(lock)])
         self.assertEqual(probe.returncode, 0)
 
@@ -688,7 +693,7 @@ def _bwrap_works() -> bool:
         return False
 
 
-@unittest.skipUnless(_bwrap_works(), "unprivileged bubblewrap unavailable")
+@needs(_bwrap_works(), "unprivileged bubblewrap unavailable")
 class OAuthSandboxProbe(OAuthBase):
     def test_the_profile_auth_store_and_its_tokens_are_invisible_in_the_sandbox(self):
         seat = self.seat("codex")
@@ -726,7 +731,7 @@ class OAuthSandboxProbe(OAuthBase):
 
 # -- 5. the real sandboxed Hermes speaking each wire format through the real proxy ----------------
 
-SOURCE = pathlib.Path(os.environ.get("HERMES_AGENT_SOURCE") or pathlib.Path.home() / ".hermes/hermes-agent")
+SOURCE = _home_guard.HERMES_AGENT_SOURCE
 
 
 def _sse(events):
@@ -777,8 +782,7 @@ def messages_reply(request):
                  ("message_stop", {"type": "message_stop"})])
 
 
-@unittest.skipUnless(_bwrap_works() and (SOURCE / "venv/bin/hermes").exists(),
-                     "bubblewrap or Hermes checkout unavailable")
+@_home_guard.needs_real_hermes(_bwrap_works(), reason="bubblewrap or Hermes checkout unavailable")
 class RealHermesWireFormats(unittest.TestCase):
     """The sandboxed Hermes, configured by ``sandbox_config``, completes a tool turn in each mode."""
 

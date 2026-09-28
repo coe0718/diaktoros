@@ -1,0 +1,52 @@
+"""One way to open the SQLite ledger: a connection that is always closed.
+
+``with sqlite3.connect(...) as con:`` only commits or rolls back; it never closes. The handle
+then lives until garbage collection, which a long-lived broker, proxy or supervisor turns into a
+growing pile of open files (and Python 3.13 into a ResourceWarning per call). ``connect`` keeps
+the ``with con:`` transaction semantics exactly and closes the connection on the way out:
+
+    with ledger.connect(db, timeout=10, isolation_level=None) as con:
+        con.execute('BEGIN IMMEDIATE')
+        ...
+
+Any ``sqlite3.connect`` keyword passes through unchanged (``timeout``, ``isolation_level``,
+``uri``, ...). ``row_factory`` and ``pragmas`` are applied before the body runs; if one of them
+fails, the connection is still closed. A close() that fails while an exception is already on
+its way out is attached to that exception as a note instead of replacing it.
+
+A caller that must open the connection itself (a worker vetting the host's ledger before any
+pragma touches it) passes ``opener=``: the connection it returns gets the same transaction and
+the same close. What the opener opens and then refuses, it closes itself before raising.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import sqlite3
+from typing import Callable, Iterator
+
+
+@contextlib.contextmanager
+def connect(path, *, row_factory=None, pragmas: tuple[str, ...] = (),
+            opener: Callable[[], sqlite3.Connection] | None = None,
+            **kwargs) -> Iterator[sqlite3.Connection]:
+    # ``opener`` opens (and vets) the connection in place of ``sqlite3.connect(path, **kwargs)``.
+    # From the moment it returns, the connection is this function's to close; until then it is
+    # the opener's, which must close anything it opened before raising.
+    con = opener() if opener is not None else sqlite3.connect(path, **kwargs)
+    try:
+        if row_factory is not None:
+            con.row_factory = row_factory
+        for pragma in pragmas:
+            con.execute(f"PRAGMA {pragma}")
+        with con:  # commit on success, roll back on an exception: sqlite3's own semantics
+            yield con
+    except BaseException as exc:
+        # The error in flight is the one the caller must see; a failing close() only adds a
+        # note to it, never replaces it.
+        try:
+            con.close()
+        except Exception as close_exc:
+            exc.add_note(f"closing the ledger connection also failed: {close_exc!r}")
+        raise
+    con.close()

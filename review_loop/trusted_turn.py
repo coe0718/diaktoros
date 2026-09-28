@@ -25,8 +25,22 @@ import sys
 import tempfile
 import time
 
-from . import (broker_client, broker_ipc, contained, deps, gh, inference_proxy, safe_push,
-               trusted_fetch)
+from . import (broker_client, broker_ipc, contained, deps, gh, hostdirs, inference_proxy,
+               safe_push, trusted_fetch)
+
+
+def dependency_cache(loop: dict) -> Path | None:
+    """The loop's host crate cache root, or None: then nothing is fetched into or mounted.
+
+    The host (gate enqueue) creates ``<state_dir>/deps``; a worker never does (#108), so a
+    worker that finds it gone runs without the cache rather than recreate it.
+    """
+    try:
+        if hostdirs.in_worker():
+            hostdirs.ensure(Path(loop['state_dir']).expanduser() / 'deps')
+        return deps.cache_root(loop)
+    except OSError:  # includes a non-private cache: never fetched into, never mounted
+        return None
 
 # The turn budget is Hermes's own --run-budget: it warns the agent at 80% and caps its last
 # request to the budget. The sandbox is SIGKILLed only this long after, so Hermes's clean stop
@@ -478,9 +492,14 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
         raise TurnDenied('scope mismatch')
     if no_write is not False and (no_write is not True or scope.role != 'reviewer'):
         raise TurnDenied('no-write mode supports only a reviewer turn')
+    # The host (gate enqueue) creates the work root; a worker never recreates host state (#108).
+    if hostdirs.in_worker():  # checks only: nothing is created here
+        hostdirs.ensure(Path(work_root or loop['state_dir']).expanduser())
+
     if not model or not prompt or timeout < 1 or not key:
         raise TurnDenied('missing model, prompt or credential')
-    parent = Path(work_root or loop['state_dir']).resolve()
+    from .config import guard_real_home, state_dir
+    parent = guard_real_home(Path(work_root) if work_root else state_dir(loop)).resolve()
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if parent.is_symlink() or parent.stat().st_mode & 0o077:
         raise TurnDenied('work root must be private')
@@ -515,10 +534,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
         checkout = trusted_fetch.stage(loop, repo=scope.repo, number=scope.number,
                                        head=scope.head, ref=scope.branch, role=scope.role,
                                        sandbox_root=root / 'export')
-        try:
-            cache: Path | None = deps.cache_root(loop)
-        except OSError:  # includes a non-private cache: never fetched into, never mounted
-            cache = None
+        cache = dependency_cache(loop)
         _report(progress, time.strftime('fetching — started %H:%M:%SZ', time.gmtime())
                 + f', bounded at {int(prefetch_timeout)}s, before the turn budget starts')
         prefetched = deps.prepare(checkout, cache, Path(rust), timeout=prefetch_timeout)
@@ -584,7 +600,12 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 if server.is_alive():
                     # Raised here it replaces whatever was in flight; keep a budget kill in the
                     # reason (and as the cause) so the operator sees both clocks (#98).
-                    killed = sys.exc_info()[1]
-                    if isinstance(killed, TurnBudgetExceeded):
-                        raise TurnDenied(drain_failure(killed)) from killed
+                    in_flight = sys.exc_info()[1]
+                    if isinstance(in_flight, TurnBudgetExceeded):
+                        raise TurnDenied(drain_failure(in_flight)) from in_flight
+                    if in_flight is not None:
+                        # Whatever the sandbox raised stays the cause, and is named (#98).
+                        raise TurnDenied(f'broker did not shut down (after '
+                                         f'{type(in_flight).__name__}: {in_flight})'[:400]
+                                         ) from in_flight
                     raise TurnDenied('broker did not shut down')

@@ -13,7 +13,8 @@ plugin keeps a private copy of what it wrote and puts it back.
   loop expects, and the only place the original secret survives an erasure.
 * **Self-heal** — every armed watchdog sweep (and ``doctor --repair``) compares the live
   registry with the record for this loop's own route names. A missing route, or one whose
-  ``WATCHED`` fields differ, is restored under the registry lock with the *same* secret, and the
+  ``WATCHED`` fields differ (the observer route also watches its ``deliver``/``deliver_extra``
+  destination), is restored under the registry lock with the *same* secret, and the
   operator is told what was restored. A name another writer now uses for a non-review-loop
   script is reported, never overwritten; names not in this loop's config are never read.
 * **Adoption** — a loop installed before this record existed has none. A live route that
@@ -39,7 +40,17 @@ INTENT_FILE = "route-intent.json"
 VERSION = 1
 
 # The fields that decide whether a route still wakes the right seat and still authenticates.
-WATCHED = ("secret", "script", "prompt", "events", "profile", "deliver_only", "host")
+# ``enabled``: the plugin never writes the key, and an explicit ``false`` makes the gateway answer
+# 403 to every event — a switched-off seat, so heal drops it like any other drifted field.
+WATCHED = ("secret", "script", "prompt", "events", "profile", "deliver_only", "host", "enabled")
+# The observer route also carries where its notices go: the feed refuses a route whose
+# destination is not the one the loop authorized (``observer.route_contract``), so a changed
+# ``deliver``/``deliver_extra`` is a dead feed, and restoring the recorded one is the repair.
+OBSERVER_WATCHED = WATCHED + ("deliver", "deliver_extra")
+
+
+def watched(role: str) -> tuple[str, ...]:
+    return OBSERVER_WATCHED if role == "observer" else WATCHED
 
 GATE_SCRIPT = {"reviewer": "gate_reviewer.py", "fixer": "gate_fixer.py",
                "adjudicator": "gate_adjudicator.py", "observer": "observe.py"}
@@ -69,7 +80,7 @@ def routes_of(loop: dict) -> dict:
 
 
 def path(loop: dict) -> pathlib.Path:
-    return pathlib.Path(str(loop["state_dir"])).expanduser() / INTENT_FILE
+    return config.state_dir(loop) / INTENT_FILE
 
 
 def owned(entry: dict) -> bool:
@@ -187,10 +198,10 @@ def _adoptable(loop: dict, registry: dict, known: dict) -> dict:
 
 def drift(loop: dict, registry: dict, intent: dict) -> dict:
     """name → differing watched fields (``["missing"]`` when erased), for this loop's names only."""
-    mine = set(routes_of(loop).values())
+    role_of = {name: role for role, name in routes_of(loop).items()}
     out = {}
     for name, want in intent.items():
-        if name not in mine:
+        if name not in role_of:
             continue
         live = registry.get(name)
         if live is None:
@@ -198,7 +209,7 @@ def drift(loop: dict, registry: dict, intent: dict) -> dict:
         elif not isinstance(live, dict):
             out[name] = ["entry"]
         else:
-            diff = [key for key in WATCHED if live.get(key) != want.get(key)]
+            diff = [key for key in watched(role_of[name]) if live.get(key) != want.get(key)]
             if diff:
                 out[name] = diff
     return out
@@ -249,7 +260,9 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
     if not expected or not drift(loop, registry, expected):
         return lines
     try:
-        restored, conflicts = routes.heal_entries(expected, WATCHED, owned)
+        role_of = {name: role for role, name in routes_of(loop).items()}
+        restored, conflicts = routes.heal_entries(
+            expected, {name: watched(role_of[name]) for name in expected}, owned)
     except (OSError, ValueError) as exc:
         return lines + [f"⚠️ Review loop {label} — route registry changed by another writer and "
                         f"could NOT be restored (fail closed): {exc}"]

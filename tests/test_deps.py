@@ -1,4 +1,5 @@
 """Issue #51: host-side dependency prefetch, read-only offline cache, and what the seat is told."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import fcntl
 import json
 import os
@@ -6,7 +7,6 @@ from pathlib import Path
 import pwd
 import shutil
 import socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -16,7 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from review_loop import contained, deps  # noqa: E402
+from review_loop import contained, deps, ledger  # noqa: E402
 
 CRATES = "registry+https://github.com/rust-lang/crates.io-index"
 LOCK = f'''version = 4
@@ -633,7 +633,7 @@ class LedgerTests(unittest.TestCase):
     def row(self, sup, state="running", owner="w"):
         with mock.patch.object(sup, "_spawn"):
             sup.enqueue(f"d{time.monotonic_ns()}", REPO, 7, HEAD, "reviewer")
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             run_id = con.execute("SELECT id FROM runs ORDER BY created DESC").fetchone()[0]
             con.execute("UPDATE runs SET state=?, owner=?, generation='g', lease=? WHERE id=?",
                         (state, owner, time.time() + 60, run_id))
@@ -654,7 +654,7 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(dependency_view(sup.db, REPO, 8), [])
         self.assertIsNone(dependency_view(self.root / "absent.sqlite", REPO))
         # status JSON (python -m review_loop.run_supervisor status) carries it for failed runs.
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             con.execute("UPDATE runs SET state='failed' WHERE id=?", (run_id,))
         [failed] = sup.status()
         self.assertTrue(failed["deps"].startswith("rust: unavailable"))
@@ -698,24 +698,24 @@ class LedgerTests(unittest.TestCase):
 
     def test_a_slow_prefetch_keeps_its_lease_and_is_never_taken_for_a_lost_worker(self):
         from review_loop.run_supervisor import Supervisor
-        # child_timeout matters: _run_one's launching lease is child_timeout + lease_seconds, and
-        # with the 120 s default no sweep inside this test could ever reclaim the run, heartbeat
-        # or not. The lease (5 s) is five sweep periods and three heartbeat periods (5/3 s), so a
-        # live heartbeat has ~3.3 s of scheduling slack: what varies is whether it runs at all,
-        # never how promptly. The pre-sandbox phase lasts over two lease lengths (11 s), so a
-        # run nobody renews is reclaimed by the sweeps in it, deterministically.
+        # The lease (5 s) is five sweep periods and three heartbeat periods (5/3 s), so a live
+        # heartbeat has ~3.3 s of scheduling slack: what varies is whether it runs at all, never
+        # how promptly. What makes the lease expirable is slow_turn's own UPDATE below (the one
+        # _run_production makes: running, on a one-lease lease); _run_one's longer launching
+        # lease is overwritten before any sweep sees it. The pre-sandbox phase lasts over two
+        # lease lengths (11 s), so a run nobody renews is reclaimed by the sweeps in it.
         sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
-                         hermes_home=self.root, lease_seconds=5.0, child_timeout=5.0)
+                         hermes_home=self.root, lease_seconds=5.0)
         run_id = self.row(sup, state="claimed")
         seen = []
 
         def lease(rid):
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 return con.execute("SELECT state, lease FROM runs WHERE id=?", (rid,)).fetchone()
 
         def slow_turn(rid, owner):
             # What _run_production does before any GitHub read: running, on a one-lease lease.
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 con.execute("UPDATE runs SET state='running', lease=? WHERE id=?",
                             (time.time() + sup.lease_seconds, rid))
             started = lease(rid)[1]

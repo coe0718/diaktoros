@@ -11,14 +11,16 @@ preflight answers it before anyone arms anything:
 
     hermes review-loop doctor --loop attest
 
-One line per check, in one of four states:
+One line per check, in one of these states:
 
 * ``verified`` — checked, and correct;
 * ``absent`` — the thing is not there (a missing profile, token file, route, hook, job, script);
 * ``mismatch`` — present, but not what this loop needs (a route waking the wrong profile, a hook
   pointing at another gateway, a shim pinned to a stale plugin path, a world-readable PAT);
 * ``unknown`` — could not be decided *from here* (a hooks read the token was not allowed to make,
-  a probe skipped with ``--offline``).
+  a probe skipped with ``--offline``);
+* ``skipped`` — not checked because another line already fails for the same cause
+  (``extras:<seat>`` while ``model:<seat>`` is absent): neither a pass nor a second warning.
 
 ``unknown`` is never folded into ``absent``. "The API refused to tell me" and "there are no
 hooks" are different claims, and printing the second one when the first is true sends the
@@ -41,18 +43,23 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import socket
+import subprocess
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from . import config, gh, route_intent, routes
+from . import config, gh, observer, route_intent, routes
 
 VERIFIED = "verified"
 ABSENT = "absent"
 MISMATCH = "mismatch"
 UNKNOWN = "unknown"
+# Not checked because another line already fails for the same cause (``extras:<seat>`` when
+# ``model:<seat>`` is ❌): neither a pass nor a second warning.
+SKIPPED = "skipped"
 FAILURES = (ABSENT, MISMATCH)
-MARKS = {VERIFIED: "✅", ABSENT: "❌", MISMATCH: "❌", UNKNOWN: "⚠️"}
+MARKS = {VERIFIED: "✅", ABSENT: "❌", MISMATCH: "❌", UNKNOWN: "⚠️", SKIPPED: "➖"}
 
 # What `init` writes, mirrored here because ``cli`` imports this module (so this module cannot
 # import ``cli``) and `tests/run_tests.py` asserts the two spellings agree — a preflight that
@@ -117,20 +124,33 @@ def watchdog_job_name(loop: dict) -> str:
     return f"review loop watchdog ({loop['id']})"
 
 
-def init_fix(loop: dict, extra: str = "") -> str:
-    """The one remediation that fixes most route/shim problems: rewrite them from the config.
-
-    Worded as a command the operator can actually run, not as advice: the plugin never writes
-    anything itself during a preflight.
-    """
-    tail = f" {extra}" if extra else ""
-    return (f"re-run `hermes review-loop init --repo {loop['repo']} ...` for this loop to "
-            f"regenerate it from the config{tail}")
-
-
 def cron_fix(loop: dict) -> str:
+    """The scheduler's own command for the watchdog job. Never ``init``: it refuses a loop that
+    already exists, and the job is the scheduler's to create."""
     return (f"`hermes cron create 15m --name \"{watchdog_job_name(loop)}\" --no-agent "
-            f"--script {SHIM_NAME} --deliver local` (or re-run init with --schedule 15m)")
+            f"--script {SHIM_NAME} --deliver local`")
+
+
+def cron_replace_fix(loop: dict, job_ids) -> str:
+    """For a watchdog job that exists but cannot run as it should: remove it (every one, by its
+    exact id), then create it. ``hermes cron create`` only appends — it never replaces a job of
+    the same name — so printing a bare create here would leave the broken job answering beside
+    a duplicate that fires the same shim."""
+    removes = ", then ".join(f"`hermes cron remove {job_id}`" for job_id in job_ids)
+    return f"{removes}, then {cron_fix(loop)}"
+
+
+def shim_fix(loop: dict) -> str:
+    return (f"`hermes review-loop apply --loop {loop['id']} --watchdog-shim` rewrites it from the "
+            "plugin (the scheduled job runs it by name)")
+
+
+def hooks_fix(loop: dict, what: str) -> str:
+    """``apply --hooks`` reconciles this loop's two repo hooks with its routes; ``init --hooks``
+    refuses an existing loop."""
+    from . import cli       # the one wording of what a hook write needs (#106)
+    return (f"`hermes review-loop apply --loop {loop['id']} --hooks --admin-token <login>` {what} "
+            f"({cli.hook_write_need(loop, '<login>')})")
 
 
 def _env_keys(path: pathlib.Path) -> set[str]:
@@ -177,15 +197,17 @@ def check_config(loop: dict) -> Check:
 
 
 def check_turn_budget(loop: dict) -> Check:
-    """The wall clock each isolated seat turn gets (#49), against every clock that judges it.
+    """The wall clock each isolated seat turn gets (#49), and every clock that judges it.
 
     A turn runs from launch to end for up to ``config.worst_turn_s``: the host dependency
     prefetch (#51), the budget, the sandbox kill grace, and the broker drain that lets an
-    in-flight write finish (#98). The watchdog's stall threshold (``grace_min``) must fit that
-    — it is the operator's setting, so too short a grace is a warning. The seat-lock TTL, the
-    "that run died" report (twice the TTL) and the stall clock of an ``adjudicating`` breach
-    marker follow the turn by construction (``config.seat_ttl_s``,
-    ``config.adjudicating_stall_s``); doctor prints them so the operator sees what they are.
+    in-flight write finish (#98). Every age threshold the watchdog applies to a seat follows
+    *that seat's* whole turn by construction: its stall grace (``grace_min``, raised to the
+    turn — ``config.stall_grace_s``), its seat-lock TTL (``ttl_min``, raised the same way —
+    ``config.seat_ttl_s``), the "that run died" report at twice the TTL, and an
+    ``adjudicating`` breach marker's stall clock (``config.adjudicating_stall_s``). One seat's
+    long budget never lengthens another's. So there is nothing to warn about: doctor prints
+    each figure, and names every one the turn raised past the operator's setting.
     """
     seats = ["reviewer", "fixer"] + (["adjudicator"] if (loop.get("adjudicator") or {}).get("route")
                                      else [])
@@ -196,28 +218,37 @@ def check_turn_budget(loop: dict) -> Check:
     whole = (f"up to {worst}s launch to end ({parts['prefetch']}s dependency prefetch + "
              f"{parts['budget']}s budget + {parts['grace']}s kill grace + {parts['drain']}s "
              "broker drain)")
+    grace_min = int(loop.get("grace_min") or config.DEFAULTS["grace_min"])
     ttl_min = int(loop.get("ttl_min") or config.DEFAULTS["ttl_min"])
-    ttl = -(-config.seat_ttl_s(loop) // 60)
-    lock = (f"seat lock TTL {ttl}m" + ("" if ttl == ttl_min else
-                                         f" (ttl_min {ttl_min}m, raised to fit the turn)")
-            + f", 'that run died' after {-(-config.seat_died_after_s(loop) // 60)}m")
+
+    def minutes(seconds: int) -> int:
+        return -(-seconds // 60)
+
+    def per_seat(name: str, setting: int, clock) -> str:
+        bits = []
+        for seat in seats:
+            value = minutes(clock(seat))
+            bits.append(f"{seat} {value}m" + ("" if value == setting else
+                                               " (raised to fit its turn)"))
+        return f"{name} " + " · ".join(bits)
+
+    stall_seats = [seat for seat in seats if seat != "adjudicator"]
+    stall = "stall grace " + " · ".join(
+        f"{seat} {minutes(config.stall_grace_s(loop, seat))}m"
+        + ("" if minutes(config.stall_grace_s(loop, seat)) == grace_min
+           else " (raised to fit its turn)") for seat in stall_seats)
+    lock = (per_seat("seat lock TTL", ttl_min, lambda seat: config.seat_ttl_s(loop, seat=seat))
+            + "; 'that run died' after twice that")
+    text = (f"{detail} per isolated turn (sandbox killed past it); {whole} — grace_min "
+            f"{grace_min}m, ttl_min {ttl_min}m; {stall}; {lock}")
     if "adjudicator" in seats:
         # The breach marker's stall clocks (#98): a ruling in flight is never a stall; one
         # claimed with no live run is, only after the adjudicator's whole turn.
         marker = int(loop.get("marker_grace_min") or config.DEFAULTS["marker_grace_min"])
-        lock += (f"; breach marker: awaiting-adjudication stalls after {marker}m; adjudicating "
+        text += (f"; breach marker: awaiting-adjudication stalls after {marker}m; adjudicating "
                  "only with no live ruling run, after "
-                 f"{-(-config.adjudicating_stall_s(loop) // 60)}m")
-    grace = int(loop.get("grace_min") or 0) * 60
-    if grace and worst > grace:
-        return Check("turn-budget", UNKNOWN,
-                     f"{detail} — {whole}, longer than the {loop['grace_min']}m watchdog grace, "
-                     f"so a healthy long turn can be reported as a stall; {lock}",
-                     f"set --grace-min {-(-worst // 60)} (or more), or lower the turn budget "
-                     "(`hermes review-loop set`)")
-    return Check("turn-budget", VERIFIED,
-                 f"{detail} per isolated turn (sandbox killed past it); {whole} — fits the "
-                 f"watchdog grace {loop.get('grace_min')}m; {lock}")
+                 f"{minutes(config.adjudicating_stall_s(loop))}m")
+    return Check("turn-budget", VERIFIED, text)
 
 
 def _check_profile(name: str, seat: str) -> Check:
@@ -274,9 +305,142 @@ def check_seat_models(loop: dict) -> list[Check]:
                             "seats.<seat> as an explicit per-seat override"))
     status_of = {"ok": VERIFIED, "warn": UNKNOWN, "fail": ABSENT}
     for seat in seat_model.seats_for(loop):
-        status, detail, fix = seat_model.describe_seat(loop, seat, settings)
+        try:
+            status, detail, fix = seat_model.describe_seat(loop, seat, settings)
+        except Exception as exc:        # e.g. a malformed base_url: undecided, never a crash
+            status, detail, fix = ("warn", f"could not describe this seat ({type(exc).__name__}: "
+                                           f"{exc})", "run `hermes review-loop selftest`")
         checks.append(Check(f"model:{seat}", status_of[status], detail, fix))
     return checks
+
+# Read-only: ``find_spec`` locates a module without importing (or installing) anything.
+# ``-I`` keeps the answer the venv's own — no PYTHONPATH, user site-packages or cwd — which is
+# what the sandbox's Hermes resolves against; a dotted name whose parent is missing is "absent".
+_FIND_SPEC = ("import importlib.util, sys\n"
+              "try:\n    found = importlib.util.find_spec(sys.argv[1]) is not None\n"
+              "except (ImportError, ValueError):\n    found = False\n"
+              "sys.exit(0 if found else 1)\n")
+EXTRA_PROBE_TIMEOUT = 20
+
+
+def venv_has_module(python: str, module: str) -> bool | None:
+    """True/False: can ``python`` import ``module``; ``None`` when it could not say."""
+    try:
+        process = subprocess.run([python, "-I", "-c", _FIND_SPEC, module],
+                                 env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+                                 stdin=subprocess.DEVNULL, capture_output=True,
+                                 timeout=EXTRA_PROBE_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {0: True, 1: False}.get(process.returncode)
+
+
+def check_seat_extras(loop: dict) -> list[Check]:
+    """#118: each seat's provider's optional Hermes package, importable by the runtime's venv.
+
+    A Claude-subscription (or any Messages-wire) seat needs Hermes's ``anthropic`` extra; an
+    install without it looks healthy until the seat's first turn fails at model setup. The venv
+    checked is the one the runtime file names — the one the sandbox mounts — and it is asked
+    with ``find_spec`` (read-only, no network, bounded). The provider comes from the same
+    read-only description as ``model:<seat>``: no credential is resolved. A seat whose provider
+    could not be read, or a probe that could not answer, is ``unknown`` — never ``verified``.
+    """
+    from . import seat_model
+    runtime = config.home() / "review-loop-runtime.json"
+    settings, problem = runtime_settings()
+    venv = str((settings or {}).get("venv") or "")
+    probes: dict[str, bool | None] = {}
+    checks = []
+    for seat in seat_model.seats_for(loop):
+        name = f"extras:{seat}"
+        if not venv:
+            why = f"{runtime} is not usable" if problem else f"no runtime file at {runtime}"
+            checks.append(Check(name, UNKNOWN, f"{why}, so the Hermes venv the {seat} turn "
+                                "mounts is not known; its provider package was not checked",
+                                f"write {runtime} naming source/venv/runtime/rust"))
+            continue
+        needed = maybe = None
+        explain: dict = {}
+        try:
+            status, _, _, wire = seat_model.describe_seat_wire(loop, seat, settings)
+            if wire is not None and status != "fail":
+                needed, maybe = seat_model.extras_for(
+                    wire["provider"], wire["api_mode"], wire["base_url"],
+                    model=wire.get("model") or "", configured=wire.get("configured") or "",
+                    facts=wire.get("facts"), entry=wire.get("entry"), hermes=wire.get("hermes"),
+                    entry_hint=bool(wire.get("entry_hint")), explain=explain)
+        except Exception as exc:        # a malformed URL, a broken description: undecided
+            status, wire, reason = "warn", None, f" ({type(exc).__name__}: {exc})"
+        else:
+            reason = ""
+        if status == "fail":
+            checks.append(Check(name, SKIPPED, f"skipped: model unresolved (see model:{seat})"))
+            continue
+        if wire is None:
+            checks.append(Check(name, UNKNOWN, f"the {seat} seat's provider could not be read"
+                                f"{reason} (see model:{seat}), so whether it needs an optional "
+                                "Hermes package is unknown",
+                                f"fix model:{seat} first, then re-run doctor"))
+            continue
+        provider, model = wire["provider"], wire.get("model") or ""
+        # The wire Hermes will use when it is decided (a named entry, nous native, ...), not
+        # the profile's own spelling.
+        mode = explain.get("wire") or wire["api_mode"]
+        not_asked = str(wire.get("not_asked") or "")
+        if not needed and not maybe:
+            if not_asked:       # a "not needed" from doctor's own table is not a pass
+                checks.append(Check(name, UNKNOWN, f"{provider} [{mode}] needs no optional Hermes "
+                                    f"package by doctor's own table only — Hermes was not asked "
+                                    f"({not_asked})", f"fix model:{seat} first, then re-run doctor"))
+            else:
+                checks.append(Check(name, VERIFIED, f"{provider} [{mode}] needs no optional "
+                                    "Hermes package"))
+            continue
+        python = str(pathlib.Path(venv) / "bin" / "python")
+
+        def probe(extra: str) -> bool | None:
+            module = seat_model.HERMES_EXTRAS[extra]["module"]
+            if module not in probes:
+                probes[module] = venv_has_module(python, module)
+            return probes[module]
+
+        missing = [e for e in needed if probe(e) is False]
+        undecided = [e for e in needed if probe(e) is None]
+        maybe_missing = [e for e in maybe if probe(e) is not True]
+        what = ", ".join(f"`{e}` (import {seat_model.HERMES_EXTRAS[e]['module']})"
+                         for e in needed + maybe)
+        switch = "; ".join(
+            f"may need the {e} extra: {provider} can use Anthropic's native wire for {model} "
+            f"{explain.get(e, '')}".rstrip()
+            for e in maybe_missing)
+        because = "; ".join(explain[e] for e in needed if explain.get(e))
+        install = lambda extras: " and ".join(f"`hermes pm install --extra {e}`" for e in extras)
+        where = (f"it installs into the venv Hermes selects, so if that is not {venv}, install the "
+                 f"extra into {venv} or point `venv` in {runtime} at the venv that has it")
+        if missing:
+            checks.append(Check(
+                name, ABSENT,
+                f"{provider} [{mode}] needs the Hermes extra {what}"
+                + (f" ({because})" if because else "")
+                + f", which {python} cannot import; the {seat} turn would fail at model setup"
+                + (f" ({switch})" if switch else ""),
+                f"{install(missing + maybe_missing)} (Hermes's own command for a missing extra) "
+                f"— {where}; then re-run doctor"))
+        elif undecided or maybe_missing:
+            if switch and not undecided:
+                detail = (f"{switch}; {python} cannot import it (install: "
+                          f"{install(maybe_missing)} — {where})")
+            else:
+                detail = (f"{provider} [{mode}] needs the Hermes extra {what}; {python} could not "
+                          "answer whether it is importable (missing, not a python, or no answer "
+                          "in time)")
+            checks.append(Check(name, UNKNOWN, detail, f"check `venv` in {runtime}"))
+        else:
+            label = "may use" if maybe and not needed else "needs"
+            checks.append(Check(name, VERIFIED,
+                                f"{provider} [{mode}] {label} {what}: importable by {python}"))
+    return checks
+
 
 def _token_file_facts(path: pathlib.Path) -> str:
     """``path (exists: yes, private: no)`` — metadata only; the file is never opened here."""
@@ -421,7 +585,13 @@ def check_read_token(loop: dict) -> Check:
         return Check("read_token", MISMATCH, f"read_token names {name!r}, which has no token file",
                      f"re-run init with --token {name}=/path/to/pat: the gates read every PR "
                      f"state as this login")
-    return Check("read_token", VERIFIED, f"{name} (mapped in tokens)")
+    problem = config.reader_problem(loop)
+    if problem:
+        # The broker refuses every write while the reader is a seat, so a loop in this shape
+        # installs, "passes", and then never posts a review.
+        return Check("read_token", MISMATCH, f"{problem} — {config.FOUR_IDENTITY_RULE}",
+                     config.reader_fix(loop))
+    return Check("read_token", VERIFIED, f"{name} (mapped in tokens; its own account and file)")
 
 
 def _route_entry(data: dict, name: str) -> dict | None:
@@ -433,9 +603,7 @@ def check_routes(loop: dict) -> list[Check]:
     """Route/profile/secret correspondence, read from the gateway's own subscription file."""
     path = routes.subs_path()
     if not path.exists():
-        return [Check("routes", ABSENT, f"no route registry at {path}",
-                      "re-run init for this loop: it writes the routes into the subscription "
-                      "file the gateway already reads")]
+        return [Check("routes", ABSENT, f"no route registry at {path}", _missing_route_fix(loop))]
     try:
         data = json.loads(path.read_text())
     except Exception as exc:
@@ -448,6 +616,9 @@ def check_routes(loop: dict) -> list[Check]:
     adjudicator = check_adjudicator_route(loop, data)
     if adjudicator:
         checks.append(adjudicator)
+    feed = check_observer_route(loop, data)
+    if feed:
+        checks.append(feed)
     return _intent_overlay(loop, data, checks)
 
 
@@ -492,8 +663,55 @@ def _intent_overlay(loop: dict, data: dict, checks: list[Check]) -> list[Check]:
             check.status, check.detail = MISMATCH, what
         else:
             check.detail += f" ({what})"
-        check.fix = REPAIR_FIX
+        live = data.get(name)
+        if isinstance(live, dict) and not route_intent.owned(live):
+            # Repair reports a route something else now runs as a conflict and never overwrites
+            # it, so it can only be the second step.
+            check.fix = (f"remove or rename that entry (it now runs {live.get('script')!r}, not a "
+                         "review-loop gate, so repair and apply leave it alone), then "
+                         f"`hermes review-loop doctor --loop {loop['id']} --repair`")
+        # The observer check already chose between repair and a rebuild: repair only restores
+        # the record, which is no fix when the record itself breaks the feed's contract.
+        elif not (check.fix and name == (loop.get("observer") or {}).get("route")):
+            check.fix = REPAIR_FIX
     return checks
+
+
+def _missing_route_fix(loop: dict) -> str:
+    """``init`` refuses an existing loop, so a lost route is written back by ``apply``. (With an
+    intent record, ``_intent_overlay`` replaces this with ``doctor --repair``, same secret.)"""
+    from . import gate_shims
+    return gate_shims.recreate_fix(loop)
+
+
+def _apply_fix(loop: dict, what: str) -> str:
+    """``apply`` rewrites this loop's own routes from its config (secret kept): the remedy for
+    every route field it reconciles. Never ``init``, which refuses an existing loop."""
+    return f"run `hermes review-loop apply --loop {loop['id']}` to {what} (its secret is kept)"
+
+
+def _secret_fix(loop: dict) -> str:
+    """A route with no secret cannot be rewritten in place: apply keeps the secret it finds, and
+    a new one would not match the repo hook. Recreating it mints one and re-keys the hook."""
+    return (f"remove that entry (a route without a secret can never verify a signature), then "
+            f"{_missing_route_fix(loop)}")
+
+
+def _host_fixes(loop: dict) -> tuple[str, str]:
+    """(invalid origin, no origin): both name the loop's origin with ``set``, then ``apply``."""
+    lid = loop["id"]
+    both = (f"`hermes review-loop set --loop {lid} --host https://your-gateway.example`, then "
+            f"`hermes review-loop apply --loop {lid}` so the routes carry it")
+    return both, both
+
+
+def _prompt_fix(loop: dict, name: str) -> str:
+    """The remedy for a route whose prompt no longer proves it is ours: the same one apply prints
+    (``gate_shims.divergence``) — repair from the record when it holds the real prompt, else
+    move the entry aside and recreate it."""
+    from . import gate_shims
+    found = gate_shims.divergence(loop, contract=True).get(name)
+    return found[1] if found else REPAIR_FIX
 
 
 def check_route(loop: dict, data: dict, seat: str) -> Check:
@@ -501,59 +719,70 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
     profile = str(loop["seats"][seat].get("profile") or "")
     if not name:
         return Check(f"route:{seat}", ABSENT, "no route named for this seat",
-                     f"re-run init for this loop: it names {seat} routes <id>-review/-fix")
+                     f"name the route as seats.{seat}.route in the loop config, then "
+                     f"`hermes review-loop apply --loop {loop['id']} --recreate-routes`")
     entry = _route_entry(data, name)
     if entry is None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
-                     f"re-run init for this loop (it writes {name!r} with a generated secret), "
-                     f"or `hermes webhook subscribe {name}`")
-    if str(entry.get("profile") or "") != profile:
+                     _missing_route_fix(loop))
+    if routes.route_profile(entry) != profile:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but seats.{seat}.profile is "
                      f"{profile!r} — the wake would run the wrong agent",
-                     f"re-run init with --{seat}-profile {profile or '<name>'} so the route and "
-                     f"the loop config agree")
+                     _apply_fix(loop, f"rebind it to {profile or 'the configured profile'}"))
+    if entry.get("deliver_only"):
+        return Check(f"route:{name}", MISMATCH,
+                     "deliver_only is set — the gateway delivers the rendered prompt and runs no "
+                     "agent, so this seat is never woken",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to rewrite it from the "
+                     "loop config (its secret is kept)")
+    if entry.get("enabled", True) is False:
+        return Check(f"route:{name}", MISMATCH,
+                     "disabled in the registry (enabled: false) — the gateway answers 403 to "
+                     "every event, so this seat is never woken",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to re-enable it (its "
+                     "secret is kept)")
     if not str(entry.get("secret") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a secret",
-                     f"re-run init for this loop: without a secret the hook signature can never "
-                     f"verify, so every event would be rejected")
+                     _secret_fix(loop))
     if not str(entry.get("prompt") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a prompt",
-                     "re-run init for this loop: the wake would start an agent with no protocol")
+                     _prompt_fix(loop, name))
+    if entry.get("prompt") != route_intent.ROUTE_PROMPT[seat]:
+        return Check(f"route:{name}", MISMATCH,
+                     f"does not carry the {seat} gate's prompt — the wake would run an agent on "
+                     "another protocol, and nothing proves the route is this plugin's",
+                     _prompt_fix(loop, name))
     script = str(entry.get("script") or "")
     if script != GATE_SCRIPT[seat]:
         return Check(f"route:{name}", MISMATCH,
                      f"runs gate script {script or '(none)'!r}, expected "
                      f"{GATE_SCRIPT[seat]!r}",
-                     f"re-run init for this loop: {GATE_SCRIPT[seat]} is what decides whether an "
-                     f"event starts a {seat} run")
+                     _prompt_fix(loop, name))
     events = entry.get("events")
     if not isinstance(events, list) or any(not isinstance(event, str) for event in events):
         return Check(f"route:{name}", MISMATCH, "events must be a list of event names",
-                     f"re-run init for this loop: the gateway needs an event list for {seat}")
+                     _apply_fix(loop, f"rewrite it with the {seat} gate's event"))
     if GATE_EVENT[seat] not in events:
         return Check(f"route:{name}", MISMATCH,
                      f"events {events or '(none)'} do not include {GATE_EVENT[seat]!r}",
-                     f"re-run init for this loop: the gateway only routes the events a route "
-                     f"subscribes to, so {GATE_EVENT[seat]} never reaches this seat")
+                     _apply_fix(loop, f"rewrite it with {GATE_EVENT[seat]!r}: the gateway only "
+                                "routes the events a route subscribes to"))
     host = str(loop.get("host") or "")
     try:
         url = routes.url_for(name, host or None)
     except config.ConfigError:
         return Check(f"route:{name}", MISMATCH, "invalid webhook host (URL withheld)",
-                     f"fix the stored origin (`hermes review-loop set --loop {loop['id']} "
-                     f"--host https://your-gateway.example`) and re-run init")
+                     _host_fixes(loop)[0])
     if not url:
         return Check(f"route:{name}", ABSENT, "no webhook URL (neither the loop nor the route "
                                               "names a gateway origin)",
-                     "pass --host https://your-gateway.example at init (or set the plugin's "
-                     "webhook host), then re-run init so the route carries it")
+                     _host_fixes(loop)[1])
     stored = str(entry.get("host") or "").removesuffix("/")
     if host and stored and stored != host:
         return Check(f"route:{name}", MISMATCH,
                      "registered gateway origin differs from the loop's configured origin (URLs withheld)",
-                     "re-run init to rewrite the route: a hook or a manual POST still "
-                     f"goes to the recorded origin")
+                     _apply_fix(loop, "rewrite it at the loop's origin"))
     return Check(f"route:{name}", VERIFIED,
                  f"{profile} · {GATE_EVENT[seat]} · [webhook URL redacted]")
 
@@ -568,28 +797,45 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
     entry = _route_entry(data, name)
     if entry is None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
-                     f"re-run init with --adjudicator-route {name}: the breach marker is the only "
-                     f"record of an escalation nobody is woken for")
-    if str(entry.get("profile") or "") != profile:
+                     _missing_route_fix(loop) + " — the breach marker is the only record of an "
+                     "escalation nobody is woken for")
+    if routes.route_profile(entry) != profile:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but adjudicator.profile is "
                      f"{profile!r}",
-                     f"re-run init with --adjudicator-profile {profile}: the ruling must not "
-                     f"happen as one of the two seats that just stalled")
+                     _apply_fix(loop, f"rebind it to {profile}: the ruling must not happen as one "
+                                "of the two seats that just stalled"))
+    if entry.get("deliver_only"):
+        return Check(f"route:{name}", MISMATCH,
+                     "deliver_only is set — the gateway delivers the rendered prompt and runs no "
+                     "agent, so no adjudicator is woken",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to rewrite it from the "
+                     "loop config (its secret is kept)")
+    if entry.get("enabled", True) is False:
+        return Check(f"route:{name}", MISMATCH,
+                     "disabled in the registry (enabled: false) — the gateway answers 403 to "
+                     "every event, so no adjudicator is woken",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to re-enable it (its "
+                     "secret is kept)")
     if not str(entry.get("secret") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a secret",
-                     "re-run init for this loop: a wake without a secret cannot be signed")
+                     _secret_fix(loop))
     if not str(entry.get("prompt") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a prompt",
-                     "re-run init for this loop: the adjudicator wake has no ruling protocol")
+                     _prompt_fix(loop, name))
+    if entry.get("prompt") != route_intent.ROUTE_PROMPT["adjudicator"]:
+        return Check(f"route:{name}", MISMATCH,
+                     "does not carry the adjudicator gate's prompt — the ruling would run on "
+                     "another protocol, and nothing proves the route is this plugin's",
+                     _prompt_fix(loop, name))
     events = entry.get("events")
     if not isinstance(events, list) or any(not isinstance(event, str) for event in events):
         return Check(f"route:{name}", MISMATCH, "events must be a list of event names",
-                     "re-run init for this loop: the gateway needs an adjudicator event list")
+                     _apply_fix(loop, "rewrite it with the adjudicator gate's event"))
     if "pull_request" not in events:
         return Check(f"route:{name}", MISMATCH,
                      f"events {events or '(none)'} do not include 'pull_request'",
-                     "re-run init for this loop: breach wakes use pull_request events")
+                     _apply_fix(loop, "rewrite it with 'pull_request': breach wakes use it"))
     script = str(entry.get("script") or "")
     if script in config.LEGACY_GATE_SCRIPTS["adjudicator"]:
         # Installed before the dedicated adjudicator gate. `init` refuses an existing loop, so
@@ -602,12 +848,76 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
     if script != "gate_adjudicator.py":
         return Check(f"route:{name}", MISMATCH,
                      f"runs {script or '(none)'!r}, expected 'gate_adjudicator.py'",
-                     "this route is not the loop's adjudicator gate — point adjudicator.route at "
-                     "a route of its own")
+                     _prompt_fix(loop, name))
     if not (scripts_dir() / script).is_file():
         return Check(f"route:{name}", ABSENT, f"gate_adjudicator.py missing from {scripts_dir()}",
                      "reinstall the plugin")
+    host = str(loop.get("host") or "").removesuffix("/")
+    stored = str(entry.get("host") or "").removesuffix("/")
+    if host and stored and stored != host:
+        return Check(f"route:{name}", MISMATCH,
+                     "registered gateway origin differs from the loop's configured origin (URLs "
+                     "withheld)", _apply_fix(loop, "rewrite it at the loop's origin"))
     return Check(f"route:{name}", VERIFIED, f"{profile} · adjudication wake")
+
+
+def check_observer_route(loop: dict, data: dict) -> Check | None:
+    """The observer feed's route: present, serving the profile the loop names, and exactly the
+    delivery-only contract the feed checks before every notice (``observer.route_contract``).
+
+    Nothing to check when the loop has no feed. A misconfigured feed has no route to check, but
+    it is still a feed that delivers nothing, so it is reported rather than skipped.
+    """
+    cfg = loop.get("observer") or {}
+    if not cfg:
+        return None
+    if cfg.get("misconfigured"):
+        return Check("route:observer", MISMATCH, str(cfg["misconfigured"]),
+                     f"`hermes review-loop set --loop {loop['id']} --observer-profile <name>` "
+                     "(or --observer-disable): the feed delivers nothing as configured")
+    name = str(cfg.get("route") or "")
+    profile = config.seat_profile(loop, "observer")
+    remedy = observer.route_remedy(loop)
+    entry = _route_entry(data, name)
+    if entry is None:
+        return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
+                     f"{remedy} writes it again")
+    served = routes.route_profile(entry)
+    if served is None:
+        return Check(f"route:{name}", MISMATCH,
+                     f"profile {entry.get('profile')!r} is blank or not a name — the gateway "
+                     f"refuses every request for it, and the feed refuses to deliver through it",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to rebind it to "
+                     f"{profile} (its secret is kept)")
+    if served != profile:
+        return Check(f"route:{name}", MISMATCH,
+                     f"wakes profile {served!r}, but observer.profile is {profile!r} — the "
+                     "feed refuses to deliver through it",
+                     f"run `hermes review-loop apply --loop {loop['id']}` to rebind it to "
+                     f"{profile} (its secret is kept)")
+    # The very comparison the feed makes before every notice (routes.target) — with the checks
+    # above and below, this is exactly observer._target(): doctor verifies the route if and only
+    # if the feed would deliver through it (tests sweep every registry field for that). Drift
+    # from the plugin's intent record is the one stricter case, reported by _intent_overlay.
+    contract = observer.route_contract(loop)
+    wrong = [key for key in routes.contract_mismatch(entry, contract) if key != "profile"]
+    if wrong:
+        return Check(f"route:{name}", MISMATCH,
+                     "does not match the observer delivery-only contract: " + ", ".join(wrong)
+                     + " — the feed refuses to deliver through it", f"{remedy} restores it")
+    if not str(entry.get("secret") or ""):
+        return Check(f"route:{name}", ABSENT, "registered without a secret",
+                     f"{remedy}: a notice without a secret cannot be signed")
+    # The registry's own `host` is not checked: the feed always posts to the loop's origin and
+    # never reads the registry's (a private PR link must not follow a registry edit), so a stale
+    # one changes nothing about delivery.
+    if not str(loop.get("host") or ""):
+        return Check(f"route:{name}", ABSENT, "the loop names no gateway origin",
+                     f"`hermes review-loop set --loop {loop['id']} --host "
+                     "https://your-gateway.example`: the feed never borrows the registry's host")
+    muted = " · muted" if cfg.get("mute") else ""
+    return Check(f"route:{name}", VERIFIED,
+                 f"{profile} · observer feed → {contract['deliver']} · deliver-only{muted}")
 
 
 def check_scripts() -> Check:
@@ -617,6 +927,82 @@ def check_scripts() -> Check:
                      "reinstall the plugin: the routes and the cron shim run these files by name, "
                      "so a missing one is a seat that can never be woken")
     return Check("scripts", VERIFIED, f"{scripts_dir()} (watchdog, three gates, cleanup)")
+
+
+def gate_timeout_profiles(loop: dict) -> dict[str, list[str]]:
+    """Every profile whose gateway runs one of this loop's route scripts → the routes it hosts."""
+    hosted: dict[str, list[str]] = {}
+    for role in ("reviewer", "fixer", "adjudicator"):
+        if role == "adjudicator" and not str((loop.get("adjudicator") or {}).get("route") or ""):
+            continue
+        profile = config.seat_profile(loop, role)
+        if profile:
+            hosted.setdefault(profile, []).append(role)
+    observer = loop.get("observer") if isinstance(loop.get("observer"), dict) else {}
+    if observer.get("route"):
+        hosted.setdefault(str(observer.get("profile") or "default"), []).append("observer")
+    return hosted
+
+
+def check_gate_timeouts(loop: dict) -> list[Check]:
+    """Does a route script's time budget fit inside its gateway's script timeout (#75)?
+
+    One line per profile that hosts a loop route. The gateway kills a route script at its webhook
+    ``script_timeout_seconds`` and answers the delivery 200 "ignored" either way. Gates read the
+    same setting (the smaller one, when either the host or the profile's own gateway may serve
+    the route) and shrink their budget to fit, so a low value is safe but starves them of time.
+    """
+    from . import gate_failures as gf
+    checks = []
+    for profile, roles in gate_timeout_profiles(loop).items():
+        name = f"gate:timeout:{profile}"
+        serves = f"serves {', '.join(roles)}"
+        try:
+            home = config.profile_dir(profile)
+            limit, rows = gf.effective_timeout(home)
+        except Exception as exc:  # noqa: BLE001 - one unreadable profile must not stop doctor
+            checks.append(Check(name, UNKNOWN,
+                                f"{serves}; the script timeout could not be worked out: "
+                                f"{type(exc).__name__}: {exc}"))
+            continue
+        hosts = "; ".join(f"{label}: {f'{sec}s' if sec is not None else 'unreadable'} ({where})"
+                          for label, _host, sec, where in rows)
+        unread = [row for row in rows if row[2] is None]
+        if unread:
+            checks.append(Check(name, UNKNOWN,
+                                f"{serves}; cannot read every gateway's script timeout — {hosts}; "
+                                f"gates fit the readable ones (or assume "
+                                f"{gf.GATEWAY_DEFAULT_TIMEOUT_S}s)"))
+            continue
+        budget, backstop = gf.plan(limit, gf.DEFAULT_BUDGET_S)
+        low = [row for row in rows if row[2] < gf.MIN_TIMEOUT_S]
+        tiny = [row for row in rows if row[2] < gf.MIN_RECORDABLE_S]
+        if tiny:
+            checks.append(Check(
+                name, MISMATCH,
+                f"{serves}; {hosts} — too small for a gate even to record its own failure (it "
+                f"needs at least {gf.MIN_RECORDABLE_S:g}s: {gf.STARTUP_S:g}s to start, "
+                f"{gf.RECORD_S:g}s to record, 1s of work); a hung gate is killed with no record",
+                "; ".join(f"set platforms.webhook.{gf.KEY}: {gf.GATEWAY_DEFAULT_TIMEOUT_S} (at "
+                          f"least {gf.MIN_TIMEOUT_S}) in {host / 'config.yaml'} for the {label}"
+                          for label, host, _sec, _where in tiny) + "; then restart that gateway"))
+            continue
+        if low:
+            fixes = "; ".join(
+                f"set platforms.webhook.{gf.KEY}: {gf.GATEWAY_DEFAULT_TIMEOUT_S} (at least "
+                f"{gf.MIN_TIMEOUT_S}) in {host / 'config.yaml'} for the {label}"
+                for label, host, _sec, _where in low)
+            checks.append(Check(name, MISMATCH,
+                                f"{serves}; {hosts} — gates get only {budget:g}s for GitHub reads "
+                                f"(they need {gf.DEFAULT_BUDGET_S:g}s, plus a {gf.BACKSTOP_S:g}s "
+                                f"backstop and time to record a failure)",
+                                f"{fixes}; then restart that gateway. Until then an overrun is "
+                                f"recorded as a gate timeout and re-driven by the watchdog"))
+            continue
+        checks.append(Check(name, VERIFIED,
+                            f"{serves}; {hosts}; gate budget {budget:g}s + {backstop:g}s "
+                            f"backstop fits"))
+    return checks
 
 
 _WATCHDOG_LINE = re.compile(r"WATCHDOG\s*=\s*pathlib\.Path\((['\"])(?P<path>.+?)\1\)")
@@ -632,13 +1018,12 @@ def check_shim(loop: dict) -> Check:
     path = shim_path()
     if not path.exists():
         return Check("cron:shim", ABSENT, f"no {path}",
-                     f"re-run init with --schedule 15m: it writes the shim and the cron job that "
-                     f"runs the watchdog")
+                     f"{shim_fix(loop)}; then, if no job runs it yet: {cron_fix(loop)}")
     try:
         text = path.read_text()
     except Exception as exc:
         return Check("cron:shim", MISMATCH, f"{path} cannot be read ({exc})",
-                     f"chmod +r {path}, or re-run init --schedule 15m to rewrite it")
+                     f"chmod +r {path}, or {shim_fix(loop)}")
     # Do not run arbitrary installed shim code during a read-only preflight. Instead require
     # byte-for-byte identity with the shim init actually generates; a dead assignment, commented
     # line or altered subprocess invocation cannot pass merely by mentioning WATCHDOG.
@@ -647,7 +1032,7 @@ def check_shim(loop: dict) -> Check:
     expected = cli.SHIM.format(watchdog=pathlib.Path(live))
     if text != expected:
         return Check("cron:shim", MISMATCH, f"{path} differs from init's executable shim for {live}",
-                     "re-run init --schedule 15m to rewrite the shim")
+                     shim_fix(loop))
     pinned = live
     return Check("cron:shim", VERIFIED, f"{path} → {pinned}")
 
@@ -662,12 +1047,12 @@ def check_cron_job(loop: dict) -> Check:
         data = json.loads(path.read_text())
     except Exception as exc:
         return Check("cron:job", MISMATCH, f"{path} is not readable JSON ({exc})",
-                     "repair the job store (or re-run init --schedule 15m): a store the scheduler "
-                     "cannot read is a watchdog that never sweeps")
+                     "repair the job store (a store the scheduler cannot read is a watchdog that "
+                     f"never sweeps), then, if the job is gone: {cron_fix(loop)}")
     jobs = data.get("jobs", []) if isinstance(data, dict) else data
     if not isinstance(jobs, list):
         return Check("cron:job", MISMATCH, f"{path} has no job list",
-                     "repair the job store (or re-run init --schedule 15m)")
+                     f"repair the job store, then, if the job is gone: {cron_fix(loop)}")
     wanted = watchdog_job_name(loop)
     job = next((entry for entry in jobs if isinstance(entry, dict)
                 and str(entry.get("name") or "").strip() == wanted), None)
@@ -680,20 +1065,30 @@ def check_cron_job(loop: dict) -> Check:
         return Check("cron:job", ABSENT, f"no job named {wanted!r} in {path}",
                      cron_fix(loop))
     job_id = str(job.get("id") or "?")
+    named = [str(entry.get("id") or "?") for entry in jobs if isinstance(entry, dict)
+             and str(entry.get("name") or "").strip() == wanted]
+    if len(named) > 1:
+        return Check("cron:job", MISMATCH,
+                     f"{len(named)} jobs are named {wanted!r} ({', '.join(named)}) — each one "
+                     "fires the watchdog",
+                     cron_replace_fix(loop, named))
+    replace = cron_replace_fix(loop, [job_id])
     # Match the scheduler's runnable predicate: a stored pause timestamp blocks firing even
     # when enabled=True and the display state has already been normalized to "scheduled".
     if (not job.get("enabled", True) or job.get("state") in ("paused", "completed")
             or bool(job.get("paused_at"))):
         state = job.get("state")
         reason = ("completed" if state == "completed" else "paused or disabled")
-        fix = (cron_fix(loop) if state == "completed" else
+        # A completed recurring watchdog is not "paused": resuming does not re-arm it. It is
+        # replaced — never created beside, which would leave two jobs of one name.
+        fix = (replace if state == "completed" else
                f"`hermes cron resume {job_id}`: the scheduler skips a disabled watchdog")
         return Check("cron:job", MISMATCH, f"{job_id} ({wanted}) is {reason}",
                      fix)
     if job.get("script") != SHIM_NAME or job.get("no_agent") is not True:
         return Check("cron:job", MISMATCH,
                      f"{job_id} runs {job.get('script')!r} (no_agent={job.get('no_agent')!r}), "
-                     f"expected {SHIM_NAME!r} with --no-agent", cron_fix(loop))
+                     f"expected {SHIM_NAME!r} with --no-agent", replace)
     schedule_data = job.get("schedule")
     valid = False
     missing_croniter = False
@@ -718,7 +1113,7 @@ def check_cron_job(loop: dict) -> Check:
     if not valid and not missing_croniter:
         return Check("cron:job", MISMATCH,
                      f"{job_id} has no valid stored schedule (display text does not schedule work)",
-                     cron_fix(loop))
+                     replace)
     next_run = job.get("next_run_at")
     try:
         if not isinstance(next_run, str) or not next_run.strip():
@@ -728,7 +1123,7 @@ def check_cron_job(loop: dict) -> Check:
         return Check("cron:job", MISMATCH,
                      f"{job_id} has no valid next_run_at — cannot verify the next wake "
                      "(the scheduler may recompute a missing value for a recurring job)",
-                     cron_fix(loop))
+                     replace)
     if missing_croniter:
         return Check("cron:job", UNKNOWN,
                      f"{job_id} cron schedule could not be validated here (croniter unavailable); "
@@ -879,6 +1274,8 @@ def gateway_reachable(host: str, timeout: float = 3.0) -> tuple[bool, str]:
     parsed = urlsplit(host)
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     name = parsed.hostname or host
+    # Under the test guard only a loopback gateway is probed; a real host raises first.
+    config.guard_network(f"tcp://{f'[{name}]' if ':' in name else name}:{port}")
     try:
         with socket.create_connection((name, port), timeout=timeout):
             return True, f"{name}:{port} accepts a connection"
@@ -957,48 +1354,296 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
     return checks
 
 
+def hook_route_name(hook: dict) -> str:
+    """The webhook route a hook posts to: the last ``/webhooks/<name>`` path segment, exactly.
+
+    Never a substring test on the URL: route ``widgets`` must not claim a hook posting to
+    ``widgets-fix``, nor a route name embedded anywhere else in a URL.
+    """
+    url = (hook.get("config") or {}).get("url") if isinstance(hook.get("config"), dict) else ""
+    return routes.route_name_of(url)
+
+
+def seat_route_target(loop: dict, name: str) -> tuple[str | None, str]:
+    """``(url, "")`` for the one URL a hook must post to for route ``name`` to wake its seat, or
+    ``(None, reason)`` when no hook can.
+
+    The registry is the gateway's binding, so it is the only source: the gateway serves
+    ``/webhooks/<route>`` (default profile) and ``/p/<profile>/webhooks/<route>`` for a route in
+    its subscription file, and answers anything else 404 — another profile's URL included. A
+    route missing from the registry has no binding at all; a route whose entry binds another
+    profile than the seat's would run the wrong agent. Both are ``doctor.check_route``'s findings,
+    in its words, and neither has a URL a hook could be credited to.
+    """
+    role = next((role for role, route in route_intent.routes_of(loop).items() if route == name),
+                "")
+    entry = routes.route(name)
+    if entry is None:
+        return None, (f"route {name!r} is not in {routes.subs_path().name} — the gateway has no "
+                      "binding for it, so no hook can wake this seat")
+    want = config.seat_profile(loop, role) if role else ""
+    if role in ("reviewer", "fixer") and str(entry.get("profile") or "") != want:
+        return None, (f"route {name!r} wakes profile {entry.get('profile')!r}, but "
+                      f"seats.{role}.profile is {want!r} — the wake would run the wrong agent")
+    url = routes.url_for(name, str(loop.get("host") or "") or None)
+    if not url:
+        return None, f"route {name!r} has no gateway host to build its URL from"
+    return url, ""
+
+
+def seat_hook_url(loop: dict, name: str) -> str | None:
+    """The registry URL a hook must post to for route ``name`` (see ``seat_route_target``)."""
+    return seat_route_target(loop, name)[0]
+
+
+def same_hook_url(posted: str, expected: str) -> bool:
+    """Is this hook *for* that route URL? Scheme and host case-insensitive, a trailing slash
+    ignored. For finding a hook (whose is it, which one to pause or delete) — never for deciding
+    it is correct: see ``exact_hook_url``."""
+    return routes.same_webhook_url(posted, expected)
+
+
+def exact_hook_url(posted: str, expected: str) -> bool:
+    """Does the gateway route this hook's URL to that route? Path byte-exact.
+
+    The gateway registers ``/webhooks/{route_name}`` and ``/p/{profile}/webhooks/{route_name}``
+    only (``{route_name}`` cannot hold a ``/``, and no path normalizing is installed), so
+    ``…/webhooks/<route>/`` falls through to the ``/p/{profile}/{tail}`` catch-all and is
+    answered 404. Scheme and host still compare case-insensitively (DNS and the Host header),
+    and a query string is not part of the match: the router reads the path only, so
+    ``…/webhooks/<route>?x=1`` is delivered like the bare URL.
+    """
+    return routes.serves_route_url(posted, expected)
+
+
+SLASH_404 = ("posts to the route's URL with a trailing slash — the gateway does not route it "
+             "(404), so this seat is never woken")
+
+
+def _profile_in(path: str) -> str:
+    """The profile a webhook URL path names (``default`` when it has no ``/p/<profile>``)."""
+    head = path.rsplit("/webhooks/", 1)[0].strip("/")
+    return head[2:] if head.startswith("p/") else ("default" if not head else "")
+
+
+def hook_url_difference(posted: str, expected: str) -> str:
+    """Why ``posted`` is not the route's own URL, in the operator's terms (no URL echoed)."""
+    if not expected:
+        return "a route with no registry binding (see the route's line)"
+    got, want = urlsplit(posted.rstrip("/")), urlsplit(expected.rstrip("/"))
+    if (got.scheme.lower(), got.netloc.lower()) != (want.scheme.lower(), want.netloc.lower()):
+        return f"another origin ({got.scheme}://{got.netloc.lower()}, not this loop's gateway)"
+    have, need = _profile_in(got.path), _profile_in(want.path)
+    if have and need and have != need and got.path.endswith(want.path.rsplit("/webhooks/", 1)[-1]):
+        return (f"another profile ({have!r}; the route is bound to {need!r}, and the gateway "
+                "answers any other profile's URL 404)")
+    return "another path on this gateway (not the route's URL)"
+
+
+def install_hook_urls(loop: dict, name: str) -> list[str]:
+    """Every URL a hook *this install* made (or is about to make) for route ``name`` posts to.
+
+    An ownership question, not a delivery one: pausing (``arm --pause``), ``uninstall``
+    deleting its hooks (``cli._classify_hooks``) and ``init``'s stale-hook guard (the same
+    function) ask "is this hook one of ours?", and the answer includes the route's registry URL
+    whatever profile it binds, and the URL the loop's config gives it — which is all there is
+    once the registry entry is gone (a route removed before its hooks, or for ``init`` not
+    written yet). Arming never uses this: whether a hook *wakes the
+    seat* is ``seat_route_target``'s question, and only the registry binding answers it.
+    """
+    urls = []
+    host = str(loop.get("host") or "") or None
+    if routes.route(name) is not None:
+        registered = routes.url_for(name, host)
+        if registered:
+            urls.append(registered)
+    role = next((role for role, route in route_intent.routes_of(loop).items() if route == name),
+                "")
+    if role:
+        planned = routes.url_for_profile(name, config.seat_profile(loop, role), host)
+        if planned and not any(same_hook_url(planned, url) for url in urls):
+            urls.append(planned)
+    return urls
+
+
+def hook_wake_problem(hook: dict, seat: str) -> str:
+    """Why a hook at the seat's own URL still would not wake it, in ``check_hook``'s words."""
+    event = GATE_EVENT.get(seat)
+    events = hook.get("events")
+    if not isinstance(events, list) or event not in [str(item) for item in events]:
+        return (f"subscribes to {events if isinstance(events, list) and events else '(no events)'}"
+                f", not {event!r}")
+    content_type = (hook.get("config") or {}).get("content_type")
+    if content_type != "json":
+        return f"has content_type {content_type!r}, expected 'json'"
+    return ""
+
+
+def split_route_hooks(loop: dict, listing: list, names, *,
+                      ownership: bool = False) -> tuple[list[dict], list[dict]]:
+    """``(own, other)`` for the hooks posting to one of the route ``names``.
+
+    The one matcher for hooks: ``arm`` (arming and pausing), ``uninstall`` and ``init``'s
+    stale-hook guard (via ``cli._classify_hooks``) and ``selftest --ping``; ``doctor``'s helpers
+    use the same URL rules. A hook is a
+    seat's only when it posts to exactly that route's registry URL, and the registry entry binds
+    the seat's profile (``seat_route_target``). Every other hook
+    whose last ``/webhooks/<route>`` segment names one of the routes — another profile's URL, a
+    retired gateway, another install — is *other*: reported, never flipped, deleted or pinged
+    as this loop's. ``ownership=True`` (pausing, uninstall, init's stale-hook guard) counts the
+    URLs ``install_hook_urls`` names instead. Raises ``ConfigError`` when the loop has no usable
+    host.
+    """
+    config.webhook_host(loop.get("host"), required=True)
+    if ownership:
+        expected = {name: install_hook_urls(loop, name) for name in set(names)}
+    else:
+        expected = {name: [url] if (url := seat_hook_url(loop, name)) else []
+                    for name in set(names)}
+    own, other = [], []
+    for hook in listing:
+        if not isinstance(hook, dict):
+            continue
+        name = hook_route_name(hook)
+        if name not in expected:
+            continue
+        posted = str((hook.get("config") or {}).get("url") or "")
+        mine = any(same_hook_url(posted, want) for want in expected[name])
+        (own if mine else other).append(hook)
+    return own, other
+
+
 def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check:
     event = GATE_EVENT[seat]
     def posted_url(hook: dict) -> str:
         cfg = hook.get("config")
         return str(cfg.get("url") or "") if isinstance(cfg, dict) else ""
 
-    exact = [hook for hook in hooks if posted_url(hook).rstrip("/") == url.rstrip("/")]
-    # A wrong origin/profile for the same webhook route is a mismatch, not an absent hook.
-    candidates = exact or [hook for hook in hooks if
-                           urlsplit(posted_url(hook)).path.rstrip("/").endswith(
-                               "/webhooks/" + name)]
+    exact = [hook for hook in hooks if same_hook_url(posted_url(hook), url)]
+    # A wrong origin/profile/path for the same webhook route is a mismatch (reported with its
+    # cause), not an absent hook — "the same route" is the exact segment, never a substring.
+    candidates = exact or [hook for hook in hooks if hook_route_name(hook) == name]
+    # Every hook posting to this route name, on any origin. More than one is a previous install
+    # left behind: GitHub never returns a secret, but a leftover signs with the secret the old
+    # route held, so at most one of them can authenticate — and "hook N active" says nothing
+    # about which one that is.
+    # Only this gateway's hooks can be duplicates: the same route name on another origin is
+    # another install (or an old gateway) and never receives this route's deliveries.
+    # A duplicate is a second hook at the route's own URL; one at another profile, path or
+    # origin never reaches this route at all (the gateway answers it 404, or it goes elsewhere).
+    named = list(exact)
+    if len(named) > 1:
+        ids = sorted(hook.get("id") for hook in named if isinstance(hook.get("id"), int))
+        active = sum(1 for hook in named if hook.get("active"))
+        repo = loop["repo"]
+        deletes = "; ".join(f"`gh api -X DELETE {shlex.quote(f'repos/{repo}/hooks/{i}')}`"
+                            for i in ids[:-1])
+        return Check(f"hook:{name}", MISMATCH,
+                     f"{len(named)} repo hooks post to this route (ids "
+                     f"{', '.join(str(i) for i in ids)}; {active} active) — duplicates from a "
+                     "previous install sign with a secret this route no longer holds, so their "
+                     "deliveries are refused",
+                     f"`hermes review-loop uninstall --loop {shlex.quote(loop['id'])}` deletes "
+                     "them all, then re-run init --hooks; or keep only the newest (GitHub ids "
+                     f"only grow, so {ids[-1]} is the latest init's) and delete the rest: {deletes}")
     match = next((hook for hook in candidates if hook.get("active") and
                   event in (hook.get("events") or [])), None) or (candidates[0] if candidates else None)
     if match is None:
         return Check(f"hook:{name}", ABSENT, "no repo hook posts to [webhook URL redacted]",
-                     f"re-run init --hooks --admin-token <login> (needs hook write and delete access on "
-                     f"{loop['repo']}: `repo`, or the narrower `admin:repo_hook`), or add the hook by "
-                     f"hand with that URL and the route's secret")
+                     hooks_fix(loop, "creates it, paused until `arm`") + ", or add the hook "
+                     "by hand with that URL and the route's secret")
     hook_id = match.get("id")
     posted = posted_url(match)
-    if posted.removesuffix("/") != url.removesuffix("/"):
+    if not same_hook_url(posted, url):
+        why = hook_url_difference(posted, url)
         return Check(f"hook:{name}", MISMATCH,
-                     f"hook {hook_id} posts to another origin, not [webhook URL redacted]",
-                     f"re-run init --hooks, or repoint hook {hook_id} at the route's URL: this "
-                     f"loop cannot be woken through the old origin")
+                     f"hook {hook_id} posts to {why}, not [webhook URL redacted]",
+                     hooks_fix(loop, f"repoints hook {hook_id} at the route's URL (secret and TLS "
+                                     "setting kept): the gateway delivers this route only at that "
+                                     "URL, so the hook wakes nothing"))
+    if not exact_hook_url(posted, url):
+        return Check(f"hook:{name}", MISMATCH, f"hook {hook_id} {SLASH_404}",
+                     f"`hermes review-loop apply --loop {loop['id']}` repoints hook {hook_id} at "
+                     "the exact URL (or edit its URL on GitHub to drop the trailing slash)")
     events = [str(item) for item in (match.get("events") or [])]
     if event not in events:
         return Check(f"hook:{name}", MISMATCH,
                      f"hook {hook_id} subscribes to {events or '(no events)'}, not {event!r}",
-                     f"re-run init --hooks, or add {event!r} to hook {hook_id} on {loop['repo']}")
+                     hooks_fix(loop, f"adds {event!r} to hook {hook_id}"))
     content_type = match["config"].get("content_type")
     if content_type != "json":
         return Check(f"hook:{name}", MISMATCH,
                      f"hook {hook_id} has content_type {content_type!r}, expected 'json'",
-                     f"re-run init --hooks, or set hook {hook_id}'s content_type to json: "
-                     "the gate reads a JSON payload, not form-encoded data")
+                     hooks_fix(loop, f"sets hook {hook_id}'s content_type to json: the gate reads a "
+                                     "JSON payload, not form-encoded data"))
+    delivery = check_deliveries(loop, hook_id, name)
+    if isinstance(delivery, Check):
+        return delivery
     if not match.get("active"):
         return Check(f"hook:{name}", VERIFIED,
                      f"hook {hook_id} → [webhook URL redacted] ({event}, PAUSED — nothing fires "
-                     f"until `hermes review-loop arm --loop {loop['id']}`)", paused=True)
+                     f"until `hermes review-loop arm --loop {loop['id']}`; {delivery})", paused=True)
     return Check(f"hook:{name}", VERIFIED,
-                 f"hook {hook_id} → [webhook URL redacted] ({event}, active)")
+                 f"hook {hook_id} → [webhook URL redacted] ({event}, active; {delivery})")
+
+
+# The gateway's answers to a delivery whose signature it would not accept: 401 is "Invalid
+# signature", 403 a route that is disabled or has no HMAC secret to check against.
+REJECTED = {401: "signature rejected — the hook's secret does not match the route's",
+            403: "refused — the route is disabled or holds no secret"}
+
+
+def check_deliveries(loop: dict, hook_id, name: str) -> "Check | str":
+    """How the gateway answered this hook's most recent delivery — GitHub's only secret evidence.
+
+    GitHub never returns a hook's secret, but it keeps each recent delivery with the status code
+    the gateway answered. A latest delivery answered 401/403 is a hook signing with a secret the
+    route does not hold (a previous install's, say): it looks armed and wakes nothing. Returns a
+    failing/unknown ``Check``, or a short phrase for the verified line.
+    """
+    path = f"/repos/{loop['repo']}/hooks/{hook_id}/deliveries?per_page=30"
+    data, error = gh.fetch(loop, path)
+    if error or not isinstance(data, list) or not all(isinstance(d, dict) for d in data):
+        reason = error or "no delivery list returned"
+        return Check(f"hook:{name}", UNKNOWN,
+                     f"hook {hook_id} found, but its recent deliveries could not be read ({reason}) "
+                     "— whether its secret matches the route is unproven",
+                     f"give the read token hook read access (`read:repo_hook`, or `repo`), or look "
+                     f"by hand: `gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`")
+    stamped = [d for d in data if isinstance(d.get("delivered_at"), str)]
+    if not stamped:
+        return "no deliveries yet — the secret is unproven until the first one arrives"
+    latest = max(stamped, key=lambda d: d["delivered_at"])
+    code = latest.get("status_code")
+    deliveries = f"`gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`"
+    ping = f"`hermes review-loop selftest --loop {shlex.quote(loop['id'])} --no-model --ping`"
+    if type(code) is not int or code <= 0:
+        # GitHub recorded the delivery but no HTTP answer (a timeout, a refused connection): the
+        # gateway never judged the signature, so nothing is proven — hook_ping refuses this too.
+        return Check(f"hook:{name}", UNKNOWN,
+                     f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got no HTTP "
+                     f"response from the gateway (GitHub recorded: "
+                     f"{latest.get('status') or 'no status'}) — it never answered, so whether "
+                     "its secret matches is unproven",
+                     f"check the gateway is running and reachable from GitHub (`hermes gateway "
+                     f"status`), then {ping}; the delivery log: {deliveries}")
+    if code in REJECTED:
+        return Check(f"hook:{name}", MISMATCH,
+                     f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got HTTP {code}: "
+                     f"{REJECTED[code]}, so the hook wakes nothing",
+                     f"`hermes review-loop uninstall --loop {shlex.quote(loop['id'])}` (deletes the "
+                     f"hook), then re-run init --hooks so the new hook and route share one fresh "
+                     f"secret; then `hermes review-loop arm --loop {shlex.quote(loop['id'])}`")
+    if not 200 <= code < 300:
+        # A 5xx is the gateway erroring on the delivery (and any other non-2xx is it refusing):
+        # either way nothing woke, and the signature was never shown to verify.
+        kind = "the gateway errored" if code >= 500 else "the gateway did not accept it"
+        return Check(f"hook:{name}", MISMATCH,
+                     f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got HTTP {code}: "
+                     f"{kind}, so the hook wakes nothing and its secret is unproven",
+                     f"read the gateway's log for that delivery ({deliveries}), fix what it "
+                     f"reports, then {ping}")
+    return f"latest delivery {code}"
 
 
 # -- the report ------------------------------------------------------------------
@@ -1011,6 +1656,15 @@ def _safe_report_text(text: str) -> str:
     return _URL_IN_REPORT.sub("[webhook URL redacted]", text)
 
 
+def check_gateway_scripts(loop: dict) -> list[Check]:
+    """Each installed route's script, resolved exactly as the gateway resolves it (issue #105):
+    under the serving profile's ``scripts/``, a real file inside it, and this plugin's shim."""
+    from . import gate_shims
+    status_of = {"ok": VERIFIED, "absent": ABSENT, "mismatch": MISMATCH}
+    return [Check(name, status_of[status], detail, fix)
+            for name, status, detail, fix in gate_shims.live_checks(loop)]
+
+
 def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     """Every check, in the order an operator reads an install: what it is, who runs it, what
     wakes it, what schedules it, and where it works."""
@@ -1021,6 +1675,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     if str((loop.get("adjudicator") or {}).get("route") or ""):
         checks.append(check_adjudicator_profile(loop))
     checks.extend(check_seat_models(loop))
+    checks.extend(check_seat_extras(loop))
     checks.append(check_fixer_push(loop))
     checks.append(check_sandbox_caps(loop))
     identity = check_adjudicator_identity(loop)
@@ -1029,7 +1684,9 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.extend(check_tokens(loop))
     checks.append(check_read_token(loop))
     checks.extend(check_routes(loop))
+    checks.extend(check_gateway_scripts(loop))
     checks.append(check_scripts())
+    checks.extend(check_gate_timeouts(loop))
     checks.append(check_shim(loop))
     checks.append(check_cron_job(loop))
     checks.append(check_clone(loop))
@@ -1054,8 +1711,9 @@ def report(loop: dict, checks: list[Check], strict: bool = False) -> int:
         if check.failed and check.fix:
             print(f"      fix: {_safe_report_text(check.fix)}")
     print()
-    print(f"{loop['id']}: {len(verified)} verified, {len(failed)} failed, {len(unknown)} unknown "
-          f"(of {len(checks)} checks)")
+    skipped = [check for check in checks if check.status == SKIPPED]
+    print(f"{loop['id']}: {len(verified)} verified, {len(failed)} failed, {len(unknown)} unknown"
+          + (f", {len(skipped)} skipped" if skipped else "") + f" (of {len(checks)} checks)")
     if failed:
         print(f"  {len(failed)} failed: {', '.join(check.name for check in failed)} — "
               f"fix the ❌ lines above before this loop is armed.")

@@ -3,6 +3,7 @@
 Stdlib only, disposable HOME/HERMES_HOME. The "tokens" are short obviously-fake sentinels; every
 test ends by grepping everything the CLI printed and every file it wrote for them.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
 import io
@@ -33,8 +34,14 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.root = Path(temp.name).resolve()
         self.home = self.root / "home"
         self.hermes = self.root / "hermes"
+        # GitHub is a stub with no hooks: a plain `apply` reads the hook listing (#106), and a
+        # test never reaches the real API.
+        self.root.joinpath("gh-stub").write_text(
+            '#!/bin/sh\ncase "$1" in */hooks*) echo "[]";; *) echo "{}";; esac\n')
+        self.root.joinpath("gh-stub").chmod(0o700)
         env = patch.dict(os.environ, {
             "HOME": str(self.home), "HERMES_HOME": str(self.hermes),
+            "REVIEW_LOOP_GH_STUB": str(self.root / "gh-stub"),
             "REVIEW_LOOP_CONFIG_DIR": str(self.hermes / "review-loops.d"),
             "REVIEW_LOOP_SUBS": str(self.hermes / "webhook_subscriptions.json")})
         env.start()
@@ -188,7 +195,7 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.assert_refused([*base, ADJ, "--token", f"{ADJ}=keys/adj.pat"],
                             r"not an absolute path")
         self.assert_refused(["set", "--loop", "widgets", "--token", f"{REV}={self.pats['rev2']}"],
-                            r"only maps the adjudicator")
+                            r"only maps the token file of the login named by --read-token or --adjudicator-login")
         self.assert_no_leak()
 
     # -- plugin settings → apply / init -----------------------------------------------------

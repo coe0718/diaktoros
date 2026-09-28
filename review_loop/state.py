@@ -32,13 +32,31 @@ import time
 import uuid
 from collections.abc import Callable
 
-from . import config
+from . import config, hostdirs
 from .util import log, now_iso
 
 # Per-thread depth of the state lock we already hold, keyed by lock path. ``flock`` is tied to
 # the open file description, so a second ``open`` + ``flock`` in the same thread would deadlock
 # against itself; nested sections (``take_seat`` queueing under its own claim) reuse the outer one.
 _HELD = threading.local()
+
+# Seat claims this process made, as ``(state, seat, key, at)``. A gate that crashes or runs out
+# of time after claiming a seat releases exactly these on its way out (#75, ``gate_failures``),
+# so a failed delivery never holds the seat until ``ttl_min`` expires.
+CLAIMS: list = []
+
+
+def release_process_claims() -> list[str]:
+    """Free every seat claim this process made that is still the one on disk; name them."""
+    freed = []
+    while CLAIMS:
+        st, seat, key, at = CLAIMS.pop()
+        try:
+            if st.release_exact(seat, key, at):
+                freed.append(f"{seat}:{key}")
+        except Exception as exc:  # noqa: BLE001 - best effort; the TTL remains the backstop
+            log(f"could not release {seat} claim on {key}: {type(exc).__name__}: {exc}")
+    return freed
 
 
 def _atomic_write(path: pathlib.Path, data) -> None:
@@ -84,7 +102,7 @@ def _mark_live(entry, now: float, ttl: float) -> bool:
 class LoopState:
     def __init__(self, loop: dict):
         self.loop = loop
-        self.dir = pathlib.Path(str(loop["state_dir"])).expanduser()
+        self.dir = config.state_dir(loop)
         self.locks = self.dir / "locks.json"
         self.pending = self.dir / "pending.json"
         self.inflight_file = self.dir / "inflight.json"
@@ -109,7 +127,7 @@ class LoopState:
 
     def _save(self, path: pathlib.Path, data) -> None:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            hostdirs.ensure(path.parent)
             _atomic_write(path, data)
         except Exception as exc:
             log(f"state write failed ({path.name}): {exc}")
@@ -133,7 +151,7 @@ class LoopState:
             finally:
                 held[path] -= 1
             return
-        self.dir.mkdir(parents=True, exist_ok=True)
+        hostdirs.ensure(self.dir)
         fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -148,7 +166,7 @@ class LoopState:
 
     def note(self, message: str) -> None:
         try:
-            self.dir.mkdir(parents=True, exist_ok=True)
+            hostdirs.ensure(self.dir)
             with self.log.open("a") as fh:
                 fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {message}\n")
         except Exception:
@@ -171,7 +189,8 @@ class LoopState:
         # nothing can age answers "expired" here instead of raising out of every reader.
         now = time.time()
         return {k: v for k, v in entries.items()
-                if isinstance(v, dict) and _mark_live(v, now, self._seat_ttl(v.get("budget")))}
+                if isinstance(v, dict) and _mark_live(
+                    v, now, self._seat_ttl(seat, config.claim_budget(v)))}
 
     def active(self, seat: str) -> dict:
         """This seat's live runs, ``{key: entry}``, expired ones dropped and persisted away.
@@ -209,11 +228,11 @@ class LoopState:
         data = self._load(self.locks, {}) or {}
         return data if isinstance(data, dict) else {}
 
-    def _seat_ttl(self, recorded: float | None = None) -> float:
+    def _seat_ttl(self, seat: str | None = None, recorded: float | None = None) -> float:
         """The seat ledger's TTL in seconds: ``ttl_min``, or the whole worst-case turn if longer.
 
         ``config.seat_ttl_s``'s rule — a claim taken for a turn still inside its own budget never
-        loses its slot (#98) — reached through the ledger's own read, so a missing or wrong-typed
+        loses its slot, on ``seat``'s own clock (#98) — reached through the ledger's own read, so a missing or wrong-typed
         ``ttl_min`` (``config.settings_defaults``' fallback, kept here) cannot propagate into the
         age arithmetic and stop the readers either. ``recorded`` is the budget the claim was taken
         with, which keeps a lowered ``turn_budget_s`` from shortening it.
@@ -226,7 +245,8 @@ class LoopState:
             ttl_min = float(raw)
         except (TypeError, ValueError):
             ttl_min = default
-        return config.seat_ttl_s({**self.loop, "ttl_min": ttl_min}, recorded)
+        return config.seat_ttl_s({**self.loop, "ttl_min": ttl_min}, seat=seat,
+                                 recorded=recorded)
 
     def active_count(self, seat: str) -> int:
         return len(self.active(seat))
@@ -250,25 +270,51 @@ class LoopState:
                 return other
         return None
 
-    def acquire(self, seat: str, key: str, head: str = "", why: str = "") -> None:
+    def acquire(self, seat: str, key: str, head: str = "", why: str = "",
+                budget: float | None = None, run: str | None = None) -> None:
+        """Claim ``seat`` for ``key``. The isolated worker calls this at launch with its run's
+        own budget and id (#98); the claim's TTL never shrinks below the budget it was taken
+        with, and only a release naming the same ``run`` may free it."""
         with self.locked():
             data = self._load(self.locks, {}) or {}
-            # The budget the claim is taken with: its TTL never shrinks below it (#98).
-            data.setdefault(seat, {})[key] = {"at": time.time(), "head": head, "why": why,
-                                              "budget": config.turn_budget(self.loop, seat)}
+            at = time.time()
+            entry = {"at": at, "head": head, "why": why,
+                     "budget": budget if budget is not None else config.turn_budget(self.loop, seat)}
+            if run is not None:
+                entry["run"] = run
+            data.setdefault(seat, {})[key] = entry
             self._save(self.locks, data)
+            CLAIMS.append((self, seat, key, at))
 
-    def release_if(self, seat: str, key: str, head: str | None = None) -> bool:
+    def release_exact(self, seat: str, key: str, at: float) -> bool:
+        """Free one claim only if it is still the very claim made at ``at``."""
+        with self.locked():
+            data = self._load(self.locks, {}) or {}
+            entry = (data.get(seat) or {}).get(key)
+            if not isinstance(entry, dict) or entry.get("at") != at:
+                return False
+            data[seat].pop(key)
+            if not data[seat]:
+                data.pop(seat, None)
+            self._save(self.locks, data)
+            return True
+
+    def release_if(self, seat: str, key: str, head: str | None = None,
+                   run: str | None = None) -> bool:
         """Free a seat only for *this* PR's turn — never another PR's in-flight work.
 
         With ``head``, only a claim made for that head is freed: a late verdict on an older
-        head must not end a newer run on the same PR.
+        head must not end a newer run on the same PR. With ``run``, only the claim that run
+        wrote is freed (#98): a run's own release (its worker ending it, or an operator
+        reconciling it) must never free a newer run's claim on the same seat, PR and head.
         """
         with self.locked():
             data = self._load(self.locks, {}) or {}
             entry = (data.get(seat) or {}).get(key)
             if entry is None or (head is not None and not (
                     isinstance(entry, dict) and entry.get("head") == head)):
+                return False
+            if run is not None and not (isinstance(entry, dict) and entry.get("run") == run):
                 return False
             data[seat].pop(key)
             if not data[seat]:
@@ -386,6 +432,13 @@ class LoopState:
         data = self._load(self.inflight_file, {}) or {}
         return now - data.get(key, 0) < self.loop["inflight_ttl_min"] * 60
 
+    def inflight_clear(self, key: str) -> None:
+        """Drop one in-flight mark: its run has ended (the isolated worker's release, #98)."""
+        with self.locked():
+            data = self._load(self.inflight_file, {}) or {}
+            if data.pop(key, None) is not None:
+                self._save(self.inflight_file, data)
+
     def inflight_at(self, key: str) -> float:
         """When this head's in-flight mark was armed, or 0.0 — the mark's own clock, read-only.
 
@@ -412,7 +465,7 @@ class LoopState:
 
     @contextlib.contextmanager
     def _breach_lock(self):
-        self.dir.mkdir(parents=True, exist_ok=True)
+        hostdirs.ensure(self.dir)
         fd = os.open(self.dir / "breach.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -596,7 +649,7 @@ class LoopState:
         return result if isinstance(result, dict) and result.get("head") == head else None
 
     def _transition_write(self, number: int, change) -> dict:
-        self.dir.mkdir(parents=True, exist_ok=True)
+        hostdirs.ensure(self.dir)
         with (self.dir / "stack-transitions.lock").open("a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             data = self._load(self.transitions_file, {}) or {}

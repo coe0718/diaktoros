@@ -3,16 +3,18 @@
 The fixture creates both HOME and HERMES_HOME before starting *any* child.
 Only the stub executable is permitted to answer the gate's GitHub reads.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import sqlite3
 import time
 import unittest
 from unittest import mock
+
+from review_loop import ledger
 
 ROOT = Path(__file__).resolve().parents[1]
 HEAD = "a" * 40
@@ -41,7 +43,7 @@ class RouteSubprocess(unittest.TestCase):
                      "fixers": ["dev"], "reviewers": ["reviewer"], "reviewer_seat": "reviewer",
                      "seats": {"reviewer": {"profile": "fixture-reviewer", "route": "review"},
                                "fixer": {"profile": "fixture-fixer", "route": "fix"}},
-                     "state_dir": str(home / "state"), "tokens": {}, "read_token": "",
+                     "state_dir": str(home / "state"), "tokens": {}, "read_token": "reader",
                      "host": "http://127.0.0.1:9"}
         (loops / "widgets.json").write_text(json.dumps(self.loop))
         (self.root / "gh-stub.py").write_text(
@@ -310,7 +312,7 @@ class RouteSubprocess(unittest.TestCase):
         # is a read to retry — a counted, backed-off, visible wait, never failed at once (#53)
         # and never an invisible pending row.
         time.sleep(1.5)
-        with sqlite3.connect(db) as conn:
+        with ledger.connect(db) as conn:
             rows = conn.execute("SELECT state, attempts, retries, error FROM runs").fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][:3], ("waiting", 0, 1))
@@ -331,7 +333,7 @@ class RouteSubprocess(unittest.TestCase):
         time.sleep(1.0)  # the detached worker's claim read fails here: the row stays pending
 
         def redeliver(state, extra=""):
-            with sqlite3.connect(db) as conn:
+            with ledger.connect(db) as conn:
                 conn.execute("UPDATE runs SET state=?, owner=NULL" + extra, (state,))
             return self.route("gate_reviewer.py", payload).stderr
 
@@ -340,13 +342,13 @@ class RouteSubprocess(unittest.TestCase):
         self.assertNotIn("enqueued for isolated worker", out)
         out = redeliver("failed", ", error='isolated turn failed: TimeoutError: upstream'")
         self.assertIn("reviewer rearmed: isolated worker re-armed", out)
-        with sqlite3.connect(db) as conn:
+        with ledger.connect(db) as conn:
             run = conn.execute("SELECT id FROM runs").fetchone()[0]
             conn.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created) "
                          "VALUES(?,?,?,?,?)", (run, "claimed", "g", 1, 0))
         out = redeliver("failed")
         self.assertIn("not enqueued: duplicate failed: review receipt claimed", out)
-        with sqlite3.connect(db) as conn:
+        with ledger.connect(db) as conn:
             self.assertEqual(conn.execute("SELECT state FROM runs").fetchone()[0], "failed")
 
     def test_dismissed_same_head_reopens_one_distinct_reviewer_turn(self):
@@ -364,7 +366,7 @@ class RouteSubprocess(unittest.TestCase):
             result = self.route('gate_reviewer.py', payload)
             self.assertEqual((result.returncode, result.stdout.strip()),
                              (0, '[SILENT]'), result.stderr)
-        with sqlite3.connect(db) as conn:
+        with ledger.connect(db) as conn:
             keys = [row[0] for row in conn.execute('SELECT turn_key FROM runs ORDER BY turn_key')]
         self.assertEqual(keys, ['', 'dismissed:42'])
 

@@ -64,6 +64,7 @@ def group_settings() -> None:
     # the rail that matters: no clone, so no parallel
     solo = config.normalize({"id": "solo", "repo": "acme/solo", "fixers": [FIXER],
                              "reviewers": [REVIEWER], "reviewer_seat": SEAT,
+                             "read_token": READ_LOGIN,
                              "seats": {"reviewer": {"profile": "r", "route": "solo-review"},
                                        "fixer": {"profile": "f", "route": "solo-fix"}},
                              "state_dir": str(STATE_DIR / "solo")})
@@ -81,7 +82,7 @@ def group_settings() -> None:
 
     # the round trip that a stranger's install depends on: what we write must read back
     rt = config.normalize({"id": "rt", "repo": "acme/rt", "fixers": [FIXER],
-                           "reviewers": [REVIEWER], "reviewer_seat": SEAT,
+                           "reviewers": [REVIEWER], "reviewer_seat": SEAT, "read_token": READ_LOGIN,
                            "seats": {"reviewer": {"profile": "r", "route": "rt-review"},
                                      "fixer": {"profile": "f", "route": "rt-fix"}}})
     (LOOPS_DIR / "rt.json").write_text(json.dumps(rt))
@@ -146,7 +147,7 @@ def group_parallel() -> None:
     check("same delivery is deduplicated", supervisor.enqueue("delivery-7", REPO, 7, HEAD_A, "reviewer"), "[SILENT]")
     check("same head under another delivery is deduplicated",
           supervisor.enqueue("redelivery-7", REPO, 7, HEAD_A, "reviewer"), "[SILENT]")
-    with sqlite3.connect(db) as con:
+    with ledger.connect(db) as con:
         check("one ledger row for duplicate head",
               con.execute("SELECT COUNT(*) FROM runs WHERE pr=7 AND seat='reviewer'").fetchone()[0], 1)
         # A new head and the opposite seat cannot occupy this same PR while it is claimed.
@@ -156,7 +157,7 @@ def group_parallel() -> None:
     check("other seat same PR waits", supervisor.get("fix-7")["state"], "pending")
     check("no third claim while occupied", supervisor._claim(), None)
     # A finished turn releases precisely one slot. Another pending PR can then claim it.
-    with sqlite3.connect(db) as con:
+    with ledger.connect(db) as con:
         con.execute("UPDATE runs SET state='succeeded' WHERE id=?", (first[0],))
     third = supervisor._claim()
     check("completed reviewer frees one slot", third is not None, True)
@@ -294,9 +295,9 @@ def group_plugin_settings() -> None:
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        rc = cli.cmd_apply(ns(loop="widgets", dry_run=True))
-    check("apply --dry-run exits 0", rc, 0)
-    check("  and shows the diff", "reviewer concurrency: 1 → 2" in buf.getvalue(), True)
+        rc_dry = cli.cmd_apply(ns(loop="widgets", dry_run=True))
+    dry = buf.getvalue()
+    check("  and shows the diff", "reviewer concurrency: 1 → 2" in dry, True)
     check("  nothing written on a dry run",
           config.seat_concurrency(config.load_id("widgets"), "reviewer"), 1)
 
@@ -304,12 +305,22 @@ def group_plugin_settings() -> None:
     with contextlib.redirect_stdout(buf):
         rc = cli.cmd_apply(ns(loop="widgets", dry_run=False))
     check("apply writes it", config.seat_concurrency(config.load_id("widgets"), "reviewer"), 2)
+    # This fixture's breach route is script-less, so apply rightly reports it and exits 1 — and
+    # the dry run must say exactly that, not preview a clean exit (#112 review).
+    check("apply --dry-run exits as the real apply does", rc_dry, rc)
+    check("  and warns about the same routes",
+          [line for line in dry.splitlines() if "⚠️ route" in line],
+          [line for line in buf.getvalue().splitlines() if "⚠️ route" in line])
     check("  and reports the file", "loop config updated" in buf.getvalue(), True)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         rc = cli.cmd_apply(ns(loop="widgets", dry_run=False))
-    check("a second apply is a no-op", "already matches" in buf.getvalue(), True)
+    # Nothing left to write — but the fixture's script-less breach route still is not what the
+    # config installs, so apply says the config matches and the registry does not (#112 review).
+    check("a second apply is a no-op", ("loop config updated" in buf.getvalue(),
+          "the loop config matches the plugin settings, but the route registry does not"
+          in buf.getvalue(), rc), (False, True, 1))
 
     # the rails still hold: two reviews at once with nowhere to isolate them is refused
     cfg = json.loads((LOOPS_DIR / "widgets.json").read_text())
@@ -344,8 +355,9 @@ def make_loop(loop_id: str, repo: str, reviewer_profile: str, fixer_profile: str
                                "login": REVIEWER},
                   "fixer": {"profile": fixer_profile, "route": f"{loop_id}-fix", "login": FIXER}},
         "state_dir": str(STATE_DIR / loop_id),
-        "tokens": {REVIEWER: str(SEAT_PATS[0]), FIXER: str(SEAT_PATS[1])},
-        "read_token": REVIEWER, "host": HOST,
+        "tokens": {REVIEWER: str(SEAT_PATS[0]), FIXER: str(SEAT_PATS[1]),
+                   READ_LOGIN: str(READ_PAT)},
+        "read_token": READ_LOGIN, "host": HOST,
     }
     if adjudicator:
         raw["adjudicator"] = {"route": f"{loop_id}-breach", "profile": adjudicator}
@@ -376,7 +388,7 @@ def group_seat_identity() -> None:
             "reviewer_login": REVIEWER, "fixer_login": FIXER}
     parser = parser_for(form)
     init_args = ["init", "--repo", "acme/seats", "--fixer", FIXER, "--reviewer", REVIEWER,
-                 "--host", HOST, "--read-token", REVIEWER,
+                 "--host", HOST, *READER_ARGS,
                  "--token", f"{REVIEWER}={SEAT_PATS[0]}", "--token", f"{FIXER}={SEAT_PATS[1]}",
                  "--adjudicator-route", "seats-breach"]
 
@@ -595,7 +607,7 @@ def group_seat_identity() -> None:
 
     shared = make_loop("shared", "acme/shared", "reviewer-profile", "fixer-profile")
     raw = json.loads(loop_bytes("shared"))
-    raw["tokens"] = {REVIEWER: str(SEAT_PATS[0]), FIXER: str(SEAT_PATS[0])}
+    raw["tokens"] = {REVIEWER: str(SEAT_PATS[0]), FIXER: str(SEAT_PATS[0]), READ_LOGIN: str(READ_PAT)}
     (LOOPS_DIR / "shared.json").write_text(json.dumps(raw))
     fingerprint = (loop_bytes("shared"), SUBS.read_text())
     rc, out = run_cli(parser_for(form).parse_args(["apply", "--loop", "shared"]))
@@ -610,7 +622,7 @@ def group_seat_identity() -> None:
             alias.symlink_to(SEAT_PATS[0])
         else:
             os.link(SEAT_PATS[0], alias)
-        raw["tokens"] = {REVIEWER: str(SEAT_PATS[0]), FIXER: str(alias)}
+        raw["tokens"] = {REVIEWER: str(SEAT_PATS[0]), FIXER: str(alias), READ_LOGIN: str(READ_PAT)}
         (LOOPS_DIR / "shared.json").write_text(json.dumps(raw))
         fingerprint = (loop_bytes("shared"), SUBS.read_text())
         rc, out = run_cli(parser_for(form).parse_args(["apply", "--loop", "shared"]))
@@ -631,7 +643,7 @@ def group_seat_identity() -> None:
             args = ["init", "--repo", "acme/profile-alias", "--id", "profile-alias",
                     "--fixer", FIXER, "--reviewer", REVIEWER, "--host", HOST,
                     "--token", f"{REVIEWER}={SEAT_PATS[0]}",
-                    "--token", f"{FIXER}={SEAT_PATS[1]}"]
+                    "--token", f"{FIXER}={SEAT_PATS[1]}", *READER_ARGS]
             fingerprint = SUBS.read_text()
         else:
             make_loop("profile-alias", "acme/profile-alias", "vex", "drey")
@@ -663,7 +675,7 @@ def group_seat_identity() -> None:
                 args = ["init", "--repo", "acme/inode-alias", "--id", "inode-alias",
                         "--fixer", FIXER, "--reviewer", REVIEWER, "--host", HOST,
                         "--token", f"{REVIEWER}={SEAT_PATS[0]}",
-                        "--token", f"{FIXER}={SEAT_PATS[1]}"]
+                        "--token", f"{FIXER}={SEAT_PATS[1]}", *READER_ARGS]
                 fingerprint = SUBS.read_text()
             else:
                 make_loop("inode-alias", "acme/inode-alias", "reviewer-profile", "fixer-profile")
@@ -740,15 +752,18 @@ def group_seat_identity() -> None:
     fingerprint = (loop_bytes("two-seats"), SUBS.read_text())
     rc, out = run_cli(parser_for(form).parse_args(["apply", "--loop", "two-seats"]))
     check("two seats on one route → refused", rc, 2)
-    check("  and it says why", "routed to more than one seat" in out, True)
+    # Refused on load now (config.normalize), before apply's own route check could run.
+    check("  and it says why", "each seat needs its own route" in out, True)
     check("  nothing was written", (loop_bytes("two-seats"), SUBS.read_text()), fingerprint)
+    # A file the loader refuses stops every loop-wide command; take the probe back out.
+    (LOOPS_DIR / "two-seats.json").unlink()
 
     # `init` writes routes from scratch, so it must refuse a name another loop already owns too.
     fingerprint = (SUBS.read_text(), loop_bytes("north"))
     rc, out = run_cli(parser.parse_args(["init", "--repo", "acme/elsewhere", "--id", "north",
                                          "--fixer", FIXER, "--reviewer", REVIEWER, "--host", HOST,
                                          "--token", f"{REVIEWER}={SEAT_PATS[0]}",
-                                         "--token", f"{FIXER}={SEAT_PATS[1]}"]))
+                                         "--token", f"{FIXER}={SEAT_PATS[1]}", *READER_ARGS]))
     check("init refuses a route another loop owns", rc, 2)
     check("  and it names the owner", "already belongs to loop north" in out, True)
     check("  nothing was written", (SUBS.read_text(), loop_bytes("north")), fingerprint)
@@ -781,7 +796,7 @@ def group_seat_identity() -> None:
                                              "--fixer", FIXER, "--reviewer", REVIEWER,
                                              "--host", HOST,
                                              "--token", f"{REVIEWER}={SEAT_PATS[0]}",
-                                             "--token", f"{FIXER}={SEAT_PATS[1]}"]))
+                                             "--token", f"{FIXER}={SEAT_PATS[1]}", *READER_ARGS]))
     finally:
         cli.routes.new_route = real_new_route
     check("a route install that fails → refused", rc, 2)
@@ -794,18 +809,23 @@ def group_seat_identity() -> None:
     empty_pat = TMP / "empty.pat"
     empty_pat.write_text("")
     for label, extra, expect in (
-            ("no token mappings", [], "has no entry in 'tokens'"),
-            ("a seat login with no token mapped", ["--read-token", FIXER,
-                                                   "--token", f"{FIXER}={SEAT_PATS[1]}"],
+            ("no reader named", [], "--read-token LOGIN names the account"),
+            ("no token mappings", ["--read-token", READ_LOGIN], "has no entry in 'tokens'"),
+            ("a seat login with no token mapped", ["--token", f"{FIXER}={SEAT_PATS[1]}",
+                                                   *READER_ARGS],
              "no token mapped for the reviewer login"),
-            ("a token file that is not there", ["--read-token", REVIEWER,
+            ("a token file that is not there", [*READER_ARGS,
                                                 "--token", f"{REVIEWER}={SEAT_PATS[0]}",
                                                 "--token", f"{FIXER}={TMP / 'missing.pat'}"],
              "token file for 'dev-fixer' is missing"),
-            ("a token file that is empty", ["--read-token", REVIEWER,
+            ("a token file that is empty", [*READER_ARGS,
                                             "--token", f"{REVIEWER}={SEAT_PATS[0]}",
                                             "--token", f"{FIXER}={empty_pat}"],
-             "is empty")):
+             "is empty"),
+            ("the reader on the reviewer seat", ["--read-token", REVIEWER,
+                                                 "--token", f"{REVIEWER}={SEAT_PATS[0]}",
+                                                 "--token", f"{FIXER}={SEAT_PATS[1]}"],
+             "four-identity rule")):
         (LOOPS_DIR / "probe.json").unlink(missing_ok=True)
         fingerprint = SUBS.read_text()
         args = ["init", "--repo", "acme/probe", "--fixer", FIXER, "--reviewer", REVIEWER,
@@ -827,13 +847,14 @@ def group_webhook_host() -> None:
                  "--reviewer", REVIEWER, "--reviewer-profile", "reviewer-profile",
                  "--fixer-profile", "fixer-profile", "--hooks",
                  "--token", f"{REVIEWER}={SEAT_PATS[0]}",
-                 "--token", f"{FIXER}={SEAT_PATS[1]}"]
+                 "--token", f"{FIXER}={SEAT_PATS[1]}", *READER_ARGS]
     calls = []
     installed_hooks = {}
     original_api = gh.api
     def fake_api(loop, path, **kwargs):
         if path.endswith('/hooks?per_page=100'):
-            return [{'id': key, 'config': {'url': url}} for key, url in installed_hooks.items()]
+            return [{'id': key, 'active': False, 'config': {'url': url}}
+                    for key, url in installed_hooks.items()]
         if kwargs.get('method') == 'POST':
             calls.append((path, kwargs))
             hook_id = len(calls)

@@ -8,6 +8,7 @@ review stays diagnostic; a missing baseline holds forever.
 No GitHub, model, Hermes or ~/.hermes: GitHub is mocked, and HERMES_HOME (the run ledger) and
 the loop state live in a private temporary directory.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import contextlib
 import io
 import json
@@ -20,7 +21,7 @@ import unittest
 import uuid
 from unittest import mock
 
-from review_loop import gate, state as state_mod, transition
+from review_loop import gate, ledger, state as state_mod, transition
 from review_loop.run_supervisor import Supervisor
 from tests.test_stacked_reconciliation import fixer, reviewer, watchdog
 from tests.test_stacked_situation import A, B, C, D, pr
@@ -76,7 +77,7 @@ class FreshReviewTest(unittest.TestCase):
         self.ledger.enqueue(delivery, loop["repo"], number, head, seat, turn_key=turn_key)
 
     def ledger_rows(self, seat="reviewer"):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             return con.execute("SELECT head, turn_key FROM runs WHERE seat=? AND pr=184",
                                (seat,)).fetchall()
 
@@ -86,7 +87,7 @@ class FreshReviewTest(unittest.TestCase):
         generation = json.dumps({"head": head, "base_ref": base, "base_sha": A, "parents": [],
                                  "parent_chain_verified": False}, sort_keys=True, separators=(",", ":"))
         run_id = uuid.uuid4().hex
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,updated,"
                         "generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                         (run_id, run_id, REPO, 184, head, seat, f"t:{run_id}", "completed",
@@ -103,7 +104,7 @@ class FreshReviewTest(unittest.TestCase):
         with mock.patch.object(watchdog, "TEST", True), \
              mock.patch.object(watchdog.gh, "open_prs", return_value=listing), \
              mock.patch.object(watchdog.gh, "pr", side_effect=lambda _loop, n: self.live(n)), \
-             mock.patch.object(watchdog.gh, "reviews", side_effect=lambda *_: list(self.reviews)), \
+             mock.patch.object(watchdog.gh, "reviews", side_effect=lambda *_, **__: list(self.reviews)), \
              mock.patch.object(watchdog.gh, "reviews_read", side_effect=lambda *_: (
                  (None, self.baseline_error) if self.baseline_error else (list(self.reviews), ""))), \
              mock.patch.object(watchdog.gh, "fetch", return_value=(
@@ -137,7 +138,7 @@ class FreshReviewTest(unittest.TestCase):
              contextlib.redirect_stdout(output), contextlib.redirect_stderr(output), \
              mock.patch.object(module.gate, "context", return_value=(self.loop, self.st)), \
              mock.patch.object(module.gh, "pr", side_effect=lambda _loop, n: self.live(n)), \
-             mock.patch.object(module.gh, "reviews", side_effect=lambda *_: list(self.reviews)), \
+             mock.patch.object(module.gh, "reviews", side_effect=lambda *_, **__: list(self.reviews)), \
              mock.patch.object(module.gh, "reviews_read", side_effect=lambda *_: (list(self.reviews), "")), \
              mock.patch.object(gate, "enqueue_isolated", side_effect=self.fake_enqueue), \
              mock.patch.object(module.gate, "block_pr_agent", side_effect=block), \
@@ -389,7 +390,7 @@ class FreshReviewTest(unittest.TestCase):
     def test_fixer_claim_needs_a_receipted_post_boundary_verdict(self):
         self.merge_parent_and_retarget()
         run_id = uuid.uuid4().hex
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,updated,"
                         "push_admitted) VALUES(?,?,?,?,?,?,?,?,?,?,1)",
                         (run_id, "fix-184", REPO, 184, C, "fixer", "", "pending", time.time(),
@@ -400,7 +401,7 @@ class FreshReviewTest(unittest.TestCase):
         def claim():
             with mock.patch("review_loop.config.by_repo", return_value=self.loop), \
                  mock.patch("review_loop.gh.api", return_value=self.child), \
-                 mock.patch("review_loop.gh.reviews", side_effect=lambda *_: list(self.reviews)):
+                 mock.patch("review_loop.gh.reviews", side_effect=lambda *_, **__: list(self.reviews)):
                 return sup._claim()
 
         # The latest listed verdict is an old rejection: not a work order after the boundary.

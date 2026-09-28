@@ -1,4 +1,5 @@
 """An approval is not merge authority after a same-head base retarget or base push."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import contextlib
 import io
 import json
@@ -29,6 +30,12 @@ def pr(ref='main', sha=BASE):
 
 def git_ref(sha=BASE):
     return {'ref': 'refs/heads/main', 'object': {'type': 'commit', 'sha': sha}}
+
+
+# These tests reach code that reads config.home(): never the operator's (#108).
+import _ledger_guard  # noqa: E402
+
+setUpModule, tearDownModule = _ledger_guard.module_home()
 
 
 class ExactBaseHandoffTests(unittest.TestCase):

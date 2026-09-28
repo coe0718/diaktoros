@@ -464,7 +464,7 @@ def group_watchdog() -> None:
     reset(prs={"7": pr(7)})
     out, _, _ = run("watchdog.py", None, "--loop", "widgets", extra_env=blind)
     check("unreadable hooks alert with login and status",
-          "cannot read GitHub as rev-coach: HTTP 401" in out, True)
+          f"cannot read GitHub as {READ_LOGIN}: HTTP 401" in out, True)   # the reader (#56)
     out, _, _ = run("watchdog.py", None, "--loop", "widgets", "--drain", "--seat", "reviewer",
                     extra_env=blind)
     check("  drain says unreadable, not paused", "hook list unreadable" in out, True)
@@ -512,6 +512,7 @@ def group_explain() -> None:
         loop_cfg = config.normalize(
             {"id": loop_id, "repo": REPO, "base": "main", "cap": 2,
              "fixers": [FIXER], "reviewers": [REVIEWER], "reviewer_seat": SEAT,
+             "read_token": READ_LOGIN,
              "seats": {"reviewer": {"profile": "reviewer-profile", "route": "widgets-review"},
                        "fixer": {"profile": "fixer-profile", "route": "widgets-fix"}},
              "state_dir": str(STATE_DIR), "clone": str(CLONE), "host": HOST})
@@ -871,7 +872,7 @@ def group_explain() -> None:
 
     (LOOPS_DIR / "second.json").write_text(json.dumps(config.normalize(
         {"id": "second", "repo": "acme/second", "fixers": [FIXER], "reviewers": [REVIEWER],
-         "reviewer_seat": SEAT,
+         "reviewer_seat": SEAT, "read_token": READ_LOGIN,
          "seats": {"reviewer": {"profile": "reviewer-profile", "route": "second-review"},
                    "fixer": {"profile": "fixer-profile", "route": "second-fix"}}})))
     rc, out = explain(loop=None)
