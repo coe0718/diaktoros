@@ -147,7 +147,7 @@ def group_parallel() -> None:
     check("same delivery is deduplicated", supervisor.enqueue("delivery-7", REPO, 7, HEAD_A, "reviewer"), "[SILENT]")
     check("same head under another delivery is deduplicated",
           supervisor.enqueue("redelivery-7", REPO, 7, HEAD_A, "reviewer"), "[SILENT]")
-    with sqlite3.connect(db) as con:
+    with ledger.connect(db) as con:
         check("one ledger row for duplicate head",
               con.execute("SELECT COUNT(*) FROM runs WHERE pr=7 AND seat='reviewer'").fetchone()[0], 1)
         # A new head and the opposite seat cannot occupy this same PR while it is claimed.
@@ -157,7 +157,7 @@ def group_parallel() -> None:
     check("other seat same PR waits", supervisor.get("fix-7")["state"], "pending")
     check("no third claim while occupied", supervisor._claim(), None)
     # A finished turn releases precisely one slot. Another pending PR can then claim it.
-    with sqlite3.connect(db) as con:
+    with ledger.connect(db) as con:
         con.execute("UPDATE runs SET state='succeeded' WHERE id=?", (first[0],))
     third = supervisor._claim()
     check("completed reviewer frees one slot", third is not None, True)
@@ -295,9 +295,9 @@ def group_plugin_settings() -> None:
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        rc = cli.cmd_apply(ns(loop="widgets", dry_run=True))
-    check("apply --dry-run exits 0", rc, 0)
-    check("  and shows the diff", "reviewer concurrency: 1 → 2" in buf.getvalue(), True)
+        rc_dry = cli.cmd_apply(ns(loop="widgets", dry_run=True))
+    dry = buf.getvalue()
+    check("  and shows the diff", "reviewer concurrency: 1 → 2" in dry, True)
     check("  nothing written on a dry run",
           config.seat_concurrency(config.load_id("widgets"), "reviewer"), 1)
 
@@ -305,12 +305,22 @@ def group_plugin_settings() -> None:
     with contextlib.redirect_stdout(buf):
         rc = cli.cmd_apply(ns(loop="widgets", dry_run=False))
     check("apply writes it", config.seat_concurrency(config.load_id("widgets"), "reviewer"), 2)
+    # This fixture's breach route is script-less, so apply rightly reports it and exits 1 — and
+    # the dry run must say exactly that, not preview a clean exit (#112 review).
+    check("apply --dry-run exits as the real apply does", rc_dry, rc)
+    check("  and warns about the same routes",
+          [line for line in dry.splitlines() if "⚠️ route" in line],
+          [line for line in buf.getvalue().splitlines() if "⚠️ route" in line])
     check("  and reports the file", "loop config updated" in buf.getvalue(), True)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         rc = cli.cmd_apply(ns(loop="widgets", dry_run=False))
-    check("a second apply is a no-op", "already matches" in buf.getvalue(), True)
+    # Nothing left to write — but the fixture's script-less breach route still is not what the
+    # config installs, so apply says the config matches and the registry does not (#112 review).
+    check("a second apply is a no-op", ("loop config updated" in buf.getvalue(),
+          "the loop config matches the plugin settings, but the route registry does not"
+          in buf.getvalue(), rc), (False, True, 1))
 
     # the rails still hold: two reviews at once with nowhere to isolate them is refused
     cfg = json.loads((LOOPS_DIR / "widgets.json").read_text())
@@ -843,7 +853,8 @@ def group_webhook_host() -> None:
     original_api = gh.api
     def fake_api(loop, path, **kwargs):
         if path.endswith('/hooks?per_page=100'):
-            return [{'id': key, 'config': {'url': url}} for key, url in installed_hooks.items()]
+            return [{'id': key, 'active': False, 'config': {'url': url}}
+                    for key, url in installed_hooks.items()]
         if kwargs.get('method') == 'POST':
             calls.append((path, kwargs))
             hook_id = len(calls)

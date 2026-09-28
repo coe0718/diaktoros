@@ -38,7 +38,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
-from . import gh, prompts, routes
+from . import config, gh, hostdirs, prompts, route_intent, routes
 from .util import log, now_iso
 
 # The transitions an observer may subscribe to. These names are the loop's vocabulary for what
@@ -136,9 +136,35 @@ def describe(observer: dict) -> str:
 def route_contract(loop: dict) -> dict:
     """Exact destination and no-model adapter the observer has authorized."""
     cfg = loop.get("observer") or {}
-    return {"profile": cfg.get("profile", "default"), "deliver": cfg.get("deliver", "telegram"),
+    return {"profile": config.seat_profile(loop, "observer"),
+            "deliver": cfg.get("deliver", "telegram"),
             "deliver_only": True, "prompt": prompts.OBSERVER, "script": "observe.py",
-            "events": ["pull_request"], "deliver_extra": cfg.get("deliver_extra") or {}}
+            "events": ["pull_request"], "deliver_extra": cfg.get("deliver_extra") or {},
+            "enabled": True}
+
+def route_remedy(loop: dict) -> str:
+    """The command that puts this loop's observer route back to its contract, as a fix line.
+
+    ``doctor --repair`` only when the plugin's intent record holds an entry for the route that
+    itself honours the contract (repair restores exactly that entry); otherwise moving the feed
+    to a fresh route name with ``set``, which writes a new route from the loop config and removes
+    the old one. The feed is fired by the plugin itself, never by a GitHub hook, so its route name
+    is free to change.
+    """
+    cfg = loop.get("observer") or {}
+    name = str(cfg.get("route") or "")
+    try:
+        recorded = (route_intent.load(loop) or {}).get(name)
+    except route_intent.IntentError:
+        recorded = None
+    if (isinstance(recorded, dict) and recorded.get("secret")
+            and not routes.contract_mismatch(recorded, route_contract(loop))):
+        return f"`hermes review-loop doctor --loop {loop['id']} --repair`"
+    n = 2
+    while routes.route(f"{name}-{n}") is not None:
+        n += 1
+    return f"`hermes review-loop set --loop {loop['id']} --observer-route {name}-{n}`"
+
 
 def _target(loop: dict):
     """Refuse gateway-side destination overrides not authorized by this loop."""
@@ -166,7 +192,7 @@ def _lock(path: pathlib.Path):
     The same shape the route registry uses, and held only across a read and a write — never
     across the POST. A delivery that hangs must not hold a lock that the next transition needs.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    hostdirs.ensure(path.parent)
     lock = path.with_name(path.name + ".lock")
     fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:

@@ -50,7 +50,9 @@ from . import config, doctor, gh
 PASS, FAIL, WARN, SKIP = "pass", "fail", "warn", "skip"
 MARKS = {PASS: "✅", FAIL: "❌", WARN: "⚠️ ", SKIP: "⏭️ "}
 RUNTIME_KEYS = ("source", "venv", "runtime", "rust")   # required; the model comes from each seat
-DEFAULT_TIMEOUT = 600  # a real review routinely outlasts a two-minute budget
+# No selftest-only budget: the live turn runs for the loop's reviewer ``turn_budget_s``, the same
+# clock the production worker enforces, so a pass here means the turn fits in production (#49).
+DEFAULT_TIMEOUT = None
 
 
 class WriteBlocked(RuntimeError):
@@ -890,11 +892,11 @@ def check_build(report: Report, loop: dict, settings: dict | None, pr: dict | No
 
 def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict | None) -> None:
     from . import observer
-    from .run_supervisor import Supervisor
+    from .run_supervisor import Supervisor, presence_marker
     step = "supervisor"
     db = ledger_path()
     try:
-        supervisor = Supervisor(db)
+        supervisor = Supervisor(db, presence=presence_marker())
         rows = supervisor.status()
     except Exception as exc:
         report.add(step, "ledger", FAIL, f"{db}: {type(exc).__name__}: {exc}",
@@ -981,8 +983,10 @@ def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | 
         report.add(step, "turn:reviewer", FAIL,
                    f"turn did not finish with a verdict ({error or f'rc={rc}'})"
                    + ("; last output: " + " | ".join(t[:120] for t in tail) if tail else ""),
-                   f"raise --timeout (now {timeout}s) if it timed out; otherwise read the output "
-                   "above — the production worker runs the same turn")
+                   f"if it timed out ({timeout}s), production would kill it too: raise the "
+                   f"budget with `hermes review-loop set --loop {loop['id']} "
+                   "--reviewer-turn-budget N`; otherwise read the output above — the production "
+                   "worker runs the same turn")
         return
     if not submissions[-1].get("authorized"):
         report.add(step, "turn:reviewer", FAIL, "the agent's verdict would have been denied",
@@ -994,10 +998,75 @@ def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | 
 
 # -- driver ------------------------------------------------------------------------------------
 
+def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
+                          login: str | None = None) -> None:
+    """Does each loop hook's secret verify at the gateway?
+
+    Read-only by default: the evidence is each hook's latest recorded delivery (doctor's check).
+    With ``ping`` — the selftest's one, opt-in GitHub write — GitHub is asked to ping each hook
+    and the answer is awaited (bounded): a ping authenticates at the gateway and is then ignored,
+    since the routes subscribe to pull_request / pull_request_review only.
+    """
+    from . import hook_ping
+    step = "hooks"
+    hooks, error = gh.hooks_read(loop, loop.get("read_token"))
+    if hooks is None:
+        report.add(step, "hooks:signature", WARN, f"cannot read the repo's hooks ({error})",
+                   "give the read token hook read access (`read:repo_hook`, or `repo`)")
+        return
+    names = {name: seat for seat, name in ((s, str(loop["seats"][s].get("route") or ""))
+                                           for s in ("reviewer", "fixer")) if name}
+    try:
+        # uninstall's matcher: route name *and* this loop's gateway origin, so another
+        # install's hook on the same route name is never pinged or counted as this loop's.
+        own, foreign = doctor.split_route_hooks(loop, hooks, names)
+    except config.ConfigError as exc:
+        report.add(step, "hooks:signature", FAIL, f"cannot tell this loop's hooks apart: {exc}",
+                   f"hermes review-loop set --loop {loop['id']} --host https://your-gateway.example")
+        return
+    ours = [(names[doctor.hook_route_name(hook)], hook) for hook in own]
+    if not ours:
+        causes = sorted({doctor.hook_url_difference(str(h["config"].get("url") or ""),
+                                                    doctor.seat_hook_url(loop, doctor.hook_route_name(h)) or "")
+                         for h in foreign})
+        elsewhere = (f"; {len(foreign)} hook(s) post to the same route names at other URLs "
+                     f"({'; '.join(causes)}) and were not touched" if foreign else "")
+        report.add(step, "hooks:signature", FAIL,
+                   f"no repo hook posts to this loop's route URLs{elsewhere}",
+                   "run init --hooks (see doctor)")
+        return
+    for seat, hook in ours:
+        name = f"hook:{hook['id']}"
+        if ping:
+            status, line = hook_ping.ping(loop, hook["id"], login)
+            detail = line.split("\n")[0][2:].strip()
+            mark = {hook_ping.OK: PASS, hook_ping.REJECTED: FAIL, hook_ping.ERROR: FAIL,
+                    hook_ping.SILENT: WARN}[status]
+            if status == hook_ping.ERROR and line.startswith("⚠️"):
+                mark = WARN
+            report.add(step, name, mark, f"{seat}: {detail}",
+                       hook_ping.fix_line(loop) if mark == FAIL else "")
+            continue
+        found = doctor.check_deliveries(loop, hook["id"], seat)
+        if isinstance(found, doctor.Check):
+            _from_doctor(report, step, found)
+        elif found.startswith("no deliveries"):
+            report.add(step, name, WARN, f"{seat}: {found}",
+                       f"`hermes review-loop selftest --loop {loop['id']} --no-model --ping` "
+                       "(or `arm`, which pings) sends one harmless signed ping")
+        else:
+            report.add(step, name, PASS, f"{seat}: {found} — signature accepted")
+
+
 def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: bool = False,
-        timeout: int = DEFAULT_TIMEOUT, out=None, runtime_file: Path | None = None,
-        resolver=None) -> int:
-    """Run every step; return 1 when any check failed, else 0."""
+        timeout: int | None = DEFAULT_TIMEOUT, out=None, runtime_file: Path | None = None,
+        resolver=None, ping: bool = False, ping_login: str | None = None) -> int:
+    """Run every step; return 1 when any check failed, else 0.
+
+    ``timeout`` defaults to the loop's reviewer turn budget — what production gives the turn.
+    """
+    if timeout is None:
+        timeout = config.turn_budget(loop, "reviewer")
     runtime_file = Path(runtime_file or runtime_path())
     redact = Redactor()
     for raw in (loop.get("tokens") or {}).values():
@@ -1037,6 +1106,13 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
             run_live_turn(report, loop, settings, live_pr, timeout, seats.get("reviewer"))
         else:
             report.add("live-turn", "turn:reviewer", SKIP, "pass --live-turn --pr N to run one")
+        report.step("8. Repo hooks: does each secret verify at the gateway?"
+                    + ("" if ping else " (recorded deliveries; --ping to test now)"))
+        if not ping:
+            check_hook_signatures(report, loop)
+    if ping:
+        # Outside the read-only guard on purpose: the one write --ping asked for.
+        check_hook_signatures(report, loop, ping=True, login=ping_login)
     counts = report.counts()
     report.text(f"\n{loop['id']}: {counts[PASS]} passed, {counts[FAIL]} failed, "
                 f"{counts[WARN]} warnings, {counts[SKIP]} skipped")

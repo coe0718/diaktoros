@@ -35,7 +35,7 @@ import time
 import unittest
 from urllib.parse import parse_qs, urlsplit
 
-from review_loop import run_supervisor
+from review_loop import ledger, run_supervisor
 from review_loop.inference_proxy import PATH
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,8 +156,10 @@ class World(http.server.BaseHTTPRequestHandler):
             found = [r for r in world['reviews'] if r['id'] == rid]
             self._send(200 if found else 404, found[0] if found else {})
         elif path == base + '/hooks':
-            self._send(200, [{'id': 1, 'active': True, 'config': {'url': 'http://gw/webhooks/widgets-review'}},
-                             {'id': 2, 'active': True, 'config': {'url': 'http://gw/webhooks/widgets-fix'}}]
+            self._send(200, [{'id': 1, 'active': True,
+                              'config': {'url': 'http://gw/p/fixture/webhooks/widgets-review'}},
+                             {'id': 2, 'active': True,
+                              'config': {'url': 'http://gw/p/fixture/webhooks/widgets-fix'}}]
                        if page == 1 else [])
         elif path == base + '/git/commits/' + HEAD:
             self._send(200, {'sha': HEAD, 'tree': {'sha': world['tree_sha']}})
@@ -252,6 +254,14 @@ class LiveRouteRetry(unittest.TestCase):
                                          'login': 'fixer'}},
                      'read_token': 'reader', 'tokens': tokens, 'state_dir': str(home / 'state')}
         (home / 'review-loops.d/widgets.json').write_text(json.dumps(self.loop))
+        # The routes the fake GitHub's hooks post to (http://gw/p/fixture/webhooks/<route>): a
+        # seat is armed only by an active hook at the URL its registered route is served at, bound
+        # to the seat's profile — the URL `arm` credits (#106, doctor.seat_route_target).
+        (home / 'webhook_subscriptions.json').write_text(json.dumps({
+            name: {'profile': 'fixture', 'host': 'http://gw', 'script': script,
+                   'secret': 'fixture-route-' + name, 'events': [event], 'prompt': 'fixture'}
+            for name, script, event in (('widgets-review', 'gate_reviewer.py', 'pull_request'),
+                                        ('widgets-fix', 'gate_fixer.py', 'pull_request_review'))}))
         blobs = {'Cargo.toml': b'[package]\nname="probe"\nversion="0.1.0"\nedition="2021"\n',
                  'src/lib.rs': b'#[test] fn works() {}\n'}
         self.world = {
@@ -353,7 +363,7 @@ class LiveRouteRetry(unittest.TestCase):
         return result.stdout
 
     def row(self):
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.row_factory = sqlite3.Row
             rows = [dict(r) for r in con.execute('SELECT * FROM runs')]
         self.assertEqual(len(rows), 1, rows)
@@ -362,7 +372,7 @@ class LiveRouteRetry(unittest.TestCase):
     def _active(self):
         if not self.db.exists():
             return False
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             return con.execute("SELECT COUNT(*) FROM runs WHERE state IN "
                                "('claimed','launching','running')").fetchone()[0] > 0
 
@@ -384,7 +394,7 @@ class LiveRouteRetry(unittest.TestCase):
         self.assertEqual(row['state'], 'waiting')
         self.assertAlmostEqual(row['retry_at'] - row['updated'],
                                run_supervisor.backoff(row['retries']), delta=5)
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET retry_at=? WHERE state='waiting'", (time.time() - 1,))
         self.say(f"(clock: retry {row['retries']} backoff of "
                  f"{int(run_supervisor.backoff(row['retries']))}s elapses)")
@@ -403,7 +413,7 @@ class LiveRouteRetry(unittest.TestCase):
         self.assertIn('Error code: 429', row['detail'])
         self.assertIn('Rate limit reached for fixture-model', row['detail'])
         self.assertEqual(self.world['reviews'], [])
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             self.assertEqual(con.execute('SELECT COUNT(*) FROM review_receipts').fetchone()[0], 0)
 
         # The operator sees the real reason, not an exception type.
@@ -502,7 +512,7 @@ class LiveRouteRetry(unittest.TestCase):
         self.assertEqual(row['error'], 'turn exited with status 1')
         self.assertIn('agent crashed after its review', row['detail'])
         self.assertEqual([r['state'] for r in self.world['reviews']], ['APPROVED'])
-        with sqlite3.connect(self.db) as con:
+        with ledger.connect(self.db) as con:
             self.assertEqual(con.execute('SELECT state FROM review_receipts').fetchall(),
                              [('confirmed',)])
         status = self.supervisor_status()

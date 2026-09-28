@@ -6,7 +6,6 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -16,6 +15,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from review_loop import ledger  # noqa: E402
 from review_loop import config, contained, gh, run_supervisor, trusted_turn  # noqa: E402
 from review_loop.run_supervisor import Supervisor  # noqa: E402
 
@@ -259,7 +259,7 @@ class Worker(Base):
             sup = Supervisor(root / "ledger.sqlite", production_config=runtime, hermes_home=root)
             with mock.patch.object(sup, "_spawn"):
                 sup.enqueue("d", REPO, 7, HEAD, "reviewer")
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 con.execute("UPDATE runs SET state='launching', owner='w', generation='g', "
                             "retries=?", (retries,))
                 run_id = con.execute("SELECT id FROM runs").fetchone()[0]
@@ -274,7 +274,7 @@ class Worker(Base):
                  mock.patch.object(trusted_turn, "run_turn", return_value=0) as run_turn, \
                  mock.patch.object(sup, "recover"):
                 sup._run_production(run_id, "w")
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 state = con.execute("SELECT state, error FROM runs").fetchone()
         return run_turn, state
 
@@ -306,7 +306,7 @@ class Worker(Base):
             sup = Supervisor(root / "ledger.sqlite", production_config=runtime, hermes_home=root)
             with mock.patch.object(sup, "_spawn"):
                 sup.enqueue("d", REPO, 7, HEAD, "reviewer")
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 con.execute("UPDATE runs SET state='launching', owner='w', generation='g'")
                 run_id = con.execute("SELECT id FROM runs").fetchone()[0]
             world = World([changed(1)])
@@ -319,7 +319,7 @@ class Worker(Base):
                  mock.patch.object(trusted_turn, "run_turn") as run_turn, \
                  mock.patch.object(sup, "recover"):
                 sup._run_production(run_id, "w")
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 state = con.execute("SELECT state, error FROM runs").fetchone()
         run_turn.assert_not_called()
         # An unreadable listing is a transient pre-write read (#53): no turn, a backed-off retry.
@@ -337,7 +337,7 @@ class Worker(Base):
             sup = Supervisor(root / "ledger.sqlite", production_config=runtime, hermes_home=root)
             with mock.patch.object(sup, "_spawn"):
                 sup.enqueue("d", REPO, 7, HEAD, "reviewer")
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 con.execute("UPDATE runs SET state='launching', owner='w', generation='g'")
                 run_id = con.execute("SELECT id FROM runs").fetchone()[0]
             world = World([changed(1)])
@@ -350,7 +350,7 @@ class Worker(Base):
                  mock.patch.object(trusted_turn, "run_turn") as run_turn, \
                  mock.patch.object(sup, "recover"):
                 sup._run_production(run_id, "w")
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 state = con.execute("SELECT state, error FROM runs").fetchone()
         run_turn.assert_not_called()
         # A moved head is not transient: the new head gets its own turn, this one never retries.

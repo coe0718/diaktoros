@@ -18,10 +18,12 @@ import os
 import pathlib
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 
-from . import config
+from . import config, hostdirs
 from .util import log
 
 
@@ -134,7 +136,7 @@ def _registry_lock(path: pathlib.Path):
 
     Hermes CLI/dashboard subscription writers do not take this lock.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    hostdirs.ensure(path.parent)
     lock = path.with_name(path.name + ".lock")
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(lock, flags, 0o600)
@@ -203,6 +205,74 @@ def route(name: str) -> dict | None:
     return entry if isinstance(entry, dict) else None
 
 
+def route_profile(entry: dict) -> str | None:
+    """The profile a registry entry is served under, read exactly the way the gateway reads it.
+
+    Hermes's ``WebhookAdapter._route_allows_profile``: a route with no ``profile`` key is bound to
+    ``default``; an explicit null, blank or non-string profile matches no request at all (it
+    fails closed), which is ``None`` here. Everything that compares a route's profile — the
+    feed's delivery contract, doctor, status, apply's readback — goes through this, so none of
+    them can call a route healthy that the gateway refuses, or refuse one it serves.
+    """
+    profile = entry.get("profile") if "profile" in entry else "default"
+    if not isinstance(profile, str) or not profile.strip():
+        return None
+    return profile.strip()
+
+
+def contract_mismatch(entry: dict, expected: dict) -> list[str]:
+    """The ``expected`` keys a registry entry does not honour (``[]`` when it matches).
+
+    ``profile`` goes through :func:`route_profile`; an absent ``deliver_extra`` is ``{}``;
+    ``enabled`` is the gateway's reading (only an explicit ``false`` turns a route off, and it
+    then answers 403); every other key must be equal as stored.
+    """
+    wrong = []
+    for key, value in expected.items():
+        if key == "profile":
+            ok = route_profile(entry) == value
+        elif key == "enabled":
+            ok = (entry.get("enabled", True) is not False) == value
+        elif key == "deliver_extra":
+            ok = (entry.get(key) or {}) == value
+        else:
+            ok = entry.get(key) == value
+        if not ok:
+            wrong.append(key)
+    return wrong
+
+
+def route_name_of(url: str) -> str:
+    """The route a webhook URL posts to: its complete last ``/webhooks/<name>`` segment ("" when
+    it has none). One spelling of the rule for every caller — a substring match would take
+    another route whose name merely contains this one."""
+    path = urllib.parse.urlsplit(str(url or "")).path.rstrip("/")
+    return path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
+
+
+def _url_parts(url: str) -> tuple[str, str, str]:
+    parts = urllib.parse.urlsplit(str(url or ""))
+    return parts.scheme.lower(), parts.netloc.lower(), parts.path
+
+
+def serves_route_url(hook_url: str, route_url: str) -> bool:
+    """Does a hook posting to ``hook_url`` reach the route served at ``route_url``?
+
+    The gateway (aiohttp) routes on the exact PATH: scheme and host compare case-insensitively,
+    the path exactly, and a query string or fragment is ignored — ``?x=1`` reaches the handler,
+    while a trailing slash, a doubled slash or ``%2F`` is a 404. The one rule every surface uses
+    to decide whether a hook is *correct* (armed, verified, left alone)."""
+    route = _url_parts(route_url)
+    return bool(route[2]) and _url_parts(hook_url) == route
+
+
+def same_webhook_url(a: str, b: str) -> bool:
+    """Same origin and the same path up to a trailing slash: how a hook the gateway would 404
+    only for that slash is *found* for its route. Whether it is *correct* is ``serves_route_url``."""
+    pa, pb = _url_parts(a), _url_parts(b)
+    return pa[:2] == pb[:2] and pa[2].rstrip("/") == pb[2].rstrip("/")
+
+
 def url_for_profile(name: str, profile: str | None, host: str | None = None) -> str | None:
     """The URL a route *has* under a profile — the same shape the gateway serves.
 
@@ -228,7 +298,10 @@ def url_for(name: str, host: str | None = None) -> str | None:
     base = config.webhook_host(host or entry.get("host")) or ""
     if not base:
         return None
-    return url_for_profile(name, entry.get("profile", "default"), base)
+    profile = route_profile(entry)
+    if profile is None:
+        return None                   # the gateway serves this route under no URL at all
+    return url_for_profile(name, profile, base)
 
 
 def target(name: str, host: str | None = None, *, expected: dict | None = None):
@@ -237,14 +310,16 @@ def target(name: str, host: str | None = None, *, expected: dict | None = None):
     if not entry:
         log(f"route {name!r} not found in {subs_path().name}")
         return None
-    if expected is not None and any((entry.get(k) or {}) != value if k == "deliver_extra"
-                                    else entry.get(k) != value for k, value in expected.items()):
+    if expected is not None and contract_mismatch(entry, expected):
         log(f"route {name!r} no longer matches its delivery contract")
         return None
     secret = entry.get("secret") or ""
+    profile = route_profile(entry)
+    if profile is None:
+        log(f"route {name!r} has a blank or invalid profile: the gateway refuses it")
+        return None
     try:
         base = config.webhook_host(host or entry.get("host"))
-        profile = entry.get("profile", "default")
         url = (f"{base}/webhooks/{name}" if profile == "default"
                else f"{base}/p/{profile}/webhooks/{name}") if base else None
     except config.ConfigError as exc:
@@ -283,6 +358,8 @@ def fire(name: str, event: str, payload: dict, tag: str, host: str | None = None
             log(f"fired {name} for {tag} (HTTP {resp.status})")
             return 200 <= resp.status < 300
     except Exception as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()   # it holds the response open
         log(f"could not fire {name} for {tag}: {exc}")
         return False
 
@@ -357,10 +434,11 @@ def restore_entries(entries: dict[str, dict | None]) -> None:
     _transact(subs_path(), edit)
 
 
-def heal_entries(expected: dict[str, dict], fields: tuple[str, ...], owned) -> tuple[dict, dict]:
+def heal_entries(expected: dict[str, dict], fields, owned) -> tuple[dict, dict]:
     """Put back the plugin's own routes a non-cooperating writer erased or rewrote.
 
-    ``expected`` is the plugin's intent record (name → full entry). Under the lock, against the
+    ``expected`` is the plugin's intent record (name → full entry); ``fields`` is the watched
+    keys, one tuple for every name or a name → tuple map. Under the lock, against the
     live bytes, each name is: left alone when every watched ``field`` already matches; restored
     when missing, or present and still ``owned(entry)`` (one of this plugin's gate scripts);
     reported as a conflict — never overwritten — when something else now holds the name.
@@ -382,7 +460,8 @@ def heal_entries(expected: dict[str, dict], fields: tuple[str, ...], owned) -> t
             if not isinstance(live, dict):
                 conflicts[name] = "registry entry is not a JSON object"
                 continue
-            diff = [key for key in fields if live.get(key) != want.get(key)]
+            watched = fields.get(name, ()) if isinstance(fields, dict) else fields
+            diff = [key for key in watched if live.get(key) != want.get(key)]
             if not diff:
                 continue
             if not owned(live):
@@ -390,7 +469,7 @@ def heal_entries(expected: dict[str, dict], fields: tuple[str, ...], owned) -> t
                                    "something else holds this name")
                 continue
             merged = {**live, **want}
-            for key in fields:          # a watched key the plugin never wrote is not kept either
+            for key in watched:         # a watched key the plugin never wrote is not kept either
                 if key not in want:
                     merged.pop(key, None)
             data[name] = merged

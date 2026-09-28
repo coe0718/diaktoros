@@ -8,7 +8,7 @@ import re
 import sqlite3
 import time
 
-from . import gh
+from . import gh, ledger
 
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 
@@ -62,10 +62,8 @@ class ReceiptLedger:
             raise ReceiptDenied('unclaimed generation')
 
     def _connect(self):
-        con = sqlite3.connect(self.db, timeout=10, isolation_level=None)
-        con.execute('PRAGMA busy_timeout=10000')
-        con.execute('PRAGMA synchronous=FULL')
-        return con
+        return ledger.connect(self.db, timeout=10, isolation_level=None,
+                              pragmas=('busy_timeout=10000', 'synchronous=FULL'))
 
     def claim(self, principal_id, verdict=None):
         if type(principal_id) is not int or principal_id <= 0:

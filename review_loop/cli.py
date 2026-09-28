@@ -18,9 +18,9 @@ import subprocess
 import sys
 import time
 import tempfile
-from urllib.parse import urlsplit
 
-from . import config, doctor, gate, gh, observer, prompts, route_intent, routes, state as state_mod
+from . import (config, doctor, gate, gate_shims, gh, observer, prompts, route_intent, routes,
+               state as state_mod)
 
 SHIM_NAME = "review-loop-watchdog.py"
 
@@ -168,7 +168,7 @@ def _install_routes(loop: dict, roles=None) -> dict:
                                           "verdict", **common)
         else:
             adjudicator = loop.get("adjudicator") or {}
-            routes.new_route(name, profile=adjudicator.get("profile", "default"),
+            routes.new_route(name, profile=config.seat_profile(loop, "adjudicator"),
                              prompt=prompts.ADJUDICATOR, events=["pull_request"],
                              deliver=adjudicator.get("deliver", "telegram"),
                              description=f"{loop['repo']} — adjudicate a loop that spent its "
@@ -177,7 +177,7 @@ def _install_routes(loop: dict, roles=None) -> dict:
     if "observer" in wanted and "observer" in names:
         observer_cfg = loop["observer"]
         name = names["observer"]
-        routes.new_route(name, profile=observer_cfg.get("profile", "default"),
+        routes.new_route(name, profile=config.seat_profile(loop, "observer"),
                          prompt=prompts.OBSERVER, events=["pull_request"],
                          script="observe.py", deliver=observer_cfg.get("deliver", "telegram"),
                          deliver_only=True, host=host,
@@ -277,10 +277,17 @@ def _route_state(loop: dict, role: str) -> str:
     want = config.seat_profile(loop, role)
     entry = routes.route(name)
     if not entry:
+        if role == "observer":
+            # init refuses an existing loop, so "run init" would be a dead end for the feed.
+            return f"{role} {name}: not installed — {observer.route_remedy(loop).strip('`')}"
         return f"{role} {name}: not installed — run init"
-    got = str(entry.get("profile") or "default")
+    got = routes.route_profile(entry)
+    if got is None:
+        return (f"{role} {name} → {entry.get('profile')!r} (blank — the gateway refuses it), "
+                f"not {want}: MISMATCH — hermes review-loop apply --loop {loop['id']}")
     if got == want:
-        return f"{role} {name} → {got} (ok)"
+        muted = role == "observer" and (loop.get("observer") or {}).get("mute")
+        return f"{role} {name} → {got} (ok{', muted' if muted else ''})"
     return (f"{role} {name} → {got}, not {want}: MISMATCH — "
             f"hermes review-loop apply --loop {loop['id']}")
 
@@ -343,11 +350,30 @@ def _route_binds(loop: dict, touched: set[str]) -> dict:
         entry = routes.route(name)
         if not entry:
             continue
-        current = str(entry.get("profile") or "default")
+        current = routes.route_profile(entry) or ""   # "" = blank: the gateway refuses it
         target = config.seat_profile(loop, role)
         if current != target:
             binds[role] = (name, current, target)
     return binds
+
+
+def _drifted_routes(loop: dict) -> dict:
+    """role → (route name, fields) for this loop's own routes whose registry entry differs from
+    what the plugin writes (``gate_shims.contract_drift``) in a way apply can repair.
+
+    Only a route provably ours (its role's gate *and* prompt) counts; rewriting it from the config
+    keeps its secret. That covers the gateway's 403 on ``enabled: false``, an observer that lost
+    ``deliver_only`` (which would wake an agent) or its destination, and a seat off its event.
+    """
+    out: dict = {}
+    for role, name in _routes_of(loop).items():
+        entry = routes.route(name)
+        if (isinstance(entry, dict) and entry.get("script") == GATE_SCRIPT[role]
+                and entry.get("prompt") == _ROUTE_PROMPT[role]):
+            fields = gate_shims.contract_drift(loop, role, entry)
+            if fields:
+                out[role] = (name, fields)
+    return out
 
 
 def _stale_scripts(loop: dict) -> dict:
@@ -420,21 +446,24 @@ def _observer_args(args, loop_id: str) -> dict:
 
 
 
-def _install_hooks(loop: dict, token_login: str | None, active: bool = False) -> list[str]:
-    """Create the two repo hooks via the API. Needs hook write access on the repo: classic ``repo``,
-    or the narrower ``admin:repo_hook``."""
+def _install_hooks(loop: dict, token_login: str | None, active: bool = False,
+                   seats=("reviewer", "fixer")) -> list[str]:
+    """Create the loop's repo hooks via the API (both, or only ``seats``). Needs hook write access
+    on the repo: classic ``repo``, or the narrower ``admin:repo_hook``."""
     names = _routes_of(loop)
     host = config.webhook_host(loop.get("host"), required=True)
     # Validate both destinations and secrets before creating either external hook.
     hooks = []
     for seat, event in (("reviewer", "pull_request"), ("fixer", "pull_request_review")):
+        if seat not in seats:
+            continue
         route_name = names.get(seat, "")
         url = routes.url_for(route_name, host)
         secret = (routes.route(route_name) or {}).get("secret", "")
         if not url or not secret:
             raise config.ConfigError(f"route {route_name!r} needs a valid webhook URL and secret before installing hooks")
         hooks.append((event, url, secret))
-    baseline = _hook_listing(loop, token_login)
+    baseline = _hook_listing(loop, token_login, require_active=False)
     created = []
     try:
         for event, url, secret in hooks:
@@ -455,7 +484,7 @@ def _install_hooks(loop: dict, token_login: str | None, active: bool = False) ->
         failures = []
         # A lost POST response may still have created a hook: compare with the baseline.
         try:
-            current = _hook_listing(loop, token_login)
+            current = _hook_listing(loop, token_login, require_active=False)
             target_urls = {url for _, url, _ in hooks}
             created = list(set(created) | {h["id"] for h in current
                            if h["id"] not in {b["id"] for b in baseline}
@@ -466,7 +495,7 @@ def _install_hooks(loop: dict, token_login: str | None, active: bool = False) ->
             try:
                 gh.api(loop, f"/repos/{loop['repo']}/hooks/{hook_id}", method="DELETE",
                        login=token_login or loop.get("read_token"))
-                if any(h["id"] == hook_id for h in _hook_listing(loop, token_login)):
+                if any(h["id"] == hook_id for h in _hook_listing(loop, token_login, require_active=False)):
                     raise config.ConfigError("still present after DELETE")
             except Exception as rollback_exc:
                 failures.append(f"hook {hook_id}: {rollback_exc}")
@@ -474,16 +503,43 @@ def _install_hooks(loop: dict, token_login: str | None, active: bool = False) ->
                                  ("ROLLBACK FAILED: " + "; ".join(failures) if failures
                                   else "created hooks removed")) from exc
 
-def _hook_listing(loop: dict, token_login: str | None = None) -> list[dict]:
+class HookAccessError(config.ConfigError):
+    """GitHub did not let this token read or write the repo's hooks. Only this cause is fixed by
+    a different token; every other hook error names its own remedy."""
+
+
+def _hook_fix(loop: dict, exc: Exception, token_login: str | None = None) -> str:
+    """The remedy for a failed hook step, matched to its cause."""
+    if isinstance(exc, HookAccessError):
+        return f"re-run with --admin-token <login> ({hook_write_need(loop, token_login)})"
+    return f"`hermes review-loop doctor --loop {loop['id']}` names what to repair first"
+
+
+def _hook_listing(loop: dict, token_login: str | None = None, *,
+                  require_active: bool = True) -> list[dict]:
     hooks = gh.api(loop, f"/repos/{loop['repo']}/hooks?per_page=100",
                    login=token_login or loop.get("read_token"))
+    # ``active`` is part of a valid entry where a choice depends on it (which of two hooks for one
+    # route is kept). `arm` asks for ``require_active=False``: it flips and reads back a hook with
+    # no real bool rather than trusting — or refusing — the listing's word for its state (#55).
     if not isinstance(hooks, list) or len(hooks) >= 100 or any(
         not isinstance(h, dict) or not isinstance(h.get("id"), int) or
+        (require_active and not isinstance(h.get("active"), bool)) or
         not isinstance(h.get("config"), dict) or
         not isinstance(h["config"].get("url"), str) for h in hooks
     ):
-        raise config.ConfigError("cannot read a complete, valid repo hook listing; no changes made")
+        raise HookAccessError("cannot read a complete, valid repo hook listing; no changes made")
     return hooks
+
+
+def _keep_one(candidates: list[dict], dest: str) -> tuple[dict, list[dict]]:
+    """Of several repo hooks for one route, the one that stays: an ACTIVE hook first (a route must
+    never end up with fewer armed hooks than it had), then one already at ``dest``, then the
+    oldest (lowest id). The rest are redundant — named for deletion, never moved or deleted."""
+    ordered = sorted(candidates, key=lambda hook: (hook.get("active") is not True,
+                                                  not routes.serves_route_url(hook["config"]["url"], dest),
+                                                  hook["id"]))
+    return ordered[0], ordered[1:]
 
 
 def hook_write_need(loop: dict, token_login: str | None) -> str:
@@ -543,7 +599,7 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
     word = "active" if active else "paused"
     login = token_login or loop.get("read_token")
     try:
-        hooks = _hook_listing(loop, token_login)
+        hooks = _hook_listing(loop, token_login, require_active=False)
     except config.ConfigError as exc:
         return [f"could not read the repo's hooks: {exc}",
                 f"fix: {_hook_write_fix(token_login, loop=loop)}"], False
@@ -638,7 +694,8 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         out.append(f"fix: hook{'s' if len(miswired) > 1 else ''} {', '.join(map(str, miswired))}:"
                    f" `hermes review-loop doctor --loop {loop.get('id')}` names what each needs "
                    "(re-run init --hooks, or on GitHub set the event / content_type, or drop the "
-                   "URL's trailing slash), then run `arm` again")
+                   f"URL's trailing slash — `hermes review-loop apply --loop {loop.get('id')}` "
+                   "repoints a slashed hook), then run `arm` again")
     # The fix is per hook: one refused hook must not hide the retry advice another hook's 5xx
     # earned. Hooks that need the same fix share its line.
     advice: dict[str, list[int]] = {}
@@ -665,7 +722,8 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
     return out, ok
 
 
-def _hook_moves(before: dict, after: dict, binds: dict) -> list[tuple[int, str, str]]:
+def _hook_moves(before: dict, after: dict, binds: dict, token_login: str | None = None, *,
+                check_only: bool = False) -> tuple[list, list]:
     """Preflight exact hook URLs against configured and installed owned route profiles."""
     names = _routes_of(after)
     expected: dict[str, tuple[str, str]] = {}
@@ -694,50 +752,440 @@ def _hook_moves(before: dict, after: dict, binds: dict) -> list[tuple[int, str, 
             targets[role] = new
         else:
             unchanged[role] = new
-    if not targets:
-        return []
-    hooks = _hook_listing(before)  # Never repair a route if this listing cannot be trusted.
-    moves = []
     route_names = {name: role for role, name in names.items() if role in ("reviewer", "fixer")}
-    for hook in hooks:
-        old = hook["config"]["url"]
-        # The same rules as arm/doctor (doctor.hook_route_name / same_hook_url / exact_hook_url):
-        # the complete route segment (a trailing slash or a query string does not hide it), a
-        # hook *found* loosely, and judged correct only at the exact path. Every hook on one of
-        # this loop's routes is either left because it is already right, moved, or refused —
-        # never skipped in silence while the push reports itself applied.
-        role = route_names.get(doctor.hook_route_name(hook))
-        if role is None:
+    if not targets and not (check_only and unchanged):
+        # Nothing moves: a settings push reads no hooks. Only plain `apply` (check_only) reads
+        # them anyway, to name duplicates and repoint a slashed hook nothing else would report.
+        return [], []
+    if targets:
+        hooks = _hook_listing(before, token_login)  # Never repair a route if this listing cannot be trusted.
+    else:
+        # Nothing moves, so an unreadable listing blocks nothing — but a readable one is still
+        # checked for two hooks on one route URL, which nothing else would ever report.
+        try:
+            hooks = _hook_listing(before, token_login)
+        except config.ConfigError as exc:
+            print(f"  (repo hooks not checked for duplicates: {exc})")
+            return [], []
+    moves, redundant = [], []
+    for name, role in route_names.items():
+        mine = [hook for hook in hooks if routes.route_name_of(hook["config"]["url"]) == name]
+        if role in targets:
+            dest = targets[role]
+            for hook in mine:
+                old = hook["config"]["url"]
+                # A trailing slash on the target or a known old URL is the same route, spelled so
+                # the gateway 404s it: repairable by a move, never "unexpected".
+                known = routes.same_webhook_url(old, dest) or any(
+                    routes.same_webhook_url(old, url) and owner == role
+                    for url, (owner, _new) in expected.items())
+                if not known:
+                    raise config.ConfigError(f"installed {role} hook {hook['id']} "
+                                             f"points at unexpected URL {old!r}; no changes made")
+        elif role in unchanged:
+            dest = unchanged[role]
+            # Every hook on this route is left (already right), repaired (a trailing slash on this
+            # URL), or refused — never skipped in silence (#55): one posting anywhere else is not
+            # something this push can explain.
+            for hook in mine:
+                if not routes.same_webhook_url(hook["config"]["url"], dest):
+                    raise config.ConfigError(
+                        f"installed {role} hook {hook['id']} points at unexpected URL "
+                        f"{hook['config']['url']!r}; no changes made — `hermes review-loop doctor "
+                        f"--loop {after.get('id')}` names what it is")
+        else:
             continue
-        if role in unchanged:
-            if doctor.exact_hook_url(old, unchanged[role]):
+        if not mine:
+            continue
+        keep, rest = _keep_one(mine, dest)
+        if not routes.serves_route_url(keep["config"]["url"], dest):
+            moves.append((keep["id"], keep["config"]["url"], dest, keep["config"].get("insecure_ssl")))
+        redundant += [(hook, keep) for hook in rest]
+    return moves, redundant
+
+
+def _hook_origin(loop: dict, drifted: dict) -> dict:
+    """The loop as its repo hooks still know it, for ``_hook_moves``' "before" side.
+
+    After ``set --host`` the loop config already names the new origin while the seat routes (and
+    the hooks that post to them) still carry the old one; apply rewrites the routes' origin
+    (``drifted`` ⊇ "host"), so the hooks' old URLs are the routes' *recorded* origin. Handing
+    that to ``_hook_moves`` moves the hooks with the routes through #106's own path — its
+    listing, active-first choice, duplicate naming and full-config PATCH — unchanged.
+    """
+    hosts = {str((routes.route(name) or {}).get("host") or "").removesuffix("/")
+             for role, (name, fields) in drifted.items()
+             if role in ("reviewer", "fixer") and "host" in fields}
+    if not hosts:
+        return loop
+    if len(hosts) > 1:
+        raise config.ConfigError("the reviewer and fixer routes record different gateway origins; "
+                                 "cannot tell which one their repo hooks post to — no changes made")
+    return {**loop, "host": hosts.pop()}
+
+
+def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool) -> int:
+    """``apply --hooks``: make this loop's two repo hooks what its routes need, the way ``init
+    --hooks`` would have for a new loop (``init`` refuses an existing one).
+
+    Per seat, hooks are matched by route name and one is kept by #106's ``_keep_one`` (active
+    first). A seat with none gets one created, paused until ``arm``. The kept hook is repointed at
+    the route's exact URL with ``_patch_hook_url`` (full config: the route's secret, the hook's own
+    TLS setting, json), and given the gate's event if it lacks it. Extra hooks are only named. The
+    listing is read first and nothing is written if it cannot be trusted; returns an exit code.
+    """
+    names = _routes_of(loop)
+    try:
+        host = config.webhook_host(loop.get("host"), required=True)
+        listing = _hook_listing(loop, token_login)
+        plans, missing = [], []
+        for seat, event in (("reviewer", "pull_request"), ("fixer", "pull_request_review")):
+            name = names.get(seat, "")
+            url = routes.url_for(name, host) if name else None
+            if not url or not (routes.route(name) or {}).get("secret"):
+                raise config.ConfigError(f"route {name!r} needs a webhook URL and a secret before "
+                                         "its hook can be written")
+            mine = [hook for hook in listing if routes.route_name_of(hook["config"]["url"]) == name]
+            if not mine:
+                missing.append((seat, url))
                 continue
-            if doctor.same_hook_url(old, unchanged[role]):
-                raise config.ConfigError(
-                    f"installed {role} hook {hook['id']} posts to its route's URL with a trailing "
-                    "slash, which the gateway does not route (404) — drop the slash on GitHub "
-                    "first; no changes made")
-        if role in targets and doctor.exact_hook_url(old, targets[role]):
-            continue  # Already corrected independently; do not rewrite it.
-        known = next((url for url in expected if doctor.same_hook_url(old, url)), None)
-        if role in targets and known is None and doctor.same_hook_url(old, targets[role]):
-            known = targets[role]            # at the new URL but slashed: repair it to the exact one
-        elif role not in targets or known is None or expected[known][0] != role:
-            raise config.ConfigError(f"installed {role} hook {hook['id']} "
-                                     f"points at unexpected URL {old!r}; no changes made")
-        moves.append((hook["id"], old, targets[role]))
-    return moves
+            keep, rest = _keep_one(mine, url)
+            todo = []
+            if (not routes.serves_route_url(keep["config"]["url"], url)
+                    or keep["config"].get("content_type") != "json"):
+                todo.append("config")
+            if event not in (keep.get("events") or []):
+                todo.append("event")
+            plans.append((seat, event, url, keep, rest, todo))
+    except config.ConfigError as exc:
+        print(f"refused: repo hooks not reconciled: {exc}")
+        print(f"  fix: re-run with --admin-token <login> ({hook_write_need(loop, token_login)})")
+        return 2
+    verb = "would " if dry_run else ""
+    for seat, url in missing:
+        print(f"  hook for {names[seat]}: {verb}create → {url} (paused until `arm`)")
+    for seat, event, url, keep, rest, todo in plans:
+        if "config" in todo:
+            print(f"  hook {keep['id']}: {verb}repoint → {url} (json, secret and TLS kept)")
+        if "event" in todo:
+            print(f"  hook {keep['id']}: {verb}add event {event!r}")
+        for hook in rest:
+            print(f"  {_redundant_hook_line(loop, hook, keep)}")
+    redundant = any(rest for *_ignored, rest, _todo in plans)
+    if dry_run:
+        return 1 if redundant else 0
+    login = token_login or loop.get("read_token")
+    try:
+        if missing:
+            for line in _install_hooks(loop, token_login, seats=[seat for seat, _ in missing]):
+                print(f"  {line}")
+        for seat, event, url, keep, rest, todo in plans:
+            if "config" in todo:
+                _patch_hook_url(loop, keep["id"], url, token_login,
+                                insecure_ssl=keep["config"].get("insecure_ssl"))
+                print(f"  hook {keep['id']} → {url}")
+            if "event" in todo:
+                path = f"/repos/{loop['repo']}/hooks/{keep['id']}"
+                gh.api(loop, path, method="PATCH", body={"add_events": [event]}, login=login)
+                actual = gh.api(loop, path, login=login)
+                if not isinstance(actual, dict) or event not in (actual.get("events") or []):
+                    raise config.ConfigError(f"hook {keep['id']} event {event!r} not confirmed — "
+                                             f"{hook_write_need(loop, token_login)}")
+                print(f"  hook {keep['id']} now subscribes to {event!r}")
+    except config.ConfigError as exc:
+        print(f"repo hooks NOT fully reconciled: {exc}")
+        print(f"  fix: re-run with --admin-token <login> ({hook_write_need(loop, token_login)})")
+        return 2
+    return 1 if redundant else 0
 
 
-def _patch_hook_url(loop: dict, hook_id: int, url: str) -> None:
+def _redundant_hook_line(loop: dict, hook: dict, keep: dict) -> str:
+    def state(h: dict) -> str:
+        return "active" if h["active"] else "paused"
+    return (f"⚠️ hook {hook['id']} ({state(hook)}) at {hook['config']['url']} is redundant — hook "
+            f"{keep['id']} ({state(keep)}) is the one kept for this route, so this one was left "
+            f"where it is rather than duplicated. Delete it: "
+            f"`gh api -X DELETE repos/{loop['repo']}/hooks/{hook['id']}`")
+
+
+def _hook_config(url: str, insecure_ssl=None) -> dict:
+    """The complete config a loop hook for ``url`` must carry. Always sent whole: GitHub may treat
+    a PATCHed ``config`` as a replacement, and a url-only body would then drop the secret, leaving
+    a hook whose deliveries the route rejects. The secret is the route's own, from the registry;
+    it is never printed or logged. ``insecure_ssl`` is the hook's own (the operator's TLS choice,
+    read from the hook listing); ``"0"`` — verify TLS — only when the hook has none."""
+    name = routes.route_name_of(url)
+    secret = (routes.route(name) or {}).get("secret") or ""
+    if not name or not secret:
+        raise config.ConfigError(f"route {name or url!r} has no secret in the registry; "
+                                 "the hook was not changed")
+    ssl = "0" if insecure_ssl in (None, "") else str(insecure_ssl)
+    return {"url": url, "content_type": "json", "insecure_ssl": ssl, "secret": secret}
+
+
+def _patch_hook_url(loop: dict, hook_id: int, url: str, login: str | None = None,
+                    require_secret: bool = False, insecure_ssl=None) -> None:
     path = f"/repos/{loop['repo']}/hooks/{hook_id}"
-    result = gh.api(loop, path, method="PATCH", body={"config": {"url": url}},
-                    login=loop.get("read_token"))
+    login = login or loop.get("read_token")
+    result = gh.api(loop, path, method="PATCH", body={"config": _hook_config(url, insecure_ssl)}, login=login)
     # A lost response is ambiguous. Always read back and roll back if it does not agree.
-    actual = gh.api(loop, path, login=loop.get("read_token"))
-    if not isinstance(result, dict) or not isinstance(actual, dict) or \
-            (actual.get("config") or {}).get("url") != url:
-        raise config.ConfigError(f"hook {hook_id} URL update not confirmed as {url!r}")
+    actual = gh.api(loop, path, login=login)
+    got = (actual.get("config") or {}) if isinstance(actual, dict) else {}
+    if not isinstance(result, dict) or not isinstance(actual, dict) or got.get("url") != url \
+            or (require_secret and not got.get("secret")):
+        raise HookAccessError(f"hook {hook_id} update not confirmed as {url!r} — "
+                              f"{hook_write_need(loop, login)}")
+
+
+def _hook_route_names(loop: dict) -> set[str]:
+    """The route names a repo hook of this loop posts to (reviewer and fixer)."""
+    return {name for role, name in _routes_of(loop).items()
+            if role in ("reviewer", "fixer") and name}
+
+
+# One matcher for every caller (doctor.split_route_hooks): arm and selftest --ping credit a hook
+# only at the registry's route URL; uninstall and init's stale-hook guard (ownership) also count
+# the URL the loop's config gives a route the registry no longer holds.
+_hook_route_name = doctor.hook_route_name
+
+
+def _classify_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, list[dict], str]:
+    """``(own, foreign, error)`` for the hooks posting to this loop's route names.
+
+    *Own* hooks post to exactly one of the routes' URLs (``doctor.seat_hook_url``: the gateway
+    binds a route to its profile by URL and answers any other profile's URL 404). *Foreign* ones
+    post to the same route name at another origin, profile or path — another install, an old
+    gateway — and are only ever reported, never deleted or counted as a collision. Every page is read; a partial or malformed listing is
+    ``(None, [], reason)``, never "no hooks".
+    """
+    listing, error = gh.hooks_read(loop, login or loop.get("read_token"))
+    if error:
+        return None, [], error
+    if any(not isinstance(hook.get("id"), int) or not isinstance(hook.get("config"), dict)
+           or not isinstance(hook["config"].get("url"), str) for hook in listing):
+        return None, [], "invalid hook listing"
+    try:
+        own, foreign = doctor.split_route_hooks(loop, listing, _hook_route_names(loop),
+                                                ownership=True)
+    except config.ConfigError as exc:
+        return None, [], f"cannot resolve the loop's webhook host: {exc}"
+    return own, foreign, ""
+
+
+def _loop_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, str]:
+    """This loop's own repo hooks (see ``_classify_hooks``)."""
+    own, _, error = _classify_hooks(loop, login)
+    return own, error
+
+
+def _foreign_lines(loop: dict, foreign: list[dict]) -> list[str]:
+    lines = []
+    for hook in foreign:
+        name = _hook_route_name(hook)
+        why = doctor.hook_url_difference(str(hook["config"].get("url") or ""),
+                                         (doctor.install_hook_urls(loop, name) or [""])[0])
+        lines.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this install's "
+                     "hook (not the route's URL), left alone")
+    return lines
+
+
+def _hook_delete_commands(loop: dict, hook_ids) -> list[str]:
+    """Pasteable ``gh`` commands that delete these hooks (a token with admin:repo_hook or repo)."""
+    repo = loop["repo"]
+    return [f"gh api -X DELETE {shlex.quote(f'repos/{repo}/hooks/{hook_id}')}"
+            for hook_id in hook_ids]
+
+
+def _hook_find_command(loop: dict) -> str:
+    """A pasteable ``gh`` command listing the ids of the hooks posting to this loop's routes."""
+    names = "|".join(sorted(_hook_route_names(loop)))
+    jq = f'.[] | select(.config.url | test("/webhooks/({names})/?$")) | .id'
+    repo = loop["repo"]
+    return (f"gh api {shlex.quote(f'repos/{repo}/hooks?per_page=100')} "
+            f"--jq {shlex.quote(jq)}")
+
+
+def _delete_loop_hooks(loop: dict, login: str | None) -> tuple[list[str], list[str], list[int]]:
+    """Delete this loop's repo hooks and read the listing back: ``(done, failures, left)``.
+
+    Deleted rather than paused: a paused hook still signs with a secret the next install's route
+    will not hold, and it is exactly what a later ``init --hooks`` would trip over.
+    """
+    hooks, foreign, error = _classify_hooks(loop, login)
+    if hooks is None:
+        return [], [f"could not read the repo's hooks: {error}"], []
+    done, failures = _foreign_lines(loop, foreign), []
+    login = login or loop.get("read_token")
+    if not hooks:
+        # Nothing of ours to delete — but "gone" is only ever concluded from a read: a second
+        # sample still catches a hook created meanwhile (a concurrent arm or init --hooks), and
+        # an unreadable one is "not confirmed", never a claim that anything is live.
+        after, error = _loop_hooks(loop, login)
+        if after is None:
+            return done, [f"could not confirm that no hook of this loop's appeared while uninstall "
+                          f"ran (the listing read-back failed: {error}) — nothing was deleted"], []
+        if after:
+            ids = sorted(hook["id"] for hook in after)
+            return done, [f"hook{'s' if len(ids) > 1 else ''} {', '.join(map(str, ids))} "
+                          "appeared on this loop's route URLs while uninstall ran (a concurrent "
+                          "arm or init --hooks?) — not deleted"], ids
+        return done, failures, []
+    refused: list[int] = []                       # ids whose DELETE failed, recorded as they fail
+    for hook in hooks:
+        _, error = gh.fetch(loop, f"/repos/{loop['repo']}/hooks/{hook['id']}", method="DELETE",
+                            login=login)
+        if error:
+            refused.append(hook["id"])
+            failures.append(f"hook {hook['id']}: DELETE failed ({error})")
+    after, error = _loop_hooks(loop, login)
+    if after is None:
+        # Only the hooks whose DELETE failed are known to be live; the rest were accepted and
+        # merely not read back — say exactly that, never "still live" about ids that are gone.
+        accepted = [hook["id"] for hook in hooks if hook["id"] not in refused]
+        if accepted:
+            failures.append(f"could not confirm the deletion of hook"
+                            f"{'s' if len(accepted) > 1 else ''} "
+                            f"{', '.join(map(str, accepted))} (GitHub accepted each DELETE; the "
+                            f"listing read-back failed: {error})")
+        else:
+            failures.append(f"could not confirm the deletion: {error}")
+        return done, failures, refused
+    left = {hook["id"] for hook in after}
+    for hook in hooks:
+        if hook["id"] not in left:
+            done.append(f"hook {hook['id']} deleted")
+    return done, failures, sorted(left)
+
+
+def _hermes_bin() -> str | None:
+    """The ``hermes`` executable the scheduler commands run. ``REVIEW_LOOP_HERMES`` names a
+    stand-in (the test suite's fake), so no test ever drives the operator's real install."""
+    found = os.environ.get("REVIEW_LOOP_HERMES") or shutil.which("hermes")
+    # Under the test guard (#101), never the operator's real hermes — for cron create and remove.
+    return config.guard_real_hermes(found) if found else None
+
+
+def _cron_jobs(loop: dict) -> tuple[list[dict] | None, str]:
+    """The scheduler jobs ``init --schedule`` registered for this loop, read from the job store."""
+    path = doctor.cron_store()
+    if not path.exists():
+        return [], ""
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:
+        return None, f"{path} is not readable JSON ({exc})"
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    if not isinstance(jobs, list):
+        return None, f"{path} has no job list"
+    wanted = watchdog_job_name(loop)
+    return [job for job in jobs if isinstance(job, dict)
+            and str(job.get("name") or "").strip() == wanted], ""
+
+
+def _remove_cron(loop: dict) -> tuple[list[str], list[str]]:
+    """Remove this loop's watchdog job through the scheduler's own CLI, then read the store back."""
+    jobs, error = _cron_jobs(loop)
+    if jobs is None:
+        return [], [f"cron: {error}"]
+    hermes = _hermes_bin()
+    done, failures = [], []
+    for job in jobs:
+        job_id = str(job.get("id") or "")
+        if not job_id:
+            failures.append(f"cron: job {watchdog_job_name(loop)!r} has no id")
+            continue
+        if not hermes:
+            failures.append(f"cron: no `hermes` on PATH to remove job {job_id}")
+            continue
+        try:
+            proc = subprocess.run([hermes, "cron", "remove", job_id], capture_output=True,
+                                  text=True, timeout=120)
+        except Exception as exc:
+            failures.append(f"cron: removing job {job_id} failed ({exc})")
+            continue
+        if proc.returncode != 0:
+            failures.append(f"cron: removing job {job_id} failed "
+                            f"({(proc.stderr or proc.stdout).strip()[:200]})")
+    after, error = _cron_jobs(loop)
+    if after is None:
+        return done, failures + [f"cron: could not confirm the removal: {error}"]
+    left = {str(job.get("id") or "") for job in after}
+    for job in jobs:
+        if str(job.get("id") or "") in left:
+            if not failures:
+                failures.append(f"cron: job {job.get('id')} is still scheduled")
+        else:
+            done.append(f"cron job removed: {job.get('id')} ({watchdog_job_name(loop)})")
+    return done, failures
+
+
+def _remove_unused_shim() -> str:
+    """The cron shim is shared by every loop's job: remove it only when no job runs it any more."""
+    shim = config.home() / "scripts" / SHIM_NAME
+    if not shim.is_symlink() and not shim.is_file():
+        return ""
+    try:
+        data = json.loads(doctor.cron_store().read_text()) if doctor.cron_store().exists() else []
+    except Exception:
+        return ""
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    if not isinstance(jobs, list) or any(
+            isinstance(job, dict) and pathlib.Path(str(job.get("script") or "")).name == SHIM_NAME
+            for job in jobs):
+        return ""
+    if shim.is_symlink():
+        # Never followed or removed on its own authority — but named, like every other leftover.
+        return (f"cron shim NOT removed: {shim} is a symlink (never followed) — no job runs it; "
+                f"remove the link itself: rm -- {shlex.quote(str(shim))}")
+    try:
+        shim.unlink()
+    except OSError as exc:
+        return (f"cron shim NOT removed: {shim} ({exc.strerror or exc}) — no job runs it; remove "
+                f"it by hand: rm -- {shlex.quote(str(shim))}")
+    return f"cron shim removed: {shim} (no job runs it any more)"
+
+
+def _purge_target(loop: dict) -> tuple[pathlib.Path | None, str]:
+    """The state directory ``uninstall --purge`` may delete, or ``(None, why not)``.
+
+    Only the default ``<hermes home>/state/review-loops/<id>`` is ever removed: a custom
+    ``state_dir`` could be anything the operator typed, and a recursive delete is not the place
+    to find out. No symlink anywhere below the Hermes home is followed.
+    """
+    base = config.home()
+    default = base / "state" / "review-loops" / loop["id"]
+    raw = pathlib.Path(str(loop.get("state_dir") or "")).expanduser()
+    lid = shlex.quote(loop["id"])
+    if os.path.normpath(str(raw)) != os.path.normpath(str(default)):
+        return None, (f"state_dir {raw} is not the default {default}, so --purge will not delete "
+                      "it: a custom directory could hold anything the operator pointed it at. "
+                      "Check it holds only this loop's state, then run:\n"
+                      f"  hermes review-loop uninstall --loop {lid} && "
+                      f"rm -rf -- {shlex.quote(str(raw))}")
+    for path in (base / "state", base / "state" / "review-loops", default):
+        if path.is_symlink():
+            return None, (f"{path} is a symlink; --purge never follows one — it may point at "
+                          "this loop's own (moved) state or somewhere else entirely, and this "
+                          "command cannot tell which. Check where it points, uninstall without "
+                          "--purge, remove the link, and remove the directory it points at by "
+                          "hand if it is this loop's:\n"
+                          f"  ls -ld -- {shlex.quote(str(path))}   # where it points\n"
+                          f"  hermes review-loop uninstall --loop {lid} && "
+                          f"rm -- {shlex.quote(str(path))}   # the link itself")
+    if default.exists() and not default.is_dir():
+        return None, f"{default} is not a directory"
+    return default, ""
+
+
+def _write_watchdog_shim() -> pathlib.Path:
+    """The cron shim the watchdog job runs by name, pinned to this plugin's watchdog."""
+    scripts = config.home() / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    shim = scripts / SHIM_NAME
+    shim.write_text(SHIM.format(watchdog=watchdog))
+    shim.chmod(0o755)
+    return shim
 
 
 def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str], bool]:
@@ -746,13 +1194,8 @@ def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str
     Returns ``(lines, ok)``; ``ok`` is false when no job was created. The fallback command is
     shell-quoted — the job name has spaces and parentheses — so it can be pasted as printed.
     """
-    scripts = config.home() / "scripts"
-    scripts.mkdir(parents=True, exist_ok=True)
-    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
-    shim = scripts / SHIM_NAME
-    shim.write_text(SHIM.format(watchdog=watchdog))
-    shim.chmod(0o755)
-    hermes = config.guard_real_hermes(shutil.which("hermes") or "hermes")
+    shim = _write_watchdog_shim()
+    hermes = _hermes_bin() or "hermes"
     cmd = [hermes, "cron", "create", schedule, "--name", watchdog_job_name(loop),
            "--no-agent", "--script", SHIM_NAME, "--deliver", deliver]
     try:
@@ -763,6 +1206,102 @@ def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str
         return [f"cron create failed: {(proc.stderr or proc.stdout).strip()[:200]}",
                 f"run it yourself: {shlex.join(cmd)}"], False
     return [f"scheduled the watchdog ({schedule}, deliver={deliver})", f"shim: {shim}"], True
+
+
+def _install_shims(loop: dict, report: bool = True, pairs=None) -> bool:
+    """Write the loop's gate shims where the gateway resolves route scripts (issue #105)."""
+    try:
+        for line in gate_shims.install(loop, report=report, pairs=pairs):
+            print(f"  {line}")
+        return True
+    except (OSError, config.ConfigError) as exc:
+        print(f"gate shim install FAILED: {exc}")
+        print(f"  fix it, then: hermes review-loop apply --loop {loop['id']}")
+        return False
+
+
+def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
+                     token_login: str | None = None) -> tuple[int, int]:
+    """``apply --recreate-routes``: write routes the registry lost when no intent record can
+    restore them. The old secret is gone with the route, so each gets a new one and the repo hook
+    that points at the route's URL is re-keyed to it — a route whose hook still signs with the old
+    secret would reject every delivery. Refuses, writing nothing, if the hooks cannot be read.
+
+    Hooks are matched by route name, as ``_hook_moves`` does, and one is kept by ``_keep_one``
+    (active first, then already at the route's URL, then lowest id): it is re-keyed, and moved to
+    the route's URL if it was left at the loop's previous one. Any further hook for the route is
+    never duplicated onto its URL — it is named with the command that deletes it. Returns
+    ``(rc, redundant hooks named)``."""
+    roles = set(missing)
+    names = ", ".join(sorted(missing.values()))
+    try:
+        config.verify_seats(loop, roles & set(config.SEAT_KEYS))
+        _verify_routes(loop, roles)
+        hooks = _hook_listing(loop, token_login)
+    except config.ConfigError as exc:
+        print(f"refused: cannot recreate {names}: {exc}")
+        if isinstance(exc, HookAccessError):
+            print(f"  fix: {_hook_fix(loop, exc, token_login)}")
+        return 2, 0
+    urls = {name: routes.url_for_profile(name, config.seat_profile(loop, role), loop.get("host"))
+            for role, name in missing.items()}
+    rekey, redundant = [], []
+    for name, url in urls.items():
+        mine = [hook for hook in hooks if routes.route_name_of(hook["config"]["url"]) == name]
+        if url and mine:
+            keep, rest = _keep_one(mine, url)
+            rekey.append((keep, name))
+            redundant += [(hook, keep) for hook in rest]
+    for name in sorted(missing.values()):
+        plan = [(f"re-keys hook {hook['id']}" if routes.serves_route_url(hook["config"]["url"], urls[name])
+                 else f"moves hook {hook['id']} from {hook['config']['url']} and re-keys it")
+                for hook, hooked in rekey if hooked == name]
+        print(f"  route {name}: {'would recreate' if dry_run else 'recreating'} from the loop "
+              f"config (new secret)" + (f"; {plan[0]}" if plan else "; no repo hook points at it"))
+    for hook, keep in redundant:
+        print(f"  {_redundant_hook_line(loop, hook, keep)}")
+    if dry_run:
+        return 0, len(redundant)
+    written: list[str] = []
+    try:
+        written = list(_install_routes(loop, roles=tuple(roles)).values())
+        for hook, name in rekey:
+            # A hook that already reaches the route keeps its own URL (a query string, say);
+            # one left elsewhere is moved to the route's URL.
+            url = (hook["config"]["url"] if routes.serves_route_url(hook["config"]["url"], urls[name])
+                   else urls[name])
+            _patch_hook_url(loop, hook["id"], url, token_login, require_secret=True,
+                            insecure_ssl=hook["config"].get("insecure_ssl"))
+            print(f"  hook {hook['id']} re-keyed for {name}")
+        route_intent.record_live(loop, written)
+    except Exception as exc:
+        try:
+            routes.restore_entries({name: None for name in written})
+            route_intent.forget(loop, written)
+        except Exception as rollback_exc:
+            print(f"ROLLBACK FAILED: {rollback_exc} — inspect routes {names} manually")
+        print(f"route recreation FAILED: {exc}; the recreated routes were taken back out — a hook "
+              "already re-keyed now signs with a secret no route holds: re-run this command")
+        print(f"  fix: {_hook_fix(loop, exc, token_login)}")
+        return 2, 0
+    for name in written:
+        print(f"  route {name} recreated")
+    return (0 if _install_shims(loop, report=False) else 2), len(redundant)
+
+
+def _diverged(loop: dict, *, rewritten=(), header: str = "") -> bool:
+    """Say so when a route still is not what the config installs, even after a push: never
+    report success over a route the gateway runs under another profile or gate.
+
+    ``rewritten`` names the routes this apply is about to write from the config: a dry run passes
+    them, so it prints exactly what the real apply will still find afterwards."""
+    left = {name: value for name, value in gate_shims.divergence(loop, contract=True).items()
+            if name not in set(rewritten)}
+    if left and header:
+        print(header)
+    for name, (detail, fix, _status) in left.items():
+        print(f"  ⚠️ route {name}: {detail} — fix: {fix}")
+    return bool(left)
 
 
 # -- verbs ----------------------------------------------------------------------
@@ -834,6 +1373,39 @@ def _restore_config_locked(path: pathlib.Path, data: bytes) -> None:
         pathlib.Path(temporary).unlink(missing_ok=True)
 
 
+def _stale_hooks_refusal(loop: dict, admin: str | None) -> str:
+    """Why ``init --hooks`` must not create hooks yet, or ``""`` when the routes have none.
+
+    Only hooks at this loop's route URLs collide; the same route name at another origin, profile
+    or path is printed as information (the gateway never delivers it to these routes).
+
+    Refuse, never adopt. Adopting would mean PATCHing a new secret onto hooks this install did not
+    create: GitHub never returns a hook's secret, so nothing can prove whose they are or which of
+    several is current, and an adopted hook keeps its old ``active`` state — an armed leftover
+    would arm a loop that has not passed doctor/selftest. Refusing writes nothing, and the fix is
+    one pasteable command per hook (or ``uninstall`` for a loop that is still configured).
+    """
+    hooks, foreign, error = _classify_hooks(loop, admin)
+    if hooks is None:
+        return (f"refused: cannot read {loop['repo']}'s hooks to check for a previous install's "
+                f"({error}); nothing written. Give the --admin-token login hook access "
+                "(`admin:repo_hook`, or classic `repo`) and re-run")
+    for line in _foreign_lines(loop, foreign):
+        print(f"  info: {line}")
+    if not hooks:
+        return ""
+    ids = sorted(hook["id"] for hook in hooks)
+    lines = [f"refused: {loop['repo']} already has repo hook(s) posting to this loop's routes "
+             f"({', '.join(sorted({_hook_route_name(h) for h in hooks}))}): "
+             f"{', '.join(str(i) for i in ids)} — "
+             f"{sum(1 for h in hooks if h.get('active'))} active. They were created by a previous "
+             "install and sign with its secret, which the routes this init writes will not hold.",
+             "nothing written. Delete them (a token with `admin:repo_hook` or classic `repo`), "
+             "then re-run this init:"]
+    lines += [f"  {command}" for command in _hook_delete_commands(loop, ids)]
+    return "\n".join(lines)
+
+
 def cmd_init(args) -> int:
     """Install a loop: write its config, its routes, and (on request) its hooks and cron job.
 
@@ -845,6 +1417,14 @@ def cmd_init(args) -> int:
     """
     if getattr(args, "arm", False) and not args.hooks:
         print("--arm arms the repo hooks init creates; it needs --hooks")
+        return 2
+    loop_id = args.id or args.repo.split("/")[-1]
+    # The rule the loader enforces: an id that does not name exactly one config file would be
+    # written here and then break every loop-wide command that reads the directory.
+    if (not loop_id or loop_id in (".", "..") or pathlib.Path(loop_id).name != loop_id
+            or "\\" in loop_id or loop_id.startswith(".")):
+        print(f"--id {loop_id!r} cannot name a loop config file: use letters, digits, '-', '_' "
+              "or '.' (not leading, not a path)")
         return 2
     d = config.settings_defaults(_SETTINGS)
     tokens = {}
@@ -933,12 +1513,17 @@ def cmd_init(args) -> int:
                                            / (args.id or args.repo.split("/")[-1])),
         "host": args.host, "grace_min": args.grace_min,
         "ttl_min": args.ttl_min, "inflight_ttl_min": args.inflight_ttl_min,
+        "turn_budget_s": getattr(args, "turn_budget", None),
         "observer": _observer_args(args, args.id or args.repo.split("/")[-1]),
     }
     # A seat-level capacity wins over the loop default, so only write it when it was asked for.
     for seat, value in (("reviewer", args.reviewer_concurrency), ("fixer", args.fixer_concurrency)):
         if value is not None:
             raw["seats"][seat]["concurrency"] = value
+    for seat, value in (("reviewer", getattr(args, "reviewer_turn_budget", None)),
+                         ("fixer", getattr(args, "fixer_turn_budget", None))):
+        if value is not None:
+            raw["seats"][seat]["turn_budget_s"] = value
     names = routes_for(raw)
     raw["seats"]["reviewer"]["route"] = names["reviewer"]
     raw["seats"]["fixer"]["route"] = names["fixer"]
@@ -971,6 +1556,10 @@ def cmd_init(args) -> int:
                 f"--token {args.admin_token}=/path/to/pat (hook write access)")
         _verify_routes(loop, roles)
         _observer_check(loop)
+        # Refuses a foreign file (#105). Routes init is about to write are not "missing".
+        shim_lines = gate_shims.install(loop, dry_run=True, report=False) + [
+            f"⚠️ route {name}: {detail}" for name, (detail, _fix, _status)
+            in gate_shims.divergence(loop, include_missing=False).items()]
     except config.ConfigError as exc:
         print(f"config refused: {exc}")
         return 2
@@ -991,6 +1580,8 @@ def cmd_init(args) -> int:
             print(f"  would install the watchdog cron job ({args.schedule})")
         if loop.get("observer", {}).get("route"):
             print(f"  would write route: {loop['observer']['route']}")
+        for line in shim_lines:
+            print(f"  {line}")
         return 0
 
     path = config.config_dir() / f"{loop['id']}.json"
@@ -1002,6 +1593,15 @@ def cmd_init(args) -> int:
     if observer_name and routes.route(observer_name):
         print(f"refused: route {observer_name!r} already exists and is not this observer's route")
         return 2
+    if args.hooks:
+        # A previous install's hooks on these routes still sign with that install's secret, and
+        # this init writes the routes with a fresh one: a second set would leave the old ones live
+        # but unable to authenticate, next to new paused ones. Refused (not adopted) while nothing
+        # is written yet; see _stale_hooks_refusal for why.
+        refusal = _stale_hooks_refusal(loop, args.admin_token)
+        if refusal:
+            print(refusal)
+            return 2
     previous_config = None
     previous_routes = {name: routes.route(name) for name in _routes_of(loop).values()}
     try:
@@ -1036,6 +1636,7 @@ def cmd_init(args) -> int:
         return 2
     for name in written_routes:
         print(f"route written: {name}")
+    shims_ok = _install_shims(loop)
     try:
         hook_lines = (_install_hooks(loop, args.admin_token, active=bool(getattr(args, "arm", False)))
                       if args.hooks else [])
@@ -1068,6 +1669,9 @@ def cmd_init(args) -> int:
         print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), False)}")
     if not args.hooks:
         print("  (repo hooks not created — pass --hooks, or add them by hand with the route URLs)")
+    # Armed at birth: prove the secret now, as `arm` does, rather than at the first real event.
+    pinged = (_ping_loop_hooks(loop, args.admin_token)
+              if args.hooks and getattr(args, "arm", False) else True)
     schedule_lines, scheduled = (_install_schedule(loop, args.schedule, args.watchdog_deliver)
                                  if args.schedule else ([], True))
     for line in schedule_lines:
@@ -1077,6 +1681,10 @@ def cmd_init(args) -> int:
         # install script's `init && ...` does not read a missing watchdog as success.
         print("\ninit INCOMPLETE: the watchdog job was not scheduled — run the command above, "
               f"then `hermes review-loop doctor --loop {loop['id']}`")
+        return 1
+    if not pinged:
+        print(f"\ninit INCOMPLETE: a hook's ping was rejected — see the ❌ line above, then "
+              f"`hermes review-loop doctor --loop {loop['id']}`")
         return 1
     # The seats never hold a GitHub token: every write goes through the host broker with the token
     # files mapped above, so a GH_TOKEN in a seat profile's .env is only an extra copy to leak.
@@ -1101,7 +1709,7 @@ def cmd_init(args) -> int:
         print(f"  {n}. {step}")
     print("  Seat tokens live only in the token files mapped above; a seat profile needs no "
           "GH_TOKEN.")
-    return 0
+    return 0 if shims_ok else 1
 
 
 def cmd_set(args) -> int:
@@ -1128,10 +1736,25 @@ def cmd_set(args) -> int:
             return 2
         print(f"repairing {args.loop}: it has no read_token; setting the reader named by --read-token")
 
+    host = args.host
+    if host is not None:
+        # A blank or whitespace host is not "unchanged": it would strip the loop of the origin
+        # its hooks and routes are matched by. Say so, and validate a real one here, by name.
+        host = host.strip()
+        try:
+            if not host:
+                raise config.ConfigError("--host needs your gateway origin (https://…); a blank "
+                                         "host would orphan the loop's hooks — to take the loop "
+                                         "down use `uninstall`")
+            config.webhook_host(host, required=True)
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
     wanted = {"concurrency": args.concurrency, "cap": args.cap, "base": args.base,
               "clone": args.clone, "grace_min": args.grace_min,
               "marker_grace_min": args.marker_grace_min, "ttl_min": args.ttl_min,
-              "inflight_ttl_min": args.inflight_ttl_min, "host": args.host}
+              "inflight_ttl_min": args.inflight_ttl_min, "host": host,
+              "turn_budget_s": getattr(args, "turn_budget", None)}
     changes = {k: v for k, v in wanted.items()
                if v is not None and v != "" and v != loop.get(k)}
 
@@ -1196,6 +1819,12 @@ def cmd_set(args) -> int:
         if value is not None and value != config.seat_concurrency(loop, seat):
             seats[seat]["concurrency"] = value
             seat_changes[seat] = value
+    budget_changes = {}
+    for seat, value in (("reviewer", getattr(args, "reviewer_turn_budget", None)),
+                         ("fixer", getattr(args, "fixer_turn_budget", None))):
+        if value is not None and value != (seats[seat].get("turn_budget_s")):
+            budget_changes[seat] = (config.turn_budget(loop, seat), value)
+            seats[seat]["turn_budget_s"] = value
 
     # The observer is a nested block, so it is collected the same way the seats are: flags the
     # operator did not pass leave the existing answer alone, and a flag that means "drop it"
@@ -1227,10 +1856,12 @@ def cmd_set(args) -> int:
     if args.observer_unmute:
         observer_cfg["mute"] = False
 
-    if (not changes and not seat_changes and not adj_changed and not read_changed
+    if (not changes and not seat_changes and not budget_changes and not adj_changed
+            and not read_changed
             and observer_cfg == (loop.get("observer") or {})):
         print("nothing to change — pass at least one setting "
               "(--concurrency, --reviewer-concurrency, --fixer-concurrency, --cap, --clone, "
+              "--turn-budget, "
               "--observer-profile, ...)")
         return 0
 
@@ -1256,6 +1887,7 @@ def cmd_set(args) -> int:
         print(f"refused: {exc}")
         return 2
 
+    shims_ok = True
     before = loop.get("observer") or {}
     after = updated.get("observer") or {}
     # Disabling stops new notices and removes the route, but leaves the outbox intact.
@@ -1296,7 +1928,8 @@ def cmd_set(args) -> int:
             return 2
         try:
             host = config.webhook_host(updated.get("host"), required=True)
-            written = routes.new_route(name, profile=after["profile"], prompt=prompts.OBSERVER,
+            written = routes.new_route(name, profile=config.seat_profile(updated, "observer"),
+                                       prompt=prompts.OBSERVER,
                                        events=["pull_request"], script="observe.py",
                                        deliver=after["deliver"], deliver_only=True, host=host,
                                        description=f"{updated['repo']} — read-only observer feed")
@@ -1313,6 +1946,7 @@ def cmd_set(args) -> int:
                 print(f"ROLLBACK FAILED: {rollback_exc} — inspect route {name!r} manually")
             print(f"observer route intent could not be recorded; loop config unchanged: {exc}")
             return 2
+        shims_ok = _install_shims(updated)
     path = _write_config(updated)
     if destination_changed and before.get("route") and before["route"] != after.get("route"):
         try:
@@ -1325,6 +1959,8 @@ def cmd_set(args) -> int:
     for seat, value in seat_changes.items():
         was = config.seat_concurrency(loop, seat)
         print(f"  {seat} concurrency: {was} → {value}  (this seat only)")
+    for seat, (was, value) in budget_changes.items():
+        print(f"  {seat} turn budget: {was}s → {value}s  (this seat only)")
     if read_after != read_before:
         print(f"  read_token: {read_before or '(none)'} → {read_after}")
     if read_after and _token_ref(loop, read_after) != _token_ref(updated, read_after):
@@ -1341,6 +1977,16 @@ def cmd_set(args) -> int:
               f"{observer.describe(updated.get('observer') or {})}")
     print(f"loop config updated: {path}")
 
+    if "turn_budget_s" in changes:
+        for seat in ("reviewer", "fixer"):
+            if (updated["seats"].get(seat) or {}).get("turn_budget_s") is not None:
+                print(f"  note: {seat} has its own turn budget "
+                      f"({updated['seats'][seat]['turn_budget_s']}s) — the loop default does not "
+                      "apply to it")
+    if "turn_budget_s" in changes or budget_changes:
+        print("  turn budget now: " + _budget_line(updated)
+              + "   (queued turns keep the budget they were enqueued with)")
+
     if "concurrency" in changes:
         # Say it out loud, because a loop-wide default that a seat overrides is exactly the kind
         # of setting someone changes twice and wonders why nothing moved.
@@ -1352,10 +1998,27 @@ def cmd_set(args) -> int:
     print("  parallel now: " + " · ".join(
         f"{seat} {config.seat_concurrency(updated, seat)}" for seat in ("reviewer", "fixer"))
         + "   (1 = serialized; everything above the limit queues)")
-    return 0
+    return 0 if shims_ok else 1
 
 
 def cmd_apply(args) -> int:
+    """``apply``, then the explicit extras it was asked for (``--hooks``, ``--watchdog-shim``),
+    after the routes are what the config says — their URLs are what the hooks must post to."""
+    rc = _apply(args)
+    if rc == 2 or not (getattr(args, "hooks", False) or getattr(args, "watchdog_shim", False)):
+        return rc
+    loop = config.load_id(args.loop)
+    if getattr(args, "watchdog_shim", False):
+        if args.dry_run:
+            print(f"  would write the watchdog shim: {doctor.shim_path()}")
+        else:
+            print(f"  watchdog shim written: {_write_watchdog_shim()}")
+    if getattr(args, "hooks", False):
+        rc = max(rc, _ensure_hooks(loop, getattr(args, "admin_token", "") or None, args.dry_run))
+    return rc
+
+
+def _apply(args) -> int:
     """Make a loop match the plugin settings — one push, with the diff printed.
 
     Push, not subscription: a running loop whose numbers changed under it is exactly the kind of
@@ -1403,7 +2066,8 @@ def cmd_apply(args) -> int:
     # A route installed by an older release (the pre-#21 breach route on gate_reviewer.py) is
     # repaired here too: `init` refuses an existing loop, so apply is the only reconcile path.
     repairs = _stale_scripts(updated)
-    rebinding = touched | set(binds) | set(repairs)
+    drifted = _drifted_routes(updated)
+    rebinding = touched | set(binds) | set(repairs) | set(drifted)
     try:
         # Validate what this apply would *write*: a loop that predates the seat checks keeps
         # loading, but a seat this push moves must be one that can actually run.
@@ -1415,12 +2079,32 @@ def cmd_apply(args) -> int:
             config.verify_credentials(updated)
         if rebinding:
             _verify_routes(updated, rebinding)
+        # Refuses a foreign file (#105) — only over what this apply writes: the config's pairs. A
+        # route the registry holds elsewhere is what apply is about to rebind away, so it never
+        # blocks; disagreements left afterwards are reported by ``_diverged``.
+        shim_pairs = gate_shims.wanted(updated)
+        shim_lines = gate_shims.install(updated, dry_run=True, report=False, pairs=shim_pairs)
     except config.ConfigError as exc:
         print(f"settings refused: {exc}")
         return 2
+    # The gate shims are not a setting and move nothing, so apply writes them up front, even when
+    # everything else already matches: a loop whose gates the gateway cannot find drops every event.
+    if shim_lines and args.dry_run:
+        for line in shim_lines:
+            print(f"  {line}")
+    elif shim_lines and not _install_shims(updated, report=False, pairs=shim_pairs):
+        return 2
+    missing = {role: name for role, name in _routes_of(updated).items() if not routes.route(name)}
+    leftover_hooks = 0
+    if missing and getattr(args, "recreate_routes", False):
+        rc, leftover_hooks = _recreate_routes(updated, missing, dry_run=args.dry_run,
+                                              token_login=getattr(args, "admin_token", "") or None)
+        if rc:
+            return rc
 
     changes = []
-    for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min"):
+    for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
+                "turn_budget_s"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -1433,9 +2117,39 @@ def cmd_apply(args) -> int:
     missing_routes = sorted(name for role, name in _routes_of(updated).items()
                             if role in touched and not routes.route(name))
 
-    if not changes and not identity and not binds and not repairs:
-        print(f"[{loop['id']}] already matches the plugin settings")
-        return 0
+    if not changes and not identity and not binds and not repairs and not drifted:
+        # Never "matches" over a route the registry holds differently (#112 review): the loop
+        # config can agree with the settings while the gateway serves something else.
+        left = _diverged(updated, header=f"[{loop['id']}] the loop config matches the plugin "
+                                         "settings, but the route registry does not:")
+        if not left:
+            print(f"[{loop['id']}] already matches the plugin settings")
+        duplicates, slashed = [], []
+        # With --hooks, the hooks are reconciled after this by _ensure_hooks — the same listing,
+        # the same keep-one rule, and a repoint for a hook this read-only check can only refuse.
+        if not args.dry_run and not getattr(args, "hooks", False):
+            token = getattr(args, "admin_token", "") or None
+            try:        # nothing else moves: this reads, to name two hooks on one route URL and
+                        # find one whose URL differs only by a trailing slash (a gateway 404)
+                slashed, duplicates = _hook_moves(loop, updated, {}, token, check_only=True)
+            except HookAccessError as exc:
+                print(f"  (repo hooks not checked: {exc})")
+            except config.ConfigError as exc:
+                print(f"  {exc}")       # a hook on a loop route this push cannot explain (#55)
+                return 1
+        for hook_id, old, new, ssl in slashed:
+            try:
+                _patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None,
+                                insecure_ssl=ssl)
+            except config.ConfigError as exc:
+                print(f"  hook {hook_id} NOT repointed from {old} to {new}: {exc}")
+                print(f"  fix: {_hook_fix(loop, exc, getattr(args, 'admin_token', '') or None)}")
+                return 2
+            print(f"  hook {hook_id} → {new}   (was {old}: the gateway does not route a trailing "
+                  "slash)")
+        for hook, keep in duplicates:
+            print(f"  {_redundant_hook_line(loop, hook, keep)}")
+        return 1 if left or leftover_hooks or duplicates else 0
     if not args.dry_run and updated.get("host") != loop.get("host") and loop.get("observer"):
         try:
             outstanding = observer.unsettled(state_mod.state_for(loop))
@@ -1449,7 +2163,16 @@ def cmd_apply(args) -> int:
     for name, was, now in list(changes) + list(identity):
         print(f"  {name}: {was} → {now}")
     for role, (name, current, target) in sorted(binds.items()):
-        print(f"  route {name}: profile {current} → {target}   (the URL carries the profile)")
+        print(f"  route {name}: profile {current or '(blank)'} → {target}   (the URL carries "
+              "the profile)")
+    for role, (name, fields) in sorted(drifted.items()):
+        if fields == ["enabled"]:
+            print(f"  route {name}: disabled (enabled: false) → enabled   (the gateway answers 403 "
+                  "to every event while it is off)")
+        else:
+            print(f"  route {name}: {', '.join(fields)} "
+                  f"{'differs' if len(fields) == 1 else 'differ'} from what the plugin writes → "
+                  "rewritten from the loop config   (secret kept)")
     for role, (name, script) in sorted(repairs.items()):
         print(f"  route {name}: script {script} → {GATE_SCRIPT[role]}   (installed by an older "
               "release)")
@@ -1462,8 +2185,28 @@ def cmd_apply(args) -> int:
         return 2
 
     if args.dry_run:
+        rewritten = ({bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
+                     | {n for n, _ in drifted.values()})
+        if getattr(args, "recreate_routes", False):
+            rewritten |= set(missing.values())
+        left = _diverged(updated, rewritten=rewritten)
+        try:
+            hook_before = _hook_origin(loop, drifted)
+            if hook_before is not loop:
+                # The routes' origin moves, so their hooks move too: preview it (reads only).
+                moves, redundant = _hook_moves(hook_before, updated, binds,
+                                               getattr(args, "admin_token", "") or None)
+                for hook_id, _old, new, _ssl in moves:
+                    print(f"  hook {hook_id} would move → {new}")
+                for hook, keep in redundant:
+                    print(f"  {_redundant_hook_line(loop, hook, keep)}")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
         print("(dry run — nothing written: no loop config, no routes touched)")
-        return 0
+        if left:
+            print("  apply would exit 1: the route(s) above still disagree with the config after it")
+        return 1 if left or leftover_hooks else 0
 
     busy = _busy_seats(loop, rebinding) if rebinding else []
     if busy and not getattr(args, "while_busy", False):
@@ -1479,35 +2222,43 @@ def cmd_apply(args) -> int:
     # Preflight remote hooks before any local mutation. Snapshot each owned route and roll back
     # both surfaces on any failure; config is published only after route/hook readback agrees.
     try:
-        hook_moves = _hook_moves(loop, updated, binds)
+        hook_moves, redundant_hooks = _hook_moves(_hook_origin(loop, drifted), updated, binds,
+                                                  getattr(args, "admin_token", "") or None)
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
     previous = {name: routes.route(name)
-                for name in {bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}}
+                for name in ({bind[0] for bind in binds.values()} | {n for n, _ in repairs.values()}
+                             | {n for n, _ in drifted.values()})}
     config_path = config.config_dir() / f"{loop['id']}.json"
     previous_config = config_path.read_bytes()
     attempted_hooks = []
     try:
-        rewrite = tuple(set(binds) | set(repairs))
+        rewrite = tuple(set(binds) | set(repairs) | set(drifted))
         rebound = list(_install_routes(updated, roles=rewrite).items()) if rewrite else []
         for role, name in rebound:
             entry = routes.route(name)
-            if not entry or str(entry.get("profile") or "") != config.seat_profile(updated, role):
+            if not entry or routes.route_profile(entry) != config.seat_profile(updated, role):
                 raise config.ConfigError(f"route {name} readback does not match requested profile")
             if entry.get("script") != GATE_SCRIPT[role]:
                 raise config.ConfigError(f"route {name} readback does not run {GATE_SCRIPT[role]}")
-        for hook_id, old, new in hook_moves:
-            attempted_hooks.append((hook_id, old))
-            _patch_hook_url(loop, hook_id, new)
+            if gate_shims.contract_drift(updated, role, entry):
+                raise config.ConfigError(f"route {name} readback still differs from what the "
+                                         "plugin writes: "
+                                         + ", ".join(gate_shims.contract_drift(updated, role, entry)))
+        for hook_id, old, new, ssl in hook_moves:
+            attempted_hooks.append((hook_id, old, ssl))
+            _patch_hook_url(loop, hook_id, new, getattr(args, "admin_token", "") or None,
+                            insecure_ssl=ssl)
         path = _write_config(updated) if changes or identity else config_path
         if rebound:
             route_intent.record_live(updated, [name for _, name in rebound])
     except Exception as exc:
         failed = []
-        for hook_id, old in reversed(attempted_hooks):
+        for hook_id, old, ssl in reversed(attempted_hooks):
             try:
-                _patch_hook_url(loop, hook_id, old)
+                _patch_hook_url(loop, hook_id, old, getattr(args, "admin_token", "") or None,
+                                insecure_ssl=ssl)
             except Exception as rollback_exc:
                 failed.append(f"hook {hook_id}: {rollback_exc}")
         if previous:
@@ -1534,10 +2285,13 @@ def cmd_apply(args) -> int:
     print(f"loop config updated: {path}")
     for role, name in rebound:
         print(f"  route {name} rebound → profile {config.seat_profile(updated, role)}"
-              + (f", script {GATE_SCRIPT[role]}" if role in repairs else ""))
-    for hook_id, _, new in hook_moves:
+              + (f", script {GATE_SCRIPT[role]}" if role in repairs else "")
+              + (f", {', '.join(drifted[role][1])} restored" if role in drifted else ""))
+    for hook_id, _, new, _ssl in hook_moves:
         print(f"  hook {hook_id} → {new}")
-    return 0
+    for hook, keep in redundant_hooks:
+        print(f"  {_redundant_hook_line(loop, hook, keep)}")
+    return 1 if _diverged(updated) or redundant_hooks or leftover_hooks else 0
 
 
 def cmd_settings(args) -> int:
@@ -1586,6 +2340,13 @@ def cmd_settings(args) -> int:
           "\n(settings are defaults, not a subscription: an existing loop keeps its own seats, "
           "profiles and numbers until you apply — and blank fields above never erase them)")
     return 0
+
+
+def _budget_line(loop: dict) -> str:
+    """Each seat's turn budget, the way status/doctor/set print it."""
+    seats = ["reviewer", "fixer"] + (["adjudicator"] if (loop.get("adjudicator") or {}).get("route")
+                                     else [])
+    return " · ".join(f"{seat} {config.turn_budget(loop, seat)}s" for seat in seats)
 
 
 def _readable_loops() -> tuple[list[dict], list[str]]:
@@ -1661,6 +2422,7 @@ def cmd_status(args) -> int:
             + ("" if config.seat_concurrency(loop, seat) > 1 else " (serialized)")
             for seat in ("reviewer", "fixer")))
         print(f"  clone:      {loop['clone'] or '(none)'}")
+        print(f"  turn:       {_budget_line(loop)} per turn (killed past it)")
         print("  fixer push: " + ("ENABLED — operator accepted PR-metadata/ref race"
                                   if config.unattended_fixer_push_enabled(loop)
                                   else "off (unattended pushes disabled)"))
@@ -1679,7 +2441,7 @@ def cmd_status(args) -> int:
         # What the registry actually serves, next to what the config claims: those two facts can
         # disagree after a profile change, and this is the one place the operator would see it.
         print("  routes:     " + " · ".join(_route_state(loop, role)
-                                            for role in config.ROUTE_ROLES
+                                            for role in (*config.ROUTE_ROLES, "observer")
                                             if role in _routes_of(loop)))
         refs = _credential_lines(loop)
         if refs:
@@ -1808,7 +2570,8 @@ def cmd_retry(args) -> int:
     for row in candidates:
         label = f"{row['seat']} #{args.pr} @ {head[:7]}" + (f" ({row['turn_key']})" if row["turn_key"] else "")
         try:
-            sup.retry(row["id"])
+            # The loop's budget now (#49): a turn killed at its budget reruns on the raised one.
+            sup.retry(row["id"], budget=config.turn_budget(loop, row["seat"]))
         except ValueError as exc:
             refused += 1
             print(f"[{loop['id']}] {label} {row['state']}: {exc}")
@@ -1892,6 +2655,8 @@ def cmd_explain(args) -> int:
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")
         print(f"  {'github:':<12}{report['github']}")
+        if not report.get("gate_failures"):
+            print(f"  {'gates:':<12}no unresolved gate failure recorded for this PR")
         runs = _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
         # A ledgered turn at the current head that waits to retry, failed before any write, or
         # is quarantined holds the PR as surely as any gate guard (#53): it is the blocker, and
@@ -1931,7 +2696,7 @@ def cmd_doctor(args) -> int:
         if getattr(args, "repair", False):
             # The one write doctor can make, and only when asked: put this loop's own routes back
             # from the plugin's intent record (same secret). Everything after it stays read-only.
-            lines = route_intent.heal(loop)
+            lines = route_intent.heal(loop) + gate_shims.heal(loop)
             print("\n".join(lines) if lines else
                   f"[{loop['id']}] repair: routes match the plugin's intent record — nothing restored")
         failed += doctor.report(loop, doctor.check_loop(loop, offline=args.offline),
@@ -1953,7 +2718,7 @@ def cmd_selftest(args) -> int:
     if args.live_turn and args.no_model:
         print("--live-turn needs the model; drop --no-model")
         return 2
-    if args.timeout < 1:
+    if getattr(args, "timeout", None) is not None and args.timeout < 1:
         print("--timeout must be positive")
         return 2
     try:
@@ -1961,8 +2726,13 @@ def cmd_selftest(args) -> int:
     except config.ConfigError as exc:
         print(f"cannot selftest loop: {doctor._safe_report_text(str(exc))}")
         return 2
+    # Default to what production gives the reviewer seat, so a passing selftest proves the turn
+    # fits the budget the unattended worker will actually enforce (#49).
     return selftest.run(loop, pr=args.pr, model=not args.no_model, live_turn=args.live_turn,
-                        timeout=args.timeout)
+                        timeout=(args.timeout if getattr(args, "timeout", None) is not None
+                                 else config.turn_budget(loop, "reviewer")),
+                        ping=getattr(args, "ping", False),
+                        ping_login=getattr(args, "admin_token", "") or None)
 
 
 def cmd_models(args) -> int:
@@ -2024,6 +2794,28 @@ def cmd_models(args) -> int:
     return 0
 
 
+def _ping_loop_hooks(loop: dict, login: str | None) -> bool:
+    """After arming: ping each of the loop's hooks and report how the gateway answered.
+
+    An active hook whose secret the route does not hold looks armed and wakes nothing; this is
+    the moment to find out. False only on a ping the gateway rejected or one that could not be
+    sent — no delivery seen within the bounded wait is a warning, not a verdict.
+    """
+    from . import hook_ping
+    hooks, error = _loop_hooks(loop, login)
+    if hooks is None:
+        print(f"[{loop['id']}] ⚠️ hooks not pinged: cannot read the repo's hooks ({error})")
+        return True
+    ok = True
+    for hook in sorted(hooks, key=lambda item: item["id"]):
+        status, line = hook_ping.ping(loop, hook["id"], login)
+        for part in line.split("\n"):
+            print(f"[{loop['id']}] {part}")
+        if status in (hook_ping.REJECTED, hook_ping.ERROR) and not line.startswith("⚠️"):
+            ok = False
+    return ok
+
+
 def cmd_arm(args) -> int:
     """Arm or pause loops by flipping their repo hooks; exit 1 unless GitHub confirms every one."""
     try:
@@ -2041,6 +2833,8 @@ def cmd_arm(args) -> int:
         for line in lines:
             print(f"[{loop['id']}] {line}")
         if not ok:
+            failed.append(loop["id"])
+        elif not args.pause and not _ping_loop_hooks(loop, args.admin_token):
             failed.append(loop["id"])
     if failed:
         print(f"{'pause' if args.pause else 'arm'} NOT confirmed for: {', '.join(failed)} "
@@ -2151,31 +2945,351 @@ def cmd_cleanup(args) -> int:
     return subprocess.run(cmd).returncode
 
 
+def _uninstall_preflight(loop: dict) -> list[str]:
+    """Reasons a later uninstall step would fail on a shared file, read before anything is removed.
+
+    The route registry is rewritten by step 3, after the hooks and the watchdog job are already
+    gone; it must parse now. (The cron store was read just before this; the intent record's own
+    reader tolerates a bad file — it heals nothing then.)
+    """
+    problems = []
+    path = routes.subs_path()
+    if path.exists() or path.is_symlink():
+        try:
+            data = json.loads(path.read_text())
+        except Exception as exc:
+            problems.append(f"route registry {path} cannot be read ({type(exc).__name__}: "
+                            f"{exc}) — fix or restore it; nothing was removed")
+        else:
+            if not isinstance(data, dict):
+                problems.append(f"route registry {path} is not a JSON object — fix or restore "
+                                "it; nothing was removed")
+    return problems
+
+
+def _unloadable_teardown_advice(loop_id: str) -> None:
+    """For a loop file the loader refuses: what may still be live, and how to find it.
+
+    ``uninstall`` will not act on a config it cannot validate — deleting hooks or jobs on a
+    guess is the wrong way to fail — but it can still read the raw file for the repo, the route
+    names and the job name, and hand over the commands to look them up.
+    """
+    try:
+        raw = json.loads((config.config_dir() / f"{loop_id}.json").read_text())
+    except Exception:
+        return
+    if not isinstance(raw, dict) or str(raw.get("repo") or "").count("/") != 1:
+        return
+    raw = {**raw, "id": loop_id, "repo": str(raw["repo"]).strip().lower()}
+    print("it may still have live repo hooks and a watchdog job; nothing was touched. "
+          "Look them up with:")
+    if _hook_route_names(raw):
+        print(f"  {_hook_find_command(raw)}   # hook ids on its route names — check each URL "
+              "before deleting: `gh api -X DELETE repos/<owner>/<repo>/hooks/<id>`")
+    jobs, _ = _cron_jobs(raw)
+    for job in jobs or []:
+        print(f"  hermes cron remove {shlex.quote(str(job.get('id') or '<id>'))}   "
+              f"# {watchdog_job_name(raw)}")
+    print("then fix the file (the reason above) and re-run `hermes review-loop uninstall "
+          f"--loop {shlex.quote(loop_id)}`, or remove what is listed by hand and delete "
+          f"{config.config_dir() / (loop_id + '.json')}")
+
+
+def _uninstall_incomplete(removed: list[str], left: list[str], keep_hooks: bool,
+                          commands: list[str]) -> int:
+    """A late step failed after earlier ones were done: say which, and how to finish. Exit 2.
+
+    Past this point the config may be gone, so a re-run cannot finish the job — the printed
+    commands do.
+    """
+    print("uninstall INCOMPLETE — removed: " + (", ".join(removed) or "nothing else")
+          + "; left behind: " + ("the repo hooks (--keep-hooks), " if keep_hooks else "")
+          + ", ".join(left))
+    print("fix what refused (the permissions of the path above), then finish with:")
+    for command in commands:
+        print(f"  {command}")
+    return 2
+
+
+def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
+                       args, unattributed: bool = False) -> int:
+    """Refuse an uninstall with the exact commands that finish it. The config is still there."""
+    lid = shlex.quote(loop["id"])
+    print("refused: uninstall stopped before removing routes or config — nothing below the "
+          "failure was touched:")
+    for reason in reasons:
+        print(f"  {reason}")
+    if unattributed:
+        print("they may be this install's or another install's (same repo, same route names): "
+              "look at each one's URL before deleting anything:")
+        print(f"  {_hook_find_command(loop)}   # the ids")
+        print(f"  gh api {shlex.quote(f'repos/' + loop['repo'] + '/hooks/<id>')} --jq .config.url"
+              "   # where each posts")
+        print("then either set this loop's host (`hermes review-loop set --loop "
+              f"{lid} --host https://your-gateway.example`) so uninstall can tell its own hooks "
+              "apart, or delete the ones that are this install's by hand")
+    elif any(reason.startswith("could not confirm the deletion of hook") for reason in reasons) \
+            and not left_hooks:
+        print("every DELETE was accepted, but the hook listing could not be read back to confirm "
+              "it — look before re-running (it lists any id that is somehow still there):")
+        print(f"  {_hook_find_command(loop)}")
+    elif left_hooks:
+        # Only ids a listing actually showed at this loop's route URLs are called live, and only
+        # they get DELETE commands.
+        print("the loop's repo hooks are still live. Delete them with a token that has "
+              "`admin:repo_hook` (or classic `repo`):")
+        for command in _hook_delete_commands(loop, left_hooks):
+            print(f"  {command}")
+        print("or map such a token on this loop and let uninstall do it:")
+        print(f"  hermes review-loop uninstall --loop {lid} --admin-token <login>")
+    elif any(reason.startswith(("hook", "could not")) for reason in reasons):
+        # Nothing was read (or read back), so nothing is known about which hooks exist — or
+        # whose they are. No liveness claim, and no DELETE on a guess.
+        print("the hook listing could not be read or confirmed, so this command does not know "
+              "which hooks exist; nothing was deleted on a guess. Look first — check each one's "
+              "URL before deleting anything:")
+        print(f"  {_hook_find_command(loop)}   # the ids")
+        print(f"  gh api {shlex.quote(f'repos/' + loop['repo'] + '/hooks/<id>')} --jq .config.url"
+              "   # where each posts")
+    if any(reason.startswith("cron") for reason in reasons):
+        jobs, _ = _cron_jobs(loop)
+        for job in jobs or []:
+            print(f"  hermes cron remove {shlex.quote(str(job.get('id') or '<id>'))}")
+    print("then re-run:")
+    admin = getattr(args, "admin_token", "") or ""
+    print(f"  hermes review-loop uninstall --loop {lid}"
+          + (f" --admin-token {shlex.quote(admin)}" if admin else "")
+          + (" --keep-config" if args.keep_config else "")
+          + (" --purge" if getattr(args, "purge", False) else ""))
+    print("(`--keep-hooks` uninstalls anyway and leaves the hooks live — they keep posting to "
+          "routes that no longer exist)")
+    return 2
+
+
 def cmd_uninstall(args) -> int:
+    """The inverse of ``init``: hooks, cron job, routes, config and (``--purge``) state.
+
+    Order matters. Everything that needs the loop config — its hook routes, its token mapping, its
+    job name — is undone *first*, while the config still exists; if any of it cannot be done the
+    command refuses with the commands that finish it, and the config stays so they still run.
+    """
     try:
         loop = config.load_id(args.loop)
     except config.ConfigError as exc:
         print(f"cannot uninstall: {exc}")
+        _unloadable_teardown_advice(args.loop)
         return 2
-    # Forget first: a route the operator removed must not be put back by the next watchdog
+    keep_hooks = getattr(args, "keep_hooks", False)
+    purge = getattr(args, "purge", False)
+    admin = getattr(args, "admin_token", "") or ""
+    target = None
+    if purge:
+        if args.keep_config:
+            print("refused: --purge removes the state the kept config points at; drop one of "
+                  "--purge / --keep-config")
+            return 2
+        target, why = _purge_target(loop)
+        if target is None:
+            print(f"refused: {why}")
+            return 2
+        try:
+            busy = _busy_seats(loop, {"reviewer", "fixer"})
+        except OSError as exc:
+            # Reading the in-flight marks takes the state lock inside the directory about to be
+            # deleted; if that cannot be opened, nothing can be proved idle — refuse, untouched.
+            where = f" ({exc.filename})" if getattr(exc, "filename", None) else ""
+            print(f"refused: --purge cannot check for a run in flight — the state directory "
+                  f"{target} cannot be read: {exc.strerror or exc}{where}. Nothing was removed. "
+                  "Fix its permissions and re-run, or uninstall without --purge and remove it "
+                  f"by hand afterwards: rm -rf -- {shlex.quote(str(target))}")
+            return 2
+        if busy:
+            print("refused: --purge would delete the state of a run in flight: " + "; ".join(busy))
+            return 2
+    if admin and gh.token_path(loop, admin) is None:
+        print(f"refused: --admin-token {admin!r} has no token file mapped on this loop — map it "
+              f"with `hermes review-loop set --loop {shlex.quote(loop['id'])} --token "
+              f"{shlex.quote(admin)}=/abs/path/to/pat`")
+        return 2
+    jobs, error = _cron_jobs(loop)
+    if jobs is None:
+        return _uninstall_refused(loop, [f"cron: {error}"], [], args)
+    # Every shared file a later step rewrites is read *now*, before a hook or a job is touched:
+    # a registry that will not parse must refuse here, not raise after the destructive steps.
+    problems = _uninstall_preflight(loop)
+    if problems:
+        return _uninstall_refused(loop, problems, [], args)
+    # What is already gone, for the summary if a later step (the state purge) fails.
+    removed: list[str] = []
+    # 1. Stop deliveries: delete the repo hooks while the config still names their routes.
+    if keep_hooks:
+        print("hooks: kept (--keep-hooks) — they stay live and post to routes about to be removed;"
+              " find them with:")
+        print(f"  {_hook_find_command(loop)}")
+    elif not str(loop.get("host") or "").strip():
+        # A host-less loop has no gateway origin to tell its own hooks from another install's —
+        # and it may once have had one (a host blanked by hand). So look before skipping: any hook
+        # posting to its route names may be this install's, live, and is refused with the
+        # commands that delete it; only an empty answer lets the uninstall go on.
+        listing, error = gh.hooks_read(loop, admin or loop.get("read_token"))
+        if error:
+            return _uninstall_refused(loop, [f"could not read the repo's hooks: {error}"], [], args)
+        matching = [hook for hook in listing
+                    if not isinstance(hook, dict) or doctor.hook_route_name(hook)
+                    in _hook_route_names(loop)]
+        if any(not isinstance(hook, dict) or not isinstance(hook.get("id"), int)
+               for hook in matching):
+            # _classify_hooks' rule: an entry that cannot be identified makes the listing
+            # untrustworthy — never "no hooks".
+            return _uninstall_refused(loop, ["could not read the repo's hooks: invalid hook "
+                                             "listing (an entry on the loop's route names has no "
+                                             "integer id)"], [], args)
+        named = sorted(hook["id"] for hook in matching)
+        if named:
+            # Without a host there is no route URL to compare with, so none of these can be
+            # attributed to this install: never hand out DELETE commands for them.
+            return _uninstall_refused(loop, [
+                f"hooks {', '.join(map(str, named))} post to this loop's route names, and the loop "
+                "has no host to tell whether they are this install's (a blanked host leaves its "
+                "hooks behind) or another install's on the same repo — nothing was deleted"],
+                [], args, unattributed=True)
+        print("hooks: none — the loop has no host, and no repo hook posts to its route names")
+    else:
+        done, failures, left = _delete_loop_hooks(loop, admin or None)
+        for line in done:
+            print(line)
+        if failures or left:
+            if left and not failures:
+                failures = [f"hook {hook_id} still present after DELETE" for hook_id in left]
+            return _uninstall_refused(loop, failures, left, args)
+        if not done:
+            print("hooks: none of this loop's routes has a repo hook")
+        elif any(line.endswith(" deleted") for line in done):
+            removed.append("repo hooks")
+    # 2. Stop the watchdog.
+    done, failures = _remove_cron(loop)
+    for line in done:
+        print(line)
+    if failures:
+        return _uninstall_refused(loop, failures, [], args)
+    if done:
+        removed.append("watchdog job")
+    shim_line = _remove_unused_shim()
+    leftovers: list[tuple[str, str]] = []          # (what, the command that removes it)
+    if shim_line:
+        print(shim_line)
+        if shim_line.startswith("cron shim removed"):
+            removed.append("cron shim")
+        else:
+            shim = config.home() / "scripts" / SHIM_NAME
+            leftovers.append((f"the cron shim {shim}", f"rm -- {shlex.quote(str(shim))}"))
+    # 3. Forget first: a route the operator removed must not be put back by the next watchdog
     # sweep's self-heal (which only ever restores routes still in the intent record).
+    lid = shlex.quote(loop["id"])
+    finish = f"hermes review-loop uninstall --loop {lid}"
     try:
         route_intent.forget(loop, _routes_of(loop).values())
-    except OSError as exc:
-        print(f"refused: route intent record could not be updated, routes left in place: {exc}")
-        return 2
-    for name in _routes_of(loop).values():
-        if name and routes.remove_route(name):
-            print(f"route removed: {name}")
+        for name in _routes_of(loop).values():
+            if name and routes.remove_route(name):
+                print(f"route removed: {name}")
+                if "routes" not in removed:
+                    removed.append("routes")
+    except (OSError, ValueError) as exc:
+        # Hooks and the job are already gone; the config is still here, so a re-run finishes
+        # once the registry (or intent record) can be written — say so, never a traceback.
+        print(f"routes NOT removed: {exc}")
+        left = [what for what, _ in leftovers] + [
+            f"the routes {', '.join(n for n in _routes_of(loop).values() if n)} in "
+            f"{routes.subs_path()}", f"the loop config (so `{finish}` can finish)"]
+        commands = [cmd for _, cmd in leftovers] + [f"{finish}   # once the file above is "
+                                                    "readable and writable again"]
+        return _uninstall_incomplete(removed, left, keep_hooks, commands)
+    try:
+        others = [other for other in config.all_loops()
+                  if not (other["id"] == loop["id"] and other.get("repo") == loop.get("repo"))]
+        for line in gate_shims.remove(loop, others):
+            print(line)
+    except (OSError, config.ConfigError) as exc:
+        print(f"gate shims left in place (another loop may still need them): {exc}")
     if not args.keep_config:
         path = config.config_dir() / f"{loop['id']}.json"
         if path.exists():
-            path.unlink()
+            try:
+                path.unlink()
+            except OSError as exc:
+                # Hooks, cron and routes are already gone: report the half-done state and the
+                # one command that finishes it, never a traceback.
+                print(f"config NOT removed: {path} — {exc.strerror or exc}")
+                left = [what for what, _ in leftovers] + [f"the loop config {path}"]
+                commands = [cmd for _, cmd in leftovers] + [f"rm -f -- {shlex.quote(str(path))}"]
+                if target is not None:
+                    left.append(f"the state directory {target} (not attempted)")
+                    commands.append(f"rm -rf -- {shlex.quote(str(target))}")
+                return _uninstall_incomplete(removed, left, keep_hooks, commands)
             print(f"config removed: {path}")
-    print("GitHub hooks and the cron job are NOT removed automatically:")
-    print(f"  hooks: hermes review-loop arm --loop {loop['id']} --pause  # stops deliveries; "
-          "delete them on GitHub to remove them")
-    print("  cron:  hermes cron list | grep review-loop-watchdog && hermes cron remove <id>")
+            removed.append("config")
+    if target is not None:
+        if target.is_symlink():
+            # Swapped for a link after the preflight vetted it: never followed. Everything above
+            # is already done, so this is a partial decommission, reported as one.
+            print(f"state NOT removed: {target} became a symlink after it was checked — never "
+                  "followed")
+            return _uninstall_incomplete(
+                removed, [what for what, _ in leftovers]
+                + [f"the state directory {target} (now a symlink: check where it points, "
+                   "remove the link, and that directory by hand if it is this loop's)"],
+                keep_hooks, [cmd for _, cmd in leftovers]
+                + [f"ls -ld -- {shlex.quote(str(target))}   # where it points",
+                   f"rm -- {shlex.quote(str(target))}   # the link itself"])
+        if target.exists():
+            refused: list[tuple[str, str]] = []
+
+            def note(_func, path, exc_info) -> None:
+                # rmtree's own exception names only the entry, relative to an open directory:
+                # keep the full path of every refusal, and delete everything else it can.
+                exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+                refused.append((str(path), getattr(exc, "strerror", None) or str(exc)))
+
+            try:
+                if sys.version_info >= (3, 12):
+                    shutil.rmtree(target, onexc=note)
+                else:
+                    shutil.rmtree(target, onerror=note)
+            except OSError as exc:
+                refused.append((str(getattr(exc, "filename", None) or target),
+                                exc.strerror or str(exc)))
+            if refused or target.exists():
+                # Everything above is already undone and the config is gone, so a re-run cannot
+                # finish this: say what happened and hand over the one command that does.
+                path, why = refused[0] if refused else (str(target), "still present")
+                more = f" (and {len(refused) - 1} more)" if len(refused) > 1 else ""
+                print(f"state NOT removed: {target} — {why}: {path}{more}")
+                return _uninstall_incomplete(
+                    removed, [what for what, _ in leftovers]
+                    + [f"the state directory {target} (whatever the delete could remove "
+                       "is gone; the rest is still there)"],
+                    keep_hooks, [cmd for _, cmd in leftovers]
+                    + [f"rm -rf -- {shlex.quote(str(target))}"])
+            print(f"state removed: {target}")
+    elif not args.keep_config:
+        _, why = _purge_target(loop)
+        raw = pathlib.Path(str(loop.get("state_dir") or "")).expanduser()
+        if why:
+            print(f"state kept: {raw} — not the default location or not a plain directory, so "
+                  f"--purge would not remove it; check it, then: rm -rf -- {shlex.quote(str(raw))}")
+        else:
+            print(f"state kept: {raw} (pass --purge to remove it)")
+    if not args.keep_config:
+        # The last loop gone (#113): forget that a run ledger existed, so a later fresh install
+        # is not reported as a vanished ledger (run_supervisor.presence_marker). After the state
+        # step, so a --purge has removed the state dir first.
+        from .run_supervisor import forget_ledger_presence, presence_marker
+        if not any(config.config_dir().glob("*.json")) and forget_ledger_presence():
+            print(f"ledger presence marker removed: {presence_marker()}")
+    if leftovers:
+        # Everything else went; the shim did not. That is not a clean uninstall.
+        return _uninstall_incomplete(removed, [what for what, _ in leftovers], keep_hooks,
+                                     [cmd for _, cmd in leftovers])
     return 0
 
 
@@ -2281,6 +3395,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="how long a run may hold its seat slot")
         init.add_argument("--inflight-ttl-min", type=int, default=d["inflight_ttl_min"],
                           help="how long an in-flight mark blocks a second run at the same head")
+        init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
+                          help="seconds one isolated seat turn may run, build and tests included "
+                               f"(default {d['turn_budget_s']}; the sandbox is killed past it)")
+        init.add_argument("--reviewer-turn-budget", type=int, default=None,
+                          help="the reviewer seat's own turn budget in seconds (overrides --turn-budget)")
+        init.add_argument("--fixer-turn-budget", type=int, default=None,
+                          help="the fixer seat's own turn budget in seconds (overrides --turn-budget)")
         init.add_argument("--hooks", action="store_true",
                           help="create the GitHub hooks too, paused until `arm`")
         init.add_argument("--arm", action="store_true",
@@ -2324,8 +3445,14 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         check.add_argument("--live-turn", action="store_true",
                            help="with --pr: run one real isolated reviewer turn whose verdict is "
                                 "printed and never posted")
-        check.add_argument("--timeout", type=int, default=600,
-                           help="live turn budget in seconds (default 600; the production worker uses its own child_timeout)")
+        check.add_argument("--ping", action="store_true",
+                           help="ask GitHub to ping each loop hook and report whether the gateway "
+                                "accepted its signature (the selftest's only GitHub write)")
+        check.add_argument("--admin-token", default="",
+                           help="login whose token may ping hooks (admin:repo_hook or repo)")
+        check.add_argument("--timeout", type=int, default=None,
+                           help="live turn budget in seconds (default: the loop's reviewer "
+                                "turn_budget_s — the budget the production worker enforces)")
         check.set_defaults(func=cmd_selftest)
 
         models = sub.add_parser("models", help="Read-only: list the models a seat's Hermes "
@@ -2352,6 +3479,12 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--marker-grace-min", type=int)
         change.add_argument("--ttl-min", type=int, help="how long a run may hold its slot")
         change.add_argument("--inflight-ttl-min", type=int)
+        change.add_argument("--turn-budget", type=int,
+                            help="seconds one isolated seat turn may run (loop default)")
+        change.add_argument("--reviewer-turn-budget", type=int, default=None,
+                            help="the reviewer seat's own turn budget in seconds")
+        change.add_argument("--fixer-turn-budget", type=int, default=None,
+                            help="the fixer seat's own turn budget in seconds")
         change.add_argument("--host", help="gateway webhook host")
         change.add_argument("--adjudicator-login", default=None,
                             help="optional fourth GitHub account the ruling is also posted as; "
@@ -2388,6 +3521,21 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         apply_cmd.add_argument("--while-busy", action="store_true",
                                help="rebind a seat's profile/login even while a run is in flight "
                                     "(that run keeps the identity it started with)")
+        apply_cmd.add_argument("--admin-token", default="",
+                               help="login whose token can write the repo's hooks, for the hook "
+                                    "moves and re-keys apply makes (default: the reader)")
+        apply_cmd.add_argument("--recreate-routes", action="store_true",
+                               help="write this loop's routes the registry lost, from the loop "
+                                    "config, with a new secret, and re-key the repo hooks that "
+                                    "point at them (when no intent record can restore them)")
+        apply_cmd.add_argument("--hooks", action="store_true",
+                               help="make this loop's two repo hooks what its routes need: "
+                                    "create a missing one (paused until arm), repoint one at the "
+                                    "route's exact URL, add its gate's event (hook write access, "
+                                    "see --admin-token)")
+        apply_cmd.add_argument("--watchdog-shim", action="store_true",
+                               help="rewrite the cron shim the watchdog job runs, pinned to this "
+                                    "plugin's watchdog")
         apply_cmd.set_defaults(func=cmd_apply)
 
         settings_cmd = sub.add_parser("settings",
@@ -2428,9 +3576,16 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cleanup.add_argument("--dry-run", action="store_true")
         cleanup.set_defaults(func=cmd_cleanup)
 
-        uninstall = sub.add_parser("uninstall", help="Remove a loop's routes and config")
+        uninstall = sub.add_parser("uninstall", help="Remove a loop: its repo hooks, cron job, "
+                                   "routes and config (refuses rather than leave live hooks)")
         uninstall.add_argument("--loop", required=True)
         uninstall.add_argument("--keep-config", action="store_true")
+        uninstall.add_argument("--admin-token", default="",
+                               help="login whose token can delete hooks (admin:repo_hook or repo)")
+        uninstall.add_argument("--keep-hooks", action="store_true",
+                               help="leave the repo hooks live (explicit opt-out)")
+        uninstall.add_argument("--purge", action="store_true",
+                               help="also delete the loop's default state directory")
         uninstall.set_defaults(func=cmd_uninstall)
 
     ctx.register_cli_command(

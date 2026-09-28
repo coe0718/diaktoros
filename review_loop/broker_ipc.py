@@ -234,7 +234,7 @@ class RunBroker:
                     if not self.scope.run_id or not self.scope.ledger_db:
                         raise ProtocolError('host run admission unavailable')
                     from .run_supervisor import Supervisor
-                    supervisor = Supervisor(self.scope.ledger_db)
+                    supervisor = Supervisor(self.scope.ledger_db, create=False)
                     if not supervisor.push_admitted(
                             self.scope.run_id, self.scope.repo, self.scope.number,
                             self.scope.head):
@@ -263,7 +263,7 @@ class RunBroker:
                             outcome = (exc.outcome if isinstance(exc, safe_push.PushFailure)
                                        and exc.outcome == 'published_pr_unverified' else 'unknown')
                             try:
-                                Supervisor(self.scope.ledger_db).quarantine_push(
+                                Supervisor(self.scope.ledger_db, create=False).quarantine_push(
                                     self.scope.run_id, self.scope.repo, self.scope.number,
                                     self.scope.head, outcome)
                             except Exception as persistence_error:
@@ -384,7 +384,7 @@ class RunBroker:
         retried: a POST whose outcome is unknown stays 'uncertain'.
         """
         from .run_supervisor import Supervisor
-        supervisor = Supervisor(self.scope.ledger_db)
+        supervisor = Supervisor(self.scope.ledger_db, create=False)
         record = dict(run_id=self.scope.run_id, repo=self.scope.repo, pr=self.scope.number,
                       base=self.scope.head, head=head, body=text)
         try:
@@ -470,7 +470,7 @@ class RunBroker:
             raise ProtocolError("host run ledger unavailable")
         # Consume BEFORE the ledger write: a lost response cannot lead to a second ruling.
         self._used = True
-        supervisor = Supervisor(self.scope.ledger_db)
+        supervisor = Supervisor(self.scope.ledger_db, create=False)
         recorded = supervisor.record_ruling(self.scope.run_id, self.scope.repo,
                                             self.scope.number, self.scope.head, verdict, body)
         self.completed = True

@@ -12,7 +12,6 @@ import json
 import os
 from pathlib import Path
 import socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -22,6 +21,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from review_loop import ledger  # noqa: E402
 from review_loop import (broker_client, broker_ipc, config, gh, review_receipt,  # noqa: E402
                          run_supervisor, trusted_turn)
 from review_loop.run_supervisor import Supervisor  # noqa: E402
@@ -75,7 +75,7 @@ class Broker(unittest.TestCase):
         sup = Supervisor(self.root / "runs.sqlite")
         sup.enqueue("d", REPO, 7, HEAD, "reviewer")
         generation = review_receipt.generation_for(self.pr, self.loop, 7, HEAD)
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             con.execute("UPDATE runs SET state='running', owner='w', generation=?", (generation,))
             run_id = con.execute("SELECT id FROM runs").fetchone()[0]
         sup.record_view(run_id, "w", partial)
@@ -106,7 +106,7 @@ class Broker(unittest.TestCase):
             return json.loads(client.recv(16384))
 
     def receipts(self, sup):
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             return con.execute("SELECT state,review_id,verdict FROM review_receipts").fetchall()
 
     def test_incomplete_view_refuses_approve_then_request_changes_goes_through(self):
@@ -145,7 +145,7 @@ class Broker(unittest.TestCase):
                 self.assertEqual(response["error"], "unsupported request fields")
         self.assertIn(REFUSED, self.send(server, "APPROVE")["error"])
         self.assertEqual(self.posts, [])
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             self.assertEqual(con.execute("SELECT partial_view FROM runs").fetchone(), (REASON,))
         # Not a socket field, and not a setting on a started broker: the scope is frozen.
         with self.assertRaises(dataclasses.FrozenInstanceError):
@@ -153,7 +153,7 @@ class Broker(unittest.TestCase):
         # The host-side record is only the owning worker's to write, and only while it runs.
         with self.assertRaises(ValueError):
             sup.record_view(scope.run_id, "someone-else", "")
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             self.assertEqual(con.execute("SELECT partial_view FROM runs").fetchone(), (REASON,))
 
     def test_the_ledger_refuses_even_when_the_scope_says_complete(self):
@@ -221,7 +221,7 @@ class FixerBroker(Broker):
         sup = Supervisor(self.root / "runs.sqlite")
         with mock.patch.object(sup, "_spawn"):
             sup.enqueue("f", REPO, 7, HEAD, "fixer")
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             con.execute("UPDATE runs SET state='running', owner='w', launch_intent=1, "
                         "push_admitted=1")
             run_id = con.execute("SELECT id FROM runs").fetchone()[0]
@@ -266,7 +266,7 @@ class FixerBroker(Broker):
         # No review request: nothing was pushed, so there is nothing new to review.
         self.assertFalse([c for c in self.calls if c[0] == "POST" and "requested_reviewers" in c[1]])
         self.assertTrue(server.completed)
-        with sqlite3.connect(sup.db) as con:
+        with ledger.connect(sup.db) as con:
             self.assertEqual(con.execute("SELECT state, base, head FROM fixer_answers").fetchone(),
                              ("posted", HEAD, HEAD))
         again = self.push(server)
@@ -380,14 +380,14 @@ class HostRecordsTheView(pc.Base):
             sup = Supervisor(root / "ledger.sqlite", production_config=runtime, hermes_home=root)
             with mock.patch.object(sup, "_spawn"):
                 sup.enqueue("d", REPO, 7, HEAD, "reviewer")
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 con.execute("UPDATE runs SET state='launching', owner='w', generation='g'")
                 run_id = con.execute("SELECT id FROM runs").fetchone()[0]
             settings = {k: str(root) for k in ("source", "venv", "runtime", "rust")}
             seen = {}
 
             def turn(loop, scope, **kwargs):
-                with sqlite3.connect(sup.db) as con:
+                with ledger.connect(sup.db) as con:
                     seen["ledger"] = con.execute("SELECT partial_view FROM runs").fetchone()[0]
                 seen["scope"] = scope
                 return 0
@@ -466,7 +466,7 @@ class LaunchPathRefuses(pc.Base):
             with mock.patch.object(sup, "_spawn"):
                 sup.enqueue("d", REPO, 7, HEAD, "reviewer")
             generation = review_receipt.generation_for(world.pr, loop, 7, HEAD)
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 con.execute("UPDATE runs SET state='launching', owner='w', generation=?, "
                             "launch_intent=1", (generation,))
                 run_id = con.execute("SELECT id FROM runs").fetchone()[0]
@@ -515,7 +515,7 @@ class LaunchPathRefuses(pc.Base):
                  mock.patch.object(contained, "run", side_effect=sandbox), \
                  mock.patch.object(sup, "recover"):
                 sup._run_production(run_id, "w")
-            with sqlite3.connect(sup.db) as con:
+            with ledger.connect(sup.db) as con:
                 state = con.execute("SELECT state, error, partial_view FROM runs").fetchone()
                 receipts = con.execute("SELECT state, verdict FROM review_receipts").fetchall()
         self.assertIn("could not read the PR's file list", seat["query"])
@@ -554,11 +554,11 @@ class ExplainShowsIt(unittest.TestCase):
         sup._spawn = lambda: None
         for delivery, head in (("old", "c" * 40), ("new", HEAD)):
             sup.submit(delivery, REPO, 7, head, "reviewer")
-            with sqlite3.connect(self.db) as con:
+            with ledger.connect(self.db) as con:
                 con.execute("UPDATE runs SET state='running', owner='w' WHERE delivery=?",
                             (delivery,))
             sup.record_view(sup.get(delivery)["id"], "w", REASON + " at " + delivery)
-            with sqlite3.connect(self.db) as con:
+            with ledger.connect(self.db) as con:
                 con.execute("UPDATE runs SET state='succeeded' WHERE delivery=?", (delivery,))
 
     def explain(self):
