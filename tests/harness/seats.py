@@ -295,9 +295,9 @@ def group_plugin_settings() -> None:
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        rc = cli.cmd_apply(ns(loop="widgets", dry_run=True))
-    check("apply --dry-run exits 0", rc, 0)
-    check("  and shows the diff", "reviewer concurrency: 1 → 2" in buf.getvalue(), True)
+        rc_dry = cli.cmd_apply(ns(loop="widgets", dry_run=True))
+    dry = buf.getvalue()
+    check("  and shows the diff", "reviewer concurrency: 1 → 2" in dry, True)
     check("  nothing written on a dry run",
           config.seat_concurrency(config.load_id("widgets"), "reviewer"), 1)
 
@@ -305,12 +305,22 @@ def group_plugin_settings() -> None:
     with contextlib.redirect_stdout(buf):
         rc = cli.cmd_apply(ns(loop="widgets", dry_run=False))
     check("apply writes it", config.seat_concurrency(config.load_id("widgets"), "reviewer"), 2)
+    # This fixture's breach route is script-less, so apply rightly reports it and exits 1 — and
+    # the dry run must say exactly that, not preview a clean exit (#112 review).
+    check("apply --dry-run exits as the real apply does", rc_dry, rc)
+    check("  and warns about the same routes",
+          [line for line in dry.splitlines() if "⚠️ route" in line],
+          [line for line in buf.getvalue().splitlines() if "⚠️ route" in line])
     check("  and reports the file", "loop config updated" in buf.getvalue(), True)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         rc = cli.cmd_apply(ns(loop="widgets", dry_run=False))
-    check("a second apply is a no-op", "already matches" in buf.getvalue(), True)
+    # Nothing left to write — but the fixture's script-less breach route still is not what the
+    # config installs, so apply says the config matches and the registry does not (#112 review).
+    check("a second apply is a no-op", ("loop config updated" in buf.getvalue(),
+          "the loop config matches the plugin settings, but the route registry does not"
+          in buf.getvalue(), rc), (False, True, 1))
 
     # the rails still hold: two reviews at once with nowhere to isolate them is refused
     cfg = json.loads((LOOPS_DIR / "widgets.json").read_text())

@@ -402,14 +402,14 @@ $ hermes review-loop doctor --loop widgets
   ✅ token:reader-bot     doctor-demo/read.pat (mode 600, non-empty)
   ✅ token:rev-coach      doctor-demo/rev.pat (mode 600, non-empty)
   ✅ read_token           reader-bot (mapped in tokens; its own account and file)
-  ❌ route:widgets-review registered at https://old-gateway.example, but the loop is armed at http://127.0.0.1:43651
-      fix: re-run init to rewrite the route for http://127.0.0.1:43651: a hook or a manual POST still goes to the recorded origin
+  ❌ route:widgets-review registered gateway origin differs from the loop's configured origin (URLs withheld)
+      fix: run `hermes review-loop apply --loop widgets` to rewrite it at the loop's origin (its secret is kept)
   ❌ route:widgets-fix    wakes profile 'some-other-agent', but seats.fixer.profile is 'fixer-profile' — the wake would run the wrong agent
-      fix: re-run init with --fixer-profile fixer-profile so the route and the loop config agree
+      fix: run `hermes review-loop apply --loop widgets` to rebind it to fixer-profile (its secret is kept)
   ✅ route:widgets-breach default · adjudication wake
   ✅ scripts              /home/jeremy/projects/rl-15-doctor/scripts (watchdog, both gates, cleanup)
   ❌ cron:shim            pinned to /opt/old/plugins/hermes-review-loop/scripts/watchdog.py, this install runs /home/jeremy/projects/rl-15-doctor/scripts/watchdog.py
-      fix: re-run init --schedule 15m for this loop: the shim was written by a different plugin install, and the scheduler keeps running that path
+      fix: `hermes review-loop apply --loop widgets --watchdog-shim` rewrites it from the plugin (the scheduled job runs it by name)
   ❌ cron:job             8f21c0 (review loop watchdog (widgets)) is paused
       fix: `hermes cron resume 8f21c0`: a paused watchdog never reports a stall
   ✅ clone                doctor-demo/clone (git checkout)
@@ -420,6 +420,16 @@ $ hermes review-loop doctor --loop widgets
 
 widgets: 13 verified, 6 failed, 1 unknown (of 20 checks)
   6 failed: profile:fixer, token:dev-fixer, route:widgets-review, route:widgets-fix, cron:shim, cron:job — fix the ❌ lines above before this loop is armed.
+```
+
+Every fix on a route, hook or cron line is a command that works on a loop that already exists
+(`init` refuses one): `apply` rewrites the loop's routes and their origin, `apply --hooks` makes
+its two repo hooks what the routes need (a missing one is created paused until `arm`), and
+`apply --watchdog-shim` rewrites the cron shim:
+
+```
+hermes review-loop apply --loop widgets --hooks --admin-token admin-login --dry-run
+hermes review-loop apply --loop widgets --watchdog-shim
 ```
 
 (Both transcripts are real output from the suite's isolated demo home — a loopback gateway

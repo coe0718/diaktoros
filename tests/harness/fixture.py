@@ -345,14 +345,17 @@ def write_loop() -> dict:
 
 
 def write_subs() -> dict:
+    from review_loop import prompts
     subs = {}
-    for name, profile, script, events in (
-        ("widgets-review", "reviewer-profile", "gate_reviewer.py", ["pull_request"]),
-        ("widgets-fix", "fixer-profile", "gate_fixer.py", ["pull_request_review"]),
-        ("widgets-breach", "default", None, ["pull_request"]),
+    # Each route carries its role's real prompt, as `init` writes it: the prompt is half of the
+    # proof a route is this plugin's, and apply reports a route that has lost it (#112 review).
+    for name, profile, script, events, prompt in (
+        ("widgets-review", "reviewer-profile", "gate_reviewer.py", ["pull_request"], prompts.REVIEWER),
+        ("widgets-fix", "fixer-profile", "gate_fixer.py", ["pull_request_review"], prompts.FIXER),
+        ("widgets-breach", "default", None, ["pull_request"], prompts.ADJUDICATOR),
     ):
         subs[name] = {"description": name, "events": events, "secret": hashlib.sha256(name.encode()).hexdigest(),
-                      "prompt": "Review-loop event", "skills": [], "deliver": "discord", "profile": profile,
+                      "prompt": prompt, "skills": [], "deliver": "discord", "profile": profile,
                       "created_at": PAST, "script": script, "host": HOST}
     SUBS.write_text(json.dumps(subs, indent=2))
     return subs
