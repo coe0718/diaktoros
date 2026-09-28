@@ -46,6 +46,8 @@ def payload_loop(payload: dict) -> dict:
 
 def context(payload: dict):
     loop = payload_loop(payload)
+    # A gate's failed GitHub read ends in [SILENT]; keep it on disk for the watchdog and explain.
+    gh.record_failures()
     return loop, state_mod.state_for(loop)
 
 
@@ -83,27 +85,47 @@ def artifacts_for(loop: dict, number: int) -> str:
     return str(config.artifacts_dir(loop, number))
 
 
-def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key: str = '') -> None:
-    """Commit one isolated turn to the host run ledger, then arm its detached worker.
+def isolated_supervisor(loop: dict):
+    """The production run ledger and worker launcher, as every isolated enqueue builds it.
 
-    Raises on anything short of a durable, armed enqueue — a missing/invalid private runtime,
-    a ledger failure, or a spawn failure after the row committed (the row stays pending and a
-    redelivery re-arms it). The unique repo/PR/head/seat/turn index deduplicates redelivery.
+    Raises when the private runtime file is missing or invalid (a fail-closed hold).
     """
     from .run_supervisor import SEATS, Supervisor
 
-    supervisor = Supervisor(
+    return Supervisor(
         config.home() / "state" / "review-loop-runs.sqlite",
         production_config=config.home() / "review-loop-runtime.json", hermes_home=config.home(),
         # Every seat, always: a worker spawned by one seat's event claims any pending row, and
         # must know every seat's capacity to do so.
         capacity={s: config.seat_concurrency(loop, s) for s in SEATS},
     )
+
+
+def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key: str = '') -> str:
+    """Commit one isolated turn to the host run ledger, then arm its detached worker.
+
+    Raises on anything short of a durable, armed enqueue — a missing/invalid private runtime,
+    a ledger failure, or a spawn failure after the row committed (the row stays pending and a
+    redelivery re-arms it). The unique repo/PR/head/seat/turn index deduplicates redelivery.
+    Returns the ledger's outcome (``Supervisor.submit``): ``enqueued``, ``rearmed``,
+    ``pending`` or ``duplicate <state>…`` — only the first three scheduled anything.
+    """
+    supervisor = isolated_supervisor(loop)
     supervisor.recover()
     delivery = f"{loop['repo']}:{number}:{head}:{seat}"
-    supervisor.enqueue(delivery + (f':{turn_key}' if turn_key else ''),
-                       loop["repo"], number, head, seat, turn_key=turn_key,
-                       require_push_admission=seat == "fixer")
+    return supervisor.submit(delivery + (f':{turn_key}' if turn_key else ''),
+                             loop["repo"], number, head, seat, turn_key=turn_key,
+                             require_push_admission=seat == "fixer")
+
+
+def resume_isolated(loop: dict) -> bool:
+    """Schedule ledger work that is due — a backed-off pre-write retry (#53), or a pending
+    row whose claim-time read failed — by running the worker-enabled recovery. False (and
+    nothing launched) when no private runtime is configured."""
+    if not (config.home() / "review-loop-runtime.json").exists():
+        return False
+    isolated_supervisor(loop).recover()
+    return True
 
 
 def hold_fixer_push_off(loop: dict, st: state_mod.LoopState, number: int, head: str) -> bool:
@@ -140,9 +162,15 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
     push_off = seat == "fixer" and not config.unattended_fixer_push_enabled(loop)
     if not push_off:
         try:
-            enqueue_isolated(loop, seat, number, head, turn_key=turn_key)
+            outcome = enqueue_isolated(loop, seat, number, head, turn_key=turn_key)
             st.queue_pop_if(seat, key, queued)
-            log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")
+            if outcome == "enqueued":
+                log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")
+            elif outcome in ("rearmed", "pending"):
+                log(f"#{number} @ {head[:7]} {seat} {outcome}: isolated worker re-armed")
+            else:
+                # Nothing was scheduled (#73): say so, instead of reporting a fresh enqueue.
+                log(f"#{number} @ {head[:7]} {seat} not enqueued: {outcome}")
         except FixerPushDisabled:
             push_off = True  # the policy changed under the admission lock: same hold
         except Exception as exc:
@@ -293,11 +321,14 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     return not missing, ", ".join(missing)
 
 
-def hooks_armed(loop: dict) -> bool:
-    """Both seat routes present and active. A failed read answers False on purpose: the watchdog
-    must stay quiet rather than alert on a loop it cannot confirm is armed."""
+def hooks_armed(loop: dict) -> bool | None:
+    """Both seat routes present and active: True armed, False paused, None unknown (unreadable).
+
+    None is falsy, so "start nothing unless armed" callers stay fail-closed; the ones that talk to
+    an operator must tell the two apart — a paused loop is silent on purpose, a blind one is not.
+    """
     armed, _ = hooks_read(loop)
-    return bool(armed)
+    return armed
 
 
 # -- explain --------------------------------------------------------------------
@@ -430,8 +461,29 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
     else:
         sweep = "no watchdog sweep recorded — nothing has read this loop's PRs yet"
 
+    github_bits = []
+    blind = watch.get("github_read")
+    if isinstance(blind, dict) and blind.get("error"):
+        github_bits.append(f"watchdog could not read GitHub as {blind.get('login') or '?'} for "
+                           f"{blind.get('sweeps', '?')} sweep(s): {gh.one_line(blind.get('error'), 300)}")
+    failure = st.github_failure()
+    if failure.get("error"):
+        at = failure.get("at")
+        when = iso_at(float(at)) if isinstance(at, (int, float)) and not isinstance(at, bool) else "?"
+        github_bits.append(f"last failed call: {failure.get('where') or '?'} "
+                           f"{failure.get('method') or 'GET'} {failure.get('path') or '?'} at {when}: "
+                           f"{gh.one_line(failure.get('error'), 300)} — "
+                           + ("a gate that hit it treated the PR as unavailable and started nothing"
+                              if (failure.get("method") or "GET") == "GET"
+                              else gh.write_outcome(str(failure.get("method")),
+                                                    str(failure.get("path") or ""),
+                                                    failure.get("status")
+                                                    if type(failure.get("status")) is int
+                                                    else None)))
+    github_line = " · ".join(github_bits) or "no failed GitHub call recorded"
+
     return {"seat": seat_line, "queue": queue_line, "inflight": inflight_line,
-            "escalation": escalation_line, "held": held, "queued_seat": queued_seat,
+            "escalation": escalation_line, "github": github_line, "held": held, "queued_seat": queued_seat,
             "queued_reason": queued_reason, "stale_queues": stale_queues,
             "inflight_review": inflight_review,
             "inflight_fix": inflight_fix, "parked": parked, "delivery_status": delivery_status,
@@ -868,7 +920,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         "read_at": iso_at(now),
         "state_line": state_line, "budget": budget, "seat": local["seat"], "queue": local["queue"],
         "inflight": local["inflight"], "escalation": local["escalation"], "hooks": hooks_line,
-        "sweep": local["sweep"], "blockers": blockers, "next": {"kind": kind, "action": action},
+        "sweep": local["sweep"],
+        "github": local.get("github", "no failed GitHub call recorded"),
+        "blockers": blockers, "next": {"kind": kind, "action": action},
     }
 
 
@@ -917,12 +971,17 @@ def wake_adjudicator(loop: dict, number: int, head: str, rounds: int, reason: st
     live-head check under the breach lock keeps a stale head from being re-armed.
     """
     try:
-        enqueue_isolated(loop, "adjudicator", number, head, turn_key=f"breach:{int(rounds)}")
+        outcome = enqueue_isolated(loop, "adjudicator", number, head,
+                                   turn_key=f"breach:{int(rounds)}")
     except Exception as exc:
         log(f"adjudicator turn for #{number} @ {head[:7]} not enqueued: "
             f"{type(exc).__name__}: {exc}")
         return False
-    log(f"#{number} @ {head[:7]} adjudicator enqueued for isolated worker ({reason})")
+    if outcome == "enqueued":
+        log(f"#{number} @ {head[:7]} adjudicator enqueued for isolated worker ({reason})")
+    else:
+        # A duplicate is still durable (the ledger owns the turn), so the marker may advance.
+        log(f"#{number} @ {head[:7]} adjudicator {outcome} ({reason})")
     return True
 
 

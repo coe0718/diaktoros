@@ -93,6 +93,7 @@ hermes review-loop arm --loop name      # arm/pause by flipping the repo hooks
 hermes review-loop arm --loop name --pause
 hermes review-loop drain --loop name --seat reviewer
 hermes review-loop fixer-push --loop name --enable --acknowledge-pr-race   # let the fixer publish (off by default)
+hermes review-loop retry --loop name --pr 123   # re-arm a run that failed before any GitHub write
 hermes review-loop cleanup --loop name --dry-run   # every closed PR; --pr N for one
 hermes review-loop uninstall --loop name
 ```
@@ -353,7 +354,7 @@ python -m review_loop.run_supervisor status ~/.hermes/state/review-loop-runs.sql
 | 2 bubblewrap | unprivileged user namespaces work; a probe in the real sandbox layout (committed source snapshot, configured venv/runtime/Rust) cannot read a dummy host secret, any model key file, each seat profile's `.env`/`auth.json`/`config.yaml`, the PATs, the runtime file, `~/.hermes/.env` or the loop config, and has no network or credential-like env |
 | 3 inference | one ~16-token request in the seat's own wire format (chat completion, Responses or Messages) through the host inference capability **per distinct seat resolution** (seats that share a profile's provider, model and credential share one call), each with that resolution's own credential; an OAuth seat's 401 is refreshed and retried once on the host before it is reported (`--no-model` skips it) |
 | 4 identities | read, reviewer, fixer (and optional adjudicator) PATs resolve via `/user` to the expected logins and distinct principals; the repo is readable |
-| 5 authorization | with `--pr N`: the broker's reviewer-write checks (`broker.authorize`, reads only) and the host receipt generation |
+| 5 authorization | with `--pr N`: the broker's reviewer-write checks (`broker.authorize`, reads only) and the host receipt generation; then whether the seat can build that head: `build:rust:fetch` is the host prefetch of its `Cargo.lock` crates.io dependencies (a warning when refused or failed, since turns still run and the seat judges by reading; it prints the cache's size against its byte cap, and names a `REVIEW_LOOP_CRATE_CACHE_GIB` value it refused), and `build:rust` is an offline `cargo metadata --locked` inside the real sandbox layout with the cache mounted read-only ([dependency prefetch](issue-16-boundary.md#dependency-prefetch-issue-51-the-host-fetches-the-sandbox-builds-offline)) |
 | 6 supervisor | the ledger migrates and `status` reads; the route would accept the runtime file; `doctor`'s state dir, cron shim/job and gateway checks; the observer route |
 | 7 live turn | with `--live-turn --pr N`: a real isolated reviewer turn with the reviewer seat's resolved model (`--timeout`, default 600 s); the verdict and body the agent *would* submit are printed |
 
@@ -394,9 +395,11 @@ hermes review-loop explain --loop widgets --pr 7    # --loop may be omitted when
   seat:       nobody holds it
   queue:      not queued
   in-flight:  none
+  deps:       reviewer #7 @ aaaaaaa succeeded — rust: ready — 224 crates.io crates from Cargo.lock (2.4s)
   escalation: none
   hooks:      armed — both seat routes are active repo hooks
   sweep:      no watchdog sweep recorded — nothing has read this loop's PRs yet
+  github:     no failed GitHub call recorded
   blocked:    the changes-requested verdict at head aaaaaaa has no fix run out — the fixer gate did not start one for that delivery
   next:       re-deliver the changes-requested review event for head aaaaaaa to the fixer gate after checking why its run did not start — no fixer is running to push a fix
 ```
@@ -424,9 +427,20 @@ A PR that is waiting rather than broken says so, instead of looking like a failu
   escalation: none
   hooks:      armed — both seat routes are active repo hooks
   sweep:      no watchdog sweep recorded — nothing has read this loop's PRs yet
+  github:     no failed GitHub call recorded
   blocked:    no capacity: queued with the reviewer seat — reviewer at capacity 1/1: acme/widgets#7 (720s)
   next:       a reviewer slot frees — the queued run starts then (a verdict or a handoff ends the run holding it; the lock expiry at 45m is the backstop)
 ```
+
+The `deps:` line is what the host's dependency prefetch did for that PR's newest turns, read from
+the run ledger: `fetching — started …` while a turn is still fetching (it is bounded at 300 s and
+runs before the turn budget starts, so it is not a hung turn), then `ready` or `unavailable` with
+the reason — for example `the host crate cache would exceed 2 GiB (host limit
+REVIEW_LOOP_CRATE_CACHE_GIB)`, or a lockfile with git dependencies, which the host never fetches
+([dependency prefetch](issue-16-boundary.md#dependency-prefetch-issue-51-the-host-fetches-the-sandbox-builds-offline)).
+`status` prints the same line for the loop's newest turns. The cap is a host setting: set
+`REVIEW_LOOP_CRATE_CACHE_GIB` (whole GiB, 1-1024, default 2) in the environment of the process
+that runs the supervisor (normally the gateway), and it applies from the next prefetch.
 
 Three rules keep it honest:
 
@@ -452,6 +466,56 @@ all — an unknown loop, or several loops and no `--loop`.
 
 The guard order `explain` walks is in
 [architecture: Explain](architecture.md#explain--why-is-this-pr-not-moving).
+
+## When an isolated run fails
+
+Every isolated turn is a row in the host run ledger (`~/.hermes/state/review-loop-runs.sqlite`).
+A failure is sorted by one question — *could it have written to GitHub?* — answered from the
+host's own write-ahead records, never from an exit code. The sandbox holds no GitHub credential;
+its only writes go through the run's broker, which commits a record keyed by the run ID *before*
+the external call: a review-receipt claim (reviewer), a push intent/confirmation (fixer; its
+review request needs a confirmed push first) or a ruling (adjudicator; its optional PR comment
+follows the ruling). A run with any of those, or one ever quarantined as `uncertain`, may have
+written. Anything else did not.
+
+```
+pending ──claim──► claimed ──► launching/running ──► succeeded
+   ▲  │ PR draft, or no effective verdict yet: stays pending (a wait, not a failure)
+   │  │ GitHub read failed at claim (a 502, a timeout): waiting, counted like a failed turn
+   │  │ PR closed / head moved: cancelled               (a reopen or redelivery re-arms it)
+   │  │ fixer push not admitted / revoked: cancelled    (listed; an operator `retry` after
+   │  │                                                   opting in re-admits it — see below)
+   │                         │ failed, nothing on the write-ahead record
+   │                         ├─ transient (non-zero sandbox exit — model 429/5xx, OAuth refresh —,
+   │                         │  timeout, network, staging read): waiting, backoff 2m, 4m, 8m
+   ├──── backoff elapsed ────┘     … the 4th failure: failed (with a notice)
+   ├──── redelivered event (≤8 failures) or `retry` ◄── failed / waiting / push-policy cancelled
+   │                         │ may have written, or a worker lost/still alive: uncertain
+   └─ never ◄────────────────┘   (operator `reconcile` only; never replayed)
+```
+
+Backoff is `2m·2ⁿ⁻¹` after the n-th failure, so a run waits 120 s, 240 s and 480 s (the
+longest wait the chain can reach) before its fourth failure makes it `failed`. The same count
+covers a GitHub read that failed at claim time: a claim that cannot read the PR waits and retries
+like a failed turn, and is never left pending and invisible.
+
+Due retries start on the next event for the PR, when another run finishes, or on the next armed
+watchdog sweep. A failed run's notice carries the real reason (the exception text, or the sandbox
+exit status) and the tail of the turn's stdout/stderr; `status` and `explain` print the same with
+the next step, and `explain` reports a waiting, write-free failed, cancelled-by-push-policy or
+uncertain run at the PR's head as a `blocked:` line with that step as `next:`.
+`hermes review-loop retry --loop name --pr 123 [--seat reviewer]` re-arms the PR's failed and
+waiting runs, and its fixer runs cancelled by the push policy, at its newest head (the head of its
+most recently active run), resets their retry budget and starts the worker. It refuses a run that
+may have written and prints the `reconcile` command instead. Any other cancellation (head moved,
+PR closed) is not offered: a new head gets its own turn.
+
+A fixer run the push policy cancelled at claim (pushes were off when its verdict was enqueued, or
+were turned off before it started) is listed by `status` and `explain` with that reason and what
+to do. Admission has two rules. A redelivered event **never** upgrades it: a row admitted while
+pushes were off stays unadmitted. An operator `retry` re-admits it under the policy in force
+**now**, taking a fresh admission snapshot under the same push-policy lock the gate and the
+broker use. While pushes are still off, that retry is refused with the command that turns them on.
 
 ## How it handles a burst
 
