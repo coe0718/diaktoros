@@ -58,6 +58,18 @@ class ReceiptTests(unittest.TestCase):
                 pr = copy.deepcopy(self.pr)
                 pr['base']['sha'] = 'c' * 40
                 return pr
+            # The PR leaving the eligible set while the write is in flight.
+            # Separate modes: `generation_for` refuses state and draft the same
+            # way, but they are not the same event -- a draft can be marked
+            # ready again and a close cannot.
+            if self.mode == 'closed-after-post' and self.posts:
+                pr = copy.deepcopy(self.pr)
+                pr['state'] = 'closed'
+                return pr
+            if self.mode == 'draft-after-post' and self.posts:
+                pr = copy.deepcopy(self.pr)
+                pr['draft'] = True
+                return pr
             return self.pr
         if path == f'/repos/{REPO}/pulls/7/reviews' and method == 'POST':
             self.posts += 1
@@ -109,6 +121,56 @@ class ReceiptTests(unittest.TestCase):
     def test_lost_post_stays_uncertain_without_retry(self):
         self.mode = 'lost-post'
         self.assert_uncertain_after_post()
+
+    # -- the PR leaving the eligible set while the write is in flight --------
+    #
+    # `generation_for` refuses a PR that is not `open` and not non-draft, and
+    # `submit` re-reads through it *after* the POST. Nothing exercised that arm
+    # through `submit` until now: every mode above varies the base SHA, the
+    # readback id, the readback result or a POST timeout -- never `state` or
+    # `draft`, so the check could be deleted and the suite stayed green.
+    #
+    # The POST cannot be recalled by the time the re-read refuses, which is why
+    # these assert the raises rather than trying to assert the write away. They
+    # deliberately do **not** pin the durable receipt: naming that outcome is
+    # #154, and a test that pinned today's value would have to be rewritten by
+    # it. Three separate causes, so CI names the one that broke.
+
+    def deny_during_the_write(self, mode):
+        """Drive one window case; return the reason the write was refused for."""
+        self.mode = mode
+        with mock.patch.object(gh, 'api', side_effect=self.api):
+            with self.assertRaises(review_receipt.ReceiptDenied) as caught:
+                review_receipt.submit(self.loop, self.scope, self.ledger,
+                                      'APPROVE', 'reviewed')
+        self.assertEqual(self.posts, 1, 'the review reached GitHub before the re-read')
+        reason = str(caught.exception)
+        self.assertTrue(reason.strip(), 'a refusal must name its own cause')
+        return reason
+
+    def test_a_pr_that_closes_during_the_write_is_refused(self):
+        self.deny_during_the_write('closed-after-post')
+
+    def test_a_pr_that_goes_draft_during_the_write_is_refused(self):
+        self.deny_during_the_write('draft-after-post')
+
+    def test_a_pr_retargeted_during_the_write_is_refused(self):
+        self.deny_during_the_write('stale-after-post')
+
+    def test_the_two_causes_of_a_post_write_refusal_are_distinguishable(self):
+        """A base retarget and an ineligible PR are not the same event.
+
+        One is benign -- the PR is re-queued against its new base. The other
+        means a verdict is now sitting on a PR that can no longer receive it.
+        Whoever reconciles the run has to be able to tell them apart, and that
+        must not depend on the receipt: both currently end up claimed, which is
+        the gap in #154. Whether a close and a draft also separate is #154's
+        call; this pins the pair that already do.
+        """
+        retarget = self.deny_during_the_write('stale-after-post')
+        self.setUp()
+        ineligible = self.deny_during_the_write('closed-after-post')
+        self.assertNotEqual(retarget, ineligible)
 
     def assert_uncertain_after_post(self):
         with mock.patch.object(gh, 'api', side_effect=self.api):
