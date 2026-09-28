@@ -20,6 +20,7 @@ import time
 import unittest
 
 from tests.test_turn_vertical import SOURCE, RUST
+from tests.hermes_prereqs import needs
 from review_loop.inference_proxy import PATH
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,8 +115,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             self._send(404, {})
 
 
-@unittest.skipUnless(shutil.which('bwrap') and (SOURCE / 'venv/bin/hermes').exists()
-                     and (RUST / 'bin/cargo').exists(), 'offline sandbox prerequisites absent')
+@needs(shutil.which('bwrap') and (SOURCE / 'venv/bin/hermes').exists()
+       and (RUST / 'bin/cargo').exists(), 'offline sandbox prerequisites absent')
 class RouteWorkerVertical(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
