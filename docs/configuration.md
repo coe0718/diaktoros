@@ -42,7 +42,7 @@ See [Preflight](architecture.md#preflight-can-this-installation-run) and, for ex
 | `seats.adjudicator.concurrency` | `1` | isolated adjudicator turns at once. Does not inherit the loop-level `concurrency` |
 | `skill` | — | skill the seats are told to load |
 | `tokens` | `{}` | `login → path of a file containing that seat's PAT (mode 600)` |
-| `read_token` | first token | login whose token performs reads |
+| `read_token` | the first `tokens` entry | login whose token performs reads. When it is unset or empty, the loader on this branch infers it: it takes the first login in `tokens`, in file order (`config.normalize`). Set it explicitly, so that which account reads is not decided by key order. A `read_token` with no `tokens` entry is refused. |
 | `clone` | — | the local clone reviews may use; cleanup prunes its worktrees |
 | `roots` | `[]` | directories the cleanup may ever touch. Anything outside them is out of scope. A root may be shared between loops: a child is only this loop's when its name carries both the PR (`pr7`) and the repository name (`widgets-pr7-target`). `/`, the home directory and its ancestors are refused. |
 | `concurrency` | `1` | default runs at once *per seat*. `1` = serialized; above 1 requires `clone`, because every run then gets its own isolated clone. |

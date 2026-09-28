@@ -1570,6 +1570,17 @@ def _dependency_lines(loop: dict, pr: int | None = None, limit: int = 5) -> list
     return [describe_dependencies(row) for row in rows or []]
 
 
+def _view_lines(loop: dict, pr: int, head: str | None, limit: int = 3) -> list[str]:
+    """This PR's turns whose seat could not see the whole change (#93, #110), from the ledger.
+
+    Only the current head's: a new head gets a new change record. Read-only; an absent or
+    unreadable ledger is no lines.
+    """
+    from .run_supervisor import describe_view, view_view
+    rows = view_view(_ledger_path(), loop["repo"], pr, limit) or []
+    return [describe_view(row) for row in rows if head and row["head"] == head]
+
+
 def cmd_status(args) -> int:
     loops = [config.load_id(args.loop)] if args.loop else config.all_loops()
     for loop in loops:
@@ -1646,7 +1657,103 @@ def cmd_status(args) -> int:
         watch = st.watch()
         if watch.get("last_run"):
             print(f"  watchdog:   last run {watch['last_run']}")
+        _print_ledger_runs(loop, None, "  runs:       ", limit=10)
     return 0
+
+
+def _ledger_path() -> pathlib.Path:
+    return config.home() / "state" / "review-loop-runs.sqlite"
+
+
+def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> list[dict]:
+    """The isolated run ledger's failed/waiting/uncertain rows for this loop, read-only (#53).
+    Prints them and returns them ([] when there is no readable ledger)."""
+    from .run_supervisor import describe_run, read_only_view
+
+    ledger = _ledger_path()
+    if not ledger.exists():
+        return []
+    rows = read_only_view(ledger, loop["repo"], pr)
+    if rows is None:
+        print(f"{prefix}run ledger unreadable ({ledger})")
+        return []
+    for row in rows[-limit:]:
+        print(prefix + describe_run(row, loop["id"]))
+        if row.get("detail") and pr is not None:
+            for line in str(row["detail"]).splitlines()[-6:]:
+                print(f"{' ' * len(prefix)}| {line[:200]}")
+    if len(rows) > limit:
+        print(f"{prefix}… {len(rows) - limit} more: python -m review_loop.run_supervisor "
+              f"status {ledger}")
+    return rows
+
+
+def cmd_retry(args) -> int:
+    """Re-arm a PR's isolated run that failed before any external write (issue #53).
+
+    Only runs at the PR's newest ledgered head are considered: the head of the most recently
+    active run (``updated``), which is where the PR is after a backwards force-push re-armed an
+    older head's run. A run that may have written —
+    uncertain, quarantined, reconciled, or with a receipt claim, push intent or ruling on
+    record — is refused with the reconcile instructions; it is never replayed.
+    """
+    from .run_supervisor import Supervisor
+
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"no such loop: {exc}")
+        return 2
+    ledger = _ledger_path()
+    if not ledger.exists():
+        print(f"no run ledger at {ledger} — nothing to retry")
+        return 2
+    sup = Supervisor(ledger)
+    with sup._connect() as con:
+        rows = [dict(row) for row in con.execute(
+            "SELECT id,seat,head,turn_key,state,error,updated FROM runs WHERE repo=? AND pr=? "
+            "ORDER BY created,id", (loop["repo"], args.pr))]
+    if args.seat:
+        rows = [row for row in rows if row["seat"] == args.seat]
+    if not rows:
+        print(f"[{loop['id']}] #{args.pr}: no isolated run on record"
+              + (f" for the {args.seat} seat" if args.seat else ""))
+        return 2
+    # Not the last-created row's head: a backwards force-push re-arms an older head's row rather
+    # than creating one, so creation order would name a head the PR has since left (Tuck, #97).
+    head = max(rows, key=lambda row: (row["updated"] or 0, row["id"]))["head"]
+    # A fixer run the push policy cancelled at claim is recovered here, under the policy in
+    # force now; any other cancellation is superseded and is not offered (runs_view draws the
+    # same line: a new head gets its own turn).
+    from .run_supervisor import policy_cancelled
+    candidates = [row for row in rows if row["head"] == head
+                  and (row["state"] in ("failed", "waiting", "uncertain")
+                       or (row["state"] == "cancelled" and policy_cancelled(row["error"])))]
+    if not candidates:
+        print(f"[{loop['id']}] #{args.pr} @ {head[:7]}: nothing to retry — "
+              + ", ".join(f"{row['seat']} {row['state']}" for row in rows if row["head"] == head))
+        return 2
+    rearmed, refused = 0, 0
+    for row in candidates:
+        label = f"{row['seat']} #{args.pr} @ {head[:7]}" + (f" ({row['turn_key']})" if row["turn_key"] else "")
+        try:
+            sup.retry(row["id"])
+        except ValueError as exc:
+            refused += 1
+            print(f"[{loop['id']}] {label} {row['state']}: {exc}")
+            continue
+        rearmed += 1
+        print(f"[{loop['id']}] {label} re-armed (was {row['state']}: {row['error'] or 'no reason'})")
+    if rearmed:
+        try:
+            started = gate.resume_isolated(loop)
+        except Exception as exc:
+            print(f"worker not started: {type(exc).__name__}: {exc} — the next event or armed "
+                  "watchdog sweep starts it")
+        else:
+            print("worker started" if started else
+                  "no private runtime file — the run stays pending until one exists")
+    return 0 if rearmed and not refused else 2
 
 
 def cmd_explain(args) -> int:
@@ -1662,6 +1769,7 @@ def cmd_explain(args) -> int:
     unknown, with the read to retry.
     """
     from . import state as state_mod
+    from .run_supervisor import next_step
 
     if args.loop:
         try:
@@ -1697,15 +1805,29 @@ def cmd_explain(args) -> int:
         print(f"  {'in-flight:':<12}{report['inflight']}")
         for line in _dependency_lines(loop, args.pr, limit=3):
             print(f"  {'deps:':<12}{line}")
+        # A head the host could not show whole cannot be approved by the loop (the broker refuses
+        # it); only an operator can end it, so it is said here rather than left to the cap.
+        for line in _view_lines(loop, args.pr, report.get("head")):
+            print(f"  {'view:':<12}{line}")
         print(f"  {'escalation:':<12}{report['escalation']}")
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")
         print(f"  {'github:':<12}{report['github']}")
-        for text in report["blockers"]:
+        runs = _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
+        # A ledgered turn at the current head that waits to retry, failed before any write, or
+        # is quarantined holds the PR as surely as any gate guard (#53): it is the blocker, and
+        # its step is next. A failed turn that did write is final; GitHub shows where it left off.
+        held = [row for row in runs if report.get("head") and row["head"] == report["head"]
+                and (row["state"] != "failed" or row["write"] is None)]
+        blockers = list(report["blockers"]) + [
+            f"isolated {row['seat']} turn {row['state']} at this head — "
+            f"{row['error'] or 'no reason recorded'}" for row in held]
+        for text in blockers:
             print(f"  {'blocked:':<12}{text}")
-        if not report["blockers"]:
+        if not blockers:
             print(f"  {'blocked:':<12}nothing — no guard is holding this PR back")
-        print(f"  {'next:':<12}{report['next']['action']}")
+        print(f"  {'next:':<12}"
+              + (next_step(held[-1], loop["id"]) if held else report['next']['action']))
     return 0
 
 
@@ -2187,6 +2309,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                 help="accept the residual non-atomic PR-metadata/ref race; required for --enable")
         fixer_push.add_argument("--dry-run", action="store_true", help="show action without writing")
         fixer_push.set_defaults(func=cmd_fixer_push)
+
+        retry = sub.add_parser("retry", help="Re-arm a PR's isolated run that failed before "
+                                             "any GitHub write (refuses one that may have written)")
+        retry.add_argument("--loop", required=True)
+        retry.add_argument("--pr", type=int, required=True)
+        retry.add_argument("--seat", choices=["reviewer", "fixer", "adjudicator"])
+        retry.set_defaults(func=cmd_retry)
 
         drain = sub.add_parser("drain", help="Start a queued run once its seat is free")
         drain.add_argument("--loop", required=True)

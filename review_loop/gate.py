@@ -85,27 +85,47 @@ def artifacts_for(loop: dict, number: int) -> str:
     return str(config.artifacts_dir(loop, number))
 
 
-def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key: str = '') -> None:
-    """Commit one isolated turn to the host run ledger, then arm its detached worker.
+def isolated_supervisor(loop: dict):
+    """The production run ledger and worker launcher, as every isolated enqueue builds it.
 
-    Raises on anything short of a durable, armed enqueue — a missing/invalid private runtime,
-    a ledger failure, or a spawn failure after the row committed (the row stays pending and a
-    redelivery re-arms it). The unique repo/PR/head/seat/turn index deduplicates redelivery.
+    Raises when the private runtime file is missing or invalid (a fail-closed hold).
     """
     from .run_supervisor import SEATS, Supervisor
 
-    supervisor = Supervisor(
+    return Supervisor(
         config.home() / "state" / "review-loop-runs.sqlite",
         production_config=config.home() / "review-loop-runtime.json", hermes_home=config.home(),
         # Every seat, always: a worker spawned by one seat's event claims any pending row, and
         # must know every seat's capacity to do so.
         capacity={s: config.seat_concurrency(loop, s) for s in SEATS},
     )
+
+
+def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key: str = '') -> str:
+    """Commit one isolated turn to the host run ledger, then arm its detached worker.
+
+    Raises on anything short of a durable, armed enqueue — a missing/invalid private runtime,
+    a ledger failure, or a spawn failure after the row committed (the row stays pending and a
+    redelivery re-arms it). The unique repo/PR/head/seat/turn index deduplicates redelivery.
+    Returns the ledger's outcome (``Supervisor.submit``): ``enqueued``, ``rearmed``,
+    ``pending`` or ``duplicate <state>…`` — only the first three scheduled anything.
+    """
+    supervisor = isolated_supervisor(loop)
     supervisor.recover()
     delivery = f"{loop['repo']}:{number}:{head}:{seat}"
-    supervisor.enqueue(delivery + (f':{turn_key}' if turn_key else ''),
-                       loop["repo"], number, head, seat, turn_key=turn_key,
-                       require_push_admission=seat == "fixer")
+    return supervisor.submit(delivery + (f':{turn_key}' if turn_key else ''),
+                             loop["repo"], number, head, seat, turn_key=turn_key,
+                             require_push_admission=seat == "fixer")
+
+
+def resume_isolated(loop: dict) -> bool:
+    """Schedule ledger work that is due — a backed-off pre-write retry (#53), or a pending
+    row whose claim-time read failed — by running the worker-enabled recovery. False (and
+    nothing launched) when no private runtime is configured."""
+    if not (config.home() / "review-loop-runtime.json").exists():
+        return False
+    isolated_supervisor(loop).recover()
+    return True
 
 
 def hold_fixer_push_off(loop: dict, st: state_mod.LoopState, number: int, head: str) -> bool:
@@ -142,9 +162,15 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
     push_off = seat == "fixer" and not config.unattended_fixer_push_enabled(loop)
     if not push_off:
         try:
-            enqueue_isolated(loop, seat, number, head, turn_key=turn_key)
+            outcome = enqueue_isolated(loop, seat, number, head, turn_key=turn_key)
             st.queue_pop_if(seat, key, queued)
-            log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")
+            if outcome == "enqueued":
+                log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")
+            elif outcome in ("rearmed", "pending"):
+                log(f"#{number} @ {head[:7]} {seat} {outcome}: isolated worker re-armed")
+            else:
+                # Nothing was scheduled (#73): say so, instead of reporting a fresh enqueue.
+                log(f"#{number} @ {head[:7]} {seat} not enqueued: {outcome}")
         except FixerPushDisabled:
             push_off = True  # the policy changed under the admission lock: same hold
         except Exception as exc:
@@ -953,12 +979,17 @@ def wake_adjudicator(loop: dict, number: int, head: str, rounds: int, reason: st
     live-head check under the breach lock keeps a stale head from being re-armed.
     """
     try:
-        enqueue_isolated(loop, "adjudicator", number, head, turn_key=f"breach:{int(rounds)}")
+        outcome = enqueue_isolated(loop, "adjudicator", number, head,
+                                   turn_key=f"breach:{int(rounds)}")
     except Exception as exc:
         log(f"adjudicator turn for #{number} @ {head[:7]} not enqueued: "
             f"{type(exc).__name__}: {exc}")
         return False
-    log(f"#{number} @ {head[:7]} adjudicator enqueued for isolated worker ({reason})")
+    if outcome == "enqueued":
+        log(f"#{number} @ {head[:7]} adjudicator enqueued for isolated worker ({reason})")
+    else:
+        # A duplicate is still durable (the ledger owns the turn), so the marker may advance.
+        log(f"#{number} @ {head[:7]} adjudicator {outcome} ({reason})")
     return True
 
 
