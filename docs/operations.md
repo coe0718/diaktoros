@@ -184,7 +184,7 @@ GitHub write, e.g.
 `hermes review-loop selftest --loop name --no-model --ping --admin-token LOGIN`).
 
 `set` is how you change the knobs after install — `--reviewer-concurrency`, `--fixer-concurrency`,
-`--concurrency` (the default for both seats), `--cap`, `--clone`, `--base`, `--grace-min`,
+`--concurrency` (the default for both seats, except a seat given its own value), `--cap`, `--clone`, `--base`, `--grace-min`,
 `--ttl-min`, `--turn-budget` (and per seat `--reviewer-turn-budget` / `--fixer-turn-budget`) —
 through the same validation `init` uses, so a capacity above 1 without a clone is
 refused here exactly as it is at init. Prompts are rendered from the payload at fire time, so a
