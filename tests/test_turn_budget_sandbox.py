@@ -17,6 +17,7 @@ positive budget), and the kill grace is shortened to match, so the whole file ru
 ``REVIEW_LOOP_SANDBOX_BUDGET``/``REVIEW_LOOP_SANDBOX_GRACE`` override both for a longer demo.
 """
 from __future__ import annotations
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 
 import json
 import os

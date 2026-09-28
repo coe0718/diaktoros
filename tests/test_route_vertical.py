@@ -3,6 +3,7 @@
 The fixture creates both HOME and HERMES_HOME before starting *any* child.
 Only the stub executable is permitted to answer the gate's GitHub reads.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import os
 from pathlib import Path
@@ -41,7 +42,7 @@ class RouteSubprocess(unittest.TestCase):
                      "fixers": ["dev"], "reviewers": ["reviewer"], "reviewer_seat": "reviewer",
                      "seats": {"reviewer": {"profile": "fixture-reviewer", "route": "review"},
                                "fixer": {"profile": "fixture-fixer", "route": "fix"}},
-                     "state_dir": str(home / "state"), "tokens": {}, "read_token": "",
+                     "state_dir": str(home / "state"), "tokens": {}, "read_token": "reader",
                      "host": "http://127.0.0.1:9"}
         (loops / "widgets.json").write_text(json.dumps(self.loop))
         (self.root / "gh-stub.py").write_text(

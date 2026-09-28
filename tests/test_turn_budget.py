@@ -6,6 +6,7 @@ without a network or a model: a real ``Supervisor`` spawning its real detached w
 fixture child, the real ``gate.enqueue_isolated`` writing a real ledger, and the real
 ``trusted_turn.run_turn`` building the real Hermes argv (only bwrap itself is faked).
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import io
 import json
 import os
@@ -36,6 +37,7 @@ def _loop(**extra) -> dict:
            "seats": {"reviewer": {"profile": "rev", "route": "r"},
                      "fixer": {"profile": "fix", "route": "f"}}}
     raw.update(extra)
+    raw.setdefault("read_token", "reader")      # main requires a named reader (#102)
     return raw
 
 
@@ -121,6 +123,34 @@ class CliSurfaces(unittest.TestCase):
         with redirect_stdout(out):
             rc = func(argparse.Namespace(**kw))
         return rc, out.getvalue()
+
+    def test_the_merged_cli_keeps_both_sides(self):
+        # #139: list/status call main's _readable_loops *and* this PR's _budget_line, and `set`
+        # counts a per-seat budget change as a change next to main's read_changed. A one-sided
+        # resolution of those add/add hunks is a NameError or a silent "nothing to change".
+        rc, out = self.run_cli(cli.cmd_list)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("widgets", out)
+        with mock.patch("review_loop.state.state_for") as state_for:
+            state_for.return_value.dir = self.root / "state"
+            state_for.return_value._load.return_value = {}
+            state_for.return_value.queue_items.return_value = {}
+            state_for.return_value.queue_all.return_value = {}
+            state_for.return_value.breach_all.return_value = {}
+            state_for.return_value.watch.return_value = {}
+            rc, out = self.run_cli(cli.cmd_status, loop=None)
+        self.assertIn("turn:       reviewer 900s · fixer 900s per turn", out)
+        empty = dict(concurrency=None, cap=None, base=None, clone=None, grace_min=None,
+                     marker_grace_min=None, ttl_min=None, inflight_ttl_min=None, host=None,
+                     reviewer_concurrency=None, fixer_concurrency=None, adjudicator_login=None,
+                     token=[], observer_route=None, observer_profile=None, observer_deliver=None,
+                     observer_events=None, observer_digest_min=None, observer_mute=False,
+                     observer_unmute=False, observer_disable=False, read_token=None)
+        rc, out = self.run_cli(cli.cmd_set, loop="widgets", turn_budget=None,
+                               fixer_turn_budget=1800, reviewer_turn_budget=None, **empty)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("nothing to change", out)
+        self.assertIn("fixer turn budget: 900s → 1800s", out)
 
     def test_set_then_status_and_doctor_show_it(self):
         empty = dict(concurrency=None, cap=None, base=None, clone=None, grace_min=None,
@@ -854,8 +884,15 @@ class GateToProductionWorker(unittest.TestCase):
 
     def test_the_worker_hands_the_rows_budget_to_the_turn(self):
         seen = {}
-        row = self.run_production(lambda _loop, scope, **kw: seen.update(kw) or 0)
+        guarded = self.home / "guarded-state"
+        # config.state_dir is main's guarded resolver (expanduser + the real-home tripwire): the
+        # work root must come from it, not from the raw loop value.
+        with mock.patch.object(config, "state_dir", return_value=guarded):
+            row = self.run_production(lambda _loop, scope, **kw: seen.update(kw) or 0)
+        # Both terms of the one run_turn call two branches edited (#139): the row's budget
+        # (#49) and main's guarded work root. A one-sided merge resolution fails here.
         self.assertEqual(seen["timeout"], 2700)
+        self.assertEqual(seen["work_root"], guarded / "isolated-runs")
         self.assertEqual(row["state"], "succeeded")
 
     def test_a_timeout_names_the_budget(self):

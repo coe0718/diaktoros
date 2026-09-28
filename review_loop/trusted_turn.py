@@ -313,7 +313,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
         raise TurnDenied('no-write mode supports only a reviewer turn')
     if not model or not prompt or timeout < 1 or not key:
         raise TurnDenied('missing model, prompt or credential')
-    parent = Path(work_root or loop['state_dir']).resolve()
+    from .config import guard_real_home, state_dir
+    parent = guard_real_home(Path(work_root) if work_root else state_dir(loop)).resolve()
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if parent.is_symlink() or parent.stat().st_mode & 0o077:
         raise TurnDenied('work root must be private')

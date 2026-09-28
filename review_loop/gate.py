@@ -38,7 +38,15 @@ from .util import iso_at, log, now_iso, silence
 
 def payload_loop(payload: dict) -> dict:
     full = ((payload.get("repository") or {}).get("full_name") or "")
-    loop = config.by_repo(full)
+    # Per-file: a sibling loop file the loader refuses is skipped with one log line instead of
+    # stopping this repo's gate (it still fails closed when that file might be this repo's).
+    try:
+        loop = config.loop_for_repo(full, warn=log)
+    except config.ConfigError as exc:
+        # This repo's ownership cannot be settled (its own file will not load, or two files
+        # claim it): fail closed — nothing runs — with the reason in the log, not a traceback.
+        log(f"loop config refused for {full or 'an unknown repository'}: {exc}")
+        silence(f"loop config refused for {full or 'an unknown repository'}")
     if not loop:
         silence(f"no loop configured for {full or 'an unknown repository'}")
     return loop
@@ -1052,6 +1060,7 @@ def ping_start(loop: dict, seat: str, text: str) -> None:
             f"https://discord.com/api/v10/channels/{channel}/messages", data=body,
             headers={"Authorization": f"Bot {token}", "Content-Type": "application/json",
                      "User-Agent": "hermes-review-loop"})
+        config.guard_network(req.full_url)
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status not in (200, 201):
                 raise RuntimeError(f"Discord HTTP {resp.status}")

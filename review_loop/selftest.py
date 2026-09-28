@@ -388,7 +388,7 @@ _USERNS_FIX = ("enable unprivileged user namespaces: `sudo sysctl -w kernel.unpr
 
 def _work_root(loop: dict) -> Path:
     """The same private parent the production worker uses for its turn directories."""
-    root = Path(loop["state_dir"]).expanduser() / "isolated-runs"
+    root = config.state_dir(loop) / "isolated-runs"
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if root.is_symlink() or root.stat().st_mode & 0o077:
         raise PermissionError(f"{root} must be a private (0700) directory")
@@ -687,7 +687,11 @@ def check_identities(report: Report, loop: dict) -> bool:
         if not login:
             ok = False
             report.add(step, name, FAIL, f"no login configured for the {role} identity",
-                       "re-run `hermes review-loop init` with --read-token/--reviewer-login/--fixer-login")
+                       f"hermes review-loop set --loop {loop.get('id') or '<id>'} --read-token "
+                       "LOGIN --token LOGIN=/path/to/pat" if role == "read" else
+                       f"name the {role} login: reviewer_login/fixer_login in the plugin settings, "
+                       f"then `hermes review-loop apply --loop {loop.get('id') or '<id>'}` (a new "
+                       "loop takes them from `init --reviewer/--reviewer-seat/--fixer`)")
             continue
         raw = (loop.get("tokens") or {}).get(login)
         if not raw:

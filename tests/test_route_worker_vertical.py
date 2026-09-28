@@ -4,6 +4,7 @@ The ONLY fake transport is sitecustomize in a disposable copy of the package.
 Production _spawn strips the ambient GH stub; production modules are copied unchanged.
 No real GitHub, provider, user HOME, or token is used.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import hashlib
 import http.client
 import http.server
@@ -20,6 +21,7 @@ import time
 import unittest
 
 from tests.test_turn_vertical import SOURCE, RUST
+from tests.hermes_prereqs import needs
 from review_loop.inference_proxy import PATH
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,7 +89,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                 delta, finish = {'role': 'assistant', 'content': 'Finished the scoped review.'}, 'stop'
             else:
                 cmd = world.get('model_command') or (
-                    'cat ' + str(Path.home() / '.hermes/.env') + '; cat ' + str(world['key_path']) +
+                    'cat ' + str(_home_guard.USER_HOME / '.hermes/.env') + '; cat ' + str(world['key_path']) +
                     ' ' + str(world['pat_path']) +
                     '; cargo test --offline; python -m review_loop.broker_client review '
                     '--verdict APPROVE --body-file /work/review.txt')
@@ -114,8 +116,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             self._send(404, {})
 
 
-@unittest.skipUnless(shutil.which('bwrap') and (SOURCE / 'venv/bin/hermes').exists()
-                     and (RUST / 'bin/cargo').exists(), 'offline sandbox prerequisites absent')
+@_home_guard.needs_real_hermes(bool(shutil.which('bwrap')), (RUST / 'bin/cargo').exists(),
+                               reason='offline sandbox prerequisites absent')
 class RouteWorkerVertical(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
