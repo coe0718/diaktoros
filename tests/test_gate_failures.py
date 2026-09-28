@@ -8,6 +8,8 @@ stdin, ``cwd`` = the script's directory, a 30-second timeout.
 """
 from __future__ import annotations
 
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+
 import json
 import os
 import pathlib
@@ -893,7 +895,7 @@ class GateFailureTest(unittest.TestCase):
         third, _ = self.normal_watchdog(hang, "5")
         stopped = [line for line in third.stdout.splitlines() if "watchdog stopped" in line]
         self.assertEqual(len(stopped), 1, third.stdout)
-        self.assertIn("reading as rev-coach", stopped[0])
+        self.assertIn(f"reading as {config.load_id('widgets')['read_token']}", stopped[0])
         self.assertIn("(3 sweep(s) in a row since", stopped[0])
         again, _ = self.normal_watchdog(hang, "5")          # still hanging, inside the cooldown
         self.assertEqual((again.returncode, again.stdout.strip()), (0, ""))
