@@ -645,19 +645,61 @@ class PurgeTest(Base):
         self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
         self.assertTrue(LOOP_FILE.exists())
 
-    def test_no_hooks_of_ours_means_no_read_back_and_nothing_called_live(self):
-        # The first, complete listing found none of this loop's hooks: nothing is deleted, so a
-        # failing second read cannot make "still live" claims about hooks that do not exist.
+    def test_no_hooks_of_ours_and_a_failed_read_back_is_unconfirmed_not_live(self):
+        # The first listing found none of this loop's hooks. The second sample is still taken
+        # (it is what catches a hook created meanwhile); when it fails, the refusal says the
+        # absence could not be confirmed — no "still live", no DELETE template.
         self.world(hooks=[])
+        calls = []
         original = cli._loop_hooks
-        cli._loop_hooks = lambda loop, login: (None, "HTTP 502 Bad Gateway")
+
+        def failing(loop, login):
+            calls.append(login)
+            return None, "HTTP 502 Bad Gateway"
+        cli._loop_hooks = failing
         self.addCleanup(setattr, cli, "_loop_hooks", original)
         rc, out = self.cli("uninstall", "--loop", "widgets")
-        self.assertEqual(rc, 0, out)
+        self.assertEqual(calls and len(calls), 1, "the read-back must be taken")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("could not confirm that no hook of this loop's appeared while uninstall ran",
+                      out)
         self.assertNotIn("still live", out)
-        self.assertNotIn("<id>", out)
-        self.assertIn("hooks: none of this loop's routes has a repo hook", out)
-        self.assertFalse(LOOP_FILE.exists())
+        self.assertNotIn("gh api -X DELETE", out)
+        self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
+        self.assertTrue(LOOP_FILE.exists())
+
+    def test_a_hook_that_appears_during_uninstall_is_caught(self):
+        # The review's race: none of ours on the first listing, one on the second (a concurrent
+        # arm or init --hooks). Refused and named — never "decommissioned" with a live hook.
+        self.fresh_install()
+        live = self.hooks()
+        self.world(hooks=[])
+        original = cli._loop_hooks
+        cli._loop_hooks = lambda loop, login: (live, "")
+        self.addCleanup(setattr, cli, "_loop_hooks", original)
+        rc, out = self.cli("uninstall", "--loop", "widgets")
+        self.assertEqual(rc, 2, out)
+        ids = sorted(hook["id"] for hook in live)
+        self.assertIn(f"hooks {ids[0]}, {ids[1]} appeared on this loop's route URLs while "
+                      "uninstall ran", out)
+        self.assertTrue(LOOP_FILE.exists())
+        self.assertIsNotNone(routes.route("widgets-review"))
+
+    def test_an_unreadable_listing_asserts_nothing_and_hands_out_no_delete(self):
+        # Hosted and host-less alike: nothing was classified, so no liveness claim and no
+        # destructive template — the find command, and look at each URL first.
+        for blank in (False, True):
+            if blank:
+                cfg = json.loads(LOOP_FILE.read_text())
+                cfg["host"] = ""
+                LOOP_FILE.write_text(json.dumps(cfg))
+            self.world(hooks=None)
+            rc, out = self.cli("uninstall", "--loop", "widgets")
+            self.assertEqual(rc, 2, (blank, out))
+            self.assertNotIn("still live", out)
+            self.assertNotIn("gh api -X DELETE", out)
+            self.assertIn("check each one's URL before deleting anything", out)
+            self.assertIn(f"gh api 'repos/{t.REPO}/hooks?per_page=100' --jq", out)
 
     def test_a_failed_delete_is_live_and_an_accepted_one_unconfirmed(self):
         # Recorded as they fail, not recovered from the failure prose: hook A's DELETE fails and

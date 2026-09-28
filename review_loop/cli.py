@@ -818,11 +818,21 @@ def _delete_loop_hooks(loop: dict, login: str | None) -> tuple[list[str], list[s
     if hooks is None:
         return [], [f"could not read the repo's hooks: {error}"], []
     done, failures = _foreign_lines(loop, foreign), []
-    if not hooks:
-        # The first (complete) listing proved there is nothing of ours to delete: no DELETE, so
-        # no read-back to fail, and nothing to call live.
-        return done, failures, []
     login = login or loop.get("read_token")
+    if not hooks:
+        # Nothing of ours to delete — but "gone" is only ever concluded from a read: a second
+        # sample still catches a hook created meanwhile (a concurrent arm or init --hooks), and
+        # an unreadable one is "not confirmed", never a claim that anything is live.
+        after, error = _loop_hooks(loop, login)
+        if after is None:
+            return done, [f"could not confirm that no hook of this loop's appeared while uninstall "
+                          f"ran (the listing read-back failed: {error}) — nothing was deleted"], []
+        if after:
+            ids = sorted(hook["id"] for hook in after)
+            return done, [f"hook{'s' if len(ids) > 1 else ''} {', '.join(map(str, ids))} "
+                          "appeared on this loop's route URLs while uninstall ran (a concurrent "
+                          "arm or init --hooks?) — not deleted"], ids
+        return done, failures, []
     refused: list[int] = []                       # ids whose DELETE failed, recorded as they fail
     for hook in hooks:
         _, error = gh.fetch(loop, f"/repos/{loop['repo']}/hooks/{hook['id']}", method="DELETE",
@@ -2563,17 +2573,24 @@ def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
         print("every DELETE was accepted, but the hook listing could not be read back to confirm "
               "it — look before re-running (it lists any id that is somehow still there):")
         print(f"  {_hook_find_command(loop)}")
-    elif any(reason.startswith(("hook", "could not")) for reason in reasons):
+    elif left_hooks:
+        # Only ids a listing actually showed at this loop's route URLs are called live, and only
+        # they get DELETE commands.
         print("the loop's repo hooks are still live. Delete them with a token that has "
               "`admin:repo_hook` (or classic `repo`):")
-        if left_hooks:
-            for command in _hook_delete_commands(loop, left_hooks):
-                print(f"  {command}")
-        else:
-            print(f"  {_hook_find_command(loop)}   # the ids to delete")
-            print(f"  {_hook_delete_commands(loop, ['<id>'])[0]}   # once per id")
+        for command in _hook_delete_commands(loop, left_hooks):
+            print(f"  {command}")
         print("or map such a token on this loop and let uninstall do it:")
         print(f"  hermes review-loop uninstall --loop {lid} --admin-token <login>")
+    elif any(reason.startswith(("hook", "could not")) for reason in reasons):
+        # Nothing was read (or read back), so nothing is known about which hooks exist — or
+        # whose they are. No liveness claim, and no DELETE on a guess.
+        print("the hook listing could not be read or confirmed, so this command does not know "
+              "which hooks exist; nothing was deleted on a guess. Look first — check each one's "
+              "URL before deleting anything:")
+        print(f"  {_hook_find_command(loop)}   # the ids")
+        print(f"  gh api {shlex.quote(f'repos/' + loop['repo'] + '/hooks/<id>')} --jq .config.url"
+              "   # where each posts")
     if any(reason.startswith("cron") for reason in reasons):
         jobs, _ = _cron_jobs(loop)
         for job in jobs or []:

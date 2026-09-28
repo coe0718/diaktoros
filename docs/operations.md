@@ -144,7 +144,10 @@ the config, and reads both back. If it cannot (a token without `admin:repo_hook`
 failure, a job the scheduler will not remove) it refuses, changes nothing else, and prints the
 exact `gh api -X DELETE …` / `hermes cron remove …` commands; `--keep-hooks` is the explicit
 opt-out. `uninstall` deletes only hooks at the loop's own route URLs; a hook on the same route
-name at another origin, profile or path is reported with that cause and left alone. A loop with no
+name at another origin, profile or path is reported with that cause and left alone. It concludes
+"no hooks left" only from a listing read after its DELETEs (or after finding none), so a hook
+created meanwhile is caught and refused; when a listing cannot be read or confirmed it says so
+and prints commands to *look*, never DELETE commands for hooks it has not seen. A loop with no
 `host` has no route URL to compare with, so `uninstall` reads the listing first: when any hook
 posts to the loop's route names (a host blanked by hand leaves its hooks behind — or they may be
 another install's on the same repo) it refuses with exit 2 and the commands to *look* at them,
