@@ -116,8 +116,12 @@ class BrokerIPCTests(unittest.TestCase):
         from review_loop import config, run_supervisor, safe_push
         pushed = "c" * 40
         server = self.start(role="fixer")
+        # A real (empty) ledger: the broker reads the run's view record from it before a push,
+        # and an unreadable one is a partial view (fail closed). Its writes are mocked below.
+        ledger = self.root / "runs.sqlite"
+        run_supervisor.Supervisor(ledger)
         object.__setattr__(server, "scope", broker_ipc.RunScope(
-            REPO, 7, HEAD, "fixer", "fix-7", "rid", "/nonexistent"))
+            REPO, 7, HEAD, "fixer", "fix-7", "rid", str(ledger)))
         supervisor = run_supervisor.Supervisor
         with mock.patch.object(config, "by_repo", return_value=self.loop), \
              mock.patch.object(config, "unattended_fixer_push_enabled", return_value=True), \
