@@ -434,7 +434,7 @@ def _install_hooks(loop: dict, token_login: str | None, active: bool = False) ->
         if not url or not secret:
             raise config.ConfigError(f"route {route_name!r} needs a valid webhook URL and secret before installing hooks")
         hooks.append((event, url, secret))
-    baseline = _hook_listing(loop, token_login)
+    baseline = _hook_listing(loop, token_login, require_active=False)
     created = []
     try:
         for event, url, secret in hooks:
@@ -455,7 +455,7 @@ def _install_hooks(loop: dict, token_login: str | None, active: bool = False) ->
         failures = []
         # A lost POST response may still have created a hook: compare with the baseline.
         try:
-            current = _hook_listing(loop, token_login)
+            current = _hook_listing(loop, token_login, require_active=False)
             target_urls = {url for _, url, _ in hooks}
             created = list(set(created) | {h["id"] for h in current
                            if h["id"] not in {b["id"] for b in baseline}
@@ -466,7 +466,7 @@ def _install_hooks(loop: dict, token_login: str | None, active: bool = False) ->
             try:
                 gh.api(loop, f"/repos/{loop['repo']}/hooks/{hook_id}", method="DELETE",
                        login=token_login or loop.get("read_token"))
-                if any(h["id"] == hook_id for h in _hook_listing(loop, token_login)):
+                if any(h["id"] == hook_id for h in _hook_listing(loop, token_login, require_active=False)):
                     raise config.ConfigError("still present after DELETE")
             except Exception as rollback_exc:
                 failures.append(f"hook {hook_id}: {rollback_exc}")
@@ -486,13 +486,16 @@ def _hook_fix(loop: dict, exc: Exception, token_login: str | None = None) -> str
     return f"`hermes review-loop doctor --loop {loop['id']}` names what to repair first"
 
 
-def _hook_listing(loop: dict, token_login: str | None = None) -> list[dict]:
+def _hook_listing(loop: dict, token_login: str | None = None, *,
+                  require_active: bool = True) -> list[dict]:
     hooks = gh.api(loop, f"/repos/{loop['repo']}/hooks?per_page=100",
                    login=token_login or loop.get("read_token"))
-    # ``active`` is part of a valid entry: which of two hooks for one route is kept depends on it.
+    # ``active`` is part of a valid entry where a choice depends on it (which of two hooks for one
+    # route is kept). `arm` asks for ``require_active=False``: it flips and reads back a hook with
+    # no real bool rather than trusting — or refusing — the listing's word for its state (#55).
     if not isinstance(hooks, list) or len(hooks) >= 100 or any(
         not isinstance(h, dict) or not isinstance(h.get("id"), int) or
-        not isinstance(h.get("active"), bool) or
+        (require_active and not isinstance(h.get("active"), bool)) or
         not isinstance(h.get("config"), dict) or
         not isinstance(h["config"].get("url"), str) for h in hooks
     ):
@@ -504,7 +507,7 @@ def _keep_one(candidates: list[dict], dest: str) -> tuple[dict, list[dict]]:
     """Of several repo hooks for one route, the one that stays: an ACTIVE hook first (a route must
     never end up with fewer armed hooks than it had), then one already at ``dest``, then the
     oldest (lowest id). The rest are redundant — named for deletion, never moved or deleted."""
-    ordered = sorted(candidates, key=lambda hook: (not hook["active"],
+    ordered = sorted(candidates, key=lambda hook: (hook.get("active") is not True,
                                                   not routes.serves_route_url(hook["config"]["url"], dest),
                                                   hook["id"]))
     return ordered[0], ordered[1:]
@@ -567,7 +570,7 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
     word = "active" if active else "paused"
     login = token_login or loop.get("read_token")
     try:
-        hooks = _hook_listing(loop, token_login)
+        hooks = _hook_listing(loop, token_login, require_active=False)
     except config.ConfigError as exc:
         return [f"could not read the repo's hooks: {exc}",
                 f"fix: {_hook_write_fix(token_login, loop=loop)}"], False
@@ -661,9 +664,9 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
     if miswired:
         out.append(f"fix: hook{'s' if len(miswired) > 1 else ''} {', '.join(map(str, miswired))}:"
                    f" `hermes review-loop doctor --loop {loop.get('id')}` names what each needs "
-                   "(re-run init --hooks, or on GitHub set the event / content_type; a trailing "
-                   f"slash: `hermes review-loop apply --loop {loop.get('id')}` repoints the hook), "
-                   "then run `arm` again")
+                   "(re-run init --hooks, or on GitHub set the event / content_type, or drop the "
+                   f"URL's trailing slash — `hermes review-loop apply --loop {loop.get('id')}` "
+                   "repoints a slashed hook), then run `arm` again")
     # The fix is per hook: one refused hook must not hide the retry advice another hook's 5xx
     # earned. Hooks that need the same fix share its line.
     advice: dict[str, list[int]] = {}
@@ -690,8 +693,8 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
     return out, ok
 
 
-def _hook_moves(before: dict, after: dict, binds: dict,
-                token_login: str | None = None) -> list[tuple[int, str, str, object]]:
+def _hook_moves(before: dict, after: dict, binds: dict, token_login: str | None = None, *,
+                check_only: bool = False) -> tuple[list, list]:
     """Preflight exact hook URLs against configured and installed owned route profiles."""
     names = _routes_of(after)
     expected: dict[str, tuple[str, str]] = {}
@@ -721,7 +724,9 @@ def _hook_moves(before: dict, after: dict, binds: dict,
         else:
             unchanged[role] = new
     route_names = {name: role for role, name in names.items() if role in ("reviewer", "fixer")}
-    if not targets and not unchanged:
+    if not targets and not (check_only and unchanged):
+        # Nothing moves: a settings push reads no hooks. Only plain `apply` (check_only) reads
+        # them anyway, to name duplicates and repoint a slashed hook nothing else would report.
         return [], []
     if targets:
         hooks = _hook_listing(before, token_login)  # Never repair a route if this listing cannot be trusted.
@@ -1626,7 +1631,7 @@ def cmd_apply(args) -> int:
             token = getattr(args, "admin_token", "") or None
             try:        # nothing else moves: this reads, to name two hooks on one route URL and
                         # find one whose URL differs only by a trailing slash (a gateway 404)
-                slashed, duplicates = _hook_moves(loop, updated, {}, token)
+                slashed, duplicates = _hook_moves(loop, updated, {}, token, check_only=True)
             except HookAccessError as exc:
                 print(f"  (repo hooks not checked: {exc})")
             except config.ConfigError as exc:

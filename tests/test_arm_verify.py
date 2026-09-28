@@ -526,12 +526,16 @@ class ApplyHookMoveTests(unittest.TestCase):
         self.after = config.normalize(moved)
 
     def moves(self, reviewer_url, fixer_url=f"{HOST}/p/fixer/webhooks/widgets-fix"):
+        """``_hook_moves``' moves, as ``(id, old, new)`` — #106 returns ``(moves, redundant)`` with
+        each hook's ``insecure_ssl`` carried along; a case here with a redundant hook fails."""
         listing = [{"id": 1, "active": True, "events": ["pull_request"],
                     "config": {"url": reviewer_url, "content_type": "json"}},
                    {"id": 2, "active": True, "events": ["pull_request_review"],
                     "config": {"url": fixer_url, "content_type": "json"}}]
         with patch.object(gh, "api", return_value=listing):
-            return cli._hook_moves(self.before, self.after, {})
+            moves, redundant = cli._hook_moves(self.before, self.after, {})
+        self.assertEqual(redundant, [])
+        return [move[:3] for move in moves]
 
     def test_the_old_url_moves_to_the_new_one(self):
         self.assertEqual(self.moves(f"{HOST}/p/reviewer/webhooks/widgets-review"),
@@ -549,11 +553,15 @@ class ApplyHookMoveTests(unittest.TestCase):
         self.assertEqual(self.moves(with_query),
                          [(1, with_query, f"{HOST}/p/reviewer2/webhooks/widgets-review")])
 
-    def test_a_slashed_hook_on_an_unchanged_seat_is_refused_by_name(self):
-        with self.assertRaisesRegex(config.ConfigError, r"installed fixer hook 2 posts to its "
-                                    r"route's URL with a trailing slash"):
-            self.moves(f"{HOST}/p/reviewer/webhooks/widgets-review",
-                       f"{HOST}/p/fixer/webhooks/widgets-fix/")
+    def test_a_slashed_hook_on_an_unchanged_seat_is_repointed_by_name(self):
+        # #106 repairs this spelling (the gateway 404s it) rather than refusing the whole push:
+        # the hook is named in the moves and put on the exact URL, never skipped in silence.
+        self.assertEqual(self.moves(f"{HOST}/p/reviewer/webhooks/widgets-review",
+                                    f"{HOST}/p/fixer/webhooks/widgets-fix/"),
+                         [(1, f"{HOST}/p/reviewer/webhooks/widgets-review",
+                           f"{HOST}/p/reviewer2/webhooks/widgets-review"),
+                          (2, f"{HOST}/p/fixer/webhooks/widgets-fix/",
+                           f"{HOST}/p/fixer/webhooks/widgets-fix")])
 
     def test_an_unexpected_url_is_still_refused(self):
         with self.assertRaisesRegex(config.ConfigError, r"points at unexpected URL"):

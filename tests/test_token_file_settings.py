@@ -34,8 +34,14 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.root = Path(temp.name).resolve()
         self.home = self.root / "home"
         self.hermes = self.root / "hermes"
+        # GitHub is a stub with no hooks: a plain `apply` reads the hook listing (#106), and a
+        # test never reaches the real API.
+        self.root.joinpath("gh-stub").write_text(
+            '#!/bin/sh\ncase "$1" in */hooks*) echo "[]";; *) echo "{}";; esac\n')
+        self.root.joinpath("gh-stub").chmod(0o700)
         env = patch.dict(os.environ, {
             "HOME": str(self.home), "HERMES_HOME": str(self.hermes),
+            "REVIEW_LOOP_GH_STUB": str(self.root / "gh-stub"),
             "REVIEW_LOOP_CONFIG_DIR": str(self.hermes / "review-loops.d"),
             "REVIEW_LOOP_SUBS": str(self.hermes / "webhook_subscriptions.json")})
         env.start()
