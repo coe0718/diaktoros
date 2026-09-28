@@ -164,7 +164,10 @@ registry — is read before the first hook is touched, so an unparseable one ref
 removed; a route step that still fails later (a registry that changes or becomes unwritable
 mid-run) ends INCOMPLETE with the config kept, so re-running `uninstall` finishes it. A loop file
 the loader refuses is never torn down on a guess: `uninstall` exits 2 with the reason and the
-commands to look up what it may still have live (its hooks' ids, its watchdog job). `init --hooks` refuses when hooks from a previous install still post to the loop's
+commands to look up what it may still have live (its hooks' ids, its watchdog job). When the
+loop removed was the last one configured, `uninstall` also forgets the run ledger's presence
+marker (`review-loops.d/.ledger-present`, after `--purge` has removed the state directory), so a
+later fresh install is not reported as a vanished ledger. `init --hooks` refuses when hooks from a previous install still post to the loop's
 routes (they sign with a secret the new routes will not hold), and `doctor` fails a route with
 more than one hook, or whose latest delivery the gateway answered 401/403 (a secret that does not
 match) or any other non-2xx (a 5xx is the gateway erroring); a latest delivery with no HTTP answer
