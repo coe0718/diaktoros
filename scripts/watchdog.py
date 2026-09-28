@@ -43,7 +43,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from review_loop import config, gate, gate_failures, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
+from review_loop import config, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
 from review_loop.util import age_min, epoch, log, now_iso  # noqa: E402
 
 TEST = bool(os.environ.get("REVIEW_LOOP_TEST"))
@@ -720,7 +720,7 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
     # Self-heal first, and independent of GitHub listing: a route another registry writer erased
     # or rewrote (issue #1) is a loop that cannot wake a seat, whatever the PRs look like.
     try:
-        healed = route_intent.heal(loop)
+        healed = route_intent.heal(loop) + gate_shims.heal(loop)
     except Exception as exc:                      # never let the heal hide the stall scan
         healed = [f"⚠️ Review loop [{loop['id']}] route self-heal failed: "
                   f"{type(exc).__name__}: {exc}"]
@@ -980,6 +980,26 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
     return lines
 
 
+def sweep_ledger(ledger: pathlib.Path, presence: pathlib.Path | None = None) -> list[str]:
+    """Deliver the run ledger's operator notices; return lines for a failed sweep.
+
+    A ledger that vanished since the host last opened it — its ``.present`` marker remains, or
+    ``presence`` (the loop config dir's marker, which survives a wiped state dir) names it — is
+    recreated here, which records a one-time notice that this sweep then delivers. Where no
+    ledger ever existed nothing is created.
+    """
+    from review_loop.run_supervisor import Supervisor, _names, ledger_marker
+    if not ledger.exists() and not ledger_marker(ledger).exists() and not _names(presence, ledger):
+        return []
+    try:
+        sup = Supervisor(ledger, presence=presence)
+        sup.recover()  # no runtime configured here: never launch a worker
+        sup.notify(lambda message: print(message, flush=True))
+    except Exception as exc:
+        return [f"⚠️ Review-loop operator notification sweep failed: {type(exc).__name__}: {exc}"]
+    return []
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Stall watchdog for configured review loops")
     ap.add_argument("--loop", help="loop id (default: every configured loop)")
@@ -1034,15 +1054,9 @@ def run(args: argparse.Namespace, budget: float) -> None:
     out: list[str] = []
     # The supervisor outbox is independent of GitHub listing availability or
     # paused hooks. It uses the existing cron stdout delivery path.
-    from review_loop.run_supervisor import Supervisor
-    ledger = config.home() / 'state' / 'review-loop-runs.sqlite'
-    if ledger.exists():
-        try:
-            sup = Supervisor(ledger)
-            sup.recover()  # no runtime configured here: never launch a worker
-            sup.notify(lambda message: print(message, flush=True))
-        except Exception as exc:
-            out.append(f"⚠️ Review-loop operator notification sweep failed: {type(exc).__name__}: {exc}")
+    from review_loop.run_supervisor import presence_marker
+    out.extend(sweep_ledger(config.home() / 'state' / 'review-loop-runs.sqlite',
+                            presence=presence_marker()))
     # Failures no loop could be named for (a malformed payload, a broken config) — swept by
     # every run, scoped or not: an install whose cron jobs are all ``--loop``-scoped would
     # otherwise never say them. The ledger's claims keep overlapping sweeps to one alert.

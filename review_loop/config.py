@@ -1011,8 +1011,8 @@ def push_policy_lock():
     Manual config edits outside this lock are not an authorization mechanism.
     """
     import fcntl
-    directory = config_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    from . import hostdirs
+    directory = hostdirs.ensure(config_dir())
     with (directory / '.fixer-push-policy.lock').open('a+b') as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
         try:
