@@ -322,10 +322,23 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     hooks, error = gh.fetch(loop, gh.hooks_path(loop))
     if error or not isinstance(hooks, list):
         return None, error or "GitHub returned no hook list"
-    missing = [seat for seat in ("reviewer", "fixer")
-               if not any(isinstance(h, dict)
-                          and loop["seats"][seat]["route"] in (h.get("config") or {}).get("url", "")
-                          and h.get("active") is True for h in hooks)]
+    from . import doctor          # its matchers are arm's and apply's too; imported late (it is big)
+    missing = []
+    for seat in ("reviewer", "fixer"):
+        # The seat's URL is the one `arm` credits (doctor.seat_route_target: the registry route,
+        # bound to the seat's profile), judged by the rule doctor and apply use
+        # (doctor.exact_hook_url: same origin, exact path, query ignored). A hook whose URL
+        # merely *contains* the route name — a trailing slash, another profile — is a 404 at the
+        # gateway, and a seat woken only through it is not armed.
+        try:
+            url = doctor.seat_hook_url(loop, loop["seats"][seat]["route"])
+        except config.ConfigError:
+            url = None
+        if not url or not any(isinstance(h, dict) and h.get("active") is True
+                              and doctor.exact_hook_url(str((h.get("config") or {}).get("url")
+                                                            or ""), url)
+                              for h in hooks):
+            missing.append(seat)
     return not missing, ", ".join(missing)
 
 

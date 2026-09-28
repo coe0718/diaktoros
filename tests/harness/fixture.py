@@ -74,12 +74,14 @@ def section(title: str) -> None:
 
 
 def world(prs: dict | None = None, hooks_active: bool = True) -> dict:
-    routes = ("widgets-review", "widgets-fix")
+    # Each hook posts to its route's exact URL (the host and profile ``write_subs`` registers):
+    # the gateway serves nothing else, so "armed" is judged against exactly that URL.
+    routes = (("widgets-review", "reviewer-profile"), ("widgets-fix", "fixer-profile"))
     return {
         "prs": prs or {},
         "hooks": [{"id": n, "active": hooks_active,
-                   "config": {"url": f"http://127.0.0.1:9/p/seat/webhooks/{name}"}}
-                  for n, name in enumerate(routes, 1)],
+                   "config": {"url": f"{HOST}/p/{profile}/webhooks/{name}"}}
+                  for n, (name, profile) in enumerate(routes, 1)],
         "requested_reviewers": [],
     }
 
