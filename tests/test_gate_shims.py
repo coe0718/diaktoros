@@ -1702,7 +1702,7 @@ class HookAndCronRemedies(Base):
             import json, os, sys
             path, method = sys.argv[1], os.environ.get("GH_METHOD", "GET")
             body = json.loads(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else {{}}
-            world = json.load(open({str(world)!r}))
+            with open({str(world)!r}) as f: world = json.load(f)
             def masked(hook):
                 config = dict(hook["config"])
                 if config.get("secret"):
@@ -1710,7 +1710,7 @@ class HookAndCronRemedies(Base):
                 return {{**hook, "config": config}}
             def save():
                 world["writes"] += 1
-                json.dump(world, open({str(world)!r}, "w"))
+                with open({str(world)!r}, "w") as f: json.dump(world, f)
             if path.split("?")[0].endswith("/hooks") and method == "POST":
                 hook = {{"id": max([h["id"] for h in world["hooks"]] + [100]) + 1,
                          "active": body.get("active", True), "events": body.get("events", []),
