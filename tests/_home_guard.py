@@ -247,3 +247,8 @@ for _home in {os.environ.get("HOME"), os.environ.get("HERMES_HOME")} - {None, ""
 
 RUST = (pathlib.Path(os.environ.get("RUSTUP_HOME") or USER_HOME / ".rustup")
         / "toolchains/stable-x86_64-unknown-linux-gnu")
+
+
+# The run-ledger guard (#108): refuses a Supervisor whose ledger or presence marker is under the
+# real ~/.hermes, as spelled or through a symlink. Last, once HOME/HERMES_HOME are pinned above.
+import _ledger_guard  # noqa: E402,F401

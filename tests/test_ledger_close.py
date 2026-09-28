@@ -14,7 +14,7 @@ import unittest
 from unittest import mock
 import warnings
 
-from review_loop import review_receipt
+from review_loop import ledger, review_receipt
 from review_loop.run_supervisor import Supervisor
 
 HEAD = 'a' * 40
@@ -78,6 +78,27 @@ class LedgerConnectionsClose(unittest.TestCase):
             still_open.append(con)
             con.close()
         self.assertEqual(still_open, [], f'{len(still_open)} of {len(opened)} left open')
+
+    def test_a_worker_refusing_a_non_ledger_leaves_nothing_open(self):
+        # #113's worker path: _worker_connect opens the host's file, finds no review-loop ledger
+        # and raises LedgerMissing, having closed it; ledger.connect never holds it.
+        from review_loop.run_supervisor import LedgerMissing
+        other = Path(self.tmp.name) / 'other.sqlite'
+        with ledger.connect(other) as con:
+            con.execute('CREATE TABLE unrelated(x)')
+        opened = []
+        real = sqlite3.connect
+
+        def tracking(*args, **kwargs):
+            opened.append(real(*args, **kwargs))
+            return opened[-1]
+
+        with mock.patch('sqlite3.connect', tracking):
+            with self.assertRaises(LedgerMissing):
+                Supervisor(other, create=False)
+        self.assertTrue(opened)
+        for con in opened:
+            self.assertRaises(sqlite3.ProgrammingError, con.execute, 'SELECT 1')
 
     def test_no_resource_warning(self):
         caught = []
@@ -164,6 +185,39 @@ class ConnectHelper(unittest.TestCase):
             with self.connect(self.db, factory=CloseFails) as con:
                 con.execute('INSERT INTO t VALUES (1)')
         self.assertEqual(self.rows(), [1])   # committed before the close
+
+    def test_an_opener_gets_the_same_transaction_and_close(self):
+        opened = []
+
+        def opener():
+            opened.append(sqlite3.connect(self.db, isolation_level=None))
+            return opened[-1]
+
+        with self.assertRaises(RuntimeError):
+            with self.connect(None, opener=opener, row_factory=sqlite3.Row,
+                              pragmas=('busy_timeout=1234',)) as con:
+                self.assertIs(con, opened[0])
+                self.assertEqual(con.execute('PRAGMA busy_timeout').fetchone()[0], 1234)
+                con.execute('BEGIN IMMEDIATE')
+                con.execute('INSERT INTO t VALUES (4)')
+                raise RuntimeError('boom')
+        self.assertRaises(sqlite3.ProgrammingError, opened[0].execute, 'SELECT 1')
+        self.assertEqual(self.rows(), [])
+
+    def test_an_opener_that_refuses_closes_what_it_opened(self):
+        # The contract: until it returns, the connection is the opener's. #113's worker opener
+        # (Supervisor._worker_connect) closes a ledger it refuses before raising.
+        opened = []
+
+        def opener():
+            opened.append(sqlite3.connect(self.db))
+            opened[-1].close()
+            raise LookupError('not a ledger')
+
+        with self.assertRaises(LookupError):
+            with self.connect(None, opener=opener):
+                self.fail('the body never runs')
+        self.assertRaises(sqlite3.ProgrammingError, opened[0].execute, 'SELECT 1')
 
     def test_failed_pragma_still_closes(self):
         opened = []

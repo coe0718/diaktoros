@@ -13,19 +13,27 @@ Any ``sqlite3.connect`` keyword passes through unchanged (``timeout``, ``isolati
 ``uri``, ...). ``row_factory`` and ``pragmas`` are applied before the body runs; if one of them
 fails, the connection is still closed. A close() that fails while an exception is already on
 its way out is attached to that exception as a note instead of replacing it.
+
+A caller that must open the connection itself (a worker vetting the host's ledger before any
+pragma touches it) passes ``opener=``: the connection it returns gets the same transaction and
+the same close. What the opener opens and then refuses, it closes itself before raising.
 """
 
 from __future__ import annotations
 
 import contextlib
 import sqlite3
-from typing import Iterator
+from typing import Callable, Iterator
 
 
 @contextlib.contextmanager
 def connect(path, *, row_factory=None, pragmas: tuple[str, ...] = (),
+            opener: Callable[[], sqlite3.Connection] | None = None,
             **kwargs) -> Iterator[sqlite3.Connection]:
-    con = sqlite3.connect(path, **kwargs)
+    # ``opener`` opens (and vets) the connection in place of ``sqlite3.connect(path, **kwargs)``.
+    # From the moment it returns, the connection is this function's to close; until then it is
+    # the opener's, which must close anything it opened before raising.
+    con = opener() if opener is not None else sqlite3.connect(path, **kwargs)
     try:
         if row_factory is not None:
             con.row_factory = row_factory

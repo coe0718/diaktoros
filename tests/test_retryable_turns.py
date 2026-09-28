@@ -404,7 +404,8 @@ class OperatorCommands(unittest.TestCase):
         # change the directory (#97 CI: 3.13 collected them in the middle of the read).
         gc.collect()
         before = sorted(p.name for p in self.db.parent.iterdir())
-        self.assertEqual(before, ['review-loop-runs.sqlite'])
+        # The ledger, and the host's record that it exists (#108: a vanished ledger is reported).
+        self.assertEqual(before, ['review-loop-runs.sqlite', 'review-loop-runs.sqlite.present'])
         with contextlib.redirect_stdout(out):
             cli._print_ledger_runs(loop, 7, '  run: ', limit=6)
         text = out.getvalue()

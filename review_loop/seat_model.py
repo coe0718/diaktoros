@@ -53,7 +53,7 @@ import sys
 import threading
 from urllib.parse import urlsplit
 
-from . import config, util
+from . import config, hostdirs, util
 
 SEATS = ("reviewer", "fixer", "adjudicator")
 HOST_KEYS = ("source", "venv", "runtime", "rust")
@@ -538,6 +538,11 @@ _PROFILE_LOCKS: dict[str, threading.Lock] = {}
 _PROFILE_LOCKS_GUARD = threading.Lock()
 
 
+def lock_dir() -> Path:
+    """Where the cross-process profile locks live: review-loop's host state, not a profile."""
+    return config.home() / "state" / "review-loop-seat-locks"
+
+
 @contextlib.contextmanager
 def profile_lock(profile: str):
     """Serialize every credential resolution of one profile, across threads and processes.
@@ -552,9 +557,10 @@ def profile_lock(profile: str):
     with _PROFILE_LOCKS_GUARD:
         local = _PROFILE_LOCKS.setdefault(home, threading.Lock())
     with local:
-        directory = config.home() / "state" / "review-loop-seat-locks"
         try:
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # The host (gate enqueue) creates it; a worker never recreates host state, and
+            # without it falls back to the in-process lock below.
+            directory = hostdirs.ensure(lock_dir(), mode=0o700)
             handle = open(directory / (hashlib.sha256(home.encode()).hexdigest()[:24] + ".lock"), "a")
         except OSError:
             handle = None                       # read-only state: the thread lock still holds

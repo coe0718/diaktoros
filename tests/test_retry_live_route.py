@@ -156,8 +156,10 @@ class World(http.server.BaseHTTPRequestHandler):
             found = [r for r in world['reviews'] if r['id'] == rid]
             self._send(200 if found else 404, found[0] if found else {})
         elif path == base + '/hooks':
-            self._send(200, [{'id': 1, 'active': True, 'config': {'url': 'http://gw/webhooks/widgets-review'}},
-                             {'id': 2, 'active': True, 'config': {'url': 'http://gw/webhooks/widgets-fix'}}]
+            self._send(200, [{'id': 1, 'active': True,
+                              'config': {'url': 'http://gw/p/fixture/webhooks/widgets-review'}},
+                             {'id': 2, 'active': True,
+                              'config': {'url': 'http://gw/p/fixture/webhooks/widgets-fix'}}]
                        if page == 1 else [])
         elif path == base + '/git/commits/' + HEAD:
             self._send(200, {'sha': HEAD, 'tree': {'sha': world['tree_sha']}})
@@ -252,6 +254,14 @@ class LiveRouteRetry(unittest.TestCase):
                                          'login': 'fixer'}},
                      'read_token': 'reader', 'tokens': tokens, 'state_dir': str(home / 'state')}
         (home / 'review-loops.d/widgets.json').write_text(json.dumps(self.loop))
+        # The routes the fake GitHub's hooks post to (http://gw/p/fixture/webhooks/<route>): a
+        # seat is armed only by an active hook at the URL its registered route is served at, bound
+        # to the seat's profile — the URL `arm` credits (#106, doctor.seat_route_target).
+        (home / 'webhook_subscriptions.json').write_text(json.dumps({
+            name: {'profile': 'fixture', 'host': 'http://gw', 'script': script,
+                   'secret': 'fixture-route-' + name, 'events': [event], 'prompt': 'fixture'}
+            for name, script, event in (('widgets-review', 'gate_reviewer.py', 'pull_request'),
+                                        ('widgets-fix', 'gate_fixer.py', 'pull_request_review'))}))
         blobs = {'Cargo.toml': b'[package]\nname="probe"\nversion="0.1.0"\nedition="2021"\n',
                  'src/lib.rs': b'#[test] fn works() {}\n'}
         self.world = {
