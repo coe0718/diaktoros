@@ -280,6 +280,25 @@ def tree_digest(root: pathlib.Path) -> str:
     return f"{len(lines)} entries, sha256 {hashlib.sha256(body).hexdigest()[:16]}"
 
 
+def doctor_summary(out: str, loop_id: str) -> dict | None:
+    """The counts on ``report()``'s summary line, by name rather than by position (#150).
+
+    ``report()`` inserts ``, N skipped`` before ``(of M checks)`` when a check was skipped, so a
+    pattern that needs "unknown (of M checks)" adjacent misses a real summary line.
+    """
+    import re
+    line = re.search(rf"^{re.escape(loop_id)}: (.*\(of \d+ checks\))$", out, re.M)
+    if not line:
+        return None
+    counts = {name: int(n) for n, name in
+              re.findall(r"(\d+) (verified|failed|unknown|skipped)\b", line.group(1))}
+    if not {"verified", "failed", "unknown"} <= counts.keys():
+        return None
+    counts.setdefault("skipped", 0)
+    counts["total"] = int(re.search(r"\(of (\d+) checks\)$", line.group(1)).group(1))
+    return counts
+
+
 def group_doctor() -> None:
     """`hermes review-loop doctor` — the read-only preflight of an installation."""
     from review_loop import cli, config, doctor
@@ -291,6 +310,14 @@ def group_doctor() -> None:
     check("the seat configs match what this interpreter can read",
           seat_config_style(), "yaml" if any(_have(m) for m in ("yaml", "ruamel.yaml")) else "json")
 
+    # report()'s skipped form parses too (#150): a summary it cannot read is not a green one.
+    check("the summary parser reads report()'s skipped form",
+          doctor_summary("demo: 0 verified, 3 failed, 0 unknown, 3 skipped (of 6 checks)", "demo"),
+          {"verified": 0, "failed": 3, "unknown": 0, "skipped": 3, "total": 6})
+    check("  and the form without it",
+          doctor_summary("demo: 6 verified, 0 failed, 0 unknown (of 6 checks)", "demo"),
+          {"verified": 6, "failed": 0, "unknown": 0, "skipped": 0, "total": 6})
+
     install_doctor_fixture()
     added = doctor_runtime_fixture()
     before_files = tree_digest(TMP)
@@ -299,11 +326,10 @@ def group_doctor() -> None:
     check("a correct install passes", rc, 0)
     # The invariant, not a count: every check verified, none failed or unknown. A hard-coded
     # total breaks each time a branch adds a check (#104's gate:timeout lines, main's own).
-    import re as _re
-    summary = _re.search(r"widgets: (\d+) verified, (\d+) failed, (\d+) unknown \(of (\d+) checks\)", out)
+    summary = doctor_summary(out, "widgets")
     check("  every check verified",
-          bool(summary) and summary.group(1) == summary.group(4)
-          and summary.group(2) == summary.group(3) == "0", True)
+          summary is not None and summary["verified"] == summary["total"]
+          and summary["failed"] == summary["unknown"] == 0, True)
     check("  nothing is marked failed", "❌" in out, False)
     check("  the header says it is read-only",
           "read-only: it writes nothing and fires nothing" in out, True)
@@ -314,7 +340,9 @@ def group_doctor() -> None:
                  "sandbox:caps",
                  "hook:widgets-review", "hook:widgets-fix",
                  "model:reviewer", "model:fixer", "model:adjudicator",
-                 "extras:reviewer", "extras:fixer", "extras:adjudicator"):
+                 "extras:reviewer", "extras:fixer", "extras:adjudicator",
+                 # The fixture opts in (unattended_fixer_push), so the fix leg reads as enabled.
+                 "fixer-push"):
         check(f"  ✅ {name}", f"✅ {name}" in out, True)
     check("  it writes nothing", tree_digest(TMP), before_files)
 
