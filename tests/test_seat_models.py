@@ -320,6 +320,9 @@ class ProfileResolution(Base):
             self.assertNotIn(inference.key, inference.describe())
 
     def test_parent_environment_key_never_satisfies_a_seat(self):
+        # The proof below is only as good as the value injected in setUp: pin that they agree, so
+        # a one-sided merge of either line fails here instead of silently disarming the check.
+        self.assertEqual(os.environ.get("OPENROUTER_API_KEY"), PARENT_LEAK)
         (self.home / "profiles" / "rev" / ".env").unlink()
         with self.assertRaises(seat_model.SeatModelError) as caught:
             seat_model.resolve_seat(self.loop, "reviewer", self.settings)
@@ -1072,13 +1075,11 @@ class ProviderExtras(Base):
         self.assertIn("extras:reviewer", [c.name for c in checks])
 
 
-# The Hermes checkout to compare against: HERMES_AGENT_SOURCE only — never a default, so this can
-# never probe the operator's live install (its venv python can complete a pending source update).
-# Off a prepared host it skips; with REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1 (CI's `verticals` job) a
-# missing checkout fails instead (tests/hermes_prereqs.py).
-sys.path.insert(0, str(ROOT / "tests"))
-import hermes_prereqs  # noqa: E402
-HERMES_SOURCE = os.environ.get("HERMES_AGENT_SOURCE", "")
+# The Hermes checkout to compare against: HERMES_AGENT_SOURCE only, as _home_guard captured it —
+# never a default, and a source inside the live install fails loudly (_home_guard.needs_real_hermes),
+# since probing it can complete a pending source update. Off a prepared host it skips; with
+# REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1 (CI's `verticals` job) a missing checkout fails instead.
+HERMES_SOURCE = str(_home_guard.HERMES_AGENT_SOURCE or "")
 _TRUTH = r"""
 import json, sys
 sys.path.insert(0, sys.argv[1])
@@ -1093,10 +1094,9 @@ except Exception as exc:
 _DUMMY = "placeholder-value-0000111122223333"
 
 
-@hermes_prereqs.needs(bool(HERMES_SOURCE)
-                      and (pathlib.Path(HERMES_SOURCE) / "venv" / "bin" / "python").exists(),
-                      "set HERMES_AGENT_SOURCE to a hermes-agent checkout with its venv/ to compare "
-                      "doctor with Hermes's own resolver")
+@_home_guard.needs_real_hermes(reason="set HERMES_AGENT_SOURCE to a disposable hermes-agent "
+                                      "checkout with its venv/ to compare doctor with Hermes's own "
+                                      "resolver")
 class HermesAgreement(unittest.TestCase):
     """#118, differential: for each profile, the pinned Hermes resolver's api_mode against
     doctor's verdict. Hermes on the Messages wire ⇒ doctor lists the extra (required or possible);
