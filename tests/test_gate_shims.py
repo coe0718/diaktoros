@@ -1767,6 +1767,155 @@ class HookAndCronRemedies(Base):
         job = doctor.check_cron_job(config.load_id("widgets"))
         self.assertNotIn("init", job.fix)
 
+_CRON_DRIVER = textwrap.dedent("""
+    import argparse, sys
+    sys.path.insert(0, sys.argv[1])
+    from hermes_cli.subcommands.cron import build_cron_parser
+    from hermes_cli.cron import cron_command
+    parser = argparse.ArgumentParser(prog="hermes")
+    build_cron_parser(parser.add_subparsers(dest="command"), cmd_cron=cron_command)
+    sys.exit(cron_command(parser.parse_args(sys.argv[2:])) or 0)
+""")
+
+
+class CronJobRemedies(Base):
+    """Review of #112 at dda6d56: `cron:job` printed `hermes cron create` for states where the
+    job already exists; create only appends, so the broken job kept answering beside a duplicate.
+    Each state's printed remedy, applied, must leave exactly one healthy watchdog job."""
+
+    NAME = "review loop watchdog (widgets)"
+    BROKEN = {
+        "completed": lambda j: j.update(state="completed", enabled=False),
+        "paused": lambda j: j.update(state="paused", enabled=False,
+                                     paused_at="2026-09-01T00:00:00+00:00"),
+        "wrong script": lambda j: j.update(script="something_else.py"),
+        "not no-agent": lambda j: j.update(no_agent=False),
+        "bad stored schedule": lambda j: j.update(schedule={"kind": "interval", "minutes": 0}),
+        "no next_run_at": lambda j: j.update(next_run_at=None),
+    }
+
+    @classmethod
+    def healthy_job(cls, job_id="aaaaaaaaaaaa"):
+        # The shape `hermes cron create 15m --no-agent --script … --deliver local` stores.
+        return {"id": job_id, "name": cls.NAME, "script": doctor.SHIM_NAME, "no_agent": True,
+                "enabled": True, "state": "scheduled", "deliver": "local",
+                "schedule": {"kind": "interval", "minutes": 15, "display": "every 15m"},
+                "next_run_at": "2026-09-28T00:00:00+00:00"}
+
+    def store(self, jobs=None):
+        path = doctor.cron_store()
+        if jobs is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"jobs": jobs}))
+        return json.loads(path.read_text())["jobs"]
+
+    def check(self):
+        return doctor.check_cron_job(config.load_id("widgets"))
+
+    def named(self):
+        return [job for job in self.store() if job.get("name") == self.NAME]
+
+    def commands(self, fix):
+        self.assertNotIn("re-run init", fix)
+        found = re.findall(r"`hermes (cron [^`]+)`", fix)
+        self.assertTrue(found, f"no hermes cron command in: {fix}")
+        return [shlex.split(command) for command in found]
+
+    def simulate(self, argv):
+        """What Hermes's `cron remove/resume/create` do to the store (cron.jobs), for the suite
+        that runs without the Hermes source; the pinned-source test below runs the real ones."""
+        jobs = self.store()
+        verb = argv[1]
+        if verb == "remove":
+            jobs = [job for job in jobs if job["id"] != argv[2]]
+        elif verb == "resume":
+            for job in jobs:
+                if job["id"] == argv[2]:
+                    job.update(enabled=True, state="scheduled", paused_at=None)
+        elif verb == "create":
+            jobs.append(self.healthy_job(f"new{len(jobs):09d}"))   # create only appends
+        else:
+            self.fail(f"unexpected cron verb {verb!r}")
+        self.store(jobs)
+
+    def test_no_state_prints_a_create_that_duplicates_an_existing_job(self):
+        self.install()
+        for label, mutate in self.BROKEN.items():
+            with self.subTest(label):
+                job = self.healthy_job()
+                mutate(job)
+                self.store([job])
+                check = self.check()
+                self.assertTrue(check.failed, check.detail)
+                for argv in self.commands(check.fix):
+                    self.simulate(argv)
+                self.assertEqual(len(self.named()), 1, self.store())
+                self.assertEqual(self.check().status, doctor.VERIFIED, self.check().detail)
+
+    def test_two_jobs_with_the_watchdog_name_are_named_and_resolved(self):
+        self.install()
+        self.store([self.healthy_job("aaaaaaaaaaaa"), self.healthy_job("bbbbbbbbbbbb")])
+        check = self.check()
+        self.assertTrue(check.failed, "two watchdog jobs both fire the sweep")
+        self.assertIn("aaaaaaaaaaaa", check.detail)
+        self.assertIn("bbbbbbbbbbbb", check.detail)
+        for argv in self.commands(check.fix):
+            self.simulate(argv)
+        self.assertEqual(len(self.named()), 1)
+        self.assertEqual(self.check().status, doctor.VERIFIED)
+
+    def test_a_missing_job_is_created(self):
+        self.install()
+        self.store([])
+        check = self.check()
+        self.assertEqual(check.status, doctor.ABSENT)
+        commands = self.commands(check.fix)
+        self.assertEqual([argv[1] for argv in commands], ["create"])
+
+    def test_the_printed_remedies_run_through_hermes_own_cron_cli(self):
+        """Every state, driven through the pinned Hermes source's `hermes cron` parser and
+        handlers in this disposable HOME (never the live install)."""
+        if not (SOURCE / "hermes_cli" / "cron.py").exists():
+            if REQUIRED:
+                raise AssertionError(f"no Hermes source at {SOURCE}")
+            self.skipTest(f"no Hermes source at {SOURCE}")
+        self.install()
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--watchdog-shim"])
+        self.assertEqual(rc, 0, out)
+        driver = self.tmp / "cron_driver.py"
+        driver.write_text(_CRON_DRIVER)
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.home),
+               "HERMES_HOME": str(self.hermes), "TMPDIR": str(self.tmp)}
+
+        def hermes(argv):
+            proc = subprocess.run([real_python(), str(driver), str(SOURCE), *argv],
+                                  capture_output=True, text=True, timeout=120, env=env,
+                                  cwd=str(self.home))
+            if proc.returncode != 0 and "No module named" in proc.stderr:
+                if REQUIRED:
+                    raise AssertionError(proc.stderr[-300:])
+                self.skipTest(f"Hermes cron CLI not importable here: {proc.stderr[-200:]}")
+            return proc
+
+        fresh = self.commands(doctor.cron_fix(config.load_id("widgets")))[0]
+        for label, mutate in self.BROKEN.items():
+            with self.subTest(label):
+                if doctor.cron_store().exists():
+                    doctor.cron_store().unlink()
+                proc = hermes(fresh)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertEqual(self.check().status, doctor.VERIFIED, self.check().detail)
+                data = json.loads(doctor.cron_store().read_text())
+                mutate(data["jobs"][0])
+                doctor.cron_store().write_text(json.dumps(data))
+                check = self.check()
+                self.assertTrue(check.failed, check.detail)
+                for argv in self.commands(check.fix):
+                    proc = hermes(argv)
+                    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertEqual(len(self.named()), 1, self.store())
+                self.assertEqual(self.check().status, doctor.VERIFIED, self.check().detail)
+
 
 if __name__ == "__main__":
     unittest.main()

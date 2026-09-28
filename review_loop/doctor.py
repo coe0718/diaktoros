@@ -124,6 +124,15 @@ def cron_fix(loop: dict) -> str:
             f"--script {SHIM_NAME} --deliver local`")
 
 
+def cron_replace_fix(loop: dict, job_ids) -> str:
+    """For a watchdog job that exists but cannot run as it should: remove it (every one, by its
+    exact id), then create it. ``hermes cron create`` only appends — it never replaces a job of
+    the same name — so printing a bare create here would leave the broken job answering beside
+    a duplicate that fires the same shim."""
+    removes = ", then ".join(f"`hermes cron remove {job_id}`" for job_id in job_ids)
+    return f"{removes}, then {cron_fix(loop)}"
+
+
 def shim_fix(loop: dict) -> str:
     return (f"`hermes review-loop apply --loop {loop['id']} --watchdog-shim` rewrites it from the "
             "plugin (the scheduled job runs it by name)")
@@ -784,20 +793,30 @@ def check_cron_job(loop: dict) -> Check:
         return Check("cron:job", ABSENT, f"no job named {wanted!r} in {path}",
                      cron_fix(loop))
     job_id = str(job.get("id") or "?")
+    named = [str(entry.get("id") or "?") for entry in jobs if isinstance(entry, dict)
+             and str(entry.get("name") or "").strip() == wanted]
+    if len(named) > 1:
+        return Check("cron:job", MISMATCH,
+                     f"{len(named)} jobs are named {wanted!r} ({', '.join(named)}) — each one "
+                     "fires the watchdog",
+                     cron_replace_fix(loop, named))
+    replace = cron_replace_fix(loop, [job_id])
     # Match the scheduler's runnable predicate: a stored pause timestamp blocks firing even
     # when enabled=True and the display state has already been normalized to "scheduled".
     if (not job.get("enabled", True) or job.get("state") in ("paused", "completed")
             or bool(job.get("paused_at"))):
         state = job.get("state")
         reason = ("completed" if state == "completed" else "paused or disabled")
-        fix = (cron_fix(loop) if state == "completed" else
+        # A completed recurring watchdog is not "paused": resuming does not re-arm it. It is
+        # replaced — never created beside, which would leave two jobs of one name.
+        fix = (replace if state == "completed" else
                f"`hermes cron resume {job_id}`: the scheduler skips a disabled watchdog")
         return Check("cron:job", MISMATCH, f"{job_id} ({wanted}) is {reason}",
                      fix)
     if job.get("script") != SHIM_NAME or job.get("no_agent") is not True:
         return Check("cron:job", MISMATCH,
                      f"{job_id} runs {job.get('script')!r} (no_agent={job.get('no_agent')!r}), "
-                     f"expected {SHIM_NAME!r} with --no-agent", cron_fix(loop))
+                     f"expected {SHIM_NAME!r} with --no-agent", replace)
     schedule_data = job.get("schedule")
     valid = False
     missing_croniter = False
@@ -822,7 +841,7 @@ def check_cron_job(loop: dict) -> Check:
     if not valid and not missing_croniter:
         return Check("cron:job", MISMATCH,
                      f"{job_id} has no valid stored schedule (display text does not schedule work)",
-                     cron_fix(loop))
+                     replace)
     next_run = job.get("next_run_at")
     try:
         if not isinstance(next_run, str) or not next_run.strip():
@@ -832,7 +851,7 @@ def check_cron_job(loop: dict) -> Check:
         return Check("cron:job", MISMATCH,
                      f"{job_id} has no valid next_run_at — cannot verify the next wake "
                      "(the scheduler may recompute a missing value for a recurring job)",
-                     cron_fix(loop))
+                     replace)
     if missing_croniter:
         return Check("cron:job", UNKNOWN,
                      f"{job_id} cron schedule could not be validated here (croniter unavailable); "
