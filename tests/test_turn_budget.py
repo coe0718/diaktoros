@@ -47,7 +47,9 @@ class Settings(unittest.TestCase):
         self.assertEqual(loop["turn_budget_s"], 900)
         for seat in ("reviewer", "fixer", "adjudicator"):
             self.assertEqual(config.turn_budget(loop, seat), 900)
-        self.assertEqual(Supervisor.__init__.__kwdefaults__["child_timeout"], 900)
+        # Read off an instance: main's test ledger guard wraps Supervisor.__init__.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(Supervisor(pathlib.Path(tmp) / "runs.sqlite").child_timeout, 900)
         self.assertEqual(config.SETTINGS_SCHEMA["turn_budget_s"]["default"], 900)
         self.assertEqual(config.settings_defaults(None)["turn_budget_s"], 900)
 

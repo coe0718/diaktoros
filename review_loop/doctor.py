@@ -450,9 +450,7 @@ def check_routes(loop: dict) -> list[Check]:
     """Route/profile/secret correspondence, read from the gateway's own subscription file."""
     path = routes.subs_path()
     if not path.exists():
-        return [Check("routes", ABSENT, f"no route registry at {path}",
-                      "re-run init for this loop: it writes the routes into the subscription "
-                      "file the gateway already reads")]
+        return [Check("routes", ABSENT, f"no route registry at {path}", _missing_route_fix(loop))]
     try:
         data = json.loads(path.read_text())
     except Exception as exc:
@@ -513,6 +511,13 @@ def _intent_overlay(loop: dict, data: dict, checks: list[Check]) -> list[Check]:
     return checks
 
 
+def _missing_route_fix(loop: dict) -> str:
+    """``init`` refuses an existing loop, so a lost route is written back by ``apply``. (With an
+    intent record, ``_intent_overlay`` replaces this with ``doctor --repair``, same secret.)"""
+    from . import gate_shims
+    return gate_shims.recreate_fix(loop)
+
+
 def check_route(loop: dict, data: dict, seat: str) -> Check:
     name = str(loop["seats"][seat].get("route") or "")
     profile = str(loop["seats"][seat].get("profile") or "")
@@ -522,8 +527,7 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
     entry = _route_entry(data, name)
     if entry is None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
-                     f"re-run init for this loop (it writes {name!r} with a generated secret), "
-                     f"or `hermes webhook subscribe {name}`")
+                     _missing_route_fix(loop))
     if str(entry.get("profile") or "") != profile:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but seats.{seat}.profile is "
@@ -585,8 +589,8 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
     entry = _route_entry(data, name)
     if entry is None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
-                     f"re-run init with --adjudicator-route {name}: the breach marker is the only "
-                     f"record of an escalation nobody is woken for")
+                     _missing_route_fix(loop) + " — the breach marker is the only record of an "
+                     "escalation nobody is woken for")
     if str(entry.get("profile") or "") != profile:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {entry.get('profile')!r}, but adjudicator.profile is "
@@ -926,8 +930,7 @@ def hook_route_name(hook: dict) -> str:
     ``widgets-fix``, nor a route name embedded anywhere else in a URL.
     """
     url = (hook.get("config") or {}).get("url") if isinstance(hook.get("config"), dict) else ""
-    path = urlsplit(str(url or "")).path.rstrip("/")
-    return path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
+    return routes.route_name_of(url)
 
 
 def seat_route_target(loop: dict, name: str) -> tuple[str | None, str]:
@@ -966,9 +969,7 @@ def same_hook_url(posted: str, expected: str) -> bool:
     """Is this hook *for* that route URL? Scheme and host case-insensitive, a trailing slash
     ignored. For finding a hook (whose is it, which one to pause or delete) — never for deciding
     it is correct: see ``exact_hook_url``."""
-    got, want = urlsplit(posted), urlsplit(expected)
-    return ((got.scheme.lower(), got.netloc.lower(), got.path.rstrip("/"))
-            == (want.scheme.lower(), want.netloc.lower(), want.path.rstrip("/")))
+    return routes.same_webhook_url(posted, expected)
 
 
 def exact_hook_url(posted: str, expected: str) -> bool:
@@ -981,9 +982,7 @@ def exact_hook_url(posted: str, expected: str) -> bool:
     and a query string is not part of the match: the router reads the path only, so
     ``…/webhooks/<route>?x=1`` is delivered like the bare URL.
     """
-    got, want = urlsplit(posted), urlsplit(expected)
-    return ((got.scheme.lower(), got.netloc.lower(), got.path)
-            == (want.scheme.lower(), want.netloc.lower(), want.path))
+    return routes.serves_route_url(posted, expected)
 
 
 SLASH_404 = ("posts to the route's URL with a trailing slash — the gateway does not route it "
@@ -1095,8 +1094,9 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                   event in (hook.get("events") or [])), None) or (candidates[0] if candidates else None)
     if match is None:
         return Check(f"hook:{name}", ABSENT, "no repo hook posts to [webhook URL redacted]",
-                     f"re-run init --hooks --admin-token <login> (needs hook write and delete access on "
-                     f"{loop['repo']}: `repo`, or the narrower `admin:repo_hook`), or add the hook by "
+                     f"re-run init --hooks --admin-token <login> "
+                     f"(needs hook write and delete access on {loop['repo']}: `repo`, or the "
+                     f"narrower `admin:repo_hook`), or add the hook by "
                      f"hand with that URL and the route's secret")
     hook_id = match.get("id")
     posted = posted_url(match)
@@ -1108,8 +1108,8 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                      "gateway delivers this route only at that URL, so the hook wakes nothing")
     if not exact_hook_url(posted, url):
         return Check(f"hook:{name}", MISMATCH, f"hook {hook_id} {SLASH_404}",
-                     f"edit hook {hook_id}'s URL on GitHub to drop the trailing slash (or re-run "
-                     "init --hooks for a fresh loop)")
+                     f"`hermes review-loop apply --loop {loop['id']}` repoints hook {hook_id} at "
+                     "the exact URL (or edit its URL on GitHub to drop the trailing slash)")
     events = [str(item) for item in (match.get("events") or [])]
     if event not in events:
         return Check(f"hook:{name}", MISMATCH,
@@ -1139,6 +1139,15 @@ def _safe_report_text(text: str) -> str:
     return _URL_IN_REPORT.sub("[webhook URL redacted]", text)
 
 
+def check_gateway_scripts(loop: dict) -> list[Check]:
+    """Each installed route's script, resolved exactly as the gateway resolves it (issue #105):
+    under the serving profile's ``scripts/``, a real file inside it, and this plugin's shim."""
+    from . import gate_shims
+    status_of = {"ok": VERIFIED, "absent": ABSENT, "mismatch": MISMATCH}
+    return [Check(name, status_of[status], detail, fix)
+            for name, status, detail, fix in gate_shims.live_checks(loop)]
+
+
 def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     """Every check, in the order an operator reads an install: what it is, who runs it, what
     wakes it, what schedules it, and where it works."""
@@ -1156,6 +1165,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.extend(check_tokens(loop))
     checks.append(check_read_token(loop))
     checks.extend(check_routes(loop))
+    checks.extend(check_gateway_scripts(loop))
     checks.append(check_scripts())
     checks.append(check_shim(loop))
     checks.append(check_cron_job(loop))

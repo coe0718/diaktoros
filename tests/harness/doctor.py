@@ -55,8 +55,8 @@ def install_doctor_fixture() -> dict:
     `reset()` gives the loop, the clone and the three routes. The parts doctor exists to check
     beyond those are built here explicitly: the two profile homes (with the GH_TOKEN a seat
     pushes with, and the model doctor resolves as that profile), owner-only PAT files, the cron
-    shim pinned to *this* plugin install, the scheduler's job store, and two repo hooks pointing
-    at this loop's own gateway.
+    shim pinned to *this* plugin install, the scheduler's job store, two repo hooks pointing
+    at this loop's own gateway, and the gate shims in each serving profile's scripts/.
     """
     from review_loop import cli, config
 
@@ -92,6 +92,9 @@ def install_doctor_fixture() -> dict:
                     "content_type": "json"}},
     ]
     save_world()
+    # The gate shims the gateway runs from each serving profile's scripts/ (issue #105).
+    from review_loop import gate_shims
+    gate_shims.install(config.load_id("widgets"))
     return config.load_id("widgets")
 
 
@@ -236,7 +239,13 @@ def group_doctor() -> None:
     before_posts = len(RECEIVED)
     rc, out = run_doctor("--loop", "widgets")
     check("a correct install passes", rc, 0)
-    check("  every check verified", "widgets: 27 verified, 0 failed, 0 unknown (of 27 checks)" in out,
+    # The number of checks grows as `doctor` gains them, so assert the invariant rather than a
+    # literal that has to be kept in step in two files: every check ran, and none failed or was
+    # unknown. A pinned count silently stops testing the claim it names the moment doctor changes.
+    summary = next((ln for ln in out.splitlines() if ln.startswith("widgets: ") and "checks)" in ln), "")
+    parts = summary.split()   # "widgets: N verified, 0 failed, 0 unknown (of M checks)"
+    check("  every check verified",
+          "0 failed, 0 unknown" in summary and len(parts) > 2 and parts[1] == parts[-2],
           True)
     check("  nothing is marked failed", "❌" in out, False)
     check("  the header says it is read-only",

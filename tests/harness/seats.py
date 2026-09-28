@@ -843,7 +843,8 @@ def group_webhook_host() -> None:
     original_api = gh.api
     def fake_api(loop, path, **kwargs):
         if path.endswith('/hooks?per_page=100'):
-            return [{'id': key, 'config': {'url': url}} for key, url in installed_hooks.items()]
+            return [{'id': key, 'active': False, 'config': {'url': url}}
+                    for key, url in installed_hooks.items()]
         if kwargs.get('method') == 'POST':
             calls.append((path, kwargs))
             hook_id = len(calls)

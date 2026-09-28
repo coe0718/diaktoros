@@ -18,8 +18,12 @@ import sys
 import threading
 import time
 from typing import NamedTuple
+import urllib.request
 import uuid
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
+
+from . import hostdirs
+from .hostdirs import WORKER_ENV, HostStateGone, in_worker
 
 from .config import DEFAULT_TURN_BUDGET_S
 
@@ -61,7 +65,42 @@ CREATE TABLE IF NOT EXISTS review_receipts (
  generation TEXT NOT NULL, principal_id INTEGER NOT NULL,
  review_id INTEGER, verdict TEXT, created REAL NOT NULL, confirmed REAL
 );
+-- Facts about the ledger itself for the operator outbox, e.g. that it vanished and was
+-- recreated empty. Delivered once by notify(), claim-before-send like every other notice.
+CREATE TABLE IF NOT EXISTS ledger_events (
+ id INTEGER PRIMARY KEY, message TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+ created REAL NOT NULL, delivered REAL
+);
 """
+# The host's migrations of ``runs``, in order: (column, ALTER, follow-up statements). The one
+# source for both the host (which applies what a ledger lacks) and the worker's schema check.
+_MIGRATIONS = (
+    ("generation", "ALTER TABLE runs ADD COLUMN generation TEXT", ()),
+    ("turn_key", "ALTER TABLE runs ADD COLUMN turn_key TEXT NOT NULL DEFAULT ''",
+     ("DROP INDEX IF EXISTS runs_turn",
+      "CREATE UNIQUE INDEX runs_turn ON runs(repo,pr,head,seat,turn_key)")),
+    # Legacy rows cannot acquire permission from a later policy toggle.
+    ("push_admitted", "ALTER TABLE runs ADD COLUMN push_admitted INTEGER NOT NULL DEFAULT 0", ()),
+    ("push_intent", "ALTER TABLE runs ADD COLUMN push_intent REAL", ()),
+    ("push_confirmed", "ALTER TABLE runs ADD COLUMN push_confirmed REAL", ()),
+    # Issue #53: pre-write failure count, next retry time, bounded output tail.
+    ("retries", "ALTER TABLE runs ADD COLUMN retries INTEGER NOT NULL DEFAULT 0", ()),
+    ("retry_at", "ALTER TABLE runs ADD COLUMN retry_at REAL", ()),
+    ("detail", "ALTER TABLE runs ADD COLUMN detail TEXT", ()),
+    # The host dependency prefetch (#51): "fetching …" while it runs, then each ecosystem's
+    # outcome. Host-written, one bounded line, never tool output.
+    ("deps", "ALTER TABLE runs ADD COLUMN deps TEXT", ()),
+    # Whether the seat was shown the whole change (#93, #110): '' when it was, the host's
+    # reason when it was not, NULL before the change record was built. Written only by the
+    # owning worker; the broker refuses an approval while it is set.
+    ("partial_view", "ALTER TABLE runs ADD COLUMN partial_view TEXT", ()),
+    # The turn's wall clock, fixed at enqueue (#49). NULL on legacy rows: the worker's own
+    # child_timeout applies to them.
+    ("budget", "ALTER TABLE runs ADD COLUMN budget REAL", ()),
+)
+# Worker stderr (one diagnostic line, or a traceback) goes to <ledger>.workers.log, rotated
+# once to .1 by the host when it passes this size.
+WORKER_LOG_MAX = 256 * 1024
 ACTIVE = ("claimed", "launching", "running", "uncertain")
 MAX_ATTEMPTS = 3
 # Issue #53: a turn that failed before any external write is not dead. It waits
@@ -108,6 +147,102 @@ _FIXER_NOT_ADMITTED_BEFORE_97 = (
     "and a later opt-in cannot authorize this run — no turn launched; this head needs a manual "
     "fix or a new commit")
 POLICY_CANCELLATIONS = (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED, _FIXER_NOT_ADMITTED_BEFORE_97)
+
+
+class LedgerMissing(HostStateGone):
+    """A worker found no usable ledger (missing, empty or not SQLite); it creates none."""
+
+
+def _has_content(path: Path) -> bool:
+    """A non-empty regular file at ``path``, by stat alone.
+
+    Never open(): closing any descriptor on a database file drops every POSIX lock this
+    process holds on it, including those of its live SQLite connections.
+    """
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+_EXPECTED: dict[str, set[str]] = {}
+
+
+def _expected_schema() -> dict[str, set[str]]:
+    """Every table of a current ledger and its columns, from SCHEMA plus the migrations."""
+    if not _EXPECTED:
+        with closing(sqlite3.connect(":memory:")) as con:
+            con.executescript(SCHEMA)
+            for (name,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+                _EXPECTED[name] = {row[1] for row in con.execute(f"PRAGMA table_info({name})")}
+        _EXPECTED["runs"] |= {column for column, _, _ in _MIGRATIONS}
+    return _EXPECTED
+
+
+def _ledger_problem(con: sqlite3.Connection) -> str | None:
+    """Why ``con`` is not a review-loop ledger the host prepared, or None. Reads only."""
+    for table, columns in _expected_schema().items():
+        have = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+        if not have:
+            return f"no {table} table"
+        if columns - have:
+            return f"{table} lacks {', '.join(sorted(columns - have))}"
+    return None
+
+
+def ledger_marker(db: str | Path) -> Path:
+    """The host's record, beside the ledger, that a ledger existed at ``db``."""
+    db = Path(db)
+    return db.with_name(db.name + ".present")
+
+
+def production_ledger() -> Path:
+    """The run ledger every host caller uses: ``$HERMES_HOME/state/review-loop-runs.sqlite``."""
+    from . import config
+    return config.home() / "state" / "review-loop-runs.sqlite"
+
+
+def presence_marker() -> Path:
+    """The host's record, in the loop config dir, that the production ledger existed.
+
+    It survives a wipe of the whole state dir (which takes the beside-ledger marker with it),
+    so that loss is reported instead of looking like a first install. Every host-side
+    ``Supervisor`` of the production ledger checks and keeps it by default, whoever opens it
+    first (gate, watchdog, selftest, the ``status`` CLI, observer…); a worker never writes it.
+    """
+    from . import config
+    return config.config_dir() / ".ledger-present"
+
+
+def forget_ledger_presence() -> bool:
+    """Forget that the production ledger existed; True if a marker was removed.
+
+    Call it when the last loop is uninstalled (``cli.cmd_uninstall`` does), so that a real
+    fresh install later is not reported as a vanished ledger.
+    """
+    try:
+        presence_marker().unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def _canonical(path) -> str:
+    """Which file ``path`` names, not how it is spelled: ``~`` expanded, symlinks resolved.
+
+    A symlinked ``~/.hermes`` or an aliasing ``HERMES_HOME`` names the same ledger as the
+    canonical path, and a path whose tail does not exist yet resolves through its existing
+    part, so a wiped state dir still compares equal to the ledger it held.
+    """
+    return os.path.realpath(os.path.expanduser(str(path)))
+
+
+def _names(presence: Path | None, db: Path) -> bool:
+    """Does the config-dir marker record the ledger ``db`` is (by file, not spelling)?"""
+    try:
+        return presence is not None and _canonical(presence.read_text().strip()) == _canonical(db)
+    except OSError:
+        return False
 
 
 class FixerPushDisabled(ValueError):
@@ -871,7 +1006,46 @@ class Supervisor:
                  fixture_mode: bool = False, capacity: dict[str, int] | None = None,
                  lease_seconds: float = 60, child_timeout: float = DEFAULT_TURN_BUDGET_S,
                  production_config: str | Path | None = None,
-                 hermes_home: str | Path | None = None):
+                 hermes_home: str | Path | None = None, create: bool = True,
+                 presence: str | Path | None = None):
+        """``create=False`` is the detached worker's mode: it opens an existing ledger only.
+
+        Hardening: a worker must never create host state. Only host-side callers (gate
+        enqueue, CLI, init, watchdog) create, schema or migrate the ledger and its directory;
+        the host did so before it enqueued the run. A worker never runs SCHEMA or a migration.
+        Every worker connection (``_connect``) requires a non-empty file, opens it with
+        ``mode=rw`` and checks this plugin's full schema before any pragma; anything else —
+        gone, empty, not SQLite, corrupt, foreign, replaced mid-run — is ``LedgerMissing``,
+        before anything is written to it.
+
+        The host reports a ledger that vanished since it last opened one: one stderr line and
+        one operator notice, recorded before any marker is (re)written. It knows one existed
+        from ``<ledger>.present`` beside it, or from ``presence`` in the loop config dir, which
+        survives a wipe of the whole state dir. ``presence`` defaults to ``presence_marker()``
+        for the production ledger, so no host caller can forget it; other ledger paths use the
+        beside-ledger marker alone unless one is passed.
+        """
+        # A literal '~/…' (unexpanded by any shell) names the home's ledger, never ./~ here.
+        db = Path(os.path.expanduser(str(db)))
+        # First, before any other check: no ledger at all is a quiet exit, not an error.
+        if not create and not _has_content(db):
+            raise LedgerMissing(f"run ledger {db} is gone, empty or not SQLite")
+        vanished = False
+        if create:
+            empty = db.is_file() and db.stat().st_size == 0
+            if presence is None and _canonical(db) == _canonical(production_ledger()):
+                presence = presence_marker()
+            presence = Path(presence) if presence is not None else None
+            vanished = (not db.is_file() or empty) and (ledger_marker(db).is_file()
+                                                        or _names(presence, db))
+            if vanished:
+                print(f"review-loop: run ledger {db} vanished since it was last opened; creating "
+                      f"a fresh, empty ledger. Earlier runs, holds and notices are not in it.",
+                      file=sys.stderr)
+            elif empty:
+                # SQLite treats an empty file as a new database; say so, never adopt it silently.
+                print(f"review-loop: run ledger {db} was an empty file; initializing it as a "
+                      f"new, empty ledger", file=sys.stderr)
         if fixture_mode and production_config is not None:
             raise ValueError("fixture and production modes are exclusive")
         if production_config is not None and hermes_home is None:
@@ -897,52 +1071,72 @@ class Supervisor:
             raise ValueError("positive seat capacities required")
         self.lease_seconds = lease_seconds
         self.child_timeout = child_timeout
+        self.create = create
+        if not create:
+            self._connect().close()  # validates; a worker never schemas or migrates
+            return
         self.db.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as con:
             con.executescript(SCHEMA)
             con.execute('BEGIN IMMEDIATE')
-            if 'generation' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
-                con.execute('ALTER TABLE runs ADD COLUMN generation TEXT')
-            if 'turn_key' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
-                con.execute("ALTER TABLE runs ADD COLUMN turn_key TEXT NOT NULL DEFAULT ''")
-                con.execute('DROP INDEX IF EXISTS runs_turn')
-                con.execute('CREATE UNIQUE INDEX runs_turn ON runs(repo,pr,head,seat,turn_key)')
-            if 'push_admitted' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
-                # Legacy rows cannot acquire permission from a later policy toggle.
-                con.execute('ALTER TABLE runs ADD COLUMN push_admitted INTEGER NOT NULL DEFAULT 0')
-            if 'push_intent' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
-                con.execute('ALTER TABLE runs ADD COLUMN push_intent REAL')
-            if 'push_confirmed' not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
-                con.execute('ALTER TABLE runs ADD COLUMN push_confirmed REAL')
-            columns = {r[1] for r in con.execute('PRAGMA table_info(runs)')}
-            # Issue #53: pre-write failure count, next retry time, bounded output tail.
-            if 'retries' not in columns:
-                con.execute('ALTER TABLE runs ADD COLUMN retries INTEGER NOT NULL DEFAULT 0')
-            if 'retry_at' not in columns:
-                con.execute('ALTER TABLE runs ADD COLUMN retry_at REAL')
-            if 'detail' not in columns:
-                con.execute('ALTER TABLE runs ADD COLUMN detail TEXT')
-            if 'budget' not in columns:
-                # The turn's wall clock, fixed at enqueue (#49). NULL on legacy rows: the worker's
-                # own child_timeout applies to them.
-                con.execute('ALTER TABLE runs ADD COLUMN budget REAL')
-            if 'deps' not in columns:
-                # The host dependency prefetch (#51): "fetching …" while it runs, then each
-                # ecosystem's outcome. Host-written, one bounded line, never tool output.
-                con.execute('ALTER TABLE runs ADD COLUMN deps TEXT')
-            if 'partial_view' not in columns:
-                # Whether the seat was shown the whole change (#93, #110): '' when it was, the
-                # host's reason when it was not, NULL before the change record was built. Written
-                # only by the owning worker; the broker refuses an approval while it is set.
-                con.execute('ALTER TABLE runs ADD COLUMN partial_view TEXT')
+            for column, alter, follow in _MIGRATIONS:
+                if column not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
+                    con.execute(alter)
+                    for statement in follow:
+                        con.execute(statement)
+            if vanished:
+                con.execute("INSERT INTO ledger_events(message,created) VALUES(?,?)",
+                            (f"⚠️ Review-loop run ledger {self.db} vanished and was recreated "
+                             f"empty: earlier runs, holds and undelivered notices are lost. "
+                             f"Check what removed it before trusting seat state.", time.time()))
             con.execute('COMMIT')
+        marker = ledger_marker(self.db)
+        if not marker.is_file():
+            os.close(os.open(marker, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                             0o600))
+        if presence is not None and not _names(presence, self.db):
+            hostdirs.ensure(presence.parent)
+            temp = presence.with_name(presence.name + f".{os.getpid()}.tmp")
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                         0o600)
+            with os.fdopen(fd, "w") as out:
+                out.write(_canonical(self.db) + "\n")
+            os.replace(temp, presence)
 
     def _connect(self):
-        con = sqlite3.connect(self.db, timeout=10, isolation_level=None)
+        if self.create:
+            con = sqlite3.connect(self.db, timeout=10, isolation_level=None)
+        else:
+            con = self._worker_connect()
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA busy_timeout=10000")
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA synchronous=FULL")
+        return con
+
+    def _worker_connect(self) -> sqlite3.Connection:
+        """Open the host's ledger, or raise LedgerMissing having written nothing to the file.
+
+        Checked on every connection, not once: the file can be removed or replaced mid-run.
+        SQLite itself tells a non-database ("file is not a database") from a ledger; the schema
+        check runs before any pragma or write, so a refused file is left as it was.
+        """
+        if not _has_content(self.db):
+            raise LedgerMissing(f"run ledger {self.db} is gone, empty or not SQLite")
+        # mode=rw: a ledger removed after the check above is an error, never a new file.
+        uri = "file:" + urllib.request.pathname2url(str(self.db.resolve())) + "?mode=rw"
+        try:
+            con = sqlite3.connect(uri, uri=True, timeout=10, isolation_level=None)
+        except sqlite3.DatabaseError as exc:
+            raise LedgerMissing(f"run ledger {self.db} cannot be opened: {exc}") from exc
+        try:
+            problem = _ledger_problem(con)  # before any pragma: nothing is written yet
+        except sqlite3.DatabaseError as exc:
+            con.close()
+            raise LedgerMissing(f"run ledger {self.db} is unreadable: {exc}") from exc
+        if problem:
+            con.close()
+            raise LedgerMissing(f"run ledger {self.db} is not a review-loop ledger ({problem})")
         return con
 
     def get(self, delivery: str) -> dict | None:
@@ -1261,6 +1455,31 @@ class Supervisor:
                 con.execute("UPDATE operator_notices SET state='delivered', delivered=? "
                             "WHERE run_id=? AND state='sending'", (time.time(), row['id']))
             count += 1
+        # Facts about the ledger itself (it vanished and was recreated): once each.
+        with self._connect() as con:
+            events = con.execute("SELECT id FROM ledger_events WHERE state='pending' "
+                                 "ORDER BY id LIMIT 20").fetchall()
+        for event in events:
+            with self._connect() as con:
+                con.execute('BEGIN IMMEDIATE')
+                row = con.execute("SELECT * FROM ledger_events WHERE id=? AND state='pending'",
+                                  (event['id'],)).fetchone()
+                if row is not None:
+                    con.execute("UPDATE ledger_events SET state='sending' WHERE id=?", (row['id'],))
+                con.execute('COMMIT')
+            if row is None:
+                continue
+            try:
+                deliver(row['message'])
+            except Exception:
+                with self._connect() as con:
+                    con.execute("UPDATE ledger_events SET state='pending' WHERE id=? "
+                                "AND state='sending'", (row['id'],))
+                raise
+            with self._connect() as con:
+                con.execute("UPDATE ledger_events SET state='delivered',delivered=? WHERE id=? "
+                            "AND state='sending'", (time.time(), row['id']))
+            count += 1
         # Every ruling reaches the operator here, whatever the observer feed's configuration,
         # mute or event filter: the feed is best effort, this outbox is the guaranteed path.
         # Same claim-before-send rule as above: a crash mid-send is left 'sending', never replayed.
@@ -1499,10 +1718,39 @@ class Supervisor:
         for name in HOST_LIMIT_ENV:
             if os.environ.get(name):
                 env[name] = os.environ[name]
+
+        env[WORKER_ENV] = "1"  # hostdirs: a worker never creates host state (#108)
         _WORKERS[:] = [worker for worker in _WORKERS if worker.poll() is None]
-        _WORKERS.append(subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                         close_fds=True, start_new_session=True))
+        log = self._worker_log()
+        try:
+            _WORKERS.append(subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
+                                             stdout=subprocess.DEVNULL,
+                                             stderr=log if log is not None else subprocess.DEVNULL,
+                                             close_fds=True, start_new_session=True))
+        finally:
+            if log is not None:
+                log.close()  # the worker holds its own copy of the descriptor
+
+    def _worker_log(self):
+        """The worker's stderr: ``<ledger>.workers.log``, so its exit reason is on record.
+
+        The host creates it (0600) and rotates it once to ``.1`` past WORKER_LOG_MAX. A worker
+        (whose recover() also spawns) only appends to an existing, unrotated log and never
+        creates one; failing that its worker's stderr is discarded, as before.
+        """
+        path = self.db.with_name(self.db.name + ".workers.log")
+        flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            if in_worker():
+                if not path.is_file() or path.stat().st_size > WORKER_LOG_MAX:
+                    return None
+            else:
+                if path.is_file() and path.stat().st_size > WORKER_LOG_MAX:
+                    os.replace(path, path.with_name(path.name + ".1"))
+                flags |= os.O_CREAT
+            return os.fdopen(os.open(path, flags, 0o600), "ab")
+        except OSError:
+            return None
 
     def recover(self) -> str:
         """Sweep lost claims and ambiguous launches; schedule waiting work."""
@@ -1689,6 +1937,7 @@ class Supervisor:
     def _heartbeat(self, run_id: str, owner: str, stop: threading.Event) -> None:
         # Only the owning worker can extend a live lease. An expired lease is
         # never silently revived after recovery has quarantined the turn.
+        reported = set()
         while not stop.wait(max(0.01, min(self.lease_seconds / 3, 5))):
             try:
                 with self._connect() as con:
@@ -1696,9 +1945,15 @@ class Supervisor:
                     con.execute("UPDATE runs SET lease=?, updated=? WHERE id=? AND owner=? "
                                 "AND state IN ('launching','running') AND lease>=?",
                                 (now + self.lease_seconds, now, run_id, owner, now))
-            except sqlite3.Error:
-                # Recovery will quarantine this run if persistence stays down.
-                pass
+            except (sqlite3.Error, LedgerMissing) as exc:
+                # Recovery will quarantine this run if persistence stays down; a worker whose
+                # ledger is gone never recreates it and ends when its run does. Each distinct
+                # failure is logged once (the worker log), so a missed beat has a reason.
+                reason = f"{type(exc).__name__}: {exc}"
+                if reason not in reported:
+                    reported.add(reason)
+                    print(f"review-loop worker {os.getpid()}: heartbeat for run {run_id} "
+                          f"failed: {reason}", file=sys.stderr, flush=True)
 
     def complete_uncertain(self, run_id: str, owner: str, rc: int | None,
                            error: str | None = None, *, stopped: bool = True,
@@ -2112,20 +2367,31 @@ def main():
         return
     if a.command is None or a.capacity is None or a.lease is None or a.timeout is None:
         p.error('worker requires command, capacity, lease and timeout')
-    if a.operation == "_fixture-worker":
-        if os.environ.get("REVIEW_LOOP_TEST_FIXTURE") != "1":
-            raise SystemExit("fixture worker disabled")
-        sup = Supervisor(a.db, fixture_mode=True, fixture_command=json.loads(a.command),
-                         capacity=json.loads(a.capacity), lease_seconds=a.lease,
-                         child_timeout=a.timeout)
-    else:
-        home = os.environ.get("HERMES_HOME")
-        if not home or os.environ.get("REVIEW_LOOP_TEST_FIXTURE") != "0":
-            raise SystemExit("production worker requires explicit host home")
-        sup = Supervisor(a.db, production_config=a.command, hermes_home=home,
-                         capacity=json.loads(a.capacity), lease_seconds=a.lease,
-                         child_timeout=a.timeout)
-    sup._run_one()
+    # A worker never creates host state (create=False, hostdirs.ensure). If the ledger or a
+    # state dir is gone, replaced or unusable, before or during the run, it logs one line
+    # (to <ledger>.workers.log, which the host opened for it) and exits 0.
+    os.environ[WORKER_ENV] = "1"
+    try:
+        if a.operation == "_fixture-worker":
+            if os.environ.get("REVIEW_LOOP_TEST_FIXTURE") != "1":
+                raise SystemExit("fixture worker disabled")
+            sup = Supervisor(a.db, fixture_mode=True, fixture_command=json.loads(a.command),
+                             capacity=json.loads(a.capacity), lease_seconds=a.lease,
+                             child_timeout=a.timeout, create=False)
+        else:
+            home = os.environ.get("HERMES_HOME")
+            if not home or os.environ.get("REVIEW_LOOP_TEST_FIXTURE") != "0":
+                raise SystemExit("production worker requires explicit host home")
+            sup = Supervisor(a.db, production_config=a.command, hermes_home=home,
+                             capacity=json.loads(a.capacity), lease_seconds=a.lease,
+                             child_timeout=a.timeout, create=False)
+        sup._run_one()
+    except (HostStateGone, sqlite3.DatabaseError) as exc:
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        reason = exc if isinstance(exc, HostStateGone) else f"run ledger {a.db} unusable: {exc}"
+        print(f"review-loop worker {os.getpid()} {stamp}: {reason}; nothing to run",
+              file=sys.stderr, flush=True)
+        return
 
 
 if __name__ == "__main__":
