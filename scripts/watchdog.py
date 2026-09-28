@@ -135,7 +135,7 @@ def alert_due(watch: dict, key: str, now: float, cooldown: float) -> bool:
     """True at most once per ``cooldown`` for ``key``, and again after each cooldown passes.
 
     Stamped only when it fires: a condition that persists re-alerts every cooldown instead of
-    refreshing its own clock on every sweep and never speaking again (the stall map's #77).
+    refreshing its own clock on every sweep and never speaking again (#77, as the stall map does).
     """
     marks = watch.get("github_alerts")
     if not isinstance(marks, dict):
@@ -859,7 +859,22 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
     cooldown = 0.0 if TEST else loop["cooldown_h"] * 3600
     breach = st.breach_all()
     alerts: list[tuple[int, str, str]] = []
-    seen: dict[str, float] = {}
+    # The cooldown map (#77): ``marks`` is when each still-standing stall last alerted. A key is
+    # stamped only when it alerts, never merely for being seen, so a stall that persists
+    # re-alerts every cooldown; ``present`` is what this sweep still sees, and a key it no
+    # longer sees has cleared and is dropped, so the same stall returning alerts at once.
+    marks = watch.get("alerts") if isinstance(watch.get("alerts"), dict) else {}
+    present: set[str] = set()
+    unjudged: set[str] = set()            # PRs whose reviews were unreadable: not "cleared"
+    raised: dict[str, float] = {}
+
+    def due(key: str) -> bool:
+        present.add(key)
+        last = valid_clock(marks.get(key), now)
+        if last is not None and now - last < cooldown:
+            return False
+        raised[key] = now
+        return True
 
     for pr in prs:
         if not isinstance(pr, dict):
@@ -885,6 +900,7 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         if not isinstance(reviews, list):
             # Unknown beats wrong: no verdict is guessed — but the skipped check is said.
             pr_failures.extend((number, e) for e in errors[:1])
+            unjudged.add(f"{number}:")        # nor is its stall cleared: its cooldown stands
             continue
         latest = gate.latest_effective_review_at_head(reviews, loop, head)
         if latest is not None and gh.review_state(latest) == "APPROVED":
@@ -927,10 +943,8 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
                 kind = (f"reviewer never posted a verdict — head {head[:7]} observed "
                         f"{mins / 60:.1f}h ago, 0 verdicts at this head")
 
-        if kind:
-            seen[f"{number}:{head[:7]}:{kind[:24]}"] = now
-            if now - watch.get("alerts", {}).get(f"{number}:{head[:7]}:{kind[:24]}", 0) > cooldown:
-                alerts.append((number, kind, (pr.get("title") or "")[:60]))
+        if kind and due(stall_key(number, head, kind)):
+            alerts.append((number, kind, (pr.get("title") or "")[:60]))
 
     stuck: list[tuple[str, str]] = died_locks(loop, st._load(st.locks, {}) or {}, now)
     for seat, items in st.queue_all().items():
@@ -944,11 +958,7 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
 
     # The same cooldown the stall alerts use, on a stable key per stuck mark: an unrepaired
     # mark is worth one warning per window, not the identical two lines every 15 minutes.
-    reported: list[str] = []
-    for key, line in stuck:
-        seen[key] = now
-        if now - watch.get("alerts", {}).get(key, 0) > cooldown:
-            reported.append(line)
+    reported = [line for key, line in stuck if due(key)]
 
     if alerts or reported:
         header = f"[{loop['id']}] {loop['repo']}"
@@ -982,8 +992,12 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         log("observer: retried an undelivered notice")
     observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
 
-    history = {**watch.get("alerts", {}), **seen}
-    watch["alerts"] = {k: v for k, v in history.items() if now - v < 30 * 86400}
+    # Bounded by what is stalled now: cleared keys go, and a PR this sweep could not judge
+    # keeps its marks (a failed read is not a resolved stall, and must not re-alert it).
+    watch["alerts"] = {**{k: v for k, v in marks.items()
+                          if (k in present or k.startswith(tuple(unjudged)))
+                          and valid_clock(v, now) is not None},
+                       **raised}
     watch["last_run"] = now_iso()
     finish_reads(loop, watch, now, health, pr_failures, lines)
     st.watch_save(watch)
@@ -992,6 +1006,13 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
 
 
 LIVE_TURN = ("pending", "claimed", "launching", "running", "waiting")
+
+
+def stall_key(number: int, head: str, kind: str) -> str:
+    """The cooldown key for one stall: the PR, its head and what the stall is — with the ages
+    and counts its wording carries masked, so "adjudicating for 1.2h" and "... 1.3h" on the next
+    sweep are one stall, not a new one every six minutes (#77)."""
+    return f"{number}:{head[:7]}:{re.sub(r'[0-9]+(?:[.][0-9]+)?', '#', kind)[:24]}"
 
 
 def parked_kind(loop: dict, marker: dict, number: int, head: str,
