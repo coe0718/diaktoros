@@ -1,4 +1,5 @@
 """Fixture-only lifecycle tests: never invoke a real Hermes agent."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import concurrent.futures
 import contextlib
 import io
@@ -665,16 +666,20 @@ class Lifecycle(unittest.TestCase):
         # claims whatever row is pending with the config it was spawned with, so a phase's
         # idle straggler (spawned by its worker's recover()) could claim the next phase's row
         # under load (#108). Each phase therefore waits until its workers are gone.
+        # Nothing on the write-ahead record: both failures wait for a backed-off retry (#53),
+        # RETRY_BASE away, so neither is relaunched within this test.
         sup = self.supervisor(rc=7)
         sup.enqueue("bad", "o/r", 1, "a", "reviewer")
-        self.assertEqual(self.wait(sup, "bad", "failed")["outcome"], 7)
+        bad = self.wait(sup, "bad", "waiting")
+        self.assertEqual((bad["outcome"], bad["retries"], bad["error"]),
+                         (7, 1, "turn exited with status 7"))
         wait_for_workers(self.root)
         # The child sleeps far past its timeout, so only the timeout can end it, however
         # slow the machine is; the timeout is still short enough to keep the test quick.
         slow = self.supervisor(delay=60, child_timeout=1)
         slow.enqueue("slow", "o/r", 2, "b", "reviewer")
-        row = self.wait(slow, "slow", "failed", timeout=20)
-        self.assertEqual((row["error"], row["outcome"]), ("child timeout", None))
+        row = self.wait(slow, "slow", "waiting", timeout=20)
+        self.assertEqual((row["error"], row["outcome"], row["retries"]), ("child timeout", None, 1))
         wait_for_workers(self.root)
         ok = self.supervisor()
         ok.enqueue("ok", "o/r", 3, "c", "reviewer")
@@ -894,8 +899,14 @@ class ReviewerClaimConcurrency(unittest.TestCase):
         with patch('review_loop.config.by_repo', return_value=self.loop), \
              patch('review_loop.gh.api', side_effect=[TimeoutError('temporary'), self.pull()]):
             self.assertIsNone(self.sup._claim())
-            self.assertEqual(self.sup.get('review')['state'], 'pending')
-            self.assertEqual(self.sup.get('review')['attempts'], 0)
+            # Counted and backed off with its reason (#53): visible, bounded, not claimed.
+            row = self.sup.get('review')
+            self.assertEqual((row['state'], row['attempts'], row['retries']), ('waiting', 0, 1))
+            self.assertIn('claim-time read failed: TimeoutError: temporary', row['error'])
+            with sqlite3.connect(self.db) as con:
+                con.execute("UPDATE runs SET retry_at=0 WHERE delivery='review'")
+            with patch.object(self.sup, '_spawn'):
+                self.sup.recover()
             self.assertIsNotNone(self.sup._claim())
         self.assertEqual(self.sup.get('review')['state'], 'claimed')
 
@@ -903,9 +914,16 @@ class ReviewerClaimConcurrency(unittest.TestCase):
         with patch('review_loop.config.by_repo', return_value=self.loop), \
              patch('review_loop.gh.api', side_effect=TimeoutError('temporary')):
             self.assertIsNone(self.sup._claim())
+        # The failed read waits out its backoff (#53); a redelivery does not skip it, and the
+        # sweep that finds the backoff spent re-arms the worker.
         with patch.object(self.sup, '_spawn') as spawn:
             self.sup.enqueue('review', 'o/r', 1, 'a' * 40, 'reviewer')
+            spawn.assert_not_called()
+            with sqlite3.connect(self.db) as con:
+                con.execute("UPDATE runs SET retry_at=0 WHERE delivery='review'")
+            self.sup.recover()
             spawn.assert_called_once_with()
+        self.assertEqual(self.sup.get('review')['state'], 'pending')
 
     def test_dismissed_same_head_uses_new_turn_but_redelivery_deduplicates(self):
         head = 'a' * 40

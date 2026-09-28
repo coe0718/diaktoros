@@ -113,7 +113,7 @@ def _api(loop: dict, path: str, *, login: str, method: str = "GET", body=None) -
 
 def _audit(loop: dict, record: dict) -> None:
     """Durable metadata journal; failure aborts the write."""
-    audit = Path(loop["state_dir"]) / "broker-audit.jsonl"
+    audit = config.state_dir(loop) / "broker-audit.jsonl"
     if not audit.parent.is_dir() or audit.parent.is_symlink():
         raise broker.BrokerDenied("durable audit directory unavailable")
     dirfd = os.open(audit.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -141,7 +141,7 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
     `remote` is a private local-fixture seam, never sourced from IPC or config.
     Only validated manifest paths/bytes reach Git's temporary private bare repo.
     """
-    url = remote if remote is not None else f"https://github.com/{repo}.git"
+    url = config.guard_network(remote if remote is not None else f"https://github.com/{repo}.git")
     protocol = "file" if remote is not None else "https"
     with tempfile.TemporaryDirectory(prefix="review-loop-git-") as temp:
         root = Path(temp)

@@ -2,6 +2,7 @@
 
 GitHub is a fake ``gh.fetch``; the sandbox check runs real bubblewrap when it is installed.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import os
 from pathlib import Path
 import shutil
@@ -37,6 +38,7 @@ class World:
                    "head": {"sha": HEAD, "ref": "fix-7"}, "base": {"ref": "main", "sha": BASE}}
         self.files = files
         self.fail = set()
+        self.gone = {}              # path -> a persistent answer ("HTTP 404 {}", ...)
         self.calls = []
         self.trees = {}
         self.truncated = False
@@ -47,6 +49,8 @@ class World:
             raise AssertionError("write attempted")
         if path in self.fail:
             return None, "HTTP 502"
+        if path in self.gone:
+            return None, self.gone[path]
         if path == f"/repos/{REPO}/pulls/7":
             return self.pr, ""
         if path.startswith(FILES):
@@ -191,7 +195,107 @@ class Record(Base):
             self.change(world)
 
 
+class FileListUnreadable(Base):
+    """#110: GitHub answering "no" to the file list degrades the view; it never kills the turn."""
+
+    WARNING = "You cannot see the whole change: do not approve it"
+
+    def test_a_persistent_answer_degrades_to_a_visible_partial_view(self):
+        for answer in ("HTTP 404 {}", "HTTP 410 Gone",
+                       'HTTP 403 {"message":"Resource not accessible by integration"}'):
+            with self.subTest(answer):
+                world = World([changed(1)])
+                world.gone[FILES] = answer
+                change = self.change(world)
+                self.assertIn("could not read the PR's file list", change.record)
+                self.assertIn(answer.split()[1], change.record)          # the reason, visible
+                self.assertIn(self.WARNING, change.record)
+                self.assertIn("- changed files: unknown", change.record)
+                # One statement of the count, never also "GitHub reports 1 but lists 0" (Tuck):
+                # the host listed nothing because it read nothing.
+                [count] = [line for line in change.record.splitlines()
+                           if line.startswith("- changed files:")]
+                self.assertTrue(count.endswith(f"; GitHub reports {len(world.files)}"), count)
+                self.assertNotIn("but lists", change.record)
+                self.assertNotIn("lists 0", change.record)
+                self.assertIn("file list could not be read", change.diff)
+                self.assertNotIn("diff --git", change.diff)
+
+    def test_a_transient_failure_still_raises_for_a_retry(self):
+        for answer in ("HTTP 502", "HTTP 503 upstream", "HTTP 429",
+                       'HTTP 403 {"message":"API rate limit exceeded for user"}',
+                       "URLError: <urlopen error timed out>", "TimeoutError: timed out"):
+            with self.subTest(answer):
+                world = World([changed(1)])
+                world.gone[FILES] = answer
+                with self.assertRaisesRegex(ValueError, "PR files unreadable"):
+                    self.change(world)
+        self.assertFalse(gh.persistent_failure("PR file page 1: HTTP 500"))
+        self.assertTrue(gh.persistent_failure("PR file page 1: HTTP 404 {}"))
+        self.assertTrue(gh.persistent_failure("PR file page 2: invalid PR file list"))
+
+    def test_the_last_attempt_degrades_a_transient_failure_instead_of_failing(self):
+        world = World([changed(1)])
+        world.fail.add(FILES)
+        with mock.patch.object(gh, "fetch", side_effect=world.fetch):
+            change = run_supervisor.pr_change(self.loop, self.row, final=True)
+        self.assertIn("HTTP 502", change.record)
+        self.assertIn(self.WARNING, change.record)
+
+    def test_a_readable_list_carries_no_warning(self):
+        record = self.change(World([changed(1)])).record
+        self.assertNotIn("could not read the PR's file list", record)
+        self.assertNotIn("do not approve", record)
+
+
 class Worker(Base):
+    def run_worker(self, world, retries=0):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            runtime = root / "runtime.json"
+            runtime.write_text("{}")
+            runtime.chmod(0o600)
+            sup = Supervisor(root / "ledger.sqlite", production_config=runtime, hermes_home=root)
+            with mock.patch.object(sup, "_spawn"):
+                sup.enqueue("d", REPO, 7, HEAD, "reviewer")
+            with sqlite3.connect(sup.db) as con:
+                con.execute("UPDATE runs SET state='launching', owner='w', generation='g', "
+                            "retries=?", (retries,))
+                run_id = con.execute("SELECT id FROM runs").fetchone()[0]
+            settings = {k: str(root) for k in ("source", "venv", "runtime", "rust")}
+            with mock.patch("review_loop.seat_model.load_runtime", return_value=settings), \
+                 mock.patch("review_loop.seat_model.resolve_seat"), \
+                 mock.patch.object(config, "by_repo",
+                                   return_value={**self.loop, "state_dir": str(root / "state")}), \
+                 mock.patch.object(gh, "fetch", side_effect=world.fetch), \
+                 mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
+                 mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
+                 mock.patch.object(trusted_turn, "run_turn", return_value=0) as run_turn, \
+                 mock.patch.object(sup, "recover"):
+                sup._run_production(run_id, "w")
+            with sqlite3.connect(sup.db) as con:
+                state = con.execute("SELECT state, error FROM runs").fetchone()
+        return run_turn, state
+
+    def test_a_404_file_list_runs_the_turn_with_the_warning(self):
+        world = World([changed(1)])
+        world.gone[FILES] = "HTTP 404 {}"
+        run_turn, state = self.run_worker(world)
+        run_turn.assert_called_once()
+        prompt = run_turn.call_args.kwargs["prompt"]
+        self.assertIn("could not read the PR's file list (PR file page 1: HTTP 404", prompt)
+        self.assertIn(FileListUnreadable.WARNING, prompt)
+        self.assertEqual(state, ("succeeded", None))
+
+    def test_retries_exhausted_runs_the_degraded_turn_not_a_failure(self):
+        world = World([changed(1)])
+        world.fail.add(FILES)                      # transient, on the final allowed attempt
+        run_turn, state = self.run_worker(world, retries=run_supervisor.MAX_RETRIES - 1)
+        run_turn.assert_called_once()
+        self.assertIn("HTTP 502", run_turn.call_args.kwargs["prompt"])
+        self.assertEqual(state, ("succeeded", None))
+
     def test_unreadable_file_list_holds_the_turn_before_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -218,7 +322,40 @@ class Worker(Base):
             with sqlite3.connect(sup.db) as con:
                 state = con.execute("SELECT state, error FROM runs").fetchone()
         run_turn.assert_not_called()
-        self.assertEqual(state, ("failed", "isolated turn failed: ValueError"))
+        # An unreadable listing is a transient pre-write read (#53): no turn, a backed-off retry.
+        self.assertEqual(state[0], "waiting")
+        self.assertIn("PR files unreadable: PR file page 1: HTTP 502", state[1])
+
+
+    def test_a_moved_head_fails_final_not_retried(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            runtime = root / "runtime.json"
+            runtime.write_text("{}")
+            runtime.chmod(0o600)
+            sup = Supervisor(root / "ledger.sqlite", production_config=runtime, hermes_home=root)
+            with mock.patch.object(sup, "_spawn"):
+                sup.enqueue("d", REPO, 7, HEAD, "reviewer")
+            with sqlite3.connect(sup.db) as con:
+                con.execute("UPDATE runs SET state='launching', owner='w', generation='g'")
+                run_id = con.execute("SELECT id FROM runs").fetchone()[0]
+            world = World([changed(1)])
+            world.pr["head"]["sha"] = "c" * 40  # a new push since the event
+            with mock.patch("review_loop.seat_model.load_runtime", return_value={}), \
+                 mock.patch("review_loop.seat_model.resolve_seat"), \
+                 mock.patch.object(config, "by_repo", return_value=self.loop), \
+                 mock.patch.object(gh, "fetch", side_effect=world.fetch), \
+                 mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
+                 mock.patch.object(trusted_turn, "run_turn") as run_turn, \
+                 mock.patch.object(sup, "recover"):
+                sup._run_production(run_id, "w")
+            with sqlite3.connect(sup.db) as con:
+                state = con.execute("SELECT state, error FROM runs").fetchone()
+        run_turn.assert_not_called()
+        # A moved head is not transient: the new head gets its own turn, this one never retries.
+        self.assertEqual(state[0], "failed")
+        self.assertIn("PR head moved", state[1])
 
 
 class Sandbox(unittest.TestCase):

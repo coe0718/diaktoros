@@ -3,6 +3,7 @@
 No real GitHub, model, Hermes or ~/.hermes: GitHub is mocked, the ledger and state live in a
 private temporary directory, and the sandbox launcher is replaced where a turn is exercised.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import os
 from pathlib import Path
@@ -211,9 +212,21 @@ class Claim(Base):
                              "draft": dict(api=lambda *a, **k: pull(draft=True)),
                              "reviews unreadable": dict(reviews=False)}.items():
             with self.subTest(name):
+                with sqlite3.connect(self.db) as con:
+                    con.execute("UPDATE runs SET state='pending', retries=0, error=NULL")
                 result, row = self.claim(**kwargs)
                 self.assertIsNone(result)
-                self.assertEqual((row["state"], row["attempts"]), ("pending", 0))
+                if name == "draft":
+                    # A draft is a wait, not a failed read: pending, uncounted.
+                    self.assertEqual((row["state"], row["attempts"], row["retries"]),
+                                     ("pending", 0, 0))
+                else:
+                    # A failed read is counted and backed off with its reason (bounded, visible).
+                    self.assertEqual((row["state"], row["attempts"], row["retries"]),
+                                     ("waiting", 0, 1))
+                    self.assertIn("claim-time read failed", row["error"])
+        with sqlite3.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='pending', retries=0, error=NULL")
         self.assertEqual(self.claim()[1]["state"], "claimed")
 
     def test_worker_without_adjudicator_capacity_never_claims(self):

@@ -27,7 +27,8 @@ from .util import log
 
 def subs_path() -> pathlib.Path:
     override = os.environ.get("REVIEW_LOOP_SUBS")
-    return pathlib.Path(override).expanduser() if override else config.home() / "webhook_subscriptions.json"
+    return (config.guard_real_home(pathlib.Path(override).expanduser()) if override
+            else config.home() / "webhook_subscriptions.json")
 
 
 def all_routes() -> dict:
@@ -277,6 +278,7 @@ def fire(name: str, event: str, payload: dict, tag: str, host: str | None = None
     try:
         if on_attempt is not None:
             on_attempt()
+        config.guard_network(req.full_url)
         with urllib.request.urlopen(req, timeout=20) as resp:
             log(f"fired {name} for {tag} (HTTP {resp.status})")
             return 200 <= resp.status < 300

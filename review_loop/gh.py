@@ -128,6 +128,8 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
         f"{API}{path}", data=data, method=method,
         headers={"Accept": "application/vnd.github+json", "Authorization": f"token {tok}",
                  "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "hermes-review-loop"})
+    from .config import guard_network
+    guard_network(req.full_url)         # under the test guard: loopback fakes only
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode() or "null"
@@ -325,6 +327,26 @@ def reviews(loop: dict, number: int):
         log(f"gh GET {reviews_path(loop, number)} failed: {error}")
         record_failure(loop, "GET", reviews_path(loop, number), error)
     return result
+
+
+# GitHub answered, and the answer is no: retrying will not change it (#110). A 403 that is a rate
+# limit is the exception — that one passes.
+_PERSISTENT_HTTP = (403, 404, 410)
+
+
+def persistent_failure(error: str) -> bool:
+    """Whether a listing error (``_read_pages``' reason) is an answer rather than an outage.
+
+    404/410/403 (other than a rate limit), a malformed page and a listing past its page bound are
+    answers; a 5xx, 429, timeout or connection error is transient, and so is anything unknown.
+    """
+    import re
+    text = str(error)
+    match = re.search(r"\bHTTP (\d{3})\b", text)
+    if match:
+        code = int(match.group(1))
+        return code in _PERSISTENT_HTTP and not (code == 403 and "rate limit" in text.lower())
+    return "invalid " in text or "listing exceeds" in text
 
 
 def pr_files_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
