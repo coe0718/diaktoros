@@ -11,14 +11,16 @@ preflight answers it before anyone arms anything:
 
     hermes review-loop doctor --loop attest
 
-One line per check, in one of four states:
+One line per check, in one of these states:
 
 * ``verified`` — checked, and correct;
 * ``absent`` — the thing is not there (a missing profile, token file, route, hook, job, script);
 * ``mismatch`` — present, but not what this loop needs (a route waking the wrong profile, a hook
   pointing at another gateway, a shim pinned to a stale plugin path, a world-readable PAT);
 * ``unknown`` — could not be decided *from here* (a hooks read the token was not allowed to make,
-  a probe skipped with ``--offline``).
+  a probe skipped with ``--offline``);
+* ``skipped`` — not checked because another line already fails for the same cause
+  (``extras:<seat>`` while ``model:<seat>`` is absent): neither a pass nor a second warning.
 
 ``unknown`` is never folded into ``absent``. "The API refused to tell me" and "there are no
 hooks" are different claims, and printing the second one when the first is true sends the
@@ -43,6 +45,7 @@ import pathlib
 import re
 import shlex
 import socket
+import subprocess
 from datetime import datetime
 from urllib.parse import urlsplit
 
@@ -52,8 +55,11 @@ VERIFIED = "verified"
 ABSENT = "absent"
 MISMATCH = "mismatch"
 UNKNOWN = "unknown"
+# Not checked because another line already fails for the same cause (``extras:<seat>`` when
+# ``model:<seat>`` is ❌): neither a pass nor a second warning.
+SKIPPED = "skipped"
 FAILURES = (ABSENT, MISMATCH)
-MARKS = {VERIFIED: "✅", ABSENT: "❌", MISMATCH: "❌", UNKNOWN: "⚠️"}
+MARKS = {VERIFIED: "✅", ABSENT: "❌", MISMATCH: "❌", UNKNOWN: "⚠️", SKIPPED: "➖"}
 
 # What `init` writes, mirrored here because ``cli`` imports this module (so this module cannot
 # import ``cli``) and `tests/run_tests.py` asserts the two spellings agree — a preflight that
@@ -299,9 +305,142 @@ def check_seat_models(loop: dict) -> list[Check]:
                             "seats.<seat> as an explicit per-seat override"))
     status_of = {"ok": VERIFIED, "warn": UNKNOWN, "fail": ABSENT}
     for seat in seat_model.seats_for(loop):
-        status, detail, fix = seat_model.describe_seat(loop, seat, settings)
+        try:
+            status, detail, fix = seat_model.describe_seat(loop, seat, settings)
+        except Exception as exc:        # e.g. a malformed base_url: undecided, never a crash
+            status, detail, fix = ("warn", f"could not describe this seat ({type(exc).__name__}: "
+                                           f"{exc})", "run `hermes review-loop selftest`")
         checks.append(Check(f"model:{seat}", status_of[status], detail, fix))
     return checks
+
+# Read-only: ``find_spec`` locates a module without importing (or installing) anything.
+# ``-I`` keeps the answer the venv's own — no PYTHONPATH, user site-packages or cwd — which is
+# what the sandbox's Hermes resolves against; a dotted name whose parent is missing is "absent".
+_FIND_SPEC = ("import importlib.util, sys\n"
+              "try:\n    found = importlib.util.find_spec(sys.argv[1]) is not None\n"
+              "except (ImportError, ValueError):\n    found = False\n"
+              "sys.exit(0 if found else 1)\n")
+EXTRA_PROBE_TIMEOUT = 20
+
+
+def venv_has_module(python: str, module: str) -> bool | None:
+    """True/False: can ``python`` import ``module``; ``None`` when it could not say."""
+    try:
+        process = subprocess.run([python, "-I", "-c", _FIND_SPEC, module],
+                                 env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+                                 stdin=subprocess.DEVNULL, capture_output=True,
+                                 timeout=EXTRA_PROBE_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {0: True, 1: False}.get(process.returncode)
+
+
+def check_seat_extras(loop: dict) -> list[Check]:
+    """#118: each seat's provider's optional Hermes package, importable by the runtime's venv.
+
+    A Claude-subscription (or any Messages-wire) seat needs Hermes's ``anthropic`` extra; an
+    install without it looks healthy until the seat's first turn fails at model setup. The venv
+    checked is the one the runtime file names — the one the sandbox mounts — and it is asked
+    with ``find_spec`` (read-only, no network, bounded). The provider comes from the same
+    read-only description as ``model:<seat>``: no credential is resolved. A seat whose provider
+    could not be read, or a probe that could not answer, is ``unknown`` — never ``verified``.
+    """
+    from . import seat_model
+    runtime = config.home() / "review-loop-runtime.json"
+    settings, problem = runtime_settings()
+    venv = str((settings or {}).get("venv") or "")
+    probes: dict[str, bool | None] = {}
+    checks = []
+    for seat in seat_model.seats_for(loop):
+        name = f"extras:{seat}"
+        if not venv:
+            why = f"{runtime} is not usable" if problem else f"no runtime file at {runtime}"
+            checks.append(Check(name, UNKNOWN, f"{why}, so the Hermes venv the {seat} turn "
+                                "mounts is not known; its provider package was not checked",
+                                f"write {runtime} naming source/venv/runtime/rust"))
+            continue
+        needed = maybe = None
+        explain: dict = {}
+        try:
+            status, _, _, wire = seat_model.describe_seat_wire(loop, seat, settings)
+            if wire is not None and status != "fail":
+                needed, maybe = seat_model.extras_for(
+                    wire["provider"], wire["api_mode"], wire["base_url"],
+                    model=wire.get("model") or "", configured=wire.get("configured") or "",
+                    facts=wire.get("facts"), entry=wire.get("entry"), hermes=wire.get("hermes"),
+                    entry_hint=bool(wire.get("entry_hint")), explain=explain)
+        except Exception as exc:        # a malformed URL, a broken description: undecided
+            status, wire, reason = "warn", None, f" ({type(exc).__name__}: {exc})"
+        else:
+            reason = ""
+        if status == "fail":
+            checks.append(Check(name, SKIPPED, f"skipped: model unresolved (see model:{seat})"))
+            continue
+        if wire is None:
+            checks.append(Check(name, UNKNOWN, f"the {seat} seat's provider could not be read"
+                                f"{reason} (see model:{seat}), so whether it needs an optional "
+                                "Hermes package is unknown",
+                                f"fix model:{seat} first, then re-run doctor"))
+            continue
+        provider, model = wire["provider"], wire.get("model") or ""
+        # The wire Hermes will use when it is decided (a named entry, nous native, ...), not
+        # the profile's own spelling.
+        mode = explain.get("wire") or wire["api_mode"]
+        not_asked = str(wire.get("not_asked") or "")
+        if not needed and not maybe:
+            if not_asked:       # a "not needed" from doctor's own table is not a pass
+                checks.append(Check(name, UNKNOWN, f"{provider} [{mode}] needs no optional Hermes "
+                                    f"package by doctor's own table only — Hermes was not asked "
+                                    f"({not_asked})", f"fix model:{seat} first, then re-run doctor"))
+            else:
+                checks.append(Check(name, VERIFIED, f"{provider} [{mode}] needs no optional "
+                                    "Hermes package"))
+            continue
+        python = str(pathlib.Path(venv) / "bin" / "python")
+
+        def probe(extra: str) -> bool | None:
+            module = seat_model.HERMES_EXTRAS[extra]["module"]
+            if module not in probes:
+                probes[module] = venv_has_module(python, module)
+            return probes[module]
+
+        missing = [e for e in needed if probe(e) is False]
+        undecided = [e for e in needed if probe(e) is None]
+        maybe_missing = [e for e in maybe if probe(e) is not True]
+        what = ", ".join(f"`{e}` (import {seat_model.HERMES_EXTRAS[e]['module']})"
+                         for e in needed + maybe)
+        switch = "; ".join(
+            f"may need the {e} extra: {provider} can use Anthropic's native wire for {model} "
+            f"{explain.get(e, '')}".rstrip()
+            for e in maybe_missing)
+        because = "; ".join(explain[e] for e in needed if explain.get(e))
+        install = lambda extras: " and ".join(f"`hermes pm install --extra {e}`" for e in extras)
+        where = (f"it installs into the venv Hermes selects, so if that is not {venv}, install the "
+                 f"extra into {venv} or point `venv` in {runtime} at the venv that has it")
+        if missing:
+            checks.append(Check(
+                name, ABSENT,
+                f"{provider} [{mode}] needs the Hermes extra {what}"
+                + (f" ({because})" if because else "")
+                + f", which {python} cannot import; the {seat} turn would fail at model setup"
+                + (f" ({switch})" if switch else ""),
+                f"{install(missing + maybe_missing)} (Hermes's own command for a missing extra) "
+                f"— {where}; then re-run doctor"))
+        elif undecided or maybe_missing:
+            if switch and not undecided:
+                detail = (f"{switch}; {python} cannot import it (install: "
+                          f"{install(maybe_missing)} — {where})")
+            else:
+                detail = (f"{provider} [{mode}] needs the Hermes extra {what}; {python} could not "
+                          "answer whether it is importable (missing, not a python, or no answer "
+                          "in time)")
+            checks.append(Check(name, UNKNOWN, detail, f"check `venv` in {runtime}"))
+        else:
+            label = "may use" if maybe and not needed else "needs"
+            checks.append(Check(name, VERIFIED,
+                                f"{provider} [{mode}] {label} {what}: importable by {python}"))
+    return checks
+
 
 def _token_file_facts(path: pathlib.Path) -> str:
     """``path (exists: yes, private: no)`` — metadata only; the file is never opened here."""
@@ -1479,6 +1618,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     if str((loop.get("adjudicator") or {}).get("route") or ""):
         checks.append(check_adjudicator_profile(loop))
     checks.extend(check_seat_models(loop))
+    checks.extend(check_seat_extras(loop))
     checks.append(check_fixer_push(loop))
     identity = check_adjudicator_identity(loop)
     if identity:
@@ -1513,8 +1653,9 @@ def report(loop: dict, checks: list[Check], strict: bool = False) -> int:
         if check.failed and check.fix:
             print(f"      fix: {_safe_report_text(check.fix)}")
     print()
-    print(f"{loop['id']}: {len(verified)} verified, {len(failed)} failed, {len(unknown)} unknown "
-          f"(of {len(checks)} checks)")
+    skipped = [check for check in checks if check.status == SKIPPED]
+    print(f"{loop['id']}: {len(verified)} verified, {len(failed)} failed, {len(unknown)} unknown"
+          + (f", {len(skipped)} skipped" if skipped else "") + f" (of {len(checks)} checks)")
     if failed:
         print(f"  {len(failed)} failed: {', '.join(check.name for check in failed)} — "
               f"fix the ❌ lines above before this loop is armed.")

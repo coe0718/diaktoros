@@ -395,6 +395,8 @@ Example transcripts are in [Operating a loop](operations.md#preflight-doctor).
 | `config` | the loop file is there and parses |
 | `profile:reviewer` / `profile:fixer` | each seat's Hermes profile home exists (`~/.hermes/profiles/<name>`, or `~/.hermes` itself for `default`) |
 | `credential:<seat>` | a nonempty token file is mapped for that seat's login through `gh.token_path`; profile `GH_TOKEN` alone is not used by the gates |
+| `model:<seat>` | the seat's profile names a provider and model the inference proxy can carry — read from the profile's `config.yaml` by the runtime's Hermes interpreter, without resolving any credential |
+| `extras:<seat>` | the optional Hermes package that seat's provider needs (the `anthropic` extra for the Messages wire) is importable by the runtime file's `venv` — the interpreter the sandbox mounts; a provider Hermes only *may* move onto that wire is ⚠️ without it, and the line is skipped when `model:<seat>` already fails |
 | `token:<login>` | every credential file named in the config exists, is non-empty, and is not readable by group or other users |
 | `read_token` | the login the gates read GitHub as is one of those mappings, and is its own account: not a seat, not the adjudicator login, no shared token file (the four-identity rule) |
 | `route:<name>` | the gateway's registry holds the route, it wakes *this* seat's profile, it carries a secret and a prompt, it runs the right gate script for the right event, it is not switched off (`enabled: false` makes the gateway answer 403 to every event; `apply` or `doctor --repair` re-enables it), and it resolves to this loop's own gateway origin — and, when the plugin has an intent record for it, still matches that record (a rotated secret looks well-formed but no longer matches GitHub's hook). A loop with an observer gets the same check for its feed route: present, serving `observer.profile`, and exactly the delivery-only contract the feed checks before every notice |
@@ -407,7 +409,7 @@ Example transcripts are in [Operating a loop](operations.md#preflight-doctor).
 | `gateway` | a TCP connect to the loop's webhook origin is accepted |
 | `hook:<route>` | the repo hook posts at the route's URL, subscribes to that seat's event, and is active |
 
-Four states, and the difference between the last two is the point:
+Five states, and the difference between absent/mismatch and unknown is the point:
 
 * ✅ **verified** — checked, and correct;
 * ❌ **absent** — not there at all;
@@ -415,7 +417,10 @@ Four states, and the difference between the last two is the point:
   another gateway, a shim pinned to a stale plugin path, a world-readable PAT;
 * ⚠️ **unknown** — could not be decided from here: a hooks read the token was not allowed to make
   (reading a repo's hooks needs hook read access: classic `repo`, or the narrower `read:repo_hook`),
-  or a probe skipped with `--offline`.
+  or a probe skipped with `--offline`;
+* ➖ **skipped** — not checked, because another line already fails for the same cause:
+  `extras:<seat>` while `model:<seat>` is ❌ (no provider to check). Neither a pass nor a second
+  warning, and not counted as unknown by `--strict`.
 
 **Unknown is never folded into absent.** "The API refused to tell me" and "there are no hooks" are
 different claims, and printing the second when the first is true sends the operator hunting for a

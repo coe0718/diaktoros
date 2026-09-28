@@ -332,6 +332,59 @@ turn starts. The reader tries `yaml`, then `ruamel.yaml`, then JSON (a JSON conf
 and names the interpreter it was when it has neither: a profile's `config.yaml` written as real
 YAML needs one of the first two.
 
+**It must also have the provider's optional Hermes package.** The sandboxed Hermes runs on this
+`venv`, and some providers need a Hermes extra that a plain install leaves out: every seat on the
+Messages wire (`anthropic_messages` — a Claude subscription or API key on `anthropic`, MiniMax,
+Tencent TokenPlan, an endpoint ending in `/anthropic`, Kimi Code's `api.kimi.com/coding`, or an
+OpenCode model Hermes routes to Messages such as Zen's `claude-*`) imports the `anthropic`
+package, and without it the turn fails at model setup. `doctor` prints one `extras:<seat>` line
+per seat:
+
+* ✅ the seat needs no extra, or `venv`'s own python can import it (`find_spec`, read-only);
+* ❌ it needs the extra and the package is missing — with the fix: `hermes pm install --extra
+  anthropic`, Hermes's own command for a missing extra, which installs into the venv Hermes
+  selects, so this `venv` must be that one (or have the extra installed itself);
+* ⚠️ the seat *may* need it — Hermes can move it onto the Messages wire depending on something
+  doctor does not read (`nous` with an `anthropic/*` model and `nous.anthropic_wire: auto`, whose
+  session may be promoted; `kimi-coding` with a Kimi Code key and no `base_url`/`api_mode` of its
+  own) — and the package is missing, with the same install command; or the provider could not be
+  read (a malformed `base_url` included), or the probe could not answer;
+* ➖ skipped when `model:<seat>` is already ❌ (the model is unresolved, so there is no provider
+  to check).
+
+`nous` with `nous.anthropic_wire: native` needs it outright; unset or `chat` never reaches the
+Messages wire. An explicit `model.api_mode` other than `anthropic_messages` wins over a Messages
+provider's default or an Anthropic-looking URL, as it does in Hermes — except for `anthropic`,
+`minimax-oauth`, `nous` and the built-in OpenCode providers, whose wire Hermes fixes itself. A
+**named custom provider** (`model.provider: <name>` with a `providers.<name>` or `custom_providers`
+entry) is decided by that entry, not by `model.api_mode`: the entry's `api_mode`/`transport`, else
+its URL. doctor does not re-implement that lookup: the describe step asks the runtime's own Hermes
+(`_get_named_custom_provider`, `_parse_api_mode`, `_detect_api_mode_for_url`,
+`opencode_model_api_mode`), read-only, with the lookup's one secret read answered empty so no
+credential is touched, and only endpoint and wire facts come back. A provider Hermes refuses (no
+enabled entry and not a built-in, a malformed entry, or an entry pinning a wire the proxy cannot
+speak) fails `model:<seat>`. An OpenCode-family entry with no `api_mode` of its own is ⚠️ "may
+need": Hermes derives its wire from the model unless the credential comes from a pool, which doctor
+does not read. When the runtime file's `source` has no importable Hermes, `model:<seat>` fails —
+the turn resolves its model through that same import, so it would be held — and `extras:<seat>` is
+skipped. When that Hermes lacks one of the functions doctor asks (a pin that moved them), both lines
+say Hermes was not asked: `model:<seat>` is ⚠️ with the missing names, and `extras:<seat>` is never
+✅ "needs no optional Hermes package" on doctor's own table (a seat whose provider a config entry
+might decide is ⚠️ "may need"). When Hermes *was* asked and raised — the turn would fail the same
+way — `model:<seat>` fails (❌, exit 1) with Hermes's reason. CI's `verticals` job compares these
+verdicts with the pinned Hermes's own resolver on a table of profiles, and fails if the comparison
+is skipped. To run it yourself against a Hermes checkout with its `venv/` (never point it at the
+install your gateway runs):
+
+```bash
+HERMES_AGENT_SOURCE=/path/to/hermes-agent \
+  python -m unittest discover -v -s tests -p test_seat_models.py -k HermesAgreement
+```
+
+(By discovery from `tests/`: a dotted `tests.test_seat_models…` name can resolve to Hermes's own
+`tests` package when Hermes is on the path.) The provider→extra table, including those "possible"
+entries, is `HERMES_EXTRAS` in `review_loop/seat_model.py`.
+
 **Each seat runs its own Hermes profile's model.** Before a turn, the host resolves the seat's
 profile (`seats.reviewer.profile`, `seats.fixer.profile`, `adjudicator.profile`) with Hermes's own
 resolution — the profile's `config.yaml` `model` block, its `.env`/secret sources and `auth.json`

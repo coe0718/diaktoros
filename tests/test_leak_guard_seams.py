@@ -1,6 +1,6 @@
 """Children that ignore PYTHONPATH still report leaks under tests/leakguard.py, and only there.
 
-The seat-model resolver runs ``python -E -s -c <program>`` and Git's askpass is a script run
+The seat-model resolver runs ``python -E -s -B -c <program>`` and Git's askpass is a script run
 with a scrubbed environment; neither reads PYTHONPATH, so the guard loads its recorder into
 them by absolute path. With the guard off, each argv, script and environment is pinned to be
 exactly what it was before the guard existed.
@@ -44,7 +44,7 @@ class Seams(unittest.TestCase):
         return [leak for line in self.log.read_text().splitlines()
                 for leak in json.loads(line)['leaks']]
 
-    # -- the seat-model resolver: python -E -s -c ------------------------------------------
+    # -- the seat-model resolver: python -E -s -B -c ---------------------------------------
 
     def resolver_call(self) -> tuple[list, dict]:
         seen = {}
@@ -64,18 +64,18 @@ class Seams(unittest.TestCase):
     def test_resolver_unchanged_without_the_guard(self):
         self.guard(False)
         argv, env = self.resolver_call()
-        self.assertEqual(argv[:5], [str(self.tmp / 'venv/bin/python'), '-E', '-s', '-c',
+        self.assertEqual(argv[:6], [str(self.tmp / 'venv/bin/python'), '-E', '-s', '-B', '-c',
                                     seat_model._RESOLVER])
         self.assertEqual(set(env), RESOLVER_ENV)
 
     def test_resolver_leak_is_recorded_under_the_guard(self):
         self.guard(True)
         argv, env = self.resolver_call()
-        self.assertTrue(argv[4].endswith(seat_model._RESOLVER))
+        self.assertTrue(argv[5].endswith(seat_model._RESOLVER))
         self.assertEqual(set(env), RESOLVER_ENV | {'REVIEW_LOOP_LEAK_LOG'})
         # The same flags and environment, with a leaking program after the recorder.
-        loader = argv[4][:-len(seat_model._RESOLVER)]
-        subprocess.run([sys.executable, '-E', '-s', '-c', loader + LEAK], env=env, check=True,
+        loader = argv[5][:-len(seat_model._RESOLVER)]
+        subprocess.run([sys.executable, '-E', '-s', '-B', '-c', loader + LEAK], env=env, check=True,
                        capture_output=True, timeout=60)
         self.assertTrue(any('unclosed file' in leak for leak in self.recorded()), self.recorded())
 

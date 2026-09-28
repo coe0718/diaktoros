@@ -76,6 +76,264 @@ OAUTH_PROVIDERS = {"openai-codex": "codex_responses", "xai-oauth": "codex_respon
 ANTHROPIC_ALIASES = frozenset({"anthropic", "claude", "claude-code"})
 REFUSED_API_MODES = frozenset({"bedrock_converse", "codex_app_server"})
 
+# Optional Hermes extras a seat's sandboxed Hermes imports to talk to its provider (#118). Keyed
+# by the extra's name in Hermes's ``pyproject.toml`` ``[project.optional-dependencies]``; every
+# fact is from the pinned Hermes source. The sandbox runs on the wire (``api_mode``) the host's
+# Hermes resolves for the seat, so the table predicts that resolution:
+#
+# * ``module`` — the import that proves the extra is installed (Hermes's own anchor for it,
+#   ``pm/extras.py`` ``ANCHORS``), checked with ``find_spec`` by the runtime venv's python;
+# * ``wires`` — the proxied ``api_mode``s whose Hermes client imports it (``anthropic_messages``:
+#   ``agent/agent_init.py`` → ``anthropic_adapter.build_anthropic_client`` → ``import anthropic``,
+#   for every provider on that wire, the Claude subscription included);
+# * ``pinned`` — providers whose wire Hermes fixes whatever ``model.api_mode`` says:
+#   ``anthropic`` (``runtime_provider``: ``provider == "anthropic"`` → ``anthropic_messages``) and
+#   ``minimax-oauth`` (``_minimax_oauth_runtime``);
+# * ``providers`` / ``hosts`` / ``url_suffixes`` / ``host_paths`` — providers whose overlay
+#   transport is that wire (``hermes_cli/providers.py``) and base URLs Hermes maps onto it
+#   (``runtime_provider._detect_api_mode_for_url``). These are *fallbacks*: a configured
+#   ``model.api_mode`` wins over both (``_configured_or_fallback_api_mode``: configured, else
+#   ``_fallback_api_mode``; ``_custom_runtime``: ``api_mode or _detect_api_mode_for_url``), so an
+#   explicit non-Messages ``api_mode`` means the package is never imported;
+# * ``models`` — provider families whose *model* picks the wire, by model-id prefix
+#   (``hermes_cli/models.py`` ``_OPENCODE_API_MODE_PREFIXES``). For the built-in providers
+#   (``builtin_models``) the model wins over a configured ``api_mode`` (``opencode_by_model``); a
+#   custom provider named after a family keeps its own ``api_mode``;
+# * ``possible`` — providers Hermes *can* put on that wire depending on what doctor does not read:
+#   ``models`` prefixes (empty: any model), ``required_if`` / ``possible_if`` the profile settings
+#   that make it certain / possible (neither matching: never), ``unless_configured`` when an
+#   explicit ``base_url`` or ``api_mode`` decides instead, ``ignores_api_mode`` when Hermes derives
+#   the wire itself (``nous``: ``nous_api_mode``), and ``why``. Without the package such a
+#   seat is ⚠️, never ✅.
+#
+# The fix is Hermes's own command for a missing extra (``pm/extras.py`` ``install_hint``).
+HERMES_EXTRAS = {
+    "anthropic": {
+        "module": "anthropic",
+        "wires": frozenset({"anthropic_messages"}),
+        "pinned": ANTHROPIC_ALIASES | {"minimax-oauth"},
+        "providers": frozenset({"minimax", "minimax-cn", "tencent-tokenplan"}),
+        "hosts": frozenset({"api.anthropic.com"}),
+        "url_suffixes": ("/anthropic", "/anthropic/v1"),
+        "host_paths": (("api.kimi.com", "/coding"),),
+        "models": {"opencode-zen": ("claude-", "union-alpha", "qwen"),
+                   "opencode-go": ("minimax-", "qwen", "union-alpha")},
+        "builtin_models": frozenset({"opencode-zen", "opencode", "zen", "opencode-go", "go",
+                                     "opencode-go-sub"}),
+        "possible": {
+            # hermes_cli/providers.py nous_api_mode: anthropic/* is on the Messages wire only with
+            # nous.anthropic_wire: native; agent/nous_wire.py may promote a session to it only on
+            # `auto`. Unset or `chat` never reaches it. nous ignores model.api_mode.
+            "nous": {"models": ("anthropic/",),
+                     "required_if": {"nous_anthropic_wire": "native"},
+                     "possible_if": {"nous_anthropic_wire": "auto"}, "ignores_api_mode": True,
+                     "why": "when nous.anthropic_wire: auto promotes the session"},
+            # hermes_cli/auth_zai_kimi.py _resolve_kimi_base_url: a Kimi Code (sk-kimi-) key is
+            # redirected to api.kimi.com/coding, which Hermes speaks on the Messages wire.
+            "kimi-coding": {"models": (), "unless_configured": True,
+                            "why": "with a Kimi Code key (redirected to api.kimi.com/coding)"},
+        },
+    },
+}
+# Hermes's aliases for the provider families above (hermes_cli/auth.py, hermes_cli/models.py
+# opencode_provider_family), so a profile's spelling finds its table entry.
+PROVIDER_FAMILIES = {
+    "opencode": "opencode-zen", "zen": "opencode-zen", "go": "opencode-go",
+    "opencode-go-sub": "opencode-go",
+    "nous-portal": "nous", "nousresearch": "nous",
+    "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
+    "kimi-coding-cn": "kimi-coding", "kimi-cn": "kimi-coding", "moonshot-cn": "kimi-coding",
+}
+# Hermes's spellings of a configured api_mode (hermes_cli/config_providers.py _API_MODE_ALIASES,
+# all 13). Used only when Hermes itself cannot be imported: the describe step asks Hermes's own
+# ``runtime_provider._parse_api_mode`` whenever it can.
+API_MODE_ALIASES = {
+    "openai": "chat_completions", "openai_chat": "chat_completions",
+    "openai-chat": "chat_completions", "chat-completions": "chat_completions",
+    "chatcompletions": "chat_completions", "responses": "codex_responses",
+    "openai_responses": "codex_responses", "openai-responses": "codex_responses",
+    "anthropic": "anthropic_messages", "anthropic-messages": "anthropic_messages",
+    "messages": "anthropic_messages", "bedrock": "bedrock_converse",
+    "bedrock-converse": "bedrock_converse",
+}
+
+
+def provider_family(provider: str) -> str:
+    provider = (provider or "").strip().lower()
+    for family in ("opencode-go", "opencode-zen"):    # built-ins and custom names extending them
+        if provider.startswith(family):
+            return family
+    return PROVIDER_FAMILIES.get(provider, provider)
+
+
+def _bare_model(provider: str, family: str, model: str) -> str:
+    model = (model or "").strip().lower()
+    for prefix in (f"{provider}/", f"{family}/"):
+        if model.startswith(prefix):
+            return model[len(prefix):]
+    return model
+
+
+def _matches(facts: dict, wanted: dict) -> bool:
+    return bool(wanted) and all(str(facts.get(k) or "").strip().lower() == v
+                                for k, v in wanted.items())
+
+
+def _canonical_mode(raw: str) -> str:
+    """A configured api_mode as Hermes reads it (``runtime_provider._parse_api_mode``): aliases
+    canonicalized, anything unknown ignored."""
+    mode = (raw or "").strip().lower()
+    mode = API_MODE_ALIASES.get(mode, mode)
+    return mode if mode in {"chat_completions", "codex_responses", "anthropic_messages",
+                            "bedrock_converse", "codex_app_server"} else ""
+
+
+def _url_wire(spec: dict, url: str) -> bool:
+    """Without Hermes: does this base URL map onto the extra's wire? Mirrors
+    ``runtime_provider._detect_api_mode_for_url`` — the *parsed path* is tested, so a query or
+    fragment does not hide an ``/anthropic`` endpoint. With Hermes, its own function answers."""
+    raw = (url or "").strip().lower()
+    parts = urlsplit(raw)
+    host = parts.hostname or ""
+    path = parts.path.rstrip("/")
+    return bool(raw) and (host in spec["hosts"] or path.endswith(spec["url_suffixes"])
+                          or any(host == h and p in path for h, p in spec["host_paths"]))
+
+
+def _opencode_family(provider: str, url: str) -> str:
+    """``runtime_provider_custom._opencode_family_for_custom``: by name, else an opencode.ai host."""
+    family = provider_family(provider)
+    if family in ("opencode-zen", "opencode-go"):
+        return family
+    url = (url or "").strip().lower()
+    if (urlsplit(url).hostname or "") == "opencode.ai":
+        return "opencode-go" if "/zen/go" in url else "opencode-zen"
+    return ""
+
+
+def _named_entry_extras(provider: str, model: str, entry: dict,
+                        explain: dict) -> tuple[list[str], list[str]]:
+    """A named custom provider: Hermes ignores ``model.api_mode`` and takes the wire from the
+    entry — its ``api_mode``/``transport``, else URL detection, else chat
+    (``_custom_runtime``) — except that an OpenCode-family entry with no ``api_mode`` re-derives
+    it from the model on the direct path while a credential-pool hit keeps the URL's wire
+    (``_try_resolve_from_custom_pool`` returns first). Doctor cannot see the pool, so when the two
+    paths disagree the extra is only *possible*.
+
+    ``entry`` comes from Hermes's own lookup when Hermes is importable (``url_wire``,
+    ``family`` and ``model_wire`` computed by Hermes); the local fallbacks below only fill in a
+    field it did not supply."""
+    where = entry.get("where") or "the provider entry"
+    pinned = _canonical_mode(str(entry.get("api_mode") or ""))
+    url = str(entry.get("url") or "")
+    effective = str(entry.get("model") or model or "")
+    family = entry["family"] if "family" in entry else _opencode_family(provider, url)
+    required, possible = [], []
+    for extra, spec in HERMES_EXTRAS.items():
+        wire = sorted(spec["wires"])[0]
+        if pinned:
+            if pinned in spec["wires"]:
+                required.append(extra)
+                explain[extra] = f"{where} sets api_mode {pinned}"
+            explain["wire"] = pinned
+            continue
+        by_url = (entry["url_wire"] in spec["wires"] if "url_wire" in entry
+                  else _url_wire(spec, url))
+        if "model_wire" in entry:
+            by_model = bool(family) and entry["model_wire"] in spec["wires"]
+        else:
+            bare = _bare_model(provider, family, effective) if family else ""
+            by_model = bool(family) and bare.startswith(spec["models"].get(family, ()))
+        if by_url and (by_model or not family):
+            required.append(extra)
+            explain[extra] = f"Hermes maps {where}'s URL to {wire}"
+            explain["wire"] = wire
+        elif by_url or by_model:
+            possible.append(extra)
+            explain[extra] = (f"{where} is an OpenCode-family endpoint: Hermes derives the wire "
+                              f"from the model ({effective}) unless its credential comes from a "
+                              "pool, which keeps the URL's wire")
+            explain["wire"] = (entry.get("model_wire") if family and entry.get("model_wire")
+                               else wire if by_model else "")
+        else:
+            explain["wire"] = ((entry.get("model_wire") if family else "")
+                               or entry.get("url_wire") or "chat_completions")
+    return required, possible
+
+
+def extras_for(provider: str, api_mode: str = "", base_url: str = "", *, model: str = "",
+               configured: str = "", facts: dict | None = None, entry: dict | None = None,
+               hermes: dict | None = None, entry_hint: bool = False,
+               explain: dict | None = None) -> tuple[list[str], list[str]]:
+    """``(required, possible)`` optional Hermes extras (``HERMES_EXTRAS`` keys) for a seat.
+
+    ``api_mode`` is the wire the seat is expected on; ``configured`` the profile's own
+    ``model.api_mode`` (empty when unset), which beats provider and URL fallbacks as it does in
+    Hermes; ``facts`` carries profile settings ``required_if``/``possible_if`` read
+    (``nous_anthropic_wire``) — never a credential. ``entry`` is the named custom provider the
+    profile selects (``{"where", "url", "api_mode", "model"}``, from the describe step): Hermes
+    resolves such a seat from the entry, not from ``model.api_mode``. ``explain``, when given,
+    receives the reason per extra and ``"wire"`` — the wire Hermes will use when it is decided.
+    ``hermes`` is the describe step's answer from Hermes's own functions (``url_wire`` for the
+    model's base URL, ``entry``); ``None`` means Hermes could not be imported there, and then
+    ``entry_hint`` — a config entry *might* decide this provider — makes anything not required
+    only *possible*: without Hermes, doctor does not claim "not needed" for such a seat.
+    Raises ValueError on a malformed URL.
+    """
+    explain = explain if explain is not None else {}
+    provider = (provider or "").strip().lower()
+    entry = entry or (hermes or {}).get("entry")
+    if entry:
+        return _named_entry_extras(provider, model, entry, explain)
+    family = provider_family(provider)
+    bare = _bare_model(provider, family, model)
+    url = (base_url or "").strip().rstrip("/").lower()
+    urlsplit(url).hostname                              # a malformed URL raises here
+    configured = _canonical_mode(configured)
+    facts = facts or {}
+    required, possible = [], []
+    for extra, spec in HERMES_EXTRAS.items():
+        maybe = spec["possible"].get(family)
+        wire = sorted(spec["wires"])[0]
+        # Hermes derives some providers' wire itself (nous), whatever model.api_mode says.
+        mode, conf = ("", "") if maybe and maybe.get("ignores_api_mode") else (api_mode, configured)
+        overridden = bool(conf) and conf not in spec["wires"]
+        by_model = (family in spec["models"] and bare.startswith(spec["models"][family])
+                    and (provider in spec["builtin_models"] or not overridden))
+        reason = (f"{provider} is always on {wire}" if provider in spec["pinned"]
+                  else f"model.api_mode is {conf}" if conf in spec["wires"]
+                  else f"{provider}/{model} is routed to {wire}" if by_model
+                  else f"{provider} is on {mode}" if mode in spec["wires"]
+                  else f"{provider}'s default wire is {wire}"
+                  if provider in spec["providers"] and not overridden
+                  else f"Hermes maps {url} to {wire}" if not overridden and (
+                      hermes.get("url_wire") in spec["wires"] if hermes is not None
+                      else _url_wire(spec, url))
+                  else "")
+        if reason:
+            required.append(extra)
+            explain[extra], explain["wire"] = reason, wire
+            continue
+        if (not maybe or (maybe["models"] and not bare.startswith(maybe["models"]))
+                or (maybe.get("unless_configured") and (url or overridden))):
+            continue
+        if _matches(facts, maybe.get("required_if") or {}):
+            required.append(extra)
+            setting = ", ".join(f"{k.replace('_', '.', 1)}: {v}"
+                                for k, v in maybe["required_if"].items())
+            explain[extra], explain["wire"] = f"{setting} puts {model} on {wire}", wire
+        elif "possible_if" not in maybe or _matches(facts, maybe["possible_if"]):
+            possible.append(extra)
+            explain[extra] = maybe["why"]
+    if hermes is None and entry_hint:
+        for extra in HERMES_EXTRAS:
+            if extra not in required + possible:
+                possible.append(extra)
+                explain[extra] = ("when its providers:/custom_providers: entry puts it there — "
+                                  "Hermes could not be imported from the runtime source to say")
+    return required, possible
+
+
 _SECRETISH = re.compile(r"(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}"
                         r"|sk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+|[A-Za-z0-9_-]{40,})")
 
@@ -343,6 +601,113 @@ def read_config(raw):
                            "$HERMES_HOME/review-loop-runtime.json (docs/configuration.md)") from None
 
 
+
+# What the describe step needs from Hermes. Checked by name before any is called, so a pin that
+# moves one reports which, instead of the check quietly deciding without Hermes.
+HERMES_WIRE_FUNCTIONS = (
+    ("hermes_cli.runtime_provider", "_parse_api_mode"),
+    ("hermes_cli.runtime_provider", "_detect_api_mode_for_url"),
+    ("hermes_cli.runtime_provider_custom", "_get_named_custom_provider"),
+    ("hermes_cli.runtime_provider_custom", "_opencode_family_for_custom"),
+    ("hermes_cli.runtime_provider_custom", "get_secret_str"),
+    ("hermes_cli.models", "opencode_model_api_mode"),
+    ("hermes_cli.auth", "resolve_provider"),
+)
+
+
+def hermes_facts(requested, block):
+    """Hermes's own answers; ``{"unavailable": "missing"|"drift", "detail"}`` when Hermes could
+    not be asked (not importable, or lacking a function doctor needs) — never a silent ``None``,
+    the caller says so on both lines; or ``{"error"}`` when Hermes was asked and raised, which
+    holds the seat exactly as the turn's own resolution would."""
+    import importlib
+    try:
+        import hermes_cli  # noqa: F401
+    except Exception as exc:
+        return {"unavailable": "missing",
+                "detail": "Hermes is not importable from " + source + " (" + text(exc) + ")"}
+    missing = []
+    for module, name in HERMES_WIRE_FUNCTIONS:
+        try:
+            if not callable(getattr(importlib.import_module(module), name, None)):
+                missing.append(module + "." + name)
+        except Exception as exc:
+            missing.append(module + " (" + text(exc) + ")")
+    if missing:
+        return {"unavailable": "drift",
+                "detail": "the Hermes at " + source + " lacks " + ", ".join(missing)}
+    try:
+        return _hermes_facts(requested, block)
+    except Exception as exc:
+        # Hermes WAS asked and raised on this profile: the turn resolves through the same code
+        # and would fail the same way, so this is a refusal (the seat is held), not "not asked".
+        return {"error": "the Hermes at " + source + " raised reading this profile ("
+                         + text(exc) + ")"}
+
+
+def _hermes_facts(requested, block):
+    """Hermes's OWN answers for the wire questions doctor needs. Read-only and credential-free:
+    ``load_config`` only reads config.yaml, and the named-provider lookup's one secret read (a
+    ``key_env``) is answered with "" before it runs. Only endpoint and wire facts leave this
+    process — never a key."""
+    from hermes_cli import runtime_provider as rp
+    from hermes_cli import runtime_provider_custom as rpc
+    from hermes_cli.models import opencode_model_api_mode
+    rpc.get_secret_str = lambda name, default="": default     # never read a credential
+    facts = {"configured": rp._parse_api_mode(block.get("api_mode")) or ""}
+    try:
+        facts["url_wire"] = rp._detect_api_mode_for_url(str(block.get("base_url") or "")) or ""
+    except Exception as exc:        # Hermes itself cannot read it (a named entry ignores it)
+        facts["url_wire"], facts["url_error"] = "", text(exc)
+    name = requested.strip().lower()
+    if not name or name == "auto":
+        return facts
+    try:
+        entry = rpc._get_named_custom_provider(name)
+    except Exception as exc:
+        facts["error"] = "Hermes refuses provider " + name + " (" + text(exc) + ")"
+        return facts
+    if entry:
+        url = str(entry.get("base_url") or "").rstrip("/")
+        api_mode = str(entry.get("api_mode") or "")
+        model = str(entry.get("model") or block.get("default") or block.get("model") or "")
+        family = rpc._opencode_family_for_custom(name, url) or ""
+        key = str(entry.get("provider_key") or "")
+        cfg = rp.load_config()
+        where = ("providers." + key if key and isinstance(cfg.get("providers"), dict)
+                 and key in cfg["providers"] else "custom_providers[" + str(entry.get("name")) + "]")
+        facts["entry"] = {"where": where, "url": url, "api_mode": api_mode, "model": model,
+                          "url_wire": rp._detect_api_mode_for_url(url) or "", "family": family,
+                          "model_wire": (opencode_model_api_mode(family, model)
+                                         if family and not api_mode and model else "")}
+        return facts
+    if name != "custom":
+        try:
+            from hermes_cli import auth as hermes_auth
+            hermes_auth.resolve_provider(name)
+        except Exception as exc:
+            facts["error"] = ("Hermes knows no provider " + name + " (no enabled providers." + name
+                              + " or custom_providers entry, and not a built-in: " + text(exc) + ")")
+    return facts
+
+
+def entry_hint(requested, cfg):
+    """Without Hermes: might a providers:/custom_providers: entry decide this provider? A loose
+    test on purpose — it only turns a verdict into "possible", never into "not needed"."""
+    name = requested.strip().lower().replace(" ", "-")
+    if not name or name == "auto":
+        return False
+    bare = name.split(":", 1)[1] if name.startswith("custom:") else name
+    providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+    legacy = cfg.get("custom_providers") if isinstance(cfg.get("custom_providers"), list) else []
+    names = {str(k).strip().lower().replace(" ", "-") for k in providers}
+    for entry in list(providers.values()) + legacy:
+        if isinstance(entry, dict):
+            names.update(str(entry.get(k) or "").strip().lower().replace(" ", "-")
+                         for k in ("name", "provider_key"))
+    return bare in names or name in names
+
+
 home = os.environ["HERMES_HOME"]
 if mode == "describe":             # read-only: the profile's config, no credential lookup
     try:
@@ -357,11 +722,16 @@ if mode == "describe":             # read-only: the profile's config, no credent
     if isinstance(block, str):
         block = {"default": block}
     block = block if isinstance(block, dict) else {}
-    done(model=str(block.get("default") or block.get("model") or ""),
+    nous = cfg.get("nous") if isinstance(cfg, dict) else None
+    nous = nous if isinstance(nous, dict) else {}
+    done(hermes=hermes_facts(str(block.get("provider") or ""), block),
+         entry_hint=entry_hint(str(block.get("provider") or ""), cfg if isinstance(cfg, dict) else {}),
+         model=str(block.get("default") or block.get("model") or ""),
          requested=str(block.get("provider") or "auto").strip().lower(),
          base_url=str(block.get("base_url") or ""),
          api_mode=str(block.get("api_mode") or "").strip().lower(),
-         openai_runtime=str(block.get("openai_runtime") or "").strip().lower())
+         openai_runtime=str(block.get("openai_runtime") or "").strip().lower(),
+         nous_anthropic_wire=str(nous.get("anthropic_wire") or "").strip().lower())
 try:
     from hermes_cli.env_loader import load_hermes_dotenv
     from hermes_cli import runtime_provider as rp
@@ -605,7 +975,7 @@ def run_resolver(profile: str, mode: str, settings: dict | None,
     locked = profile_lock(profile) if mode in ("resolve", "refresh") else contextlib.nullcontext()
     try:
         with locked:
-            process = subprocess.run([python, "-E", "-s", "-c", util.leak_guard_code(_RESOLVER),
+            process = subprocess.run([python, "-E", "-s", "-B", "-c", util.leak_guard_code(_RESOLVER),
                                       source, mode, policy],
                                      env=util.leak_guard_env(env, pythonpath=False), cwd=str(home), stdin=subprocess.DEVNULL,
                                      capture_output=True, timeout=timeout, check=False)
@@ -764,12 +1134,23 @@ def expected_wire(requested: str, api_mode: str = "") -> tuple[str, str]:
 
 def describe_seat(loop: dict, seat: str, settings: dict | None) -> tuple[str, str, str]:
     """Read-only (no credential lookup) — ``(status, detail, fix)`` with status ok|warn|fail."""
+    return describe_seat_wire(loop, seat, settings)[:3]
+
+
+def describe_seat_wire(loop: dict, seat: str,
+                       settings: dict | None) -> tuple[str, str, str, dict | None]:
+    """``describe_seat`` plus the wire the seat is expected to use — ``{"provider", "api_mode",
+    "base_url"}`` when it is decided (a profile's provider, a runtime override, or the legacy
+    fallback), else ``None``: a seat whose provider could not be read has no wire to reason
+    about."""
     profile = config.seat_profile(loop, seat)
     override = seat_override(settings or {}, seat)
     if override is not None:
         return ("ok", f"runtime override seats.{seat}: {override['model']} via "
                       f"{urlsplit(override['upstream']).hostname} [chat_completions, API key] "
-                      f"(profile {profile or '-'} unused)", "")
+                      f"(profile {profile or '-'} unused)", "",
+                {"provider": "override", "api_mode": "chat_completions",
+                 "base_url": override["upstream"]})
     legacy = legacy_override(settings or {})
     problem = profile_problem(profile, seat)
     reason = problem
@@ -777,25 +1158,56 @@ def describe_seat(loop: dict, seat: str, settings: dict | None) -> tuple[str, st
         try:
             answer = run_resolver(profile, "describe", settings)
         except SeatModelError as exc:
-            return ("warn", f"profile {profile}: {exc}", "run `hermes review-loop selftest`")
+            return ("warn", f"profile {profile}: {exc}", "run `hermes review-loop selftest`", None)
         requested = str(answer.get("requested") or "auto")
         model = str(answer.get("model") or "")
-        configured = str(answer.get("api_mode") or "")
+        hermes = answer.get("hermes") if isinstance(answer.get("hermes"), dict) else None
+        # Hermes could not be asked: say so. "missing" means the turn itself cannot run (it
+        # resolves through the same import); "drift" means this Hermes lacks what doctor asks, so
+        # the verdicts below rest on doctor's own table and are at most warnings.
+        unavailable = str((hermes or {}).get("unavailable") or "")
+        not_asked = _redact(str((hermes or {}).get("detail") or "")) if unavailable else ""
+        if unavailable or hermes is None:
+            not_asked = not_asked or "the describe step did not report Hermes's answers"
+            hermes = None
+        entry = (hermes or {}).get("entry") if isinstance((hermes or {}).get("entry"), dict) else None
+        # Hermes's own reading of model.api_mode when it can be asked (every alias included);
+        # a named custom provider ignores it — its entry decides.
+        configured = ("" if entry else (hermes or {}).get("configured", "")
+                      if hermes is not None else _canonical_mode(str(answer.get("api_mode") or "")))
+        entry_mode = _canonical_mode(str((entry or {}).get("api_mode") or ""))
+        if entry and entry.get("model"):
+            model = str(entry["model"])
         if answer.get("error"):
             reason = f"profile {profile}: {_redact(answer['error'])}"
             if str(answer.get("kind") or "") == "interpreter":
                 return ("fail", f"{reason}; the {seat} turn will be held",
                         "name a venv with Hermes's own dependencies in "
                         f"{config.home() / 'review-loop-runtime.json'} — the interpreter the host "
-                        "picked cannot read YAML at all (docs/configuration.md)")
+                        "picked cannot read YAML at all (docs/configuration.md)", None)
         elif requested in ("", "auto"):
             reason = f"profile {profile} names no model.provider"
+        elif unavailable == "missing":
+            reason = (f"profile {profile}: {not_asked} — the turn resolves its model through that "
+                      "same import")
+            fix_missing = ("point source/venv in "
+                           f"{config.home() / 'review-loop-runtime.json'} at the Hermes install")
+            if legacy is None:
+                return ("fail", f"{reason}; the {seat} turn will be held", fix_missing, None)
+        elif hermes is not None and hermes.get("error"):
+            reason = f"profile {profile}: {_redact(str(hermes['error']))}"
+        elif hermes is not None and hermes.get("url_error") and not entry:
+            reason = (f"profile {profile}: Hermes cannot read model.base_url "
+                      f"({_redact(str(hermes['url_error']))})")
         elif requested in UNSUPPORTED_PROVIDERS:
             reason = (f"profile {profile} uses {requested}, which the inference proxy cannot "
                       "speak (token exchange, cloud signing or several models)")
         elif answer.get("openai_runtime") == "codex_app_server":
             reason = (f"profile {profile} runs the codex_app_server runtime, which the inference "
                       "proxy cannot carry")
+        elif entry_mode in REFUSED_API_MODES:
+            reason = (f"profile {profile}'s {entry.get('where')} sets api_mode {entry_mode}, "
+                      "which the proxy cannot speak")
         elif configured in REFUSED_API_MODES:
             reason = f"profile {profile} sets api_mode {configured}, which the proxy cannot speak"
         elif not model:
@@ -803,12 +1215,32 @@ def describe_seat(loop: dict, seat: str, settings: dict | None) -> tuple[str, st
         else:
             base = answer.get("base_url") or ""
             mode, label = expected_wire(requested, configured)
-            return ("ok", f"profile {profile}: {requested} / {model}"
-                          + (f" via {urlsplit(base).hostname}" if base else "")
-                          + f" [{mode}, {label}] (credential checked by selftest)", "")
+            wire = {"provider": requested, "api_mode": mode, "base_url": str(base),
+                    "model": model, "configured": configured, "entry": entry, "hermes": hermes,
+                    "entry_hint": bool(answer.get("entry_hint")), "not_asked": not_asked,
+                    "facts": {"nous_anthropic_wire": str(answer.get("nous_anthropic_wire") or "")}}
+            explain: dict = {}
+            extras_for(requested, mode, str(base), model=model, configured=configured,
+                       facts=wire["facts"], entry=entry, hermes=hermes,
+                       entry_hint=wire["entry_hint"], explain=explain)
+            # The wire Hermes will use, when decided — not the profile's own spelling.
+            wire["api_mode"] = mode = explain.get("wire") or mode
+            if entry:
+                label = "API key"
+            shown = (entry or {}).get("url") or base
+            detail = (f"profile {profile}: {requested} / {model}"
+                      + (f" via {urlsplit(shown).hostname}" if shown else "")
+                      + f" [{mode}, {label}]")
+            if not_asked:
+                return ("warn", f"{detail} by doctor's own table, NOT by Hermes: {not_asked}",
+                        "point source/venv in the runtime file at the Hermes install the turn runs "
+                        "(then re-run doctor)", wire)
+            return ("ok", detail + " (credential checked by selftest)", "", wire)
     fix = (f"set a supported provider in profile {profile or '<name>'} (see `docs/configuration.md`), "
            f"or add seats.{seat} to the runtime file")
     if legacy is not None:
         return ("warn", f"{reason}; falls back to the LEGACY runtime model {legacy['model']} "
-                        "(every such seat shares it)", fix)
-    return ("fail", f"{reason}; the {seat} turn will be held", fix)
+                        "(every such seat shares it)", fix,
+                {"provider": "legacy", "api_mode": "chat_completions",
+                 "base_url": str(legacy.get("upstream") or "")})
+    return ("fail", f"{reason}; the {seat} turn will be held", fix, None)

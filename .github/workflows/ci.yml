@@ -128,7 +128,9 @@ jobs:
         run: python tests/leakguard.py discover -v -s tests -p 'test_gate_shims.py'
 
   # The vertical tests drive the real Hermes (pinned) inside bubblewrap against local fakes: the
-  # route script, the worker, the sandboxed turn, the inference proxy and each seat wire format.
+  # route script, the worker, the sandboxed turn, the inference proxy and each seat wire format —
+  # and, without bubblewrap, doctor's provider-extra verdicts against that Hermes's own resolver
+  # (test_seat_models.HermesAgreement, #118).
   # Everywhere else they skip for want of a Hermes checkout, so a green `tests` job never ran
   # them — which is how #110 reached main. Here a missing prerequisite fails the job
   # (REVIEW_LOOP_REQUIRE_HERMES_SOURCE), and a final step refuses any skip in these modules.
@@ -215,6 +217,7 @@ jobs:
             tests.test_contained_agent \
             tests.test_inference_proxy \
             tests.test_oauth_seats \
+            tests.test_seat_models.HermesAgreement \
             2>&1 | tee "$RUNNER_TEMP/verticals.log"
       # REVIEW_LOOP_REQUIRE_HERMES_SOURCE already turns the known skips into failures; this catches
       # any other skip a later change adds to these modules.
