@@ -83,7 +83,7 @@ def _atomic_write(path: pathlib.Path, data) -> None:
 class LoopState:
     def __init__(self, loop: dict):
         self.loop = loop
-        self.dir = pathlib.Path(str(loop["state_dir"])).expanduser()
+        self.dir = config.state_dir(loop)
         self.locks = self.dir / "locks.json"
         self.pending = self.dir / "pending.json"
         self.inflight_file = self.dir / "inflight.json"

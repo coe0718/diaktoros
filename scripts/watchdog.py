@@ -999,12 +999,21 @@ def main() -> None:
 
 
 def run(args: argparse.Namespace, budget: float) -> None:
-    loops = [config.load_id(args.loop)] if args.loop else config.all_loops()
+    # The cron job runs this with no --loop: one loop file the loader refuses (for any repo)
+    # is reported by name, like any other per-loop failure, and every other loop still sweeps.
+    refused: list[tuple[str, str]] = []
+    if args.loop:
+        loops = [config.load_id(args.loop)]
+    else:
+        loops, refused = config.readable_loops()
     if not loops and args.loop:
         print(f"no loop config named {args.loop}")
         return
 
     if args.drain:
+        for loop_id, reason in refused:
+            # Drain prints nothing else, but a refused file must not go quiet: stderr.
+            print(f"⚠️ Review loop [{loop_id}] not drained: ConfigError: {reason}", file=sys.stderr)
         for loop in loops:
             st = state_mod.state_for(loop)
             armed, armed_error = (True, "") if TEST else gate.hooks_read(loop)
@@ -1039,6 +1048,8 @@ def run(args: argparse.Namespace, budget: float) -> None:
     # otherwise never say them. The ledger's claims keep overlapping sweeps to one alert.
     out.extend(sweep_gate_failures(gate_failures.fallback_ledger(), "(no loop)",
                                    0.0 if TEST else 6 * 3600, may_redrive=True))
+    for loop_id, reason in refused:
+        out.append(f"⚠️ Review loop [{loop_id}] watchdog failed: ConfigError: {reason}")
     for loop in loops:
         lines: list[str] = []
         try:
