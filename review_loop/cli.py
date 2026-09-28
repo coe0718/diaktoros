@@ -504,7 +504,8 @@ def _keep_one(candidates: list[dict], dest: str) -> tuple[dict, list[dict]]:
     never end up with fewer armed hooks than it had), then one already at ``dest``, then the
     oldest (lowest id). The rest are redundant — named for deletion, never moved or deleted."""
     ordered = sorted(candidates, key=lambda hook: (not hook["active"],
-                                                  hook["config"]["url"] != dest, hook["id"]))
+                                                  not routes.serves_route_url(hook["config"]["url"], dest),
+                                                  hook["id"]))
     return ordered[0], ordered[1:]
 
 
@@ -528,7 +529,7 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
             exact = routes.url_for(name, loop.get("host") or None)
         except config.ConfigError:
             exact = None
-        if url != exact:
+        if not exact or not routes.serves_route_url(url, exact):
             ok = False
             out.append(f"⚠️ hook {hook['id']} posts to {url}, which the gateway does not route "
                        f"for {name} — `hermes review-loop apply --loop {loop['id']}` repoints it")
@@ -608,7 +609,7 @@ def _hook_moves(before: dict, after: dict, binds: dict,
         if not mine:
             continue
         keep, rest = _keep_one(mine, dest)
-        if keep["config"]["url"] != dest:
+        if not routes.serves_route_url(keep["config"]["url"], dest):
             moves.append((keep["id"], keep["config"]["url"], dest, keep["config"].get("insecure_ssl")))
         redundant += [(hook, keep) for hook in rest]
     return moves, redundant
@@ -718,7 +719,7 @@ def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
             rekey.append((keep, name))
             redundant += [(hook, keep) for hook in rest]
     for name in sorted(missing.values()):
-        plan = [(f"re-keys hook {hook['id']}" if hook["config"]["url"] == urls[name]
+        plan = [(f"re-keys hook {hook['id']}" if routes.serves_route_url(hook["config"]["url"], urls[name])
                  else f"moves hook {hook['id']} from {hook['config']['url']} and re-keys it")
                 for hook, hooked in rekey if hooked == name]
         print(f"  route {name}: {'would recreate' if dry_run else 'recreating'} from the loop "
@@ -731,7 +732,11 @@ def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
     try:
         written = list(_install_routes(loop, roles=tuple(roles)).values())
         for hook, name in rekey:
-            _patch_hook_url(loop, hook["id"], urls[name], token_login, require_secret=True,
+            # A hook that already reaches the route keeps its own URL (a query string, say);
+            # one left elsewhere is moved to the route's URL.
+            url = (hook["config"]["url"] if routes.serves_route_url(hook["config"]["url"], urls[name])
+                   else urls[name])
+            _patch_hook_url(loop, hook["id"], url, token_login, require_secret=True,
                             insecure_ssl=hook["config"].get("insecure_ssl"))
             print(f"  hook {hook['id']} re-keyed for {name}")
         route_intent.record_live(loop, written)

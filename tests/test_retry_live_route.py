@@ -251,6 +251,13 @@ class LiveRouteRetry(unittest.TestCase):
                                          'login': 'fixer'}},
                      'read_token': 'reader', 'tokens': tokens, 'state_dir': str(home / 'state')}
         (home / 'review-loops.d/widgets.json').write_text(json.dumps(self.loop))
+        # The routes the fake GitHub's hooks post to (http://gw/webhooks/<route>): a seat is armed
+        # only by an active hook at the URL the gateway serves for its registered route (#106).
+        (home / 'webhook_subscriptions.json').write_text(json.dumps({
+            name: {'profile': 'default', 'host': 'http://gw', 'script': script,
+                   'secret': 'fixture-route-' + name, 'events': [event], 'prompt': 'fixture'}
+            for name, script, event in (('widgets-review', 'gate_reviewer.py', 'pull_request'),
+                                        ('widgets-fix', 'gate_fixer.py', 'pull_request_review'))}))
         blobs = {'Cargo.toml': b'[package]\nname="probe"\nversion="0.1.0"\nedition="2021"\n',
                  'src/lib.rs': b'#[test] fn works() {}\n'}
         self.world = {

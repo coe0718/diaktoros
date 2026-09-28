@@ -28,6 +28,10 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from review_loop import cli, config, doctor, routes  # noqa: E402
+# By file, not as ``tests.hermes_prereqs``: in CI's installed-mode lane Hermes's own ``tests``
+# package is on PYTHONPATH and would shadow ours.
+sys.path.insert(0, str(ROOT / "tests"))
+from hermes_prereqs import skip_or_fail  # noqa: E402
 
 SOURCE = pathlib.Path(os.environ.get("HERMES_AGENT_SOURCE")
                       or pathlib.Path.home() / ".hermes/hermes-agent")
@@ -83,30 +87,20 @@ def real_python():
     return str(venv) if venv.exists() else sys.executable
 
 
-# CI's installed-mode job sets this: there the Hermes checkout is the point, so a missing or
-# unimportable source is a failure, never a quiet skip.
-# TODO: move to #117's tests/hermes_prereqs.py (REQUIRED/needs/skip_or_fail) once it lands.
-REQUIRED = os.environ.get("REVIEW_LOOP_REQUIRE_HERMES_SOURCE") == "1"
+def require_real_resolver(test: unittest.TestCase) -> None:
+    """Skip without the Hermes source — or fail, under REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1 (CI's
+    installed-mode lane), via #117's shared ``hermes_prereqs.skip_or_fail``."""
+    if not (SOURCE / "gateway" / "platforms" / "webhook_filters.py").exists():
+        skip_or_fail(test, f"no Hermes source at {SOURCE}")
 
 
-def real_resolver_available() -> bool:
-    present = (SOURCE / "gateway" / "platforms" / "webhook_filters.py").exists()
-    if not present and REQUIRED:
-        raise AssertionError(f"REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1 but no Hermes source at {SOURCE}"
-                             " — set HERMES_AGENT_SOURCE to the hermes-agent checkout")
-    return present
-
-
-def real_resolve(home_env: dict, pairs) -> list:
+def real_resolve(test: unittest.TestCase, home_env: dict, pairs) -> list:
     """Hermes's own resolver, per (profile, script), under the disposable HOME/HERMES_HOME."""
     proc = subprocess.run([real_python(), "-c", _REAL, str(SOURCE), json.dumps(pairs)],
                           capture_output=True, text=True, timeout=120, env=home_env,
                           cwd=home_env["HOME"])
     if proc.returncode != 0:
-        message = f"Hermes resolver not importable from {SOURCE}: {proc.stderr[-300:]}"
-        if REQUIRED:
-            raise AssertionError(message)
-        raise unittest.SkipTest(message)
+        skip_or_fail(test, f"Hermes resolver not importable from {SOURCE}: {proc.stderr[-300:]}")
     return json.loads(proc.stdout)
 
 
@@ -200,12 +194,11 @@ class GatewayResolvesEveryRoute(Base):
         self.assertTrue((self.hermes / "scripts/observe.py").is_file())
 
     def test_hermes_own_resolver_agrees(self):
-        if not real_resolver_available():
-            self.skipTest(f"no Hermes source at {SOURCE}")
+        require_real_resolver(self)
         self.full_install()
         entries = self.loop_routes()
         pairs = [[entry.get("profile", "default"), entry["script"]] for entry in entries.values()]
-        real = real_resolve({**os.environ, **self.env}, pairs)
+        real = real_resolve(self, {**os.environ, **self.env}, pairs)
         for (profile, script), (path, error) in zip(pairs, real):
             self.assertIsNone(error, f"{profile}/{script}: {error}")
             self.assertEqual(pathlib.Path(path),
@@ -213,8 +206,7 @@ class GatewayResolvesEveryRoute(Base):
 
     def test_local_resolver_matches_hermes_on_the_edge_cases(self):
         """The copy doctor uses must fail exactly where the gateway fails."""
-        if not real_resolver_available():
-            self.skipTest(f"no Hermes source at {SOURCE}")
+        require_real_resolver(self)
         from review_loop import gate_shims
         scripts = self.hermes / "profiles" / "vex" / "scripts"
         scripts.mkdir(parents=True)
@@ -228,7 +220,7 @@ class GatewayResolvesEveryRoute(Base):
                  str(outside), str(scripts / "real.py"), "~/.hermes/profiles/vex/scripts/real.py",
                  "", "  "]
         pairs = [[profile, case] for profile in ("vex", "default") for case in cases]
-        real = real_resolve({**os.environ, **self.env}, pairs)
+        real = real_resolve(self, {**os.environ, **self.env}, pairs)
         for (profile, case), want in zip(pairs, real):
             home = gateway_home(self.hermes, profile)
             for ours in (gate_shims.resolve(home, case), gateway_resolve(home, case)):
@@ -892,6 +884,45 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(gate.hooks_read(config.load_id("widgets")), (True, ""))
         rc, out = self.run_cli(["arm", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
+
+    def test_a_query_string_hook_is_served_so_every_surface_calls_it_armed(self):
+        """The gateway routes on the exact PATH (aiohttp): `?x=1` reaches the handler, a trailing
+        slash is a 404. So a query-string hook is armed and correct everywhere — explain/watchdog,
+        arm, doctor, apply — while the slashed spelling stays refused."""
+        from review_loop import gate
+        self.install()
+        world = self.github_with_hook(self.REVIEW_URL + "?x=1", hook_id=41,
+                                      events=("pull_request",), more=[(42, self.FIX_URL)])
+        loop = config.load_id("widgets")
+        self.assertEqual(gate.hooks_read(loop), (True, ""))
+        self.assertIs(gate.hooks_armed(loop), True, "the watchdog must not park a working seat")
+        rc, out = self.run_cli(["arm", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("⚠️", out)
+        self.assertEqual(self.hook_check().status, doctor.VERIFIED, self.hook_check().detail)
+        rc, out = self.run_cli(["apply", "--loop", "widgets"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(json.loads(world.read_text())["patches"], 0, "a working hook is untouched")
+        # Scheme and host compare case-insensitively; the path never does.
+        self.github_with_hook("HTTPS://Gateway.Example/p/vex/webhooks/widgets-review",
+                              hook_id=41, events=("pull_request",), more=[(42, self.FIX_URL)])
+        self.assertEqual(gate.hooks_read(loop), (True, ""))
+        self.github_with_hook("https://gateway.example/p/vex/webhooks/Widgets-Review",
+                              hook_id=41, events=("pull_request",), more=[(42, self.FIX_URL)])
+        self.assertEqual(gate.hooks_read(loop), (False, "reviewer"))
+        # And the trailing slash is still a 404, with or without a query.
+        self.github_with_hook(self.REVIEW_URL + "/?x=1", hook_id=41, events=("pull_request",),
+                              more=[(42, self.FIX_URL)])
+        self.assertEqual(gate.hooks_read(loop), (False, "reviewer"))
+
+    def test_recreate_re_keys_a_query_string_hook_in_place(self):
+        self.lose_fix_route()
+        world = self.github_with_hook(self.NEW_FIX + "?x=1", hook_id=102)
+        with patch("secrets.token_hex", return_value="placeholder-recreated-key"):
+            rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.hook_config(world, 102)["url"], self.NEW_FIX + "?x=1")
+        self.assertEqual(self.hook_config(world, 102)["secret"], "placeholder-recreated-key")
 
     def test_a_repair_names_the_fix_for_its_cause_not_always_the_token(self):
         """A route with no secret is not a token problem: no --admin-token remedy for it."""

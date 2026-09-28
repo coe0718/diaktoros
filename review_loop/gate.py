@@ -316,15 +316,17 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
         return None, error or "GitHub returned no hook list"
     missing = []
     for seat in ("reviewer", "fixer"):
-        # The exact URL the gateway serves for this route, the rule doctor and apply use: a hook
-        # whose URL merely *contains* the route name (a trailing slash, another profile) is a 404
-        # at the gateway, and a seat woken only through it is not armed.
+        # The URL the gateway serves for this route, judged by the rule doctor and apply use
+        # (routes.serves_route_url: same origin, exact path, query ignored): a hook whose URL
+        # merely *contains* the route name (a trailing slash, another profile) is a 404 at the
+        # gateway, and a seat woken only through it is not armed.
         try:
             url = routes.url_for(loop["seats"][seat]["route"], loop.get("host") or None)
         except config.ConfigError:
             url = None
         if not url or not any(isinstance(h, dict) and h.get("active") is True
-                              and (h.get("config") or {}).get("url") == url for h in hooks):
+                              and routes.serves_route_url((h.get("config") or {}).get("url"), url)
+                              for h in hooks):
             missing.append(seat)
     return not missing, ", ".join(missing)
 
