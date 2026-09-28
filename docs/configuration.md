@@ -49,12 +49,64 @@ See [Preflight](architecture.md#preflight-can-this-installation-run) and, for ex
 | `seats.<seat>.concurrency` | loop default | this seat's own limit, overriding the default. Set with `hermes review-loop set --reviewer-concurrency N` / `--fixer-concurrency N`. |
 | `state_dir` | `~/.hermes/state/review-loops/<id>` | locks, queue, in-flight marks, breach markers, artifacts, watchdog memory |
 | `host` | unset | your gateway's HTTP(S) webhook origin; `init` requires `--host` or an explicit plugin setting before it writes config/routes/hooks |
-| `grace_min` | `25` | how long a quiet head is allowed to sit before the watchdog speaks |
-| `marker_grace_min` | `60` | how long a breach marker may sit unpicked-up |
+| `grace_min` | `35` | how long a quiet head is allowed to sit before the watchdog speaks. Per seat it is raised to that seat's whole turn when the turn is longer (see [Turn budget](#turn-budget-how-long-one-turn-may-run)); 35 covers a whole default turn (1830 s). Before #98 the default was 25 |
+| `marker_grace_min` | `60` | how long a breach marker may wait for its adjudicator run (`awaiting-adjudication`) before the watchdog reports the PR parked. A marker being ruled on (`adjudicating`) is never a stall while its adjudicator run is live; with no live run it is reported only after the adjudicator's whole worst-case turn, or this, if longer (`doctor` prints both) |
 | `cooldown_h` | `6` | repeat suppression per stall |
-| `ttl_min` | `45` | seat-lock lifetime; past this a crashed run has lost its seat |
+| `ttl_min` | `45` | seat-lock lifetime; past this a crashed run has lost its seat. Raised automatically, per seat, to that seat's whole worst-case turn, so a healthy long turn never loses its slot; the watchdog calls a claim dead at twice that |
 | `inflight_ttl_min` | `10` | how long a same-head burst is considered already handled |
+| `turn_budget_s` | `900` | wall-clock seconds one isolated seat turn may run — read the PR, build, run tests, submit. The whole turn is up to 930 s longer (300 s dependency prefetch before it, 30 s kill grace and up to 600 s broker drain after); that seat's stall grace and lock TTL follow the total. See [Turn budget](#turn-budget-how-long-one-turn-may-run). Plugin setting `turn_budget_s`; `init`/`set --turn-budget N` |
+| `seats.<seat>.turn_budget_s` | loop default | this seat's own budget (`reviewer`, `fixer`, `adjudicator`), overriding `turn_budget_s`. `init`/`set --reviewer-turn-budget N` / `--fixer-turn-budget N`; the adjudicator's is set in the file |
 | `observer` | `{}` | the read-only observer feed. `{}` means no feed, and the loop is untouched by its absence — see [The observer feed](#the-observer-feed) |
+
+## Turn budget: how long one turn may run
+
+Every isolated seat turn (reviewer, fixer, adjudicator) runs against one wall clock, in seconds,
+60–14400, default **900**:
+
+- it is Hermes's `--run-budget`: at 80% Hermes tells the agent to wrap up, and its last request is
+  capped to the budget;
+- the sandbox is SIGKILLed 30 s after it (a grace so Hermes's own clean stop wins the race);
+- a broker request already in flight when the sandbox dies — a push is several GitHub calls plus a
+  git fetch and push — is let finish (up to 600 s) rather than abandoned, so a kill mid-push
+  resolves the push instead of leaving its intent open and quarantining the run as uncertain.
+  The worker's ledger heartbeat keeps the run's lease alive the whole time, however long the
+  budget: a healthy long turn is never swept as lost.
+
+The gate records the budget on the run's ledger row when it enqueues the turn, so whichever worker
+claims it (a worker spawned by another loop's event included) runs it on this loop's terms; a
+`set` changes turns enqueued after it. `status` and `doctor` print each seat's budget. A whole
+turn, launch to end, is the host dependency prefetch (bounded at 300 s, and run before the budget
+starts, so it never shortens it), then the budget, then the 30 s kill grace, then up to 600 s of
+broker drain for a write still in flight: the default 900 s budget is up to 1830 s (30.5 min).
+
+Every age threshold the watchdog applies to a seat follows **that seat's** whole turn, never
+another seat's: its stall grace is `grace_min` raised to the seat's turn (a 1500 s fixer budget
+waits 41 min before "fixer never pushed", while the reviewer keeps the 35 min default); its
+seat-lock TTL is `ttl_min` raised the same way — on the budget the claim was taken with, so
+lowering `turn_budget_s` mid-turn cannot free a live seat early — and the watchdog calls a claim
+a run that died only at twice that. A breach marker being ruled on follows the adjudicator's turn
+(see `marker_grace_min`). `doctor` prints every one of these per seat and names each one a turn
+raised past your setting; there is nothing to tune by hand.
+A turn killed at its budget fails with
+`isolated turn failed: TimeoutExpired — killed at the Ns turn budget (sandbox stopped 30s past
+it) — raise turn_budget_s (hermes review-loop set …), then `retry``, shown by `status`,
+`explain` and the watchdog's operator notice. The whole sandbox process tree goes with it (a
+child that detached into its own session included), and the seat is free for the next turn at
+once. Such a turn is **not** retried automatically — the same budget would most likely run out
+again. If it made no write, once the budget is raised `hermes review-loop retry` (or a new event
+for the head) re-arms it, on the budget the loop has *then*. If a write finished during the drain
+(a push published after the kill), the reason says `after it wrote (fixer push recorded) — final:
+never replayed; a new head gets a fresh turn`: that run is final, and `retry` refuses it. If the
+drain itself runs out, the run is quarantined `uncertain` (a write may still land) and the reason
+names both clocks: `broker did not shut down within 600s after the sandbox was killed at the Ns
+turn budget …`. An adjudicator killed this way
+hands its breach marker back, so the re-armed ruling starts again. Only the sandbox's own clock
+is reported this way; any other timeout keeps its reason and its automatic retry.
+`selftest --live-turn` runs for the loop's reviewer budget unless `--timeout` says otherwise, so a
+passing selftest means the turn fits what production enforces.
+
+Before this setting (issue #49) every production turn got a hard-coded 120 s — too short for any
+review that builds and tests.
 
 ## The observer feed
 
@@ -161,7 +213,7 @@ hermes review-loop apply --loop <id>             # write it
 | `adjudicator_login` | — | `seats.adjudicator.login`, on a loop that already has an `adjudicator.route` |
 | `adjudicator_token_file` | — | `tokens[<adjudicator login>]` — a **path** only, same checks, and not shared with any other login |
 | `clone`, `base`, `host` | —, `main`, unset | the same loop keys; a blank host in the form preserves an existing loop's explicit host |
-| `grace_min`, `ttl_min`, `inflight_ttl_min` | 25, 45, 10 | the same loop keys |
+| `grace_min`, `ttl_min`, `inflight_ttl_min` | 35, 45, 10 | the same loop keys |
 
 Settings are per profile (`plugins.entries.hermes-review-loop.settings`, written through Hermes'
 single config writer), and `review_loop/config.py::SETTINGS_SCHEMA` mirrors the manifest — the suite
@@ -247,9 +299,9 @@ did not. Token values are never printed: only which login reads which file.
 
 | file | what it holds |
 |---|---|
-| `locks.json` | `{seat: {"repo#PR": {at, head, why}}}` — live runs per seat; `concurrency` of them may be active at once |
-| `pending.json` | `{seat: {"repo#PR": {at, head, url, reason}}}` — queued, not run |
-| `inflight.json` | `{"review:PR:sha" / "fix:PR:sha": ts}` — this head is already being handled |
+| `locks.json` | `{seat: {"repo#PR": {at, head, why, budget, run}}}` — the seat claim of each live isolated run, written by its worker at launch (with the run's budget and id) and removed when it ends — only by that run's own release, never by another run's; an `uncertain` run keeps it until `run_supervisor reconcile` frees it (with the head's in-flight mark). The run ledger enforces capacity; this is its visible copy |
+| `pending.json` | `{seat: {"repo#PR": {at, head, url, reason}}}` — held, not run: a turn the run ledger could not take (the private runtime was missing, say), or a changes-requested verdict held while unattended fixer pushes are off. The watchdog drains it |
+| `inflight.json` | `{"review:PR:sha" / "fix:PR:sha": ts}` — a reviewer/fixer run for this head is live: marked by its worker at launch, cleared when it ends (and after `inflight_ttl_min` regardless) |
 | `breach.json` | `{"repo#PR": {head, rounds, cap, reason, at, status}}` — `delivery-pending` retries on a current-head watchdog sweep; `awaiting-adjudication` means POST accepted; `adjudicating` means the ruling run was claimed |
 | `watchdog.json` | `armed_since`, `{heads: {PR: {sha, observed_at, last_seen_at}}}` (null observation for baseline/invalid clocks; absent PR clocks retained 30 days since last seen). A missing, malformed, boolean, non-finite, or future `armed_since` re-arms at the first successful PR listing and baselines all current heads rather than trusting old observations; a failed listing leaves state and queue unchanged. Alert history and last run are also stored here. |
 | `watchdog.log` | one line per sweep, and per breach |

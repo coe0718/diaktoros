@@ -32,8 +32,8 @@ File shape (all keys except ``repo`` have defaults)::
       "state_dir": "~/.hermes/state/review-loops/attest",
       "clone": "~/projects/attest",
       "roots": ["~/reviews", "~/.hermes/cache/scratch"],
-      "grace_min": 25, "marker_grace_min": 60, "cooldown_h": 6,
-      "ttl_min": 45, "inflight_ttl_min": 10
+      "grace_min": 35, "marker_grace_min": 60, "cooldown_h": 6,
+      "ttl_min": 45, "inflight_ttl_min": 10, "turn_budget_s": 900
     }
 
 ``config.py`` is deliberately strict: a loop that cannot be resolved to a repository,
@@ -51,6 +51,7 @@ import contextlib
 
 import ipaddress
 import json
+import math
 import os
 import pathlib
 import re
@@ -77,7 +78,7 @@ SETTINGS_SCHEMA: dict = {
                              "parallel run in a shared checkout produces wrong verdicts"},
     "base": {"label": "Base branch", "type": "str", "default": "main",
              "description": "Base branch the loop watches"},
-    "grace_min": {"label": "Watchdog grace (minutes)", "type": "int", "default": 25,
+    "grace_min": {"label": "Watchdog grace (minutes)", "type": "int", "default": 35,
                   "description": "Minutes a quiet PR may sit before the watchdog speaks"},
     "ttl_min": {"label": "Seat slot TTL (minutes)", "type": "int", "default": 45,
                 "description": "Minutes a seat slot survives — the backstop for a run that died "
@@ -85,6 +86,11 @@ SETTINGS_SCHEMA: dict = {
     "inflight_ttl_min": {"label": "In-flight mark TTL (minutes)", "type": "int", "default": 10,
                          "description": "Minutes an in-flight mark blocks a second run at the "
                                         "same head"},
+    "turn_budget_s": {"label": "Turn budget (seconds)", "type": "int", "default": 900,
+                      "description": "Wall-clock seconds one isolated seat turn may run: Hermes's "
+                                     "--run-budget, and the sandbox is killed shortly after. A "
+                                     "real review builds and tests, so keep it generous "
+                                     "(60-14400)"},
     "host": {"label": "Webhook host", "type": "str", "default": "",
              "description": "Your gateway's public webhook origin (required to create GitHub hooks)"},
     "reviewer_profile": {"label": "Reviewer's Hermes profile", "type": "str", "default": "",
@@ -197,7 +203,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     host = d["host"] or loop_raw.get("host") or ""
     overlaid = {**loop_raw, "cap": d["cap"], "clone": clone, "base": d["base"],
                 "host": host, "grace_min": d["grace_min"], "ttl_min": d["ttl_min"],
-                "inflight_ttl_min": d["inflight_ttl_min"], "seats": seats}
+                "inflight_ttl_min": d["inflight_ttl_min"], "turn_budget_s": d["turn_budget_s"],
+                "seats": seats}
     # Seat identity rides the same push: the form names who serves each seat, and a blank field
     # stays blank rather than unsetting what the loop already answered for itself.
     return apply_seats(overlaid, settings)
@@ -417,11 +424,15 @@ DEFAULTS: dict = {
     "clone": "",
     "roots": [],
     "concurrency": 1,         # runs allowed at once per seat; >1 requires isolation
-    "grace_min": 25,          # how long a quiet head is allowed to sit before the watchdog speaks
+    # How long a quiet head may sit before the watchdog speaks. It must cover a whole default
+    # turn — 300 s prefetch + 900 s budget + 30 s kill grace + 600 s broker drain = 1830 s — so a
+    # fresh install's healthy turn is never a "stall" (doctor checks it); 35 leaves a sweep's slack.
+    "grace_min": 35,
     "marker_grace_min": 60,
     "cooldown_h": 6,
     "ttl_min": 45,            # seat lock lifetime: past this a crashed run has lost its seat
     "inflight_ttl_min": 10,
+    "turn_budget_s": 900,     # wall clock for one isolated seat turn (seats.<seat>.turn_budget_s wins)
     "host": "",
     "unattended_fixer_push": False,  # per-repository; never inherited from plugin settings
 }
@@ -458,6 +469,121 @@ def is_fixer_push_hold(entry: object) -> bool:
     return isinstance(entry, dict) and str(entry.get("reason") or "").startswith(FIXER_PUSH_HOLD)
 
 SEAT_KEYS = ("reviewer", "fixer")
+
+# One isolated turn's wall clock, in seconds. It is Hermes's ``--run-budget`` and (plus a short
+# grace) the sandbox kill deadline. A real review reads the diff, builds and runs tests: two
+# minutes (the old hard-coded worker value) cannot fit that, and a kill mid-push quarantines the run.
+DEFAULT_TURN_BUDGET_S = 900
+TURN_BUDGET_RANGE = (60, 14400)
+
+
+def turn_budget(loop: dict, seat: str) -> int:
+    """Seconds one isolated ``seat`` turn may run: the seat's own value, else the loop's.
+
+    Tolerates an un-normalized loop dict (the worker and tests read raw configs): a missing value
+    is the default, never zero. ``normalize`` is where a bad value is refused.
+    """
+    seat_cfg = (loop.get("seats") or {}).get(seat) or {}
+    value = seat_cfg.get("turn_budget_s")
+    if value is None or value == "":
+        value = loop.get("turn_budget_s")
+    if value is None or value == "":
+        value = DEFAULT_TURN_BUDGET_S
+    return int(value)
+
+
+def _recorded_budget(recorded) -> int:
+    """A claim's recorded budget as whole seconds; None is "none recorded" (0). Anything that
+    is not a number is refused: a silently ignored value would be a silently wrong clock."""
+    if recorded is None:
+        return 0
+    if (isinstance(recorded, bool) or not isinstance(recorded, (int, float))
+            or not math.isfinite(recorded)):
+        raise ValueError(f"recorded turn budget must be finite seconds, got {recorded!r}")
+    return int(recorded)
+
+
+def claim_budget(entry) -> float | None:
+    """The budget a seat claim (a ``locks.json`` entry) recorded, or None — for a legacy or
+    hand-edited claim whose value is missing or not a number, which then gets its seat's own
+    clock rather than an error in a read-only report."""
+    value = entry.get("budget") if isinstance(entry, dict) else None
+    # NaN and infinity are floats too: a claim holding one gets its seat's clock, like any
+    # other value that is not a number of seconds (#98).
+    return (value if isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) else None)
+
+
+def turn_parts(loop: dict, seat: str | None = None, *, recorded: float | None = None) -> dict:
+    """The pieces of one isolated turn's worst-case wall clock, launch to end, in seconds.
+
+    Before the budget: the host dependency prefetch (``deps.FETCH_TIMEOUT``, #51). Then the
+    budget — ``seat``'s, or the longest seat's — the sandbox kill grace after it
+    (``trusted_turn.KILL_GRACE_S``), and the broker drain that lets an in-flight write (a push)
+    finish once the sandbox is gone (``trusted_turn.BROKER_DRAIN_S``) — all inside the run, all
+    before its seat is released. ``recorded`` is a budget a running turn was started with: the
+    clock never runs shorter than it, whatever the loop says now (a row keeps its budget).
+    """
+    from . import deps, trusted_turn   # imported late: both import this module
+    seats = (seat,) if seat else (*SEAT_KEYS, "adjudicator")
+    budget = max(max(turn_budget(loop, name) for name in seats), _recorded_budget(recorded))
+    return {"prefetch": deps.FETCH_TIMEOUT, "budget": budget,
+            "grace": trusted_turn.KILL_GRACE_S, "drain": trusted_turn.BROKER_DRAIN_S}
+
+
+def worst_turn_s(loop: dict, seat: str | None = None, *, recorded: float | None = None) -> int:
+    """Seconds one isolated turn may take from launch to end (see ``turn_parts``)."""
+    return sum(turn_parts(loop, seat, recorded=recorded).values())
+
+
+def seat_ttl_s(loop: dict, *, seat: str | None = None, recorded: float | None = None) -> int:
+    """How long a ``seat``'s claim lives: ``ttl_min``, or that seat's whole worst-case turn if
+    that is longer (the longest seat's when no seat is named).
+
+    ``ttl_min`` is the backstop for a run that died without a verdict; it must never be what
+    takes a slot from a turn that is still inside its own budget (#98) — and another seat's
+    longer budget must not keep a dead claim alive either. ``recorded``, the budget the claim
+    was taken with, keeps a lowered ``turn_budget_s`` from shortening it.
+    """
+    return max(int(loop.get("ttl_min") or DEFAULTS["ttl_min"]) * 60,
+               worst_turn_s(loop, seat, recorded=recorded))
+
+
+def seat_died_after_s(loop: dict, *, seat: str | None = None,
+                      recorded: float | None = None) -> int:
+    """Age past which the watchdog reports a seat claim as a run that died: twice its TTL.
+
+    ``seat`` and ``recorded`` are keyword-only (#98): positionally a seat name could land in
+    ``recorded`` and the clock would silently be the longest seat's."""
+    return 2 * seat_ttl_s(loop, seat=seat, recorded=recorded)
+
+
+def stall_grace_s(loop: dict, seat: str) -> int:
+    """How long the watchdog lets ``seat``'s part of a PR sit quiet before calling it a stall:
+    ``grace_min``, or that seat's whole worst-case turn if longer (#98). Per seat, so one
+    seat's long budget never delays the stall report of another."""
+    grace = int(loop.get("grace_min") or DEFAULTS["grace_min"]) * 60
+    return max(grace, worst_turn_s(loop, seat))
+
+
+def adjudicating_stall_s(loop: dict) -> int:
+    """How long a breach marker may sit ``adjudicating`` — a ruling claimed — with no live
+    adjudicator run before the watchdog calls the PR stalled: ``marker_grace_min``, or the
+    adjudicator's whole worst-case turn if that is longer (#98). While the run is live, never."""
+    grace = int(loop.get("marker_grace_min") or DEFAULTS["marker_grace_min"]) * 60
+    return max(grace, worst_turn_s(loop, "adjudicator"))
+
+
+def _check_budget(value, what: str, where: str) -> int:
+    low, high = TURN_BUDGET_RANGE
+    try:
+        budget = int(value)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}: {what} must be whole seconds, got {value!r}") from None
+    if isinstance(value, bool) or not low <= budget <= high:
+        raise ConfigError(f"{where}: {what} must be {low}-{high} seconds, got {value!r} — it is "
+                          "the whole wall clock of one seat turn (build and tests included)")
+    return budget
 
 
 def seat_concurrency(loop: dict, seat: str) -> int:
@@ -497,9 +623,13 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
     """
     if raw is None or raw == {}:
         return {}
-    if not isinstance(raw, dict) or not set(raw) <= {"login", "concurrency"}:
-        raise ConfigError(f"{where}: seats.adjudicator may only hold 'login' and 'concurrency'")
+    if not isinstance(raw, dict) or not set(raw) <= {"login", "concurrency", "turn_budget_s"}:
+        raise ConfigError(f"{where}: seats.adjudicator may only hold 'login', 'concurrency' and "
+                          "'turn_budget_s'")
     seat: dict = {}
+    if raw.get("turn_budget_s") not in (None, ""):
+        seat["turn_budget_s"] = _check_budget(raw["turn_budget_s"],
+                                              "seats.adjudicator.turn_budget_s", where)
     if raw.get("concurrency") not in (None, ""):
         seat["concurrency"] = _as_int(raw["concurrency"], "seats.adjudicator.concurrency",
                                       where)
@@ -1148,6 +1278,14 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         seats[seat]["concurrency"] = _as_int(raw, f"seats.{seat}.concurrency", where)
         if seats[seat]["concurrency"] < 1:
             raise ConfigError(f"{where}: seats.{seat}.concurrency must be >= 1 (1 = serialized)")
+
+    loop["turn_budget_s"] = _check_budget(
+        DEFAULT_TURN_BUDGET_S if loop.get("turn_budget_s") in (None, "") else loop["turn_budget_s"],
+        "'turn_budget_s'", where)
+    for seat in SEAT_KEYS:
+        if seats[seat].get("turn_budget_s") not in (None, ""):
+            seats[seat]["turn_budget_s"] = _check_budget(
+                seats[seat]["turn_budget_s"], f"seats.{seat}.turn_budget_s", where)
 
     if not loop.get("clone"):
         # Above one run at once, isolation is not a preference: without a clone to isolate from,

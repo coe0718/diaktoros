@@ -26,6 +26,7 @@ from . import hostdirs
 from .hostdirs import WORKER_ENV, HostStateGone, in_worker
 
 from . import ledger, util
+from .config import DEFAULT_TURN_BUDGET_S
 
 SILENT = "[SILENT]"
 SCHEMA = """
@@ -94,6 +95,9 @@ _MIGRATIONS = (
     # reason when it was not, NULL before the change record was built. Written only by the
     # owning worker; the broker refuses an approval while it is set.
     ("partial_view", "ALTER TABLE runs ADD COLUMN partial_view TEXT", ()),
+    # The turn's wall clock, fixed at enqueue (#49). NULL on legacy rows: the worker's own
+    # child_timeout applies to them.
+    ("budget", "ALTER TABLE runs ADD COLUMN budget REAL", ()),
 )
 # Worker stderr (one diagnostic line, or a traceback) goes to <ledger>.workers.log, rotated
 # once to .1 by the host when it passes this size.
@@ -779,13 +783,14 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     if pr is not None:
         where += ' AND r.pr=?'
         args.append(pr)
-    # The dependency prefetch line (#51) is read when the ledger has it; a read-only view
-    # never migrates.
-    deps = ('r.deps' if 'deps' in {c[1] for c in con.execute('PRAGMA table_info(runs)')}
-            else 'NULL AS deps')
+    # The turn budget (#49) and the dependency prefetch line (#51) are read when the ledger has
+    # them; a read-only view never migrates.
+    columns = {c[1] for c in con.execute('PRAGMA table_info(runs)')}
+    budget = 'r.budget' if 'budget' in columns else 'NULL AS budget'
+    deps = 'r.deps' if 'deps' in columns else 'NULL AS deps'
     rows = [dict(row) for row in con.execute(
         "SELECT r.id,r.repo,r.pr,r.head,r.seat,r.turn_key,r.state,r.pid,r.error,"
-        f"r.detail,r.retries,r.retry_at,r.outcome,{deps},n.state AS notice FROM runs r "
+        f"r.detail,r.retries,r.retry_at,r.outcome,{budget},{deps},n.state AS notice FROM runs r "
         "LEFT JOIN operator_notices n ON n.run_id=r.id WHERE " + where +
         " ORDER BY r.created,r.id LIMIT 100", args)]
     for row in rows:
@@ -823,6 +828,71 @@ def read_only_view(db: str | Path, repo: str, pr: int | None = None) -> list[dic
         return None
 
 
+def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str | None:
+    """The newest ledger state of ``seat``'s turn on this PR head, read-only (#98).
+
+    None when the ledger is absent, unreadable or holds no such turn. The watchdog uses it to
+    tell a ruling still in flight from a breach marker nobody is working on.
+    """
+    try:
+        con = _read_only(db)
+        if con is None:
+            return None
+        try:
+            row = con.execute("SELECT state FROM runs WHERE repo=? AND pr=? AND head=? AND seat=? "
+                              "ORDER BY updated DESC, created DESC LIMIT 1",
+                              (repo, pr, head, seat)).fetchone()
+            return row[0] if row else None
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+INFLIGHT_LABEL = {'reviewer': 'review', 'fixer': 'fix'}
+
+
+def claim_seat(loop: dict, row, budget: float):
+    """Claim ``row``'s seat in the loop's ``locks.json`` and mark its head in flight, for the
+    life of the run (#98). Best effort: the run ledger is what enforces capacity; these are
+    what ``explain``, ``status``, the queue drain and the watchdog's clocks read. Returns what
+    ``release_seat`` needs, or None when nothing was written."""
+    try:
+        from . import gate, state as state_mod
+        st = state_mod.state_for(loop)
+        key = gate.seat_key(loop, row['pr'])
+        st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}", budget=budget,
+                   run=row['id'])
+    except Exception:
+        return None
+    # The claim is written: from here on its release must stay reachable, whatever the mark
+    # does (a failed mark write must not orphan the claim).
+    mark = (f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}"
+            if row['seat'] in INFLIGHT_LABEL else None)
+    if mark:
+        try:
+            st.inflight(mark, record=True)
+        except Exception:
+            mark = None
+    return st, row['seat'], key, row['head'], mark, row['id']
+
+
+def release_seat(claim, state: str | None) -> None:
+    """Free a run's claim and in-flight mark once it has ended — unless it ended ``uncertain``
+    (or its end could not be recorded): then the claim stays as the seat's visible occupancy
+    until an operator reconciles it, with its TTL and the "that run died" report as backstop."""
+    if claim is None or state in (None, 'uncertain'):
+        return
+    st, seat, key, head, mark, run = claim
+    try:
+        # Only this run's own claim; its mark goes with it. A newer run that has claimed the
+        # same seat/PR/head (a retry, a re-armed turn) keeps both (#98).
+        if st.release_if(seat, key, head, run=run) and mark:
+            st.inflight_clear(mark)
+    except Exception:
+        pass
+
+
 def dependency_view(db: str | Path, repo: str, pr: int | None = None,
                     limit: int = 5) -> list[dict] | None:
     """The newest runs that recorded a dependency prefetch, for ``status``/``explain`` (#51).
@@ -849,6 +919,10 @@ def dependency_view(db: str | Path, repo: str, pr: int | None = None,
         return None
 
 
+# The reason a turn killed at its budget records (#49); ``next_step`` keys on it.
+BUDGET_KILL = 'turn budget (sandbox stopped'
+
+
 def describe_run(row: dict, loop_id: str = 'LOOP') -> str:
     """One operator line: state, reason and the next step for a ``runs_view`` row."""
     text = (f"{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']}"
@@ -871,8 +945,16 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
                 f"{loop_id} --pr {row['pr']} --seat fixer` (an operator retry admits it under the "
                 f"policy then in force; a redelivered event never does)")
     if row['write'] is None:
-        return (f"no external write — re-arm: hermes review-loop retry --loop {loop_id} "
-                f"--pr {row['pr']} --seat {row['seat']}")
+        rearm = (f"re-arm: hermes review-loop retry --loop {loop_id} "
+                 f"--pr {row['pr']} --seat {row['seat']}")
+        if row['state'] == 'failed' and BUDGET_KILL in (row['error'] or ''):
+            # The same budget would run out again (#49): raise it first; the re-arm takes it.
+            flag = {'reviewer': '--reviewer-turn-budget', 'fixer': '--fixer-turn-budget'}.get(
+                row['seat'], '--turn-budget')
+            return (f"no external write — raise the turn budget (now "
+                    f"{int(row.get('budget') or 0) or '?'}s): hermes review-loop set --loop "
+                    f"{loop_id} {flag} N, then {rearm}")
+        return f"no external write — {rearm}"
     if row['state'] == 'failed':
         return f"may have written ({row['write']}) — never replayed; a new head gets a fresh turn"
     return (f"may have written ({row['write']}) — inspect the PR, then "
@@ -923,7 +1005,7 @@ def describe_dependencies(row: dict) -> str:
 class Supervisor:
     def __init__(self, db: str | Path, *, fixture_command: list[str] | None = None,
                  fixture_mode: bool = False, capacity: dict[str, int] | None = None,
-                 lease_seconds: float = 60, child_timeout: float = 120,
+                 lease_seconds: float = 60, child_timeout: float = DEFAULT_TURN_BUDGET_S,
                  production_config: str | Path | None = None,
                  hermes_home: str | Path | None = None, create: bool = True,
                  presence: str | Path | None = None):
@@ -1430,14 +1512,16 @@ class Supervisor:
         return count
 
     def enqueue(self, delivery: str, repo: str, pr: int, head: str, seat: str,
-                *, turn_key: str = '', require_push_admission: bool = False) -> str:
+                *, turn_key: str = '', require_push_admission: bool = False,
+                budget: float | None = None) -> str:
         """Commit identity before any spawn. A repeated delivery cannot change terms."""
         self.submit(delivery, repo, pr, head, seat, turn_key=turn_key,
-                    require_push_admission=require_push_admission)
+                    require_push_admission=require_push_admission, budget=budget)
         return SILENT
 
     def submit(self, delivery: str, repo: str, pr: int, head: str, seat: str,
-               *, turn_key: str = '', require_push_admission: bool = False) -> str:
+               *, turn_key: str = '', require_push_admission: bool = False,
+               budget: float | None = None) -> str:
         """``enqueue``, reporting what it did (issue #73): ``enqueued`` (new row),
         ``rearmed`` (a failed/cancelled pre-write run is pending again), ``pending``
         (an unclaimed row, worker re-armed), or ``duplicate <state>[: why]`` — nothing
@@ -1447,7 +1531,17 @@ class Supervisor:
         host policy would not admit is refused with ``FixerPushDisabled`` *before* any row is
         written, under the same policy lock as the admission snapshot. The verdict is then
         held by the gate, and a later opt-in admits a fresh row instead of an old one.
+
+        ``budget`` is this turn's wall clock in seconds (the loop's per-seat ``turn_budget_s``,
+        #49), recorded on the row so whichever worker claims it runs it on the loop's terms;
+        ``None`` means this supervisor's ``child_timeout``. A re-arm by a new event takes the
+        budget the loop has *now*: a turn killed at its budget reruns on the raised one.
         """
+        requested = budget
+        if budget is None:
+            budget = self.child_timeout
+        if isinstance(budget, bool) or not isinstance(budget, (int, float)) or not budget > 0:
+            raise ValueError("positive turn budget required")
         if not all(isinstance(v, str) and v and len(v) <= 256 for v in
                    (delivery, repo, head, seat)) or not isinstance(turn_key, str) or len(turn_key) > 256 or type(pr) is not int or pr <= 0:
             raise ValueError("invalid run identity")
@@ -1477,10 +1571,11 @@ class Supervisor:
                     con.execute("ROLLBACK")
                     raise FixerPushDisabled(repo)
                 if not prior:
-                    con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,updated,push_admitted) "
-                                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,updated,push_admitted,budget) "
+                                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                                 (uuid.uuid4().hex, delivery, repo, pr, head, seat, turn_key,
-                                 "pending" if self.fixture_mode or self.production_config else "blocked", now, now, admitted))
+                                 "pending" if self.fixture_mode or self.production_config else "blocked", now, now, admitted,
+                                 float(budget)))
             outcome = 'enqueued' if not prior else 'pending' if prior['state'] == 'pending' \
                 else f"duplicate {prior['state']}"
             if prior and prior['state'] in REARMABLE and (self.fixture_mode or self.production_config):
@@ -1498,7 +1593,7 @@ class Supervisor:
                     outcome += (f": {prior['retries']} failed attempts — only "
                                 "`hermes review-loop retry` re-arms it")
                 else:
-                    self._rearm(con, prior['id'], reset=False)
+                    self._rearm(con, prior['id'], reset=False, budget=requested)
                     outcome = 'rearmed'
             elif prior and prior['state'] == 'waiting' and prior['retry_at']:
                 outcome += f" (retry {prior['retries']} due in {max(0, int(prior['retry_at'] - now))}s)"
@@ -1510,20 +1605,26 @@ class Supervisor:
         return outcome
 
     @staticmethod
-    def _rearm(con, run_id: str, *, reset: bool) -> None:
+    def _rearm(con, run_id: str, *, reset: bool, budget: float | None = None) -> None:
         """Make a pre-write run pending again, inside the caller's transaction. Admission,
         generation terms and history stay; claim attempts restart; its notice is resolved
-        so a later failure is reported afresh."""
+        so a later failure is reported afresh. ``budget`` (the loop's current seat budget,
+        #49) replaces the row's, so a turn killed at its budget reruns on the raised one."""
+        if budget is not None:
+            con.execute("UPDATE runs SET budget=? WHERE id=?", (float(budget), run_id))
         con.execute("UPDATE runs SET state='pending', owner=NULL, lease=NULL, pid=NULL, "
                     "launch_intent=NULL, outcome=NULL, attempts=0, retry_at=NULL, "
                     "retries=CASE WHEN ? THEN 0 ELSE retries END, updated=? WHERE id=?",
                     (1 if reset else 0, time.time(), run_id))
         con.execute("DELETE FROM operator_notices WHERE run_id=?", (run_id,))
 
-    def retry(self, run_id: str) -> str:
+    def retry(self, run_id: str, budget: float | None = None) -> str:
         """Operator re-arm of a failed or waiting run that never wrote, or of a fixer run the
         push policy cancelled at claim (#53; ``policy_cancelled``). Any other cancellation is
         superseded (head moved, PR closed) and refused: a new head gets its own turn.
+
+        ``budget``, when given, is the loop's seat budget now (#49): a turn killed at its
+        budget is re-armed on the raised one, not the budget recorded when it was enqueued.
 
         Refuses anything that may have written — uncertain, quarantined, reconciled, or with
         a receipt claim, push intent or ruling on record — with the reconcile instructions.
@@ -1584,9 +1685,12 @@ class Supervisor:
                 # After the write and state checks: those refusals say more about the run.
                 con.execute('COMMIT')
                 raise ValueError(policy_off)
+            if budget is not None and (isinstance(budget, bool) or not budget > 0):
+                con.execute('COMMIT')
+                raise ValueError('positive turn budget required')
             if admitted is not None:
                 con.execute('UPDATE runs SET push_admitted=? WHERE id=?', (admitted, run_id))
-            self._rearm(con, run_id, reset=True)
+            self._rearm(con, run_id, reset=True, budget=budget)
             con.execute('COMMIT')
         return 'pending'
 
@@ -1916,7 +2020,8 @@ class Supervisor:
             raise ValueError('explicit reconciliation acknowledgement and reason required')
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
-            row = con.execute("SELECT pid,state,launch_intent FROM runs WHERE id=?", (run_id,)).fetchone()
+            row = con.execute("SELECT pid,state,launch_intent,repo,pr,head,seat FROM runs WHERE id=?",
+                              (run_id,)).fetchone()
             if row is None or row['state'] != 'uncertain':
                 con.execute('COMMIT')
                 return False
@@ -1935,18 +2040,40 @@ class Supervisor:
                         "WHERE id=? AND state='uncertain'",
                         ('operator reconciliation: ' + reason, time.time(), run_id))
             con.execute('COMMIT')
-            return True
+        # The uncertain run kept its seat claim and in-flight mark until now (#98): the
+        # operator's reconciliation is what ends it, so it frees them too. Best effort — the
+        # ledger row above is the decision; a loop that is no longer configured has no claim.
+        try:
+            from . import config, gate, state as state_mod
+            loop = config.by_repo(row['repo'])
+            if loop is not None:
+                st = state_mod.state_for(loop)
+                # Only the claim this run wrote: the ledger row left `uncertain` above, so a
+                # newer run may already hold this seat/PR/head, and keeps its claim and mark.
+                if (st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'],
+                                  run=run_id) and row['seat'] in INFLIGHT_LABEL):
+                    st.inflight_clear(f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}")
+        except Exception:
+            pass
+        return True
+
+    def budget_of(self, run_id: str) -> float:
+        """The row's own turn budget; a legacy row without one gets this worker's child_timeout."""
+        with self._connect() as con:
+            row = con.execute("SELECT budget FROM runs WHERE id=?", (run_id,)).fetchone()
+        return float(row['budget']) if row is not None and row['budget'] else float(self.child_timeout)
 
     def _run_one(self):
         claim = self._claim()
         if not claim:
             return
         run_id, owner = claim
+        budget = self.budget_of(run_id)
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
             con.execute("UPDATE runs SET state='launching', launch_intent=?, lease=?, "
                         "updated=? WHERE id=? AND owner=? AND state='claimed'",
-                        (time.time(), time.time() + self.child_timeout + self.lease_seconds,
+                        (time.time(), time.time() + budget + self.lease_seconds,
                          time.time(), run_id, owner))
             con.execute("COMMIT")
         # From here onward recovery must NEVER launch this job again.
@@ -1958,13 +2085,14 @@ class Supervisor:
             if self.production_config is not None:
                 self._run_production(run_id, owner)
                 return
-            self._run_fixture(run_id, owner)
+            self._run_fixture(run_id, owner, budget)
         finally:
             heartbeat_stop.set()
             heartbeat.join(timeout=2)
 
-    def _run_fixture(self, run_id: str, owner: str) -> None:
+    def _run_fixture(self, run_id: str, owner: str, budget: float | None = None) -> None:
         assert self.fixture_command is not None
+        budget = self.child_timeout if budget is None else budget
         import tempfile
         child = None
         rc = None
@@ -1977,7 +2105,9 @@ class Supervisor:
                 child = subprocess.Popen(self.fixture_command,
                                          env=util.leak_guard_env(
                                              {"PATH": "/usr/bin:/bin", "HOME": os.environ["HOME"],
-                                              "HERMES_HOME": os.environ["HERMES_HOME"]}),
+                                              "HERMES_HOME": os.environ["HERMES_HOME"],
+                                              # What the production turn hands Hermes as --run-budget.
+                                              "REVIEW_LOOP_TURN_BUDGET": str(int(budget))}),
                                          stdin=subprocess.DEVNULL, stdout=out,
                                          stderr=err, close_fds=True,
                                          start_new_session=True)
@@ -1986,13 +2116,14 @@ class Supervisor:
                                 "WHERE id=? AND owner=? AND state='launching'",
                                 (child.pid, time.time() + self.lease_seconds, time.time(), run_id, owner))
                 try:
-                    rc = child.wait(timeout=self.child_timeout)
+                    rc = child.wait(timeout=budget)
                     retry = rc != 0
                 except subprocess.TimeoutExpired:
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait()
+                    # The fixture's stand-in for the turn-budget kill (#49): failed, re-armable
+                    # by `retry` or a new event, never retried automatically on the same budget.
                     error = "child timeout"
-                    retry = True
             except Exception as exc:
                 error = f"launch/wait failed: {type(exc).__name__}: {exc}"
                 if child and child.poll() is None:
@@ -2018,7 +2149,8 @@ class Supervisor:
         """Worker-only host control plane; never pass credentials to bwrap."""
         from . import broker_ipc, config, gh, seat_model, trusted_turn
         rc, error = None, None
-        retry, stopped, observed, breach = False, True, {}, None
+        budget = int(self.budget_of(run_id))
+        retry, stopped, observed, breach, claim = False, True, {}, None, None
         try:
             assert self.production_config is not None
             try:
@@ -2041,6 +2173,9 @@ class Supervisor:
                 # never started (the broker would refuse its push anyway).
                 error = FIXER_NOT_ADMITTED if row['push_admitted'] != 1 else FIXER_PUSH_REVOKED
                 return
+            # The seat claim and the head's in-flight mark, for as long as this run lives (#98):
+            # the worker is the one party that knows a turn is running, so it writes them.
+            claim = claim_seat(loop, row, budget)
             # The seat's own profile decides its model and account (#32). Resolved host-side,
             # before any GitHub read: an unresolvable seat is held here with the reason, and never
             # borrows another seat's model or key. The key lives only in this turn's proxy; an
@@ -2119,7 +2254,7 @@ class Supervisor:
                   api_mode=inference.api_mode, credential=inference.credential_provider(),
                   proxy_model=inference.proxy_model, client_identity=inference.client_identity,
                   prompt=prompt, review_diff=change.diff if change else None,
-                  timeout=int(self.child_timeout),
+                  timeout=budget,
                   work_root=config.state_dir(loop) / "isolated-runs", observed=observed,
                   # The prefetch phase lands in the ledger as it happens (#51): a slow one shows
                   # as "fetching", not as a silent turn, and its outcome outlives the run.
@@ -2127,6 +2262,30 @@ class Supervisor:
             # A non-zero sandbox exit with nothing on the write-ahead record is the model or
             # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
             retry = rc != 0
+        except trusted_turn.TurnBudgetExceeded as exc:
+            # Name the clock (#49): an opaque "TimeoutExpired" hides that a setting killed the
+            # turn. Never retried automatically: the same budget would most likely run out
+            # again, each attempt burning a whole budget.
+            killed = (f"isolated turn failed: TimeoutExpired — killed at the {exc.budget}s turn "
+                      f"budget (sandbox stopped {exc.grace}s past it)")
+            # The broker drain lets a write already in flight finish after the kill (#98): a
+            # push can complete, a receipt be recorded. Then the run wrote — final, and the
+            # "raise the budget, then retry" advice would be wrong (`retry` refuses it).
+            with self._connect() as con:
+                wrote = write_evidence(con, run_id)
+            if wrote == 'review receipt claimed':
+                # Sent but never read back: the run goes uncertain (reconcile), not final.
+                error = (f"{killed} after it may have written ({wrote}) — never replayed; "
+                         "inspect the PR and reconcile")
+            elif wrote is not None:
+                error = (f"{killed} after it wrote ({wrote}) — final: never replayed; a new head "
+                         "gets a fresh turn")
+            else:
+                flag = {'reviewer': '--reviewer-turn-budget',
+                        'fixer': '--fixer-turn-budget'}.get(row['seat'], '--turn-budget')
+                error = (f"{killed} — raise turn_budget_s (hermes review-loop set --loop "
+                         f"{loop['id']} {flag} N), then `retry`")
+            retry = False
         except Exception as exc:
             # The real reason, not just its type (#53). Messages here are host-generated
             # (no credential is ever formatted into one), and bounded.
@@ -2148,6 +2307,7 @@ class Supervisor:
                         breach[0].breach_resume(row['pr'], row['head'], breach[1])
                 except Exception:
                     pass
+            release_seat(claim, state)
             self.recover()
 
 
@@ -2181,8 +2341,19 @@ def main():
         elif a.operation == 'retry':
             if not a.command or a.capacity or a.reason or a.acknowledge_no_live_worker:
                 p.error('retry requires exactly one run ID')
+            budget = None
             try:
-                sup.retry(a.command)
+                # The loop's seat budget now (#49), when its config is readable here.
+                from . import config
+                with sup._connect() as con:
+                    row = con.execute('SELECT repo,seat FROM runs WHERE id=?',
+                                      (a.command,)).fetchone()
+                loop = config.by_repo(row['repo']) if row is not None else None
+                budget = config.turn_budget(loop, row['seat']) if loop else None
+            except Exception:
+                budget = None     # the recorded budget stands
+            try:
+                sup.retry(a.command, budget=budget)
             except ValueError as exc:
                 print(exc)
                 raise SystemExit(2)

@@ -564,6 +564,8 @@ class TurnPrefetchTests(unittest.TestCase):
 
         def run(**kw):
             events.append(("sandbox", time.monotonic(), kw["timeout"]))
+            entry = kw["entry"]
+            events.append(("run-budget", entry[entry.index("--run-budget") + 1]))
             return subprocess.CompletedProcess([], 0, "", "")
 
         class Inference:
@@ -593,8 +595,11 @@ class TurnPrefetchTests(unittest.TestCase):
                                   upstream="https://model.invalid", key="k", model="m",
                                   prompt="RULE", timeout=5, work_root=self.root / "work",
                                   progress=progress.append)
-        [(_, fetched_at), (_, sandbox_at, budget)] = events
-        self.assertEqual(budget, 5)                       # the prefetch took none of it
+        [(_, fetched_at), (_, sandbox_at, kill_at), (_, run_budget)] = events
+        # The prefetch took none of the turn's budget (#49): Hermes gets all of it, and the
+        # sandbox is killed only at the budget plus its grace, both counted from launch.
+        self.assertEqual(run_budget, "5")
+        self.assertEqual(kill_at, 5 + trusted_turn.KILL_GRACE_S)
         self.assertGreaterEqual(sandbox_at - fetched_at, 0.4)
         self.assertEqual(len(progress), 2, progress)
         self.assertTrue(progress[0].startswith("fetching"), progress)
