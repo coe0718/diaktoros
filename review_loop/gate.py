@@ -135,9 +135,12 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     supervisor = isolated_supervisor(loop)
     supervisor.recover()
     delivery = f"{loop['repo']}:{number}:{head}:{seat}"
+    # The turn's wall clock rides on the row (#49): whichever worker claims it — possibly one
+    # spawned by another loop's event — runs it for this loop's seat budget, not a worker default.
     return supervisor.submit(delivery + (f':{turn_key}' if turn_key else ''),
                              loop["repo"], number, head, seat, turn_key=turn_key,
-                             require_push_admission=seat == "fixer")
+                             require_push_admission=seat == "fixer",
+                             budget=config.turn_budget(loop, seat))
 
 
 def resume_isolated(loop: dict) -> bool:
@@ -438,7 +441,7 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
             held[seat] = entry
     seat_line = " · ".join(
         f"{seat} holds it ({_minutes_since(_mark_time(entry, 0.0), now)}m of ttl "
-        f"{loop['ttl_min']}m, since {iso_at(_mark_time(entry, 0.0)) or 'an unrecorded time'})"
+        f"{-(-config.seat_ttl_s(loop, seat=seat, recorded=config.claim_budget(entry)) // 60)}m, since {iso_at(_mark_time(entry, 0.0)) or 'an unrecorded time'})"
         for seat, entry in sorted(held.items())) or "nobody holds it"
 
     queue_bits: list[str] = []
@@ -953,7 +956,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif queued_seat:
         kind = "release"
         action = (f"a {queued_seat} slot frees — the queued run starts then (a verdict or a handoff "
-                  f"ends the run holding it; the lock expiry at {loop['ttl_min']}m is the backstop)")
+                  f"ends the run holding it; the lock expiry at "
+                  f"{-(-config.seat_ttl_s(loop, seat=queued_seat) // 60)}m is "
+                  "the backstop)")
     elif full_seat:
         kind = "retry"
         action = (f"re-deliver the {'changes-requested review' if at_head else 'review_requested'} "

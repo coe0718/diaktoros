@@ -33,7 +33,7 @@ import uuid
 from collections.abc import Callable
 
 from . import config, hostdirs
-from .util import log
+from .util import log, now_iso
 
 # Per-thread depth of the state lock we already hold, keyed by lock path. ``flock`` is tied to
 # the open file description, so a second ``open`` + ``flock`` in the same thread would deadlock
@@ -163,10 +163,12 @@ class LoopState:
         and exactly what the acceptance test for a read-only command looks at.
         """
         entries = (self._load(self.locks, {}) or {}).get(seat) or {}
-        ttl = self.loop["ttl_min"] * 60
+        # ttl_min, raised to the whole worst-case turn — on the budget the claim was taken with,
+        # or the loop's now if longer — so a healthy turn never loses its slot (#98).
         now = time.time()
         return {k: v for k, v in entries.items()
-                if isinstance(v, dict) and now - v.get("at", 0) <= ttl}
+                if isinstance(v, dict) and now - v.get("at", 0) <= config.seat_ttl_s(
+                    self.loop, seat=seat, recorded=config.claim_budget(v))}
 
     def active(self, seat: str) -> dict:
         """This seat's live runs, ``{key: entry}``, expired ones dropped and persisted away.
@@ -208,11 +210,19 @@ class LoopState:
                 return other
         return None
 
-    def acquire(self, seat: str, key: str, head: str = "", why: str = "") -> None:
+    def acquire(self, seat: str, key: str, head: str = "", why: str = "",
+                budget: float | None = None, run: str | None = None) -> None:
+        """Claim ``seat`` for ``key``. The isolated worker calls this at launch with its run's
+        own budget and id (#98); the claim's TTL never shrinks below the budget it was taken
+        with, and only a release naming the same ``run`` may free it."""
         with self.locked():
             data = self._load(self.locks, {}) or {}
             at = time.time()
-            data.setdefault(seat, {})[key] = {"at": at, "head": head, "why": why}
+            entry = {"at": at, "head": head, "why": why,
+                     "budget": budget if budget is not None else config.turn_budget(self.loop, seat)}
+            if run is not None:
+                entry["run"] = run
+            data.setdefault(seat, {})[key] = entry
             self._save(self.locks, data)
             CLAIMS.append((self, seat, key, at))
 
@@ -229,17 +239,22 @@ class LoopState:
             self._save(self.locks, data)
             return True
 
-    def release_if(self, seat: str, key: str, head: str | None = None) -> bool:
+    def release_if(self, seat: str, key: str, head: str | None = None,
+                   run: str | None = None) -> bool:
         """Free a seat only for *this* PR's turn — never another PR's in-flight work.
 
         With ``head``, only a claim made for that head is freed: a late verdict on an older
-        head must not end a newer run on the same PR.
+        head must not end a newer run on the same PR. With ``run``, only the claim that run
+        wrote is freed (#98): a run's own release (its worker ending it, or an operator
+        reconciling it) must never free a newer run's claim on the same seat, PR and head.
         """
         with self.locked():
             data = self._load(self.locks, {}) or {}
             entry = (data.get(seat) or {}).get(key)
             if entry is None or (head is not None and not (
                     isinstance(entry, dict) and entry.get("head") == head)):
+                return False
+            if run is not None and not (isinstance(entry, dict) and entry.get("run") == run):
                 return False
             data[seat].pop(key)
             if not data[seat]:
@@ -356,6 +371,13 @@ class LoopState:
             return False
         data = self._load(self.inflight_file, {}) or {}
         return now - data.get(key, 0) < self.loop["inflight_ttl_min"] * 60
+
+    def inflight_clear(self, key: str) -> None:
+        """Drop one in-flight mark: its run has ended (the isolated worker's release, #98)."""
+        with self.locked():
+            data = self._load(self.inflight_file, {}) or {}
+            if data.pop(key, None) is not None:
+                self._save(self.inflight_file, data)
 
     def inflight_at(self, key: str) -> float:
         """When this head's in-flight mark was armed, or 0.0 — the mark's own clock, read-only.
@@ -477,7 +499,7 @@ class LoopState:
                             or (marker.get("status") == "delivery-pending"
                                 and marker.get("delivery_token")))):
                 return None
-            data[key] = {**marker, "status": "adjudicating"}
+            data[key] = {**marker, "status": "adjudicating", "adjudicating_at": now_iso()}
             self._breach_save(data)
             return marker
 
@@ -502,6 +524,8 @@ class LoopState:
             data[key] = {k: v for k, v in marker.items()
                          if k not in {"delivery_token", "delivery_at"}}
             data[key]["status"] = "adjudicating"
+            # When the ruling started: the watchdog's stall clock for it counts from here.
+            data[key]["adjudicating_at"] = now_iso()
             self._breach_save(data)
             return marker
 

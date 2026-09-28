@@ -668,8 +668,9 @@ class Lifecycle(unittest.TestCase):
         # claims whatever row is pending with the config it was spawned with, so a phase's
         # idle straggler (spawned by its worker's recover()) could claim the next phase's row
         # under load (#108). Each phase therefore waits until its workers are gone.
-        # Nothing on the write-ahead record: both failures wait for a backed-off retry (#53),
-        # RETRY_BASE away, so neither is relaunched within this test.
+        # Nothing on the write-ahead record: a failed exit waits for a backed-off retry (#53),
+        # RETRY_BASE away, so it is not relaunched within this test; a timeout is the budget
+        # kill (#49): failed, re-armable, never auto-retried.
         sup = self.supervisor(rc=7)
         sup.enqueue("bad", "o/r", 1, "a", "reviewer")
         bad = self.wait(sup, "bad", "waiting")
@@ -680,8 +681,9 @@ class Lifecycle(unittest.TestCase):
         # slow the machine is; the timeout is still short enough to keep the test quick.
         slow = self.supervisor(delay=60, child_timeout=1)
         slow.enqueue("slow", "o/r", 2, "b", "reviewer")
-        row = self.wait(slow, "slow", "waiting", timeout=20)
-        self.assertEqual((row["error"], row["outcome"], row["retries"]), ("child timeout", None, 1))
+        # A timeout is the budget kill (#49): failed, re-armable, never auto-retried.
+        row = self.wait(slow, "slow", "failed", timeout=20)
+        self.assertEqual((row["error"], row["outcome"], row["retries"]), ("child timeout", None, 0))
         wait_for_workers(self.root)
         ok = self.supervisor()
         ok.enqueue("ok", "o/r", 3, "c", "reviewer")

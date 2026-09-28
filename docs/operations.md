@@ -96,6 +96,7 @@ hermes review-loop init --repo owner/name --read-token reader-bot --token reader
 hermes review-loop apply --loop name    # push those defaults onto an existing loop (--dry-run)
 hermes review-loop apply --loop name --while-busy     # rebind even while a seat has a run out
 hermes review-loop set --loop name --reviewer-concurrency 2   # two reviews at once, one fix at a time
+hermes review-loop set --loop name --fixer-turn-budget 1800   # let a fix run (build + tests) for 30 minutes
 hermes review-loop arm --loop name      # arm/pause by flipping the repo hooks (--admin-token LOGIN)
 hermes review-loop arm --loop name --pause
 hermes review-loop drain --loop name --seat reviewer
@@ -184,7 +185,8 @@ GitHub write, e.g.
 
 `set` is how you change the knobs after install — `--reviewer-concurrency`, `--fixer-concurrency`,
 `--concurrency` (the default for both seats), `--cap`, `--clone`, `--base`, `--grace-min`,
-`--ttl-min` — through the same validation `init` uses, so a capacity above 1 without a clone is
+`--ttl-min`, `--turn-budget` (and per seat `--reviewer-turn-budget` / `--fixer-turn-budget`) —
+through the same validation `init` uses, so a capacity above 1 without a clone is
 refused here exactly as it is at init. Prompts are rendered from the payload at fire time, so a
 change takes effect on the next event with nothing to re-install. The observer feed is changed the
 same way: `--observer-profile`, `--observer-route`, `--observer-deliver`, `--observer-events`,
@@ -357,6 +359,7 @@ A correct installation:
 $ hermes review-loop doctor --loop widgets
 [widgets] acme/widgets — preflight (read-only: it writes nothing and fires nothing)
   ✅ config               doctor-demo/loops/widgets.json (repo acme/widgets, cap 3, base main)
+  ✅ turn-budget          reviewer 900s · fixer 900s · adjudicator 900s per isolated turn (sandbox killed past it); up to 1830s launch to end (300s dependency prefetch + 900s budget + 30s kill grace + 600s broker drain) — grace_min 35m, ttl_min 45m; stall grace reviewer 35m · fixer 35m; seat lock TTL reviewer 45m · fixer 45m · adjudicator 45m; 'that run died' after twice that; breach marker: awaiting-adjudication stalls after 60m; adjudicating only with no live ruling run, after 60m
   ✅ profile:reviewer     reviewer-profile → doctor-demo/hermes-home/profiles/reviewer-profile
   ✅ credential:reviewer  rev-coach → a nonempty token file (identity and API access not checked)
   ✅ profile:fixer        fixer-profile → doctor-demo/hermes-home/profiles/fixer-profile
@@ -388,6 +391,7 @@ and the same loop with six of the ways it really breaks:
 $ hermes review-loop doctor --loop widgets
 [widgets] acme/widgets — preflight (read-only: it writes nothing and fires nothing)
   ✅ config               doctor-demo/loops/widgets.json (repo acme/widgets, cap 3, base main)
+  ✅ turn-budget          reviewer 900s · fixer 900s · adjudicator 900s per isolated turn (sandbox killed past it); up to 1830s launch to end (300s dependency prefetch + 900s budget + 30s kill grace + 600s broker drain) — grace_min 35m, ttl_min 45m; stall grace reviewer 35m · fixer 35m; seat lock TTL reviewer 45m · fixer 45m · adjudicator 45m; 'that run died' after twice that; breach marker: awaiting-adjudication stalls after 60m; adjudicating only with no live ruling run, after 60m
   ✅ profile:reviewer     reviewer-profile → doctor-demo/hermes-home/profiles/reviewer-profile
   ✅ credential:reviewer  rev-coach → a nonempty token file (identity and API access not checked)
   ❌ profile:fixer        no profile home at doctor-demo/hermes-home/profiles/fixer-profile
@@ -462,7 +466,7 @@ A detached worker's stderr goes to `~/.hermes/state/review-loop-runs.sqlite.work
 | 4 identities | read, reviewer, fixer (and optional adjudicator) PATs resolve via `/user` to the expected logins and distinct principals; the repo is readable |
 | 5 authorization | with `--pr N`: the broker's reviewer-write checks (`broker.authorize`, reads only) and the host receipt generation; then whether the seat can build that head: `build:rust:fetch` is the host prefetch of its `Cargo.lock` crates.io dependencies (a warning when refused or failed, since turns still run and the seat judges by reading; it prints the cache's size against its byte cap, and names a `REVIEW_LOOP_CRATE_CACHE_GIB` value it refused), and `build:rust` is an offline `cargo metadata --locked` inside the real sandbox layout with the cache mounted read-only ([dependency prefetch](issue-16-boundary.md#dependency-prefetch-issue-51-the-host-fetches-the-sandbox-builds-offline)) |
 | 6 supervisor | the ledger migrates and `status` reads; the route would accept the runtime file; `doctor`'s state dir, cron shim/job and gateway checks; the observer route |
-| 7 live turn | with `--live-turn --pr N`: a real isolated reviewer turn with the reviewer seat's resolved model (`--timeout`, default 600 s); the verdict and body the agent *would* submit are printed |
+| 7 live turn | with `--live-turn --pr N`: a real isolated reviewer turn with the reviewer seat's resolved model, for the loop's reviewer `turn_budget_s` — the budget production enforces — unless `--timeout N` overrides it; the verdict and body the agent *would* submit are printed |
 
 Example step-1/3 lines for a ChatGPT-subscription reviewer and an API-key fixer:
 
@@ -474,6 +478,10 @@ Example step-1/3 lines for a ChatGPT-subscription reviewer and an API-key fixer:
 
 A subscription seat's step 3 spends a request from **your** plan's usage window (the seat shares
 it with your own use of that account); a 429 there means that window is spent.
+
+A live turn that times out here would be killed in production too: raise the seat's budget
+(`set --reviewer-turn-budget N`, see [Turn budget](configuration.md#turn-budget-how-long-one-turn-may-run))
+rather than only `--timeout`.
 
 The live turn runs in the CLI process, not through the supervisor, so it adds no ledger row and
 raises no operator notice; confirming alerts still needs a real enqueued turn and a watchdog sweep.
@@ -758,6 +766,7 @@ pending ──claim──► claimed ──► launching/running ──► succe
    │                         ├─ transient (non-zero sandbox exit — model 429/5xx, OAuth refresh —,
    │                         │  timeout, network, staging read): waiting, backoff 2m, 4m, 8m
    ├──── backoff elapsed ────┘     … the 4th failure: failed (with a notice)
+   │                         │ killed at its turn budget: failed at once (raise turn_budget_s)
    ├──── redelivered event (≤8 failures) or `retry` ◄── failed / waiting / push-policy cancelled
    │                         │ may have written, or a worker lost/still alive: uncertain
    └─ never ◄────────────────┘   (operator `reconcile` only; never replayed)

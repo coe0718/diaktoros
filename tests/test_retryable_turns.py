@@ -143,14 +143,20 @@ class PreWriteTurnFailures(Base):
         self.assertIn('hermes review-loop retry', outcome)
         self.assertEqual(sup.get('d')['state'], 'failed')
 
-    def test_timeout_is_retryable(self):
+    def test_budget_timeout_fails_rearmable_not_auto_retried(self):
+        # #49 x #53: the same budget would most likely run out again, so a budget kill is not
+        # backed off and relaunched; it never wrote, so `retry` re-arms it (on a new budget).
         (self.root / 'slow.py').write_text('import time\ntime.sleep(5)\n')
         sup = Supervisor(self.db, fixture_mode=True, child_timeout=0.2,
                          fixture_command=[sys.executable, str(self.root / 'slow.py')])
         sup._spawn = lambda: None
         sup.submit('d', 'o/r', 1, HEAD, 'reviewer')
         sup._run_one()
-        self.assertEqual((sup.get('d')['state'], sup.get('d')['error']), ('waiting', 'child timeout'))
+        row = sup.get('d')
+        self.assertEqual((row['state'], row['error'], row['retries'], row['retry_at']),
+                         ('failed', 'child timeout', 0, None))
+        self.assertEqual(sup.retry(row['id'], budget=0.5), 'pending')
+        self.assertEqual((sup.get('d')['state'], sup.get('d')['budget']), ('pending', 0.5))
 
     def test_duplicate_of_active_or_finished_run_is_reported_not_enqueued(self):
         sup = self.sup()

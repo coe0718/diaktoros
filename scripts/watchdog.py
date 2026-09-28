@@ -848,7 +848,9 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         st.watch_save(watch)
         return lines
 
-    grace = 0.0 if TEST else loop["grace_min"]
+    # Per seat (#98): each seat's stall waits for its own whole turn, never another seat's.
+    grace = {seat: 0.0 if TEST else config.stall_grace_s(loop, seat) / 60
+             for seat in ("reviewer", "fixer")}
     marker_grace = 0.0 if TEST else loop["marker_grace_min"]
     cooldown = 0.0 if TEST else loop["cooldown_h"] * 3600
     breach = st.breach_all()
@@ -895,27 +897,29 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         head_postdates_arming = TEST or observed_at is not None
         kind = ""
 
-        if marker.get("head") == head and age_min(marker.get("at")) > marker_grace:
-            kind = (f"parked awaiting adjudication for {age_min(marker.get('at')) / 60:.1f}h "
-                    f"(marker {marker.get('at') or 'unknown'})")
+        # A marker at this head is the escalation: whether it is a stall is its own question
+        # (parked_kind), and it is never "no escalation marker" while it is young (#98).
+        parked = parked_kind(loop, marker, number, head, marker_grace)
+        if parked is not None:
+            kind = parked
         elif len(changes) >= loop["cap"] and head_postdates_arming:
             kind = (f"{len(changes)} verdicts, no approval and NO escalation marker — "
                     f"the cap may not have fired")
         elif at_head and not config.unattended_fixer_push_enabled(loop):
             mins = age_min(at_head[-1].get("submitted_at"))
-            if mins > grace:
+            if mins > grace["fixer"]:
                 # Not a stall the fixer can end: no fixer turn starts until the loop opts in.
                 kind = (f"{PUSH_OFF_KIND} — changes requested {mins / 60:.1f}h ago at head "
                         f"{head[:7]} waits for you: run "
                         f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
         elif at_head:
             mins = age_min(at_head[-1].get("submitted_at"))
-            if mins > grace:
+            if mins > grace["fixer"]:
                 kind = (f"fixer never pushed — changes requested {mins / 60:.1f}h ago at head "
                         f"{head[:7]} by {gate.reviewer_login(at_head[-1])}")
         else:
             mins = (now - observed_at) / 60 if observed_at is not None else 0.0
-            if (TEST or mins > grace) and head_postdates_arming:
+            if (TEST or mins > grace["reviewer"]) and head_postdates_arming:
                 kind = (f"reviewer never posted a verdict — head {head[:7]} observed "
                         f"{mins / 60:.1f}h ago, 0 verdicts at this head")
 
@@ -924,19 +928,13 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
             if now - watch.get("alerts", {}).get(f"{number}:{head[:7]}:{kind[:24]}", 0) > cooldown:
                 alerts.append((number, kind, (pr.get("title") or "")[:60]))
 
-    stuck: list[str] = []
-    for seat, entries in (st._load(st.locks, {}) or {}).items():
-        for key, entry in (entries or {}).items():
-            age = (now - entry.get("at", now)) / 60
-            if age > loop["ttl_min"] * 2:
-                stuck.append(f"  {seat} slot held {age:.0f}m on {key} — that run died; the slot "
-                             f"frees itself at {loop['ttl_min']}m")
+    stuck: list[str] = died_locks(loop, st._load(st.locks, {}) or {}, now)
     for seat, items in st.queue_all().items():
         for key, entry in (items or {}).items():
             if config.is_fixer_push_hold(entry):
                 continue  # reported once per head as a stall above, not on every sweep
             age = (now - entry.get("at", now)) / 60
-            if age > loop["grace_min"]:
+            if age > config.stall_grace_s(loop, seat) / 60:
                 stuck.append(f"  {seat} queue: {key} waiting {age:.0f}m — {entry.get('reason')}")
 
     if alerts or stuck:
@@ -977,6 +975,61 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
     finish_reads(loop, watch, now, health, pr_failures, lines)
     st.watch_save(watch)
     st.note(f"run: {len(alerts)} alert(s), {len(stuck)} stuck, {len(prs)} open PRs")
+    return lines
+
+
+LIVE_TURN = ("pending", "claimed", "launching", "running", "waiting")
+
+
+def parked_kind(loop: dict, marker: dict, number: int, head: str,
+                marker_grace: float) -> str | None:
+    """The stall a breach marker at ``head`` amounts to: ``""`` when it is none yet, None when
+    the marker is not this head's (#98).
+
+    ``awaiting-adjudication`` — no ruling run has started — is parked once it is older than
+    ``marker_grace_min``. ``adjudicating`` means a ruling is out: while its adjudicator run is
+    live in the ledger it is not a stall at all (the run's own clocks bound it), and with no
+    live run it is one only once older than ``config.adjudicating_stall_s`` — the adjudicator's
+    whole worst-case turn, or ``marker_grace_min`` if longer — counted from when it started.
+    """
+    if not isinstance(marker, dict) or marker.get("head") != head:
+        return None
+    if marker.get("status") != "adjudicating":
+        mins = age_min(marker.get("at"))
+        if mins > marker_grace:
+            return (f"parked awaiting adjudication for {mins / 60:.1f}h "
+                    f"(marker {marker.get('at') or 'unknown'})")
+        return ""
+    from review_loop.run_supervisor import turn_state
+    run = turn_state(config.home() / "state" / "review-loop-runs.sqlite", loop["repo"],
+                     number, head, "adjudicator")
+    if run in LIVE_TURN:
+        return ""
+    since = marker.get("adjudicating_at") or marker.get("at")
+    mins = age_min(since)
+    if mins > (0.0 if TEST else config.adjudicating_stall_s(loop) / 60):
+        return (f"adjudicating for {mins / 60:.1f}h (since {since or 'unknown'}) but no "
+                f"adjudicator run is live ({run or 'no run on record'}) — the ruling is not "
+                "coming by itself")
+    return ""
+
+
+def died_locks(loop: dict, locks: dict, now: float) -> list[str]:
+    """Seat claims old enough to call their run dead: past twice the seat-lock TTL, which is
+    ``ttl_min`` raised to the loop's whole worst-case turn (``config.seat_ttl_s``, #98) — so a
+    healthy turn with a long budget is never reported as one that died."""
+    lines = []
+    for seat, entries in locks.items():
+        for key, entry in (entries or {}).items():
+            entry = entry if isinstance(entry, dict) else {}
+            age = now - entry.get("at", now)
+            # On the budget the claim was taken with, if longer than the loop's now (#98).
+            # This seat's own turn: another seat's longer budget never keeps it alive (#98).
+            recorded = config.claim_budget(entry)   # None: a legacy claim gets its seat's own
+            if age > config.seat_died_after_s(loop, seat=seat, recorded=recorded):
+                ttl_m = -(-config.seat_ttl_s(loop, seat=seat, recorded=recorded) // 60)
+                lines.append(f"  {seat} slot held {age / 60:.0f}m on {key} — that run died; the "
+                             f"slot frees itself at {ttl_m}m")
     return lines
 
 

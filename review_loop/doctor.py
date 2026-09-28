@@ -177,6 +177,61 @@ def check_config(loop: dict) -> Check:
                  f"{path} (repo {loop['repo']}, cap {loop['cap']}, base {loop['base']})")
 
 
+def check_turn_budget(loop: dict) -> Check:
+    """The wall clock each isolated seat turn gets (#49), and every clock that judges it.
+
+    A turn runs from launch to end for up to ``config.worst_turn_s``: the host dependency
+    prefetch (#51), the budget, the sandbox kill grace, and the broker drain that lets an
+    in-flight write finish (#98). Every age threshold the watchdog applies to a seat follows
+    *that seat's* whole turn by construction: its stall grace (``grace_min``, raised to the
+    turn — ``config.stall_grace_s``), its seat-lock TTL (``ttl_min``, raised the same way —
+    ``config.seat_ttl_s``), the "that run died" report at twice the TTL, and an
+    ``adjudicating`` breach marker's stall clock (``config.adjudicating_stall_s``). One seat's
+    long budget never lengthens another's. So there is nothing to warn about: doctor prints
+    each figure, and names every one the turn raised past the operator's setting.
+    """
+    seats = ["reviewer", "fixer"] + (["adjudicator"] if (loop.get("adjudicator") or {}).get("route")
+                                     else [])
+    budgets = {seat: config.turn_budget(loop, seat) for seat in seats}
+    detail = " · ".join(f"{seat} {value}s" for seat, value in budgets.items())
+    parts = config.turn_parts(loop)
+    worst = config.worst_turn_s(loop)
+    whole = (f"up to {worst}s launch to end ({parts['prefetch']}s dependency prefetch + "
+             f"{parts['budget']}s budget + {parts['grace']}s kill grace + {parts['drain']}s "
+             "broker drain)")
+    grace_min = int(loop.get("grace_min") or config.DEFAULTS["grace_min"])
+    ttl_min = int(loop.get("ttl_min") or config.DEFAULTS["ttl_min"])
+
+    def minutes(seconds: int) -> int:
+        return -(-seconds // 60)
+
+    def per_seat(name: str, setting: int, clock) -> str:
+        bits = []
+        for seat in seats:
+            value = minutes(clock(seat))
+            bits.append(f"{seat} {value}m" + ("" if value == setting else
+                                               " (raised to fit its turn)"))
+        return f"{name} " + " · ".join(bits)
+
+    stall_seats = [seat for seat in seats if seat != "adjudicator"]
+    stall = "stall grace " + " · ".join(
+        f"{seat} {minutes(config.stall_grace_s(loop, seat))}m"
+        + ("" if minutes(config.stall_grace_s(loop, seat)) == grace_min
+           else " (raised to fit its turn)") for seat in stall_seats)
+    lock = (per_seat("seat lock TTL", ttl_min, lambda seat: config.seat_ttl_s(loop, seat=seat))
+            + "; 'that run died' after twice that")
+    text = (f"{detail} per isolated turn (sandbox killed past it); {whole} — grace_min "
+            f"{grace_min}m, ttl_min {ttl_min}m; {stall}; {lock}")
+    if "adjudicator" in seats:
+        # The breach marker's stall clocks (#98): a ruling in flight is never a stall; one
+        # claimed with no live run is, only after the adjudicator's whole turn.
+        marker = int(loop.get("marker_grace_min") or config.DEFAULTS["marker_grace_min"])
+        text += (f"; breach marker: awaiting-adjudication stalls after {marker}m; adjudicating "
+                 "only with no live ruling run, after "
+                 f"{minutes(config.adjudicating_stall_s(loop))}m")
+    return Check("turn-budget", VERIFIED, text)
+
+
 def _check_profile(name: str, seat: str) -> Check:
     if not name:
         return Check(f"profile:{seat}", ABSENT, "no profile named for this seat",
@@ -1260,7 +1315,7 @@ def check_gateway_scripts(loop: dict) -> list[Check]:
 def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     """Every check, in the order an operator reads an install: what it is, who runs it, what
     wakes it, what schedules it, and where it works."""
-    checks = [check_config(loop)]
+    checks = [check_config(loop), check_turn_budget(loop)]
     for seat in ("reviewer", "fixer"):
         checks.append(check_profile(loop, seat))
         checks.append(check_credential(loop, seat))
