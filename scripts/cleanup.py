@@ -120,7 +120,7 @@ def has_symlink_component(path: pathlib.Path) -> bool:
 
 
 def safe_roots(loop: dict, number: int) -> list[pathlib.Path]:
-    roots = [pathlib.Path(p).expanduser() for p in loop["roots"]]
+    roots = [config.guard_real_home(pathlib.Path(p).expanduser()) for p in loop["roots"]]
     roots.append(config.artifacts_dir(loop, number).parent)
     return [root.resolve() for root in roots if root.is_dir() and not has_symlink_component(root)]
 
@@ -366,7 +366,7 @@ def clean_pr(loop: dict, number: int, dry: bool, quiet: bool, force: bool = Fals
         cands.append(base)
     # The loop's own per-PR artifacts dir, only when it is a real directory under the loop's
     # real state dir: a symlinked state dir or artifacts path gets the ordinary checks.
-    state_dir = config._path(loop["state_dir"])
+    state_dir = config.state_dir(loop)
     loop_artifacts = (base.resolve() if base.is_dir() and not has_symlink_component(base)
                       and inside(base.resolve(), state_dir.resolve()) else None)
 
@@ -417,7 +417,7 @@ def sweep(loop: dict, dry: bool, quiet: bool) -> int:
             by_pr.setdefault(number, []).append(tree)
     # Roots can hold a PR's logs with no worktree left; those still count — when they name this
     # loop's repository (a shared root also holds other loops' PR numbers).
-    for root in [pathlib.Path(p).expanduser() for p in loop["roots"]]:
+    for root in [config.guard_real_home(pathlib.Path(p).expanduser()) for p in loop["roots"]]:
         if not root.is_dir() or has_symlink_component(root):
             continue
         for child in root.iterdir():

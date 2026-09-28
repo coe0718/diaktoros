@@ -784,6 +784,8 @@ def gateway_reachable(host: str, timeout: float = 3.0) -> tuple[bool, str]:
     parsed = urlsplit(host)
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     name = parsed.hostname or host
+    # Under the test guard only a loopback gateway is probed; a real host raises first.
+    config.guard_network(f"tcp://{f'[{name}]' if ':' in name else name}:{port}")
     try:
         with socket.create_connection((name, port), timeout=timeout):
             return True, f"{name}:{port} accepts a connection"

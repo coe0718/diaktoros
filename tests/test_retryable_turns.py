@@ -4,6 +4,7 @@ Real SQLite ledger and real fixture child processes (the worker runs in-process 
 test controls time); the claim's GitHub reads go through a patched ``gh.api``. Nothing
 here launches Hermes, a sandbox or a network call.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import os
 from pathlib import Path
 import sqlite3

@@ -1,4 +1,5 @@
 """Issue #51: host-side dependency prefetch, read-only offline cache, and what the seat is told."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import fcntl
 import json
 import os

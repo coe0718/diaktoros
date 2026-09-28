@@ -11,6 +11,7 @@ admission rules, now explicit:
   admission snapshot under the push-policy lock; while pushes are off it is refused with the
   command that turns them on.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 import contextlib
 import io
