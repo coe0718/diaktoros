@@ -725,7 +725,8 @@ def claim_seat(loop: dict, row, budget: float):
         from . import gate, state as state_mod
         st = state_mod.state_for(loop)
         key = gate.seat_key(loop, row['pr'])
-        st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}", budget=budget)
+        st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}", budget=budget,
+                   run=row['id'])
     except Exception:
         return None
     # The claim is written: from here on its release must stay reachable, whatever the mark
@@ -737,7 +738,7 @@ def claim_seat(loop: dict, row, budget: float):
             st.inflight(mark, record=True)
         except Exception:
             mark = None
-    return st, row['seat'], key, row['head'], mark
+    return st, row['seat'], key, row['head'], mark, row['id']
 
 
 def release_seat(claim, state: str | None) -> None:
@@ -746,10 +747,11 @@ def release_seat(claim, state: str | None) -> None:
     until an operator reconciles it, with its TTL and the "that run died" report as backstop."""
     if claim is None or state in (None, 'uncertain'):
         return
-    st, seat, key, head, mark = claim
+    st, seat, key, head, mark, run = claim
     try:
-        st.release_if(seat, key, head)
-        if mark:
+        # Only this run's own claim; its mark goes with it. A newer run that has claimed the
+        # same seat/PR/head (a retry, a re-armed turn) keeps both (#98).
+        if st.release_if(seat, key, head, run=run) and mark:
             st.inflight_clear(mark)
     except Exception:
         pass
@@ -1780,8 +1782,10 @@ class Supervisor:
             loop = config.by_repo(row['repo'])
             if loop is not None:
                 st = state_mod.state_for(loop)
-                st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'])
-                if row['seat'] in INFLIGHT_LABEL:
+                # Only the claim this run wrote: the ledger row left `uncertain` above, so a
+                # newer run may already hold this seat/PR/head, and keeps its claim and mark.
+                if (st.release_if(row['seat'], gate.seat_key(loop, row['pr']), row['head'],
+                                  run=run_id) and row['seat'] in INFLIGHT_LABEL):
                     st.inflight_clear(f"{INFLIGHT_LABEL[row['seat']]}:{row['pr']}:{row['head']}")
         except Exception:
             pass

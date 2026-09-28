@@ -764,6 +764,57 @@ class GateToProductionWorker(unittest.TestCase):
         self.assertEqual(st.live_locks("fixer"), {})
         self.assertFalse(st.inflight(f"fix:8:{HEAD}"))
 
+    def test_a_stale_reconcile_never_frees_a_newer_runs_claim(self):
+        # #98 review 6 (F1, blocking): reconcile commits the ledger, then releases. A newer run
+        # that claims the same seat/PR/head in that gap must keep its claim and its in-flight
+        # mark — a release frees only the claim its own run wrote.
+        from review_loop import state as state_mod
+        st = state_mod.state_for(self.loop)
+        key, mark = gate.seat_key(self.loop, 8), f"fix:8:{HEAD}"
+
+        def stuck(_loop, scope, **kw):
+            try:
+                raise trusted_turn.TurnBudgetExceeded(["bwrap"], kw["timeout"], 30)
+            except trusted_turn.TurnBudgetExceeded as exc:
+                raise trusted_turn.TurnDenied(trusted_turn.drain_failure(exc)) from exc
+        row = self.run_production(stuck)
+        self.assertEqual(row["state"], "uncertain")
+        sup = self.ledger()
+        with closing(sqlite3.connect(sup.db)) as con, con:
+            con.execute("UPDATE runs SET pid=NULL WHERE id=?", (row["id"],))
+
+        def newer_run_claims_in_the_gap(repo):
+            # Runs after reconcile's COMMIT and before its release: the worst interleaving.
+            st.acquire("fixer", key, HEAD, "isolated run newer", budget=2700, run="newer")
+            st.inflight(mark, record=True)
+            return self.loop
+        with mock.patch.object(config, "by_repo", side_effect=newer_run_claims_in_the_gap):
+            self.assertTrue(sup.reconcile_uncertain(row["id"], reason="inspected",
+                                                    acknowledge_no_live_worker=True))
+        claim = st.live_locks("fixer").get(key)
+        self.assertIsNotNone(claim, "a live run's claim was freed by another run's reconcile")
+        self.assertEqual(claim["run"], "newer")
+        self.assertTrue(st.inflight(mark))
+
+    def test_a_finishing_run_never_frees_a_newer_runs_claim(self):
+        # The same race from the worker's side: an older run's release_seat after a newer run
+        # (a retry of the same head) has already claimed the seat.
+        from review_loop import state as state_mod
+        st = state_mod.state_for(self.loop)
+        key, mark = gate.seat_key(self.loop, 8), f"fix:8:{HEAD}"
+        row = {"id": "older", "seat": "fixer", "pr": 8, "head": HEAD}
+        older = run_supervisor.claim_seat(self.loop, row, 2700)
+        st.acquire("fixer", key, HEAD, "isolated run newer", budget=2700, run="newer")
+        st.inflight(mark, record=True)
+        run_supervisor.release_seat(older, "failed")
+        self.assertEqual(st.live_locks("fixer").get(key, {}).get("run"), "newer")
+        self.assertTrue(st.inflight(mark))
+        # Its own claim is still freed when nobody replaced it.
+        run_supervisor.release_seat(run_supervisor.claim_seat(self.loop, {**row, "id": "again"},
+                                                               2700), "failed")
+        self.assertNotIn(key, st.live_locks("fixer"))
+        self.assertFalse(st.inflight(mark))
+
     def test_a_failed_in_flight_mark_does_not_orphan_the_claim(self):
         # #98 review 5, item 3: the claim was written, the mark write failed, and the whole
         # claim was dropped from release's view — so nothing could ever clear it.

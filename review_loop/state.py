@@ -193,27 +193,35 @@ class LoopState:
         return None
 
     def acquire(self, seat: str, key: str, head: str = "", why: str = "",
-                budget: float | None = None) -> None:
+                budget: float | None = None, run: str | None = None) -> None:
         """Claim ``seat`` for ``key``. The isolated worker calls this at launch with its run's
-        own budget (#98); the claim's TTL never shrinks below the budget it was taken with."""
+        own budget and id (#98); the claim's TTL never shrinks below the budget it was taken
+        with, and only a release naming the same ``run`` may free it."""
         with self.locked():
             data = self._load(self.locks, {}) or {}
-            data.setdefault(seat, {})[key] = {
-                "at": time.time(), "head": head, "why": why,
-                "budget": budget if budget is not None else config.turn_budget(self.loop, seat)}
+            entry = {"at": time.time(), "head": head, "why": why,
+                     "budget": budget if budget is not None else config.turn_budget(self.loop, seat)}
+            if run is not None:
+                entry["run"] = run
+            data.setdefault(seat, {})[key] = entry
             self._save(self.locks, data)
 
-    def release_if(self, seat: str, key: str, head: str | None = None) -> bool:
+    def release_if(self, seat: str, key: str, head: str | None = None,
+                   run: str | None = None) -> bool:
         """Free a seat only for *this* PR's turn — never another PR's in-flight work.
 
         With ``head``, only a claim made for that head is freed: a late verdict on an older
-        head must not end a newer run on the same PR.
+        head must not end a newer run on the same PR. With ``run``, only the claim that run
+        wrote is freed (#98): a run's own release (its worker ending it, or an operator
+        reconciling it) must never free a newer run's claim on the same seat, PR and head.
         """
         with self.locked():
             data = self._load(self.locks, {}) or {}
             entry = (data.get(seat) or {}).get(key)
             if entry is None or (head is not None and not (
                     isinstance(entry, dict) and entry.get("head") == head)):
+                return False
+            if run is not None and not (isinstance(entry, dict) and entry.get("run") == run):
                 return False
             data[seat].pop(key)
             if not data[seat]:
