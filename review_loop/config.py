@@ -517,8 +517,7 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
         *loop["reviewers"], *loop["fixers"]) if x}
     if login.casefold() in others:
         raise ConfigError(f"{where}: seats.adjudicator.login {login!r} is also the reader, a seat "
-                          "or an allowlisted reviewer/fixer — the ruling identity must be its own "
-                          "account")
+                          f"or an allowlisted reviewer/fixer — {FOUR_IDENTITY_RULE}")
     tokens = loop.get("tokens") or {}
     if not tokens.get(login):
         raise ConfigError(f"{where}: seats.adjudicator.login {login!r} has no entry in 'tokens' — "
@@ -537,7 +536,7 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
                                   f"{exc}") from exc
         if same:
             raise ConfigError(f"{where}: the adjudicator and {other!r} read the same token file "
-                              "— the ruling identity needs its own credential")
+                              f"— {FOUR_IDENTITY_RULE}")
     seat["login"] = login
     return seat
 
@@ -586,6 +585,64 @@ class ConfigError(Exception):
     """A loop file that cannot be trusted to drive a run."""
 
 
+FOUR_IDENTITY_RULE = ("the four-identity rule: the reader, the reviewer, the fixer and (if set) "
+                      "the adjudicator comment login must be four different accounts with four "
+                      "different token files (docs/operations.md#token-files-one-pat-per-account)")
+
+
+def _same_token_file(first, second) -> bool:
+    """Whether two token-file references name one file. Metadata only; the PAT is never read."""
+    mine, theirs = _path(first), _path(second)
+    if os.path.realpath(mine) == os.path.realpath(theirs):
+        return True
+    try:
+        return mine.exists() and theirs.exists() and mine.samefile(theirs)
+    except OSError:
+        return True                        # cannot tell them apart: treat as shared, never as safe
+
+
+def reader_problem(loop: dict) -> str:
+    """Why the reader is not its own identity, or ``""`` when it is (or no reader is named).
+
+    The reader reads every PR state the gates act on; the broker refuses every write when it is
+    also a seat, so a loop that installs that way passes init and fails at its first review. The
+    offline part of the rule is checked here — distinct logins, distinct token files; distinct
+    ``/user`` principals need the network, and ``selftest`` and the broker check those.
+    """
+    reader = str(loop.get("read_token") or "").strip()
+    if not reader:
+        return ""
+    others = [(f"{seat} seat", seat_login(loop, seat)) for seat in SEAT_KEYS]
+    others.append(("adjudicator comment login", adjudicator_login(loop)))
+    for role, login in others:
+        if login and login.casefold() == reader.casefold():
+            return f"the reader {reader!r} is also the {role}"
+    tokens = {str(k).casefold(): str(v or "") for k, v in (loop.get("tokens") or {}).items()}
+    mine = tokens.get(reader.casefold())
+    if not mine:
+        return ""
+    for role, login in others:
+        theirs = tokens.get(login.casefold()) if login else ""
+        if theirs and _same_token_file(mine, theirs):
+            return (f"the reader {reader!r} and the {role} {login!r} read the same token file — "
+                    "one account wearing two hats")
+    return ""
+
+
+def reader_fix(loop: dict) -> str:
+    """The command that moves a loop's reader onto its own account."""
+    return (f"hermes review-loop set --loop {loop.get('id') or '<id>'} --read-token "
+            "<its own login> --token <that login>=/path/to/pat")
+
+
+def verify_reader(loop: dict) -> None:
+    """Refuse a reader that is not its own account, naming the four-identity rule."""
+    problem = reader_problem(loop)
+    if problem:
+        where = loop.get("id") or loop.get("repo") or "<inline>"
+        raise ConfigError(f"{where}: {problem} — {FOUR_IDENTITY_RULE}")
+
+
 def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
     """Check the loop's token *references* — never their values.
 
@@ -627,7 +684,10 @@ def verify_credentials(loop: dict, roles: set[str] | None = None) -> None:
         login = seat_login(loop, seat).lower()
         if login and login not in tokens:
             raise ConfigError(f"{where}: no token mapped for the {seat} login {login!r} — add "
-                              f"--token {login}=/path/to/pat, or the {seat} acts as {read_token!r}")
+                              f"--token {login}=/path/to/pat (its own PAT file, never the "
+                              "reader's)")
+    if roles & {"read", "adjudicator", *SEAT_KEYS}:
+        verify_reader(loop)
     if roles & set(SEAT_KEYS):
         # Distinct role credentials: two seats sharing one PAT is one account wearing two hats, and
         # the loop's whole point is that a different account reviews the fixer's work.
@@ -907,7 +967,15 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         raise ConfigError(f"{where}: 'cap' is the number of verdicts allowed; must be >= 2")
 
     loop["tokens"] = {k: str(v) for k, v in (loop.get("tokens") or {}).items()}
-    loop["read_token"] = str(loop.get("read_token") or (next(iter(loop["tokens"]), "")))
+    # The reader is named, never inferred: taking "the first token" would make whichever seat
+    # happens to be listed first the account every gate reads GitHub as.
+    loop["read_token"] = str(loop.get("read_token") or "").strip()
+    if not loop["read_token"]:
+        raise ConfigError(f"{where}: 'read_token' is not set, and the reader is never inferred "
+                          "from 'tokens' — add \"read_token\": \"<login>\" naming the reader's "
+                          "own account, with its own entry in 'tokens': `hermes review-loop set "
+                          f"--loop {loop.get('id') or '<id>'} --read-token LOGIN --token "
+                          f"LOGIN=/abs/path/to/pat` writes both; {FOUR_IDENTITY_RULE}")
     adjudicator_seat = _adjudicator_seat(raw_seats.get("adjudicator"), loop, where)
     if adjudicator_seat:
         seats["adjudicator"] = adjudicator_seat
@@ -977,6 +1045,34 @@ def _as_int(value, key: str, where: str) -> int:
         raise ConfigError(f"{where}: {key!r} must be a whole number, got {value!r}") from None
 
 
+def load_id_for_reader_repair(loop_id: str, reader: str) -> dict | None:
+    """The loop ``set --read-token`` may repair: one whose *only* defect is a missing reader.
+
+    Normalized as if ``reader`` were set (every other rule still applies — any other defect
+    raises), then handed back with ``read_token`` empty so the caller records and validates the
+    change like any other. ``None`` when the file does have a reader (nothing to repair here).
+    """
+    path = config_dir() / f"{loop_id}.json"
+    if not loop_id or pathlib.Path(loop_id).name != loop_id or path.is_symlink() or not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not isinstance(raw, dict) or str(raw.get("read_token") or "").strip() or not reader:
+        return None
+    try:
+        loop = normalize({**raw, "read_token": reader}, path)
+    except ConfigError:
+        raise
+    except (TypeError, ValueError, AttributeError, KeyError) as exc:
+        raise ConfigError(f"{path}: malformed loop file ({type(exc).__name__}: {exc})") from exc
+    if loop["id"] != loop_id:
+        raise ConfigError(f"{path}: loop ID does not match filename")
+    loop["read_token"] = ""
+    return loop
+
+
 def load_id(loop_id: str) -> dict:
     if not loop_id or pathlib.Path(loop_id).name != loop_id or loop_id in ('.', '..'):
         raise ConfigError('loop ID must name one config file')
@@ -998,6 +1094,60 @@ def all_loops() -> list[dict]:
     if not directory.exists():
         return []
     return [load_id(p.stem) for p in sorted(directory.glob("*.json"))]
+
+
+def readable_loops() -> tuple[list[dict], list[tuple[str, str]]]:
+    """Every loop file that loads, and ``(loop id, reason)`` for each that does not.
+
+    For the callers that must keep working past one bad file — the read-only listings, the cron
+    watchdog's sweep of every loop. Callers that act on a whole set of loops keep ``all_loops``'s
+    all-or-nothing refusal.
+    """
+    directory = config_dir()
+    if not directory.exists():
+        return [], []
+    loops, skipped = [], []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            loops.append(load_id(path.stem))
+        except ConfigError as exc:
+            skipped.append((path.stem, str(exc)))
+    return loops, skipped
+
+
+def loop_for_repo(full_name: str, warn=None) -> dict | None:
+    """The one loop that owns ``full_name``, loading each file on its own — for the wake path.
+
+    ``by_repo`` is all-or-nothing, which is right for the verbs that act on every loop but wrong
+    for a gate: one hand-edited sibling file the loader refuses must not stop a healthy loop's
+    events. A file that will not load is skipped (``warn`` gets one line) — unless it might be
+    this repo's own: when its raw ``repo`` names this repo, or cannot be read at all, the
+    ownership question has no safe answer and this raises, exactly as ``by_repo`` would.
+    """
+    want = str(full_name or "").lower()
+    directory = config_dir()
+    if not directory.exists():
+        return None
+    matches = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            loop = load_id(path.stem)
+        except ConfigError as exc:
+            try:
+                raw_repo = str(json.loads(path.read_text()).get("repo") or "").strip().lower()
+            except Exception:
+                raw_repo = None
+            if raw_repo is None or not raw_repo or raw_repo == want:
+                raise ConfigError(f"{exc} (it may own {want or 'this repository'}; "
+                                  "unattended writes denied until it loads)") from exc
+            if warn:
+                warn(f"skipping {path.name} (loop for {raw_repo}): {exc}")
+            continue
+        if loop["repo"] == want:
+            matches.append(loop)
+    if len(matches) > 1:
+        raise ConfigError(f"duplicate loop configs for {want}: unattended writes denied")
+    return matches[0] if matches else None
 
 
 def by_repo(full_name: str) -> dict | None:

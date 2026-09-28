@@ -92,7 +92,7 @@ hermes review-loop explain --loop name --pr 123   # why that PR is not moving, a
 hermes review-loop doctor --loop name   # preflight the install: profiles, seat models, tokens, routes, hooks, cron
 hermes review-loop models --seat reviewer --loop name   # what that seat's profile's provider offers (read-only)
 hermes review-loop settings             # the plugin-level defaults, and where each came from
-hermes review-loop init --repo owner/name --dry-run   # preview a loop: seats, routes, nothing written
+hermes review-loop init --repo owner/name --read-token reader-bot --token reader-bot=~/.hermes/keys/reader-bot-pat --dry-run   # preview a loop: seats, routes, nothing written
 hermes review-loop apply --loop name    # push those defaults onto an existing loop (--dry-run)
 hermes review-loop apply --loop name --while-busy     # rebind even while a seat has a run out
 hermes review-loop set --loop name --reviewer-concurrency 2   # two reviews at once, one fix at a time
@@ -147,7 +147,9 @@ same way: `--observer-profile`, `--observer-route`, `--observer-deliver`, `--obs
 `--observer-digest-min`, and `--observer-mute` / `--observer-unmute` / `--observer-disable`.
 
 `set --adjudicator-login LOGIN --token LOGIN=/abs/path` names (or `--adjudicator-login ""`
-clears) the optional account a ruling is also posted as; `set --token` maps only that login.
+clears) the optional account a ruling is also posted as, and `set --read-token LOGIN
+[--token LOGIN=/abs/path]` moves the reader; `set --token` maps only those two logins. Both go
+through the [four-identity rule](#token-files-one-pat-per-account).
 
 Who serves each seat, and how the plugin-level defaults reach a loop, is covered in
 [Settings, in the desktop](settings.md).
@@ -192,7 +194,7 @@ makes.
 
 | role | account | what it does | token | why nothing narrower works |
 | --- | --- | --- | --- | --- |
-| reader (`read_token`) | the repo owner | reads PRs, refs and the repo's hooks | **fine-grained, read-only**: `contents: read`, `pull_requests: read`, `repository_hooks: read` (classic `repo` also works). When the reader also creates and arms the hooks — `init --hooks` / `arm` without `--admin-token` — make that `repository_hooks: write` | the owner *is* the fine-grained token's resource owner, so this is the one seat that can hold a read-only credential on a user-owned repo. `doctor` and `explain` read the hooks to tell *armed* from *paused*; without hook read access the line reports the state as unknown |
+| reader (`read_token`) | the repo owner | reads PRs, refs and the repo's hooks | **fine-grained, read-only**: `contents: read`, `pull_requests: read`, `repository_hooks: read` (classic `repo` also works). When the reader also creates and arms the hooks — `init --hooks` / `arm` without `--admin-token`, as in the README example — make that `repository_hooks: write` | the owner *is* the fine-grained token's resource owner, so this is the one seat that can hold a read-only credential on a user-owned repo. `doctor` and `explain` read the hooks to tell *armed* from *paused*; without hook read access the line reports the state as unknown |
 | reviewer | collaborator (write) | posts one review | classic, `repo` | a review POST needs pull-request write, and on a user-owned repo that is the same permission that can push code |
 | fixer | collaborator (write) | pushes a fix commit | classic, `repo` | the fix is a commit |
 | adjudicator login | collaborator (write) | posts one comment | classic, `repo` | a comment needs only read, but a user-owned repo refuses a read-only collaborator grant (`422`), so the account can write whatever its token says |
@@ -300,8 +302,9 @@ $ hermes review-loop doctor --loop widgets
   ✅ profile:fixer        fixer-profile → doctor-demo/hermes-home/profiles/fixer-profile
   ✅ credential:fixer     dev-fixer → a tokens entry
   ✅ token:dev-fixer      doctor-demo/fix.pat (mode 600, non-empty)
+  ✅ token:reader-bot     doctor-demo/read.pat (mode 600, non-empty)
   ✅ token:rev-coach      doctor-demo/rev.pat (mode 600, non-empty)
-  ✅ read_token           rev-coach (mapped in tokens)
+  ✅ read_token           reader-bot (mapped in tokens; its own account and file)
   ✅ route:widgets-review reviewer-profile · pull_request · http://127.0.0.1:43651/p/reviewer-profile/webhooks/widgets-review
   ✅ route:widgets-fix    fixer-profile · pull_request_review · http://127.0.0.1:43651/p/fixer-profile/webhooks/widgets-fix
   ✅ route:widgets-breach default · adjudication wake
@@ -315,7 +318,7 @@ $ hermes review-loop doctor --loop widgets
   ✅ hook:widgets-review  hook 41 → http://127.0.0.1:43651/p/reviewer-profile/webhooks/widgets-review (pull_request, active)
   ✅ hook:widgets-fix     hook 42 → http://127.0.0.1:43651/p/fixer-profile/webhooks/widgets-fix (pull_request_review, active)
 
-widgets: 20 verified, 0 failed, 0 unknown (of 20 checks)
+widgets: 21 verified, 0 failed, 0 unknown (of 21 checks)
   every check passed — this loop can wake a seat and post a verdict.
 ```
 
@@ -332,8 +335,9 @@ $ hermes review-loop doctor --loop widgets
   ✅ credential:fixer     dev-fixer → a tokens entry
   ❌ token:dev-fixer      no file at doctor-demo/fix.pat
       fix: write the PAT for dev-fixer to doctor-demo/fix.pat (chmod 600), or re-run init with --token dev-fixer=<a path that exists>
+  ✅ token:reader-bot     doctor-demo/read.pat (mode 600, non-empty)
   ✅ token:rev-coach      doctor-demo/rev.pat (mode 600, non-empty)
-  ✅ read_token           rev-coach (mapped in tokens)
+  ✅ read_token           reader-bot (mapped in tokens; its own account and file)
   ❌ route:widgets-review registered at https://old-gateway.example, but the loop is armed at http://127.0.0.1:43651
       fix: re-run init to rewrite the route for http://127.0.0.1:43651: a hook or a manual POST still goes to the recorded origin
   ❌ route:widgets-fix    wakes profile 'some-other-agent', but seats.fixer.profile is 'fixer-profile' — the wake would run the wrong agent
@@ -350,7 +354,7 @@ $ hermes review-loop doctor --loop widgets
   ✅ gateway              127.0.0.1:43651 accepts a connection
   ⚠️ hooks                could not read /repos/acme/widgets/hooks — nothing was proved about 2 hook(s) (a token without hook read access — `repo`, or the narrower `read:repo_hook` — reads as denied)
 
-widgets: 12 verified, 6 failed, 1 unknown (of 19 checks)
+widgets: 13 verified, 6 failed, 1 unknown (of 20 checks)
   6 failed: profile:fixer, token:dev-fixer, route:widgets-review, route:widgets-fix, cron:shim, cron:job — fix the ❌ lines above before this loop is armed.
 ```
 
@@ -502,7 +506,9 @@ Three rules keep it honest:
 It needs to read the repo's hooks to tell "paused" from "armed", so the read token wants enough
 scope to see them (`repo` is normally enough); if it cannot, the line says the hook state is unknown
 rather than claiming the loop is parked. `explain` exits 2 only when the question cannot be asked at
-all — an unknown loop, or several loops and no `--loop`.
+all — an unknown loop, a loop file the loader refuses (without `--loop` each such file is named on a
+`skipping <file>: <reason>` line), several loops (refused ones included) and no `--loop`, or no loop
+files at all (`no loops configured in <dir>`).
 
 The guard order `explain` walks is in
 [architecture: Explain](architecture.md#explain--why-is-this-pr-not-moving).

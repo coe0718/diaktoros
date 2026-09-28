@@ -446,7 +446,8 @@ def _install_hooks(loop: dict, token_login: str | None, active: bool = False) ->
             result = gh.api(loop, f"/repos/{loop['repo']}/hooks", method="POST", body=body,
                             login=token_login or loop.get("read_token"))
             if not isinstance(result, dict) or not isinstance(result.get("id"), int):
-                raise config.ConfigError(f"hook creation not confirmed for {url}")
+                raise config.ConfigError(f"hook creation not confirmed for {url}: "
+                                         f"{hook_write_need(loop, token_login)}")
             created.append(result["id"])
         state = "armed" if active else "paused"
         return [f"hook {id} → {url} ({state})" for id, (_, url, _) in zip(created, hooks)]
@@ -503,6 +504,15 @@ def hook_write_need(loop: dict, token_login: str | None) -> str:
     else:
         need += " — check that login's token file"
     return need
+
+
+def _hook_editor_line(loop: dict, token_login: str | None, armed: bool, dry_run: bool) -> str:
+    """Who created (or would create) the hooks, in which state, and what `arm` will need."""
+    who = token_login or loop.get("read_token")
+    verb = "would be created" if dry_run else "were created"
+    state = "armed (--arm)" if armed else "paused"
+    return (f"hooks {verb} {state} as {who}, and `arm` / `arm --pause` edit them as {who} too: "
+            f"{hook_write_need(loop, token_login)}")
 
 
 def _hook_write_fix(token_login: str | None, transient: bool = False,
@@ -772,7 +782,14 @@ def _write_config_locked(loop: dict, *, policy_change: bool = False) -> pathlib.
     if path.exists() and not policy_change:
         # Set/apply snapshots never own this switch. Re-read under the same lock
         # used by explicit enable/disable and by the broker's ref operation.
-        current = config.load_id(loop['id'])
+        try:
+            current = config.load_id(loop['id'])
+        except config.ConfigError:
+            # `set --read-token` repairing a file whose only defect is its missing reader.
+            current = config.load_id_for_reader_repair(loop['id'],
+                                                       str(loop.get('read_token') or ''))
+            if current is None:
+                raise
         if current['repo'] != loop['repo']:
             raise config.ConfigError('repository changed during config update')
         loop = {**loop, 'unattended_fixer_push': current['unattended_fixer_push']}
@@ -910,7 +927,7 @@ def cmd_init(args) -> int:
         "adjudicator": ({"route": args.adjudicator_route, "profile": adjudicator_profile}
                         if args.adjudicator_route else {}),
         "skill": args.skill,
-        "tokens": tokens, "read_token": args.read_token or reviewer_seat,
+        "tokens": tokens, "read_token": args.read_token,
         "clone": args.clone, "roots": args.root or [],
         "state_dir": args.state_dir or str(config.home() / "state" / "review-loops"
                                            / (args.id or args.repo.split("/")[-1])),
@@ -929,6 +946,12 @@ def cmd_init(args) -> int:
     if raw["observer"].get("route"):
         roles.add("observer")
     try:
+        # The reader is named, never inferred: a default seat login (or the first token) is the
+        # one-account-two-hats shape the broker refuses at the first write.
+        if not args.read_token:
+            raise config.ConfigError(
+                "--read-token LOGIN names the account the gates read GitHub as (map its file with "
+                f"--token LOGIN=/path/to/pat) — {config.FOUR_IDENTITY_RULE}")
         loop = config.normalize(raw)
         # Routes are installed even without --hooks; never write a partial loop with
         # route URLs that cannot resolve to this operator's own gateway.
@@ -939,6 +962,13 @@ def cmd_init(args) -> int:
         # path is refused by its own name rather than as a generic missing file.
         config.verify_adjudicator_token(loop)
         config.verify_seats(loop, roles)
+        # Hooks are created as --admin-token's login, after the config and routes are written;
+        # an unmapped login would fail there and roll everything back, so refuse it up front.
+        if args.hooks and args.admin_token and args.admin_token.lower() not in {
+                str(k).lower() for k in loop.get("tokens") or {}}:
+            raise config.ConfigError(
+                f"--admin-token {args.admin_token!r} has no token file — add "
+                f"--token {args.admin_token}=/path/to/pat (hook write access)")
         _verify_routes(loop, roles)
         _observer_check(loop)
     except config.ConfigError as exc:
@@ -956,6 +986,7 @@ def cmd_init(args) -> int:
         if args.hooks:
             print("  would create the two repo hooks (pull_request, pull_request_review), "
                   + ("armed (--arm)" if getattr(args, "arm", False) else "paused until `arm`"))
+            print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), True)}")
         if args.schedule:
             print(f"  would install the watchdog cron job ({args.schedule})")
         if loop.get("observer", {}).get("route"):
@@ -1033,6 +1064,8 @@ def cmd_init(args) -> int:
         return 2
     for line in hook_lines:
         print(f"  {line}")
+    if args.hooks:
+        print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), False)}")
     if not args.hooks:
         print("  (repo hooks not created — pass --hooks, or add them by hand with the route URLs)")
     schedule_lines, scheduled = (_install_schedule(loop, args.schedule, args.watchdog_deliver)
@@ -1058,7 +1091,9 @@ def cmd_init(args) -> int:
                      f"verdicts: {config.fixer_push_enable_command(loop)} "
                      "(read docs/operations.md on the PR-metadata race first)")
     if args.hooks and not getattr(args, "arm", False):
-        steps.append(f"hermes review-loop arm --loop {lid}   (the hooks were created paused)")
+        admin = f" --admin-token {args.admin_token}" if args.admin_token else ""
+        steps.append(f"hermes review-loop arm --loop {lid}{admin}   (the hooks were created "
+                     "paused)")
     elif args.hooks:
         steps.append("the hooks are ARMED: until the runtime file exists every turn is held")
     print("\nNext:")
@@ -1080,8 +1115,18 @@ def cmd_set(args) -> int:
     try:
         loop = config.load_id(args.loop)
     except config.ConfigError as exc:
-        print(f"no such loop: {exc}")
-        return 2
+        # The one repair a verb can make to a file the loader refuses: a missing reader, named
+        # here with --read-token (and its --token). Any other defect still refuses.
+        try:
+            loop = config.load_id_for_reader_repair(args.loop,
+                                                    str(getattr(args, "read_token", "") or "").strip())
+        except config.ConfigError as other:
+            exc = other
+            loop = None
+        if loop is None:
+            print(f"no such loop: {exc}")
+            return 2
+        print(f"repairing {args.loop}: it has no read_token; setting the reader named by --read-token")
 
     wanted = {"concurrency": args.concurrency, "cap": args.cap, "base": args.base,
               "clone": args.clone, "grace_min": args.grace_min,
@@ -1093,21 +1138,31 @@ def cmd_set(args) -> int:
     seats = {seat: dict(cfg) for seat, cfg in loop["seats"].items()}
     seat_changes = {}
 
-    # The adjudicator's optional comment identity. `set` maps only *its* credential: the seats'
-    # token files move through the settings form and `apply`, which owns the in-flight rules.
+    # The adjudicator's optional comment identity and the reader. `set` maps only *their*
+    # credentials: the seats' token files move through the settings form and `apply`, which owns
+    # the in-flight rules.
     tokens = dict(loop.get("tokens") or {})
     adj_before = config.adjudicator_login(loop)
     adj_wanted = getattr(args, "adjudicator_login", None)
     adj_after = adj_before if adj_wanted is None else adj_wanted.strip()
+    read_before = str(loop.get("read_token") or "")
+    read_wanted = getattr(args, "read_token", None)
+    read_after = read_before if read_wanted is None else read_wanted.strip()
+    if read_wanted is not None and not read_after:
+        print("refused: --read-token needs a login — the gates cannot read GitHub as nobody")
+        return 2
     for pair in getattr(args, "token", None) or []:
         if "=" not in pair:
             print(f"--token expects login=/path/to/pat, got {pair!r}")
             return 2
         login, path = pair.split("=", 1)
-        if not adj_after or login.strip().lower() != adj_after.lower():
-            print(f"refused: `set --token` only maps the adjudicator login's token file "
-                  f"(--adjudicator-login); {login!r} is not it — seat token files move through "
-                  "the plugin settings and `apply`")
+        login = login.strip()
+        owner = next((name for name in (adj_after, read_after if read_wanted is not None else "")
+                      if name and login.lower() == name.lower()), "")
+        if not owner:
+            print(f"refused: `set --token` only maps the token file of the login named by "
+                  f"--read-token or --adjudicator-login; {login!r} is not it — seat token files "
+                  "move through the plugin settings and `apply`")
             return 2
         try:
             config.check_token_file(path, f"--token {login}")
@@ -1116,8 +1171,13 @@ def cmd_set(args) -> int:
             return 2
         for key in [k for k in tokens if str(k).lower() == login.lower()]:
             del tokens[key]
-        tokens[adj_after] = str(pathlib.Path(path.strip()).expanduser())
-    adj_changed = adj_after != adj_before or tokens != (loop.get("tokens") or {})
+        tokens[owner] = str(pathlib.Path(path.strip()).expanduser())
+    # gh looks a login's file up by its exact key: keep the reader spelled as its mapping is.
+    read_after = next((str(k) for k in tokens if str(k).lower() == read_after.lower()), read_after)
+    tokens_changed = tokens != (loop.get("tokens") or {})
+    adj_changed = adj_after != adj_before or tokens_changed
+    read_changed = (read_after != read_before
+                    or _token_ref({"tokens": tokens}, read_after) != _token_ref(loop, read_after))
     if adj_after != adj_before:
         adj_seat = dict(seats.get("adjudicator") or {})
         if adj_after:
@@ -1167,7 +1227,7 @@ def cmd_set(args) -> int:
     if args.observer_unmute:
         observer_cfg["mute"] = False
 
-    if (not changes and not seat_changes and not adj_changed
+    if (not changes and not seat_changes and not adj_changed and not read_changed
             and observer_cfg == (loop.get("observer") or {})):
         print("nothing to change — pass at least one setting "
               "(--concurrency, --reviewer-concurrency, --fixer-concurrency, --cap, --clone, "
@@ -1176,7 +1236,17 @@ def cmd_set(args) -> int:
 
     try:
         updated = config.normalize({**loop, **changes, "seats": seats, "observer": observer_cfg,
-                                    "tokens": tokens})
+                                    "tokens": tokens, "read_token": read_after})
+        if read_changed:
+            # The same rules init applies to the reader: mapped, its file present and private,
+            # and its own account (the four-identity rule).
+            if not _token_ref(updated, read_after):
+                raise config.ConfigError(
+                    f"no token file mapped for the reader {read_after!r} — add "
+                    f"--token {read_after}=/path/to/pat")
+            config.check_token_file(_token_ref(updated, read_after),
+                                    f"token file for the reader {read_after!r}")
+            config.verify_credentials(updated, {"read"})
         if adj_changed and config.adjudicator_login(updated):
             # The same file-level rules init applies, plus: the file must exist and be private.
             config.verify_adjudicator_token(updated)
@@ -1255,6 +1325,11 @@ def cmd_set(args) -> int:
     for seat, value in seat_changes.items():
         was = config.seat_concurrency(loop, seat)
         print(f"  {seat} concurrency: {was} → {value}  (this seat only)")
+    if read_after != read_before:
+        print(f"  read_token: {read_before or '(none)'} → {read_after}")
+    if read_after and _token_ref(loop, read_after) != _token_ref(updated, read_after):
+        print(f"  reader token file ({read_after}): {_token_ref(loop, read_after) or '(none)'}"
+              f" → {_token_ref(updated, read_after)}")
     if adj_after != adj_before:
         shown = adj_after or "(none — rulings go to the operator only)"
         print(f"  adjudicator login: {adj_before or '(none)'} → {shown}")
@@ -1303,6 +1378,22 @@ def cmd_apply(args) -> int:
         updated = config.normalize(config.apply_settings(loop, _SETTINGS))
     except config.ConfigError as exc:
         print(f"settings refused: {exc}")
+        return 2
+
+    # The four-identity rule holds for the config apply would leave behind, whether or not this
+    # push moves an identity: "nothing changed" must not endorse a reader that is also a seat.
+    problem = config.reader_problem(updated)
+    if problem:
+        print(f"settings refused: {updated['id']}: {problem} — {config.FOUR_IDENTITY_RULE}")
+        print(f"fix: {config.reader_fix(updated)}")
+        return 2
+    reader = str(updated.get("read_token") or "")
+    if reader.casefold() not in {str(k).casefold() for k in updated.get("tokens") or {}}:
+        # doctor fails this loop; apply must not report success over it either.
+        print(f"settings refused: {updated['id']}: read_token {reader!r} has no entry in "
+              "'tokens' — the gates read GitHub as that login and have no file to read it from")
+        print(f"fix: hermes review-loop set --loop {updated['id']} --read-token {reader} "
+              f"--token {reader}=/path/to/pat")
         return 2
 
     identity, touched = _seat_diffs(loop, updated)
@@ -1497,17 +1588,32 @@ def cmd_settings(args) -> int:
     return 0
 
 
+def _readable_loops() -> tuple[list[dict], list[str]]:
+    """Every loop that loads, plus one ``skipping <file>: <reason>`` line per one that does not.
+
+    The formatted form of ``config.readable_loops`` for ``list`` and ``status``: one broken file
+    must not hide every healthy loop's state. (``explain`` calls ``config.readable_loops``
+    itself — it needs the ids, not these lines.) Verbs that act on loops keep ``all_loops``'s
+    all-or-nothing refusal.
+    """
+    loops, skipped = config.readable_loops()
+    return loops, [f"skipping {loop_id}.json: {reason}" for loop_id, reason in skipped]
+
+
 def cmd_list(args) -> int:
-    loops = config.all_loops()
+    loops, skipped = _readable_loops()
+    for line in skipped:
+        print(line)
     if not loops:
-        print(f"no loops configured in {config.config_dir()}")
-        return 0
+        if not skipped:
+            print(f"no loops configured in {config.config_dir()}")
+        return 2 if skipped else 0
     for loop in loops:
         seats = " ".join(f"{seat}={config.seat_concurrency(loop, seat)}"
                          for seat in ("reviewer", "fixer"))
         print(f"{loop['id']:<20} {loop['repo']:<30} cap={loop['cap']} {seats} "
               f"fixers={','.join(loop['fixers'])} reviewers={','.join(loop['reviewers'])}")
-    return 0
+    return 2 if skipped else 0
 
 
 def _dependency_lines(loop: dict, pr: int | None = None, limit: int = 5) -> list[str]:
@@ -1533,7 +1639,17 @@ def _view_lines(loop: dict, pr: int, head: str | None, limit: int = 3) -> list[s
 
 
 def cmd_status(args) -> int:
-    loops = [config.load_id(args.loop)] if args.loop else config.all_loops()
+    skipped: list[str] = []
+    if args.loop:
+        try:
+            loops = [config.load_id(args.loop)]
+        except config.ConfigError as exc:
+            print(f"cannot show loop: {exc}")
+            return 2
+    else:
+        loops, skipped = _readable_loops()
+        for line in skipped:
+            print(line)
     for loop in loops:
         from . import state as state_mod
 
@@ -1568,6 +1684,10 @@ def cmd_status(args) -> int:
         refs = _credential_lines(loop)
         if refs:
             print("  token refs: " + " · ".join(refs))
+        problem = config.reader_problem(loop)
+        if problem:
+            print(f"  ⚠️  reader:  {problem} — {config.FOUR_IDENTITY_RULE}")
+            print(f"  fix:        {config.reader_fix(loop)}")
         locks = st._load(st.locks, {}) or {}
         for seat, entries in locks.items():
             for key, entry in (entries or {}).items():
@@ -1609,7 +1729,7 @@ def cmd_status(args) -> int:
         if watch.get("last_run"):
             print(f"  watchdog:   last run {watch['last_run']}")
         _print_ledger_runs(loop, None, "  runs:       ", limit=10)
-    return 0
+    return 2 if skipped else 0
 
 
 def _ledger_path() -> pathlib.Path:
@@ -1715,9 +1835,11 @@ def cmd_explain(args) -> int:
     from ``gate.explain``, so they are the predicates the live gates run rather than a second
     opinion about them.
 
-    Exit 2 only when the question cannot be asked at all (an unknown loop, or several loops and no
-    ``--loop``). A PR GitHub does not have, or cannot be read, is an *answer*: it is reported as
-    unknown, with the read to retry.
+    Exit 2 only when the question cannot be asked at all: an unknown loop, a loop file the loader
+    refuses (without ``--loop`` each is named on a ``skipping <file>: <reason>`` line), several
+    loops — refused ones included — and no ``--loop``, or no loop files at all. A PR GitHub does
+    not have, or cannot be read, is an *answer*: it is reported as unknown, with the read to
+    retry.
     """
     from . import state as state_mod
     from .run_supervisor import next_step
@@ -1729,10 +1851,16 @@ def cmd_explain(args) -> int:
             print(f"no such loop: {exc}")
             return 2
     else:
-        loops = config.all_loops()
-        if len(loops) > 1:
-            print(f"{len(loops)} loops are configured "
-                  f"({', '.join(loop['id'] for loop in loops)}) — name one with --loop")
+        loops, refused = config.readable_loops()
+        for loop_id, reason in refused:
+            print(f"skipping {loop_id}.json: {reason}")
+        skipped = [loop_id for loop_id, _ in refused]
+        # A file that will not load is still a configured loop: the question may be about it.
+        names = [loop["id"] for loop in loops] + skipped
+        if len(names) > 1:
+            print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
+            return 2
+        if skipped:
             return 2
         if not loops:
             print(f"no loops configured in {config.config_dir()}")
@@ -1999,12 +2127,22 @@ def _cmd_fixer_push_locked(args) -> int:
 
 
 def cmd_drain(args) -> int:
+    try:
+        config.load_id(args.loop)          # the watchdog reports a bad file but exits 0 (cron)
+    except config.ConfigError as exc:
+        print(f"cannot drain: {exc}")
+        return 2
     watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
     cmd = [sys.executable, str(watchdog), "--loop", args.loop, "--drain", "--seat", args.seat]
     return subprocess.run(cmd).returncode
 
 
 def cmd_cleanup(args) -> int:
+    try:
+        config.load_id(args.loop)          # refuse a loop that will not load here, by name
+    except config.ConfigError as exc:
+        print(f"cannot clean up: {exc}")
+        return 2
     cleanup = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "cleanup.py"
     cmd = [sys.executable, str(cleanup), "--loop", args.loop]
     cmd += ["--pr", str(args.pr)] if args.pr else ["--sweep"]
@@ -2014,7 +2152,11 @@ def cmd_cleanup(args) -> int:
 
 
 def cmd_uninstall(args) -> int:
-    loop = config.load_id(args.loop)
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"cannot uninstall: {exc}")
+        return 2
     # Forget first: a route the operator removed must not be put back by the next watchdog
     # sweep's self-heal (which only ever restores routes still in the intent record).
     try:
@@ -2103,7 +2245,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--root", action="append", default=[], help="a directory reviews may clean (repeatable)")
         init.add_argument("--state-dir", default="")
         init.add_argument("--token", action="append", default=[], help="login=/path/to/pat (repeatable)")
-        init.add_argument("--read-token", default="", help="login whose token reads GitHub")
+        init.add_argument("--read-token", default="",
+                          help="required: login whose token reads GitHub — its own account, never "
+                               "a seat or the adjudicator login (the four-identity rule)")
         init.add_argument("--skill", default="",
                           help="skill the seats are told to load. A plugin-provided skill is "
                                "qualified, e.g. hermes-review-loop:review-loop")
@@ -2212,9 +2356,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--adjudicator-login", default=None,
                             help="optional fourth GitHub account the ruling is also posted as; "
                                  "\"\" clears it (rulings go to the operator only)")
+        change.add_argument("--read-token", default=None,
+                            help="the login the gates read GitHub as — its own account, never a "
+                                 "seat or the adjudicator login (the four-identity rule); map a "
+                                 "new login with --token LOGIN=/path")
         change.add_argument("--token", action="append", default=[],
-                            help="LOGIN=/path/to/pat for the adjudicator login only (a path, "
-                                 "never the token)")
+                            help="LOGIN=/path/to/pat for the --read-token or --adjudicator-login "
+                                 "login only (a path, never the token)")
         change.add_argument("--observer-route", help="route the observer feed delivers through")
         change.add_argument("--observer-profile", help="profile that owns the observer destination")
         change.add_argument("--observer-deliver",
