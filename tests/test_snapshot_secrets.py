@@ -20,6 +20,7 @@ imported by ``hermes_cli.main``; ``agent/secret_sources`` is a package *about* c
 exact names of the original filter (``credentials``, ``id_rsa``, ...) still apply everywhere, and a
 shape-named directory holding data or docs is still a credential container.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import os
 import pathlib
 import subprocess

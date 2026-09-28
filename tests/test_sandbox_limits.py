@@ -12,6 +12,7 @@ whose path any same-UID process can enumerate, and the module docstring has to s
 implying an authentication it does not implement.
 """
 from __future__ import annotations
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 
 import contextlib
 import glob
@@ -446,11 +447,12 @@ class BrokerClaimTests(unittest.TestCase):
         fake = types.SimpleNamespace(
             fixture_mode=False, production_config="/tmp/widgets.json", fixture_command=None,
             db="/tmp/none.sqlite", capacity=3, lease_seconds=60.0, child_timeout=120.0,
-            hermes_home=pathlib.Path("/tmp/fake-home"))
+            hermes_home=pathlib.Path("/tmp/fake-home"), _worker_log=lambda: None)
         with mock.patch.dict(os.environ, {"REVIEW_LOOP_CHECKOUT_SIZE_GIB": "64",
                                           "REVIEW_LOOP_SCRATCH_SIZE_GIB": "4"}), \
                 mock.patch.object(subprocess, "Popen") as popen:
-            # A duck-typed stand-in for a Supervisor: _spawn only reads these seven attributes,
+            # A duck-typed stand-in for a Supervisor: _spawn only reads these attributes (and
+            # its worker log, None here: stderr discarded),
             # and building a real one needs a database this test has no use for.
             run_supervisor.Supervisor._spawn(fake)  # type: ignore[arg-type]
         env = popen.call_args.kwargs["env"]
