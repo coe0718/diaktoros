@@ -392,6 +392,26 @@ def reviews(loop: dict, number: int, errors: list | None = None):
     return result
 
 
+# GitHub answered, and the answer is no: retrying will not change it (#110). A 403 that is a rate
+# limit is the exception — that one passes.
+_PERSISTENT_HTTP = (403, 404, 410)
+
+
+def persistent_failure(error: str) -> bool:
+    """Whether a listing error (``_read_pages``' reason) is an answer rather than an outage.
+
+    404/410/403 (other than a rate limit), a malformed page and a listing past its page bound are
+    answers; a 5xx, 429, timeout or connection error is transient, and so is anything unknown.
+    """
+    import re
+    text = str(error)
+    match = re.search(r"\bHTTP (\d{3})\b", text)
+    if match:
+        code = int(match.group(1))
+        return code in _PERSISTENT_HTTP and not (code == 403 and "rate limit" in text.lower())
+    return "invalid " in text or "listing exceeds" in text
+
+
 def pr_files_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
     """Every changed file GitHub lists for the PR (``pulls/N/files``), or ``(None, reason)``.
 
