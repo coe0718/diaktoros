@@ -4,6 +4,7 @@ No real Hermes, credentials, ~/.hermes or network: a throwaway HERMES_HOME holds
 and a fake ``hermes_cli`` package (the same entry points the resolver imports from the real
 Hermes source tree) resolves them. The model upstream is never contacted.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 import importlib.util
 import io
@@ -286,7 +287,10 @@ class Base(unittest.TestCase):
         # .env into os.environ): it must never satisfy a seat's resolution.
         env = {k: v for k, v in os.environ.items()
                if k not in ("OPENROUTER_API_KEY", "DEEPSEEK_API_KEY")}
-        env.update(HERMES_HOME=str(self.home), OPENROUTER_API_KEY=PARENT_LEAK)
+        # REVIEW_LOOP_CONFIG_DIR too: an exported one would otherwise point the host policy (and
+        # its lock) at the operator's review-loops.d, not this fixture's (as in #115).
+        env.update(HERMES_HOME=str(self.home), OPENROUTER_API_KEY=PARENT_LEAK,
+                   REVIEW_LOOP_CONFIG_DIR=str(self.home / "review-loops.d"))
         patcher = mock.patch.dict(os.environ, env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)

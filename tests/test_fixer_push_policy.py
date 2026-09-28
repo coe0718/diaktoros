@@ -1,4 +1,5 @@
 """Explicit per-repository unattended push policy, using disposable config/state only."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 from contextlib import redirect_stdout
 import io
@@ -14,7 +15,7 @@ from review_loop import cli, config
 
 def raw_loop(loop_id):
     return {"id": loop_id, "repo": f"owner/{loop_id}", "fixers": ["fixer"],
-            "reviewers": ["reviewer"], "seats": {
+            "reviewers": ["reviewer"], "read_token": "reader", "seats": {
                 "reviewer": {"route": f"{loop_id}-review", "profile": "reviewer"},
                 "fixer": {"route": f"{loop_id}-fix", "profile": "fixer"}}}
 

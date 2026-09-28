@@ -11,6 +11,7 @@ admission rules, now explicit:
   admission snapshot under the push-policy lock; while pushes are off it is refused with the
   command that turns them on.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 import contextlib
 import io
@@ -59,7 +60,7 @@ class CancelledFixer(unittest.TestCase):
                 "fixers": ["dev"], "reviewers": ["reviewer"], "reviewer_seat": "reviewer",
                 "seats": {"reviewer": {"profile": "r", "route": "review"},
                           "fixer": {"profile": "f", "route": "fix"}},
-                "state_dir": str(self.home / "state"), "tokens": {}, "read_token": "",
+                "state_dir": str(self.home / "state"), "tokens": {}, "read_token": "reader",
                 "host": "http://127.0.0.1:9", "unattended_fixer_push": on}
         (self.loops / "widgets.json").write_text(json.dumps(loop))
 

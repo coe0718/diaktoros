@@ -194,6 +194,9 @@ jobs:
           path: ${{ runner.temp }}/uv-cache
           key: ${{ steps.uv-cache.outputs.cache-primary-key }}
       - name: Vertical tests (real Hermes in bubblewrap)
+        # tests/ on the path too: every suite's first import is tests/_home_guard.py.
+        env:
+          PYTHONPATH: ${{ github.workspace }}/tests
         run: |
           set -o pipefail
           python -m unittest -v \

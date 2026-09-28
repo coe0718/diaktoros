@@ -516,7 +516,13 @@ def check_read_token(loop: dict) -> Check:
         return Check("read_token", MISMATCH, f"read_token names {name!r}, which has no token file",
                      f"re-run init with --token {name}=/path/to/pat: the gates read every PR "
                      f"state as this login")
-    return Check("read_token", VERIFIED, f"{name} (mapped in tokens)")
+    problem = config.reader_problem(loop)
+    if problem:
+        # The broker refuses every write while the reader is a seat, so a loop in this shape
+        # installs, "passes", and then never posts a review.
+        return Check("read_token", MISMATCH, f"{problem} — {config.FOUR_IDENTITY_RULE}",
+                     config.reader_fix(loop))
+    return Check("read_token", VERIFIED, f"{name} (mapped in tokens; its own account and file)")
 
 
 def _route_entry(data: dict, name: str) -> dict | None:
@@ -917,6 +923,8 @@ def gateway_reachable(host: str, timeout: float = 3.0) -> tuple[bool, str]:
     parsed = urlsplit(host)
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     name = parsed.hostname or host
+    # Under the test guard only a loopback gateway is probed; a real host raises first.
+    config.guard_network(f"tcp://{f'[{name}]' if ':' in name else name}:{port}")
     try:
         with socket.create_connection((name, port), timeout=timeout):
             return True, f"{name}:{port} accepts a connection"
@@ -995,17 +1003,178 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
     return checks
 
 
+def hook_route_name(hook: dict) -> str:
+    """The webhook route a hook posts to: the last ``/webhooks/<name>`` path segment, exactly.
+
+    Never a substring test on the URL: route ``widgets`` must not claim a hook posting to
+    ``widgets-fix``, nor a route name embedded anywhere else in a URL.
+    """
+    url = (hook.get("config") or {}).get("url") if isinstance(hook.get("config"), dict) else ""
+    path = urlsplit(str(url or "")).path.rstrip("/")
+    return path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
+
+
+def seat_route_target(loop: dict, name: str) -> tuple[str | None, str]:
+    """``(url, "")`` for the one URL a hook must post to for route ``name`` to wake its seat, or
+    ``(None, reason)`` when no hook can.
+
+    The registry is the gateway's binding, so it is the only source: the gateway serves
+    ``/webhooks/<route>`` (default profile) and ``/p/<profile>/webhooks/<route>`` for a route in
+    its subscription file, and answers anything else 404 — another profile's URL included. A
+    route missing from the registry has no binding at all; a route whose entry binds another
+    profile than the seat's would run the wrong agent. Both are ``doctor.check_route``'s findings,
+    in its words, and neither has a URL a hook could be credited to.
+    """
+    role = next((role for role, route in route_intent.routes_of(loop).items() if route == name),
+                "")
+    entry = routes.route(name)
+    if entry is None:
+        return None, (f"route {name!r} is not in {routes.subs_path().name} — the gateway has no "
+                      "binding for it, so no hook can wake this seat")
+    want = config.seat_profile(loop, role) if role else ""
+    if role in ("reviewer", "fixer") and str(entry.get("profile") or "") != want:
+        return None, (f"route {name!r} wakes profile {entry.get('profile')!r}, but "
+                      f"seats.{role}.profile is {want!r} — the wake would run the wrong agent")
+    url = routes.url_for(name, str(loop.get("host") or "") or None)
+    if not url:
+        return None, f"route {name!r} has no gateway host to build its URL from"
+    return url, ""
+
+
+def seat_hook_url(loop: dict, name: str) -> str | None:
+    """The registry URL a hook must post to for route ``name`` (see ``seat_route_target``)."""
+    return seat_route_target(loop, name)[0]
+
+
+def same_hook_url(posted: str, expected: str) -> bool:
+    """Is this hook *for* that route URL? Scheme and host case-insensitive, a trailing slash
+    ignored. For finding a hook (whose is it, which one to pause or delete) — never for deciding
+    it is correct: see ``exact_hook_url``."""
+    got, want = urlsplit(posted), urlsplit(expected)
+    return ((got.scheme.lower(), got.netloc.lower(), got.path.rstrip("/"))
+            == (want.scheme.lower(), want.netloc.lower(), want.path.rstrip("/")))
+
+
+def exact_hook_url(posted: str, expected: str) -> bool:
+    """Does the gateway route this hook's URL to that route? Path byte-exact.
+
+    The gateway registers ``/webhooks/{route_name}`` and ``/p/{profile}/webhooks/{route_name}``
+    only (``{route_name}`` cannot hold a ``/``, and no path normalizing is installed), so
+    ``…/webhooks/<route>/`` falls through to the ``/p/{profile}/{tail}`` catch-all and is
+    answered 404. Scheme and host still compare case-insensitively (DNS and the Host header),
+    and a query string is not part of the match: the router reads the path only, so
+    ``…/webhooks/<route>?x=1`` is delivered like the bare URL.
+    """
+    got, want = urlsplit(posted), urlsplit(expected)
+    return ((got.scheme.lower(), got.netloc.lower(), got.path)
+            == (want.scheme.lower(), want.netloc.lower(), want.path))
+
+
+SLASH_404 = ("posts to the route's URL with a trailing slash — the gateway does not route it "
+             "(404), so this seat is never woken")
+
+
+def _profile_in(path: str) -> str:
+    """The profile a webhook URL path names (``default`` when it has no ``/p/<profile>``)."""
+    head = path.rsplit("/webhooks/", 1)[0].strip("/")
+    return head[2:] if head.startswith("p/") else ("default" if not head else "")
+
+
+def hook_url_difference(posted: str, expected: str) -> str:
+    """Why ``posted`` is not the route's own URL, in the operator's terms (no URL echoed)."""
+    if not expected:
+        return "a route with no registry binding (see the route's line)"
+    got, want = urlsplit(posted.rstrip("/")), urlsplit(expected.rstrip("/"))
+    if (got.scheme.lower(), got.netloc.lower()) != (want.scheme.lower(), want.netloc.lower()):
+        return f"another origin ({got.scheme}://{got.netloc.lower()}, not this loop's gateway)"
+    have, need = _profile_in(got.path), _profile_in(want.path)
+    if have and need and have != need and got.path.endswith(want.path.rsplit("/webhooks/", 1)[-1]):
+        return (f"another profile ({have!r}; the route is bound to {need!r}, and the gateway "
+                "answers any other profile's URL 404)")
+    return "another path on this gateway (not the route's URL)"
+
+
+def install_hook_urls(loop: dict, name: str) -> list[str]:
+    """Every URL a hook *this install* made (or is about to make) for route ``name`` posts to.
+
+    An ownership question, not a delivery one: pausing (``arm --pause``) asks "is this hook one
+    of ours?", and the answer includes the
+    route's registry URL whatever profile it binds, and the URL the loop's config gives it —
+    which is all there is once the registry entry is gone (``uninstall`` removes it, then tells
+    the operator to pause any hooks it left). Arming never uses this: whether a hook *wakes the
+    seat* is ``seat_route_target``'s question, and only the registry binding answers it.
+    """
+    urls = []
+    host = str(loop.get("host") or "") or None
+    if routes.route(name) is not None:
+        registered = routes.url_for(name, host)
+        if registered:
+            urls.append(registered)
+    role = next((role for role, route in route_intent.routes_of(loop).items() if route == name),
+                "")
+    if role:
+        planned = routes.url_for_profile(name, config.seat_profile(loop, role), host)
+        if planned and not any(same_hook_url(planned, url) for url in urls):
+            urls.append(planned)
+    return urls
+
+
+def hook_wake_problem(hook: dict, seat: str) -> str:
+    """Why a hook at the seat's own URL still would not wake it, in ``check_hook``'s words."""
+    event = GATE_EVENT.get(seat)
+    events = hook.get("events")
+    if not isinstance(events, list) or event not in [str(item) for item in events]:
+        return (f"subscribes to {events if isinstance(events, list) and events else '(no events)'}"
+                f", not {event!r}")
+    content_type = (hook.get("config") or {}).get("content_type")
+    if content_type != "json":
+        return f"has content_type {content_type!r}, expected 'json'"
+    return ""
+
+
+def split_route_hooks(loop: dict, listing: list, names, *,
+                      ownership: bool = False) -> tuple[list[dict], list[dict]]:
+    """``(own, other)`` for the hooks posting to one of the route ``names``.
+
+    The one matcher for hooks (``arm``, arming and pausing; ``doctor``'s helpers use the same
+    URL rules). A hook is a
+    seat's only when it posts to exactly that route's registry URL, and the registry entry binds
+    the seat's profile (``seat_route_target``). Every other hook
+    whose last ``/webhooks/<route>`` segment names one of the routes — another profile's URL, a
+    retired gateway, another install — is *other*: reported, never flipped, deleted or pinged
+    as this loop's. ``ownership=True`` (pausing) counts the URLs ``install_hook_urls`` names
+    instead. Raises ``ConfigError`` when the loop has no usable
+    host.
+    """
+    config.webhook_host(loop.get("host"), required=True)
+    if ownership:
+        expected = {name: install_hook_urls(loop, name) for name in set(names)}
+    else:
+        expected = {name: [url] if (url := seat_hook_url(loop, name)) else []
+                    for name in set(names)}
+    own, other = [], []
+    for hook in listing:
+        if not isinstance(hook, dict):
+            continue
+        name = hook_route_name(hook)
+        if name not in expected:
+            continue
+        posted = str((hook.get("config") or {}).get("url") or "")
+        mine = any(same_hook_url(posted, want) for want in expected[name])
+        (own if mine else other).append(hook)
+    return own, other
+
+
 def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check:
     event = GATE_EVENT[seat]
     def posted_url(hook: dict) -> str:
         cfg = hook.get("config")
         return str(cfg.get("url") or "") if isinstance(cfg, dict) else ""
 
-    exact = [hook for hook in hooks if posted_url(hook).rstrip("/") == url.rstrip("/")]
-    # A wrong origin/profile for the same webhook route is a mismatch, not an absent hook.
-    candidates = exact or [hook for hook in hooks if
-                           urlsplit(posted_url(hook)).path.rstrip("/").endswith(
-                               "/webhooks/" + name)]
+    exact = [hook for hook in hooks if same_hook_url(posted_url(hook), url)]
+    # A wrong origin/profile/path for the same webhook route is a mismatch (reported with its
+    # cause), not an absent hook — "the same route" is the exact segment, never a substring.
+    candidates = exact or [hook for hook in hooks if hook_route_name(hook) == name]
     match = next((hook for hook in candidates if hook.get("active") and
                   event in (hook.get("events") or [])), None) or (candidates[0] if candidates else None)
     if match is None:
@@ -1015,11 +1184,16 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                      f"hand with that URL and the route's secret")
     hook_id = match.get("id")
     posted = posted_url(match)
-    if posted.removesuffix("/") != url.removesuffix("/"):
+    if not same_hook_url(posted, url):
+        why = hook_url_difference(posted, url)
         return Check(f"hook:{name}", MISMATCH,
-                     f"hook {hook_id} posts to another origin, not [webhook URL redacted]",
-                     f"re-run init --hooks, or repoint hook {hook_id} at the route's URL: this "
-                     f"loop cannot be woken through the old origin")
+                     f"hook {hook_id} posts to {why}, not [webhook URL redacted]",
+                     f"re-run init --hooks, or repoint hook {hook_id} at the route's URL: the "
+                     "gateway delivers this route only at that URL, so the hook wakes nothing")
+    if not exact_hook_url(posted, url):
+        return Check(f"hook:{name}", MISMATCH, f"hook {hook_id} {SLASH_404}",
+                     f"edit hook {hook_id}'s URL on GitHub to drop the trailing slash (or re-run "
+                     "init --hooks for a fresh loop)")
     events = [str(item) for item in (match.get("events") or [])]
     if event not in events:
         return Check(f"hook:{name}", MISMATCH,

@@ -149,7 +149,8 @@ def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
 def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
            role: str, operation: str, login: str) -> None:
     # Metadata only; never token or model-produced body. Lock an append-only file.
-    path = pathlib.Path(loop["state_dir"]) / "broker-audit.jsonl"
+    from .config import state_dir
+    path = state_dir(loop) / "broker-audit.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:

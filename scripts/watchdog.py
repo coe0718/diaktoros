@@ -784,12 +784,21 @@ def main() -> None:
     ap.add_argument("--seat", default="reviewer", choices=["reviewer", "fixer"])
     args = ap.parse_args()
 
-    loops = [config.load_id(args.loop)] if args.loop else config.all_loops()
+    # The cron job runs this with no --loop: one loop file the loader refuses (for any repo)
+    # is reported by name, like any other per-loop failure, and every other loop still sweeps.
+    refused: list[tuple[str, str]] = []
+    if args.loop:
+        loops = [config.load_id(args.loop)]
+    else:
+        loops, refused = config.readable_loops()
     if not loops and args.loop:
         print(f"no loop config named {args.loop}")
         return
 
     if args.drain:
+        for loop_id, reason in refused:
+            # Drain prints nothing else, but a refused file must not go quiet: stderr.
+            print(f"⚠️ Review loop [{loop_id}] not drained: ConfigError: {reason}", file=sys.stderr)
         for loop in loops:
             st = state_mod.state_for(loop)
             armed, armed_error = (True, "") if TEST else gate.hooks_read(loop)
@@ -815,6 +824,8 @@ def main() -> None:
             sup.notify(lambda message: print(message, flush=True))
         except Exception as exc:
             out.append(f"⚠️ Review-loop operator notification sweep failed: {type(exc).__name__}: {exc}")
+    for loop_id, reason in refused:
+        out.append(f"⚠️ Review loop [{loop_id}] watchdog failed: ConfigError: {reason}")
     for loop in loops:
         try:
             out.extend(sweep_loop(loop, state_mod.state_for(loop)))
