@@ -253,8 +253,10 @@ def group_plugin_settings() -> None:
     settings = {"cap": 5, "reviewer_concurrency": 2, "fixer_concurrency": 1,
                 "clone": str(CLONE), "grace_min": 30}
     raw = config.apply_settings(config.load_id("widgets"), settings)
-    check("apply writes both seats",
-          (raw["seats"]["reviewer"]["concurrency"], raw["seats"]["fixer"]["concurrency"]), (2, 1))
+    check("apply gives both seats the form's values",
+          (config.seat_concurrency(raw, "reviewer"), config.seat_concurrency(raw, "fixer")), (2, 1))
+    check("  pinning only the seat that differs from the loop default (#76)",
+          (raw["concurrency"], "concurrency" in raw["seats"]["fixer"]), (1, False))
     check("  and the plain knobs", (raw["cap"], raw["grace_min"]), (5, 30))
 
     kept = config.apply_settings({"clone": "/some/where", "seats": {}}, {"clone": ""})
@@ -269,10 +271,13 @@ def group_plugin_settings() -> None:
     fake.setup(parser)          # the framework hands setup the COMMAND's parser, not a subparsers action
     args = parser.parse_args(["init", "--repo", "acme/solo", "--fixer", "f", "--reviewer", "r",
                               "--reviewer-profile", "p", "--fixer-profile", "q"])
+    d = config.settings_defaults(settings)
     check("a new loop starts from the settings",
-          (args.cap, args.reviewer_concurrency, args.fixer_concurrency), (5, 2, 1))
+          (args.cap, cli._init_loop_concurrency(args, d), cli._init_seat_concurrency(args, d)),
+          (5, 1, {"reviewer": 2}))
     check("  clone and grace too", (args.clone, args.grace_min), (str(CLONE), 30))
-    check("  seats differing → no misleading loop-level default", args.concurrency, 1)
+    check("  an unpassed seat flag is not an answer (#76)",
+          (args.concurrency, args.reviewer_concurrency, args.fixer_concurrency), (None, None, None))
 
     # The bug this test used to *encode*: setup was handed a subparsers action here and the
     # command's own parser in the framework, so the real CLI silently offered zero subcommands.

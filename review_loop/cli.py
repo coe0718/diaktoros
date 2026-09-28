@@ -1406,6 +1406,62 @@ def _stale_hooks_refusal(loop: dict, admin: str | None) -> str:
     return "\n".join(lines)
 
 
+def _init_loop_concurrency(args, d: dict) -> int:
+    return args.concurrency if args.concurrency is not None else config.settings_loop_concurrency(d)
+
+
+def _init_seat_concurrency(args, d: dict) -> dict:
+    """The ``seats.<seat>.concurrency`` values ``init`` writes — only the ones that were asked for.
+
+    A seat value wins over the loop default for good, so writing one nobody asked for pins that
+    seat and makes ``--concurrency`` (and every later ``set --concurrency``) dead — issue #76.
+    A per-seat flag is always written. Without one, a seat takes the settings form's own value
+    only when the operator did not name a loop default *and* the form's seat differs from the one
+    the form implies (reviewer 2, fixer 1): an explicit flag beats a form default, as everywhere.
+    """
+    loop_value = _init_loop_concurrency(args, d)
+    out = {}
+    for seat in ("reviewer", "fixer"):
+        flag = getattr(args, f"{seat}_concurrency", None)
+        if flag is not None:
+            out[seat] = flag
+        elif args.concurrency is None and d[f"{seat}_concurrency"] != loop_value:
+            out[seat] = d[f"{seat}_concurrency"]
+    return out
+
+
+def _parallel_lines(loop: dict) -> list[str]:
+    """What ``init`` and ``set`` say about capacity: a note per pinned seat, then the effective
+    limits. A loop default that a seat overrides is exactly the setting someone changes twice and
+    wonders why nothing moved, so the override is said out loud."""
+    lines = [f"note: {seat} has its own concurrency ({loop['seats'][seat]['concurrency']}) — "
+             "the loop default does not apply to it"
+             for seat in ("reviewer", "fixer")
+             if (loop["seats"].get(seat) or {}).get("concurrency") is not None]
+    lines.append("parallel now: " + " · ".join(
+        f"{seat} {config.seat_concurrency(loop, seat)}" for seat in ("reviewer", "fixer"))
+        + "   (1 = serialized; everything above the limit queues)")
+    return lines
+
+
+def _pinned_seat_notes(loop: dict) -> list[str]:
+    """Seats held at 1 by their own value while the loop default asks for more.
+
+    ``init`` before #76 wrote ``seats.<seat>.concurrency: 1`` into every loop whether or not it
+    was asked for, so this is the shape such a loop has after someone raised ``concurrency``. It
+    is also exactly what an explicit ``--fixer-concurrency 1`` looks like, and the two cannot be
+    told apart from the file — so the value is kept, and the `set` that raises it is named.
+    """
+    notes = []
+    for seat in ("reviewer", "fixer"):
+        own = (loop["seats"].get(seat) or {}).get("concurrency")
+        if own == 1 and loop.get("concurrency", 1) > 1:
+            notes.append(f"{seat} is pinned at 1 by seats.{seat}.concurrency (loop default "
+                         f"{loop['concurrency']}) — to raise it: `hermes review-loop set "
+                         f"--loop {loop['id']} --{seat}-concurrency {loop['concurrency']}`")
+    return notes
+
+
 def cmd_init(args) -> int:
     """Install a loop: write its config, its routes, and (on request) its hooks and cron job.
 
@@ -1493,7 +1549,7 @@ def cmd_init(args) -> int:
     raw = {
         "id": args.id or args.repo.split("/")[-1],
         "repo": args.repo, "base": args.base, "cap": args.cap,
-        "concurrency": args.concurrency,
+        "concurrency": _init_loop_concurrency(args, d),
         "fixers": fixers, "reviewers": reviewers,
         "reviewer_seat": reviewer_seat,
         "seats": {
@@ -1517,9 +1573,8 @@ def cmd_init(args) -> int:
         "observer": _observer_args(args, args.id or args.repo.split("/")[-1]),
     }
     # A seat-level capacity wins over the loop default, so only write it when it was asked for.
-    for seat, value in (("reviewer", args.reviewer_concurrency), ("fixer", args.fixer_concurrency)):
-        if value is not None:
-            raw["seats"][seat]["concurrency"] = value
+    for seat, value in _init_seat_concurrency(args, d).items():
+        raw["seats"][seat]["concurrency"] = value
     for seat, value in (("reviewer", getattr(args, "reviewer_turn_budget", None)),
                          ("fixer", getattr(args, "fixer_turn_budget", None))):
         if value is not None:
@@ -1569,6 +1624,8 @@ def cmd_init(args) -> int:
         print(f"  would write: {config.config_dir() / (loop['id'] + '.json')}")
         for line in _seat_lines(loop, "effective seat mapping"):
             print(f"  {line}")
+        for line in _parallel_lines(loop):
+            print(f"  {line}")
         print("  credentials: " + " · ".join(_credential_lines(loop)))
         for name in _routes_of(loop).values():
             print(f"  would write route: {name}")
@@ -1612,6 +1669,8 @@ def cmd_init(args) -> int:
     print(f"loop config written: {path}")
     for line in _seat_lines(loop):
         print(line)
+    for line in _parallel_lines(loop):
+        print(f"  {line}")
     print("  credentials: " + " · ".join(_credential_lines(loop)))
     # A route that fails to land must not leave a loop installed with half its seats woken: the
     # config `init` just wrote and any route it just added are taken back out again, so a second
@@ -1987,17 +2046,10 @@ def cmd_set(args) -> int:
         print("  turn budget now: " + _budget_line(updated)
               + "   (queued turns keep the budget they were enqueued with)")
 
-    if "concurrency" in changes:
-        # Say it out loud, because a loop-wide default that a seat overrides is exactly the kind
-        # of setting someone changes twice and wonders why nothing moved.
-        for seat in ("reviewer", "fixer"):
-            if (loop["seats"].get(seat) or {}).get("concurrency") is not None:
-                print(f"  note: {seat} has its own concurrency "
-                      f"({loop['seats'][seat]['concurrency']}) — the loop default does not apply to it")
-
-    print("  parallel now: " + " · ".join(
-        f"{seat} {config.seat_concurrency(updated, seat)}" for seat in ("reviewer", "fixer"))
-        + "   (1 = serialized; everything above the limit queues)")
+    for line in _parallel_lines(updated):
+        # The seat notes only when the loop default moved: that is when they explain something.
+        if "concurrency" in changes or not line.startswith("note:"):
+            print(f"  {line}")
     return 0 if shims_ok else 1
 
 
@@ -2421,6 +2473,8 @@ def cmd_status(args) -> int:
             f"{seat} {config.seat_concurrency(loop, seat)}"
             + ("" if config.seat_concurrency(loop, seat) > 1 else " (serialized)")
             for seat in ("reviewer", "fixer")))
+        for line in _pinned_seat_notes(loop):
+            print(f"  note:       {line}")
         print(f"  clone:      {loop['clone'] or '(none)'}")
         print(f"  turn:       {_budget_line(loop)} per turn (killed past it)")
         print("  fixer push: " + ("ENABLED — operator accepted PR-metadata/ref race"
@@ -3311,8 +3365,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
     _SETTINGS = dict(settings or {})
     d = config.settings_defaults(settings)
     # Both seats agreeing is the only case where a loop-level default says anything useful: when
-    # they disagree the two seat values below carry the answer explicitly.
-    both = d["reviewer_concurrency"] if d["reviewer_concurrency"] == d["fixer_concurrency"] else 1
+    # they disagree the differing seat carries its value explicitly (see _init_seat_concurrency).
+    both = config.settings_loop_concurrency(d)
 
     def setup(parser) -> None:  # noqa: ANN001
         """Build the command's argparse tree.
@@ -3346,14 +3400,20 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--fixer-agent", default="", help="display name for the fixer")
         init.add_argument("--cap", type=int, default=d["cap"],
                           help="verdicts allowed before adjudication")
-        init.add_argument("--concurrency", type=int, default=both,
-                          help="default PRs per seat at once: 1 = serialized (default). "
-                               "Above 1 needs --clone, because each run then gets its own clone. "
-                               "Override per seat with --reviewer-concurrency / --fixer-concurrency.")
-        init.add_argument("--reviewer-concurrency", type=int, default=d["reviewer_concurrency"],
-                          help="PRs the reviewer may work at once (overrides --concurrency)")
-        init.add_argument("--fixer-concurrency", type=int, default=d["fixer_concurrency"],
-                          help="PRs the fixer may work at once (overrides --concurrency)")
+        # None, not the settings value: a flag nobody passed must not be written as a seat
+        # override, or the loop default is dead for that seat forever (#76). cmd_init fills in the
+        # settings form's values at read time.
+        init.add_argument("--concurrency", type=int, default=None,
+                          help=f"default PRs per seat at once: 1 = serialized (default: {both}, "
+                               "from the plugin settings). Above 1 needs --clone, because each "
+                               "run then gets its own clone. Override per seat with "
+                               "--reviewer-concurrency / --fixer-concurrency.")
+        init.add_argument("--reviewer-concurrency", type=int, default=None,
+                          help="PRs the reviewer may work at once (overrides --concurrency; "
+                               f"default: the loop's, settings {d['reviewer_concurrency']})")
+        init.add_argument("--fixer-concurrency", type=int, default=None,
+                          help="PRs the fixer may work at once (overrides --concurrency; "
+                               f"default: the loop's, settings {d['fixer_concurrency']})")
         init.add_argument("--base", default=d["base"])
         init.add_argument("--clone", default=d["clone"], help="local clone the runs may use")
         init.add_argument("--root", action="append", default=[], help="a directory reviews may clean (repeatable)")

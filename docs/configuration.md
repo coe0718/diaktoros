@@ -46,7 +46,7 @@ See [Preflight](architecture.md#preflight-can-this-installation-run) and, for ex
 | `clone` | — | the local clone reviews may use; cleanup prunes its worktrees |
 | `roots` | `[]` | directories the cleanup may ever touch. Anything outside them is out of scope. A root may be shared between loops: a child is only this loop's when its name carries both the PR (`pr7`) and the repository name (`widgets-pr7-target`). `/`, the home directory and its ancestors are refused. |
 | `concurrency` | `1` | default runs at once *per seat*. `1` = serialized; above 1 requires `clone`, because every run then gets its own isolated clone. |
-| `seats.<seat>.concurrency` | loop default | this seat's own limit, overriding the default. Set with `hermes review-loop set --reviewer-concurrency N` / `--fixer-concurrency N`. |
+| `seats.<seat>.concurrency` | loop default | this seat's own limit, overriding the default for good: while it is set, `concurrency` does not reach this seat. Written only when asked for — `init`/`set` with `--reviewer-concurrency N` / `--fixer-concurrency N`, or a settings form whose two seats differ. Before #76 `init` wrote `1` here for both seats on every loop; such a file keeps its value (it cannot be told from an explicit `1`), and `status` prints a `note:` for a seat pinned at 1 under a larger loop default, with the `set` that raises it. |
 | `state_dir` | `~/.hermes/state/review-loops/<id>` | locks, queue, in-flight marks, breach markers, artifacts, watchdog memory |
 | `host` | unset | your gateway's HTTP(S) webhook origin; `init` requires `--host` or an explicit plugin setting before it writes config/routes/hooks |
 | `grace_min` | `35` | how long a quiet head is allowed to sit before the watchdog speaks. Per seat it is raised to that seat's whole turn when the turn is longer (see [Turn budget](#turn-budget-how-long-one-turn-may-run)); 35 covers a whole default turn (1830 s). Before #98 the default was 25 |
@@ -204,7 +204,7 @@ hermes review-loop apply --loop <id>             # write it
 | setting | default | lands on |
 |---|---|---|
 | `cap` | 3 | `cap` |
-| `reviewer_concurrency` / `fixer_concurrency` | 1 | `seats.<seat>.concurrency` |
+| `reviewer_concurrency` / `fixer_concurrency` | 1 | `concurrency` when the two agree; otherwise `concurrency: 1` and `seats.<seat>.concurrency` on the seat that differs. A seat equal to the loop default carries no value of its own, so a later `set --concurrency` still reaches it |
 | `reviewer_profile` / `fixer_profile` | — | `seats.<seat>.profile` (and `seats.<seat>.agent`, when the loop has not named one) |
 | `reviewer_login` | — | `seats.reviewer.login` **and** `reviewer_seat` — the login the review route serves |
 | `fixer_login` | — | `seats.fixer.login` |

@@ -183,6 +183,16 @@ def settings_defaults(settings: dict | None) -> dict:
     return out
 
 
+def settings_loop_concurrency(d: dict) -> int:
+    """The loop-level default a settings form implies: its seat value when both seats agree.
+
+    When they disagree the loop default stays 1 and each seat that differs carries its own value.
+    """
+    if d["reviewer_concurrency"] == d["fixer_concurrency"]:
+        return d["reviewer_concurrency"]
+    return 1
+
+
 def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     """The loop knobs the plugin settings own, overlaid on a raw (pre-``normalize``) loop dict.
 
@@ -192,16 +202,22 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     """
     d = settings_defaults(settings)
     seats = {k: dict(v or {}) for k, v in (loop_raw.get("seats") or {}).items()}
-    seats.setdefault("reviewer", {})["concurrency"] = d["reviewer_concurrency"]
-    seats.setdefault("fixer", {})["concurrency"] = d["fixer_concurrency"]
+    # The form's two seat numbers land as the loop default they agree on, and a seat carries its
+    # own value only where it differs. Writing both seats every time would pin them, and a later
+    # `set --concurrency` would move nothing (#76). The effective per-seat values are the form's.
+    loop_concurrency = settings_loop_concurrency(d)
+    for seat in ("reviewer", "fixer"):
+        if d[f"{seat}_concurrency"] != loop_concurrency:
+            seats.setdefault(seat, {})["concurrency"] = d[f"{seat}_concurrency"]
+        else:
+            seats.setdefault(seat, {}).pop("concurrency", None)
     # A blank clone in the form means "not set here", never "forget the clone this loop uses":
     # silently dropping it would quietly downgrade the cleanup, which prunes worktrees through it.
     clone = d["clone"] or str(loop_raw.get("clone") or "")
-    # The per-seat numbers are written explicitly, so the loop-level default never has to be
-    # guessed at: whatever `concurrency` says, the seats carry their own answered value.
     # An unset form value cannot erase an existing loop's explicitly configured gateway.
     host = d["host"] or loop_raw.get("host") or ""
     overlaid = {**loop_raw, "cap": d["cap"], "clone": clone, "base": d["base"],
+                "concurrency": loop_concurrency,
                 "host": host, "grace_min": d["grace_min"], "ttl_min": d["ttl_min"],
                 "inflight_ttl_min": d["inflight_ttl_min"], "turn_budget_s": d["turn_budget_s"],
                 "seats": seats}
