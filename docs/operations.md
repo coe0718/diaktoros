@@ -554,6 +554,46 @@ files at all (`no loops configured in <dir>`).
 The guard order `explain` walks is in
 [architecture: Explain](architecture.md#explain--why-is-this-pr-not-moving).
 
+### The loop stops with `RealHomeError` or `RealNetworkError`
+
+Those are the **test suite's** tripwires, not a loop failure. Under the test harness
+(`tests/_home_guard.py`), the plugin refuses to touch anything inside the real home (`~/.hermes`
+included), run the real `hermes`, or reach a real host. It raises a `BaseException`, so no handler
+swallows it. The message starts with `test guard active (REVIEW_LOOP_TEST_HOME_GUARD=1)`.
+
+There is one exception to "no real host": the dependency prefetch (`deps._fetch`) may make an
+anonymous, credential-free `cargo fetch` from crates.io's own hosts, `index.crates.io` (the sparse
+index) and `static.crates.io` (downloads), for the dependency tests. Before cargo starts,
+`deps.guard_registry` refuses the fetch if anything could send it elsewhere: a proxy variable,
+another registry or a source replacement, a cargo config file, a registry key or
+`[source]`/`[registries]`/`[patch]`/`[replace]` table in the manifest, or a non-crates.io source in
+the lockfile. A refusal names which of these it found. Every other host is refused.
+
+The tripwires arm only when **both** of these are set, and only the test harness sets them:
+
+| Variable | Set by | Meaning |
+|---|---|---|
+| `REVIEW_LOOP_TEST_HOME_GUARD=1` | `tests/_home_guard.py` | "this process runs under the test guard" |
+| `REVIEW_LOOP_TEST_GUARD_SENTINEL` | `tests/_home_guard.py` | path to an empty sentinel file the guard creates in its temp dir |
+
+`REVIEW_LOOP_TEST_HOME_GUARD` on its own does nothing, so a real loop that inherits it keeps
+working. A real loop stops only if its gateway inherited **both** variables while the sentinel file
+still existed, for example because it was started from a shell that was running the test suite.
+To clear it:
+
+```bash
+systemctl --user show-environment | grep REVIEW_LOOP_TEST_     # or check the shell / unit that starts the gateway
+unset REVIEW_LOOP_TEST_HOME_GUARD REVIEW_LOOP_TEST_GUARD_SENTINEL REVIEW_LOOP_TEST_REAL_HOME
+```
+
+Then restart the gateway from the cleaned environment so it re-reads it (`hermes gateway status`
+shows whether it is running; `hermes gateway start` starts it).
+
+Remove them wherever the gateway gets its environment: the systemd unit's `Environment=`, the
+shell profile, or the launching terminal. `REVIEW_LOOP_TEST_REAL_HOME`, `REVIEW_LOOP_TEST_USER_HOME`,
+`REVIEW_LOOP_TEST_SHIM_DIR` and `REVIEW_LOOP_TEST_FAKE_HERMES` are test-only too. None of them is
+ever needed by a real loop.
+
 ## When an isolated run fails
 
 Every isolated turn is a row in the host run ledger (`~/.hermes/state/review-loop-runs.sqlite`).

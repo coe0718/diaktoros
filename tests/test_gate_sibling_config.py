@@ -6,6 +6,7 @@ refused sibling is exactly the shape #56 made refusable: a loop file whose read_
 """
 from __future__ import annotations
 
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import os
 import pathlib

@@ -6,6 +6,7 @@ broker then refuses an APPROVE for a run whose view is incomplete, before the on
 with a refusal the seat reads; a REQUEST_CHANGES still goes through. Offline: GitHub REST is
 mocked, the socket is a real Unix domain socket and the ledger is the real SQLite run ledger.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import dataclasses
 import json
 import os

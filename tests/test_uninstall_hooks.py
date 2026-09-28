@@ -6,6 +6,7 @@ scheduler is the harness's fake ``hermes`` — no test here can reach a real rep
 """
 from __future__ import annotations
 
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import io
 import json
 import os

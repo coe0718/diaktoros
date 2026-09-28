@@ -3,6 +3,7 @@
 The real RunBroker serves a real Unix socket; GitHub is an in-memory fake and the Git push is a
 stub (the safe_push tests cover the ref write). No real GitHub, model, Hermes or ~/.hermes.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import base64
 import contextlib
 import hashlib

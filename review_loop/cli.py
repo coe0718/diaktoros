@@ -863,7 +863,9 @@ def _delete_loop_hooks(loop: dict, login: str | None) -> tuple[list[str], list[s
 def _hermes_bin() -> str | None:
     """The ``hermes`` executable the scheduler commands run. ``REVIEW_LOOP_HERMES`` names a
     stand-in (the test suite's fake), so no test ever drives the operator's real install."""
-    return os.environ.get("REVIEW_LOOP_HERMES") or shutil.which("hermes")
+    found = os.environ.get("REVIEW_LOOP_HERMES") or shutil.which("hermes")
+    # Under the test guard (#101), never the operator's real hermes — for cron create and remove.
+    return config.guard_real_hermes(found) if found else None
 
 
 def _cron_jobs(loop: dict) -> tuple[list[dict] | None, str]:

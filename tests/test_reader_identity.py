@@ -6,6 +6,7 @@ validated against a fixture home holding exactly the profiles and token files it
 
 Stdlib only, disposable HOME/HERMES_HOME; the "tokens" are obviously-fake sentinels.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
 import io
