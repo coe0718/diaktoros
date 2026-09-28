@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 from review_loop import contained
+from tests.hermes_prereqs import needs, skip_or_fail
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
 
@@ -77,7 +78,7 @@ memory:
             runtime = Path(os.readlink(venv / 'bin/python')).parents[2]
             rust = _home_guard.RUST
             if not (rust / 'bin/cargo').exists():
-                self.skipTest('offline stable Rust toolchain unavailable')
+                skip_or_fail(self, 'offline stable Rust toolchain unavailable')
             result = contained.run(code=code, venv=venv, runtime=runtime,
                                    home=home, checkout=checkout, rust=rust,
                                    query=Path(__file__).with_name('contained_fixture.py'),

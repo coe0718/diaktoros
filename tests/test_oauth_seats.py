@@ -29,6 +29,7 @@ from review_loop import broker_ipc, contained, doctor, inference_proxy, seat_mod
 from review_loop.inference_proxy import (CONTRACTS, Credential, InferenceCapability,  # noqa: E402
                                          RefreshingCredential, StaticCredential, _UnixHTTP)
 import test_seat_models as tsm  # noqa: E402
+from hermes_prereqs import needs  # noqa: E402
 
 HEAD = "a" * 40
 REFRESH_TOKEN = "RT-FAKE-REFRESH-TOKEN-never-leaves-the-host-0001"
@@ -689,7 +690,7 @@ def _bwrap_works() -> bool:
         return False
 
 
-@unittest.skipUnless(_bwrap_works(), "unprivileged bubblewrap unavailable")
+@needs(_bwrap_works(), "unprivileged bubblewrap unavailable")
 class OAuthSandboxProbe(OAuthBase):
     def test_the_profile_auth_store_and_its_tokens_are_invisible_in_the_sandbox(self):
         seat = self.seat("codex")

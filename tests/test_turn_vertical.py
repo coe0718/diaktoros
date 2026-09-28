@@ -20,6 +20,7 @@ from review_loop import contained, gh, review_receipt, trusted_fetch, trusted_tu
 from review_loop.broker_ipc import RunScope
 from review_loop.run_supervisor import Supervisor
 from review_loop.inference_proxy import PATH
+from tests.hermes_prereqs import needs
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
 RUST = _home_guard.RUST

@@ -16,6 +16,7 @@ from unittest import mock
 from review_loop import contained
 from review_loop import inference_proxy
 from review_loop.inference_proxy import InferenceCapability, _UnixHTTP, PATH, MAX_OUTPUT_TOKENS
+from tests.hermes_prereqs import needs, skip_or_fail
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
 
@@ -253,7 +254,7 @@ memory:
                 runtime = Path(os.readlink(venv / 'bin/python')).parents[2]
                 rust = _home_guard.RUST
                 if not (rust / 'bin/cargo').exists():
-                    self.skipTest('offline stable Rust toolchain unavailable')
+                    skip_or_fail(self, 'offline stable Rust toolchain unavailable')
                 with InferenceCapability(root / 'cap',
                                          f'http://127.0.0.1:{upstream.server_port}{PATH}',
                                          'HOST_DUMMY_MODEL_KEY_SENTINEL', model='fixture-model', quota=3) as cap:

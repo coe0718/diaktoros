@@ -556,6 +556,15 @@ def sweep_loop(loop: dict, st: state_mod.LoopState) -> list[str]:
         st.note(f"run: blind — hook list unreadable ({armed_error or 'no reason given'})")
         return lines
 
+    # Issue #53: a pre-write failure waits out its backoff in the run ledger, and a claim
+    # whose GitHub read failed stays pending. Nothing but an event would relaunch either, so
+    # an armed sweep runs the worker-enabled recovery (a no-op without a private runtime).
+    try:
+        gate.resume_isolated(loop)
+    except Exception as exc:
+        lines.append(f"⚠️ Review loop [{loop['id']}] isolated retry scheduling failed: "
+                     f"{type(exc).__name__}: {exc}")
+
     if not isinstance(prs, list):
         # Without a complete listing, even individually readable PRs cannot establish
         # that the sweep's scheduling view is current. Explicit --drain still rechecks.

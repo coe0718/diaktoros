@@ -211,7 +211,8 @@ def needs_real_hermes(*prerequisites: bool, reason: str = "real-Hermes test prer
     """Decorate an opt-in real-Hermes test (function or class).
 
     A HERMES_AGENT_SOURCE inside the live install fails the test loudly, whatever else is
-    missing; no source or a missing prerequisite skips it, as before.
+    missing. Otherwise no source or a missing prerequisite skips it — or fails it, under
+    ``REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1`` (``hermes_prereqs.needs``, the CI verticals job).
     """
     def decorate(target):
         refusal = source_refusal()
@@ -228,7 +229,8 @@ def needs_real_hermes(*prerequisites: bool, reason: str = "real-Hermes test prer
             return refuse
         ready = (HERMES_AGENT_SOURCE is not None
                  and (HERMES_AGENT_SOURCE / "venv/bin/hermes").exists() and all(prerequisites))
-        return unittest.skipUnless(ready, reason)(target)
+        from hermes_prereqs import needs
+        return needs(ready, reason)(target)
     return decorate
 
 # Create both homes now, in a fresh guarded process and in a guarded child alike: run_supervisor
