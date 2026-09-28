@@ -506,6 +506,7 @@ hermes review-loop explain --loop widgets --pr 7    # --loop may be omitted when
   hooks:      armed — both seat routes are active repo hooks
   sweep:      no watchdog sweep recorded — nothing has read this loop's PRs yet
   github:     no failed GitHub call recorded
+  gates:      no unresolved gate failure recorded for this PR
   blocked:    the changes-requested verdict at head aaaaaaa has no fix run out — the fixer gate did not start one for that delivery
   next:       re-deliver the changes-requested review event for head aaaaaaa to the fixer gate after checking why its run did not start — no fixer is running to push a fix
 ```
@@ -534,6 +535,7 @@ A PR that is waiting rather than broken says so, instead of looking like a failu
   hooks:      armed — both seat routes are active repo hooks
   sweep:      no watchdog sweep recorded — nothing has read this loop's PRs yet
   github:     no failed GitHub call recorded
+  gates:      no unresolved gate failure recorded for this PR
   blocked:    no capacity: queued with the reviewer seat — reviewer at capacity 1/1: acme/widgets#7 (720s)
   next:       a reviewer slot frees — the queued run starts then (a verdict or a handoff ends the run holding it; the lock expiry at 45m is the backstop)
 ```
@@ -614,6 +616,125 @@ Remove them wherever the gateway gets its environment: the systemd unit's `Envir
 shell profile, or the launching terminal. `REVIEW_LOOP_TEST_REAL_HOME`, `REVIEW_LOOP_TEST_USER_HOME`,
 `REVIEW_LOOP_TEST_SHIM_DIR` and `REVIEW_LOOP_TEST_FAKE_HERMES` are test-only too. None of them is
 ever needed by a real loop.
+
+## When a gate crashes or runs out of time
+
+The Hermes gateway runs a gate synchronously inside the webhook request: payload on stdin, no
+headers (so no delivery id), and a platform-wide `script_timeout_seconds` (default 30s) after which
+the gate is killed. A crash, a timeout, empty output and `[SILENT]` all get the same HTTP 200
+`ignored` reply. No script outcome yields a non-2xx, and GitHub does not redeliver failed
+deliveries by itself, so a non-2xx "retry me" is neither available nor useful. The loop keeps its
+own record instead:
+
+* **Budget.** Each gate has 20s (`REVIEW_LOOP_GATE_BUDGET_S`) and shrinks it to fit the
+  `script_timeout_seconds` of the gateway running it. The gateway reads `gateway.json` and
+  `config.yaml` from its own home, so the gate reads those same files, with the gateway's
+  precedence (later wins):
+  1. `gateway.json` `platforms.webhook`. If the file is malformed it is skipped, as the gateway
+     skips it.
+  2. `config.yaml`, with the administrator's managed overlay (`$HERMES_MANAGED_DIR` or
+     `/etc/hermes`) merged over it: `gateway.platforms.webhook`, then `platforms.webhook`, then
+     `gateway.webhook`. In each of these an `extra:` value beats a plain key. A `config.yaml`
+     that is malformed, or that cannot be read or decoded as UTF-8 (a UTF-16 or Latin-1 file,
+     say), drops this whole layer, as it does for the gateway, and `gateway.json` decides.
+  3. A top-level `webhook:` block, which the gateway bridges into `extra` last: it beats every
+     block above, and its own `extra:` beats its plain key.
+  - A `/p/<profile>/` route on the multiplexing host gateway (the default setup) runs under the
+    root home's limit. The script's `HERMES_HOME` is still the profile's home.
+  - A profile with `gateway.standalone: true` runs its own gateway and uses its own limit.
+
+  From inside the script these two cases look the same. So for a profile that isn't marked
+  standalone, the gate uses the lower of the host's and the profile's limits. Every GitHub call
+  is clipped to the time left, a timer up to 3s later interrupts anything else that hangs, and a
+  gate-triggered queue drain gets at most half the remaining time. The fit always keeps 1s for
+  start-up and 3s for recording a failure. Recording never waits on a busy ledger past its
+  share of those 3s: it falls through to the no-loop ledger, which every watchdog run sweeps.
+  `doctor` prints one `gate:timeout:<profile>` line for each profile hosting a loop route
+  (reviewer, fixer, adjudicator, observer). Each line names the gateway and file, flags any
+  limit below 27s (the lowest that fits the full 20s budget, the 3s backstop, start-up and
+  recording: `doctor` and the gate use the same arithmetic), flags a limit below 5s as too small for a gate even to record its own
+  failure, and says which file to fix.
+* **Seats.** The reviewer and fixer gates do not claim seats: they enqueue an isolated turn in
+  the host run ledger (`gate.block_pr_agent` → `enqueue_isolated`), whose worker enforces each
+  seat's capacity. What a gate does with `locks.json` is release a legacy claim it finds for the
+  PR (`st.release_if`). `gate.take_seat` still claims a seat through `st.acquire`, but no gate
+  script calls it. Every `st.acquire` is also remembered by the process
+  that made it, so if any gate process ever claims a seat and then crashes or times out, it
+  releases that claim on its way out, and a failed delivery never keeps a seat until `ttl_min`.
+* **Ledger.** A crash (exit 2), a timeout (exit 3), a stop (SIGTERM from a gateway or systemd
+  stop, or a kill; exit 143), or a `[SILENT]` that followed a failed GitHub read is written to `gate-failures.json` in the loop's state directory. The entry holds the gate,
+  repo, PR, head, action, exception type and message, and a bounded traceback, and the payload is
+  stored beside it. Failures that happen before a loop can be named go to
+  `~/.hermes/state/review-loop-gate-failures/`. The same event delivered again (same payload)
+  bumps its attempt count instead of adding an entry. A payload over 1 MiB is not kept, and
+  that entry cannot be re-driven: the alert and `explain` say so and name the route whose hook
+  to open in GitHub (Settings → Webhooks → Recent Deliveries → Redeliver).
+* **An unreadable ledger is kept, not overwritten.** If `gate-failures.json` exists but is not a
+  ledger, the next gate failure or watchdog sweep moves it aside once, to
+  `gate-failures.json.corrupt-<UTC time>` in the same directory, and starts a fresh ledger. "Not a
+  ledger" covers a torn write or a bad hand edit, and also a file that parses but has the wrong
+  shape: not an object of entry objects, or holding a key starting with `_`. The move is
+  crash-safe. The corrupt bytes get their second name first, and only then does the fresh ledger
+  replace the original path atomically. A crash in between leaves the original in place, and the
+  next writer reuses the copy it already made. The fresh ledger holds one entry that names the
+  copy. That entry is never pruned by the 200-entry bound while the copy exists. The watchdog
+  alerts on it every cooldown until the copy is gone, and `explain` lists it for every PR of the loop, because that PR's earlier
+  failures may only be in the copy. Salvage what you need from the copy and delete it; the next
+  sweep then clears the entry. A file that cannot even be read as bytes (mode 000) is still
+  moved aside, by hard link. Something that is not a regular file (a directory in its place), or
+  a state directory that is not writable, cannot be moved aside. For those, nothing is written,
+  the sweep reports why, `explain` says it cannot be moved aside automatically, and the failed
+  reads its entries owned are reported by the health check instead. An entry whose stored payload has since been deleted says so, and gives the same GitHub
+  redelivery steps as a payload that was never kept.
+* **Watchdog.** Each sweep alerts on unresolved entries, once per new failure and again after the
+  cooldown. It re-drives reviewer and fixer events by running the gate again on the stored
+  payload. This is safe because those gates re-read the live PR and the run ledger dedups a second
+  enqueue. It stops after 3 re-drives. Sweeps overlap (every loop's cron job sweeps all
+  loops), so each entry is claimed under the ledger's lock before anything is sent or run. The
+  claim adds the re-drive to the count and gives this sweep a 120-second lease on the entry.
+  Another sweep finds the live claim and skips the entry. The owner prints the alert, and only
+  then marks the entry alerted and drops the claim. If a sweep dies before its alert is printed,
+  the lease runs out and a later sweep says it: an alert can be repeated, never lost. However
+  many sweeps run, a failure is alerted once per new attempt (and per cooldown) and re-driven at
+  most 3 times in total. A loop whose hooks are paused still gets its gate failures alerted, but
+  nothing is re-driven until it is armed again. The no-loop ledger
+  (`~/.hermes/state/review-loop-gate-failures/`) is swept by every watchdog run, including one
+  scoped with `--loop`.
+  Adjudicator failures are alerted but never re-driven, because that gate's output is its
+  dispatch. An entry resolves when the same event later
+  completes cleanly, whether through a re-drive or a manual redelivery from GitHub.
+* **`explain`** lists unresolved gate failures for the PR as blockers. It also lists the
+  loop's failures whose payload named no PR, and the corrupt-copy entry, for every PR. It says
+  "the next sweep retries it" only when the sweep could: re-drivable, payload kept and present,
+  under the cap, and the gate script present.
+* **One owner per failed read.** When a gate's GitHub read fails, the event's
+  `gate-failures.json` entry owns it: that is what raises the alert and triggers the re-drive.
+  `github-reads.json` still records it as the last failed call, which `explain` shows on its
+  `github:` line, but marks it `owned_by`. The watchdog's GitHub-health check therefore doesn't
+  announce it again. The watchdog's own reads (the `/user` probe and the hook list) and any
+  failed read no gate-failure entry claims are still reported by the health check.
+* **The watchdog is budgeted too.** Its GitHub reads are capped at 20s each and the run at
+  600s (`REVIEW_LOOP_WATCHDOG_BUDGET_S`). A sweep that runs out of budget stops, and the next cron
+  run starts fresh. Running out of time does not prove GitHub gave no answer, since slow answered
+  reads spend the budget too. So it counts as a failed-read sweep for the health check and is
+  said like any failure short of a 401/403: one "watchdog stopped: the sweep ran out of its …
+  budget" line after 3 such sweeps in a row, then once per cooldown.
+* **One event, one ledger.** If a gate's write to the loop's ledger raises *after* it landed (a
+  failed directory fsync, or the record-phase alarm), the gate keeps it there instead of also
+  writing it to the no-loop ledger. An event that is in both anyway is resolved in the no-loop
+  ledger as a duplicate, so it is alerted once and re-driven at most 3 times in total. A failure
+  the no-loop ledger had to take (the loop's ledger was busy) is still shown by `explain --pr N`
+  for that loop's PR, and its `github-reads.json` record names the ledger that holds it. When
+  the owning entry resolves or is pruned, or the same event later completes cleanly, that record
+  is marked `resolved_by`, so `explain` stops pointing at a gate-failure line and the health check
+  does not announce the old read. A duplicate resolved in the no-loop ledger leaves the mark
+  alone, because the original still owns the read. Both `explain` and the health check also
+  check that some ledger still holds the owning entry: the ledger named by `owned_in`, the
+  loop's, and the no-loop one, since one event can be in two. An open entry in any of them wins.
+  A copy resolved only as a duplicate never counts as the owner resolving, because it never
+  owned the read. If none holds it open (its ledger was moved aside, pruned, or cannot be read at
+  all), `explain` says so instead of promising a line, and the health check reports the read
+  itself.
 
 ## When an isolated run fails
 

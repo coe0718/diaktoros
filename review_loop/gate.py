@@ -26,13 +26,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 import pathlib
 import subprocess
 import sys
 import time
 import urllib.request
 
-from . import config, gh, isolation, observer, routes, situation, transition, state as state_mod
+from . import config, gate_failures, gh, isolation, observer, routes, situation, transition, state as state_mod
 from .util import iso_at, log, now_iso, silence
 
 
@@ -513,7 +514,8 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
                                                     str(failure.get("path") or ""),
                                                     failure.get("status")
                                                     if type(failure.get("status")) is int
-                                                    else None)))
+                                                    else None))
+                           + _owner_note(loop, failure))
     github_line = " · ".join(github_bits) or "no failed GitHub call recorded"
 
     return {"seat": seat_line, "queue": queue_line, "inflight": inflight_line,
@@ -571,6 +573,54 @@ def explain_facts(loop: dict, number: int) -> dict:
             "receipts": receipts, "receipts_error": receipts_error}
 
 
+def _owner_note(loop: dict, failure: dict) -> str:
+    """How ``explain`` names who handles a failed read — only what a ledger still backs."""
+    if failure.get("resolved_by"):
+        return f" (settled: {failure['resolved_by']})"
+    owner = failure.get("owned_by")
+    if not owner:
+        return ""
+    where = f" in {failure['owned_in']}" if failure.get("owned_in") else ""
+    state = gate_failures.owner_state(loop, failure)
+    if state == "open":
+        return f" (tracked as {owner}{where}: its gate-failure line says what happens next)"
+    if state == "resolved":
+        return f" (tracked as {owner}{where}, which has resolved)"
+    if state == "unreadable":
+        return (f" (owned by {owner}, but a gate-failure ledger that may hold it cannot be read, "
+                f"so no line about it can come from there; the watchdog reports this read "
+                f"itself)")
+    return (f" (was owned by {owner}, which is no longer in any gate-failure ledger — the ledger "
+            f"was moved aside or the entry dropped; the watchdog reports this read itself)")
+
+
+def gate_failure_line(entry: dict) -> str:
+    if entry.get("kind") == gate_failures.CORRUPT:
+        if entry.get("corrupt_copy"):
+            return (f"gate-failure ledger {entry.get('path')} was unreadable ({entry.get('error')}) "
+                    f"and was moved aside to {entry.get('corrupt_copy')}; failures recorded before "
+                    f"then (this PR's too) are only in that copy — salvage what you need, then "
+                    f"delete it")
+        if entry.get("movable", True):
+            return (f"gate-failure ledger {entry.get('path')} is unreadable "
+                    f"({entry.get('error')}); the next gate failure or watchdog sweep moves it "
+                    f"aside, unchanged, for you to salvage")
+        return (f"gate-failure ledger {entry.get('path')} is unreadable ({entry.get('error')}) "
+                f"and cannot be moved aside automatically ({entry.get('why_not')}): nothing is "
+                f"recorded there until you repair or move it yourself, and the failures in it are "
+                f"unknown — the watchdog reports failed reads it would have owned itself")
+    status = gate_failures.explain_status(entry)
+    if entry.get("pr") is None:
+        status += " (its payload names no PR, so every PR's explain shows it)"
+    if entry.get("held_in"):
+        status += (f" (recorded in {entry['held_in']}, the no-loop ledger: this loop's ledger was "
+                   f"busy or unwritable when the gate recorded it)")
+    return (f"gate failure {entry.get('id')}: {entry.get('gate')} {entry.get('kind')} at head "
+            f"{str(entry.get('head') or '?')[:7]} ({entry.get('action') or '?'}), last "
+            f"{iso_at(float(entry.get('last_at') or 0))}, {entry.get('attempts')} attempt(s): "
+            f"{entry.get('error_type')}: {str(entry.get('error') or '')[:160]} — {status}")
+
+
 def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> dict:
     """Why one PR is not moving, and the single event that would move it. Reads nothing itself.
 
@@ -611,6 +661,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                  if isinstance(entry, dict)}
     request_pending = bool(loop["reviewer_seat"]) and loop["reviewer_seat"] in requested
     blockers: list[str] = []
+    # A gate that crashed, overran or silenced after a failed read (#75) is not a decision.
+    gate_failed = [gate_failure_line(entry) for entry in gate_failures.open_for(loop, number)]
+    blockers.extend(gate_failed)
 
     # -- what the gates conclude about this head (their predicates, not new ones) -------------
     spent: int | None = None
@@ -956,7 +1009,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         "inflight": local["inflight"], "escalation": local["escalation"], "hooks": hooks_line,
         "sweep": local["sweep"],
         "github": local.get("github", "no failed GitHub call recorded"),
-        "blockers": blockers, "next": {"kind": kind, "action": action},
+        "gate_failures": gate_failed, "blockers": blockers, "next": {"kind": kind, "action": action},
     }
 
 
@@ -964,12 +1017,23 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
 
 
 def drain_seat(loop: dict, seat: str) -> None:
-    """Start whatever queued for a seat now that its turn is over. Best effort, never fatal."""
+    """Start whatever queued for a seat now that its turn is over. Best effort, never fatal.
+
+    Inside a gate this runs on the gate's clock (#75): the drain gets at most half of what is
+    left, and its own GitHub reads are budgeted to that, so a slow drain cannot spend the
+    gateway's script timeout. The watchdog's sweep drains whatever this one had to leave.
+    """
+    left = gh.remaining()
+    timeout = 180.0 if left is None else left / 2
+    if timeout < 1:
+        log(f"drain {seat} deferred to the watchdog — the gate's time budget is nearly spent")
+        return
+    env = {**os.environ, "REVIEW_LOOP_WATCHDOG_BUDGET_S": f"{max(0.5, timeout - 0.5):.1f}"}
     try:
         subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve().parents[1]
                                             / "scripts" / "watchdog.py"),
                         "--loop", loop["id"], "--drain", "--seat", seat],
-                       capture_output=True, text=True, timeout=180)
+                       capture_output=True, text=True, timeout=timeout, env=env)
     except Exception as exc:
         log(f"drain {seat} failed: {exc}")
 

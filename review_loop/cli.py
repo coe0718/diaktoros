@@ -2422,6 +2422,8 @@ def cmd_explain(args) -> int:
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")
         print(f"  {'github:':<12}{report['github']}")
+        if not report.get("gate_failures"):
+            print(f"  {'gates:':<12}no unresolved gate failure recorded for this PR")
         runs = _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
         # A ledgered turn at the current head that waits to retry, failed before any write, or
         # is quarantined holds the PR as surely as any gate guard (#53): it is the blocker, and

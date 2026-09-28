@@ -58,6 +58,59 @@ TOKEN_EXPIRY_HEADER = "github-authentication-token-expiration"
 STUB_ENVELOPE = "__gh_stub_response__"
 
 
+class GateBudgetExceeded(BaseException):
+    """A gate (or the watchdog's sweep) ran out of its time budget (issue #75). A
+    ``BaseException`` on purpose: the ``except Exception`` fallbacks that turn a failed read into
+    "unknown → silence" must not swallow it, or an overrun would read as a deliberate
+    ``[SILENT]`` again."""
+
+
+# Set only while a gate runs under ``gate_failures.run`` (or the watchdog under its sweep
+# budget): the monotonic deadline, the per-call cap, and every call that failed, so a silence
+# that followed a failed read is told apart from a chosen one.
+_GATE: dict = {"deadline": None, "errors": None, "per_call": 30.0}
+
+
+def begin_gate(deadline: float, per_call: float = 30.0) -> None:
+    _GATE.update(deadline=deadline, errors=[], per_call=per_call)
+
+
+def end_gate() -> list[tuple[str, str, str]]:
+    errors = _GATE.get("errors") or []
+    _GATE.update(deadline=None, errors=None, per_call=30.0)
+    return errors
+
+
+def remaining() -> float | None:
+    """Seconds left in the current budget, or ``None`` when no budget is set."""
+    deadline = _GATE.get("deadline")
+    return None if deadline is None else deadline - time.monotonic()
+
+
+def _budgeted(method: str, path: str) -> float:
+    """The per-call timeout: the per-call cap, or what is left of the budget. Raises when spent."""
+    per_call = float(_GATE.get("per_call") or 30.0)
+    left = remaining()
+    if left is None:
+        return per_call
+    if left <= 0:
+        raise GateBudgetExceeded(f"time budget spent before {method} {path}")
+    return max(0.05, min(per_call, left))
+
+
+def _outcome(method: str, path: str, response: "Response") -> "Response":
+    """A failed call past the deadline is an overrun, not an answer; any other failure is noted
+    for ``gate_failures`` (a silence after it is "incomplete", not a decision)."""
+    if response.error:
+        left = remaining()
+        if left is not None and left <= 0:
+            raise GateBudgetExceeded(f"{method} {path} did not finish within the time budget "
+                                     f"({response.error})")
+        if _GATE.get("errors") is not None:
+            _GATE["errors"].append((method, path, response.error))
+    return response
+
+
 def token_path(loop: dict, login: str | None = None) -> pathlib.Path | None:
     name = login or loop.get("read_token")
     raw = (loop.get("tokens") or {}).get(name)
@@ -72,7 +125,7 @@ def token(loop: dict, login: str | None = None) -> str:
     return path.read_text().strip()
 
 
-def _stub(path: str, method: str, body, login: str = "") -> Response:
+def _stub(path: str, method: str, body, login: str = "", timeout: float = 30.0) -> Response:
     """The stub executable's answer, shaped like a real one.
 
     ``(None, "")`` means the stub answered "no such resource" — the same shape ``api`` gives a
@@ -87,7 +140,7 @@ def _stub(path: str, method: str, body, login: str = "") -> Response:
     # a read token that GitHub refuses a hook write.
     env = {**os.environ, "GH_METHOD": method, "GH_LOGIN": str(login or "")}
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=30, env=env)
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
     except Exception as exc:
         return Response(None, f"gh stub failed: {exc}")
     if proc.returncode != 0:
@@ -118,11 +171,20 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
     ``fetch`` is this without the status: most callers only need "did it work". The watchdog's
     health check needs the rest — a 401 (the token is dead) and a 502 (GitHub is) ask different
     things of the operator, and the token's expiry arrives only as a response header.
+
+    Budgeted (#75): inside a gate or a watchdog sweep each call gets at most what is left of the
+    budget, and a call that fails because the budget ran out raises ``GateBudgetExceeded``.
     """
+    timeout = _budgeted(method, path)
+    return _outcome(method, path, _request(loop, path, method, body, login, timeout))
+
+
+def _request(loop: dict, path: str, method: str, body, login: str | None,
+             timeout: float) -> Response:
     if os.environ.get("REVIEW_LOOP_GH_STUB"):
         # The login travels to the stub (as GH_LOGIN, never a token) so a test can play a read
         # token GitHub refuses a hook write.
-        return _stub(path, method, body, login or loop.get("read_token") or "")
+        return _stub(path, method, body, login or loop.get("read_token") or "", timeout)
     try:
         tok = token(loop, login)
     except GitHubError as exc:
@@ -135,7 +197,7 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
     from .config import guard_network
     guard_network(req.full_url)         # under the test guard: loopback fakes only
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode() or "null"
             headers = {k.lower(): v for k, v in resp.headers.items()}
             return Response(json.loads(raw), "", resp.status, headers)
@@ -331,11 +393,14 @@ def issue_comments_read(loop: dict, number: int) -> tuple[list[dict] | None, str
                        "comment", MAX_COMMENT_PAGES)
 
 
-def reviews(loop: dict, number: int):
+def reviews(loop: dict, number: int, errors: list | None = None):
+    """The PR's whole review history, or ``None`` (unknown). Pass ``errors`` to receive why."""
     result, error = reviews_read(loop, number)
     if error:
-        log(f"gh GET {reviews_path(loop, number)} failed: {error}")
+        log(f"gh GET {reviews_path(loop, number)} failed: {one_line(error)}")
         record_failure(loop, "GET", reviews_path(loop, number), error)
+        if errors is not None:
+            errors.append(error)
     return result
 
 
