@@ -3,6 +3,7 @@
 Issue #55 / #84: a refused PATCH used to print "hook 1 → paused" and exit 0; a failed
 `cron create` printed an unquoted fallback and exited 0. Disposable config/state only.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import argparse
 import contextlib
 from contextlib import redirect_stdout
