@@ -32,7 +32,7 @@ import time
 import uuid
 from collections.abc import Callable
 
-from . import config
+from . import config, hostdirs
 from .util import log
 
 # Per-thread depth of the state lock we already hold, keyed by lock path. ``flock`` is tied to
@@ -90,7 +90,7 @@ class LoopState:
 
     def _save(self, path: pathlib.Path, data) -> None:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            hostdirs.ensure(path.parent)
             _atomic_write(path, data)
         except Exception as exc:
             log(f"state write failed ({path.name}): {exc}")
@@ -114,7 +114,7 @@ class LoopState:
             finally:
                 held[path] -= 1
             return
-        self.dir.mkdir(parents=True, exist_ok=True)
+        hostdirs.ensure(self.dir)
         fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -129,7 +129,7 @@ class LoopState:
 
     def note(self, message: str) -> None:
         try:
-            self.dir.mkdir(parents=True, exist_ok=True)
+            hostdirs.ensure(self.dir)
             with self.log.open("a") as fh:
                 fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {message}\n")
         except Exception:
@@ -350,7 +350,7 @@ class LoopState:
 
     @contextlib.contextmanager
     def _breach_lock(self):
-        self.dir.mkdir(parents=True, exist_ok=True)
+        hostdirs.ensure(self.dir)
         fd = os.open(self.dir / "breach.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -532,7 +532,7 @@ class LoopState:
         return result if isinstance(result, dict) and result.get("head") == head else None
 
     def _transition_write(self, number: int, change) -> dict:
-        self.dir.mkdir(parents=True, exist_ok=True)
+        hostdirs.ensure(self.dir)
         with (self.dir / "stack-transitions.lock").open("a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             data = self._load(self.transitions_file, {}) or {}

@@ -22,7 +22,7 @@ import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 
-from . import config
+from . import config, hostdirs
 from .util import log
 
 
@@ -135,7 +135,7 @@ def _registry_lock(path: pathlib.Path):
 
     Hermes CLI/dashboard subscription writers do not take this lock.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    hostdirs.ensure(path.parent)
     lock = path.with_name(path.name + ".lock")
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(lock, flags, 0o600)

@@ -98,15 +98,28 @@ def isolated_supervisor(loop: dict):
 
     Raises when the private runtime file is missing or invalid (a fail-closed hold).
     """
+    from . import seat_model
     from .run_supervisor import SEATS, Supervisor
 
-    return Supervisor(
+    # presence= defaults to the config-dir marker for this (the production) ledger path.
+    supervisor = Supervisor(
         config.home() / "state" / "review-loop-runs.sqlite",
         production_config=config.home() / "review-loop-runtime.json", hermes_home=config.home(),
         # Every seat, always: a worker spawned by one seat's event claims any pending row, and
         # must know every seat's capacity to do so.
         capacity={s: config.seat_concurrency(loop, s) for s in SEATS},
     )
+    # Host-side, once the runtime is known to be valid (no state without one): a worker writes
+    # into the loop's state dir (broker audit, observer ledger), its private work root, its
+    # crate cache root and the seat-lock dir, but never creates a host directory (#108), so the
+    # host makes sure each exists before any worker is spawned — for enqueue_isolated and
+    # resume_isolated alike, since both build their supervisor here.
+    state_dir = config._path(loop["state_dir"])
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "isolated-runs").mkdir(mode=0o700, exist_ok=True)
+    (state_dir / "deps").mkdir(mode=0o700, exist_ok=True)  # the worker's crate cache root
+    seat_model.lock_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
+    return supervisor
 
 
 def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key: str = '') -> str:

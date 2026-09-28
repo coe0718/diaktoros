@@ -11,6 +11,12 @@ from review_loop import observer, routes
 from review_loop.state import LoopState
 
 
+# These tests reach code that reads config.home(): never the operator's (#108).
+import _ledger_guard  # noqa: E402
+
+setUpModule, tearDownModule = _ledger_guard.module_home()
+
+
 class ObserverSafetyTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

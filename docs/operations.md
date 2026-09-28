@@ -408,6 +408,8 @@ hermes review-loop selftest --loop ID --pr N --live-turn    # + one real isolate
 python -m review_loop.run_supervisor status ~/.hermes/state/review-loop-runs.sqlite
 ```
 
+A detached worker's stderr goes to `~/.hermes/state/review-loop-runs.sqlite.workers.log`, which the host opens for it and rotates once to `.1` past 256 KiB. A worker never creates host state. If its ledger or a state directory is gone, replaced or unusable, it writes one `review-loop worker …: …; nothing to run` line there and exits. If the ledger vanishes, alone or with the whole state directory, the host's next open of it (a gate enqueue, the watchdog sweep, `selftest`, or `run_supervisor status`) recreates it empty, says so on stderr, and the watchdog delivers one ⚠️ notice about it. The host knows a ledger existed from `review-loop-runs.sqlite.present` beside it and from `~/.hermes/review-loops.d/.ledger-present`, which survives a wiped state directory. `uninstall` of the last loop removes the latter, so a later fresh install is not reported.
+
 | step | what it proves |
 |---|---|
 | 1 runtime | the runtime file is a regular 0600 file you own with `source venv runtime rust` (plus optional `seats.<seat>` overrides and the legacy `model upstream key_file`, warned about), the paths exist (the venv's interpreter link must stay inside `runtime`), and any override has an HTTPS `…/chat/completions` upstream and a private non-empty key file; then one `seat:<seat>` line per seat — reviewer, fixer, and the adjudicator when it has a route — with the profile → provider / model the worker will use and its `[api_mode, API key \| OAuth (host-refreshed)]` (never the key or token), or the reason that seat's turn would be held |

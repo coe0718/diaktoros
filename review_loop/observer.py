@@ -38,7 +38,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
-from . import gh, prompts, routes
+from . import gh, hostdirs, prompts, routes
 from .util import log, now_iso
 
 # The transitions an observer may subscribe to. These names are the loop's vocabulary for what
@@ -166,7 +166,7 @@ def _lock(path: pathlib.Path):
     The same shape the route registry uses, and held only across a read and a write — never
     across the POST. A delivery that hangs must not hold a lock that the next transition needs.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    hostdirs.ensure(path.parent)
     lock = path.with_name(path.name + ".lock")
     fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
