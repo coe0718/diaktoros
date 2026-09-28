@@ -582,7 +582,13 @@ class Turn(Base):
         self.assertIs(seen["checkout_writable"], False)
         argv = seen["argv"]
         self.assertEqual(argv[argv.index("/work") - 2], "--ro-bind")
-        self.assertIn("/tmp/target", argv)
+        # The build target must sit on a sized mount, not the 2 GiB scratch: this seat cannot write
+        # to its checkout but still has to build, and a real scoped build does not fit /tmp.
+        # Asserting "/tmp/target" here is what let the defect look intentional.
+        tmpfs = {argv[index + 1] for index, arg in enumerate(argv) if arg == "--tmpfs"}
+        self.assertIn("/target", tmpfs, argv)
+        self.assertEqual(argv[argv.index("CARGO_TARGET_DIR") + 1], "/target")
+        self.assertNotIn("/tmp/target", argv)
         self.assertIn("broker_client ruling", seen["query"])
         self.assertNotIn("broker_client push", seen["query"])
         self.assertTrue(seen["query"].startswith("RULE"))

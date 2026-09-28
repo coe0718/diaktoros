@@ -40,7 +40,11 @@ What to do:
 1. Read the PR: description, diff, and the conversation so far — earlier rounds may already
    answer what you are about to ask.
 2. Verify the claims yourself in your own clone: build it, run the tests it touches, reproduce the
-   bug it says it fixed. A claim you did not check is not a finding, it is a rumor.
+   bug it says it fixed. Scope that to what the change touches — `cargo check -p <crate>` or
+   `cargo test -p <crate> --no-run`, never a whole-workspace build: this sandbox holds a scoped
+   build (a few GiB), not a workspace one (measured at 8.0 GiB, right at the cap) and not a mature
+   target directory (tens of GB; the host's never enters the sandbox).
+   A claim you did not check is not a finding, it is a rumor.
 3. For a direct trunk PR, post the review on the PR: a verdict, and for every finding the
    severity, evidence (command plus observed output) and the `file:line` it lives at.
    A stacked PR needs a trusted, run-bound submission CLI, which is not installed yet:
@@ -51,7 +55,10 @@ What to do:
    not verify.
 
 Never merge, never push to the branch, and never approve what you did not verify. If you cannot
-verify something, say so in the review instead of guessing."""
+verify something, say so in the review instead of guessing. If what you could not verify is a
+build or a test that did not fit the sandbox rather than a defect, say that too — as a note about
+the environment, not a finding against the PR, and not on its own a reason for REQUEST_CHANGES
+unless nothing else could be verified either."""
 
 FIXER = """A review on your pull request in {_loop.repo} needs an answer.
 
@@ -153,7 +160,11 @@ What to do:
    and the fixer's answers below — earlier rounds may already answer what you are about to ask.
    An answer is a claim, not proof: check it.
 2. Verify the claims yourself in `/work`: build it, run the tests it touches, reproduce the bug it
-   says it fixed. A claim you did not check is not a finding, it is a rumor. The host's
+   says it fixed. Scope that to what the change touches — `cargo check -p <crate>` or
+   `cargo test -p <crate> --no-run`, never a whole-workspace build: this sandbox holds a scoped
+   build (a few GiB), not a workspace one (measured at 8.0 GiB, right at the cap) and not a mature
+   target directory (tens of GB; the host's never enters the sandbox).
+   A claim you did not check is not a finding, it is a rumor. The host's
    "Build environment" note at the top of this message says whether dependencies are available
    offline; if they are not, verify by reading instead.
 3. Write the review body to a file and submit it through the broker (command below). Your review
@@ -167,10 +178,15 @@ What to do:
 
 Never approve what you did not verify. If you are uncertain — something you could not verify —
 the verdict is REQUEST_CHANGES, naming exactly what could not be verified, instead of guessing.
-One exception: when the host's build environment note says dependencies are unavailable, that the
-sandbox could not build or run the tests is not itself a defect of the PR. Judge the code by
-reading it, say plainly in the review what you could not run, and base the verdict on what you
-can show from the code — not on the missing build."""
+One exception, when what you could not verify is the environment and not the change: when the host's
+build environment note says dependencies are unavailable, that the sandbox could not build or run
+the tests is not itself a defect of the PR — judge the code by reading it, say plainly in the review
+what you could not run, and base the verdict on what you can show from the code, not on the missing
+build. Likewise, if the only thing you could not verify is a build or a test that did not fit the
+space you were given, say so plainly as a note about the environment — do not raise it as a finding
+against the PR — and let the verdict rest on what you did verify. If that leaves you with nothing
+verified, the verdict is still REQUEST_CHANGES, and you must name the environment, not the change,
+as the reason."""
 
 ISOLATED_FIXER = """A review on your pull request in {repo} needs an answer.
 

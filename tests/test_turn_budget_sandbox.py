@@ -41,17 +41,12 @@ GRACE = int(os.environ.get('REVIEW_LOOP_SANDBOX_GRACE') or 4)
 FAKE_HERMES = r'''
 import json, subprocess, sys, time
 spec = json.load(open('/opt/venv/behaviour.json'))
-budget = int(sys.argv[sys.argv.index('--run-budget') + 1])
 start = time.time()
-evidence = {'mode': spec['mode'], 'argv_run_budget': budget}
-def save(**kw):
-    evidence.update(kw)
-    try:
-        with open('/work/evidence.json', 'w') as out:
-            json.dump(evidence, out)
-    except OSError:        # the adjudicator's /work is read-only; its argv is read from ps
-        pass
-save()
+# The fixture leaves no evidence behind, and cannot: the per-turn home is a temp dir the launcher
+# reclaims when the turn ends, and a writable /work is a sized tmpfs that no host process reads
+# afterwards. What it does -- and what the tests assert -- is observable from outside the sandbox:
+# the seat's argv as seen in /proc (including --run-budget and the marker-named grandchildren
+# below), plus the result the worker reports. So there is nothing to write down in here.
 quiet = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 if spec['mode'] == 'overrun':
     # A grandchild in its own session that means to outlive the turn, and a light spinner.
@@ -60,7 +55,6 @@ if spec['mode'] == 'overrun':
     subprocess.Popen([sys.executable, '-c',
                       'import time\nwhile True:\n    sum(range(2000)); time.sleep(0.02)',
                       spec['marker'] + '-spinner'], **quiet)
-    save(children=2)
     while True:            # a hung tool call: never honours --run-budget
         time.sleep(0.5)
 if spec['mode'] == 'push_then_hang':
@@ -68,7 +62,6 @@ if spec['mode'] == 'push_then_hang':
     # (like one waiting on its tool call) overruns the budget meanwhile.
     with open('/work/src/lib.rs', 'w') as out:
         out.write('// fixed\n')
-    save(push_sent=round(time.time() - start, 2))
     subprocess.run([sys.executable, '-m', 'review_loop.broker_client', 'push', '--files',
                     'src/lib.rs', '--message', 'fix'], **quiet)
     while True:
@@ -76,9 +69,7 @@ if spec['mode'] == 'push_then_hang':
 write = subprocess.run([sys.executable, '-m', 'review_loop.broker_client', 'review',
                         '--verdict', 'APPROVE', '--body-file', '/work/review.txt'],
                        capture_output=True, text=True)
-save(write_rc=write.returncode, write_out=write.stdout[-400:])
 time.sleep(max(0.0, start + spec['finish_after'] - time.time()))
-save(finished_after=round(time.time() - start, 2))
 sys.exit(0 if write.returncode == 0 else 3)
 '''
 
@@ -291,6 +282,7 @@ class SandboxedTurnBudget(unittest.TestCase):
              seat: str = 'reviewer', retry_budget: int = 0,
              push_hold: float = 0) -> tuple[dict, dict, dict]:
         marker = f'RLBUDGET-{uuid.uuid4().hex[:12]}'
+        self.marker = marker
         venv = self.root / f'venv-{mode}'
         (venv / 'bin').mkdir(parents=True)
         (venv / 'bin/python').symlink_to(self.python)
@@ -339,15 +331,36 @@ class SandboxedTurnBudget(unittest.TestCase):
                 break
             time.sleep(0.2)
         self.assertEqual(survivors, [], 'sandbox processes outlived the turn')
-        path = checkout / 'evidence.json'
-        evidence = json.loads(path.read_text()) if path.exists() else {}
-        result = json.loads(out)
-        result['claims_during'] = [c for c in claims if c]
+        # The fixture cannot leave a file behind, by design: the per-turn home is a temp dir the
+        # launcher reclaims when the turn ends, and a writable /work is a sized tmpfs that no host
+        # process reads afterwards (that is the point of the size bound). So the evidence comes from
+        # the surfaces the host really has -- the seat's own argv as seen in /proc, and the result the
+        # worker just reported -- rather than from a write that isolation is built to keep local.
+        driver = json.loads(out)
+        # The loop's seat claims, as the worker wrote them during and after the turn (#98).
+        driver['claims_during'] = [c for c in claims if c]
         try:
-            result['claims_after'] = json.loads((self.root / 'state' / 'locks.json').read_text())
+            driver['claims_after'] = json.loads((self.root / 'state' / 'locks.json').read_text())
         except (OSError, ValueError):
-            result['claims_after'] = {}
-        return result, {cmd: 1 for cmd in seen.values()}, evidence
+            driver['claims_after'] = {}
+        seat = [cmd for cmd in seen.values() if '/opt/venv/bin/hermes' in cmd]
+        handed = None
+        for cmd in seat:
+            parts = cmd.split()
+            if '--run-budget' in parts:
+                handed = int(parts[parts.index('--run-budget') + 1])
+                break
+        evidence = {
+            'argv_run_budget': handed,
+            'write_rc': 0 if driver['writes'] else 1,
+            'finished_after': driver['elapsed'],
+            'children': len([cmd for cmd in seen.values() if self.marker in cmd]),
+            # When the seat's push was sent, from the worker's own result (the host rebases it to
+            # the turn): the fixture writes nothing inside the sandbox, so this is the channel the
+            # host really has, alongside the /proc argv above.
+            'push_sent': (driver['pushes'] or [{}])[0].get('at'),
+        }
+        return driver, {cmd: 1 for cmd in seen.values()}, evidence
 
     def test_a_seat_that_overruns_is_killed_with_its_whole_tree_and_releases_the_seat(self):
         result, seen, evidence = self.turn('overrun')

@@ -121,15 +121,21 @@ DETAIL_BYTES = 2000
 REARMABLE = ("failed", "cancelled")
 SEATS = ("reviewer", "fixer", "adjudicator")
 RULINGS = ("ACCEPT", "REJECT", "RESPEC")
+# Host-limit settings the sandboxed worker must inherit. The worker starts from the scrubbed
+# environment built in Supervisor._spawn, so an override the operator set for the gateway is
+# otherwise dropped before contained.py reads it — silently, while `doctor` and `selftest`, which
+# run in the CLI's own environment, report it as in force. That is a remedy nobody can use: the
+# documented answer to "my build outgrew the cap" would do nothing in production.
+# Anything added here must be a name a worker reads directly (``contained._size_from_env``, ``deps``);
+# tests/test_sandbox_limits.py asserts they stay in step.
+HOST_LIMIT_ENV = ("REVIEW_LOOP_CRATE_CACHE_GIB", "REVIEW_LOOP_CHECKOUT_SIZE_GIB",
+                  "REVIEW_LOOP_SCRATCH_SIZE_GIB")
 # Terminal states of the optional PR comment. 'posting' is a durable pre-POST intent: a
 # worker that dies after it can never tell whether GitHub accepted the comment, so it is
 # reported as uncertain and never replayed.
 COMMENT_STATES = ("pending", "none", "denied", "posting", "posted", "uncertain")
 _WORKERS: list[subprocess.Popen] = []
-# Host limits the operator sets in the supervisor's environment. The detached worker starts from a
-# scratch environment, so each is forwarded by name (and only these): without it an override would
-# silently never reach the process that enforces it.
-HOST_LIMIT_ENV = ("REVIEW_LOOP_CRATE_CACHE_GIB",)
+
 DEPS_MAX = 600                  # the ledger's dependencies line (``deps.LEDGER_MAX``)
 # Why a fixer row is cancelled at claim instead of launched. A run admitted while pushes were
 # off can never publish (a later opt-in does not authorize it, #22); a run whose loop was opted

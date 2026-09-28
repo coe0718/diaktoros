@@ -12,7 +12,8 @@ exits 1 if anything failed:
 2. bubblewrap with unprivileged user namespaces, and a probe *inside* the real sandbox layout
    (configured venv, runtime and Rust, a staged source snapshot) that must not be able to read a
    dummy host secret, any model key file, the seat profiles' ``.env``/``auth.json``/``config.yaml``,
-   the PATs, the runtime file or ``$HERMES_HOME/.env``;
+   the PATs, the runtime file or ``$HERMES_HOME/.env``; the staged snapshot is scanned too, so a
+   secret that reached the sandbox (a filter regression) is noticed rather than trusted;
 3. one tiny real request in the seat's wire format (chat completion, Responses or Messages)
    through the host inference capability, once per distinct seat resolution (``--no-model``
    skips it);
@@ -36,6 +37,7 @@ from contextlib import contextmanager
 import http.client
 import json
 import os
+import pathlib
 from pathlib import Path
 import re
 import shutil
@@ -451,6 +453,27 @@ def check_bwrap(report: Report, loop: dict, settings: dict | None, runtime_file:
                        "the worktree) and make sure run_agent.py is committed")
             return
         report.add(step, "sandbox:snapshot", PASS, "committed source snapshot staged")
+        violations, advisories = trusted_turn.exported_secrets(code)
+        if violations:
+            report.add(step, "sandbox:secret-files", FAIL,
+                       f"{len(violations)} secret-shaped file(s) in the exported snapshot: "
+                       + "; ".join(violations[:3])
+                       + (f" (+{len(violations) - 3} more)" if len(violations) > 3 else ""),
+                       f"remove the secret from {settings['source']}: /opt/code is readable by a "
+                       "seat that can publish what it reads; the snapshot filter is a shape rule, "
+                       "not a scanner")
+        else:
+            report.add(step, "sandbox:secret-files", PASS,
+                       "no secret-shaped name or value in the exported snapshot")
+        if advisories:
+            report.add(step, "sandbox:secret-text", WARN,
+                       f"credential-shaped text in exported code: " + "; ".join(advisories[:3])
+                       + (f" (+{len(advisories) - 3} more)" if len(advisories) > 3 else ""),
+                       "confirm these are fixtures: the sandbox imports this code, so the snapshot "
+                       "filter cannot drop it (unset the variables/values in the committed tree)")
+        else:
+            report.add(step, "sandbox:secret-text", PASS,
+                       "no credential-shaped text in the code the sandbox imports")
         home.mkdir(mode=0o700)
         work.mkdir(mode=0o700)
         query = root / "query.txt"
@@ -762,6 +785,72 @@ _DENIAL_FIX = {
     "read, reviewer and fixer tokens resolve to same principal": "see the identities step",
     "cannot verify live PR": "check the PR number and that the read token can see it",
 }
+
+
+def _gib(count: int) -> str:
+    return f"{count / 1024 ** 3:.1f} GiB"
+
+
+def _du(path: pathlib.Path) -> int:
+    """Bytes under ``path``, counted the way ``du`` counts them (no symlink following)."""
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += (pathlib.Path(root) / name).lstat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def check_build_fits(report: Report, loop: dict, number: int | None) -> None:
+    """The seat's cap against a build it will actually have to hold.
+
+    ``/work`` is a tmpfs the seat builds in, and a cap below a real target does not fail loudly:
+    the seat reports that it cannot verify and every review requests changes. So measure the
+    closest real build available — the isolation clone's own ``target`` — and say whether it fits.
+    """
+    from . import contained
+    step = "sandbox"
+    caps = (f"/work {_gib(contained.CHECKOUT_SIZE)}, /tmp {_gib(contained.SCRATCH_SIZE)}")
+    for name, raw, why in contained.live_ignored_overrides():
+        report.add(step, f"sandbox:override:{name}", FAIL,
+                   f"REVIEW_LOOP_{name}_GIB={raw!r} was refused ({why}); the default is in force",
+                   "fix the value: an integer 1..1024 GiB")
+    if number is None:
+        report.add(step, "sandbox:build-fits", SKIP, f"caps are {caps}",
+                   "pass --pr N to measure a build against them")
+        return
+    clone = str(loop.get("clone") or "")
+    target = (pathlib.Path(clone).expanduser() / "target") if clone else None
+    if target is None or not target.is_dir():
+        report.add(step, "sandbox:build-fits", SKIP,
+                   f"no build output to measure (looked for {'<clone>/target' if target else 'a clone'}); "
+                   f"caps are {caps}",
+                   "point `set --clone` at the working clone, or raise "
+                   "REVIEW_LOOP_CHECKOUT_SIZE_GIB if a real target outgrows the cap")
+        return
+    size = _du(target)
+    # A FAIL has to mean a real seat's build will not fit. The clone's accumulated target cannot
+    # mean that: it holds every profile, incremental state and stale artifact, and a mature Rust
+    # workspace reaches tens of GB. So fail only against the measured floor for a scoped build, and
+    # report a bigger accumulated target as the upper bound it is.
+    if contained.CHECKOUT_SIZE < contained.SCOPED_BUILD_FLOOR:
+        report.add(step, "sandbox:build-fits", FAIL,
+                   f"/work is {_gib(contained.CHECKOUT_SIZE)}, under the "
+                   f"{_gib(contained.SCOPED_BUILD_FLOOR)} a scoped build needs "
+                   "(measured 2.4 GiB for attest-core)",
+                   "raise REVIEW_LOOP_CHECKOUT_SIZE_GIB in the environment the gateway runs in, "
+                   "restart it, and confirm with `doctor`")
+        return
+    if size > contained.CHECKOUT_SIZE:
+        report.add(step, "sandbox:build-fits", WARN,
+                   f"{_gib(size)} in {target} exceeds the cap ({_gib(contained.CHECKOUT_SIZE)}), but "
+                   "that is the clone's accumulated target — every profile, incremental and stale "
+                   "artifacts — not what a turn builds (a fresh scoped build is about 2.4 GiB)",
+                   "nothing to fix unless a scoped build in the sandbox exceeds the cap")
+        return
+    report.add(step, "sandbox:build-fits", PASS, f"{_gib(size)} in {target.name} fits {caps}")
 
 
 def check_authorization(report: Report, loop: dict, number: int | None) -> dict | None:
@@ -1098,6 +1187,7 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
         check_identities(report, loop)
         report.step("5. Broker authorization (dry run) and seat build environment")
         live_pr = check_authorization(report, loop, pr)
+        check_build_fits(report, loop, pr)
         check_build(report, loop, settings, live_pr)
         report.step("6. Supervisor ledger, watchdog, observer")
         check_ledger(report, loop, runtime_file, settings)
