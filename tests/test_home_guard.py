@@ -536,7 +536,8 @@ class HermesShim(unittest.TestCase):
         # cli._install_schedule is the plugin's one PATH lookup of `hermes` (`init --schedule`).
         with mock.patch.dict(os.environ, {"HERMES_HOME": str(self.root / "hermes")}):
             os.environ.pop(_home_guard.FAKE_HERMES_ENV, None)
-            lines = cli._install_schedule({"id": "widgets"}, "15m", "local")
+            lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+        self.assertFalse(ok)
         self.assertIn("cron create failed", lines[0])
         self.assertIn(_home_guard.BLOCKED, lines[0])
 
@@ -547,7 +548,8 @@ class HermesShim(unittest.TestCase):
         fake.chmod(0o755)
         with mock.patch.dict(os.environ, {"HERMES_HOME": str(self.root / "hermes"),
                                           _home_guard.FAKE_HERMES_ENV: str(fake)}):
-            lines = cli._install_schedule({"id": "widgets"}, "15m", "local")
+            lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+        self.assertTrue(ok)
         self.assertIn("scheduled the watchdog", lines[0])
         self.assertEqual(record.read_text().split("\n")[:5],
                          ["cron", "create", "15m", "--name", cli.watchdog_job_name({"id": "widgets"})])
