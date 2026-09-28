@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -484,25 +485,174 @@ def _hook_listing(loop: dict, token_login: str | None = None) -> list[dict]:
     return hooks
 
 
-def _set_hooks(loop: dict, active: bool, token_login: str | None) -> list[str]:
+def hook_write_need(loop: dict, token_login: str | None) -> str:
+    """Which login's file creates, arms and pauses this loop's hooks, and what it must carry.
+
+    ``init --hooks`` and ``arm`` act as ``--admin-token``'s login, else as the reader. The reader
+    is the one role that can hold a read-only token — and on a user-owned repo it is usually the
+    owner, the only account that can manage hooks at all — so say which case this is.
+    """
+    reader = str(loop.get("read_token") or "")
+    login = token_login or reader
+    need = (f"the token for {login!r} needs hook write access on {loop.get('repo')} (classic `repo` or "
+            "`admin:repo_hook`, or fine-grained `repository_hooks: write`)")
+    if login and login.lower() == reader.lower():
+        need += (" — that is the reader's file. On a user-owned repo only the owner can manage "
+                 "hooks, so if the reader is the owner give that file hook write; otherwise pass "
+                 "--admin-token <owner login> (a login mapped with its own --token at init)")
+    else:
+        need += " — check that login's token file"
+    return need
+
+
+def _hook_write_fix(token_login: str | None, transient: bool = False,
+                    loop: dict | None = None) -> str:
+    """What to do when a hook read or write failed with the token ``arm`` used.
+
+    ``transient`` is for failures that were neither a refusal nor a write that did not stick (a
+    timeout, a 5xx): those are worth a retry before blaming the token.
+    """
+    if transient:
+        return ("retry `arm`; if it fails again, check the repo's webhooks on GitHub — "
+                + _hook_write_fix(token_login, loop=loop))
+    return hook_write_need(loop or {}, token_login)
+
+
+def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[str], bool]:
+    """Flip this loop's repo hooks, then read each one back and report what GitHub now shows.
+
+    Returns ``(lines, ok)``. ``ok`` is true only when every loop hook was observed in the asked-for
+    state: a refused PATCH, a read-back that disagrees or cannot be made, an unreadable listing,
+    a repo with no loop hooks, and a repo missing either seat's hook all make it false — ``arm``
+    must never say "paused" about a hook GitHub still delivers to, nor "armed" about a loop that
+    only one seat can hear.
+    """
     names = _routes_of(loop)
-    wanted = tuple(name for role, name in names.items() if role in ("reviewer", "fixer"))
+    seats = [(role, names[role]) for role in ("reviewer", "fixer") if names.get(role)]
+    wanted = tuple(name for _, name in seats)
+    word = "active" if active else "paused"
+    login = token_login or loop.get("read_token")
     try:
         hooks = _hook_listing(loop, token_login)
     except config.ConfigError as exc:
-        return [f"could not read the repo's hooks: {exc}"]
-    out = []
-    for hook in hooks:
-        url = (hook.get("config") or {}).get("url", "")
-        if not any(name in url for name in wanted):
+        return [f"could not read the repo's hooks: {exc}",
+                f"fix: {_hook_write_fix(token_login, loop=loop)}"], False
+    try:
+        # One matcher (doctor.split_route_hooks). Arming credits a hook only at the registry's
+        # route URL bound to the seat's profile: another profile's URL (the gateway answers it
+        # 404), another path, a retired gateway — or a route named inside another route's name —
+        # is not that seat's hook. Pausing asks the ownership question instead: every hook this
+        # install made is stopped, even once `uninstall` has removed the route it posted to.
+        own, foreign = doctor.split_route_hooks(loop, hooks, wanted, ownership=not active)
+    except config.ConfigError as exc:
+        return [f"cannot tell this loop's hooks from anyone else's: {exc}",
+                f"fix: hermes review-loop set --loop {loop.get('id')} --host "
+                "https://your-gateway.example"], False
+    out, ok = [], True
+    failed: list[tuple[int, list[str]]] = []      # (hook id, the errors that decide its fix)
+    targets = {name: doctor.seat_route_target(loop, name) for name in wanted}
+    role_of = {name: role for role, name in seats}
+    for hook in foreign:
+        name = doctor.hook_route_name(hook)
+        want, reason = targets[name]
+        if want is None and active:
+            out.append(f"hook {hook['id']} posts to route {name!r}; {reason} — not armed, "
+                       "left as it is")
             continue
-        if bool(hook.get("active")) == active:
-            out.append(f"hook {hook['id']} already {'active' if active else 'paused'}")
+        why = doctor.hook_url_difference(str(hook["config"].get("url") or ""),
+                                         want or (doctor.install_hook_urls(loop, name) or [""])[0])
+        out.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this seat's hook "
+                   "(nothing this loop serves receives it), left as it is")
+    matched: set[str] = set()
+    miswired: list[int] = []
+    for hook in own:
+        name = doctor.hook_route_name(hook)
+        matched.add(name)
+        if active:
+            # At the seat's URL but subscribed to the wrong event (or not JSON), or with a
+            # trailing slash the gateway 404s: doctor calls each a MISMATCH, so arming it would
+            # report a loop live that the seat never hears. (Found by same_hook_url, judged by
+            # exact_hook_url — pausing still stops it.)
+            want = targets[name][0] or ""
+            problem = ("" if doctor.exact_hook_url(str(hook["config"].get("url") or ""), want)
+                       else doctor.SLASH_404)
+            problem = problem or doctor.hook_wake_problem(hook, role_of.get(name, ""))
+            if problem:
+                ok = False
+                miswired.append(hook["id"])
+                why = (problem if problem.endswith("never woken") else
+                       f"{problem}, so it would not wake the {role_of.get(name, '?')} seat")
+                out.append(f"hook {hook['id']} NOT armed: it {why} — left as it is")
+                continue
+        # Only a real bool is a state: a hook with no `active` (or a non-bool one) is flipped and
+        # read back like any other, never taken as already there.
+        if isinstance(hook.get("active"), bool) and hook["active"] == active:
+            out.append(f"hook {hook['id']} already {word}")
             continue
-        gh.api(loop, f"/repos/{loop['repo']}/hooks/{hook['id']}", method="PATCH",
-               body={"active": active}, login=token_login or loop.get("read_token"))
-        out.append(f"hook {hook['id']} → {'active' if active else 'paused'}")
-    return out or ["no loop hooks found — run init --hooks first"]
+        path = f"/repos/{loop['repo']}/hooks/{hook['id']}"
+        _, error = gh.fetch(loop, path, method="PATCH", body={"active": active}, login=login)
+        # A lost response is ambiguous and a stub or proxy can answer 200 without writing, so the
+        # hook's state is whatever a fresh read says — never what was asked for.
+        actual, read_error = gh.fetch(loop, path, login=login)
+        if not isinstance(actual, dict) or not isinstance(actual.get("active"), bool):
+            ok = False
+            out.append(f"hook {hook['id']} NOT CONFIRMED {word}: "
+                       + (f"PATCH failed ({error}); " if error else "")
+                       + f"read-back failed ({read_error or 'no hook in the answer'})")
+            failed.append((hook["id"], [e for e in (error, read_error) if e]))
+            continue
+        seen = "active" if actual["active"] else "paused"
+        if actual["active"] == active:
+            out.append(f"hook {hook['id']} → {seen} (read back)")
+            continue
+        ok = False
+        out.append(f"hook {hook['id']} is still {seen}, not {word}"
+                   + (f": PATCH failed ({error})" if error else ": GitHub accepted the PATCH "
+                      "but the read-back disagrees"))
+        # A PATCH GitHub accepted that did not stick is a refusal; a failed PATCH is judged by its
+        # own code, so a timeout or a 5xx gets the retry advice, not the token-scope one.
+        failed.append((hook["id"], [error or "refused"]))
+    # Arming needs each seat's route bound in the registry; pausing only needs the hooks.
+    unbound = [(role, name) for role, name in seats
+               if active and targets[name][0] is None]
+    if not matched and not unbound:
+        return out + ["no loop hooks found at the routes' own URLs — run init --hooks first "
+                      f"(looked for hooks posting to {', '.join(wanted) or 'a loop route'})"], False
+    missing = [(role, name) for role, name in seats if name not in matched]
+    for role, name in missing:
+        reason = ((targets[name][1] if active else "") or
+                  ("no repo hook posts to this route's URL, so the loop cannot be "
+                   f"{'armed' if active else 'paused'} as a whole"))
+        out.append(f"hook:{name} ABSENT ({role} seat) — {reason}")
+    if miswired:
+        out.append(f"fix: hook{'s' if len(miswired) > 1 else ''} {', '.join(map(str, miswired))}:"
+                   f" `hermes review-loop doctor --loop {loop.get('id')}` names what each needs "
+                   "(re-run init --hooks, or on GitHub set the event / content_type, or drop the "
+                   "URL's trailing slash), then run `arm` again")
+    # The fix is per hook: one refused hook must not hide the retry advice another hook's 5xx
+    # earned. Hooks that need the same fix share its line.
+    advice: dict[str, list[int]] = {}
+    for hook_id, errors in failed:
+        # GitHub answers 404 to a token that may not see hooks, so 404 counts as a refusal too.
+        refused = any(e == "refused" or any(f"HTTP {code}" in e for code in (401, 403, 404))
+                      for e in errors)
+        advice.setdefault(_hook_write_fix(token_login, transient=not refused, loop=loop),
+                          []).append(hook_id)
+    for text, ids in advice.items():
+        out.append(f"fix: hook{'s' if len(ids) > 1 else ''} {', '.join(map(str, ids))}: {text}")
+    if unbound:
+        ok = False
+        out.append(f"fix: `hermes review-loop doctor --loop {loop.get('id')}` names what each "
+                   "route needs (its `route:` line and fix) — repair the route first, then run "
+                   f"`arm{' --pause' if not active else ''}` again")
+    if [pair for pair in missing if pair not in unbound]:
+        ok = False
+        out.append(f"fix: `hermes review-loop doctor --loop {loop.get('id')}` shows the hook each "
+                   "seat needs; add the missing one (by hand with its route's URL and secret, or "
+                   "via `init --hooks` for a loop being set up — hook write on "
+                   f"{loop.get('repo')}, --admin-token <login>), then run "
+                   f"`arm{' --pause' if not active else ''}` again")
+    return out, ok
 
 
 def _hook_moves(before: dict, after: dict, binds: dict) -> list[tuple[int, str, str]]:
@@ -541,17 +691,28 @@ def _hook_moves(before: dict, after: dict, binds: dict) -> list[tuple[int, str, 
     route_names = {name: role for role, name in names.items() if role in ("reviewer", "fixer")}
     for hook in hooks:
         old = hook["config"]["url"]
-        parts = urlsplit(old)
-        # Match a complete webhook route segment, not a substring of another route.
-        installed_name = parts.path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in parts.path else ""
-        role = route_names.get(installed_name)
+        # The same rules as arm/doctor (doctor.hook_route_name / same_hook_url / exact_hook_url):
+        # the complete route segment (a trailing slash or a query string does not hide it), a
+        # hook *found* loosely, and judged correct only at the exact path. Every hook on one of
+        # this loop's routes is either left because it is already right, moved, or refused —
+        # never skipped in silence while the push reports itself applied.
+        role = route_names.get(doctor.hook_route_name(hook))
         if role is None:
             continue
-        if role in unchanged and old == unchanged[role]:
-            continue
-        if role in targets and old == targets[role]:
+        if role in unchanged:
+            if doctor.exact_hook_url(old, unchanged[role]):
+                continue
+            if doctor.same_hook_url(old, unchanged[role]):
+                raise config.ConfigError(
+                    f"installed {role} hook {hook['id']} posts to its route's URL with a trailing "
+                    "slash, which the gateway does not route (404) — drop the slash on GitHub "
+                    "first; no changes made")
+        if role in targets and doctor.exact_hook_url(old, targets[role]):
             continue  # Already corrected independently; do not rewrite it.
-        if role not in targets or old not in expected or expected[old][0] != role:
+        known = next((url for url in expected if doctor.same_hook_url(old, url)), None)
+        if role in targets and known is None and doctor.same_hook_url(old, targets[role]):
+            known = targets[role]            # at the new URL but slashed: repair it to the exact one
+        elif role not in targets or known is None or expected[known][0] != role:
             raise config.ConfigError(f"installed {role} hook {hook['id']} "
                                      f"points at unexpected URL {old!r}; no changes made")
         moves.append((hook["id"], old, targets[role]))
@@ -569,8 +730,12 @@ def _patch_hook_url(loop: dict, hook_id: int, url: str) -> None:
         raise config.ConfigError(f"hook {hook_id} URL update not confirmed as {url!r}")
 
 
-def _install_schedule(loop: dict, schedule: str, deliver: str) -> list[str]:
-    """A cron shim plus the job itself, through the scheduler's own CLI."""
+def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str], bool]:
+    """A cron shim plus the job itself, through the scheduler's own CLI.
+
+    Returns ``(lines, ok)``; ``ok`` is false when no job was created. The fallback command is
+    shell-quoted — the job name has spaces and parentheses — so it can be pasted as printed.
+    """
     scripts = config.home() / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
@@ -583,11 +748,11 @@ def _install_schedule(loop: dict, schedule: str, deliver: str) -> list[str]:
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except Exception as exc:
-        return [f"could not create the cron job: {exc}", f"run it yourself: {' '.join(cmd)}"]
+        return [f"could not create the cron job: {exc}", f"run it yourself: {shlex.join(cmd)}"], False
     if proc.returncode != 0:
         return [f"cron create failed: {(proc.stderr or proc.stdout).strip()[:200]}",
-                f"run it yourself: {' '.join(cmd)}"]
-    return [f"scheduled the watchdog ({schedule}, deliver={deliver})", f"shim: {shim}"]
+                f"run it yourself: {shlex.join(cmd)}"], False
+    return [f"scheduled the watchdog ({schedule}, deliver={deliver})", f"shim: {shim}"], True
 
 
 # -- verbs ----------------------------------------------------------------------
@@ -870,8 +1035,16 @@ def cmd_init(args) -> int:
         print(f"  {line}")
     if not args.hooks:
         print("  (repo hooks not created — pass --hooks, or add them by hand with the route URLs)")
-    for line in _install_schedule(loop, args.schedule, args.watchdog_deliver) if args.schedule else []:
+    schedule_lines, scheduled = (_install_schedule(loop, args.schedule, args.watchdog_deliver)
+                                 if args.schedule else ([], True))
+    for line in schedule_lines:
         print(f"  {line}")
+    if not scheduled:
+        # Config, routes and hooks are in place; only the job is missing. Say so and fail, so an
+        # install script's `init && ...` does not read a missing watchdog as success.
+        print("\ninit INCOMPLETE: the watchdog job was not scheduled — run the command above, "
+              f"then `hermes review-loop doctor --loop {loop['id']}`")
+        return 1
     # The seats never hold a GitHub token: every write goes through the host broker with the token
     # files mapped above, so a GH_TOKEN in a seat profile's .env is only an extra copy to leak.
     lid = loop["id"]
@@ -1724,9 +1897,27 @@ def cmd_models(args) -> int:
 
 
 def cmd_arm(args) -> int:
-    for loop in ([config.load_id(args.loop)] if args.loop else config.all_loops()):
-        for line in _set_hooks(loop, not args.pause, args.admin_token):
+    """Arm or pause loops by flipping their repo hooks; exit 1 unless GitHub confirms every one."""
+    try:
+        loops = [config.load_id(args.loop)] if args.loop else config.all_loops()
+    except config.ConfigError as exc:
+        print(f"cannot {'pause' if args.pause else 'arm'}: {exc}")
+        return 2
+    if not loops:
+        print(f"no loops configured in {config.config_dir()} — nothing to "
+              f"{'pause' if args.pause else 'arm'}")
+        return 2
+    failed = []
+    for loop in loops:
+        lines, ok = _set_hooks(loop, not args.pause, args.admin_token)
+        for line in lines:
             print(f"[{loop['id']}] {line}")
+        if not ok:
+            failed.append(loop["id"])
+    if failed:
+        print(f"{'pause' if args.pause else 'arm'} NOT confirmed for: {', '.join(failed)} "
+              "— the lines above show what GitHub reports now")
+        return 1
     return 0
 
 def cmd_fixer_push(args) -> int:
