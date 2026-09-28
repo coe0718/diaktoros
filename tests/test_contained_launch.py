@@ -45,6 +45,7 @@ BWRAP_ARITY = {
                      "--dev-bind-try", "--setenv", "--symlink", "--chmod"), 2),
 }
 BINDS = {"--bind", "--bind-try", "--ro-bind", "--ro-bind-try", "--dev-bind", "--dev-bind-try"}
+READ_ONLY_BINDS = {"--ro-bind", "--ro-bind-try"}
 # Options whose last operand is a path inside the namespace.
 MOUNT_POINTS = BINDS | {"--proc", "--dev", "--tmpfs", "--mqueue", "--dir", "--symlink"}
 # What contained.run deliberately hands bubblewrap, and what the argv sets inside the namespace.
@@ -210,6 +211,39 @@ class ProductionLaunch(Base):
                 # Its ancestors are created empty, never bound.
                 dirs = {option[1] for option in options if option[0] == "--dir"}
                 self.assertIn(home, dirs)
+
+    def test_host_paths_are_bound_read_only_except_the_turn_home(self):
+        # #160: ``--ro-bind /usr`` → ``--bind /usr`` (a writable host root) used to stay green. The
+        # one writable host bind production makes is the turn's own staged home at /home/agent;
+        # everything else from the host is read-only. The seat's other writable space is tmpfs
+        # (/tmp, and /work or /target), which is not a host path at all.
+        tmpfs = {"reviewer": {"/tmp", "/work"}, "fixer": {"/tmp", "/work"},
+                 "adjudicator": {"/tmp", "/target"}}
+        for role in ("reviewer", "fixer", "adjudicator"):
+            with self.subTest(role=role):
+                seen = self.launch(role)
+                argv, options = seen["argv"], bwrap_options(seen["argv"])
+                home = str(seen["kwargs"]["home"])
+                writable = [option for option in options
+                            if option[0] in BINDS - READ_ONLY_BINDS]
+                self.assertEqual(writable, [("--bind", home, "/home/agent")], argv)
+                # No device passthrough: /dev is bubblewrap's own minimal one, and one procfs.
+                self.assertFalse([arg for arg in argv if "dev-bind" in arg], argv)
+                self.assertEqual([option for option in options if option[0] == "--dev"],
+                                 [("--dev", "/dev")])
+                self.assertEqual([option for option in options if option[0] == "--proc"],
+                                 [("--proc", "/proc")])
+                # No capability is granted: anywhere, the entry included.
+                self.assertFalse([arg for arg in argv if "cap-add" in arg], argv)
+                self.assertEqual({option[1] for option in options if option[0] == "--tmpfs"},
+                                 tmpfs[role])
+                # The root and /dev are sealed read-only, after every mount point is made.
+                remounts = [index for index, option in enumerate(options)
+                            if option[0] == "--remount-ro"]
+                self.assertEqual([options[index] for index in remounts],
+                                 [("--remount-ro", "/"), ("--remount-ro", "/dev")], argv)
+                self.assertFalse([option for option in options[remounts[0]:]
+                                  if option[0] in MOUNT_POINTS], argv)
 
     def test_network_cannot_be_requested(self):
         # Production's kwargs (the turn's own directories are gone once run_turn returns, which
