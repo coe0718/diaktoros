@@ -549,7 +549,7 @@ class HermesShim(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HERMES_HOME": str(self.root / "hermes"),
                                           _home_guard.FAKE_HERMES_ENV: str(fake)}):
             lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
-        self.assertTrue(ok, lines)
+        self.assertTrue(ok)
         self.assertIn("scheduled the watchdog", lines[0])
         self.assertEqual(record.read_text().split("\n")[:5],
                          ["cron", "create", "15m", "--name", cli.watchdog_job_name({"id": "widgets"})])
