@@ -1207,6 +1207,42 @@ class GateFailureTest(unittest.TestCase):
             data.pop(key, None)                            # the 7-day retention prune
             fallback.path.write_text(json.dumps(data))
 
+    def test_a_settled_duplicate_never_stands_in_for_the_owner(self):
+        # Tuck on 2b1b47b: the owner's ledger is lost (moved aside, unreadable, pruned) while the
+        # no-loop ledger holds the same key resolved *as a duplicate* — which never owned the read.
+        for shape in ("moved aside", "unreadable", "pruned"):
+            with self.subTest(shape=shape):
+                t.reset(prs={})
+                for old in t.STATE_DIR.glob(gate_failures.LEDGER + "*"):
+                    old.rmdir() if old.is_dir() else old.unlink()
+                key, loop = self.owned_502()
+                st = state_mod.LoopState(loop)
+                fallback = gate_failures.fallback_ledger()
+                fallback.record(key, {"gate": "gate_reviewer", "kind": "incomplete", "pr": 7,
+                                      "repo": t.REPO, "redrivable": True, "error_type": "X",
+                                      "error": "y"}, "{}")
+                gate_failures.sweep(fallback, "(no loop)", SCRIPTS, cooldown_s=3600)
+                self.assertTrue(fallback.entries()[key]["resolved"])
+                ledger = gate_failures.Ledger(t.STATE_DIR)
+                if shape == "moved aside":
+                    ledger.path.write_text("{torn")
+                    ledger.snapshot()
+                elif shape == "unreadable":
+                    self.ledger_as_directory()
+                else:
+                    data = json.loads(ledger.path.read_text())
+                    data.pop(key)
+                    ledger.path.write_text(json.dumps(data))
+                state = gate_failures.owner_state(loop, st.github_failure())
+                self.assertNotEqual(state, "resolved")
+                local = gate._explain_state(loop, st, f"{t.REPO}#7", 7, "", time.time())
+                self.assertNotIn("which has resolved", local["github"])
+                out, _ = self.normal_watchdog(self.switch_stub("world"))
+                self.assertIn("could not GET /repos/acme/widgets/pulls/7", out.stdout, out.stdout)
+                gate_failures.fallback_ledger().path.unlink(missing_ok=True)
+                if ledger.path.is_dir():
+                    ledger.path.rmdir()
+
     def ledger_as_directory(self) -> gate_failures.Ledger:
         ledger = gate_failures.Ledger(t.STATE_DIR)
         ledger.path.unlink(missing_ok=True)

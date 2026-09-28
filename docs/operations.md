@@ -582,9 +582,11 @@ own record instead:
   does not announce the old read. A duplicate resolved in the no-loop ledger leaves the mark
   alone, because the original still owns the read. Both `explain` and the health check also
   check that some ledger still holds the owning entry: the ledger named by `owned_in`, the
-  loop's, and the no-loop one, since one event can be in two. If none holds it open (its ledger
-  was moved aside, pruned, or cannot be read at all), `explain` says so instead of promising a
-  line, and the health check reports the read itself.
+  loop's, and the no-loop one, since one event can be in two. An open entry in any of them wins.
+  A copy resolved only as a duplicate never counts as the owner resolving, because it never
+  owned the read. If none holds it open (its ledger was moved aside, pruned, or cannot be read at
+  all), `explain` says so instead of promising a line, and the health check reports the read
+  itself.
 
 ## When an isolated run fails
 

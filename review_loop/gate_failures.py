@@ -583,13 +583,14 @@ class Ledger:
                 data[key] = {**data[key], **fields}
                 self._save(data)
 
-    def resolve(self, key: str, how: str, settle: bool = True) -> bool:
+    def resolve(self, key: str, how: str, settle: bool = True, duplicate_of: str = "") -> bool:
         with self._locked():
             data = self._load_for_write()
             entry = data.get(key)
             if not isinstance(entry, dict) or entry.get("resolved"):
                 return False
-            data[key] = {**entry, "resolved": True, "resolution": how, "resolved_at": time.time()}
+            data[key] = {**entry, "resolved": True, "resolution": how, "resolved_at": time.time(),
+                         **({"duplicate_of": duplicate_of} if duplicate_of else {})}
             now = time.time()
             for stale in [k for k, v in data.items() if isinstance(v, dict) and v.get("resolved")
                           and now - (v.get("resolved_at") or 0) > RESOLVED_RETENTION_S]:
@@ -788,7 +789,8 @@ def owner_state(loop: dict, failure: dict) -> str:
     ``owned_in`` names, the loop's, and the no-loop one:
 
     * ``"open"`` — some ledger holds it unresolved: its alert line is (or will be) said;
-    * ``"resolved"`` — held, and resolved everywhere it is held (the event completed);
+    * ``"resolved"`` — held, and resolved everywhere it is held (the event completed); a copy
+      resolved only as a duplicate of the owner does not count — it never owned the read;
     * ``"unreadable"`` — not held by any readable ledger, and one cannot be read, so no line
       about it can come from there: the health check reports the read itself;
     * ``"gone"`` — no ledger holds it (moved aside, pruned).
@@ -820,8 +822,16 @@ def owner_state(loop: dict, failure: dict) -> str:
         if isinstance(entry, dict):
             if not entry.get("resolved"):
                 return "open"
-            resolved = True
+            if not _is_duplicate(entry):     # a settled duplicate never owned the read
+                resolved = True
     return "resolved" if resolved else "unreadable" if unreadable else "gone"
+
+
+def _is_duplicate(entry: dict) -> bool:
+    """An entry resolved as a duplicate of the same event held by another ledger. It never
+    owned the read, so it says nothing about whether the owner resolved."""
+    return bool(entry.get("duplicate_of")) or str(entry.get("resolution") or "").startswith(
+        "duplicate of the same event in ")
 
 
 def _settle_github_read(repo, key: str, how: str) -> None:
@@ -1175,7 +1185,8 @@ def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s:
             # One event, two ledgers (a handover that raced a landed write): the loop's own
             # ledger owns it, so the alert and the re-drive budget are counted once, there.
             ledger.resolve(key, f"duplicate of the same event in {home.path}; handled there",
-                           settle=False)             # the original there still owns its read
+                           settle=False,             # the original there still owns its read
+                           duplicate_of=str(home.path))
             continue
         claimed = ledger.claim(
             key, me, now=time.time(), cooldown_s=cooldown_s, may_redrive=may_redrive,
