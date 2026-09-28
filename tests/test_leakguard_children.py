@@ -2,12 +2,14 @@
 
 Each case runs the guard on a one-test probe module whose test starts a child process.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest import mock
 
@@ -174,6 +176,26 @@ class LanesCatchADisarmMidRun(unittest.TestCase):
         self.assertIn('ERROR: test_c_replaces_the_hook', err)
         self.assertIn("sys.unraisablehook is not the guard's", err)
 
+    def test_boundary_lane_charges_a_redirected_child_log_and_restores_it(self):
+        result = self.boundary('''
+            import os, subprocess, sys, unittest
+
+            class P(unittest.TestCase):
+                def test_a_redirects_the_child_log(self):
+                    os.environ['REVIEW_LOOP_LEAK_LOG'] = os.devnull
+
+                def test_b_child_leaks(self):
+                    subprocess.run([sys.executable, '-c',
+                                    'import os\\nf = open(os.devnull)\\ndel f\\n'], check=True)
+            ''')
+        err = result.stderr
+        self.assertNotEqual(result.returncode, 0, err)
+        self.assertIn("leak guard was disarmed while this test ran: REVIEW_LOOP_LEAK_LOG does not "
+                      "name this run's child log", err)
+        # Restored: the next test's child reports to the run's own log again.
+        self.assertRegex(err, r'ERROR: test_b_child_leaks[^\n]*\n-+\nresource leaked while this '
+                              r'test ran:\nin child')
+
     def test_boundary_lane_catches_a_disarm_after_the_last_test(self):
         result = self.boundary('''
             import sys, unittest
@@ -223,6 +245,32 @@ class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):
         env = self.spawned_env(fixture_mode=True)
         self.assertEqual(env['REVIEW_LOOP_LEAK_LOG'], '/leaks.jsonl')
         self.assertEqual(env['PYTHONPATH'].split(os.pathsep)[0], str(SITE))
+
+    def test_a_fixture_command_run_by_the_worker_carries_it_too(self):
+        # _spawn forwards the recorder to the worker; the worker's _run_fixture must pass it on
+        # to the fixture command, whose environment it scrubs again.
+        from review_loop import run_supervisor
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            seen = Path(tmp, 'seen')
+            probe = ('import os, sys\nwith open(sys.argv[1], "w") as out:\n'
+                     '    out.write(os.environ.get("REVIEW_LOOP_LEAK_LOG", "") + "\\n"\n'
+                     '              + os.environ.get("PYTHONPATH", ""))\n')
+            sup = run_supervisor.Supervisor(Path(tmp, 'runs.sqlite'), fixture_mode=True,
+                                            fixture_command=[sys.executable, '-c', probe, str(seen)])
+            try:
+                sup.enqueue('d', 'o/r', 1, 'a', 'reviewer')
+                deadline = time.monotonic() + 30
+                while (sup.get('d') or {}).get('state') not in ('succeeded', 'failed'):
+                    self.assertLess(time.monotonic(), deadline, sup.get('d'))
+                    time.sleep(0.05)
+                self.assertEqual(sup.get('d')['state'], 'succeeded', sup.get('d'))
+            finally:
+                for worker in run_supervisor._WORKERS:
+                    worker.wait(timeout=30)
+                run_supervisor._WORKERS.clear()
+            log, path = seen.read_text().split('\n', 1)
+        self.assertEqual(log, os.environ['REVIEW_LOOP_LEAK_LOG'])
+        self.assertEqual(path.split(os.pathsep)[0], str(SITE))
 
     def test_production_worker_never_does(self):
         env = self.spawned_env(production=True)

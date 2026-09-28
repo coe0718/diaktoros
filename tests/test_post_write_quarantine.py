@@ -1,7 +1,9 @@
 """Ambiguous fixer pushes must hold the PR and alert the operator."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import contextlib
 import io
+import os
 from pathlib import Path
 
 import tempfile
@@ -22,8 +24,8 @@ class PostWriteQuarantine(unittest.TestCase):
         self.home = Path(tmp.name)
         # A fixer push takes the host policy lock under $HERMES_HOME/review-loops.d: keep it in
         # this fixture, never the operator's home (#109).
-        env = mock.patch.dict('os.environ', {'HERMES_HOME': str(self.home),
-                                             'REVIEW_LOOP_CONFIG_DIR': str(self.home / 'review-loops.d')})
+        env = mock.patch.dict(os.environ, {'HERMES_HOME': str(self.home),
+                                           'REVIEW_LOOP_CONFIG_DIR': str(self.home / 'review-loops.d')})
         env.start()
         self.addCleanup(env.stop)
         (self.home / 'state').mkdir()

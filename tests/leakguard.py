@@ -180,6 +180,9 @@ def main(argv: list[str]) -> int:
         for problem in disarmed():
             print(f"leak guard is not armed: {problem}", file=sys.stderr)
         return 3
+    # Said up front, so a lane's log shows it ran guarded (CI's verticals job relies on this).
+    print(f"leak guard armed: ResourceWarning is an error; child leaks go to {_child_log}",
+          file=sys.stderr)
     # A class, not an instance, so unittest still applies -v, -f, -b and the rest to it.
     program = unittest.main(module=None, argv=["leakguard", *argv], testRunner=_LeakRunner,
                             exit=False)

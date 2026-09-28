@@ -3,6 +3,7 @@
 ``with sqlite3.connect(...) as con:`` commits or rolls back and leaves the handle open; a
 long-lived broker, proxy or supervisor then holds a growing set of open files on the ledger.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import gc
 import os
 from pathlib import Path

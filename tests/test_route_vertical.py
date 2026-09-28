@@ -3,6 +3,7 @@
 The fixture creates both HOME and HERMES_HOME before starting *any* child.
 Only the stub executable is permitted to answer the gate's GitHub reads.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,8 @@ from review_loop import ledger
 
 ROOT = Path(__file__).resolve().parents[1]
 HEAD = "a" * 40
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from worker_wait import wait_for_workers  # noqa: E402
 
 
 class RouteSubprocess(unittest.TestCase):
@@ -24,6 +27,9 @@ class RouteSubprocess(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # Cleanups run last in, first out: every detached worker a route spawned has exited
+        # before the temp dir is removed (a worker still writing made rmtree fail under load).
+        self.addCleanup(wait_for_workers, self.root)
         home = self.root / "home"
         home.mkdir()
         loops = home / "review-loops.d"
@@ -37,7 +43,7 @@ class RouteSubprocess(unittest.TestCase):
                      "fixers": ["dev"], "reviewers": ["reviewer"], "reviewer_seat": "reviewer",
                      "seats": {"reviewer": {"profile": "fixture-reviewer", "route": "review"},
                                "fixer": {"profile": "fixture-fixer", "route": "fix"}},
-                     "state_dir": str(home / "state"), "tokens": {}, "read_token": "",
+                     "state_dir": str(home / "state"), "tokens": {}, "read_token": "reader",
                      "host": "http://127.0.0.1:9"}
         (loops / "widgets.json").write_text(json.dumps(self.loop))
         (self.root / "gh-stub.py").write_text(
@@ -130,8 +136,9 @@ class RouteSubprocess(unittest.TestCase):
             runtime.chmod(0o600)
             def enqueue(*args, **kwargs):
                 st.queue_add("reviewer", key, HEAD, "url", "new turn")
+                return "enqueued"
             with mock.patch.object(run_supervisor.Supervisor, "recover"), \
-                 mock.patch.object(run_supervisor.Supervisor, "enqueue", side_effect=enqueue), \
+                 mock.patch.object(run_supervisor.Supervisor, "submit", side_effect=enqueue), \
                  mock.patch.object(config, "seat_concurrency", return_value=1), \
                  mock.patch.object(gate, "silence", side_effect=SystemExit):
                 with self.assertRaises(SystemExit):
@@ -152,7 +159,7 @@ class RouteSubprocess(unittest.TestCase):
                 st.queue_add("reviewer", key, HEAD, "url", "new turn")
                 raise OSError("worker unavailable")
             with mock.patch.object(run_supervisor.Supervisor, "recover"), \
-                 mock.patch.object(run_supervisor.Supervisor, "enqueue", side_effect=fail), \
+                 mock.patch.object(run_supervisor.Supervisor, "submit", side_effect=fail), \
                  mock.patch.object(config, "seat_concurrency", return_value=1), \
                  mock.patch.object(gate, "silence", side_effect=SystemExit):
                 with self.assertRaises(SystemExit):
@@ -289,7 +296,7 @@ class RouteSubprocess(unittest.TestCase):
         self.assertFalse((Path(self.loop["state_dir"]) / "pending.json").exists())
         self.assertIn("not an authorized fixer", result.stderr)
 
-    def test_route_enqueues_deduplicates_and_detached_worker_fails_closed(self):
+    def test_route_enqueues_deduplicates_and_unreadable_claim_stays_pending(self):
         runtime = Path(self.env["HERMES_HOME"]) / "review-loop-runtime.json"
         runtime.write_text("{}")  # invalid production settings; no network or key access
         runtime.chmod(0o600)
@@ -301,18 +308,48 @@ class RouteSubprocess(unittest.TestCase):
             self.assertEqual((result.returncode, result.stdout.strip()), (0, "[SILENT]"),
                              result.stderr)
         db = Path(self.env["HERMES_HOME"]) / "state" / "review-loop-runs.sqlite"
-        deadline = time.monotonic() + 10
-        rows = []
-        while time.monotonic() < deadline:
-            with ledger.connect(db) as conn:
-                rows = conn.execute("SELECT state, attempts, error FROM runs").fetchall()
-            if rows and rows[0][0] == "failed":
-                break
-            time.sleep(0.05)
+        # The detached worker cannot read the PR (no token here): gh.api answers None, which
+        # is a read to retry — a counted, backed-off, visible wait, never failed at once (#53)
+        # and never an invisible pending row.
+        time.sleep(1.5)
+        with ledger.connect(db) as conn:
+            rows = conn.execute("SELECT state, attempts, retries, error FROM runs").fetchall()
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0][0:2], ("failed", 1))
-        self.assertIn("review generation unavailable", rows[0][2])
+        self.assertEqual(rows[0][:3], ("waiting", 0, 1))
+        self.assertIn("claim-time read failed: PR unreadable", rows[0][3])
         self.assertFalse((Path(self.loop["state_dir"]) / "pending.json").exists())
+
+    def test_gate_reports_what_the_ledger_did_instead_of_enqueued(self):
+        """#73: a deduplicated delivery is not logged as a fresh enqueue; a failed pre-write
+        run is re-armed by the redelivery; a run that may have written is not."""
+        runtime = Path(self.env["HERMES_HOME"]) / "review-loop-runtime.json"
+        runtime.write_text("{}")
+        runtime.chmod(0o600)
+        payload = {"repository": {"full_name": "acme/widgets"}, "action": "opened",
+                   "number": 7, "pull_request": self.pr, "sender": {"login": "dev"}}
+        first = self.route("gate_reviewer.py", payload)
+        self.assertIn("reviewer enqueued for isolated worker", first.stderr)
+        db = Path(self.env["HERMES_HOME"]) / "state" / "review-loop-runs.sqlite"
+        time.sleep(1.0)  # the detached worker's claim read fails here: the row stays pending
+
+        def redeliver(state, extra=""):
+            with ledger.connect(db) as conn:
+                conn.execute("UPDATE runs SET state=?, owner=NULL" + extra, (state,))
+            return self.route("gate_reviewer.py", payload).stderr
+
+        out = redeliver("succeeded")
+        self.assertIn("reviewer not enqueued: duplicate succeeded", out)
+        self.assertNotIn("enqueued for isolated worker", out)
+        out = redeliver("failed", ", error='isolated turn failed: TimeoutError: upstream'")
+        self.assertIn("reviewer rearmed: isolated worker re-armed", out)
+        with ledger.connect(db) as conn:
+            run = conn.execute("SELECT id FROM runs").fetchone()[0]
+            conn.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,created) "
+                         "VALUES(?,?,?,?,?)", (run, "claimed", "g", 1, 0))
+        out = redeliver("failed")
+        self.assertIn("not enqueued: duplicate failed: review receipt claimed", out)
+        with ledger.connect(db) as conn:
+            self.assertEqual(conn.execute("SELECT state FROM runs").fetchone()[0], "failed")
 
     def test_dismissed_same_head_reopens_one_distinct_reviewer_turn(self):
         runtime = Path(self.env['HERMES_HOME']) / 'review-loop-runtime.json'

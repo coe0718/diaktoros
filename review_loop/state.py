@@ -65,7 +65,7 @@ def _atomic_write(path: pathlib.Path, data) -> None:
 class LoopState:
     def __init__(self, loop: dict):
         self.loop = loop
-        self.dir = pathlib.Path(str(loop["state_dir"])).expanduser()
+        self.dir = config.state_dir(loop)
         self.locks = self.dir / "locks.json"
         self.pending = self.dir / "pending.json"
         self.inflight_file = self.dir / "inflight.json"
@@ -471,6 +471,22 @@ class LoopState:
             data[key]["status"] = "adjudicating"
             self._breach_save(data)
             return marker
+
+    def breach_resume(self, number: int, head: str, rounds: int) -> dict | None:
+        """Undo ``breach_start`` for an isolated adjudicator turn that failed before recording
+        any ruling (issue #53), so its retry can start it again. Only this head and round
+        count, and only from ``adjudicating``; anything else is left alone."""
+        key = f"{self.loop['repo']}#{number}"
+        with self._breach_lock():
+            data = self._load(self.breach, {}) or {}
+            marker = data.get(key)
+            if (not isinstance(marker, dict) or marker.get("pr") != number
+                    or marker.get("head") != head or marker.get("rounds") != rounds
+                    or marker.get("status") != "adjudicating"):
+                return None
+            data[key] = {**marker, "status": "awaiting-adjudication"}
+            self._breach_save(data)
+            return data[key]
 
     def breach_all(self) -> dict:
         return self._load(self.breach, {}) or {}

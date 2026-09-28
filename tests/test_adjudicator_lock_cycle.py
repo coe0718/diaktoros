@@ -1,6 +1,7 @@
 """The gateway must finish adjudicator filtering before its POST response returns."""
 from __future__ import annotations
 
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import os
 import pathlib
@@ -31,7 +32,7 @@ class AdjudicatorCycleTest(unittest.TestCase):
         self.config.mkdir()
         self.head = HEAD_A
         self.loop = {"id": "cycle", "repo": "acme/widgets", "base": "main", "cap": 3,
-                     "fixers": ["fixer"], "reviewers": ["reviewer"],
+                     "fixers": ["fixer"], "reviewers": ["reviewer"], "read_token": "reader",
                      "seats": {seat: {"route": seat, "profile": "default"}
                                for seat in ("reviewer", "fixer")},
                      "state_dir": str(self.root / "state")}

@@ -37,6 +37,23 @@ def generation_for(pr, loop, number, head):
                       sort_keys=True, separators=(',', ':'))
 
 
+def _partial_view(con, run_id):
+    """The run's recorded partial-view reason, or '' (a ledger that predates the column: none)."""
+    if 'partial_view' not in {c[1] for c in con.execute('PRAGMA table_info(runs)')}:
+        return ''
+    row = con.execute('SELECT partial_view FROM runs WHERE id=?', (run_id,)).fetchone()
+    return (row[0] or '') if row else ''
+
+
+def partial_view(db, run_id):
+    """Read-only: why the host could not show this run the whole change, or ''."""
+    con = sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=10)
+    try:
+        return _partial_view(con, run_id)
+    finally:
+        con.close()
+
+
 class ReceiptLedger:
     """The worker's own SQLite run claim, never a caller-supplied receipt."""
     def __init__(self, db, run_id, generation):
@@ -48,7 +65,7 @@ class ReceiptLedger:
         return ledger.connect(self.db, timeout=10, isolation_level=None,
                               pragmas=('busy_timeout=10000', 'synchronous=FULL'))
 
-    def claim(self, principal_id):
+    def claim(self, principal_id, verdict=None):
         if type(principal_id) is not int or principal_id <= 0:
             raise ReceiptDenied('invalid reviewer principal')
         with self._connect() as con:
@@ -57,6 +74,12 @@ class ReceiptLedger:
                               (self.run_id,)).fetchone()
             if row != (self.generation, 'reviewer', 'running'):
                 raise ReceiptDenied('generation not owned by running reviewer')
+            # The durable half of the partial-view rule (#93, #110): whatever scope the caller
+            # holds, an approval from a run the host recorded as not seeing the whole change is
+            # refused here, inside the claim's transaction and before any POST.
+            if verdict == 'APPROVE' and _partial_view(con, self.run_id):
+                raise ReceiptDenied('approval refused: the host could not show this run the '
+                                    'whole change')
             con.execute('INSERT INTO review_receipts(run_id,state,generation,principal_id,created) '
                         'VALUES(?,?,?,?,?)', (self.run_id, 'claimed', self.generation,
                                             principal_id, time.time()))
@@ -93,7 +116,7 @@ def submit(loop, scope, ledger, verdict, body):
     if not isinstance(principal, dict) or type(principal.get('id')) is not int or principal['id'] <= 0 or str(principal.get('login', '')).casefold() != login.casefold():
         raise ReceiptDenied('reviewer identity changed')
     principal_id = principal['id']
-    ledger.claim(principal_id)  # No retry after this durable point, even if POST throws.
+    ledger.claim(principal_id, verdict)  # No retry after this durable point, even if POST throws.
     endpoint = path + '/reviews'
     response = gh.api(loop, endpoint, method='POST', login=login,
                       body={'commit_id': scope.head, 'event': verdict, 'body': body})

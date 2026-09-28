@@ -5,6 +5,7 @@ with a scrubbed environment; neither reads PYTHONPATH, so the guard loads its re
 them by absolute path. With the guard off, each argv, script and environment is pinned to be
 exactly what it was before the guard existed.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import os
 from pathlib import Path

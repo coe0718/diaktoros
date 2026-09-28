@@ -3,6 +3,7 @@
 ``urllib.error.HTTPError`` is also the open response. Dropping it unclosed leaves the socket to
 garbage collection, and Python 3.14 warns "Implicitly cleaning up <HTTPError ...>" about it.
 """
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import io
 import os
 import unittest
@@ -23,6 +24,11 @@ class HttpErrorsAreClosed(unittest.TestCase):
         patcher = mock.patch('urllib.request.urlopen', side_effect=self.error)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # urlopen is the fake here, so nothing leaves the machine; the test guard's network
+        # check (tests/_home_guard.py) would refuse the production URLs before reaching it.
+        guard = mock.patch.object(config, 'guard_network', side_effect=lambda url: url)
+        guard.start()
+        self.addCleanup(guard.stop)
         env = mock.patch.dict(os.environ)   # restored after the test, stub or not
         env.start()
         self.addCleanup(env.stop)
