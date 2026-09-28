@@ -813,6 +813,246 @@ def _patch_hook_url(loop: dict, hook_id: int, url: str, login: str | None = None
                               f"{hook_write_need(loop, login)}")
 
 
+def _hook_route_names(loop: dict) -> set[str]:
+    """The route names a repo hook of this loop posts to (reviewer and fixer)."""
+    return {name for role, name in _routes_of(loop).items()
+            if role in ("reviewer", "fixer") and name}
+
+
+# One matcher for every caller (doctor.split_route_hooks): arm and selftest --ping credit a hook
+# only at the registry's route URL; uninstall and init's stale-hook guard (ownership) also count
+# the URL the loop's config gives a route the registry no longer holds.
+_hook_route_name = doctor.hook_route_name
+
+
+def _classify_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, list[dict], str]:
+    """``(own, foreign, error)`` for the hooks posting to this loop's route names.
+
+    *Own* hooks post to exactly one of the routes' URLs (``doctor.seat_hook_url``: the gateway
+    binds a route to its profile by URL and answers any other profile's URL 404). *Foreign* ones
+    post to the same route name at another origin, profile or path — another install, an old
+    gateway — and are only ever reported, never deleted or counted as a collision. Every page is read; a partial or malformed listing is
+    ``(None, [], reason)``, never "no hooks".
+    """
+    listing, error = gh.hooks_read(loop, login or loop.get("read_token"))
+    if error:
+        return None, [], error
+    if any(not isinstance(hook.get("id"), int) or not isinstance(hook.get("config"), dict)
+           or not isinstance(hook["config"].get("url"), str) for hook in listing):
+        return None, [], "invalid hook listing"
+    try:
+        own, foreign = doctor.split_route_hooks(loop, listing, _hook_route_names(loop),
+                                                ownership=True)
+    except config.ConfigError as exc:
+        return None, [], f"cannot resolve the loop's webhook host: {exc}"
+    return own, foreign, ""
+
+
+def _loop_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, str]:
+    """This loop's own repo hooks (see ``_classify_hooks``)."""
+    own, _, error = _classify_hooks(loop, login)
+    return own, error
+
+
+def _foreign_lines(loop: dict, foreign: list[dict]) -> list[str]:
+    lines = []
+    for hook in foreign:
+        name = _hook_route_name(hook)
+        why = doctor.hook_url_difference(str(hook["config"].get("url") or ""),
+                                         (doctor.install_hook_urls(loop, name) or [""])[0])
+        lines.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this install's "
+                     "hook (not the route's URL), left alone")
+    return lines
+
+
+def _hook_delete_commands(loop: dict, hook_ids) -> list[str]:
+    """Pasteable ``gh`` commands that delete these hooks (a token with admin:repo_hook or repo)."""
+    repo = loop["repo"]
+    return [f"gh api -X DELETE {shlex.quote(f'repos/{repo}/hooks/{hook_id}')}"
+            for hook_id in hook_ids]
+
+
+def _hook_find_command(loop: dict) -> str:
+    """A pasteable ``gh`` command listing the ids of the hooks posting to this loop's routes."""
+    names = "|".join(sorted(_hook_route_names(loop)))
+    jq = f'.[] | select(.config.url | test("/webhooks/({names})/?$")) | .id'
+    repo = loop["repo"]
+    return (f"gh api {shlex.quote(f'repos/{repo}/hooks?per_page=100')} "
+            f"--jq {shlex.quote(jq)}")
+
+
+def _delete_loop_hooks(loop: dict, login: str | None) -> tuple[list[str], list[str], list[int]]:
+    """Delete this loop's repo hooks and read the listing back: ``(done, failures, left)``.
+
+    Deleted rather than paused: a paused hook still signs with a secret the next install's route
+    will not hold, and it is exactly what a later ``init --hooks`` would trip over.
+    """
+    hooks, foreign, error = _classify_hooks(loop, login)
+    if hooks is None:
+        return [], [f"could not read the repo's hooks: {error}"], []
+    done, failures = _foreign_lines(loop, foreign), []
+    login = login or loop.get("read_token")
+    if not hooks:
+        # Nothing of ours to delete — but "gone" is only ever concluded from a read: a second
+        # sample still catches a hook created meanwhile (a concurrent arm or init --hooks), and
+        # an unreadable one is "not confirmed", never a claim that anything is live.
+        after, error = _loop_hooks(loop, login)
+        if after is None:
+            return done, [f"could not confirm that no hook of this loop's appeared while uninstall "
+                          f"ran (the listing read-back failed: {error}) — nothing was deleted"], []
+        if after:
+            ids = sorted(hook["id"] for hook in after)
+            return done, [f"hook{'s' if len(ids) > 1 else ''} {', '.join(map(str, ids))} "
+                          "appeared on this loop's route URLs while uninstall ran (a concurrent "
+                          "arm or init --hooks?) — not deleted"], ids
+        return done, failures, []
+    refused: list[int] = []                       # ids whose DELETE failed, recorded as they fail
+    for hook in hooks:
+        _, error = gh.fetch(loop, f"/repos/{loop['repo']}/hooks/{hook['id']}", method="DELETE",
+                            login=login)
+        if error:
+            refused.append(hook["id"])
+            failures.append(f"hook {hook['id']}: DELETE failed ({error})")
+    after, error = _loop_hooks(loop, login)
+    if after is None:
+        # Only the hooks whose DELETE failed are known to be live; the rest were accepted and
+        # merely not read back — say exactly that, never "still live" about ids that are gone.
+        accepted = [hook["id"] for hook in hooks if hook["id"] not in refused]
+        if accepted:
+            failures.append(f"could not confirm the deletion of hook"
+                            f"{'s' if len(accepted) > 1 else ''} "
+                            f"{', '.join(map(str, accepted))} (GitHub accepted each DELETE; the "
+                            f"listing read-back failed: {error})")
+        else:
+            failures.append(f"could not confirm the deletion: {error}")
+        return done, failures, refused
+    left = {hook["id"] for hook in after}
+    for hook in hooks:
+        if hook["id"] not in left:
+            done.append(f"hook {hook['id']} deleted")
+    return done, failures, sorted(left)
+
+
+def _hermes_bin() -> str | None:
+    """The ``hermes`` executable the scheduler commands run. ``REVIEW_LOOP_HERMES`` names a
+    stand-in (the test suite's fake), so no test ever drives the operator's real install."""
+    found = os.environ.get("REVIEW_LOOP_HERMES") or shutil.which("hermes")
+    # Under the test guard (#101), never the operator's real hermes — for cron create and remove.
+    return config.guard_real_hermes(found) if found else None
+
+
+def _cron_jobs(loop: dict) -> tuple[list[dict] | None, str]:
+    """The scheduler jobs ``init --schedule`` registered for this loop, read from the job store."""
+    path = doctor.cron_store()
+    if not path.exists():
+        return [], ""
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:
+        return None, f"{path} is not readable JSON ({exc})"
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    if not isinstance(jobs, list):
+        return None, f"{path} has no job list"
+    wanted = watchdog_job_name(loop)
+    return [job for job in jobs if isinstance(job, dict)
+            and str(job.get("name") or "").strip() == wanted], ""
+
+
+def _remove_cron(loop: dict) -> tuple[list[str], list[str]]:
+    """Remove this loop's watchdog job through the scheduler's own CLI, then read the store back."""
+    jobs, error = _cron_jobs(loop)
+    if jobs is None:
+        return [], [f"cron: {error}"]
+    hermes = _hermes_bin()
+    done, failures = [], []
+    for job in jobs:
+        job_id = str(job.get("id") or "")
+        if not job_id:
+            failures.append(f"cron: job {watchdog_job_name(loop)!r} has no id")
+            continue
+        if not hermes:
+            failures.append(f"cron: no `hermes` on PATH to remove job {job_id}")
+            continue
+        try:
+            proc = subprocess.run([hermes, "cron", "remove", job_id], capture_output=True,
+                                  text=True, timeout=120)
+        except Exception as exc:
+            failures.append(f"cron: removing job {job_id} failed ({exc})")
+            continue
+        if proc.returncode != 0:
+            failures.append(f"cron: removing job {job_id} failed "
+                            f"({(proc.stderr or proc.stdout).strip()[:200]})")
+    after, error = _cron_jobs(loop)
+    if after is None:
+        return done, failures + [f"cron: could not confirm the removal: {error}"]
+    left = {str(job.get("id") or "") for job in after}
+    for job in jobs:
+        if str(job.get("id") or "") in left:
+            if not failures:
+                failures.append(f"cron: job {job.get('id')} is still scheduled")
+        else:
+            done.append(f"cron job removed: {job.get('id')} ({watchdog_job_name(loop)})")
+    return done, failures
+
+
+def _remove_unused_shim() -> str:
+    """The cron shim is shared by every loop's job: remove it only when no job runs it any more."""
+    shim = config.home() / "scripts" / SHIM_NAME
+    if not shim.is_symlink() and not shim.is_file():
+        return ""
+    try:
+        data = json.loads(doctor.cron_store().read_text()) if doctor.cron_store().exists() else []
+    except Exception:
+        return ""
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    if not isinstance(jobs, list) or any(
+            isinstance(job, dict) and pathlib.Path(str(job.get("script") or "")).name == SHIM_NAME
+            for job in jobs):
+        return ""
+    if shim.is_symlink():
+        # Never followed or removed on its own authority — but named, like every other leftover.
+        return (f"cron shim NOT removed: {shim} is a symlink (never followed) — no job runs it; "
+                f"remove the link itself: rm -- {shlex.quote(str(shim))}")
+    try:
+        shim.unlink()
+    except OSError as exc:
+        return (f"cron shim NOT removed: {shim} ({exc.strerror or exc}) — no job runs it; remove "
+                f"it by hand: rm -- {shlex.quote(str(shim))}")
+    return f"cron shim removed: {shim} (no job runs it any more)"
+
+
+def _purge_target(loop: dict) -> tuple[pathlib.Path | None, str]:
+    """The state directory ``uninstall --purge`` may delete, or ``(None, why not)``.
+
+    Only the default ``<hermes home>/state/review-loops/<id>`` is ever removed: a custom
+    ``state_dir`` could be anything the operator typed, and a recursive delete is not the place
+    to find out. No symlink anywhere below the Hermes home is followed.
+    """
+    base = config.home()
+    default = base / "state" / "review-loops" / loop["id"]
+    raw = pathlib.Path(str(loop.get("state_dir") or "")).expanduser()
+    lid = shlex.quote(loop["id"])
+    if os.path.normpath(str(raw)) != os.path.normpath(str(default)):
+        return None, (f"state_dir {raw} is not the default {default}, so --purge will not delete "
+                      "it: a custom directory could hold anything the operator pointed it at. "
+                      "Check it holds only this loop's state, then run:\n"
+                      f"  hermes review-loop uninstall --loop {lid} && "
+                      f"rm -rf -- {shlex.quote(str(raw))}")
+    for path in (base / "state", base / "state" / "review-loops", default):
+        if path.is_symlink():
+            return None, (f"{path} is a symlink; --purge never follows one — it may point at "
+                          "this loop's own (moved) state or somewhere else entirely, and this "
+                          "command cannot tell which. Check where it points, uninstall without "
+                          "--purge, remove the link, and remove the directory it points at by "
+                          "hand if it is this loop's:\n"
+                          f"  ls -ld -- {shlex.quote(str(path))}   # where it points\n"
+                          f"  hermes review-loop uninstall --loop {lid} && "
+                          f"rm -- {shlex.quote(str(path))}   # the link itself")
+    if default.exists() and not default.is_dir():
+        return None, f"{default} is not a directory"
+    return default, ""
+
+
 def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str], bool]:
     """A cron shim plus the job itself, through the scheduler's own CLI.
 
@@ -825,7 +1065,7 @@ def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str
     shim = scripts / SHIM_NAME
     shim.write_text(SHIM.format(watchdog=watchdog))
     shim.chmod(0o755)
-    hermes = config.guard_real_hermes(shutil.which("hermes") or "hermes")
+    hermes = _hermes_bin() or "hermes"
     cmd = [hermes, "cron", "create", schedule, "--name", watchdog_job_name(loop),
            "--no-agent", "--script", SHIM_NAME, "--deliver", deliver]
     try:
@@ -997,6 +1237,39 @@ def _restore_config_locked(path: pathlib.Path, data: bytes) -> None:
         pathlib.Path(temporary).unlink(missing_ok=True)
 
 
+def _stale_hooks_refusal(loop: dict, admin: str | None) -> str:
+    """Why ``init --hooks`` must not create hooks yet, or ``""`` when the routes have none.
+
+    Only hooks at this loop's route URLs collide; the same route name at another origin, profile
+    or path is printed as information (the gateway never delivers it to these routes).
+
+    Refuse, never adopt. Adopting would mean PATCHing a new secret onto hooks this install did not
+    create: GitHub never returns a hook's secret, so nothing can prove whose they are or which of
+    several is current, and an adopted hook keeps its old ``active`` state — an armed leftover
+    would arm a loop that has not passed doctor/selftest. Refusing writes nothing, and the fix is
+    one pasteable command per hook (or ``uninstall`` for a loop that is still configured).
+    """
+    hooks, foreign, error = _classify_hooks(loop, admin)
+    if hooks is None:
+        return (f"refused: cannot read {loop['repo']}'s hooks to check for a previous install's "
+                f"({error}); nothing written. Give the --admin-token login hook access "
+                "(`admin:repo_hook`, or classic `repo`) and re-run")
+    for line in _foreign_lines(loop, foreign):
+        print(f"  info: {line}")
+    if not hooks:
+        return ""
+    ids = sorted(hook["id"] for hook in hooks)
+    lines = [f"refused: {loop['repo']} already has repo hook(s) posting to this loop's routes "
+             f"({', '.join(sorted({_hook_route_name(h) for h in hooks}))}): "
+             f"{', '.join(str(i) for i in ids)} — "
+             f"{sum(1 for h in hooks if h.get('active'))} active. They were created by a previous "
+             "install and sign with its secret, which the routes this init writes will not hold.",
+             "nothing written. Delete them (a token with `admin:repo_hook` or classic `repo`), "
+             "then re-run this init:"]
+    lines += [f"  {command}" for command in _hook_delete_commands(loop, ids)]
+    return "\n".join(lines)
+
+
 def cmd_init(args) -> int:
     """Install a loop: write its config, its routes, and (on request) its hooks and cron job.
 
@@ -1008,6 +1281,14 @@ def cmd_init(args) -> int:
     """
     if getattr(args, "arm", False) and not args.hooks:
         print("--arm arms the repo hooks init creates; it needs --hooks")
+        return 2
+    loop_id = args.id or args.repo.split("/")[-1]
+    # The rule the loader enforces: an id that does not name exactly one config file would be
+    # written here and then break every loop-wide command that reads the directory.
+    if (not loop_id or loop_id in (".", "..") or pathlib.Path(loop_id).name != loop_id
+            or "\\" in loop_id or loop_id.startswith(".")):
+        print(f"--id {loop_id!r} cannot name a loop config file: use letters, digits, '-', '_' "
+              "or '.' (not leading, not a path)")
         return 2
     d = config.settings_defaults(_SETTINGS)
     tokens = {}
@@ -1171,6 +1452,15 @@ def cmd_init(args) -> int:
     if observer_name and routes.route(observer_name):
         print(f"refused: route {observer_name!r} already exists and is not this observer's route")
         return 2
+    if args.hooks:
+        # A previous install's hooks on these routes still sign with that install's secret, and
+        # this init writes the routes with a fresh one: a second set would leave the old ones live
+        # but unable to authenticate, next to new paused ones. Refused (not adopted) while nothing
+        # is written yet; see _stale_hooks_refusal for why.
+        refusal = _stale_hooks_refusal(loop, args.admin_token)
+        if refusal:
+            print(refusal)
+            return 2
     previous_config = None
     previous_routes = {name: routes.route(name) for name in _routes_of(loop).values()}
     try:
@@ -1238,6 +1528,9 @@ def cmd_init(args) -> int:
         print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), False)}")
     if not args.hooks:
         print("  (repo hooks not created — pass --hooks, or add them by hand with the route URLs)")
+    # Armed at birth: prove the secret now, as `arm` does, rather than at the first real event.
+    pinged = (_ping_loop_hooks(loop, args.admin_token)
+              if args.hooks and getattr(args, "arm", False) else True)
     schedule_lines, scheduled = (_install_schedule(loop, args.schedule, args.watchdog_deliver)
                                  if args.schedule else ([], True))
     for line in schedule_lines:
@@ -1247,6 +1540,10 @@ def cmd_init(args) -> int:
         # install script's `init && ...` does not read a missing watchdog as success.
         print("\ninit INCOMPLETE: the watchdog job was not scheduled — run the command above, "
               f"then `hermes review-loop doctor --loop {loop['id']}`")
+        return 1
+    if not pinged:
+        print(f"\ninit INCOMPLETE: a hook's ping was rejected — see the ❌ line above, then "
+              f"`hermes review-loop doctor --loop {loop['id']}`")
         return 1
     # The seats never hold a GitHub token: every write goes through the host broker with the token
     # files mapped above, so a GH_TOKEN in a seat profile's .env is only an extra copy to leak.
@@ -1298,10 +1595,24 @@ def cmd_set(args) -> int:
             return 2
         print(f"repairing {args.loop}: it has no read_token; setting the reader named by --read-token")
 
+    host = args.host
+    if host is not None:
+        # A blank or whitespace host is not "unchanged": it would strip the loop of the origin
+        # its hooks and routes are matched by. Say so, and validate a real one here, by name.
+        host = host.strip()
+        try:
+            if not host:
+                raise config.ConfigError("--host needs your gateway origin (https://…); a blank "
+                                         "host would orphan the loop's hooks — to take the loop "
+                                         "down use `uninstall`")
+            config.webhook_host(host, required=True)
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
     wanted = {"concurrency": args.concurrency, "cap": args.cap, "base": args.base,
               "clone": args.clone, "grace_min": args.grace_min,
               "marker_grace_min": args.marker_grace_min, "ttl_min": args.ttl_min,
-              "inflight_ttl_min": args.inflight_ttl_min, "host": args.host}
+              "inflight_ttl_min": args.inflight_ttl_min, "host": host}
     changes = {k: v for k, v in wanted.items()
                if v is not None and v != "" and v != loop.get(k)}
 
@@ -2183,7 +2494,8 @@ def cmd_selftest(args) -> int:
         print(f"cannot selftest loop: {doctor._safe_report_text(str(exc))}")
         return 2
     return selftest.run(loop, pr=args.pr, model=not args.no_model, live_turn=args.live_turn,
-                        timeout=args.timeout)
+                        timeout=args.timeout, ping=getattr(args, "ping", False),
+                        ping_login=getattr(args, "admin_token", "") or None)
 
 
 def cmd_models(args) -> int:
@@ -2245,6 +2557,28 @@ def cmd_models(args) -> int:
     return 0
 
 
+def _ping_loop_hooks(loop: dict, login: str | None) -> bool:
+    """After arming: ping each of the loop's hooks and report how the gateway answered.
+
+    An active hook whose secret the route does not hold looks armed and wakes nothing; this is
+    the moment to find out. False only on a ping the gateway rejected or one that could not be
+    sent — no delivery seen within the bounded wait is a warning, not a verdict.
+    """
+    from . import hook_ping
+    hooks, error = _loop_hooks(loop, login)
+    if hooks is None:
+        print(f"[{loop['id']}] ⚠️ hooks not pinged: cannot read the repo's hooks ({error})")
+        return True
+    ok = True
+    for hook in sorted(hooks, key=lambda item: item["id"]):
+        status, line = hook_ping.ping(loop, hook["id"], login)
+        for part in line.split("\n"):
+            print(f"[{loop['id']}] {part}")
+        if status in (hook_ping.REJECTED, hook_ping.ERROR) and not line.startswith("⚠️"):
+            ok = False
+    return ok
+
+
 def cmd_arm(args) -> int:
     """Arm or pause loops by flipping their repo hooks; exit 1 unless GitHub confirms every one."""
     try:
@@ -2262,6 +2596,8 @@ def cmd_arm(args) -> int:
         for line in lines:
             print(f"[{loop['id']}] {line}")
         if not ok:
+            failed.append(loop["id"])
+        elif not args.pause and not _ping_loop_hooks(loop, args.admin_token):
             failed.append(loop["id"])
     if failed:
         print(f"{'pause' if args.pause else 'arm'} NOT confirmed for: {', '.join(failed)} "
@@ -2372,22 +2708,265 @@ def cmd_cleanup(args) -> int:
     return subprocess.run(cmd).returncode
 
 
+def _uninstall_preflight(loop: dict) -> list[str]:
+    """Reasons a later uninstall step would fail on a shared file, read before anything is removed.
+
+    The route registry is rewritten by step 3, after the hooks and the watchdog job are already
+    gone; it must parse now. (The cron store was read just before this; the intent record's own
+    reader tolerates a bad file — it heals nothing then.)
+    """
+    problems = []
+    path = routes.subs_path()
+    if path.exists() or path.is_symlink():
+        try:
+            data = json.loads(path.read_text())
+        except Exception as exc:
+            problems.append(f"route registry {path} cannot be read ({type(exc).__name__}: "
+                            f"{exc}) — fix or restore it; nothing was removed")
+        else:
+            if not isinstance(data, dict):
+                problems.append(f"route registry {path} is not a JSON object — fix or restore "
+                                "it; nothing was removed")
+    return problems
+
+
+def _unloadable_teardown_advice(loop_id: str) -> None:
+    """For a loop file the loader refuses: what may still be live, and how to find it.
+
+    ``uninstall`` will not act on a config it cannot validate — deleting hooks or jobs on a
+    guess is the wrong way to fail — but it can still read the raw file for the repo, the route
+    names and the job name, and hand over the commands to look them up.
+    """
+    try:
+        raw = json.loads((config.config_dir() / f"{loop_id}.json").read_text())
+    except Exception:
+        return
+    if not isinstance(raw, dict) or str(raw.get("repo") or "").count("/") != 1:
+        return
+    raw = {**raw, "id": loop_id, "repo": str(raw["repo"]).strip().lower()}
+    print("it may still have live repo hooks and a watchdog job; nothing was touched. "
+          "Look them up with:")
+    if _hook_route_names(raw):
+        print(f"  {_hook_find_command(raw)}   # hook ids on its route names — check each URL "
+              "before deleting: `gh api -X DELETE repos/<owner>/<repo>/hooks/<id>`")
+    jobs, _ = _cron_jobs(raw)
+    for job in jobs or []:
+        print(f"  hermes cron remove {shlex.quote(str(job.get('id') or '<id>'))}   "
+              f"# {watchdog_job_name(raw)}")
+    print("then fix the file (the reason above) and re-run `hermes review-loop uninstall "
+          f"--loop {shlex.quote(loop_id)}`, or remove what is listed by hand and delete "
+          f"{config.config_dir() / (loop_id + '.json')}")
+
+
+def _uninstall_incomplete(removed: list[str], left: list[str], keep_hooks: bool,
+                          commands: list[str]) -> int:
+    """A late step failed after earlier ones were done: say which, and how to finish. Exit 2.
+
+    Past this point the config may be gone, so a re-run cannot finish the job — the printed
+    commands do.
+    """
+    print("uninstall INCOMPLETE — removed: " + (", ".join(removed) or "nothing else")
+          + "; left behind: " + ("the repo hooks (--keep-hooks), " if keep_hooks else "")
+          + ", ".join(left))
+    print("fix what refused (the permissions of the path above), then finish with:")
+    for command in commands:
+        print(f"  {command}")
+    return 2
+
+
+def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
+                       args, unattributed: bool = False) -> int:
+    """Refuse an uninstall with the exact commands that finish it. The config is still there."""
+    lid = shlex.quote(loop["id"])
+    print("refused: uninstall stopped before removing routes or config — nothing below the "
+          "failure was touched:")
+    for reason in reasons:
+        print(f"  {reason}")
+    if unattributed:
+        print("they may be this install's or another install's (same repo, same route names): "
+              "look at each one's URL before deleting anything:")
+        print(f"  {_hook_find_command(loop)}   # the ids")
+        print(f"  gh api {shlex.quote(f'repos/' + loop['repo'] + '/hooks/<id>')} --jq .config.url"
+              "   # where each posts")
+        print("then either set this loop's host (`hermes review-loop set --loop "
+              f"{lid} --host https://your-gateway.example`) so uninstall can tell its own hooks "
+              "apart, or delete the ones that are this install's by hand")
+    elif any(reason.startswith("could not confirm the deletion of hook") for reason in reasons) \
+            and not left_hooks:
+        print("every DELETE was accepted, but the hook listing could not be read back to confirm "
+              "it — look before re-running (it lists any id that is somehow still there):")
+        print(f"  {_hook_find_command(loop)}")
+    elif left_hooks:
+        # Only ids a listing actually showed at this loop's route URLs are called live, and only
+        # they get DELETE commands.
+        print("the loop's repo hooks are still live. Delete them with a token that has "
+              "`admin:repo_hook` (or classic `repo`):")
+        for command in _hook_delete_commands(loop, left_hooks):
+            print(f"  {command}")
+        print("or map such a token on this loop and let uninstall do it:")
+        print(f"  hermes review-loop uninstall --loop {lid} --admin-token <login>")
+    elif any(reason.startswith(("hook", "could not")) for reason in reasons):
+        # Nothing was read (or read back), so nothing is known about which hooks exist — or
+        # whose they are. No liveness claim, and no DELETE on a guess.
+        print("the hook listing could not be read or confirmed, so this command does not know "
+              "which hooks exist; nothing was deleted on a guess. Look first — check each one's "
+              "URL before deleting anything:")
+        print(f"  {_hook_find_command(loop)}   # the ids")
+        print(f"  gh api {shlex.quote(f'repos/' + loop['repo'] + '/hooks/<id>')} --jq .config.url"
+              "   # where each posts")
+    if any(reason.startswith("cron") for reason in reasons):
+        jobs, _ = _cron_jobs(loop)
+        for job in jobs or []:
+            print(f"  hermes cron remove {shlex.quote(str(job.get('id') or '<id>'))}")
+    print("then re-run:")
+    admin = getattr(args, "admin_token", "") or ""
+    print(f"  hermes review-loop uninstall --loop {lid}"
+          + (f" --admin-token {shlex.quote(admin)}" if admin else "")
+          + (" --keep-config" if args.keep_config else "")
+          + (" --purge" if getattr(args, "purge", False) else ""))
+    print("(`--keep-hooks` uninstalls anyway and leaves the hooks live — they keep posting to "
+          "routes that no longer exist)")
+    return 2
+
+
 def cmd_uninstall(args) -> int:
+    """The inverse of ``init``: hooks, cron job, routes, config and (``--purge``) state.
+
+    Order matters. Everything that needs the loop config — its hook routes, its token mapping, its
+    job name — is undone *first*, while the config still exists; if any of it cannot be done the
+    command refuses with the commands that finish it, and the config stays so they still run.
+    """
     try:
         loop = config.load_id(args.loop)
     except config.ConfigError as exc:
         print(f"cannot uninstall: {exc}")
+        _unloadable_teardown_advice(args.loop)
         return 2
-    # Forget first: a route the operator removed must not be put back by the next watchdog
+    keep_hooks = getattr(args, "keep_hooks", False)
+    purge = getattr(args, "purge", False)
+    admin = getattr(args, "admin_token", "") or ""
+    target = None
+    if purge:
+        if args.keep_config:
+            print("refused: --purge removes the state the kept config points at; drop one of "
+                  "--purge / --keep-config")
+            return 2
+        target, why = _purge_target(loop)
+        if target is None:
+            print(f"refused: {why}")
+            return 2
+        try:
+            busy = _busy_seats(loop, {"reviewer", "fixer"})
+        except OSError as exc:
+            # Reading the in-flight marks takes the state lock inside the directory about to be
+            # deleted; if that cannot be opened, nothing can be proved idle — refuse, untouched.
+            where = f" ({exc.filename})" if getattr(exc, "filename", None) else ""
+            print(f"refused: --purge cannot check for a run in flight — the state directory "
+                  f"{target} cannot be read: {exc.strerror or exc}{where}. Nothing was removed. "
+                  "Fix its permissions and re-run, or uninstall without --purge and remove it "
+                  f"by hand afterwards: rm -rf -- {shlex.quote(str(target))}")
+            return 2
+        if busy:
+            print("refused: --purge would delete the state of a run in flight: " + "; ".join(busy))
+            return 2
+    if admin and gh.token_path(loop, admin) is None:
+        print(f"refused: --admin-token {admin!r} has no token file mapped on this loop — map it "
+              f"with `hermes review-loop set --loop {shlex.quote(loop['id'])} --token "
+              f"{shlex.quote(admin)}=/abs/path/to/pat`")
+        return 2
+    jobs, error = _cron_jobs(loop)
+    if jobs is None:
+        return _uninstall_refused(loop, [f"cron: {error}"], [], args)
+    # Every shared file a later step rewrites is read *now*, before a hook or a job is touched:
+    # a registry that will not parse must refuse here, not raise after the destructive steps.
+    problems = _uninstall_preflight(loop)
+    if problems:
+        return _uninstall_refused(loop, problems, [], args)
+    # What is already gone, for the summary if a later step (the state purge) fails.
+    removed: list[str] = []
+    # 1. Stop deliveries: delete the repo hooks while the config still names their routes.
+    if keep_hooks:
+        print("hooks: kept (--keep-hooks) — they stay live and post to routes about to be removed;"
+              " find them with:")
+        print(f"  {_hook_find_command(loop)}")
+    elif not str(loop.get("host") or "").strip():
+        # A host-less loop has no gateway origin to tell its own hooks from another install's —
+        # and it may once have had one (a host blanked by hand). So look before skipping: any hook
+        # posting to its route names may be this install's, live, and is refused with the
+        # commands that delete it; only an empty answer lets the uninstall go on.
+        listing, error = gh.hooks_read(loop, admin or loop.get("read_token"))
+        if error:
+            return _uninstall_refused(loop, [f"could not read the repo's hooks: {error}"], [], args)
+        matching = [hook for hook in listing
+                    if not isinstance(hook, dict) or doctor.hook_route_name(hook)
+                    in _hook_route_names(loop)]
+        if any(not isinstance(hook, dict) or not isinstance(hook.get("id"), int)
+               for hook in matching):
+            # _classify_hooks' rule: an entry that cannot be identified makes the listing
+            # untrustworthy — never "no hooks".
+            return _uninstall_refused(loop, ["could not read the repo's hooks: invalid hook "
+                                             "listing (an entry on the loop's route names has no "
+                                             "integer id)"], [], args)
+        named = sorted(hook["id"] for hook in matching)
+        if named:
+            # Without a host there is no route URL to compare with, so none of these can be
+            # attributed to this install: never hand out DELETE commands for them.
+            return _uninstall_refused(loop, [
+                f"hooks {', '.join(map(str, named))} post to this loop's route names, and the loop "
+                "has no host to tell whether they are this install's (a blanked host leaves its "
+                "hooks behind) or another install's on the same repo — nothing was deleted"],
+                [], args, unattributed=True)
+        print("hooks: none — the loop has no host, and no repo hook posts to its route names")
+    else:
+        done, failures, left = _delete_loop_hooks(loop, admin or None)
+        for line in done:
+            print(line)
+        if failures or left:
+            if left and not failures:
+                failures = [f"hook {hook_id} still present after DELETE" for hook_id in left]
+            return _uninstall_refused(loop, failures, left, args)
+        if not done:
+            print("hooks: none of this loop's routes has a repo hook")
+        elif any(line.endswith(" deleted") for line in done):
+            removed.append("repo hooks")
+    # 2. Stop the watchdog.
+    done, failures = _remove_cron(loop)
+    for line in done:
+        print(line)
+    if failures:
+        return _uninstall_refused(loop, failures, [], args)
+    if done:
+        removed.append("watchdog job")
+    shim_line = _remove_unused_shim()
+    leftovers: list[tuple[str, str]] = []          # (what, the command that removes it)
+    if shim_line:
+        print(shim_line)
+        if shim_line.startswith("cron shim removed"):
+            removed.append("cron shim")
+        else:
+            shim = config.home() / "scripts" / SHIM_NAME
+            leftovers.append((f"the cron shim {shim}", f"rm -- {shlex.quote(str(shim))}"))
+    # 3. Forget first: a route the operator removed must not be put back by the next watchdog
     # sweep's self-heal (which only ever restores routes still in the intent record).
+    lid = shlex.quote(loop["id"])
+    finish = f"hermes review-loop uninstall --loop {lid}"
     try:
         route_intent.forget(loop, _routes_of(loop).values())
-    except OSError as exc:
-        print(f"refused: route intent record could not be updated, routes left in place: {exc}")
-        return 2
-    for name in _routes_of(loop).values():
-        if name and routes.remove_route(name):
-            print(f"route removed: {name}")
+        for name in _routes_of(loop).values():
+            if name and routes.remove_route(name):
+                print(f"route removed: {name}")
+                if "routes" not in removed:
+                    removed.append("routes")
+    except (OSError, ValueError) as exc:
+        # Hooks and the job are already gone; the config is still here, so a re-run finishes
+        # once the registry (or intent record) can be written — say so, never a traceback.
+        print(f"routes NOT removed: {exc}")
+        left = [what for what, _ in leftovers] + [
+            f"the routes {', '.join(n for n in _routes_of(loop).values() if n)} in "
+            f"{routes.subs_path()}", f"the loop config (so `{finish}` can finish)"]
+        commands = [cmd for _, cmd in leftovers] + [f"{finish}   # once the file above is "
+                                                    "readable and writable again"]
+        return _uninstall_incomplete(removed, left, keep_hooks, commands)
     try:
         others = [other for other in config.all_loops()
                   if not (other["id"] == loop["id"] and other.get("repo") == loop.get("repo"))]
@@ -2398,17 +2977,82 @@ def cmd_uninstall(args) -> int:
     if not args.keep_config:
         path = config.config_dir() / f"{loop['id']}.json"
         if path.exists():
-            path.unlink()
+            try:
+                path.unlink()
+            except OSError as exc:
+                # Hooks, cron and routes are already gone: report the half-done state and the
+                # one command that finishes it, never a traceback.
+                print(f"config NOT removed: {path} — {exc.strerror or exc}")
+                left = [what for what, _ in leftovers] + [f"the loop config {path}"]
+                commands = [cmd for _, cmd in leftovers] + [f"rm -f -- {shlex.quote(str(path))}"]
+                if target is not None:
+                    left.append(f"the state directory {target} (not attempted)")
+                    commands.append(f"rm -rf -- {shlex.quote(str(target))}")
+                return _uninstall_incomplete(removed, left, keep_hooks, commands)
             print(f"config removed: {path}")
-        # The last loop gone: forget that a run ledger existed, so a later fresh install is
-        # not reported as a vanished ledger (run_supervisor.presence_marker).
+            removed.append("config")
+    if target is not None:
+        if target.is_symlink():
+            # Swapped for a link after the preflight vetted it: never followed. Everything above
+            # is already done, so this is a partial decommission, reported as one.
+            print(f"state NOT removed: {target} became a symlink after it was checked — never "
+                  "followed")
+            return _uninstall_incomplete(
+                removed, [what for what, _ in leftovers]
+                + [f"the state directory {target} (now a symlink: check where it points, "
+                   "remove the link, and that directory by hand if it is this loop's)"],
+                keep_hooks, [cmd for _, cmd in leftovers]
+                + [f"ls -ld -- {shlex.quote(str(target))}   # where it points",
+                   f"rm -- {shlex.quote(str(target))}   # the link itself"])
+        if target.exists():
+            refused: list[tuple[str, str]] = []
+
+            def note(_func, path, exc_info) -> None:
+                # rmtree's own exception names only the entry, relative to an open directory:
+                # keep the full path of every refusal, and delete everything else it can.
+                exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+                refused.append((str(path), getattr(exc, "strerror", None) or str(exc)))
+
+            try:
+                if sys.version_info >= (3, 12):
+                    shutil.rmtree(target, onexc=note)
+                else:
+                    shutil.rmtree(target, onerror=note)
+            except OSError as exc:
+                refused.append((str(getattr(exc, "filename", None) or target),
+                                exc.strerror or str(exc)))
+            if refused or target.exists():
+                # Everything above is already undone and the config is gone, so a re-run cannot
+                # finish this: say what happened and hand over the one command that does.
+                path, why = refused[0] if refused else (str(target), "still present")
+                more = f" (and {len(refused) - 1} more)" if len(refused) > 1 else ""
+                print(f"state NOT removed: {target} — {why}: {path}{more}")
+                return _uninstall_incomplete(
+                    removed, [what for what, _ in leftovers]
+                    + [f"the state directory {target} (whatever the delete could remove "
+                       "is gone; the rest is still there)"],
+                    keep_hooks, [cmd for _, cmd in leftovers]
+                    + [f"rm -rf -- {shlex.quote(str(target))}"])
+            print(f"state removed: {target}")
+    elif not args.keep_config:
+        _, why = _purge_target(loop)
+        raw = pathlib.Path(str(loop.get("state_dir") or "")).expanduser()
+        if why:
+            print(f"state kept: {raw} — not the default location or not a plain directory, so "
+                  f"--purge would not remove it; check it, then: rm -rf -- {shlex.quote(str(raw))}")
+        else:
+            print(f"state kept: {raw} (pass --purge to remove it)")
+    if not args.keep_config:
+        # The last loop gone (#113): forget that a run ledger existed, so a later fresh install
+        # is not reported as a vanished ledger (run_supervisor.presence_marker). After the state
+        # step, so a --purge has removed the state dir first.
         from .run_supervisor import forget_ledger_presence, presence_marker
         if not any(config.config_dir().glob("*.json")) and forget_ledger_presence():
             print(f"ledger presence marker removed: {presence_marker()}")
-    print("GitHub hooks and the cron job are NOT removed automatically:")
-    print(f"  hooks: hermes review-loop arm --loop {loop['id']} --pause  # stops deliveries; "
-          "delete them on GitHub to remove them")
-    print("  cron:  hermes cron list | grep review-loop-watchdog && hermes cron remove <id>")
+    if leftovers:
+        # Everything else went; the shim did not. That is not a clean uninstall.
+        return _uninstall_incomplete(removed, [what for what, _ in leftovers], keep_hooks,
+                                     [cmd for _, cmd in leftovers])
     return 0
 
 
@@ -2557,6 +3201,11 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         check.add_argument("--live-turn", action="store_true",
                            help="with --pr: run one real isolated reviewer turn whose verdict is "
                                 "printed and never posted")
+        check.add_argument("--ping", action="store_true",
+                           help="ask GitHub to ping each loop hook and report whether the gateway "
+                                "accepted its signature (the selftest's only GitHub write)")
+        check.add_argument("--admin-token", default="",
+                           help="login whose token may ping hooks (admin:repo_hook or repo)")
         check.add_argument("--timeout", type=int, default=600,
                            help="live turn budget in seconds (default 600; the production worker uses its own child_timeout)")
         check.set_defaults(func=cmd_selftest)
@@ -2668,9 +3317,16 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cleanup.add_argument("--dry-run", action="store_true")
         cleanup.set_defaults(func=cmd_cleanup)
 
-        uninstall = sub.add_parser("uninstall", help="Remove a loop's routes and config")
+        uninstall = sub.add_parser("uninstall", help="Remove a loop: its repo hooks, cron job, "
+                                   "routes and config (refuses rather than leave live hooks)")
         uninstall.add_argument("--loop", required=True)
         uninstall.add_argument("--keep-config", action="store_true")
+        uninstall.add_argument("--admin-token", default="",
+                               help="login whose token can delete hooks (admin:repo_hook or repo)")
+        uninstall.add_argument("--keep-hooks", action="store_true",
+                               help="leave the repo hooks live (explicit opt-out)")
+        uninstall.add_argument("--purge", action="store_true",
+                               help="also delete the loop's default state directory")
         uninstall.set_defaults(func=cmd_uninstall)
 
     ctx.register_cli_command(
