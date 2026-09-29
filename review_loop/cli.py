@@ -2667,7 +2667,9 @@ def cmd_explain(args) -> int:
     loops — refused ones included — and no ``--loop``, or no loop files at all. Before this function
     runs, argparse can also exit 2 for the same subcommand on its own account: a missing ``--pr``
     (``the following arguments are required: --pr``), an ``--pr`` value that is not an integer
-    (``invalid int value``), or an ``--pr`` flag with no value after it (``expected one argument``).
+    (``invalid int value``), an ``--pr`` flag with no value after it (``expected one argument``),
+    an ``--loop`` flag with no value after it (``argument --loop: expected one argument``), or an
+    unrecognized flag (``unrecognized arguments``).
     A PR GitHub does
     not have, or cannot be read, is an *answer*: it is reported as unknown, with the read to
     retry.
