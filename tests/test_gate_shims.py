@@ -540,7 +540,9 @@ class DoctorApplyUninstall(Base):
         rc, out = self.run_cli(self.init_argv("acme/widgets", "--dry-run"))
         self.assertEqual(rc, 0, out)
         self.assertNotIn("⚠️", out)
-        self.assertNotIn("404", out)
+        # The exact false-alarm wording (gate_shims.divergence's missing-route line), not the bare
+        # substring "404": random temp-dir names in the output paths can contain it (#153).
+        self.assertNotIn("the gateway 404s this seat", out)
         # On an existing loop a real disagreement is still named.
         self.install()
         self.edit_registry(lambda d: d["widgets-review"].update(profile="tuck"))
@@ -548,7 +550,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(rc, 0, out)
         self.assertIn("registry runs tuck/gate_reviewer.py, loop config says vex/gate_reviewer.py",
                       out)
-        self.assertNotIn("404", out)
+        self.assertNotIn("the gateway 404s this seat", out)
 
     def github_with_hook(self, url: str, secret: str = "placeholder-old-hook-key", *,
                          patch_fails: bool = False, hook_id: int = 51,
