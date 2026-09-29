@@ -223,9 +223,7 @@ def main() -> None:
     gate.block_pr_agent(
         loop, st, seat, number, pr_head,
         on_queued=verdict_notice("fixer queued"),
-        on_push_off=verdict_notice(
-            "you — fixer held: unattended fixer pushes are off; to let the fixer answer, run "
-            f"`{config.fixer_push_enable_command(loop)}`"))
+        on_push_off=verdict_notice(gate.fixer_push_off_notice(loop)))
 
 
 if __name__ == "__main__":

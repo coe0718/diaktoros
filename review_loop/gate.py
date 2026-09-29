@@ -176,6 +176,36 @@ def hold_fixer_push_off(loop: dict, st: state_mod.LoopState, number: int,
     return st.queue_replace_if("fixer", key, queued, head, pr_url(loop, number), hold)
 
 
+def fixer_push_denial(loop: dict, context: str = "") -> str:
+    """The shared denial sentence for a loop that refuses every fixer write (#81), else ``""``.
+
+    One source of truth: the queue hold's reason, the operator's ``next_turn`` notice and the
+    broker's own refusal all word this from ``broker_ipc.FIXER_WRITE_DENIED``, so the three
+    surfaces cannot drift apart. An unreadable policy read returns ``""`` — it must never drop
+    the enable command or the hold itself — and ``context`` prefixes the diagnostic.
+    """
+    from . import broker_ipc
+    try:
+        denial = broker_ipc.policy_hold_reason(loop)
+    except Exception as exc:
+        log(f"{context}fixer policy read failed: {type(exc).__name__}: {exc}")
+        return ""
+    return broker_ipc.FIXER_WRITE_DENIED.format(reason=denial) if denial else ""
+
+
+def fixer_push_off_notice(loop: dict) -> str:
+    """``next_turn`` for a held changes-requested verdict (#81), naming the denial.
+
+    ``scripts/gate_fixer.py`` builds the operator's notice before ``block_pr_agent`` runs, so
+    the denial is named here rather than there: the notice and the queue's hold reason then
+    say the same words about the same loop.
+    """
+    notice = (f"you — fixer held: unattended fixer pushes are off; to let the fixer answer, "
+              f"run `{config.fixer_push_enable_command(loop)}`")
+    denial = fixer_push_denial(loop)
+    return f"{notice} — {denial}" if denial else notice
+
+
 def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
                    number: int, head: str, on_queued=None, *, turn_key: str = '',
                    on_push_off=None) -> None:
@@ -215,18 +245,9 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
         # (``is_fixer_push_hold``, explain, the watchdog) matches on those words — with the
         # policy denial named after it.
         reason = config.fixer_push_hold_reason(loop)
-        try:
-            from . import broker_ipc
-            denial = broker_ipc.policy_hold_reason(loop)
-        except Exception as exc:
-            # An unreadable policy read must not drop the enable command or the hold itself.
-            log(f"#{number} @ {head[:7]} fixer policy read failed: {type(exc).__name__}: {exc}")
-            denial = ""
+        denial = fixer_push_denial(loop, context=f"#{number} @ {head[:7]} ")
         if denial:
-            reason = (f"{reason} every write from this turn is refused ({denial}); nothing is "
-                      f"written and this turn is held for the operator — say plainly in your "
-                      f"summary that the fix was not published, and never describe a fix as "
-                      f"pushed.")
+            reason = f"{reason} {denial}"
         hold_fixer_push_off(loop, st, number, head, reason)
         log(f"#{number} @ {head[:7]} fixer held: {reason}")
     notice = on_push_off if push_off and on_push_off is not None else on_queued
