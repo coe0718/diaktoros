@@ -527,7 +527,14 @@ def fixer_push_hold_reason(loop: dict) -> str:
 
 
 def is_fixer_push_hold(entry: object) -> bool:
-    return isinstance(entry, dict) and str(entry.get("reason") or "").startswith(FIXER_PUSH_HOLD)
+    """Whether a seat-queue entry is the fixer's push-off hold.
+
+    The reason may be the plain hold (``fixer_push_hold_reason``) or the shared ``broker_ipc``
+    denial (#81) — both start with ``FIXER_PUSH_HOLD``'s opening words, so one prefix test
+    covers both and keeps the hold idempotent across redelivery.
+    """
+    reason = str((entry or {}).get("reason") or "") if isinstance(entry, dict) else ""
+    return isinstance(entry, dict) and reason.startswith(FIXER_PUSH_HOLD.split(" — ")[0])
 
 SEAT_KEYS = ("reviewer", "fixer")
 

@@ -217,13 +217,17 @@ class FixerBroker(Broker):
             return {"id": 23}
         return super().api(loop, path, method, body, login)
 
-    def fixer_run(self, partial):
+    def fixer_run(self, partial, push_on=True):
+        # A policy-admitted fixer run: these tests are about the partial view, so the policy
+        # must not also refuse the writes (#81's check is a separate layer, own tests).
+        raw = {**self.loop, "unattended_fixer_push": True}
+        self.loop = raw
         sup = Supervisor(self.root / "runs.sqlite")
         with mock.patch.object(sup, "_spawn"):
             sup.enqueue("f", REPO, 7, HEAD, "fixer")
         with ledger.connect(sup.db) as con:
             con.execute("UPDATE runs SET state='running', owner='w', launch_intent=1, "
-                        "push_admitted=1")
+                        "push_admitted=?", (1 if push_on else 0,))
             run_id = con.execute("SELECT id FROM runs").fetchone()[0]
         sup.record_view(run_id, "w", partial)
         scope = broker_ipc.RunScope(REPO, 7, HEAD, "fixer", "fix-7", run_id, str(sup.db), None,
@@ -245,7 +249,7 @@ class FixerBroker(Broker):
     def test_a_partial_view_refuses_the_push_and_publishes_the_answers_instead(self):
         sup, scope = self.fixer_run(REASON)
         server = self.start(scope, require_push=True)
-        with mock.patch.object(config, "by_repo", side_effect=AssertionError("policy read")), \
+        with mock.patch.object(config, "by_repo", return_value=self.loop), \
              mock.patch("review_loop.safe_push.push", side_effect=AssertionError("git push")):
             refused = self.push(server)
         self.assertFalse(refused["ok"])

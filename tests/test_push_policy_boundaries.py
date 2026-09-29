@@ -12,6 +12,9 @@ from review_loop import broker_ipc, cli, config, ledger
 from review_loop.run_supervisor import Supervisor
 from tests.test_fixer_push_policy import raw_loop
 
+REPO = 'owner/one'
+HEAD = 'a' * 40
+
 
 class PolicyBoundaryTests(unittest.TestCase):
     def setUp(self):
@@ -63,9 +66,12 @@ class PolicyBoundaryTests(unittest.TestCase):
                                    sup.get('old')['id'], str(sup.db))
         server = broker_ipc.RunBroker(config.load_id('one'), scope, self.root)
         with patch('review_loop.safe_push._manifest'), patch('review_loop.safe_push.push') as push:
-            with self.assertRaisesRegex(broker_ipc.ProtocolError, 'admission'):
+            with self.assertRaises(broker_ipc.ProtocolError) as caught:
                 server._dispatch(json.dumps({'operation': 'push', 'manifest': {}}).encode())
         push.assert_not_called()
+        # (#81) The refusal names the policy hold (the wording differs: a run admitted under
+        # an earlier policy vs. one never admitted).
+        self.assertIn('every write from this turn is refused', str(caught.exception))
 
     def test_enabled_enqueue_is_pinned_and_disable_revokes(self):
         with patch.object(cli, '_busy_seats', return_value=[]):
@@ -191,6 +197,59 @@ class PolicyBoundaryTests(unittest.TestCase):
         self.assertFalse(errors, errors)
         self.assertTrue(disabled.is_set())
         self.assertFalse(config.load_id('one')['unattended_fixer_push'])
+
+    # -- #81: every write refused ⇒ no turn launches, and the denial is never silent --------
+
+    def test_a_push_refusal_names_the_policy_denial_not_a_spent_run(self):
+        # The broker says *why* every write is refused — the same wording the run ledger and
+        # the operator notice use — instead of an unrelated "must publish a confirmed push
+        # first" or "run capability already used".
+        self.path.write_text(json.dumps({**raw_loop('one'), 'unattended_fixer_push': True}))
+        scope = self.admitted_scope()
+        server = broker_ipc.RunBroker(config.load_id('one'), scope, self.root)
+        self.assertEqual(self.change(False), 0)
+        with patch('review_loop.safe_push.push') as push:
+            with self.assertRaisesRegex(broker_ipc.ProtocolError,
+                                        'every write from this turn is refused') as caught:
+                server._dispatch(json.dumps({'operation': 'push', 'manifest': {}}).encode())
+        push.assert_not_called()
+        self.assertIn('unattended fixer pushes were disabled', str(caught.exception))
+        self.assertIn('not published', str(caught.exception))
+
+    def test_a_fixer_review_request_when_no_write_is_left_names_the_denial(self):
+        # The last write surface: a request_review whose answers comment would also be
+        # refused names the policy hold instead of spending the capability first.
+        self.path.write_text(json.dumps({**raw_loop('one'), 'unattended_fixer_push': True}))
+        scope = self.admitted_scope()
+        server = broker_ipc.RunBroker(config.load_id('one'), scope, self.root)
+        self.assertEqual(self.change(False), 0)
+        with patch.object(config, 'by_repo',
+                          side_effect=lambda repo: config.load_id('one')), \
+             patch('review_loop.safe_push.push') as push:
+            with self.assertRaisesRegex(broker_ipc.ProtocolError,
+                                        'every write from this turn is refused') as caught:
+                server._dispatch(json.dumps({'operation': 'request_review', 'verdict': '',
+                                             'body': 'answers'}).encode())
+        push.assert_not_called()
+        self.assertIn('unattended fixer pushes were disabled', str(caught.exception))
+
+    def test_policy_hold_reason_is_the_one_denial_wording(self):
+        # A single source of truth: the reason the run ledger records, the broker's refusal
+        # and the seat queue hold all name the same facts (#81).
+        from review_loop.run_supervisor import FIXER_NOT_ADMITTED, FIXER_PUSH_OFF, FIXER_PUSH_REVOKED
+        self.path.write_text(json.dumps(raw_loop('one')))
+        self.assertEqual(broker_ipc.policy_hold_reason(config.load_id('one')),
+                         FIXER_PUSH_OFF)
+        # A run the host cannot resolve is named ``FIXER_NOT_ADMITTED`` (#81): a redelivered
+        # verdict never upgrades an unadmitted one. The ``ledger_db`` is the run-vs-gate
+        # discriminator: only a run names ``FIXER_NOT_ADMITTED``, never the gate's hold.
+        self.path.write_text(json.dumps({**raw_loop('one'), 'unattended_fixer_push': True}))
+        with patch.object(config, 'by_repo', return_value=None):
+            self.assertEqual(broker_ipc.policy_hold_reason(config.load_id('one'),
+                                                           ledger_db='runs.sqlite'),
+                             FIXER_NOT_ADMITTED)
+        # Admitted run, current policy on: nothing is held — the broker judges the push.
+        self.assertEqual(broker_ipc.policy_hold_reason(config.load_id('one')), '')
 
 
 if __name__ == '__main__':

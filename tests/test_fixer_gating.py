@@ -106,11 +106,14 @@ class GateHold(Base):
         self.assertEqual(entry["head"], HEAD)
         self.assertTrue(config.is_fixer_push_hold(entry))
         self.assertIn(ENABLE, entry["reason"])
+        self.assertIn("every write from this turn is refused", entry["reason"])
+        self.assertIn("unattended fixer pushes are off for this loop", entry["reason"])
         notify.assert_called_once()
         kwargs = notify.call_args.kwargs
         self.assertEqual(kwargs["identity"], 5)
         self.assertIn(ENABLE, kwargs["next_turn"])
         self.assertIn("fixer held", kwargs["next_turn"])
+        self.assertIn("every write from this turn is refused", kwargs["next_turn"])
 
     def test_redelivered_verdict_is_one_hold_and_one_notice_key(self):
         _, first = self.run_gate()
