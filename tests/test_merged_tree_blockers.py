@@ -151,6 +151,7 @@ class EffectiveVerdictTest(unittest.TestCase):
                 # The gate acknowledges a fired entry by removing it; drain reads that back.
                 st.queue_items.side_effect = [{"acme/widgets#7": entry}, {}]
                 st.active.return_value = {}
+                st.queue_drop_unreadable.return_value = []   # nothing unreadable to prune (#80)
                 st.held_by_other.return_value = None
                 st.watch.return_value = {}
                 with (mock.patch.object(watchdog.config, "seat_concurrency", return_value=1),
