@@ -101,11 +101,12 @@ def isolated_supervisor(loop: dict):
     Raises when the private runtime file is missing or invalid (a fail-closed hold).
     """
     from . import seat_model
-    from .run_supervisor import SEATS, Supervisor
+    from .run_supervisor import SEATS, Supervisor, presence_marker
 
     # presence= defaults to the config-dir marker for this (the production) ledger path.
     supervisor = Supervisor(
         config.home() / "state" / "review-loop-runs.sqlite",
+        presence=presence_marker(),
         production_config=config.home() / "review-loop-runtime.json", hermes_home=config.home(),
         # Every seat, always: a worker spawned by one seat's event claims any pending row, and
         # must know every seat's capacity to do so.

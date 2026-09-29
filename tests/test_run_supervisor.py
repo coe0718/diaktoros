@@ -24,59 +24,13 @@ from review_loop.hostdirs import HostStateGone
 import _ledger_guard  # noqa: E402  refuses the operator's real ledger (#108)
 from review_loop.run_supervisor import (_WORKERS, MAX_ATTEMPTS, SILENT, LedgerMissing,
                                         Supervisor)
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for tests/worker_wait.py
+import worker_wait  # noqa: E402  the shared detached-worker reaper (#108, #110)
+from worker_wait import wait_for_workers
 
-# Longest a test waits for its detached workers after it ends. The slowest fixture child
-# sleeps 2s under a 5s child timeout; this leaves room for a loaded runner.
-WORKER_EXIT_TIMEOUT = 20
-
-
-def _processes_naming(marker: str) -> dict[int, str]:
-    """Live processes (other than this one) whose command line names ``marker``."""
-    found = {}
-    proc = Path('/proc')
-    if proc.is_dir():
-        for entry in proc.iterdir():
-            if not entry.name.isdigit() or int(entry.name) == os.getpid():
-                continue
-            try:
-                cmd = (entry / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
-            except OSError:
-                continue
-            if marker in cmd:  # a zombie's command line is empty: it is not writing
-                found[int(entry.name)] = cmd.strip()
-        return found
-    # Without /proc (not Linux) there is no scan: wait_for_workers then only reaps our own
-    # children, as the suite did before #108.
-    return found
-
-
-def wait_for_workers(root: Path, timeout: float = WORKER_EXIT_TIMEOUT) -> None:
-    """Block until no detached worker or fixture child still uses ``root`` (#108).
-
-    ``enqueue`` returns as soon as it has spawned a detached worker, and a finished worker's
-    ``recover`` can spawn another, which is not this process's child. A test that returns on
-    the ledger reaching a terminal state can therefore tear down its temp dir while a worker
-    still opens the ledger there (or recreates the dir). Every worker and child names a path
-    under ``root`` on its command line, and only a live worker spawns another, so an empty
-    scan means none is left.
-    """
-    marker = str(root)
-    until = time.monotonic() + timeout
-    while True:
-        for worker in list(_WORKERS):
-            worker.poll()  # reap our own exited children so they do not linger as zombies
-        live = _processes_naming(marker)
-        if not live:
-            return
-        if time.monotonic() >= until:
-            for pid in live:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
-            raise AssertionError(f"detached workers still running {timeout}s after the test "
-                                 f"under {marker} (killed): {live}")
-        time.sleep(0.05)
+# Longest a test waits for its detached workers after it ends.
+WORKER_EXIT_TIMEOUT = worker_wait.WORKER_EXIT_TIMEOUT
 
 
 def own_lines(stream: io.StringIO) -> list[str]:
