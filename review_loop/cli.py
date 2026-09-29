@@ -2664,7 +2664,11 @@ def cmd_explain(args) -> int:
 
     Exit 2 only when the question cannot be asked at all: an unknown loop, a loop file the loader
     refuses (without ``--loop`` each is named on a ``skipping <file>: <reason>`` line), several
-    loops — refused ones included — and no ``--loop``, or no loop files at all. A PR GitHub does
+    loops — refused ones included — and no ``--loop``, or no loop files at all. Before this function
+    runs, argparse can also exit 2 for the same subcommand on its own account: a missing ``--pr``
+    (``the following arguments are required: --pr``), an ``--pr`` value that is not an integer
+    (``invalid int value``), or an ``--pr`` flag with no value after it (``expected one argument``).
+    A PR GitHub does
     not have, or cannot be read, is an *answer*: it is reported as unknown, with the read to
     retry.
     """

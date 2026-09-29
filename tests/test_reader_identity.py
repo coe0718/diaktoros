@@ -10,6 +10,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
 import io
+import inspect
 import json
 import os
 from pathlib import Path
@@ -370,6 +371,24 @@ class ReaderIdentityTests(_Loop):
         ops = " ".join((ROOT / "docs" / "operations.md").read_text().split())
         for case in ("an unknown loop", "a loop file the loader refuses", "no `--loop`",
                      "no loop files at all"):
+            self.assertIn(case.replace("`", "``"), doc, case)
+            self.assertIn(case, ops, case)
+        # argparse exits 2 for the subcommand before cmd_explain runs; both copies name those
+        # paths too (#130).
+        for case in ("the following arguments are required: --pr", "invalid int value",
+                     "expected one argument"):
+            self.assertIn(case.replace("`", "``"), doc, case)
+            self.assertIn(case, ops, case)
+        # Drift guard: the docstring's exit-2 sentence must keep enumerating every `return 2`
+        # site in cmd_explain. A new one added without updating the list fails here.
+        source = inspect.getsource(cli.cmd_explain)
+        body_returns = len(re.findall(r"^\s+return 2\s*$", source, re.M))
+        enumerated = ("an unknown loop", "a loop file the loader refuses", "several",
+                      "no loop files at all")
+        self.assertEqual(len(enumerated), body_returns,
+                         "cmd_explain grew a `return 2` path the docstring and "
+                         "docs/operations.md do not enumerate")
+        for case in enumerated:
             self.assertIn(case.replace("`", "``"), doc, case)
             self.assertIn(case, ops, case)
         # and the formatter's docstring names only its real callers
