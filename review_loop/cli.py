@@ -2504,10 +2504,16 @@ def cmd_status(args) -> int:
         if problem:
             print(f"  ⚠️  reader:  {problem} — {config.FOUR_IDENTITY_RULE}")
             print(f"  fix:        {config.reader_fix(loop)}")
-        locks = st._load(st.locks, {}) or {}
-        for seat, entries in locks.items():
-            for key, entry in (entries or {}).items():
-                held = (time.time() - entry.get("at", time.time())) / 60
+        for seat, entries in st._lock_ledger().items():
+            for key, entry in (entries if isinstance(entries, dict) else {}).items():
+                at = state_mod.mark_at(entry)
+                if at is None:
+                    # Shown, not hidden: the file holds it, but no reader counts it as running
+                    # and the next write of the ledger drops it (#80).
+                    print(f"  ⚠️  lock:    {seat} mark for {key} is unreadable (no numeric 'at') — "
+                          "not counted as running; the next sweep prunes it")
+                    continue
+                held = (time.time() - at) / 60
                 print(f"  running:    {seat} on {key} for {held:.0f}m")
         for line in _dependency_lines(loop):
             print(f"  deps:       {line}")
@@ -2517,8 +2523,12 @@ def cmd_status(args) -> int:
                 print(f"  queued:     {seat} {queued} "
                       f"({config.seat_concurrency(loop, seat)} at a time)")
         queue = st.queue_all()
-        for seat, items in queue.items():
-            for key, entry in items.items():
+        for seat, items in (queue if isinstance(queue, dict) else {}).items():
+            for key, entry in (items if isinstance(items, dict) else {}).items():
+                if state_mod.mark_at(entry) is None:
+                    print(f"  ⚠️  queued:  {seat} · {key} is unreadable (no numeric 'at') — "
+                          "the next drain drops it")
+                    continue
                 print(f"  queued:     {seat} · {key} — {entry.get('reason')}")
         breaches = st.breach_all()
         if breaches:

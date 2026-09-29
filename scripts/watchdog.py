@@ -345,14 +345,20 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False) -
     # pruning to the queue path, a dead mark would be reported as stuck by every later sweep
     # and never leave the file.
     live = st.active(seat)
-    items = st.queue_items(seat)
+    # The same prune for the queue: an entry whose ``at`` cannot be read is dropped, not sorted,
+    # so one junk entry never stops the well-formed ones behind it (#80).
+    for key in st.queue_drop_unreadable(seat):
+        log(f"drain: {seat} queue entry {key} is unreadable (no numeric 'at') — dropped")
+    queued = st.queue_items(seat)
+    items = {k: v for k, v in (queued if isinstance(queued, dict) else {}).items()
+             if state_mod.mark_at(v) is not None}
     if not items:
         return 0
     capacity = config.seat_concurrency(loop, seat)
     free = capacity - len(live)
     if free <= 0:
         if not quiet:
-            held = ", ".join(f"{k} ({int((time.time() - v.get('at', 0)) / 60)}m)"
+            held = ", ".join(f"{k} ({int((time.time() - state_mod.mark_at(v)) / 60)}m)"
                              for k, v in sorted(live.items()))
             print(f"{seat} is at capacity ({len(live)}/{capacity}: {held}) — "
                   f"{len(items)} request(s) queued")
@@ -360,7 +366,7 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False) -
 
     started = 0
 
-    for key in sorted(items, key=lambda k: items[k].get("at", 0)):
+    for key in sorted(items, key=lambda k: state_mod.mark_at(items[k])):
         if key in live:
             # A free *other* slot is not permission to wake this PR twice.
             continue
@@ -947,11 +953,15 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
             alerts.append((number, kind, (pr.get("title") or "")[:60]))
 
     stuck: list[tuple[str, str]] = died_locks(loop, st._load(st.locks, {}) or {}, now)
-    for seat, items in st.queue_all().items():
-        for key, entry in (items or {}).items():
+    queue = st.queue_all()
+    for seat, items in (queue if isinstance(queue, dict) else {}).items():
+        for key, entry in (items if isinstance(items, dict) else {}).items():
             if config.is_fixer_push_hold(entry):
                 continue  # reported once per head as a stall above, not on every sweep
-            age = (now - entry.get("at", now)) / 60
+            at = state_mod.mark_at(entry)
+            if at is None:
+                continue  # unreadable: this sweep's drain drops it (#80)
+            age = (now - at) / 60
             if age > config.stall_grace_s(loop, seat) / 60:
                 stuck.append((f"queue:{seat}:{key}",
                               f"  {seat} queue: {key} waiting {age:.0f}m — {entry.get('reason')}"))
@@ -1058,10 +1068,12 @@ def died_locks(loop: dict, locks: dict, now: float) -> list[tuple[str, str]]:
     ``drain()`` drops the expired mark at the top of the next sweep (#77).
     """
     lines: list[tuple[str, str]] = []
-    for seat, entries in locks.items():
-        for key, entry in (entries or {}).items():
-            entry = entry if isinstance(entry, dict) else {}
-            age = now - entry.get("at", now)
+    for seat, entries in (locks if isinstance(locks, dict) else {}).items():
+        for key, entry in (entries if isinstance(entries, dict) else {}).items():
+            at = state_mod.mark_at(entry)
+            if at is None:
+                continue  # unreadable: not a run that died, and the next ``active`` prunes it (#80)
+            age = now - at
             # On the budget the claim was taken with, if longer than the loop's now (#98).
             # This seat's own turn: another seat's longer budget never keeps it alive (#98).
             recorded = config.claim_budget(entry)   # None: a legacy claim gets its seat's own

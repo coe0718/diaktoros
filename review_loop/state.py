@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import math
 import os
 import pathlib
 import tempfile
@@ -91,12 +92,25 @@ def _mark_live(entry, now: float, ttl: float) -> bool:
     that take a live set do their own arithmetic on ``at`` — a numeric string is expired, never
     guessed at. ``active`` then writes the drop, so the next read sees a ledger it can read.
     """
+    at = mark_at(entry)
+    return at is not None and now - at <= ttl
+
+
+def mark_at(entry) -> float | None:
+    """A lock mark's or queue entry's ``at`` epoch, or ``None`` when it cannot be aged.
+
+    The one reading rule for ``at`` (#80), shared by ``_mark_live`` and every reader that ages,
+    sorts or prints a mark itself — the watchdog's drain and stuck report, ``died_locks``,
+    ``status`` and ``explain``: only a finite plain number is a time. A non-dict entry, a string
+    (ISO or numeric), ``null``, a bool, a list or an infinity is junk, which those readers skip
+    and the ledger's own prune drops, rather than a ``TypeError`` out of the whole sweep.
+    """
     if not isinstance(entry, dict):
-        return False
+        return None
     at = entry.get("at")
-    if isinstance(at, bool) or not isinstance(at, (int, float)):
-        return False
-    return now - at <= ttl
+    if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
+        return None
+    return float(at)
 
 
 class LoopState:
@@ -373,6 +387,28 @@ class LoopState:
 
     def queue_items(self, seat: str) -> dict:
         return (self._load(self.pending, {}) or {}).get(seat) or {}
+
+    def queue_drop_unreadable(self, seat: str) -> list[str]:
+        """Drop this seat's queue entries nothing can age, and name them (#80).
+
+        The queue's counterpart to ``active`` healing ``locks.json``: an entry that is not a
+        mapping, or whose ``at`` fails ``mark_at``, cannot be ordered, aged or trusted as a
+        request, so the drain drops it here instead of raising out of its sort for every entry
+        behind it. A later event for that PR queues a well-formed request of its own.
+        """
+        with self._queue_lock():
+            data = self._load(self.pending, {}) or {}
+            items = data.get(seat) if isinstance(data, dict) else None
+            if not isinstance(items, dict):
+                return []
+            junk = [key for key, entry in items.items() if mark_at(entry) is None]
+            if junk:
+                for key in junk:
+                    items.pop(key)
+                if not items:
+                    data.pop(seat, None)
+                self._save_queue(data)
+            return junk
 
     def queue_all(self) -> dict:
         return self._load(self.pending, {}) or {}

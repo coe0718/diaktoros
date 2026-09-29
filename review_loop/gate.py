@@ -395,11 +395,12 @@ EXPLAIN_KINDS = ("review-verdict", "review-request", "fixer-retry", "fixer-push"
 
 
 def _mark_time(entry: dict | None, fallback: float) -> float:
-    """A state mark's ``at`` epoch, or the fallback when the mark is malformed or has none."""
-    try:
-        return float((entry or {}).get("at") or fallback)
-    except (TypeError, ValueError):
-        return fallback
+    """A state mark's ``at`` epoch, or the fallback when the mark is malformed or has none.
+
+    Read by ``state.mark_at``, the same rule every other reader of a mark uses (#80).
+    """
+    at = state_mod.mark_at(entry)
+    return at if at else fallback
 
 
 def _minutes_since(when: float, now: float) -> int:
