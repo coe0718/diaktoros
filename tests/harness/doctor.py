@@ -374,6 +374,12 @@ DOCTOR_FIXTURE_CHECKS = frozenset({
     "gate:timeout:reviewer-profile", "gate:timeout:fixer-profile", "gate:timeout:default",
     "cron:shim", "cron:job", "clone", "state_dir", "roots", "gateway",
     "hook:widgets-review", "hook:widgets-fix",
+    # #67/#164: the watchdog's last-run staleness check, plus the runtime-path family (the runtime
+    # root, the rust toolchain, the source tree, the venv). #164's branch predated this roster, so
+    # its five new checks merged unnamed and main went red here — which is the roster working: a
+    # new check is a decision, and this is the decision.
+    "watchdog:run",
+    "runtime:runtime", "runtime:rust", "runtime:source", "runtime:venv",
 })
 
 
