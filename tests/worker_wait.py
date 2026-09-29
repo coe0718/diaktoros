@@ -21,9 +21,17 @@ WORKER_EXIT_TIMEOUT = 30
 
 
 def processes_naming(marker: str) -> dict[int, str]:
-    """Live processes (other than this one) whose command line names ``marker``."""
+    """Live processes (other than this one) whose command line names ``marker``.
+
+    Off-Linux (where ``/proc`` does not exist) this degrades to "no live workers" rather than
+    raising: the deleted test_run_supervisor copy carried exactly this guard, and the dedupe
+    (#145) must not lose it even though CI is ubuntu-only.
+    """
     found = {}
-    for entry in Path('/proc').iterdir():
+    proc = Path('/proc')
+    if not proc.is_dir():
+        return found
+    for entry in proc.iterdir():
         if not entry.name.isdigit() or int(entry.name) == os.getpid():
             continue
         try:
