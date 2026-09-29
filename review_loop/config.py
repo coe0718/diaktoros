@@ -193,34 +193,67 @@ def settings_loop_concurrency(d: dict) -> int:
     return 1
 
 
+# The form value the operator *actually* typed for one key — None/""/blank/whitespace is "not set
+# here", never the schema default. ``settings_defaults`` deliberately substitutes the default so a
+# fresh loop has real numbers to start from; that is right for ``init``, wrong for ``apply``, which
+# must only move keys the operator named (#59).
+def _form_value(settings: dict | None, key: str):
+    value = (settings or {}).get(key)
+    return None if value is None or str(value).strip() == "" else value
+
+
 def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     """The loop knobs the plugin settings own, overlaid on a raw (pre-``normalize``) loop dict.
 
     `apply` is deliberately a push, not a subscription: the form sets defaults, and a loop takes
     them when the operator says so. A running loop whose numbers changed under it would be a very
     confusing thing to debug at 2am.
+
+    The push is also *only* over what the form named: a blank/absent field means "not set here",
+    never "reset to the schema default" (#59). So ``cap``/``concurrency`` (and the other knobs)
+    move only when the operator typed a value; an empty form leaves the loop's own numbers —
+    including a non-default ``cap``/``concurrency`` — exactly as they were.
     """
     d = settings_defaults(settings)
     seats = {k: dict(v or {}) for k, v in (loop_raw.get("seats") or {}).items()}
     # The form's two seat numbers land as the loop default they agree on, and a seat carries its
     # own value only where it differs. Writing both seats every time would pin them, and a later
-    # `set --concurrency` would move nothing (#76). The effective per-seat values are the form's.
-    loop_concurrency = settings_loop_concurrency(d)
-    for seat in ("reviewer", "fixer"):
-        if d[f"{seat}_concurrency"] != loop_concurrency:
-            seats.setdefault(seat, {})["concurrency"] = d[f"{seat}_concurrency"]
-        else:
-            seats.setdefault(seat, {}).pop("concurrency", None)
+    # `set --concurrency` would move nothing (#76). The effective per-seat values are the form's —
+    # but only for a seat the operator actually named: a blank form moves no seat at all (#59).
+    seat_set = {seat: _form_value(settings, f"{seat}_concurrency") for seat in ("reviewer", "fixer")}
+    if all(v is not None for v in seat_set.values()):
+        # Both seats named: the form owns both, and they land as the loop default they agree on
+        # (or each pinned where they differ) — the original, untouched semantics.
+        loop_concurrency = settings_loop_concurrency(d)
+        for seat in ("reviewer", "fixer"):
+            if d[f"{seat}_concurrency"] != loop_concurrency:
+                seats.setdefault(seat, {})["concurrency"] = d[f"{seat}_concurrency"]
+            else:
+                seats.setdefault(seat, {}).pop("concurrency", None)
+    elif any(v is not None for v in seat_set.values()):
+        # One seat named, the other blank: move only the named one; the loop default and the
+        # other seat's pin are left alone.
+        for seat, value in seat_set.items():
+            if value is not None:
+                seats.setdefault(seat, {})["concurrency"] = value
+        loop_concurrency = loop_raw.get("concurrency")
+    else:
+        # No seat named: leave the seats and the loop default exactly as the loop has them.
+        loop_concurrency = loop_raw.get("concurrency")
     # A blank clone in the form means "not set here", never "forget the clone this loop uses":
     # silently dropping it would quietly downgrade the cleanup, which prunes worktrees through it.
     clone = d["clone"] or str(loop_raw.get("clone") or "")
     # An unset form value cannot erase an existing loop's explicitly configured gateway.
     host = d["host"] or loop_raw.get("host") or ""
-    overlaid = {**loop_raw, "cap": d["cap"], "clone": clone, "base": d["base"],
-                "concurrency": loop_concurrency,
-                "host": host, "grace_min": d["grace_min"], "ttl_min": d["ttl_min"],
-                "inflight_ttl_min": d["inflight_ttl_min"], "turn_budget_s": d["turn_budget_s"],
-                "seats": seats}
+    overlaid = {**loop_raw, "clone": clone, "host": host, "seats": seats}
+    # Only the knobs the operator actually set are written; a blank/absent field keeps the loop's
+    # own value (None on a bare dict is the same "leave it alone", since `normalize` defaults it).
+    for key in ("cap", "base", "grace_min", "ttl_min", "inflight_ttl_min", "turn_budget_s"):
+        value = _form_value(settings, key)
+        if value is not None:
+            overlaid[key] = value
+    if loop_concurrency is not None:
+        overlaid["concurrency"] = loop_concurrency
     # Seat identity rides the same push: the form names who serves each seat, and a blank field
     # stays blank rather than unsetting what the loop already answered for itself.
     return apply_seats(overlaid, settings)
