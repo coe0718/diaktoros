@@ -215,7 +215,11 @@ What to do:
    anything is sent (`--dry-run` checks without sending). A push adds or replaces whole files
    only; it cannot delete or rename a file, so if the fix needs that, say so in your answers.
    The host pushes it to the PR branch only if the branch is still at {head}; you cannot push
-   any other way.
+   any other way. If the broker refuses the push or any other write, that refusal is final:
+   it names why every write from this turn is denied (for example, the host operator has not
+   enabled unattended fixer pushes). Do not retry it and do not publish anything anywhere —
+   write your answers as usual, then say plainly in your summary that the fix was **not
+   published** and quote the denial; never describe an unpublished fix as pushed or fixed.
 4. Write your answers to a file: for each finding, fixed (with `file:line`), or why it is not a
    defect (with evidence), and what you deliberately did not change and why. At most 8 KiB. They
    are posted as a **public** PR comment: write for anyone who can read the PR.

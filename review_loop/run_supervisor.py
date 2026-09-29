@@ -146,6 +146,10 @@ FIXER_NOT_ADMITTED = ("fixer push not admitted: unattended fixer pushes were off
                       "no turn launched; after opting in, an operator `retry` re-admits it")
 FIXER_PUSH_REVOKED = ("fixer push revoked: unattended fixer pushes were disabled after this "
                       "run was admitted — no turn launched")
+# Before a run exists (the gate's push-off hold): the policy alone is the denial (#81). The
+# queue entry still carries the exact enable command alongside it.
+FIXER_PUSH_OFF = ("unattended fixer pushes are off for this loop — the changes-requested "
+                  "verdict waits for the operator")
 # The exact reasons a push-policy cancellation is recorded with, the pre-#97 wording of the
 # not-admitted one included (rows on an existing ledger). The one definition runs_view,
 # next_step, cmd_retry and Supervisor.retry share: matched exactly, never by a prefix or LIKE.
@@ -769,20 +773,39 @@ def write_evidence(con, run_id: str) -> str | None:
 def policy_cancelled(error: object) -> bool:
     """Whether a cancelled run was cancelled by the fixer push policy (FIXER_NOT_ADMITTED /
     FIXER_PUSH_REVOKED) — the one cancellation an operator ``retry`` recovers. Any other
-    cancellation is superseded (head moved, PR closed): a new head gets its own turn."""
-    return error in POLICY_CANCELLATIONS
+    cancellation is superseded (head moved, PR closed): a new head gets its own turn.
+
+    Also true of the same facts on a run the worker held before launch (#81, ``policy_hold``):
+    the retry covers it either way.
+    """
+    return error in POLICY_CANCELLATIONS or policy_hold(error)
+
+
+def policy_hold(error: object) -> bool:
+    """Whether a run's error is the fixer push policy holding it before its turn (#81).
+
+    ``gate.block_pr_agent`` records the same words in the seat queue; here they are what the
+    worker wrote when it held a fixer row it could not launch (``complete_uncertain``). The
+    row is pre-write and recoverable exactly like a push-policy cancellation.
+    """
+    return isinstance(error, str) and (error.startswith(FIXER_NOT_ADMITTED.split(":")[0])
+                                       or error.startswith(FIXER_PUSH_REVOKED.split(":")[0])
+                                       or error.startswith(FIXER_PUSH_OFF))
 
 
 def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:
     """Up to 100 failed, waiting, uncertain and push-policy-cancelled runs, oldest first. Each
     row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
     re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
-    # A fixer run cancelled at claim by the push policy is dead for its head until an operator
-    # acts, so it is listed too (Tuck on #97); a superseded cancellation (head moved, PR
-    # closed) is not, since a new head gets its own turn.
+    # A fixer run the push policy held (cancelled at claim, or held before its turn) is dead
+    # for its head until an operator acts, so it is listed too (Tuck on #97); a superseded
+    # cancellation (head moved, PR closed) is not, since a new head gets its own turn.
     marks = ','.join('?' * len(POLICY_CANCELLATIONS))
+    held = [FIXER_NOT_ADMITTED.split(":")[0] + "%", FIXER_PUSH_REVOKED.split(":")[0] + "%"]
     where, args = ("(r.state IN ('failed','uncertain','waiting') OR "
-                   f"(r.state='cancelled' AND r.error IN ({marks})))"), list(POLICY_CANCELLATIONS)
+                   f"(r.state='cancelled' AND r.error IN ({marks})) OR "
+                   f"(r.state='failed' AND (r.error LIKE ? OR r.error LIKE ?)))"), \
+        list(POLICY_CANCELLATIONS) + held
     if repo is not None:
         where += ' AND r.repo=?'
         args.append(repo)
@@ -944,7 +967,7 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
         due = max(0, int((row['retry_at'] or 0) - time.time()))
         return (f"attempt {(row['retries'] or 0) + 1} of {MAX_RETRIES} due in {due}s "
                 "(starts on the next event or armed watchdog sweep)")
-    if row['state'] == 'cancelled' and policy_cancelled(row['error']):
+    if (row['state'] == 'cancelled' and policy_cancelled(row['error'])) or policy_hold(row['error']):
         return (f"no external write — if unattended fixer pushes are off, turn them on "
                 f"(`hermes review-loop fixer-push --loop {loop_id} --enable "
                 f"--acknowledge-pr-race`), then re-admit it: `hermes review-loop retry --loop "
@@ -1974,8 +1997,10 @@ class Supervisor:
 
         A stopped run with no write-ahead record (``write_records``) failed *before any
         write*: with ``retry`` (a transient cause, or a non-zero sandbox exit) it waits for a
-        backed-off relaunch, up to MAX_RETRIES, then fails. Returns the state written, or
-        None when this owner no longer holds the run.
+        backed-off relaunch, up to MAX_RETRIES, then fails. A fixer turn the policy held
+        before launch (#81) is ``cancelled`` with that reason, like a claim-time policy
+        cancellation: no relaunch, listed and recovered by an operator ``retry``. Returns
+        the state written, or None when this owner no longer holds the run.
         """
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -1997,6 +2022,8 @@ class Supervisor:
                          'post-write push quarantine: unresolved push intent') if post_write else error
             elif rc == 0 and error is None:
                 state = 'succeeded'
+            elif policy_hold(error):
+                state = 'cancelled'   # the policy held this turn before it launched (#81)
             elif retry and write_records(con, run_id) is None:
                 retries += 1
                 if retries < MAX_RETRIES:
@@ -2210,6 +2237,16 @@ class Supervisor:
                 latest = gate.latest_effective_review_at_head(reviews, loop, row['head'])
                 if latest is None or gh.review_state(latest) != 'CHANGES_REQUESTED':
                     raise ValueError('fixer verdict no longer current')
+                # Every write this fixer turn would make is refused (#81): hold it instead of
+                # launching one. Named with the same reason as the broker's denial and the
+                # gate's queue hold; pre-write, so `retry` re-admits under the policy in force.
+                from . import broker_ipc
+                hold = broker_ipc.policy_hold_reason(
+                    loop, run_id=run_id, repo=row['repo'], number=row['pr'], head=row['head'],
+                    ledger_db=str(self.db))
+                if hold:
+                    error = hold
+                    return
             elif row['seat'] == 'adjudicator':
                 # Same live checks as the claim, repeated right before launch: the claim's
                 # reads may be minutes old, and a ruling on a moved or approved head is noise.

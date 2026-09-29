@@ -71,6 +71,73 @@ PARTIAL_VIEW_PUSH_REFUSAL = (
     "<file>` (no push), saying what was unavailable and what you could check in /work; nothing "
     "was written, the request is unspent")
 
+# What a fixer whose every write the host refuses is told (#81): the run is held before any
+# turn starts, but if a request somehow reaches the broker it names the denial instead of
+# answering with an unrelated "must publish a confirmed push first". ``{reason}`` comes from
+# ``policy_hold_reason``, so the seat, the operator's notice and the run ledger all name the
+# same reason.
+FIXER_WRITE_DENIED = (
+    "every write from this turn is refused ({reason}); nothing is written and this turn is "
+    "held for the operator — say plainly in your summary that the fix was not published, "
+    "and never describe a fix as pushed")
+
+
+def policy_hold_reason(loop: dict, *, run_id: str | None = None, repo: str = "",
+                       number: int = 0, head: str = "", ledger_db: str | None = None) -> str:
+    """The one reason the host refuses every write a fixer turn would make, or an empty string.
+
+    The fixer push-policy check, in one place (#81): the launch-time snapshot is only the
+    first reading, the host-owned repository configuration is reloaded as at the write
+    boundary, and a run admitted under an earlier policy is named too. Every surface that
+    holds or denies a fixer turn — ``gate.block_pr_agent``, ``run_supervisor`` and the broker —
+    words the denial from these exact constants, so the operator, the run ledger and the seat
+    all tell the same story. An unledgered turn (the gate's push-off hold) is named for the
+    policy alone: it never becomes a run.
+
+    A run whose admission snapshot is explicit (#81) — ``push_admitted`` recorded at enqueue —
+    is held only when the *current* host policy genuinely refuses it (opted out after
+    admission, ``FIXER_PUSH_REVOKED``). A launch-time opt-in the policy read cannot
+    contradict is not a denial, so an admitted run reaches the normal broker push path and
+    is judged on the push itself (partial view, capability, head), never on this hold. A run
+    with no readable admission snapshot is named ``FIXER_NOT_ADMITTED`` (#81): a redelivered
+    verdict never upgrades an unadmitted one.
+    """
+    from . import run_supervisor
+    if not config.unattended_fixer_push_enabled(loop):
+        # With no run yet (the gate's hold) the policy alone is the denial; a run that was
+        # admitted under an earlier policy is named as such (#81): same facts, one wording.
+        return run_supervisor.FIXER_PUSH_OFF if not ledger_db else run_supervisor.FIXER_NOT_ADMITTED
+    current = config.by_repo(repo or loop.get("repo", ""))
+    if current is not None and not config.unattended_fixer_push_enabled(current):
+        # The policy moved under a run that was admitted under it: the writes it would make
+        # are refused now (#81). A run this loop no longer owns is left to the broker's own
+        # write-boundary reload — refusing it here would shadow that path's exact reason.
+        return run_supervisor.FIXER_PUSH_REVOKED
+    if not (run_id and ledger_db):
+        # With no run to read an admission snapshot from (#81) — a hand-built scope, or the
+        # gate's own policy read before the run exists — the policy alone is the denial: an
+        # unprovable write is refused, and a redelivered verdict never upgrades an
+        # unadmitted one. ``FIXER_NOT_ADMITTED`` is named whenever there is a run to read
+        # and its snapshot cannot be verified.
+        return run_supervisor.FIXER_NOT_ADMITTED if ledger_db else ""
+    from .run_supervisor import Supervisor
+    try:
+        if Supervisor(ledger_db, create=False).push_admitted(run_id, repo, number, head):
+            return ""
+        # The run exists but push_admitted() returned False. Distinguish:
+        # - If launch_intent is set, the run was explicitly created with pushes off
+        #   (FIXER_NOT_ADMITTED, #22: never upgraded by a later opt-in).
+        # - If launch_intent is NULL, it's a legacy row; trust the loop's current policy.
+        with Supervisor(ledger_db, create=False)._connect() as con:
+            row = con.execute('SELECT launch_intent FROM runs WHERE id=?', (run_id,)).fetchone()
+        if row is not None and row['launch_intent'] is not None:
+            return run_supervisor.FIXER_NOT_ADMITTED
+        # Legacy row or hand-built scope: trust the loop's current opt-in.
+        return "" if config.unattended_fixer_push_enabled(loop) else run_supervisor.FIXER_NOT_ADMITTED
+    except Exception:
+        pass  # an unreadable ledger fails closed: the push itself would refuse too
+    return run_supervisor.FIXER_NOT_ADMITTED
+
 
 class ProtocolError(Exception):
     """Malformed or out-of-scope request, without leaking host details."""
@@ -214,6 +281,12 @@ class RunBroker:
         if isinstance(request, dict) and request.get("operation") == "push":
             if set(request) != {"operation", "manifest"} or self.scope.role != "fixer":
                 raise ProtocolError("operation out of scope")
+            hold = self._policy_hold()
+            if hold:
+                # (#81) Every write this turn would make is refused: say so before anything
+                # else, instead of an unrelated "must publish a confirmed push first" or
+                # "run capability already used" (or a late post-capability policy read).
+                raise ProtocolError(FIXER_WRITE_DENIED.format(reason=hold))
             if self._used:
                 raise ProtocolError("run capability already used")
             reason = self._partial_view()
@@ -299,6 +372,11 @@ class RunBroker:
         expected = {"reviewer": "review", "fixer": "request_review"}.get(self.scope.role)
         if operation != expected or expected is None:
             raise ProtocolError("operation out of scope")
+        # (#81) A fixer whose every write is refused has no request to make either: named
+        # here, before anything is read or consumed, not after a later capability error.
+        hold = self._policy_hold() if self.scope.role == "fixer" else ""
+        if hold:
+            raise ProtocolError(FIXER_WRITE_DENIED.format(reason=hold))
         # A partial-view fixer (#93, #110) may not push; its answers, alone, are its one write.
         answers_only = (operation == "request_review" and not self._pushed_head
                         and bool(self._partial_view()))
@@ -389,6 +467,22 @@ class RunBroker:
         except Exception as exc:
             # Fail closed, and say so: a record nobody can read is not a whole view.
             return f"the host could not read this run's view record ({type(exc).__name__})"
+
+    def _policy_hold(self) -> str:
+        """Why the host policy refuses this fixer's push, or '' — read at request time.
+
+        The write boundary is the same one the push path enforces: the host-owned repository
+        configuration is reloaded here (never the launch-time snapshot or anything from
+        inside the namespace), and a loop that has not opted in to unattended fixer pushes is
+        named, so a denied write is never silent (#81). Returns '' — never a hold — when this
+        broker holds no run ledger (``ledger_db`` is None): there is no admission snapshot to
+        read, so the push path's own boundary checks stay the only authority (#81).
+        """
+        if not self.scope.ledger_db:
+            return ""
+        return policy_hold_reason(self._loop, run_id=self.scope.run_id,
+                                  repo=self.scope.repo, number=self.scope.number,
+                                  head=self.scope.head, ledger_db=self.scope.ledger_db)
 
     def _publish_answers(self, head: str, text: str) -> str:
         """Post the fixer's answers as ONE PR comment by the fixer identity; return the outcome.

@@ -154,20 +154,26 @@ def resume_isolated(loop: dict) -> bool:
     return True
 
 
-def hold_fixer_push_off(loop: dict, st: state_mod.LoopState, number: int, head: str) -> bool:
-    """Hold a changes-requested verdict for the operator: unattended fixer pushes are off.
+def hold_fixer_push_off(loop: dict, st: state_mod.LoopState, number: int,
+                        head: str, reason: str | None = None) -> bool:
+    """Hold a changes-requested verdict for the operator: the fixer's writes are all refused.
 
-    No ledger row, no worker, no model turn. The seat queue carries the reason with the exact
-    enable command, so explain, the watchdog and ``status`` show it; the watchdog re-evaluates
-    the held head once the loop opts in. Returns ``True`` only when this call recorded the hold
+    No ledger row, no worker, no model turn. ``reason`` names the denial (the shared
+    ``broker_ipc`` wording, #81) and carries the exact enable command, so explain, the
+    watchdog and ``status`` show it; the watchdog re-evaluates the held head once the loop
+    opts in. Returns ``True`` only when this call recorded the hold
     (an identical hold for this head is left as it was, so its age stays honest).
     """
     key = seat_key(loop, number)
     queued = st.queue_items("fixer").get(key)
-    if config.is_fixer_push_hold(queued) and queued.get("head") == head:
+    # ``reason`` already carries the shared denial (#81) when the gate named one; when it is
+    # not given, the plain hold is the whole reason. Either way an identical hold for this
+    # head is left exactly as it was (#81): rewriting it would only move its timestamp, and a
+    # redelivered verdict must stay one hold.
+    hold = reason or config.fixer_push_hold_reason(loop)
+    if isinstance(queued, dict) and queued.get("head") == head and queued.get("reason") == hold:
         return False
-    return st.queue_replace_if("fixer", key, queued, head, pr_url(loop, number),
-                               config.fixer_push_hold_reason(loop))
+    return st.queue_replace_if("fixer", key, queued, head, pr_url(loop, number), hold)
 
 
 def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
@@ -204,10 +210,25 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
             st.queue_replace_if(seat, key, queued, head, pr_url(loop, number), reason)
             log(f"#{number} @ {head[:7]} {seat} held: {reason}")
     if push_off:
-        # Checked before the runtime: a turn that could never publish is not worth a worker,
-        # and "pushes are off" is the reason the operator can act on.
-        hold_fixer_push_off(loop, st, number, head)
-        log(f"#{number} @ {head[:7]} fixer held: {config.fixer_push_hold_reason(loop)}")
+        # Checked before the runtime: a turn that could never publish is not worth a worker.
+        # The hold reason keeps the exact enable command at its front (#81) — every surface
+        # (``is_fixer_push_hold``, explain, the watchdog) matches on those words — with the
+        # policy denial named after it.
+        reason = config.fixer_push_hold_reason(loop)
+        try:
+            from . import broker_ipc
+            denial = broker_ipc.policy_hold_reason(loop)
+        except Exception as exc:
+            # An unreadable policy read must not drop the enable command or the hold itself.
+            log(f"#{number} @ {head[:7]} fixer policy read failed: {type(exc).__name__}: {exc}")
+            denial = ""
+        if denial:
+            reason = (f"{reason} every write from this turn is refused ({denial}); nothing is "
+                      f"written and this turn is held for the operator — say plainly in your "
+                      f"summary that the fix was not published, and never describe a fix as "
+                      f"pushed.")
+        hold_fixer_push_off(loop, st, number, head, reason)
+        log(f"#{number} @ {head[:7]} fixer held: {reason}")
     notice = on_push_off if push_off and on_push_off is not None else on_queued
     if notice is not None:
         try:
