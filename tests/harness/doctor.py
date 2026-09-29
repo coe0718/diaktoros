@@ -66,6 +66,36 @@ def profile_env(profile: str) -> pathlib.Path:
     return TMP / "hermes-home" / "profiles" / profile / ".env"
 
 
+# The doctor runtime file's lifetime is owned by ``group_doctor``: ``install_doctor_fixture``
+# stashes every path ``doctor_runtime_fixture`` creates here, and the group's last act removes
+# them — later groups (gates, observer) rely on there being no runtime file (an eligible gate
+# then holds, fail closed). See ``install_doctor_fixture``.
+_runtime_added: list[pathlib.Path] = []
+
+
+def install_watchdog_state(loop: dict) -> None:
+    """A loop whose watchdog swept once, just now: the install a healthy host looks like.
+
+    ``check_watchdog_last_run`` (#67) reads ``state/watchdog.json``'s ``last_run`` and fails
+    when the watchdog has been gone longer than 2× its schedule — a freshly-init'ed loop that
+    has never swept reports it ``unknown``, which is not what a *correct installation* looks
+    like. The documented order is doctor → selftest → arm (init creates hooks paused and nothing
+    has swept yet), so ``group_doctor``'s "a correct install passes" scenario — and its
+    ``--strict`` sibling, where an unknown is a failure — must install the one fact only a real
+    sweep stamps. Every other scenario calls ``install_doctor_fixture`` without it and sees the
+    never-swept state, so ``check_watchdog_last_run``'s unknown path stays covered end to end.
+    """
+    from review_loop import state as state_mod, config as config_mod
+    from review_loop.util import now_iso
+    st = state_mod.state_for(loop)
+    watch = st.watch()
+    watch["last_run"] = now_iso()
+    st.watch_save(watch)
+    # This helper is the one place that writes state, so it is also the one place that may
+    # create the state dir it writes into. The preflight itself must stay read-only.
+    config_mod.state_dir(loop).mkdir(parents=True, exist_ok=True)
+
+
 def install_doctor_fixture() -> dict:
     """A complete, correct installation — down to the pieces `reset()` does not build.
 
@@ -112,7 +142,20 @@ def install_doctor_fixture() -> dict:
     # The gate shims the gateway runs from each serving profile's scripts/ (issue #105).
     from review_loop import gate_shims
     gate_shims.install(config.load_id("widgets"))
-    return config.load_id("widgets")
+    loop = config.load_id("widgets")
+    # #67's two checks belong to "a complete, correct installation": a healthy host has a watchdog
+    # that swept once (state/watchdog.json's ``last_run``) and a runtime file whose
+    # source/venv/runtime/rust all exist. So the fixture installs both, and every scenario that
+    # only perturbs one *other* thing sees them verified. The watchdog stamp is just state (harmless
+    # to later groups), but ``doctor_runtime_fixture``'s file is NOT: later groups (gates, observer)
+    # rely on there being no runtime file — an eligible gate then holds, fail closed. So its paths
+    # are stashed in ``_runtime_added`` and removed at the end of ``group_doctor`` (the one place
+    # that owns the doctor runtime's lifetime). The ``--offline`` "two checks undecided" and the
+    # never-swept/strict paths still call ``install_watchdog_state``/``doctor_runtime_fixture``
+    # explicitly where they need to re-shape or re-remove that state.
+    install_watchdog_state(loop)
+    _runtime_added.extend(doctor_runtime_fixture())
+    return loop
 
 
 def _have(module: str) -> bool:
@@ -239,6 +282,12 @@ def fake_hermes_source() -> str:
     for name, body in FAKE_HERMES_SOURCE.items():
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(body)
+    # #67's ``runtime:source`` checks the install shape a worker actually mounts: a hermes-agent
+    # Git checkout with run_agent.py at the top. A bare module tree passes ``load_runtime`` but
+    # would fail ``runtime:source``'s shape check, so the fixture must be a checkout like any
+    # real install.
+    (root / "run_agent.py").write_text("")
+    (root / ".git").mkdir(exist_ok=True)
     return str(root)
 
 
@@ -251,9 +300,14 @@ def doctor_runtime_fixture() -> list[pathlib.Path]:
     import sys
     home = TMP / "hermes-home"
     venv = TMP / "doctor-venv"
+    rust = TMP / "doctor-rust"
+    (rust / "bin").mkdir(parents=True, exist_ok=True)
+    # #67's ``runtime:rust`` checks for the toolchain's cargo: a Rust toolchain dir, not the
+    # Python install root. Give it one so the fixture is a complete, correct installation.
+    (rust / "bin" / "cargo").write_text("")
     runtime = home / "review-loop-runtime.json"
     runtime.write_text(json.dumps({"source": fake_hermes_source(), "venv": resolver_venv(venv),
-                                   "runtime": str(TMP), "rust": str(TMP)}))
+                                   "runtime": str(TMP), "rust": str(rust)}))
     runtime.chmod(0o600)
     return [runtime] + write_seat_models()
 
@@ -319,6 +373,7 @@ def group_doctor() -> None:
           {"verified": 6, "failed": 0, "unknown": 0, "skipped": 0, "total": 6})
 
     install_doctor_fixture()
+    install_watchdog_state(load_loop())
     added = doctor_runtime_fixture()
     before_files = tree_digest(TMP)
     before_posts = len(RECEIVED)
@@ -354,7 +409,8 @@ def group_doctor() -> None:
         fixer_config.write_text("model:\n  default: anthropic/claude-sonnet-4.6\n  provider: nous\n")
     else:
         fixer_config.write_text(json.dumps({"model": {"default": "anthropic/claude-sonnet-4.6",
-                                                      "provider": "nous"}}) + "\n")
+                                                     "provider": "nous"}}) + "\n")
+    install_watchdog_state(load_loop())   # this run is --strict: never-swept is unknown
     rc, out = run_doctor("--loop", "widgets", "--strict")
     check("a nous anthropic/* seat on the chat wire passes --strict without the package", rc, 0)
     check("  its extras line is verified", "✅ extras:fixer" in out, True)
@@ -1016,19 +1072,25 @@ def group_doctor() -> None:
     check("  naming the loop", "[widgets] acme/widgets" in out, True)
 
     install_doctor_fixture()
+    install_watchdog_state(load_loop())
     added = doctor_runtime_fixture()
     rc, out = run_doctor("--loop", "widgets", "--offline")
-    for path in added:
-        path.unlink()
     check("--offline leaves two checks undecided", rc, 0)
     check("  and counts them", "0 failed, 2 unknown" in out, True)
     check("  the gateway is not probed", "⚠️ gateway" in out and "not probed" in out, True)
     check("  nor the hooks", "⚠️ hooks" in out, True)
     check("  and it says what to do about it", "verify the ⚠️ lines by hand" in out, True)
 
+    # The runtime file must still be here for the --strict run: #67's ``runtime:*`` checks are
+    # verified when it is present, so the only undecided lines are the two --offline probes
+    # (gateway, hooks) and ``report``'s ``--strict`` note — "N undecided count as a failure" —
+    # prints. Removing it first would turn ``runtime:*`` absent (a ❌), which ``report`` treats as
+    # a real failure and (by design) does not dress up as a --strict verdict. Clean up after.
     rc, out = run_doctor("--loop", "widgets", "--offline", "--strict")
     check("--strict fails on an undecided check", rc, 1)
     check("  and says why", "--strict" in out, True)
+    for path in added:
+        path.unlink()
 
     install_doctor_fixture()
     for path in LOOPS_DIR.glob("*.json"):
@@ -1039,6 +1101,13 @@ def group_doctor() -> None:
     rc, out = run_doctor("--loop", "nope")
     check("an unknown loop is refused", rc, 2)
     check("  with the reason", "cannot preflight loop" in out, True)
+
+    # Own the doctor runtime file's lifetime: remove every path ``install_doctor_fixture`` created
+    # so later groups (gates, observer) find no runtime file — an eligible gate then holds, fail
+    # closed. Idempotent: a path a scenario already removed is skipped.
+    for path in _runtime_added:
+        path.unlink(missing_ok=True)
+    _runtime_added.clear()
 
 
 GROUPS = {
