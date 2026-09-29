@@ -375,6 +375,32 @@ class ArmVerifyTests(unittest.TestCase):
         self.assertIn("the gateway does not route it (404)", check.detail)
         self.assertIn("drop the trailing slash", check.fix)
 
+    def test_a_percent_2f_hook_is_named_not_silently_skipped(self):
+        # #133: `route_name_of` decodes nothing, so ".../widgets-review%2F" resolves to the name
+        # "widgets-review%2F" — not "widgets-review". split_route_hooks drops a hook whose name is
+        # in no route, so it landed in neither `own` nor `other`, `arm` never saw it, stayed ok,
+        # and exited 0 while `gate.hooks_read` correctly reported the seat unarmed. The hook must
+        # be named (and arm must fail), the same way the trailing-slash spelling already is.
+        from review_loop import doctor
+        encoded = hooks(False)
+        encoded[1]["config"]["url"] = f"{HOST}/p/reviewer/webhooks/widgets-review%2F"
+        fake = FakeGitHub(encoded)
+        rc, out = self.arm(fake)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("hook 1", out)
+        self.assertNotIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls,
+                         "a hook arm could not confirm must never be PATCHed blind")
+        # Pausing still finds it as this install's hook (ownership matching, not route-name).
+        for hook in encoded.values():
+            hook["active"] = True
+        rc, out = self.arm(FakeGitHub(encoded), pause=True)
+        self.assertIn("hook 1", out)
+        # And doctor refuses it as a MISMATCH rather than reporting ABSENT.
+        check = doctor.check_hook(config.load_id("widgets"), [encoded[1]], "reviewer",
+                                  "widgets-review", f"{HOST}/p/reviewer/webhooks/widgets-review")
+        self.assertNotEqual(check.status, doctor.ABSENT,
+                            "a %2F hook must be named, not reported as no hook at all")
+
     def test_a_query_string_is_the_same_route_url(self):
         # The gateway's router matches the path only, so "?x=1" is delivered like the bare URL.
         from review_loop import doctor
