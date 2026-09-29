@@ -386,7 +386,17 @@ class LoopState:
             return True
 
     def queue_items(self, seat: str) -> dict:
-        return (self._load(self.pending, {}) or {}).get(seat) or {}
+        """This seat's queue entries, ``{key: entry}``.
+
+        A seat value that is not a mapping — a hand edit, a truncated or older-shape write —
+        reads as an empty queue instead of raising out of every reader of it (``explain``'s
+        ``_explain_state`` and ``observer.hold_reason`` both call this and then ``.get`` a
+        key), the same rule ``live_locks`` applies to ``locks.json``. The next write of a
+        well-formed entry replaces it (#167).
+        """
+        data = self._load(self.pending, {}) or {}
+        items = data.get(seat) if isinstance(data, dict) else None
+        return items if isinstance(items, dict) else {}
 
     def queue_drop_unreadable(self, seat: str) -> list[str]:
         """Drop this seat's queue entries nothing can age, and name them (#80).
