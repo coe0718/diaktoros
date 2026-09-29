@@ -396,6 +396,67 @@ class OperatorCommands(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn('nothing to retry', out)
 
+    def test_retry_names_the_pr_head_not_a_supersession_bumped_timestamp(self):
+        # #126: bare `retry` picked the head by `max(updated)`, but the claim path bumps `updated`
+        # when it cancels a row for a head the PR has since left. So a supersession at an
+        # abandoned head can outrank the recoverable row at the PR's real head, and `retry` names
+        # the abandoned head, offers nothing, and prints a false "nothing to retry". The head now
+        # comes from the PR itself, falling back to the newest head that still has an offerable
+        # row when the read fails — never a timestamp supersession rewrites.
+        import argparse
+        import contextlib
+        import io
+        from review_loop import cli, gh
+        # Three rows: a recoverable failed run at the PR's real head (created first, so its
+        # `updated` is older), and a superseded cancellation at an abandoned head (created last
+        # and bumped newest by the claim path's supersession write).
+        self.sup.submit('r', 'acme/widgets', 7, HEAD, 'reviewer')          # real head, recoverable
+        self.sup.submit('s', 'acme/widgets', 7, 'b' * 40, 'fixer')         # abandoned head
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='failed', retries=4, "
+                        "error='retry limit (4 attempts): turn exited with status 3' "
+                        "WHERE delivery='r'")
+            # Supersession at the abandoned head: newest `updated`, but not offerable as a head.
+            con.execute("UPDATE runs SET state='cancelled', "
+                        "error='PR head moved before the review started', updated=? "
+                        "WHERE delivery='s'", (time.time() + 1000,))
+        pr = {'number': 7, 'state': 'open', 'head': {'sha': HEAD}}
+        with patch.object(gh, 'pr', return_value=pr):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.cmd_retry(argparse.Namespace(loop='widgets', pr=7, seat=None))
+        text = out.getvalue()
+        # The real head is named and its recoverable row is offered — not the abandoned head.
+        self.assertIn(f'reviewer #7 @ {HEAD[:7]} re-armed', text)
+        self.assertNotIn('b' * 7, text, 'the abandoned head must not be chosen')
+        self.assertNotIn('nothing to retry', text)
+        self.assertEqual(self.sup.get('r')['state'], 'pending')
+
+    def test_retry_degrades_to_offerable_head_when_the_pr_read_fails(self):
+        # The tiebreaker half of #126: with the supersession disagreement present but the PR read
+        # unavailable (gh.pr -> None), retry must fall back to the newest head that still has an
+        # offerable row — never the supersession-bumped cancelled row at the abandoned head.
+        import argparse
+        import contextlib
+        import io
+        from review_loop import cli, gh
+        self.sup.submit('r', 'acme/widgets', 7, HEAD, 'reviewer')          # real head, recoverable
+        self.sup.submit('s', 'acme/widgets', 7, 'b' * 40, 'fixer')         # abandoned head
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='failed', retries=4, "
+                        "error='retry limit (4 attempts): turn exited with status 3' "
+                        "WHERE delivery='r'")
+            con.execute("UPDATE runs SET state='cancelled', "
+                        "error='PR head moved before the review started', updated=? "
+                        "WHERE delivery='s'", (time.time() + 1000,))
+        with patch.object(gh, 'pr', return_value=None):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cli.cmd_retry(argparse.Namespace(loop='widgets', pr=7, seat=None))
+        text = out.getvalue()
+        self.assertNotIn('b' * 7, text, 'a supersession bump must not pick the head')
+        self.assertIn(f'reviewer #7 @ {HEAD[:7]}', text)
+
     def test_ledger_lines_show_reason_tail_and_next_step(self):
         from review_loop import cli, config
         loop = config.load_id('widgets')
