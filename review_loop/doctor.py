@@ -46,6 +46,7 @@ import re
 import shlex
 import socket
 import subprocess
+import time
 from datetime import datetime
 from urllib.parse import urlsplit
 
@@ -249,6 +250,140 @@ def check_turn_budget(loop: dict) -> Check:
                  "only with no live ruling run, after "
                  f"{minutes(config.adjudicating_stall_s(loop))}m")
     return Check("turn-budget", VERIFIED, text)
+
+
+def check_watchdog_last_run(loop: dict) -> Check:
+    """Has the watchdog actually run recently? (#67)
+
+    ``check_cron_job`` proves the job is *configured*; this proves it *runs*. The watchdog
+    stamps ``last_run`` in the loop's ``watchdog.json`` on every sweep, and the job's own
+    ``schedule`` gives the interval it should fire at. A ``last_run`` older than **2× the
+    schedule** means at least one scheduled run did not happen — the shim is broken, the
+    scheduler is down, or the job was paused — and stalls, queue drains and route self-heal
+    are all silently skipped while the loop keeps looking armed.
+
+    A missing or unparseable ``last_run``, or a schedule this preflight cannot read, is
+    ``unknown`` rather than a failure: nothing here writes state, so a loop whose watchdog
+    simply has not fired yet is not proof of a fault. Only a proven-stale stamp fails.
+    """
+    import time as _time
+    from . import state as state_mod
+    from .util import epoch
+    st = state_mod.state_for(loop)
+    raw = st.watch().get("last_run")
+    if not raw:
+        return Check("watchdog:run", UNKNOWN,
+                     "no last_run recorded in watchdog.json — the watchdog may not have "
+                     "run yet (or its state is unreadable)",
+                     f"run `hermes review-loop watchdog --loop {loop['id']}` once, or wait "
+                     "for the next scheduled run; if it never stamps last_run, the shim or "
+                     "the scheduler is broken (see cron:shim / cron:job)")
+    last = epoch(raw)
+    if not last:
+        return Check("watchdog:run", UNKNOWN,
+                     f"last_run in watchdog.json is not a parseable timestamp ({raw!r})",
+                     "check watchdog.json — a corrupt stamp means the watchdog state needs "
+                     "repair before staleness can be judged")
+    schedule_min = _watchdog_schedule_minutes(loop)
+    if schedule_min is None:
+        return Check("watchdog:run", UNKNOWN,
+                     f"last run {raw} ({(_time.time() - last) / 60:.0f}m ago), but the "
+                     "schedule interval could not be read from the cron store",
+                     "check `hermes cron list` or the cron store; the staleness threshold "
+                     "is 2× the schedule interval")
+    threshold_s = 2 * schedule_min * 60
+    age_s = _time.time() - last
+    if age_s > threshold_s:
+        return Check("watchdog:run", MISMATCH,
+                     f"last run {raw} ({age_s / 60:.0f}m ago) is older than 2× the "
+                     f"{schedule_min}m schedule ({threshold_s / 60:.0f}m) — the watchdog "
+                     "has stopped running",
+                     f"check the cron job (`hermes cron list`), the shim (`{shim_path()}`) "
+                     f"and the watchdog log ({st.log}); resume or replace the job with "
+                     f"{cron_fix(loop)}")
+    return Check("watchdog:run", VERIFIED,
+                 f"last run {raw} ({age_s / 60:.0f}m ago, within 2× the {schedule_min}m "
+                 f"schedule = {threshold_s / 60:.0f}m)")
+
+
+def _watchdog_schedule_minutes(loop: dict) -> int | None:
+    """The watchdog job's schedule interval in minutes, or None if it cannot be read."""
+    path = cron_store()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    if not isinstance(jobs, list):
+        return None
+    wanted = watchdog_job_name(loop)
+    job = next((entry for entry in jobs if isinstance(entry, dict)
+                and str(entry.get("name") or "").strip() == wanted), None)
+    if job is None:
+        return None
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict) and schedule.get("kind") == "interval":
+        minutes = schedule.get("minutes")
+        if type(minutes) is int and minutes > 0:
+            return minutes
+    return None
+
+
+def check_runtime_paths(loop: dict) -> list[Check]:
+    """Validate every path the runtime file names. (#67)
+
+    ``review-loop-runtime.json`` names four host paths (``source``, ``venv``, ``runtime``,
+    ``rust``) that the isolated worker mounts. A Hermes upgrade that moves the install
+    leaves those paths pointing at directories that no longer exist — and the worker fails
+    on every turn while doctor says nothing. Each path is checked independently so the
+    operator sees exactly which one is wrong; a missing runtime file is reported as such.
+    """
+    from . import seat_model
+    path = config.home() / "review-loop-runtime.json"
+    if not path.exists():
+        return [Check("runtime:file", ABSENT,
+                      f"no runtime file at {path}",
+                      f"write {path} with source/venv/runtime/rust paths (see "
+                      "`docs/configuration.md`); without it no isolated turn can start")]
+    try:
+        if not path.is_file() or path.is_symlink() or path.stat().st_mode & 0o077:
+            raise ValueError("must be a private (0600) regular file")
+        settings = seat_model.load_runtime(path)
+    except (OSError, ValueError) as exc:
+        return [Check("runtime:file", MISMATCH,
+                      f"{path}: {exc}",
+                      f"repair {path}; `hermes review-loop selftest` shows each problem")]
+    checks: list[Check] = []
+    for key in ("source", "venv", "runtime", "rust"):
+        raw = settings.get(key)
+        if not raw:
+            checks.append(Check(f"runtime:{key}", ABSENT,
+                                f"no {key} path in the runtime file",
+                                f"set {key} in {path} to the correct host path"))
+            continue
+        p = pathlib.Path(raw).expanduser()
+        if not p.exists():
+            checks.append(Check(f"runtime:{key}", ABSENT,
+                                f"{key} = {raw} does not exist",
+                                f"update {key} in {path} to the current path (a Hermes "
+                                "upgrade may have moved it)"))
+        elif key == "source" and not (p / "run_agent.py").exists():
+            checks.append(Check(f"runtime:{key}", MISMATCH,
+                                f"{key} = {raw} exists but has no run_agent.py",
+                                f"point {key} at the hermes-agent Git checkout"))
+        elif key == "venv" and not (p / "bin" / "python").exists():
+            checks.append(Check(f"runtime:{key}", MISMATCH,
+                                f"{key} = {raw} exists but has no bin/python",
+                                f"point {key} at the virtualenv Hermes is installed in"))
+        elif key == "rust" and not (p / "bin" / "cargo").exists():
+            checks.append(Check(f"runtime:{key}", MISMATCH,
+                                f"{key} = {raw} exists but has no bin/cargo",
+                                f"point {key} at the Rust toolchain directory"))
+        else:
+            checks.append(Check(f"runtime:{key}", VERIFIED, f"{key} = {raw}"))
+    return checks
 
 
 def _check_profile(name: str, seat: str) -> Check:
@@ -1689,6 +1824,8 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.extend(check_gate_timeouts(loop))
     checks.append(check_shim(loop))
     checks.append(check_cron_job(loop))
+    checks.append(check_watchdog_last_run(loop))
+    checks.extend(check_runtime_paths(loop))
     checks.append(check_clone(loop))
     checks.append(check_state_dir(loop))
     checks.append(check_roots(loop))
