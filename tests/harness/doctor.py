@@ -299,6 +299,59 @@ def doctor_summary(out: str, loop_id: str) -> dict | None:
     return counts
 
 
+# Every check doctor emits for the fixture loop, by name (#160). Deleting a check's ``append`` from
+# ``doctor.check_loop`` fails the green-install section, and so does adding one: a new check is a
+# decision someone makes here, not a line the harness never looks at. The per-seat and per-route
+# families are spelled out for the fixture's three seats, three routes and three serving profiles.
+DOCTOR_FIXTURE_CHECKS = frozenset({
+    "config", "turn-budget",
+    "profile:reviewer", "profile:fixer", "profile:adjudicator",
+    "credential:reviewer", "credential:fixer",
+    "model:reviewer", "model:fixer", "model:adjudicator",
+    "extras:reviewer", "extras:fixer", "extras:adjudicator",
+    # The fixture opts in (unattended_fixer_push), so the fix leg reads as enabled.
+    "fixer-push", "sandbox:caps",
+    "token:rev-coach", "token:dev-fixer", "token:read-acct", "read_token",
+    "route:widgets-review", "route:widgets-fix", "route:widgets-breach",
+    # Route/role isolation (#105): each route runs its own seat's gate shim.
+    "gateway-script:widgets-review", "gateway-script:widgets-fix",
+    "gateway-script:widgets-breach",
+    "scripts",
+    "gate:timeout:reviewer-profile", "gate:timeout:fixer-profile", "gate:timeout:default",
+    "cron:shim", "cron:job", "clone", "state_dir", "roots", "gateway",
+    "hook:widgets-review", "hook:widgets-fix",
+})
+
+
+def doctor_checks(out: str, loop_id: str) -> list[tuple[str, str]] | None:
+    """``(mark, name)`` for every check line ``report()`` printed for ``loop_id``, in order.
+
+    The block runs from the ``[loop_id] …`` header to the first blank line; each line in it is a
+    check (``  <mark> <name> <detail>``) or the ``      fix:`` line under a failed one. Anything
+    else — a second header, an unknown mark, a line of another shape — returns ``None``: a report
+    this cannot read is not a green one, and a skipped line would be a check nobody counted.
+    """
+    import re
+    from review_loop import doctor
+    lines = out.splitlines()
+    headers = [i for i, line in enumerate(lines) if line.startswith(f"[{loop_id}] ")]
+    if len(headers) != 1:
+        return None
+    marks = "|".join(re.escape(mark) for mark in dict.fromkeys(doctor.MARKS.values()))
+    shape = re.compile(rf"^  ({marks}) (\S+)(?: .*)?$")
+    found = []
+    for line in lines[headers[0] + 1:]:
+        if not line:
+            return found
+        if line.startswith("      fix: "):
+            continue
+        match = shape.match(line)
+        if not match:
+            return None
+        found.append((match.group(1), match.group(2)))
+    return None
+
+
 def group_doctor() -> None:
     """`hermes review-loop doctor` — the read-only preflight of an installation."""
     from review_loop import cli, config, doctor
@@ -318,6 +371,26 @@ def group_doctor() -> None:
           doctor_summary("demo: 6 verified, 0 failed, 0 unknown (of 6 checks)", "demo"),
           {"verified": 6, "failed": 0, "unknown": 0, "skipped": 0, "total": 6})
 
+    # The check-line parser reads report()'s real output, every mark and a fix line included.
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor.report({"id": "demo", "repo": "acme/demo"}, [
+            doctor.Check("a-verified-check-with-a-name-past-the-column", doctor.VERIFIED, "ok"),
+            doctor.Check("absent", doctor.ABSENT, "gone", "put it back"),
+            doctor.Check("mismatch", doctor.MISMATCH, "", "fix it"),
+            doctor.Check("unknown", doctor.UNKNOWN, "undecided"),
+            doctor.Check("skipped", doctor.SKIPPED, "not asked")])
+    # Compared by word, not by mark, so a passing line of this log never shows a red mark.
+    word = {doctor.MARKS[doctor.VERIFIED]: "verified", doctor.MARKS[doctor.ABSENT]: "failed",
+            doctor.MARKS[doctor.UNKNOWN]: "unknown", doctor.MARKS[doctor.SKIPPED]: "skipped"}
+    check("the check-line parser reads report()'s real lines",
+          [(word[mark], name) for mark, name in doctor_checks(buf.getvalue(), "demo") or ()],
+          [("verified", "a-verified-check-with-a-name-past-the-column"), ("failed", "absent"),
+           ("failed", "mismatch"), ("unknown", "unknown"), ("skipped", "skipped")])
+    check("  and refuses a line it cannot read",
+          doctor_checks("[demo] acme/demo — preflight\n  ✅ config  ok\n  ?? odd  line\n\n", "demo"),
+          None)
+
     install_doctor_fixture()
     added = doctor_runtime_fixture()
     before_files = tree_digest(TMP)
@@ -333,17 +406,18 @@ def group_doctor() -> None:
     check("  nothing is marked failed", "❌" in out, False)
     check("  the header says it is read-only",
           "read-only: it writes nothing and fires nothing" in out, True)
-    for name in ("config", "profile:reviewer", "profile:fixer", "profile:adjudicator", "credential:reviewer",
-                 "credential:fixer", "token:rev-coach", "token:dev-fixer", "token:read-acct", "read_token",
-                 "route:widgets-review", "route:widgets-fix", "route:widgets-breach", "scripts",
-                 "cron:shim", "cron:job", "clone", "state_dir", "roots", "gateway",
-                 "sandbox:caps",
-                 "hook:widgets-review", "hook:widgets-fix",
-                 "model:reviewer", "model:fixer", "model:adjudicator",
-                 "extras:reviewer", "extras:fixer", "extras:adjudicator",
-                 # The fixture opts in (unattended_fixer_push), so the fix leg reads as enabled.
-                 "fixer-push"):
-        check(f"  ✅ {name}", f"✅ {name}" in out, True)
+    # By name, both ways (#160): a check that disappears and a check nobody listed both fail.
+    emitted = doctor_checks(out, "widgets")
+    names = [name for _, name in emitted or ()]
+    check("  the report's check lines parse", emitted is not None, True)
+    check("  one line per counted check",
+          summary is not None and len(names) == summary["total"], True)
+    check("  no check is emitted twice", len(names), len(set(names)))
+    check("  no expected check is missing", sorted(DOCTOR_FIXTURE_CHECKS - set(names)), [])
+    check("  no check is emitted that the harness does not name",
+          sorted(set(names) - DOCTOR_FIXTURE_CHECKS), [])
+    check("  and every one is verified",
+          [name for mark, name in emitted or () if mark != doctor.MARKS[doctor.VERIFIED]], [])
     check("  it writes nothing", tree_digest(TMP), before_files)
 
     # #118: nous on an anthropic/* model with nous.anthropic_wire unset (Hermes's "chat") never
