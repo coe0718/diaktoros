@@ -33,6 +33,9 @@ from . import config, route_intent, routes
 
 GATE_SCRIPT = route_intent.GATE_SCRIPT
 MARKER = "# hermes-review-loop gate shim"
+# The tail of divergence()'s missing-route detail, exported so tests assert the real wording
+# instead of a hand-copied literal that silently disarms if the message is reworded (#153).
+GATEWAY_404_TAIL = "— the gateway 404s this seat"
 MODE = 0o755          # the gateway runs [sys.executable, path], so read suffices; x lets a human run it
 
 SHIM = '''#!/usr/bin/env python3
@@ -205,7 +208,7 @@ def divergence(loop: dict, *, include_missing: bool = True, contract: bool = Fal
         if not isinstance(entry, dict):
             if include_missing:
                 out[name] = (f"loop config says {_side(*want)}, but the registry holds no route "
-                             f"{name!r} — the gateway 404s this seat",
+                             f"{name!r} {GATEWAY_404_TAIL}",
                              repair if restorable else recreate_fix(loop), "absent")
             continue
         served = routes.route_profile(entry)
