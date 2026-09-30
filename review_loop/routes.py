@@ -244,11 +244,21 @@ def contract_mismatch(entry: dict, expected: dict) -> list[str]:
 
 
 def route_name_of(url: str) -> str:
-    """The route a webhook URL posts to: its complete last ``/webhooks/<name>`` segment ("" when
-    it has none). One spelling of the rule for every caller — a substring match would take
-    another route whose name merely contains this one."""
+    """The route a webhook URL posts to: its complete last ``/webhooks/<name>`` segment (``""``
+    when it has none). One spelling of the rule for every caller — a substring match would take
+    another route whose name merely contains this one.
+
+    The name is percent-decoded and stripped of trailing slashes after the split, so a hook posted
+    at ``.../webhooks/<name>%2F`` (a literal ``%2F``, not an encoded ``/``) resolves to ``<name>``
+    rather than the never-present ``<name>%2F`` (#133). It is then judged by the raw path —
+    ``same_webhook_url``/``exact_hook_url`` compare bytes, so the gateway's 404 for that spelling
+    still reports it unserved; only the *name* is recovered so ``arm`` and ``doctor`` name the hook
+    instead of saying no hook posts to the route.
+    """
     path = urllib.parse.urlsplit(str(url or "")).path.rstrip("/")
-    return path.rsplit("/webhooks/", 1)[-1] if "/webhooks/" in path else ""
+    if "/webhooks/" not in path:
+        return ""
+    return urllib.parse.unquote(path.rsplit("/webhooks/", 1)[-1]).rstrip("/")
 
 
 def _url_parts(url: str) -> tuple[str, str, str]:
