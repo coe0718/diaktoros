@@ -276,19 +276,32 @@ class ProductionLaunch(Base):
                     value = kw.get(key)
                     if value:
                         roots.append(str(Path(str(value)).parent))
+                def allowed(source: str) -> bool:
+                    # The source must be the root itself or beneath it — never a broad ancestor of
+                    # it. The symmetric `at_or_under(root, source)` accepted `/` (every root is
+                    # beneath `/`), exposing the whole host filesystem behind a green safety check
+                    # (#178 review).
+                    return source in system or any(at_or_under(source, root) for root in roots)
+
                 rogue = []
                 for option in options:
                     if option[0] not in READ_ONLY_BINDS:
                         continue
-                    source = option[1]
-                    if source in system:
-                        continue
-                    if any(at_or_under(source, root) or at_or_under(root, source)
-                           for root in roots):
+                    if allowed(option[1]):
                         continue
                     rogue.append(option)
                 self.assertEqual(rogue, [],
                                  f"{role}: read-only bind of an arbitrary host path: {rogue}")
+
+    def test_a_read_only_bind_of_a_broad_ancestor_is_rejected(self):
+        # The allowlist must reject the roots' own ancestors — `/` and `/tmp` both expose far more
+        # than the turn's staged directories. The predicate is directional: source beneath root.
+        from test_contained_launch import at_or_under
+        roots = ["/tmp/xyz/work/turn-abc", "/tmp/xyz/venv"]
+        for source in ("/", "/tmp", "/tmp/xyz", "/home"):
+            self.assertFalse(
+                any(at_or_under(source, root) for root in roots),
+                f"the allowlist accepted the broad ancestor {source!r}")
 
     def test_network_cannot_be_requested(self):
         # Production's kwargs (the turn's own directories are gone once run_turn returns, which

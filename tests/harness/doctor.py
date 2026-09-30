@@ -416,12 +416,17 @@ def doctor_checks(out: str, loop_id: str) -> list[tuple[str, str]] | None:
         if not match:
             return None
         rest = match.group(2)
-        # name field is 20 wide when the name fits; otherwise the name is space-free and runs to
-        # the separator space (report emits exactly one space between the padded name and detail).
+        # report() emits f"{name:<20} {detail}", so the separator sits at max(20, len(name)).
+        # If the name fits, rest[20] is that separator; if it overflows, the name runs to the
+        # first space at index >= 20 (splitting at the *first* space re-admits a space-bearing
+        # replacement past column 20 — #178 review).
         if len(rest) >= 21 and rest[20] == " ":
             name = rest[:20].rstrip()          # name fit in the 20-wide field
         else:
-            name = rest.split(" ", 1)[0]        # name overflowed 20: space-free, to the separator
+            i = 20
+            while i < len(rest) and rest[i] != " ":
+                i += 1
+            name = rest[:i].rstrip()           # name overflowed 20: to the separator, spaces kept
         found.append((match.group(1), name))
     return None
 
@@ -481,6 +486,19 @@ def group_doctor() -> None:
     check("  so a 'config extra' replacement is not the real 'config' by name",
           "config" in [name for _m, name in doctor_checks(buf2.getvalue(), "demo") or ()],
           False)
+    # #178 review: a replacement whose name is longer than 20 *and* contains a space must parse
+    # whole too — the padded field is max(20, len(name)) wide, so the separator sits past index 20.
+    # Truncating at the first space re-admits the false green this check exists to close.
+    overlong = "config extraordinarilylongreplacementwithoutspaces"
+    buf3 = io.StringIO()
+    with contextlib.redirect_stdout(buf3):
+        doctor.report({"id": "demo", "repo": "acme/demo"}, [
+            doctor.Check(overlong, doctor.VERIFIED, "ok"),
+            doctor.Check("turn-budget", doctor.VERIFIED, "ok")])
+    parsed3 = [name for _m, name in doctor_checks(buf3.getvalue(), "demo") or ()]
+    check("an over-20 space-bearing replacement parses whole, not its first token",
+          parsed3, [overlong, "turn-budget"])
+    check("  so it is not mistaken for the real 'config'", "config" in parsed3, False)
 
     install_doctor_fixture()
     install_watchdog_state(load_loop())
