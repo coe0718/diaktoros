@@ -2616,16 +2616,38 @@ def cmd_retry(args) -> int:
         print(f"[{loop['id']}] #{args.pr}: no isolated run on record"
               + (f" for the {args.seat} seat" if args.seat else ""))
         return 2
-    # Not the last-created row's head: a backwards force-push re-arms an older head's row rather
-    # than creating one, so creation order would name a head the PR has since left (Tuck, #97).
-    head = max(rows, key=lambda row: (row["updated"] or 0, row["id"]))["head"]
+    # Not a timestamp: the claim path bumps `updated` when it supersedes a row for a head the PR
+    # has since left, so `max(updated)` can name an abandoned head and offer nothing (Tuck, #126).
+    # The newest head that still has an offerable row is the ledger-only answer; the PR's own head
+    # is the tiebreaker when a supersession bump makes those two disagree (a gh read, or — when
+    # that read fails — the newest offerable head: never the rewritten timestamp).
+    from .run_supervisor import policy_cancelled
+    from . import gh
+
+    def offerable(row: dict) -> bool:
+        return row["state"] in ("failed", "waiting", "uncertain") or (
+            row["state"] == "cancelled" and policy_cancelled(row["error"]))
+
+    offerable_rows = [row for row in rows if offerable(row)]
+
+    def newest(rws):
+        return max(rws, key=lambda row: (row["updated"] or 0, row["id"]))["head"]
+
+    ledger_head = newest(offerable_rows) if offerable_rows else newest(rows)
+    bumped_head = newest(rows)
+    # The PR read is only a tiebreaker: reach for it when a supersession bump made the two ledger
+    # answers disagree. Otherwise stay on the ledger — no network round-trip for the common case
+    # (and none when nothing is offerable: the "nothing to retry" path answers from the ledger).
+    if offerable_rows and ledger_head != bumped_head:
+        pr = gh.pr(loop, args.pr)
+        pr_head = ((pr or {}).get("head") or {}).get("sha") if isinstance(pr, dict) else None
+        head = pr_head or ledger_head
+    else:
+        head = ledger_head
     # A fixer run the push policy cancelled at claim is recovered here, under the policy in
     # force now; any other cancellation is superseded and is not offered (runs_view draws the
     # same line: a new head gets its own turn).
-    from .run_supervisor import policy_cancelled
-    candidates = [row for row in rows if row["head"] == head
-                  and (row["state"] in ("failed", "waiting", "uncertain")
-                       or (row["state"] == "cancelled" and policy_cancelled(row["error"])))]
+    candidates = [row for row in rows if row["head"] == head and offerable(row)]
     if not candidates:
         print(f"[{loop['id']}] #{args.pr} @ {head[:7]}: nothing to retry — "
               + ", ".join(f"{row['seat']} {row['state']}" for row in rows if row["head"] == head))
