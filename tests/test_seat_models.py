@@ -230,11 +230,22 @@ def resolver_venv(dest: pathlib.Path) -> str:
                                      f"version = {sys.version.split()[0]}\n")
     packages = dest / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
     packages.mkdir(parents=True, exist_ok=True)
-    for entry in pathlib.Path(sysconfig.get_paths()["purelib"]).iterdir():
-        if entry.name.split(".")[0] in ("yaml", "ruamel") or entry.name.startswith("_yaml"):
-            link = packages / entry.name
-            if not link.exists():
-                link.symlink_to(entry)
+    # Scan every directory this interpreter actually resolves modules from — sys.path first (a
+    # PYTHONPATH'd Hermes install venv puts its site-packages there and nowhere else), then the
+    # sysconfig/site directories as the fallback for a plain install. Linking only purelib made
+    # the venv invisible to a YAML reachable only through PYTHONPATH, so doctor reported
+    # "no YAML library" under a Hermes profile while CI (yaml in purelib) stayed green.
+    import site
+    sources = [sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"],
+               *site.getsitepackages(), *sys.path]
+    for source in dict.fromkeys(pathlib.Path(p) for p in sources):
+        if not source.is_dir():
+            continue
+        for entry in source.iterdir():
+            if entry.name.split(".")[0] in ("yaml", "ruamel") or entry.name.startswith("_yaml"):
+                link = packages / entry.name
+                if not link.exists():
+                    link.symlink_to(entry)
     return str(dest)
 
 
@@ -574,6 +585,21 @@ class DoctorAndModels(Base):
         rc, text = self.models(profile="ghost")
         self.assertEqual(rc, 1)
         self.assertIn("does not exist", text)
+
+
+    def test_resolver_venv_links_a_yaml_this_interpreter_can_import(self):
+        # #— resolver_venv scanned only sysconfig purelib (this copy) / purelib+platlib+site
+        # (harness copy), so a YAML reachable only through PYTHONPATH (a Hermes install venv that
+        # puts site-packages on sys.path) was invisible: the built venv linked nothing and doctor
+        # reported "no YAML library". The venv must link whatever THIS interpreter can import —
+        # the same paths the running process resolves through — not a hardcoded site-dir list.
+        import yaml  # noqa: F401  the premise: this interpreter can read YAML
+        dest = self.root / "resolver-venv-yaml"
+        resolver_venv(dest)
+        site = next((dest / "lib").glob("python*/site-packages"))
+        self.assertTrue((site / "yaml").exists() or (site / "ruamel").exists(),
+                        f"resolver_venv linked nothing into {site}, yet this interpreter imports "
+                        f"yaml from {yaml.__file__}")
 
 
 class ReaderChain(Base):
