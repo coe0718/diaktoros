@@ -654,7 +654,11 @@ scope to see them (`repo` is normally enough); if it cannot, the line says the h
 rather than claiming the loop is parked. `explain` exits 2 only when the question cannot be asked at
 all — an unknown loop, a loop file the loader refuses (without `--loop` each such file is named on a
 `skipping <file>: <reason>` line), several loops (refused ones included) and no `--loop`, or no loop
-files at all (`no loops configured in <dir>`).
+files at all (`no loops configured in <dir>`). Before `cmd_explain` itself runs, argparse can also
+exit 2 on its own account, for the same subcommand: a missing `--pr` (`the following arguments are
+required: --pr`), an `--pr` value that is not an integer (`invalid int value`), an `--pr` flag
+with no value after it (`expected one argument`), an `--loop` flag with no value after it
+(`argument --loop: expected one argument`), or an unrecognized flag (`unrecognized arguments`).
 
 The guard order `explain` walks is in
 [architecture: Explain](architecture.md#explain--why-is-this-pr-not-moving).
