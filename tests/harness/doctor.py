@@ -228,11 +228,14 @@ def resolver_venv(dest: pathlib.Path) -> str:
                                      f"version = {sys.version.split()[0]}\n")
     packages = dest / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
     packages.mkdir(parents=True, exist_ok=True)
-    # Every site directory this interpreter imports from, not just ``purelib``: distributions put
-    # PyYAML in platlib (Fedora: /usr/lib64/…) and may not create purelib at all.
+    # Every directory this interpreter resolves modules from, not just ``purelib``: distributions
+    # put PyYAML in platlib (Fedora: /usr/lib64/…), and a PYTHONPATH'd Hermes install venv puts its
+    # site-packages on ``sys.path`` and nowhere else — scanning only the sysconfig/site dirs linked
+    # nothing there, so doctor reported "no YAML library" under a Hermes profile while CI (yaml in
+    # purelib) stayed green. ``sys.path`` is the running process's own resolution path.
     import site
     sources = [sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"],
-               *site.getsitepackages()]
+               *site.getsitepackages(), *sys.path]
     for source in dict.fromkeys(pathlib.Path(path) for path in sources):
         if not source.is_dir():
             continue
