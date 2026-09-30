@@ -66,6 +66,10 @@ MAX_REDRIVES = 3
 MAX_ENTRIES = 200
 MAX_PAYLOAD_BYTES = 1 << 20
 RESOLVED_RETENTION_S = 7 * 86400
+# The magnitude bound for an ``int`` ``resolved_at`` before it may be converted to a float:
+# beyond float range the conversion raises OverflowError, so such a value is simply unageable
+# (kept, never retired on a guess). sys.float_info.max is exactly that boundary.
+_MAX_TIMESTAMP = sys.float_info.max
 REDRIVABLE = frozenset({"gate_reviewer", "gate_fixer"})
 REDRIVE_ENV = "REVIEW_LOOP_GATE_REDRIVE"
 # A GitHub answer about the resource, not a failure to read it.
@@ -761,11 +765,24 @@ def _resolved_age(entry: dict, now: float) -> float | None:
     finite plain number is a time. A string (ISO or numeric), ``null``, a bool or a list is junk,
     which retention skips instead of a ``TypeError`` out of the whole ``resolve`` — and it is
     *kept*, never retired on a guess, until a writer records a real timestamp.
+
+    A plain ``int`` is finite by construction but may fall outside the float range a timestamp
+    needs: ``math.isfinite(10**400)`` raises ``OverflowError``. So the magnitude is checked
+    before any float conversion, and an integer that cannot be represented is treated as
+    unageable (kept) rather than raising out of ``resolve`` (#175 review).
     """
     at = entry.get("resolved_at")
-    if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
         return None
-    return now - float(at)
+    if isinstance(at, int):
+        # Bound it before the float conversion: an int outside float range is not a time we can
+        # subtract from, and converting would raise OverflowError rather than answer "keep it".
+        if abs(at) > _MAX_TIMESTAMP:
+            return None
+        at = float(at)
+    if not math.isfinite(at):
+        return None
+    return now - at
 
 
 def loop_ledger(loop: dict) -> Ledger:

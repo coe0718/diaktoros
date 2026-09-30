@@ -1135,6 +1135,10 @@ class GateFailureTest(unittest.TestCase):
             "past":       {"resolved": True, "resolution": "old",
                            "resolved_at": now - gate_failures.RESOLVED_RETENTION_S - 60},
             "fresh":      {"resolved": True, "resolution": "new", "resolved_at": now},
+            # #175 review: an int outside float range — math.isfinite(10**400) raised OverflowError
+            # and aborted resolve, breaking this test's own stated guarantee. Kept, never raised on.
+            "huge_int":   {"resolved": True, "resolution": "old", "resolved_at": 10 ** 400},
+            "neg_huge":   {"resolved": True, "resolution": "old", "resolved_at": -(10 ** 400)},
             "target":     {"gate": "gate_reviewer", "pr": 7, "attempts": 1},
         }))
         self.assertTrue(ledger.resolve("target", "operator closed it", settle=False))
@@ -1143,6 +1147,8 @@ class GateFailureTest(unittest.TestCase):
         self.assertNotIn("past", data)                                 # past retention: retired
         self.assertIn("fresh", data)                                   # inside retention: kept
         self.assertIn("junk_at", data)                                 # unparseable: kept, not guessed
+        self.assertIn("huge_int", data)                                # out of float range: kept
+        self.assertIn("neg_huge", data)                                # and its negative twin
 
     def test_an_owned_read_whose_entry_was_moved_aside_is_not_promised(self):
         # Tuck's repro: a 502 failure owns its read; the ledger is torn and moved aside (which
