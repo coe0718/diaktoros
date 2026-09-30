@@ -7,6 +7,8 @@ scheduler is the harness's fake ``hermes`` — no test here can reach a real rep
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import argparse
+import contextlib
 import io
 import json
 import os
@@ -238,6 +240,27 @@ class UninstallRefusalTest(Base):
         self.assertEqual(self.hooks(), [foreign])
         self.assertIn("hook 9", out)
         self.assertIn("another origin (https://other.example", out)
+
+
+    def test_the_honest_branch_is_keyed_on_structure_not_prose(self):
+        # #131(1): _uninstall_refused chose its remedy by pattern-matching the reason's *wording*
+        # (``reason.startswith("could not confirm the deletion of hook")``). Rewording the emitter
+        # that produced the reason silently dropped the honest branch -- "every DELETE was accepted
+        # but could not be read back" -- and fell through to a different remedy, even though every
+        # DELETE succeeded and no hook is left. The honest case is a structured fact (accepted-but-
+        # unread), so the dispatcher must take it as one, never by string prefix.
+        loop = {"id": "widgets", "repo": t.REPO}
+        args = argparse.Namespace(keep_config=False)
+        # The same fact, two spellings of the reason: only the structure may decide.
+        for wording in ("could not confirm the deletion of hooks 5 (read-back failed)",
+                        "could not verify the deletion of hooks 5 (read-back failed)"):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cli._uninstall_refused(loop, [wording], [], args, accepted_unread=True)
+            out = buf.getvalue()
+            self.assertIn("every DELETE was accepted", out, wording)
+            self.assertNotIn("still live", out, wording)
+            self.assertNotIn("could not be read or confirmed", out, wording)
 
 
 class HostlessTest(Base):
@@ -695,8 +718,20 @@ class PurgeTest(Base):
                 cfg["host"] = ""
                 LOOP_FILE.write_text(json.dumps(cfg))
             self.world(hooks=None)
+            # The test's own name: nothing was classified, so no read-back is taken either. Without
+            # this the suite would pass if the code took a read-back and simply ignored its error
+            # (#131).
+            readbacks: list = []
+            original = cli._loop_hooks
+
+            def spy(loop, login):
+                readbacks.append(login)
+                return original(loop, login)
+            cli._loop_hooks = spy
+            self.addCleanup(setattr, cli, "_loop_hooks", original)
             rc, out = self.cli("uninstall", "--loop", "widgets")
             self.assertEqual(rc, 2, (blank, out))
+            self.assertEqual(readbacks, [], "no read-back may be attempted when nothing was read")
             self.assertNotIn("still live", out)
             self.assertNotIn("gh api -X DELETE", out)
             self.assertIn("check each one's URL before deleting anything", out)

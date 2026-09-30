@@ -1005,15 +1005,20 @@ def _hook_find_command(loop: dict) -> str:
             f"--jq {shlex.quote(jq)}")
 
 
-def _delete_loop_hooks(loop: dict, login: str | None) -> tuple[list[str], list[str], list[int]]:
-    """Delete this loop's repo hooks and read the listing back: ``(done, failures, left)``.
+def _delete_loop_hooks(loop: dict, login: str | None
+                       ) -> tuple[list[str], list[str], list[int], bool]:
+    """Delete this loop's repo hooks and read the listing back: ``(done, failures, left, unread)``.
 
     Deleted rather than paused: a paused hook still signs with a secret the next install's route
     will not hold, and it is exactly what a later ``init --hooks`` would trip over.
+
+    ``unread`` is the structured fact that some DELETEs were accepted but the read-back could not
+    confirm them (the honest case): it lets ``_uninstall_refused`` choose that remedy by fact
+    rather than by matching the reason's wording (#131).
     """
     hooks, foreign, error = _classify_hooks(loop, login)
     if hooks is None:
-        return [], [f"could not read the repo's hooks: {error}"], []
+        return [], [f"could not read the repo's hooks: {error}"], [], False
     done, failures = _foreign_lines(loop, foreign), []
     login = login or loop.get("read_token")
     if not hooks:
@@ -1023,13 +1028,13 @@ def _delete_loop_hooks(loop: dict, login: str | None) -> tuple[list[str], list[s
         after, error = _loop_hooks(loop, login)
         if after is None:
             return done, [f"could not confirm that no hook of this loop's appeared while uninstall "
-                          f"ran (the listing read-back failed: {error}) — nothing was deleted"], []
+                          f"ran (the listing read-back failed: {error}) — nothing was deleted"], [], False
         if after:
             ids = sorted(hook["id"] for hook in after)
             return done, [f"hook{'s' if len(ids) > 1 else ''} {', '.join(map(str, ids))} "
                           "appeared on this loop's route URLs while uninstall ran (a concurrent "
-                          "arm or init --hooks?) — not deleted"], ids
-        return done, failures, []
+                          "arm or init --hooks?) — not deleted"], ids, False
+        return done, failures, [], False
     refused: list[int] = []                       # ids whose DELETE failed, recorded as they fail
     for hook in hooks:
         _, error = gh.fetch(loop, f"/repos/{loop['repo']}/hooks/{hook['id']}", method="DELETE",
@@ -1049,12 +1054,12 @@ def _delete_loop_hooks(loop: dict, login: str | None) -> tuple[list[str], list[s
                             f"listing read-back failed: {error})")
         else:
             failures.append(f"could not confirm the deletion: {error}")
-        return done, failures, refused
+        return done, failures, refused, bool(accepted)
     left = {hook["id"] for hook in after}
     for hook in hooks:
         if hook["id"] not in left:
             done.append(f"hook {hook['id']} deleted")
-    return done, failures, sorted(left)
+    return done, failures, sorted(left), False
 
 
 def _hermes_bin() -> str | None:
@@ -3104,8 +3109,14 @@ def _uninstall_incomplete(removed: list[str], left: list[str], keep_hooks: bool,
 
 
 def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
-                       args, unattributed: bool = False) -> int:
-    """Refuse an uninstall with the exact commands that finish it. The config is still there."""
+                       args, unattributed: bool = False, accepted_unread: bool = False) -> int:
+    """Refuse an uninstall with the exact commands that finish it. The config is still there.
+
+    ``accepted_unread`` is the structured fact that every DELETE GitHub accepted but the listing
+    read-back could not confirm: the caller knows it, so the remedy is chosen by that flag rather
+    than by pattern-matching a reason's wording (#131). Rewording the message that produced a
+    reason must not silently change which remedy the operator is given.
+    """
     lid = shlex.quote(loop["id"])
     print("refused: uninstall stopped before removing routes or config — nothing below the "
           "failure was touched:")
@@ -3120,8 +3131,9 @@ def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
         print("then either set this loop's host (`hermes review-loop set --loop "
               f"{lid} --host https://your-gateway.example`) so uninstall can tell its own hooks "
               "apart, or delete the ones that are this install's by hand")
-    elif any(reason.startswith("could not confirm the deletion of hook") for reason in reasons) \
-            and not left_hooks:
+    elif accepted_unread and not left_hooks:
+        # Chosen by the caller's structured fact, never by the reason's wording: a reworded
+        # message must not flip this honest case into a different remedy (#131).
         print("every DELETE was accepted, but the hook listing could not be read back to confirm "
               "it — look before re-running (it lists any id that is somehow still there):")
         print(f"  {_hook_find_command(loop)}")
@@ -3247,13 +3259,14 @@ def cmd_uninstall(args) -> int:
                 [], args, unattributed=True)
         print("hooks: none — the loop has no host, and no repo hook posts to its route names")
     else:
-        done, failures, left = _delete_loop_hooks(loop, admin or None)
+        done, failures, left, accepted_unread = _delete_loop_hooks(loop, admin or None)
         for line in done:
             print(line)
         if failures or left:
             if left and not failures:
                 failures = [f"hook {hook_id} still present after DELETE" for hook_id in left]
-            return _uninstall_refused(loop, failures, left, args)
+            return _uninstall_refused(loop, failures, left, args,
+                                      accepted_unread=accepted_unread)
         if not done:
             print("hooks: none of this loop's routes has a repo hook")
         elif any(line.endswith(" deleted") for line in done):
