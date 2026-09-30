@@ -588,12 +588,17 @@ class DoctorAndModels(Base):
 
 
     def test_resolver_venv_links_a_yaml_this_interpreter_can_import(self):
-        # #— resolver_venv scanned only sysconfig purelib (this copy) / purelib+platlib+site
+        # resolver_venv scanned only sysconfig purelib (this copy) / purelib+platlib+site
         # (harness copy), so a YAML reachable only through PYTHONPATH (a Hermes install venv that
         # puts site-packages on sys.path) was invisible: the built venv linked nothing and doctor
         # reported "no YAML library". The venv must link whatever THIS interpreter can import —
         # the same paths the running process resolves through — not a hardcoded site-dir list.
-        import yaml  # noqa: F401  the premise: this interpreter can read YAML
+        # CI's harness python has no yaml at all, so the premise is conditional: the property is
+        # "if this interpreter can read YAML, the venv must be able to too."
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("this interpreter has no YAML reader at all — nothing to link")
         dest = self.root / "resolver-venv-yaml"
         resolver_venv(dest)
         site = next((dest / "lib").glob("python*/site-packages"))
