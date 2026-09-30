@@ -401,7 +401,11 @@ def doctor_checks(out: str, loop_id: str) -> list[tuple[str, str]] | None:
     if len(headers) != 1:
         return None
     marks = "|".join(re.escape(mark) for mark in dict.fromkeys(doctor.MARKS.values()))
-    shape = re.compile(rf"^  ({marks}) (\S+)(?: .*)?$")
+    # ``report()`` prints ``  {mark} {name:<20} {detail}``. The name is that padded field, not the
+    # first whitespace token: a name containing a space (a *replacement* check like ``config extra``)
+    # must parse whole, so the set-difference rule below can tell it from the real name (#166).
+    # A name longer than 20 overflows the field, so it runs to the single space before the detail.
+    shape = re.compile(rf"^  ({marks}) (.*)$")
     found = []
     for line in lines[headers[0] + 1:]:
         if not line:
@@ -411,7 +415,14 @@ def doctor_checks(out: str, loop_id: str) -> list[tuple[str, str]] | None:
         match = shape.match(line)
         if not match:
             return None
-        found.append((match.group(1), match.group(2)))
+        rest = match.group(2)
+        # name field is 20 wide when the name fits; otherwise the name is space-free and runs to
+        # the separator space (report emits exactly one space between the padded name and detail).
+        if len(rest) >= 21 and rest[20] == " ":
+            name = rest[:20].rstrip()          # name fit in the 20-wide field
+        else:
+            name = rest.split(" ", 1)[0]        # name overflowed 20: space-free, to the separator
+        found.append((match.group(1), name))
     return None
 
 
@@ -453,6 +464,23 @@ def group_doctor() -> None:
     check("  and refuses a line it cannot read",
           doctor_checks("[demo] acme/demo — preflight\n  ✅ config  ok\n  ?? odd  line\n\n", "demo"),
           None)
+    # #166: the parser took the first whitespace token as the name, so a check whose *name*
+    # contains a space (``Check("config extra", ...)`` — a replacement for the real ``config``)
+    # parsed as ``config`` and the replacement passed unnoticed. The name is report()'s padded
+    # ``{name:<20} `` field, not the first token; parse it whole so a replaced name is a different
+    # name and the set-difference rule below flags it.
+    buf2 = io.StringIO()
+    with contextlib.redirect_stdout(buf2):
+        doctor.report({"id": "demo", "repo": "acme/demo"}, [
+            doctor.Check("config extra", doctor.VERIFIED, "ok"),
+            doctor.Check("turn-budget", doctor.VERIFIED, "ok")])
+    check("a check name containing a space parses whole, not as its first token",
+          [name for _mark, name in doctor_checks(buf2.getvalue(), "demo") or ()],
+          ["config extra", "turn-budget"])
+    # And the replacement is then *not* mistaken for the real check by name equality.
+    check("  so a 'config extra' replacement is not the real 'config' by name",
+          "config" in [name for _m, name in doctor_checks(buf2.getvalue(), "demo") or ()],
+          False)
 
     install_doctor_fixture()
     install_watchdog_state(load_loop())

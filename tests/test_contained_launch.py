@@ -245,6 +245,51 @@ class ProductionLaunch(Base):
                 self.assertFalse([option for option in options[remounts[0]:]
                                   if option[0] in MOUNT_POINTS], argv)
 
+    def test_every_read_only_bind_source_is_known_or_turn_scoped(self):
+        # #166: the writable set is pinned exactly above, but nothing pinned *which* read-only
+        # sources may appear — ``--ro-bind /srv /srv`` (an arbitrary host path) stayed green across
+        # the whole suite. The sources are either a fixed system path the toolchain needs, or a path
+        # under the turn's own staged directories (work/venv/rust/test-home/temp sockets). Anything
+        # else is an arbitrary host path the sandbox must never see, read-only or not.
+        system = {"/usr", "/bin", "/lib", "/lib64", "/etc/alternatives"}
+        for role in ("reviewer", "fixer", "adjudicator"):
+            with self.subTest(role=role):
+                seen = self.launch(role)
+                options = bwrap_options(seen["argv"])
+                kw = seen["kwargs"]
+                # Every turn-scoped root the fixture stages: work dir, venv, rust, home, and the
+                # temp dirs holding the inference/broker sockets and (when set) the client/review.
+                def turn_root(path_value) -> str:
+                    """The staged root a turn-scoped path lives under (<tmp>/work/..., <tmp>/...)."""
+                    text = os.path.normpath(str(path_value))
+                    head = text.split("/work/")[0] if "/work/" in text else str(Path(text).parent)
+                    return head
+
+                roots = [
+                    turn_root(kw["code"]),       # <tmp>/work/... (code under it)
+                    str(Path(str(kw["venv"])).parent),   # <tmp>/venv
+                    str(Path(str(kw["rust"])).parent),   # <tmp>/rust
+                    turn_root(kw["home"]),       # <tmp>/work/... (home under it)
+                    str(Path(str(kw["runtime"])).parent), # test-home / uv python
+                ]
+                for key in ("inference_socket_dir", "broker_socket_dir", "client_code", "review_dir"):
+                    value = kw.get(key)
+                    if value:
+                        roots.append(str(Path(str(value)).parent))
+                rogue = []
+                for option in options:
+                    if option[0] not in READ_ONLY_BINDS:
+                        continue
+                    source = option[1]
+                    if source in system:
+                        continue
+                    if any(at_or_under(source, root) or at_or_under(root, source)
+                           for root in roots):
+                        continue
+                    rogue.append(option)
+                self.assertEqual(rogue, [],
+                                 f"{role}: read-only bind of an arbitrary host path: {rogue}")
+
     def test_network_cannot_be_requested(self):
         # Production's kwargs (the turn's own directories are gone once run_turn returns, which
         # the refusal must not depend on), then a staged layout that exists for run().
