@@ -593,18 +593,24 @@ class DoctorAndModels(Base):
         # puts site-packages on sys.path) was invisible: the built venv linked nothing and doctor
         # reported "no YAML library". The venv must link whatever THIS interpreter can import —
         # the same paths the running process resolves through — not a hardcoded site-dir list.
-        # CI's harness python has no yaml at all, so the premise is conditional: the property is
-        # "if this interpreter can read YAML, the venv must be able to too."
-        try:
-            import yaml  # noqa: F401
-        except ImportError:
-            self.skipTest("this interpreter has no YAML reader at all — nothing to link")
+        # Deterministic on every interpreter: a stand-in ``yaml`` package is reachable only
+        # through sys.path, and the site directories are emptied, so nothing else can satisfy it.
+        only_on_path = self.root / "pythonpath-only"
+        (only_on_path / "yaml").mkdir(parents=True)
+        (only_on_path / "yaml" / "__init__.py").write_text("")
+        empty = self.root / "empty-site"
+        empty.mkdir()
+        import site
+        import sysconfig
         dest = self.root / "resolver-venv-yaml"
-        resolver_venv(dest)
-        site = next((dest / "lib").glob("python*/site-packages"))
-        self.assertTrue((site / "yaml").exists() or (site / "ruamel").exists(),
-                        f"resolver_venv linked nothing into {site}, yet this interpreter imports "
-                        f"yaml from {yaml.__file__}")
+        with mock.patch.object(sys, "path", [str(only_on_path), *sys.path]), \
+                mock.patch.object(sysconfig, "get_paths",
+                                  return_value={"purelib": str(empty), "platlib": str(empty)}), \
+                mock.patch.object(site, "getsitepackages", return_value=[str(empty)]):
+            resolver_venv(dest)
+        linked = next((dest / "lib").glob("python*/site-packages")) / "yaml"
+        self.assertTrue(linked.is_symlink(), f"resolver_venv linked no yaml into {linked.parent}")
+        self.assertEqual(linked.resolve(), (only_on_path / "yaml").resolve())
 
 
 class ReaderChain(Base):
