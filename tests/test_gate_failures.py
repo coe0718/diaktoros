@@ -1121,6 +1121,35 @@ class GateFailureTest(unittest.TestCase):
             lines = wd.github_health(loop, st, {}, time.time(), True, "")
         self.assertEqual([x for x in lines if "could not" in x], [])   # settled, not re-announced
 
+    def test_resolve_survives_a_junk_resolved_at_and_keeps_it(self):
+        # #167: retention aged every resolved entry by `now - (resolved_at or 0)`, so a junk
+        # `resolved_at` (a hand edit, an older-shape write) raised TypeError out of the whole
+        # resolve — the sweep-aborting class #80 closes. The age is now read with the same rule
+        # mark_at applies to `at`: only a finite number is a time, and junk is kept, never
+        # retired on a guess.
+        ledger = gate_failures.Ledger(t.STATE_DIR)
+        ledger.dir.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        ledger.path.write_text(json.dumps({
+            "junk_at":    {"resolved": True, "resolution": "old", "resolved_at": "not-a-number"},
+            "past":       {"resolved": True, "resolution": "old",
+                           "resolved_at": now - gate_failures.RESOLVED_RETENTION_S - 60},
+            "fresh":      {"resolved": True, "resolution": "new", "resolved_at": now},
+            # #175 review: an int outside float range — math.isfinite(10**400) raised OverflowError
+            # and aborted resolve, breaking this test's own stated guarantee. Kept, never raised on.
+            "huge_int":   {"resolved": True, "resolution": "old", "resolved_at": 10 ** 400},
+            "neg_huge":   {"resolved": True, "resolution": "old", "resolved_at": -(10 ** 400)},
+            "target":     {"gate": "gate_reviewer", "pr": 7, "attempts": 1},
+        }))
+        self.assertTrue(ledger.resolve("target", "operator closed it", settle=False))
+        data = json.loads(ledger.path.read_text())
+        self.assertTrue(data["target"]["resolved"])                    # the resolve landed
+        self.assertNotIn("past", data)                                 # past retention: retired
+        self.assertIn("fresh", data)                                   # inside retention: kept
+        self.assertIn("junk_at", data)                                 # unparseable: kept, not guessed
+        self.assertIn("huge_int", data)                                # out of float range: kept
+        self.assertIn("neg_huge", data)                                # and its negative twin
+
     def test_an_owned_read_whose_entry_was_moved_aside_is_not_promised(self):
         # Tuck's repro: a 502 failure owns its read; the ledger is torn and moved aside (which
         # discards the entry); the same event then completes cleanly.

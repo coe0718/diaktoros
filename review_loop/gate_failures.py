@@ -45,6 +45,7 @@ import fcntl
 import hashlib
 import io
 import json
+import math
 import os
 import pathlib
 import re
@@ -65,6 +66,10 @@ MAX_REDRIVES = 3
 MAX_ENTRIES = 200
 MAX_PAYLOAD_BYTES = 1 << 20
 RESOLVED_RETENTION_S = 7 * 86400
+# The magnitude bound for an ``int`` ``resolved_at`` before it may be converted to a float:
+# beyond float range the conversion raises OverflowError, so such a value is simply unageable
+# (kept, never retired on a guess). sys.float_info.max is exactly that boundary.
+_MAX_TIMESTAMP = sys.float_info.max
 REDRIVABLE = frozenset({"gate_reviewer", "gate_fixer"})
 REDRIVE_ENV = "REVIEW_LOOP_GATE_REDRIVE"
 # A GitHub answer about the resource, not a failure to read it.
@@ -592,9 +597,19 @@ class Ledger:
             data[key] = {**entry, "resolved": True, "resolution": how, "resolved_at": time.time(),
                          **({"duplicate_of": duplicate_of} if duplicate_of else {})}
             now = time.time()
-            for stale in [k for k, v in data.items() if isinstance(v, dict) and v.get("resolved")
-                          and now - (v.get("resolved_at") or 0) > RESOLVED_RETENTION_S]:
-                data.pop(stale, None)
+            # Retention ages resolved entries by their own ``resolved_at``. A hand-edited or
+            # older-shape write can hold a junk value there; subtracting it would raise ``TypeError``
+            # out of the whole resolve (the sweep-aborting class #80 closes). Only an age we can
+            # actually compute may retire an entry — an unparseable one is kept, never guessed at.
+            stale: list[str] = []
+            for k, v in data.items():
+                if not (isinstance(v, dict) and v.get("resolved")):
+                    continue
+                age = _resolved_age(v, now)
+                if age is not None and age > RESOLVED_RETENTION_S:
+                    stale.append(k)
+            for k in stale:
+                data.pop(k, None)
             self._save(data)
         with contextlib.suppress(OSError):
             (self.payload_dir / f"{key}.json").unlink()
@@ -741,6 +756,33 @@ def _number(value) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _resolved_age(entry: dict, now: float) -> float | None:
+    """Seconds since a resolved entry's ``resolved_at``, or ``None`` when it cannot be aged.
+
+    The reading rule ``state.mark_at`` applies to ``at`` (#80), applied to ``resolved_at``: only a
+    finite plain number is a time. A string (ISO or numeric), ``null``, a bool or a list is junk,
+    which retention skips instead of a ``TypeError`` out of the whole ``resolve`` — and it is
+    *kept*, never retired on a guess, until a writer records a real timestamp.
+
+    A plain ``int`` is finite by construction but may fall outside the float range a timestamp
+    needs: ``math.isfinite(10**400)`` raises ``OverflowError``. So the magnitude is checked
+    before any float conversion, and an integer that cannot be represented is treated as
+    unageable (kept) rather than raising out of ``resolve`` (#175 review).
+    """
+    at = entry.get("resolved_at")
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return None
+    if isinstance(at, int):
+        # Bound it before the float conversion: an int outside float range is not a time we can
+        # subtract from, and converting would raise OverflowError rather than answer "keep it".
+        if abs(at) > _MAX_TIMESTAMP:
+            return None
+        at = float(at)
+    if not math.isfinite(at):
+        return None
+    return now - at
 
 
 def loop_ledger(loop: dict) -> Ledger:

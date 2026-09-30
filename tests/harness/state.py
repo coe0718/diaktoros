@@ -250,9 +250,83 @@ def group_malformed_marks() -> None:
               sorted(outcome(lambda: broken.live_locks("reviewer"))), [key])
 
 
+def group_malformed_queue() -> None:
+    """A non-dict *seat value* in ``pending.json`` must not take every queue reader down.
+
+    ``group_malformed_marks`` closes this class for ``locks.json``; the queue is its twin.
+    ``queue_items`` is what ``explain`` (``_explain_state``) and ``observer`` read a seat's
+    queue through, and unlike ``live_locks`` and ``queue_drop_unreadable`` it did not guard the
+    seat value, so a queue file shaped ``{"reviewer": [...]}`` — a list, string or number where a
+    mapping of key→entry belongs — raised ``AttributeError`` out of ``explain`` and out of
+    ``observer.hold_reason`` instead of answering. The reading rule here is the one
+    ``locks.json`` already follows: a seat value that is not a mapping reads as an empty queue,
+    while a well-formed queue keeps its entries.
+    """
+    section("state — a non-dict queue seat value degrades, it never raises")
+
+    from review_loop import config, gate, observer, state as state_mod
+
+    reset(prs={})
+    loop = config.load_id("widgets")
+    st = state_mod.state_for(loop)
+    key = f"{REPO}#7"
+    facts = {"pr": pr(7), "reviews": [], "armed": True}
+
+    def outcome(fn):
+        """The call's value, or the exception that escaped it — the ``got`` of a no-raise check."""
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - "must not raise" is the property under test
+            return f"{type(exc).__name__}: {exc}"
+
+    def write_seat(seat_value) -> None:
+        state_file("pending.json").write_text(json.dumps({"reviewer": seat_value}))
+
+    def explain_report():
+        return outcome(lambda: gate.explain(loop, st, 7, facts))
+
+    # -- the audited failure: a seat value that is a list, not a mapping ---------------------
+    for label, seat_value in (("a list", [key]), ("a string", "junk"), ("a number", 7),
+                              ("null", None)):
+        write_seat(seat_value)
+        check(f"queue_items answers for a seat value that is {label}",
+              outcome(lambda: st.queue_items("reviewer")), {})
+        write_seat(seat_value)
+        report = explain_report()
+        check(f"  explain answers instead of raising for {label}",
+              isinstance(report, dict) and bool((report.get("next") or {}).get("kind")), True)
+        write_seat(seat_value)
+        hold = outcome(lambda: observer.hold_reason(loop, st, "reviewer", 7, HEAD_A))
+        check(f"  observer.hold_reason answers instead of raising for {label}",
+              hold, "")
+
+    # -- and the mapping around the entries ---------------------------------------------------
+    for label, doc in (("a pending file that is a list", [key]),
+                       ("a pending file that is a string", "junk")):
+        state_file("pending.json").write_text(json.dumps(doc))
+        check(f"queue_items reads {label} as an empty queue",
+              outcome(lambda: st.queue_items("reviewer")), {})
+
+    # -- a well-formed queue keeps exactly the entries it held --------------------------------
+    entry = {"head": HEAD_A, "reason": "waiting on capacity", "at": time.time()}
+    state_file("pending.json").write_text(json.dumps({"reviewer": {key: entry}}))
+    check("a well-formed queue still returns its entry", st.queue_items("reviewer"), {key: entry})
+    report = explain_report()
+    check("  explain still counts it in the queue line",
+          isinstance(report, dict) and report.get("queue") == "reviewer 1 of 1 (waiting 0m) — "
+          "waiting on capacity", True)
+    hold_entry = {"head": HEAD_A, "reason": f"{observer.HOLD_PREFIX}: no worker",
+                  "at": time.time()}
+    state_file("pending.json").write_text(json.dumps({"reviewer": {key: hold_entry}}))
+    check("  observer still reads a hold reason from it",
+          observer.hold_reason(loop, st, "reviewer", 7, HEAD_A),
+          f"{observer.HOLD_PREFIX}: no worker")
+
+
 GROUPS = {
     "reconciliation": group_reconciliation,
     "state_race": group_state_race,
     "open_prs": group_open_prs,
     "malformed_marks": group_malformed_marks,
+    "malformed_queue": group_malformed_queue,
 }
