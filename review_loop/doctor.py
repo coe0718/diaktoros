@@ -112,6 +112,9 @@ def profile_dir(name: str) -> pathlib.Path:
     return config.home() / "profiles" / name
 
 
+SHARED_JOB_NAME = "review loop watchdog"  # one shared job runs the shim (#60)
+
+
 def shim_path() -> pathlib.Path:
     return config.home() / "scripts" / SHIM_NAME
 
@@ -122,7 +125,8 @@ def cron_store() -> pathlib.Path:
 
 
 def watchdog_job_name(loop: dict) -> str:
-    return f"review loop watchdog ({loop['id']})"
+    """The shared job name — one job sweeps every loop (#60). ``loop`` is accepted for callers."""
+    return SHARED_JOB_NAME
 
 
 def cron_fix(loop: dict) -> str:
@@ -1189,13 +1193,27 @@ def check_cron_job(loop: dict) -> Check:
         return Check("cron:job", MISMATCH, f"{path} has no job list",
                      f"repair the job store, then, if the job is gone: {cron_fix(loop)}")
     wanted = watchdog_job_name(loop)
-    job = next((entry for entry in jobs if isinstance(entry, dict)
-                and str(entry.get("name") or "").strip() == wanted), None)
+    # A pre-#60 install has one per-loop job per loop; each sweeps every loop, so N jobs give
+    # N sweeps per tick (#60). Any shim job beyond the single shared one is a duplicate sweep:
+    # name them all for migration — remove the extras, keep (or create) one shared job.
+    shared = [entry for entry in jobs if isinstance(entry, dict)
+              and str(entry.get("name") or "").strip() == wanted]
+    shim_jobs = [entry for entry in jobs if isinstance(entry, dict)
+                 and pathlib.Path(str(entry.get("script") or "")).name == SHIM_NAME]
+    if not shared and shim_jobs:
+        ids = ", ".join(str(entry.get("id") or "?") for entry in shim_jobs)
+        removals = "; ".join(f"`hermes cron remove {entry.get('id')}`" for entry in shim_jobs)
+        return Check("cron:job", MISMATCH,
+                     f"{len(shim_jobs)} per-loop watchdog job(s) ({ids}) each sweep every loop "
+                     f"(N jobs × N loops = N² sweeps per tick) — migrate to the one shared job",
+                     f"{removals}, then {cron_fix(loop)}")
+    job = shared[0] if shared else None
     if job is None:
-        # A job the operator wrote by hand for this loop: same shim, a name that names the loop.
+        # A job the operator wrote by hand: same shim, a name that names the loop.
         job = next((entry for entry in jobs if isinstance(entry, dict)
                     and pathlib.Path(str(entry.get("script") or "")).name == SHIM_NAME
-                    and loop["id"] in str(entry.get("name") or "")), None)
+                    and (loop["id"] in str(entry.get("name") or "")
+                         or str(entry.get("name") or "").strip() == SHARED_JOB_NAME)), None)
     if job is None:
         return Check("cron:job", ABSENT, f"no job named {wanted!r} in {path}",
                      cron_fix(loop))
@@ -1207,6 +1225,17 @@ def check_cron_job(loop: dict) -> Check:
                      f"{len(named)} jobs are named {wanted!r} ({', '.join(named)}) — each one "
                      "fires the watchdog",
                      cron_replace_fix(loop, named))
+    # More than one shim job total (a leftover legacy job beside the shared one) is the same
+    # N-sweeps-per-tick problem: name the extras so they can be removed.
+    if len(shim_jobs) > 1:
+        extra = [str(entry.get("id") or "?") for entry in shim_jobs
+                 if str(entry.get("id") or "?") != job_id]
+        removals = "; ".join(f"`hermes cron remove {extra_id}`" for extra_id in extra)
+        return Check("cron:job", MISMATCH,
+                     f"{len(shim_jobs)} jobs run {SHIM_NAME} "
+                     f"({', '.join(str(e.get('id') or '?') for e in shim_jobs)}) "
+                     "— each sweeps every loop (N² sweeps per tick); keep one",
+                     removals)
     replace = cron_replace_fix(loop, [job_id])
     # Match the scheduler's runnable predicate: a stored pause timestamp blocks firing even
     # when enabled=True and the display state has already been normalized to "scheduled".

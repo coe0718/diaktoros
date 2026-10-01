@@ -403,7 +403,7 @@ Example transcripts are in [Operating a loop](operations.md#preflight-doctor).
 | `gateway-script:<route>` | the route's `script` resolves the way the gateway resolves it — under the **serving profile's** `scripts/` (`~/.hermes/scripts` for `default`, `~/.hermes/profiles/<name>/scripts` otherwise), as a real file inside that directory — and it is the plugin's gate shim pinned to this install. `init`/`apply` write those shims (a symlink would be refused by the gateway); `uninstall` removes the ones no other loop needs; a same-named file the plugin did not write is never touched |
 | `scripts` | the plugin's `watchdog.py`, both gates and `cleanup.py` are on disk |
 | `cron:shim` | `~/.hermes/scripts/review-loop-watchdog.py` exists **and is pinned to the plugin install that is here now** — an upgrade that moves the directory leaves the scheduler running an old path |
-| `cron:job` | the scheduler's own store holds this loop's watchdog job and it is not paused |
+| `cron:job` | the scheduler's store holds the **one shared** watchdog job (it sweeps every loop once per tick) and it is not paused — extra jobs are named for migration (#60) |
 | `clone` | the clone exists, is a git checkout, and is not inside the loop's artifacts root — the cleanup deletes that whole tree |
 | `state_dir` / `roots` | the loop can write its locks and queue there; every cleanup root is a directory |
 | `gateway` | a TCP connect to the loop's webhook origin is accepted |

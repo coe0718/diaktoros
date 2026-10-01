@@ -23,7 +23,11 @@ running loop.
    created **paused**, so nothing fires until `arm` (after `doctor` and `selftest`); `--arm` creates
    them live instead
 4. one cron job plus a 5-line shim in `~/.hermes/scripts/` that forwards to the plugin's watchdog
-   (`--schedule`). If `hermes cron create` fails, `init` prints the scheduler's error and the exact
+   (`--schedule`). It is **one shared job for every loop**: `hermes cron create --script` takes a
+   filename and no arguments, so a job cannot carry `--loop <id>`, and the shim runs the watchdog
+   with no `--loop` — it sweeps every configured loop exactly once per tick. A later loop's
+   `init --schedule` sees the job and does not create a second one (#60). If `hermes cron create`
+   fails, `init` prints the scheduler's error and the exact
    command to run yourself (shell-quoted, pasteable as printed), skips the "Next:" list, and exits
    **1** — the config, routes and hooks above are in place; only the job is missing
 
@@ -431,7 +435,7 @@ $ hermes review-loop doctor --loop widgets
   ✅ scripts              /home/jeremy/projects/rl-15-doctor/scripts (watchdog, both gates, cleanup)
   ❌ cron:shim            pinned to /opt/old/plugins/hermes-review-loop/scripts/watchdog.py, this install runs /home/jeremy/projects/rl-15-doctor/scripts/watchdog.py
       fix: `hermes review-loop apply --loop widgets --watchdog-shim` rewrites it from the plugin (the scheduled job runs it by name)
-  ❌ cron:job             8f21c0 (review loop watchdog (widgets)) is paused
+  ❌ cron:job             8f21c0 (review loop watchdog) is paused
       fix: `hermes cron resume 8f21c0`: a paused watchdog never reports a stall
   ✅ clone                doctor-demo/clone (git checkout)
   ✅ state_dir            doctor-demo/state (created under doctor-demo on the first run)
@@ -775,7 +779,7 @@ own record instead:
 * **Watchdog.** Each sweep alerts on unresolved entries, once per new failure and again after the
   cooldown. It re-drives reviewer and fixer events by running the gate again on the stored
   payload. This is safe because those gates re-read the live PR and the run ledger dedups a second
-  enqueue. It stops after 3 re-drives. Sweeps overlap (every loop's cron job sweeps all
+  enqueue. It stops after 3 re-drives. Sweeps overlap (the one shared cron job sweeps all
   loops), so each entry is claimed under the ledger's lock before anything is sent or run. The
   claim adds the re-drive to the count and gives this sweep a 120-second lease on the entry.
   Another sweep finds the live claim and skips the entry. The owner prints the alert, and only

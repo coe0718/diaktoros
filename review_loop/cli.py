@@ -24,13 +24,25 @@ from . import (config, doctor, gate, gate_shims, gh, observer, prompts, route_in
 
 SHIM_NAME = "review-loop-watchdog.py"
 
+# One shared job runs the shim (issue #60): `hermes cron create --script` takes only a filename
+# under ~/.hermes/scripts/ and no arguments, so a job cannot carry `--loop <id>`. A single job
+# whose shim runs the watchdog with no `--loop` sweeps every loop exactly once per tick — N loops
+# cost N sweeps, not N². The shim is shared by that one job and is removed only with the last loop.
+SHARED_JOB_NAME = "review loop watchdog"
+
 
 def watchdog_job_name(loop: dict) -> str:
-    """The scheduler job name ``init`` registers for a loop's watchdog.
+    """The scheduler job name for a loop — now the shared name; the loop id is not part of it.
 
-    ``doctor`` looks for exactly this name when it checks the cron job, so it lives here as one
-    spelling rather than a format string in two files.
+    Kept as a function of ``loop`` for the callers that already hold one (and for doctor to
+    recognise a legacy per-loop job from before #60). A job created by ``init`` uses
+    ``SHARED_JOB_NAME``: one job sweeps every loop.
     """
+    return SHARED_JOB_NAME
+
+
+def _legacy_job_name(loop: dict) -> str:
+    """The pre-#60 per-loop job name, recognised only to migrate it away."""
     return f"review loop watchdog ({loop['id']})"
 
 SHIM = '''#!/usr/bin/env python3
@@ -1071,7 +1083,11 @@ def _hermes_bin() -> str | None:
 
 
 def _cron_jobs(loop: dict) -> tuple[list[dict] | None, str]:
-    """The scheduler jobs ``init --schedule`` registered for this loop, read from the job store."""
+    """The scheduler watchdog job(s) for this install, read from the job store.
+
+    The shared job (``SHARED_JOB_NAME``) is the one ``init`` creates; a legacy per-loop job
+    (pre-#60) is returned too so it can be recognised and migrated.
+    """
     path = doctor.cron_store()
     if not path.exists():
         return [], ""
@@ -1082,22 +1098,51 @@ def _cron_jobs(loop: dict) -> tuple[list[dict] | None, str]:
     jobs = data.get("jobs", []) if isinstance(data, dict) else data
     if not isinstance(jobs, list):
         return None, f"{path} has no job list"
-    wanted = watchdog_job_name(loop)
+    wanted = {SHARED_JOB_NAME, _legacy_job_name(loop)}
     return [job for job in jobs if isinstance(job, dict)
-            and str(job.get("name") or "").strip() == wanted], ""
+            and str(job.get("name") or "").strip() in wanted], ""
+
+
+def _shared_job_present() -> bool:
+    """Is the one shared watchdog job already scheduled? (idempotent init.)"""
+    jobs, _ = _cron_jobs({"id": ""})
+    if jobs is None:
+        return False
+    return any(str(job.get("name") or "").strip() == SHARED_JOB_NAME for job in jobs)
+
+
+def _other_loops(loop: dict) -> list[str]:
+    """Loop ids configured besides ``loop`` — the shared job must outlive any one loop."""
+    directory = config.config_dir()
+    if not directory.exists():
+        return []
+    return [path.stem for path in sorted(directory.glob("*.json"))
+            if path.stem != loop.get("id")]
 
 
 def _remove_cron(loop: dict) -> tuple[list[str], list[str]]:
-    """Remove this loop's watchdog job through the scheduler's own CLI, then read the store back."""
+    """Remove the watchdog job through the scheduler's own CLI, then read the store back.
+
+    The shared job is removed only with the **last** loop (#60): any other loop still needs it.
+    A legacy per-loop job belonging to this loop is always removed — it is this loop's own.
+    """
     jobs, error = _cron_jobs(loop)
     if jobs is None:
         return [], [f"cron: {error}"]
+    others = _other_loops(loop)
+    shared = [job for job in jobs
+              if str(job.get("name") or "").strip() == SHARED_JOB_NAME]
+    legacy = [job for job in jobs
+              if str(job.get("name") or "").strip() == _legacy_job_name(loop)]
+    removing = legacy + (shared if not others else [])
+    keeping = [job for job in jobs if job not in removing]
     hermes = _hermes_bin()
     done, failures = [], []
-    for job in jobs:
+    for job in removing:
         job_id = str(job.get("id") or "")
+        name = str(job.get("name") or "")
         if not job_id:
-            failures.append(f"cron: job {watchdog_job_name(loop)!r} has no id")
+            failures.append(f"cron: job {name!r} has no id")
             continue
         if not hermes:
             failures.append(f"cron: no `hermes` on PATH to remove job {job_id}")
@@ -1115,12 +1160,15 @@ def _remove_cron(loop: dict) -> tuple[list[str], list[str]]:
     if after is None:
         return done, failures + [f"cron: could not confirm the removal: {error}"]
     left = {str(job.get("id") or "") for job in after}
-    for job in jobs:
+    for job in removing:
         if str(job.get("id") or "") in left:
             if not failures:
                 failures.append(f"cron: job {job.get('id')} is still scheduled")
         else:
-            done.append(f"cron job removed: {job.get('id')} ({watchdog_job_name(loop)})")
+            done.append(f"cron job removed: {job.get('id')} ({job.get('name')})")
+    for job in keeping:
+        done.append(f"cron job kept: {job.get('id')} ({job.get('name')}) — "
+                    f"{len(others)} other loop(s) still sweep through it")
     return done, failures
 
 
@@ -1194,14 +1242,18 @@ def _write_watchdog_shim() -> pathlib.Path:
 
 
 def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str], bool]:
-    """A cron shim plus the job itself, through the scheduler's own CLI.
+    """A cron shim plus the one shared job, through the scheduler's own CLI.
 
-    Returns ``(lines, ok)``; ``ok`` is false when no job was created. The fallback command is
-    shell-quoted — the job name has spaces and parentheses — so it can be pasted as printed.
+    The job is created **only if missing** (#60): one shared job sweeps every loop, so a second
+    ``init`` for another loop must not add a duplicate that would sweep them all again. Returns
+    ``(lines, ok)``; ``ok`` is false only when no job exists and one could not be created. The
+    fallback command is shell-quoted — the job name has spaces — so it can be pasted as printed.
     """
     shim = _write_watchdog_shim()
+    if _shared_job_present():
+        return [f"watchdog already scheduled (shared job, deliver={deliver})", f"shim: {shim}"], True
     hermes = _hermes_bin() or "hermes"
-    cmd = [hermes, "cron", "create", schedule, "--name", watchdog_job_name(loop),
+    cmd = [hermes, "cron", "create", schedule, "--name", SHARED_JOB_NAME,
            "--no-agent", "--script", SHIM_NAME, "--deliver", deliver]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -3277,7 +3329,7 @@ def cmd_uninstall(args) -> int:
         print(line)
     if failures:
         return _uninstall_refused(loop, failures, [], args)
-    if done:
+    if any(line.startswith("cron job removed") for line in done):
         removed.append("watchdog job")
     shim_line = _remove_unused_shim()
     leftovers: list[tuple[str, str]] = []          # (what, the command that removes it)
