@@ -545,6 +545,10 @@ class DoctorApplyUninstall(Base):
         # exported constant), not the bare substring "404": random temp-dir names in the output
         # paths can contain it (#153).
         self.assertNotIn(gate_shims.GATEWAY_404_TAIL, out)
+        # #172: companion assertion — the literal must still exist in the source so a rename
+        # fails loudly rather than silently disarming this test.
+        gate_shims_src = ROOT / "review_loop" / "gate_shims.py"
+        self.assertIn(gate_shims.GATEWAY_404_TAIL, gate_shims_src.read_text())
         # On an existing loop a real disagreement is still named.
         self.install()
         self.edit_registry(lambda d: d["widgets-review"].update(profile="tuck"))
