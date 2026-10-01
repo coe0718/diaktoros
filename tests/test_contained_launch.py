@@ -294,8 +294,9 @@ class ProductionLaunch(Base):
                                  f"{role}: read-only bind of an arbitrary host path: {rogue}")
 
     def test_a_read_only_bind_of_a_broad_ancestor_is_rejected(self):
-        # The allowlist must reject the roots' own ancestors — `/` and `/tmp` both expose far more
-        # than the turn's staged directories. The predicate is directional: source beneath root.
+        # The allowlist must reject the roots' own ancestors — `/`, `/tmp`, `/tmp/xyz`, and `/home`
+        # all expose far more than the turn's staged directories. The predicate is directional:
+        # source beneath root.
         from test_contained_launch import at_or_under
         roots = ["/tmp/xyz/work/turn-abc", "/tmp/xyz/venv"]
         for source in ("/", "/tmp", "/tmp/xyz", "/home"):

@@ -499,7 +499,6 @@ def group_doctor() -> None:
     check("an over-20 space-bearing replacement parses whole, not its first token",
           parsed3, [overlong, "turn-budget"])
     check("  so it is not mistaken for the real 'config'", "config" in parsed3, False)
-
     install_doctor_fixture()
     install_watchdog_state(load_loop())
     added = doctor_runtime_fixture()
@@ -526,6 +525,10 @@ def group_doctor() -> None:
     check("  no expected check is missing", sorted(DOCTOR_FIXTURE_CHECKS - set(names)), [])
     check("  no check is emitted that the harness does not name",
           sorted(set(names) - DOCTOR_FIXTURE_CHECKS), [])
+    # #178: no emitted check name may contain a space — the parser uses the padded field
+    # boundary, so a space in the name is either a malformed check or a replacement attack.
+    check("no emitted check name contains a space",
+          any(" " in name for name in names), False)
     check("  and every one is verified",
           [name for mark, name in emitted or () if mark != doctor.MARKS[doctor.VERIFIED]], [])
     check("  it writes nothing", tree_digest(TMP), before_files)
