@@ -374,6 +374,42 @@ class ProfileResolution(Base):
             seat_model.resolve_seat(self.loop, "reviewer", settings)
 
 
+
+class LaunchPreparation(Base):
+    """Hermes's bootstrap may re-exec a process from a source checkout into its package manager's
+    interpreter (``venv_sync.prepare_launch``, on a pending dependency sync), keeping its argv.
+    The resolver keeps ``-E``, so the relaunched child cannot import Hermes and its answer lands on
+    the swapped stdout: every seat read "Hermes gave no answer (rc=0)" on a live install."""
+
+    def relaunching_hermes(self) -> None:
+        # What that bootstrap does, in the fake Hermes the resolver imports: unless launch
+        # preparation is disabled, re-exec once with the same command line; the relaunched
+        # interpreter then lacks a dependency.
+        loader = pathlib.Path(self.settings["source"]) / "hermes_cli" / "env_loader.py"
+        loader.write_text(textwrap.dedent("""
+            import os, sys
+            if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") != "1":
+                if not os.environ.get("FAKE_HERMES_RELAUNCHED"):
+                    os.environ["FAKE_HERMES_RELAUNCHED"] = "1"
+                    os.execv(sys.executable, sys.orig_argv)
+                raise ModuleNotFoundError("No module named 'dotenv'")
+        """) + loader.read_text())
+
+    def test_the_resolver_is_not_relaunched_by_hermes_launch_preparation(self):
+        self.relaunching_hermes()
+        inference = seat_model.resolve_seat(self.loop, "reviewer", self.settings)
+        self.assertEqual(inference.model, "vendor/rev-model")
+
+    def test_no_answer_names_what_the_child_said(self):
+        said = ('{"kind": "unavailable", "error": "Hermes is not importable from /src '
+                '(ModuleNotFoundError: No module named \'dotenv\')"}')
+        done = subprocess.CompletedProcess([], 0, b"", ("notice\n" + said + "\n").encode())
+        with mock.patch.object(seat_model.subprocess, "run", return_value=done):
+            with self.assertRaises(seat_model.SeatModelError) as caught:
+                seat_model.run_resolver("rev", "resolve", self.settings)
+        self.assertIn("No module named 'dotenv'", str(caught.exception))
+        self.assertIn("Hermes gave no answer (rc=0)", str(caught.exception))
+
 class Precedence(Base):
     def test_per_seat_override_beats_the_profile(self):
         settings = {**self.settings, "seats": {"fixer": {
