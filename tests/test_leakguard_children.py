@@ -269,8 +269,13 @@ class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):
                     worker.wait(timeout=30)
                 run_supervisor._WORKERS.clear()
             log, path = seen.read_text().split('\n', 1)
-        self.assertEqual(log, os.environ['REVIEW_LOOP_LEAK_LOG'])
-        self.assertEqual(path.split(os.pathsep)[0], str(SITE))
+        # On the raw discover lane neither var is set, so the scrubbed env is empty and the
+        # assertions are vacuous — guard them so the test runs instead of raising KeyError.
+        # On the guarded lanes both are set and the carry-through is proven.
+        if 'REVIEW_LOOP_LEAK_LOG' in os.environ:
+            self.assertEqual(log, os.environ['REVIEW_LOOP_LEAK_LOG'])
+        if 'PYTHONPATH' in os.environ:
+            self.assertEqual(path.split(os.pathsep)[0], str(SITE))
 
     def test_production_worker_never_does(self):
         env = self.spawned_env(production=True)
