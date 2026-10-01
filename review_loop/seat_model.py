@@ -967,7 +967,13 @@ def run_resolver(profile: str, mode: str, settings: dict | None,
     if config.test_guard_active():
         user_home = os.environ.get("HOME", "/")   # a guarded test never hands Hermes the real HOME
     env = {"PATH": "/usr/bin:/bin", "HOME": user_home,
-           "HERMES_HOME": str(home), "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
+           "HERMES_HOME": str(home), "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1",
+           # A resolution, not a Hermes launch: a source checkout with a pending dependency sync
+           # otherwise has Hermes's bootstrap (``venv_sync.prepare_launch``) re-exec this child
+           # into its package manager's interpreter, keeping our ``-E`` -- which hides the
+           # environment that interpreter needs, so Hermes is unimportable and the answer lands
+           # on the swapped stdout. Hermes's own opt-out for launch preparation.
+           "HERMES_DISABLE_LAZY_INSTALLS": "1"}
     from .inference_proxy import SUPPORTED_MODES
     policy = json.dumps({"unsupported": sorted(UNSUPPORTED_PROVIDERS), "oauth": OAUTH_PROVIDERS,
                          "modes": sorted(SUPPORTED_MODES), "refused_modes": sorted(REFUSED_API_MODES),
@@ -989,8 +995,14 @@ def run_resolver(profile: str, mode: str, settings: dict | None,
         if not isinstance(answer, dict):
             raise ValueError
     except (ValueError, UnicodeDecodeError):
+        # Name what the child said last (redacted): "no answer" alone sends the operator to the
+        # runtime file when the reason -- an import error, a relaunch -- is right there.
+        said = [line for line in process.stderr[-4096:].decode("utf-8", "replace").splitlines()
+                if line.strip()]
+        why = f": {_redact(said[-1])[:200]}" if said else ""
         raise SeatModelError(f"profile {profile}: Hermes gave no answer "
-                             f"(rc={process.returncode}); check venv/source in the runtime file") from None
+                             f"(rc={process.returncode}){why}; check venv/source in the runtime "
+                             "file") from None
     return answer
 
 

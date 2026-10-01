@@ -18,7 +18,8 @@ from unittest import mock
 from review_loop import broker, safe_push, seat_model
 
 LEAK = 'import os\nf = open(os.devnull)\ndel f\n'
-RESOLVER_ENV = {'PATH', 'HOME', 'HERMES_HOME', 'LANG', 'PYTHONDONTWRITEBYTECODE'}
+RESOLVER_ENV = {'PATH', 'HOME', 'HERMES_HOME', 'LANG', 'PYTHONDONTWRITEBYTECODE',
+                'HERMES_DISABLE_LAZY_INSTALLS'}   # a resolution is not a Hermes launch
 
 
 class Seams(unittest.TestCase):
