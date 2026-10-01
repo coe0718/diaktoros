@@ -346,7 +346,7 @@ def check_runtime(report: Report, path: Path) -> dict | None:
 
 # -- step 2: bubblewrap ------------------------------------------------------------------------
 
-_PROBE = r'''
+_SANDBOX_PROBE = r'''
 import json, os, socket, subprocess, sys
 paths = json.loads(sys.argv[1])
 readable = []
@@ -484,7 +484,7 @@ def check_bwrap(report: Report, loop: dict, settings: dict | None, runtime_file:
         dummy.chmod(0o600)
         report.redact.add(marker)
         paths = [str(dummy)] + host_secret_paths(loop, settings, runtime_file)
-        entry = ["/opt/venv/bin/python", "-c", _PROBE, json.dumps(paths)]
+        entry = ["/opt/venv/bin/python", "-c", _SANDBOX_PROBE, json.dumps(paths)]
         try:
             result = contained.run(code=code, venv=Path(settings["venv"]),
                                    runtime=Path(settings["runtime"]), home=home, checkout=work,
@@ -584,22 +584,23 @@ def check_model(report: Report, seats: dict | None) -> None:
         _one_completion(report, names, members[0][1])
 
 
-_PROBE = "Reply with the single word OK."
+_MODEL_PROMPT = "Reply with the single word OK."
 
 
 def probe_body(api_mode: str, client_identity: str = "") -> bytes:
     """The smallest request of each wire format (the proxy forces model and output cap)."""
     if api_mode == "codex_responses":
         body = {"instructions": "You are a connectivity probe.", "store": False, "stream": True,
-                "input": [{"role": "user", "content": [{"type": "input_text", "text": _PROBE}]}]}
+                "input": [{"role": "user",
+                           "content": [{"type": "input_text", "text": _MODEL_PROMPT}]}]}
     elif api_mode == "anthropic_messages":
-        body = {"max_tokens": 16, "messages": [{"role": "user", "content": _PROBE}]}
+        body = {"max_tokens": 16, "messages": [{"role": "user", "content": _MODEL_PROMPT}]}
         if client_identity == "claude_code":
             # What Hermes sends first on a subscription token (see its anthropic adapter).
             body["system"] = [{"type": "text",
                                "text": "You are Claude Code, Anthropic's official CLI for Claude."}]
     else:
-        body = {"messages": [{"role": "user", "content": _PROBE}], "max_tokens": 16}
+        body = {"messages": [{"role": "user", "content": _MODEL_PROMPT}], "max_tokens": 16}
     return json.dumps(body).encode()
 
 

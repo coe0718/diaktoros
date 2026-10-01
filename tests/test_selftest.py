@@ -190,6 +190,27 @@ class ChecklistTests(SelftestBase):
             self.assertIn(path, self.fx.sandbox_paths)
         self.assertTrue(any("dummy-host-secret" in p for p in self.fx.sandbox_paths))
 
+    def test_sandbox_step_runs_the_probe_program_not_the_model_prompt(self):
+        # Regression: a second module-level ``_PROBE`` (the model prompt) once shadowed the
+        # sandbox probe program, so bwrap ran "Reply with the single word OK." as Python and
+        # every live selftest failed at sandbox:start with ``SyntaxError: invalid syntax``.
+        entries = []
+
+        def capture(**kwargs):
+            entries.append(kwargs["entry"])
+            return self.fx.contained_run(**kwargs)
+
+        with mock.patch.object(contained, "run", side_effect=capture):
+            rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 0, text)
+        [entry] = [e for e in entries if e[:2] == ["/opt/venv/bin/python", "-c"]]
+        program = entry[2]
+        compile(program, "probe", "exec")          # a SyntaxError here is the original bug
+        prompt = json.loads(selftest.probe_body("chat_completions"))["messages"][0]["content"]
+        self.assertNotEqual(program.strip(), prompt.strip())
+        self.assertNotIn(prompt, program)
+        self.assertIn("json.dumps", program)        # it answers with the facts JSON step 2 parses
+
     def test_no_model_skips_the_completion(self):
         rc, text = self.run_selftest(model=False)
         self.assertEqual(rc, 0, text)
