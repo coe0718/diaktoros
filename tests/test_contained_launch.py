@@ -296,12 +296,17 @@ class ProductionLaunch(Base):
     def test_a_read_only_bind_of_a_broad_ancestor_is_rejected(self):
         # The allowlist must reject the roots' own ancestors — `/`, `/tmp`, `/tmp/xyz`, and `/home`
         # all expose far more than the turn's staged directories. The predicate is directional:
-        # source beneath root.
+        # source beneath root. It must call the same `allowed()` logic the validator uses.
         from test_contained_launch import at_or_under
         roots = ["/tmp/xyz/work/turn-abc", "/tmp/xyz/venv"]
+        system = {"/usr", "/bin", "/lib", "/lib64", "/etc/alternatives"}
+
+        def allowed(source: str) -> bool:
+            return source in system or any(at_or_under(source, root) for root in roots)
+
         for source in ("/", "/tmp", "/tmp/xyz", "/home"):
             self.assertFalse(
-                any(at_or_under(source, root) for root in roots),
+                allowed(source),
                 f"the allowlist accepted the broad ancestor {source!r}")
 
     def test_network_cannot_be_requested(self):
