@@ -132,10 +132,12 @@ def valid_clock(value: object, now: float) -> float | None:
 
 
 def alert_due(watch: dict, key: str, now: float, cooldown: float) -> bool:
-    """True at most once per ``cooldown`` for ``key``, and again after each cooldown passes.
+    """True at most once per ``cooldown`` for ``key``, and again once each cooldown has elapsed.
 
-    Stamped only when it fires: a condition that persists re-alerts every cooldown instead of
-    refreshing its own clock on every sweep and never speaking again (#77, as the stall map does).
+    The edge is inclusive: the first call at exactly ``cooldown`` after the last stamp fires (``now
+    - last < cooldown`` is False there), and the call just before it is silent. Stamped only when it
+    fires: a condition that persists re-alerts every cooldown instead of refreshing its own clock on
+    every sweep and never speaking again (#77, as the stall map does).
     """
     marks = watch.get("github_alerts")
     if not isinstance(marks, dict):
@@ -983,6 +985,19 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         lines.append("Pending adjudicator delivery retries on the next sweep; other stalls "
                      "need investigation. Check the gateway log before re-driving a route.")
 
+    # Persist the cooldown stamps the moment they are decided, before ``drain_queued`` and the
+    # observer's notify/retry/flush can raise (#158(3)). Those are best-effort work; a failure in
+    # any of them must cost this sweep's line, never the ``raised`` record the next sweep reads —
+    # otherwise one bad flush silently re-alerts the same stall on every following sweep. The
+    # health settlement below rewrites ``watch`` again and saves once more; this earlier save is
+    # what survives a raise in between.
+    watch["alerts"] = {**{k: v for k, v in marks.items()
+                          if (k in present or k.startswith(tuple(unjudged)))
+                          and valid_clock(v, now) is not None},
+                       **raised}
+    watch["last_run"] = now_iso()
+    st.watch_save(watch)
+
     drain_queued(loop, st, lines)
 
     # The observer feed, last and best effort. Only the alerts this sweep actually decided to
@@ -1002,13 +1017,8 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         log("observer: retried an undelivered notice")
     observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
 
-    # Bounded by what is stalled now: cleared keys go, and a PR this sweep could not judge
-    # keeps its marks (a failed read is not a resolved stall, and must not re-alert it).
-    watch["alerts"] = {**{k: v for k, v in marks.items()
-                          if (k in present or k.startswith(tuple(unjudged)))
-                          and valid_clock(v, now) is not None},
-                       **raised}
-    watch["last_run"] = now_iso()
+    # ``watch["alerts"]`` and ``last_run`` were saved above, before the best-effort work; here only
+    # the health settlement (which rewrites ``watch``) is committed, on the same read-modify-write.
     finish_reads(loop, watch, now, health, pr_failures, lines)
     st.watch_save(watch)
     st.note(f"run: {len(alerts)} alert(s), {len(reported)} stuck, {len(prs)} open PRs")

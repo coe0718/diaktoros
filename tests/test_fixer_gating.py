@@ -257,6 +257,40 @@ class Surfaces(Base):
         for call in again.call_args_list:
             self.assertEqual(call.kwargs["identity"], "fixer-push-off")
 
+    def test_a_raise_after_the_alert_decision_keeps_the_marks(self):
+        # #158(3): the sweep saved ``watch["alerts"]`` only at the very end, after ``drain_queued``
+        # and the observer's notify/retry/flush. A raise anywhere in between dropped every stamp the
+        # sweep had decided, so the next sweep re-alerted the same stall (measured: 3 alerts in 3
+        # sweeps, ``marks={}`` throughout). The marks are persisted the moment they are decided, so a
+        # later failure costs the sweep's line, never the cooldown record.
+        gate.hold_fixer_push_off(self.loop, self.st, 7, HEAD)
+        self.sweep()                                           # first sweep: arms, baselines
+        watch = self.st.watch()
+        watch["heads"]["7"]["observed_at"] = time.time() - 3600
+        self.st.watch_save(watch)
+        # This sweep decides a stall alert, then the observer's flush explodes mid-sweep.
+        with mock.patch.object(watchdog, "TEST", True), \
+                mock.patch.object(gate, "hooks_armed", return_value=True), \
+                mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
+                mock.patch.object(gh, "open_prs", return_value=[LIVE]), \
+                mock.patch.object(gh, "reviews", return_value=[verdict()]), \
+                mock.patch.object(watchdog, "retry_pending_breaches"), \
+                mock.patch.object(watchdog.routes, "fire"), \
+                mock.patch.object(watchdog.observer, "notify"), \
+                mock.patch.object(watchdog.observer, "retry", return_value=0), \
+                mock.patch.object(watchdog.observer, "flush",
+                                  side_effect=RuntimeError("observer exploded")):
+            with self.assertRaises(RuntimeError):
+                watchdog.sweep_loop(self.loop, self.st)
+        # The stamps the sweep decided before it died are on disk: the cooldown is not lost.
+        saved = self.st.watch().get("alerts", {})
+        # The cooldown key is ``number:head:masked-kind``; the masked push-off kind rides in it.
+        self.assertTrue(any(watchdog.PUSH_OFF_KIND[:24] in k for k in saved),
+                        f"raised marks lost on the raise: {saved}")
+        # And the next sweep, past the failure, still sees the standing stall (its stamp survived).
+        lines, _, _ = self.sweep()
+        self.assertTrue(any(watchdog.PUSH_OFF_KIND in line for line in lines), lines)
+
     def test_drain_starts_the_held_verdict_only_after_opt_in(self):
         gate.hold_fixer_push_off(self.loop, self.st, 7, HEAD)
         with mock.patch.object(watchdog.routes, "fire") as fire, \

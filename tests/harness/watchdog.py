@@ -469,6 +469,20 @@ def group_watchdog() -> None:
                     extra_env=blind)
     check("  drain says unreadable, not paused", "hook list unreadable" in out, True)
 
+    # #158(2): the cooldown edge is inclusive — ``alert_due`` fires *at* exactly ``cooldown``
+    # (``now - last < cooldown`` is False there), not only strictly after. Nothing pinned that, so a
+    # later ``<`` → ``<=`` flip would pass silently while the docstring still read "after each
+    # cooldown passes". Pin the edge itself: silence just before it, an alert exactly on it.
+    from scripts import watchdog as _wd
+    watch: dict = {}
+    _wd.alert_due(watch, "edge", 100.0, 60.0)                     # first alert stamps the clock
+    check("alert_due is silent just before the cooldown edge",
+          _wd.alert_due(watch, "edge", 159.9, 60.0), False)
+    check("alert_due fires exactly at the cooldown edge (inclusive)",
+          _wd.alert_due(watch, "edge", 160.0, 60.0), True)
+    check("  and the edge stamp makes the next instant quiet again",
+          _wd.alert_due(watch, "edge", 160.1, 60.0), False)
+
 
 def group_explain() -> None:
     """``explain`` — the answer to "why is this PR not moving?".
