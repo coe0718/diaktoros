@@ -177,6 +177,17 @@ class ProductionLaunch(Base):
                 # Anywhere at all: not among the options, not smuggled into the entry.
                 self.assertNotIn("--share-net", argv)
                 self.assertFalse([arg for arg in argv if "share-net" in arg], argv)
+                # #160: --bind /usr would make the host root writable inside the sandbox.
+                # The argv must not contain any --bind for host root paths (like /usr, /bin, /lib).
+                # Legitimate --bind entries are for turn-scoped paths only (work/venv/rust/home/export/query/client).
+                for arg in argv:
+                    if arg == "--bind":
+                        idx = argv.index(arg)
+                        if idx + 1 < len(argv):
+                            source = argv[idx + 1]
+                            self.assertFalse(
+                                source in ("/usr", "/bin", "/lib", "/lib64", "/etc", "/home", "/root", "/opt", "/srv", "/var", "/tmp"),
+                                f"found dangerous --bind {source} in argv")
 
     def test_host_etc_is_not_bound_except_alternatives(self):
         for role in ("reviewer", "fixer", "adjudicator"):
