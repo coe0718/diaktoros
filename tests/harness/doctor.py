@@ -401,7 +401,11 @@ def doctor_checks(out: str, loop_id: str) -> list[tuple[str, str]] | None:
     if len(headers) != 1:
         return None
     marks = "|".join(re.escape(mark) for mark in dict.fromkeys(doctor.MARKS.values()))
-    shape = re.compile(rf"^  ({marks}) (\S+)(?: .*)?$")
+    # ``report()`` prints ``  {mark} {name:<20} {detail}``. The name is that padded field, not the
+    # first whitespace token: a name containing a space (a *replacement* check like ``config extra``)
+    # must parse whole, so the set-difference rule below can tell it from the real name (#166).
+    # A name longer than 20 overflows the field, so it runs to the single space before the detail.
+    shape = re.compile(rf"^  ({marks}) (.*)$")
     found = []
     for line in lines[headers[0] + 1:]:
         if not line:
@@ -411,7 +415,19 @@ def doctor_checks(out: str, loop_id: str) -> list[tuple[str, str]] | None:
         match = shape.match(line)
         if not match:
             return None
-        found.append((match.group(1), match.group(2)))
+        rest = match.group(2)
+        # report() emits f"{name:<20} {detail}", so the separator sits at max(20, len(name)).
+        # If the name fits, rest[20] is that separator; if it overflows, the name runs to the
+        # first space at index >= 20 (splitting at the *first* space re-admits a space-bearing
+        # replacement past column 20 — #178 review).
+        if len(rest) >= 21 and rest[20] == " ":
+            name = rest[:20].rstrip()          # name fit in the 20-wide field
+        else:
+            i = 20
+            while i < len(rest) and rest[i] != " ":
+                i += 1
+            name = rest[:i].rstrip()           # name overflowed 20: to the separator, spaces kept
+        found.append((match.group(1), name))
     return None
 
 
@@ -453,7 +469,36 @@ def group_doctor() -> None:
     check("  and refuses a line it cannot read",
           doctor_checks("[demo] acme/demo — preflight\n  ✅ config  ok\n  ?? odd  line\n\n", "demo"),
           None)
-
+    # #166: the parser took the first whitespace token as the name, so a check whose *name*
+    # contains a space (``Check("config extra", ...)`` — a replacement for the real ``config``)
+    # parsed as ``config`` and the replacement passed unnoticed. The name is report()'s padded
+    # ``{name:<20} `` field, not the first token; parse it whole so a replaced name is a different
+    # name and the set-difference rule below flags it.
+    buf2 = io.StringIO()
+    with contextlib.redirect_stdout(buf2):
+        doctor.report({"id": "demo", "repo": "acme/demo"}, [
+            doctor.Check("config extra", doctor.VERIFIED, "ok"),
+            doctor.Check("turn-budget", doctor.VERIFIED, "ok")])
+    check("a check name containing a space parses whole, not as its first token",
+          [name for _mark, name in doctor_checks(buf2.getvalue(), "demo") or ()],
+          ["config extra", "turn-budget"])
+    # And the replacement is then *not* mistaken for the real check by name equality.
+    check("  so a 'config extra' replacement is not the real 'config' by name",
+          "config" in [name for _m, name in doctor_checks(buf2.getvalue(), "demo") or ()],
+          False)
+    # #178 review: a replacement whose name is longer than 20 *and* contains a space must parse
+    # whole too — the padded field is max(20, len(name)) wide, so the separator sits past index 20.
+    # Truncating at the first space re-admits the false green this check exists to close.
+    overlong = "config extraordinarilylongreplacementwithoutspaces"
+    buf3 = io.StringIO()
+    with contextlib.redirect_stdout(buf3):
+        doctor.report({"id": "demo", "repo": "acme/demo"}, [
+            doctor.Check(overlong, doctor.VERIFIED, "ok"),
+            doctor.Check("turn-budget", doctor.VERIFIED, "ok")])
+    parsed3 = [name for _m, name in doctor_checks(buf3.getvalue(), "demo") or ()]
+    check("an over-20 space-bearing replacement parses whole, not its first token",
+          parsed3, [overlong, "turn-budget"])
+    check("  so it is not mistaken for the real 'config'", "config" in parsed3, False)
     install_doctor_fixture()
     install_watchdog_state(load_loop())
     added = doctor_runtime_fixture()
@@ -480,6 +525,10 @@ def group_doctor() -> None:
     check("  no expected check is missing", sorted(DOCTOR_FIXTURE_CHECKS - set(names)), [])
     check("  no check is emitted that the harness does not name",
           sorted(set(names) - DOCTOR_FIXTURE_CHECKS), [])
+    # #178: no emitted check name may contain a space — the parser uses the padded field
+    # boundary, so a space in the name is either a malformed check or a replacement attack.
+    check("no emitted check name contains a space",
+          any(" " in name for name in names), False)
     check("  and every one is verified",
           [name for mark, name in emitted or () if mark != doctor.MARKS[doctor.VERIFIED]], [])
     check("  it writes nothing", tree_digest(TMP), before_files)
