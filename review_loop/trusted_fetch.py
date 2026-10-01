@@ -169,14 +169,80 @@ def _entries(tree: dict) -> list[tuple[str, str, int, bool]]:
     return entries
 
 
-def _export_blob(loop: dict, repo: str, reader: str, oid: str, length: int, target: pathlib.Path) -> None:
-    raw = _request(loop, f"/repos/{repo}/git/blobs/{oid}", reader, length,
-                   "application/vnd.github.raw+json")
-    if len(raw) != length or hashlib.sha1(b"blob " + str(length).encode() + b"\0" + raw).hexdigest() != oid:
-        raise FetchDenied("blob size or hash mismatch")
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "wb") as output:
-        output.write(raw)
+def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) -> bytes:
+    """One GitHub call for the whole head: the commit's tarball, bounded by ``limit``.
+
+    This replaces the old one-GET-per-blob export (≈1,660 calls for attest, against the read
+    token's 5,000/h budget). The credential stays host-side in the ``Authorization`` header
+    (``_request``); nothing credentialed reaches the export.
+    """
+    return _request(loop, f"/repos/{repo}/tarball/{head}", reader, limit,
+                    "application/vnd.github+json")
+
+
+def _extract(archive: bytes, directory: pathlib.Path,
+             entries: list[tuple[str, str, int, bool]]) -> None:
+    """Write the tarball's regular files into ``directory`` — nothing else.
+
+    GitHub prefixes every member with ``{owner}-{repo}-{sha}/``; that one component is
+    stripped, and the remainder must be a path in the verified tree (no ``..``, no absolute
+    path, no symlink/device/hardlink, no duplicate, nothing extra). Each file's length must
+    match the tree's declared size and its bytes must hash to the tree's own object id
+    (``sha1("blob <len>\\0" + content)``), so a blob whose content does not match its tree
+    SHA, a missing entry or an extra entry refuses the turn. Executable bits come from the
+    tree, not the archive's metadata. Bytes written are bounded by ``_MAX_BYTES``.
+    """
+    import io
+    import tarfile
+    expected = {name: (oid, length, executable)
+                for name, oid, length, executable in entries}
+    total = 0
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:*") as tar:
+        seen: set[str] = set()
+        for member in tar:
+            name = member.name
+            # Drop the {owner}-{repo}-{sha} prefix (one component), keep the rest verbatim.
+            name = name.split("/", 1)[1] if "/" in name else name
+            parts = name.split("/")
+            if member.isdir():
+                # GitHub tarballs list directories; parent dirs are also created implicitly
+                # by the files under them, so skip the entry. A directory named like a tree
+                # file still cannot shadow one: `seen` only gains real files below.
+                if any(not p or p in (".", "..") or "\\" in p for p in parts):
+                    raise FetchDenied("unsafe tree entry")
+                continue
+            if (member.isdev() or member.issym() or member.islnk()
+                    or any(not p or p in (".", "..") or "\\" in p for p in parts)
+                    or name not in expected):
+                raise FetchDenied("unsafe tree entry")
+            if name in seen:
+                raise FetchDenied("unsafe tree entry")
+            seen.add(name)
+            source = tar.extractfile(member)
+            if source is None:
+                raise FetchDenied("unsafe tree entry")
+            oid, length, executable = expected[name]
+            target = directory.joinpath(*parts)
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # Stream: hash is incremental (length is known from the tree), so no file is
+            # buffered whole. A size mismatch or hash mismatch refuses before anything is
+            # published — the whole export stays unpublished until every entry verifies.
+            digest = hashlib.sha1(b"blob " + str(length).encode() + b"\0")
+            size = 0
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as output, source:
+                while chunk := source.read(_CHUNK):
+                    size += len(chunk)
+                    total += len(chunk)
+                    if total > _MAX_BYTES:
+                        raise FetchDenied("tree exceeds export bounds")
+                    digest.update(chunk)
+                    output.write(chunk)
+            if size != length or digest.hexdigest() != oid:
+                raise FetchDenied("blob size or hash mismatch")
+            target.chmod(0o755 if executable else 0o644)
+        if seen != set(expected):
+            raise FetchDenied("blob size or hash mismatch")
 
 
 def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
@@ -208,13 +274,10 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
     with tempfile.TemporaryDirectory(prefix=".review-trusted-", dir=root.parent) as temp:
         private = pathlib.Path(temp)
         private.chmod(0o700)
+        archive = _fetch_tarball(loop, repo, reader, head, _MAX_BYTES)
         directory = private / "repo"
         directory.mkdir(mode=0o700)
-        for name, oid, length, executable in entries:
-            target = directory.joinpath(*name.split("/"))
-            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            _export_blob(loop, repo, reader, oid, length, target)
-            target.chmod(0o755 if executable else 0o644)
+        _extract(archive, directory, entries)
         _live_head(loop, repo, number, head, ref, reader)
         if root.exists() or root.is_symlink():
             raise FetchDenied("sandbox root appeared during staging")

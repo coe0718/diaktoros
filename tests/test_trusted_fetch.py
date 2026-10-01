@@ -139,8 +139,33 @@ class TrustedFetchTests(unittest.TestCase):
         self.calls = []
         self.pr_count = 0
         self.pr_head = self.head
+        self.tarball = self._tarball({"hello.txt": self.blob})
         self.kw = {"repo": "acme/widgets", "number": 7, "head": self.head,
                    "ref": "work", "role": "reviewer", "sandbox_root": self.root / "sandbox"}
+
+    @staticmethod
+    def _tarball(files: dict[str, bytes], *, prefix: str = "acme-widgets-aaaaaaa",
+                 symlink: str | None = None, traversal: str | None = None) -> bytes:
+        """A GitHub-shaped tarball: every member under ``{prefix}/`` (one path component)."""
+        import io
+        import tarfile
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as tar:
+            for name, content in files.items():
+                info = tarfile.TarInfo(f"{prefix}/{name}")
+                info.size = len(content)
+                info.mode = 0o644
+                tar.addfile(info, io.BytesIO(content))
+            if symlink is not None:
+                info = tarfile.TarInfo(f"{prefix}/{symlink}")
+                info.type = tarfile.SYMTYPE
+                info.linkname = "/etc/passwd"
+                tar.addfile(info)
+            if traversal is not None:
+                info = tarfile.TarInfo(traversal)
+                info.size = 4
+                tar.addfile(info, io.BytesIO(b"pwn\n"))
+        return buffer.getvalue()
 
     def response(self, loop, path, login, limit, accept):
         self.calls.append((path, login, limit))
@@ -155,8 +180,8 @@ class TrustedFetchTests(unittest.TestCase):
             return json.dumps({"sha": self.head, "tree": {"sha": self.tree_sha}}).encode()
         if "/git/trees/" in path:
             return json.dumps(self.tree).encode()
-        if "/git/blobs/" in path:
-            return self.blob
+        if "/tarball/" in path:
+            return self.tarball
         raise AssertionError(path)
 
     def stage(self, callback=None, **changes):
@@ -193,13 +218,17 @@ class TrustedFetchTests(unittest.TestCase):
 
     def test_deleted_large_blob_never_fetched(self):
         # A historical oversized blob, modeled by an excluded OID, is never requested.
+        # The whole head now costs one tarball call, not one GET per blob: the tree is read
+        # first (so an oversized or historical entry never reaches the export at all).
         historical_oid = "d" * 40
         def only_head(loop, path, login, limit, accept):
             self.assertNotIn(historical_oid, path)
             return self.response(loop, path, login, limit, accept)
         self.stage(callback=only_head)
-        self.assertEqual([path for path, _, _ in self.calls if "/git/blobs/" in path],
-                         [f"/repos/acme/widgets/git/blobs/{self.oid}"])
+        self.assertEqual([path for path, _, _ in self.calls if "/tarball/" in path],
+                         [f"/repos/acme/widgets/tarball/{self.head}"])
+        # One call for content, whatever the file count — never one per blob.
+        self.assertFalse(any("/git/blobs/" in path for path, _, _ in self.calls))
 
     def test_truncated_malformed_and_unsafe_tree_rejected(self):
         valid = self.tree["tree"][0]
@@ -261,7 +290,7 @@ class TrustedFetchTests(unittest.TestCase):
 
     def test_partial_export_invisible_and_stale_head(self):
         def inspect(loop, path, login, limit, accept):
-            if "/git/blobs/" in path:
+            if "/tarball/" in path:
                 self.assertFalse((self.root / "sandbox").exists())
                 self.assertEqual(len(list(self.root.glob(".review-trusted-*"))), 1)
             data = self.response(loop, path, login, limit, accept)
@@ -275,13 +304,91 @@ class TrustedFetchTests(unittest.TestCase):
         self.assertFalse(any(self.root.glob(".review-trusted-*")))
 
     def test_corrupt_blob_and_wrong_commit_rejected(self):
+        # A tarball whose blob bytes do not match the tree's SHA for that path is refused.
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "hash mismatch"):
             self.stage(callback=lambda loop, path, login, limit, accept:
-                b"wrong" if "/git/blobs/" in path else self.response(loop, path, login, limit, accept))
+                self._tarball({"hello.txt": b"tampered\n"}) if "/tarball/" in path
+                else self.response(loop, path, login, limit, accept))
         self.assertFalse((self.root / "sandbox").exists())
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "commit SHA mismatch"):
             self.stage(callback=lambda loop, path, login, limit, accept:
                 b'{"sha":"bad"}' if "/git/commits/" in path else self.response(loop, path, login, limit, accept))
+
+    def test_a_turn_costs_a_small_bounded_number_of_api_calls(self):
+        # #66: one tarball call for the whole head, so the count does not grow with the file
+        # count. A tree of 50 files still costs the same handful of metadata reads + 1 tarball.
+        count = 50
+        self.tree = {"sha": self.tree_sha, "truncated": False, "tree": [
+            {"path": f"f{i}.txt", "mode": "100644", "type": "blob",
+             "sha": hashlib.sha1(b"blob 2\0" + b"x\n").hexdigest(), "size": 2}
+            for i in range(count)]}
+        self.tarball = self._tarball({f"f{i}.txt": b"x\n" for i in range(count)})
+        self.stage()
+        # 3 x /user (identity) + 3 x /pulls/7 (_live_head) + commit + tree + 1 tarball.
+        self.assertLessEqual(len(self.calls), 9,
+                             f"a turn made {len(self.calls)} API calls: {self.calls}")
+        self.assertFalse(any("/git/blobs/" in path for path, _, _ in self.calls))
+        # The count is independent of the file count: 50 files cost the same as 1.
+        self.assertEqual(len([p for p, _, _ in self.calls if "/tarball/" in p]), 1)
+        # The one content call carries the read token host-side (never the export).
+        self.assertEqual([login for path, login, _ in self.calls if "/tarball/" in path],
+                         ["reader"])
+
+    def test_a_tarball_with_a_path_traversal_is_refused(self):
+        # #66: an archive member escaping the tree root must be refused, not written.
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "unsafe tree entry"):
+            self.stage(callback=lambda loop, path, login, limit, accept:
+                self._tarball({"hello.txt": self.blob},
+                              traversal="../../etc/evil") if "/tarball/" in path
+                else self.response(loop, path, login, limit, accept))
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_a_tarball_with_a_symlink_is_refused(self):
+        # The existing handling for symlinks (#69 still open) is kept: a symlink member is
+        # refused rather than exported.
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "unsafe tree entry"):
+            self.stage(callback=lambda loop, path, login, limit, accept:
+                self._tarball({"hello.txt": self.blob},
+                              symlink="link") if "/tarball/" in path
+                else self.response(loop, path, login, limit, accept))
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_a_tarball_with_an_extra_file_is_refused(self):
+        # An entry the tree did not list (extra file) is refused: set equality with the tree.
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "unsafe tree entry"):
+            self.stage(callback=lambda loop, path, login, limit, accept:
+                self._tarball({"hello.txt": self.blob, "extra.txt": b"smuggled\n"})
+                if "/tarball/" in path
+                else self.response(loop, path, login, limit, accept))
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_a_tarball_missing_a_tree_file_is_refused(self):
+        # The tree lists hello.txt; an archive that omits it is refused (nothing matches).
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "hash mismatch"):
+            self.stage(callback=lambda loop, path, login, limit, accept:
+                self._tarball({}) if "/tarball/" in path
+                else self.response(loop, path, login, limit, accept))
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_a_tarball_with_directory_entries_is_accepted(self):
+        # Real GitHub tarballs list directory members; they must not be mistaken for a
+        # path escape or an extra file (a false refusal would break every nested tree).
+        self.tree = {"sha": self.tree_sha, "truncated": False, "tree": [
+            {"path": "src/hello.txt", "mode": "100644", "type": "blob",
+             "sha": self.oid, "size": len(self.blob)}]}
+        import io
+        import tarfile
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as tar:
+            directory = tarfile.TarInfo("acme-widgets-aaaaaaa/src")
+            directory.type = tarfile.DIRTYPE
+            tar.addfile(directory)
+            info = tarfile.TarInfo("acme-widgets-aaaaaaa/src/hello.txt")
+            info.size = len(self.blob)
+            tar.addfile(info, io.BytesIO(self.blob))
+        self.tarball = buffer.getvalue()
+        result = self.stage()
+        self.assertEqual((result / "src" / "hello.txt").read_bytes(), self.blob)
 
 
 if __name__ == "__main__":

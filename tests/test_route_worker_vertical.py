@@ -30,6 +30,24 @@ from worker_wait import wait_for_workers  # noqa: E402
 HEAD = 'a' * 40
 
 
+def tarball(blobs: dict) -> bytes:
+    """A GitHub-shaped tarball of the world's blobs: every member under ``{prefix}/``.
+
+    ``blobs`` maps ``name -> (oid, raw)``; content verbatim so ``trusted_fetch._extract``
+    verifies each blob's SHA against the tree.
+    """
+    import io
+    import tarfile
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode='w') as tar:
+        for name, (_oid, raw) in blobs.items():
+            info = tarfile.TarInfo(f'acme-widgets-{HEAD[:7]}/{name}')
+            info.size = len(raw)
+            info.mode = 0o644
+            tar.addfile(info, io.BytesIO(raw))
+    return buffer.getvalue()
+
+
 class Fixture(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -63,6 +81,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             oid = self.path.rsplit('/', 1)[-1]
             blob = next((raw for blob_sha, raw in world['blobs'].values() if blob_sha == oid), None)
             self._send(200 if blob is not None else 404, blob if blob is not None else b'')
+        elif self.path.startswith('/repos/acme/widgets/tarball/'):
+            # #66: the whole head as one tarball (GitHub's {owner}-{repo}-{sha}/ prefix).
+            self._send(200, tarball(world['blobs']), 'application/x-gzip')
         elif self.path.startswith('/repos/acme/widgets/pulls/7/files?per_page=100'):
             # The change under review (#50, #110): every blob as an added file, one page — or the
             # refusal the world asks for.
