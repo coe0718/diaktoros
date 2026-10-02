@@ -108,6 +108,21 @@ class NativeHostTests(unittest.TestCase):
         self.assertIsNotNone(reply.process.poll())
         self.assertEqual(self.endpoint.active, set())
 
+    def test_real_socket_capability_does_not_treat_idle_client_as_disconnect(self):
+        from review_loop.inference_proxy import InferenceCapability, _UnixHTTP
+        credential = backend.ProcessCredential('rev', {})
+        with InferenceCapability(self.root / 'cap', backend.UPSTREAM, model='m', quota=1,
+                                 credential=credential) as cap:
+            connection = _UnixHTTP(str(cap.socket_path), timeout=8)
+            try:
+                connection.request('POST', '/v1/chat/completions', body=json.dumps(self.payload))
+                response = connection.getresponse()
+                data = response.read()
+                self.assertEqual(response.status, 200, data)
+                self.assertEqual(json.loads(data)['choices'][0]['message']['content'], 'OK')
+            finally:
+                connection.close()
+
     def test_timeout_disconnect_and_response_bound_cancel_children(self):
         import socket
         for mode in ('timeout', 'disconnect', 'response-bound'):

@@ -47,6 +47,22 @@ prove wire forwarding, host helper isolation, response bounds, cancellation and 
 not the installed native CLI's complete end-to-end behavior. Existing full-suite vertical tests
 cover the general production sandbox boundary, not a successful live DirectSDK turn.
 
+## Follow-up: false disconnect diagnosis and fix
+
+The authorized diagnostic retry still returned 502. A no-network replay then reproduced
+502 at the real socket/helper boundary. Python performs its timeout poll before `recv`
+even when `MSG_DONTWAIT` is supplied: the capability's client socket has a positive
+three-second request timeout, so peeking at an idle, connected client raised TimeoutError.
+The relay classified that as a backend failure and closed the helper. This was independent
+of SELinux and could cancel initialization before its diagnostic handler was installed.
+
+The backend now checks socket readability with a zero-timeout select before peeking.
+A new regression exercising the actual Unix HTTP capability with a disposable SDK
+fixture failed with HTTP 502 before the fix and passed with HTTP 200 afterward.
+Follow-up targeted receipt: **19 passed, 1 skipped, 46 subtests passed** for the DirectSDK
+child/backend and inference-proxy files. Native inference remains unverified: no additional
+post-fix live request was made under the one-diagnostic-request permission.
+
 ## Security maintenance notes
 
 - Preserve native reasoning using an inert registered ProviderProfile declaring the exact carrier

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import selectors
+import select
 import signal
 import socket
 import subprocess
@@ -138,7 +139,9 @@ class ProcessReply:
     def __next__(self):
         from .inference_proxy import MAX_RESPONSE, ProxyError
         while not self.closed:
-            if self.peer is not None:
+            # Python's positive socket timeout polls before recv even with MSG_DONTWAIT.
+            # An idle, connected client must not consume CLIENT_TIMEOUT then fail inference.
+            if self.peer is not None and select.select([self.peer], [], [], 0)[0]:
                 try:
                     if self.peer.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b'':
                         self.close()
