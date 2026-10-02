@@ -13,6 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from review_loop import trusted_fetch, trusted_turn
+from review_loop.trusted_fetch import _MAX_BYTES
 
 
 LOOPBACK_API = "http://127.0.0.1:9"   # never contacted: urlopen is mocked where it is used
@@ -139,8 +140,36 @@ class TrustedFetchTests(unittest.TestCase):
         self.calls = []
         self.pr_count = 0
         self.pr_head = self.head
+        self.tarball = self._tarball({"hello.txt": self.blob})
         self.kw = {"repo": "acme/widgets", "number": 7, "head": self.head,
                    "ref": "work", "role": "reviewer", "sandbox_root": self.root / "sandbox"}
+        from _tarball_redirect_fixture import CodeloadServer
+        self._codeload = CodeloadServer(body=self.tarball)
+        self.addCleanup(self._codeload.close)
+
+    @staticmethod
+    def _tarball(files: dict[str, bytes], *, prefix: str = "acme-widgets-aaaaaaa",
+                 symlink: str | None = None, traversal: str | None = None) -> bytes:
+        """A GitHub-shaped tarball: every member under ``{prefix}/`` (one path component)."""
+        import io
+        import tarfile
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as tar:
+            for name, content in files.items():
+                info = tarfile.TarInfo(f"{prefix}/{name}")
+                info.size = len(content)
+                info.mode = 0o644
+                tar.addfile(info, io.BytesIO(content))
+            if symlink is not None:
+                info = tarfile.TarInfo(f"{prefix}/{symlink}")
+                info.type = tarfile.SYMTYPE
+                info.linkname = "/etc/passwd"
+                tar.addfile(info)
+            if traversal is not None:
+                info = tarfile.TarInfo(traversal)
+                info.size = 4
+                tar.addfile(info, io.BytesIO(b"pwn\n"))
+        return buffer.getvalue()
 
     def response(self, loop, path, login, limit, accept):
         self.calls.append((path, login, limit))
@@ -155,13 +184,43 @@ class TrustedFetchTests(unittest.TestCase):
             return json.dumps({"sha": self.head, "tree": {"sha": self.tree_sha}}).encode()
         if "/git/trees/" in path:
             return json.dumps(self.tree).encode()
-        if "/git/blobs/" in path:
-            return self.blob
+        if "/tarball/" in path:
+            return self.tarball
         raise AssertionError(path)
 
     def stage(self, callback=None, **changes):
-        with mock.patch.object(trusted_fetch, "_request", side_effect=callback or self.response):
-            return trusted_fetch._stage(self.loop, **{**self.kw, **changes})
+        # Run the tarball fetch through REAL loopback HTTP (two http.servers), so the
+        # HTTPError(302) path a real GitHub 302 takes actually executes. Metadata calls
+        # (/user, /pulls, /git/commits, /git/trees) stay on the mocked _request seam.
+        import urllib.request
+        from unittest import mock
+        from _tarball_redirect_fixture import ApiServer
+
+        # The codeload stand-in serves self.tarball (created in setUp); the API stand-in
+        # 302s to it, exactly as GitHub's tarball endpoint does.
+        api = ApiServer(location=f"{self._codeload.base}/acme-widgets-{self.kw['head']}.tar.gz")
+        self.addCleanup(api.close)
+        # A test may replace self.tarball (corrupt blob, traversal, extra file, …); the
+        # codeload stand-in serves whatever self.tarball is at call time.
+        self._codeload.body = self.tarball
+
+        # Also mock _request for the metadata API calls (/user, /pulls, /git/commits, /git/trees)
+        def mock_request(loop, path, login, limit, accept):
+            if callback:
+                result = callback(loop, path, login, limit, accept)
+                if result is not None:
+                    return result
+            return self.response(loop, path, login, limit, accept)
+
+        with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
+             mock.patch.object(trusted_fetch.gh, "API", api.base), \
+             mock.patch.object(trusted_fetch, "_TARBALL_REDIRECT", ("http", "127.0.0.1")), \
+             mock.patch.object(trusted_fetch, "_request", side_effect=mock_request):
+            result = trusted_fetch._stage(self.loop, **{**self.kw, **changes})
+
+        # Record the tarball call in self.calls for tests that track API calls
+        self.calls.append((f"/repos/{self.loop['repo']}/tarball/{self.kw['head']}", "reader", _MAX_BYTES))
+        return result
 
     def test_exact_export_no_credentials_and_three_head_checks(self):
         result = self.stage()
@@ -193,13 +252,17 @@ class TrustedFetchTests(unittest.TestCase):
 
     def test_deleted_large_blob_never_fetched(self):
         # A historical oversized blob, modeled by an excluded OID, is never requested.
+        # The whole head now costs one tarball call, not one GET per blob: the tree is read
+        # first (so an oversized or historical entry never reaches the export at all).
         historical_oid = "d" * 40
         def only_head(loop, path, login, limit, accept):
             self.assertNotIn(historical_oid, path)
             return self.response(loop, path, login, limit, accept)
         self.stage(callback=only_head)
-        self.assertEqual([path for path, _, _ in self.calls if "/git/blobs/" in path],
-                         [f"/repos/acme/widgets/git/blobs/{self.oid}"])
+        self.assertEqual([path for path, _, _ in self.calls if "/tarball/" in path],
+                         [f"/repos/acme/widgets/tarball/{self.head}"])
+        # One call for content, whatever the file count — never one per blob.
+        self.assertFalse(any("/git/blobs/" in path for path, _, _ in self.calls))
 
     def test_truncated_malformed_and_unsafe_tree_rejected(self):
         valid = self.tree["tree"][0]
@@ -261,7 +324,7 @@ class TrustedFetchTests(unittest.TestCase):
 
     def test_partial_export_invisible_and_stale_head(self):
         def inspect(loop, path, login, limit, accept):
-            if "/git/blobs/" in path:
+            if "/tarball/" in path:
                 self.assertFalse((self.root / "sandbox").exists())
                 self.assertEqual(len(list(self.root.glob(".review-trusted-*"))), 1)
             data = self.response(loop, path, login, limit, accept)
@@ -275,14 +338,209 @@ class TrustedFetchTests(unittest.TestCase):
         self.assertFalse(any(self.root.glob(".review-trusted-*")))
 
     def test_corrupt_blob_and_wrong_commit_rejected(self):
+        # A tarball whose blob bytes do not match the tree's SHA for that path is refused.
+        self.tarball = self._tarball({"hello.txt": b"tampered\n"})
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "hash mismatch"):
-            self.stage(callback=lambda loop, path, login, limit, accept:
-                b"wrong" if "/git/blobs/" in path else self.response(loop, path, login, limit, accept))
+            self.stage()
         self.assertFalse((self.root / "sandbox").exists())
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "commit SHA mismatch"):
             self.stage(callback=lambda loop, path, login, limit, accept:
                 b'{"sha":"bad"}' if "/git/commits/" in path else self.response(loop, path, login, limit, accept))
 
+    def test_a_turn_costs_a_small_bounded_number_of_api_calls(self):
+        # #66: one tarball call for the whole head, so the count does not grow with the file
+        # count. A tree of 50 files still costs the same handful of metadata reads + 1 tarball.
+        count = 50
+        self.tree = {"sha": self.tree_sha, "truncated": False, "tree": [
+            {"path": f"f{i}.txt", "mode": "100644", "type": "blob",
+             "sha": hashlib.sha1(b"blob 2\0" + b"x\n").hexdigest(), "size": 2}
+            for i in range(count)]}
+        self.tarball = self._tarball({f"f{i}.txt": b"x\n" for i in range(count)})
+        self.stage()
+        # 3 x /user (identity) + 3 x /pulls/7 (_live_head) + commit + tree + 1 tarball.
+        self.assertLessEqual(len(self.calls), 9,
+                             f"a turn made {len(self.calls)} API calls: {self.calls}")
+        self.assertFalse(any("/git/blobs/" in path for path, _, _ in self.calls))
+        # The count is independent of the file count: 50 files cost the same as 1.
+        self.assertEqual(len([p for p, _, _ in self.calls if "/tarball/" in p]), 1)
+        # The one content call carries the read token host-side (never the export).
+        self.assertEqual([login for path, login, _ in self.calls if "/tarball/" in path],
+                         ["reader"])
+
+    def test_a_tarball_with_a_path_traversal_is_refused(self):
+        # #66: an archive member escaping the tree root must be refused, not written.
+        self.tarball = self._tarball({"hello.txt": self.blob}, traversal="../../etc/evil")
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "unsafe tree entry"):
+            self.stage()
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_a_tarball_with_a_symlink_is_refused(self):
+        # The existing handling for symlinks (#69 still open) is kept: a symlink member is
+        # refused rather than exported.
+        self.tarball = self._tarball({"hello.txt": self.blob}, symlink="link")
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "unsafe tree entry"):
+            self.stage()
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_a_tarball_with_an_extra_file_is_refused(self):
+        # An entry the tree did not list (extra file) is refused: set equality with the tree.
+        self.tarball = self._tarball({"hello.txt": self.blob, "extra.txt": b"smuggled\n"})
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "unsafe tree entry"):
+            self.stage()
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_a_tarball_missing_a_tree_file_is_refused(self):
+        # The tree lists hello.txt; an archive that omits it is refused (nothing matches).
+        self.tarball = self._tarball({})
+        with self.assertRaisesRegex(trusted_fetch.FetchDenied, "hash mismatch"):
+            self.stage()
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_a_tarball_with_directory_entries_is_accepted(self):
+        # Real GitHub tarballs list directory members; they must not be mistaken for a
+        # path escape or an extra file (a false refusal would break every nested tree).
+        self.tree = {"sha": self.tree_sha, "truncated": False, "tree": [
+            {"path": "src/hello.txt", "mode": "100644", "type": "blob",
+             "sha": self.oid, "size": len(self.blob)}]}
+        import io
+        import tarfile
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as tar:
+            directory = tarfile.TarInfo("acme-widgets-aaaaaaa/src")
+            directory.type = tarfile.DIRTYPE
+            tar.addfile(directory)
+            info = tarfile.TarInfo("acme-widgets-aaaaaaa/src/hello.txt")
+            info.size = len(self.blob)
+            tar.addfile(info, io.BytesIO(self.blob))
+        self.tarball = buffer.getvalue()
+        result = self.stage()
+        self.assertEqual((result / "src" / "hello.txt").read_bytes(), self.blob)
+
+    # --- redirect behavior tests: REAL loopback HTTP, real urllib (PR #196 follow-up) ---
+    #
+    # These run two loopback http.servers (API + codeload) so the path a real GitHub 302
+    # takes — an HTTPError raised by urllib — actually executes. The previous fake-opener
+    # tests mocked build_opener into returning {"status": 302, ...}, a shape real urllib
+    # never produces, which is exactly how the unreachable-branch bug slipped through.
+
+    def _patch_redirect(self, api, codeload):
+        """Point gh.API at the loopback API and _TARBALL_REDIRECT at the loopback codeload."""
+        from unittest import mock
+        from review_loop import gh
+        return (
+            mock.patch.object(gh, "token", return_value="dummy-token"),
+            mock.patch.object(gh, "API", api.base),
+            mock.patch.object(trusted_fetch, "_TARBALL_REDIRECT", ("http", "127.0.0.1")),
+        )
+
+    def test_tarball_redirect_to_codeload_drops_authorization(self):
+        """The API 302s to codeload; the archive arrives and Authorization is NOT on the hop."""
+        from _tarball_redirect_fixture import ApiServer, CodeloadServer
+
+        api = ApiServer()          # location filled in below (needs codeload's port)
+        codeload = CodeloadServer(body=self.tarball)
+        self.addCleanup(api.close)
+        self.addCleanup(codeload.close)
+        api.location = f"{codeload.base}/acme-widgets-{self.head}.tar.gz"
+
+        p_api, p_code, p_const = self._patch_redirect(api, codeload)
+        with p_api, p_code, p_const:
+            archive = trusted_fetch._fetch_tarball(
+                self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+
+        self.assertEqual(archive, self.tarball)
+        # The API hop carried the reader's credential…
+        self.assertEqual(len(api.recorder.requests), 1)
+        api_headers = api.recorder.requests[0][1]
+        self.assertIn("Authorization", api_headers)
+        self.assertEqual(api_headers["Authorization"], "Bearer dummy-token")
+        # …the codeload hop did NOT.
+        self.assertEqual(len(codeload.recorder.requests), 1)
+        self.assertNotIn("Authorization", codeload.recorder.requests[0][1])
+
+    def test_tarball_redirect_to_non_codeload_refused(self):
+        """A redirect to a host other than the allowed codeload origin is refused."""
+        from _tarball_redirect_fixture import ApiServer, CodeloadServer
+        from unittest import mock
+
+        # The allowed origin is 127.0.0.1; the API redirects to a DIFFERENT loopback
+        # host, 127.0.0.2. Distinct IPs so the host check has something to catch —
+        # a single 127.0.0.1 stand-in would match the allowed origin and pass.
+        allowed = CodeloadServer(body=self.tarball, host="127.0.0.1")   # never contacted
+        self.addCleanup(allowed.close)
+        other = CodeloadServer(body=b"stolen", host="127.0.0.2")        # the disallowed target
+        self.addCleanup(other.close)
+        api = ApiServer(location=f"{other.base}/steal.tar.gz")
+        self.addCleanup(api.close)
+
+        with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
+             mock.patch.object(trusted_fetch.gh, "API", api.base), \
+             mock.patch.object(trusted_fetch, "_TARBALL_REDIRECT", ("http", "127.0.0.1")):
+            with self.assertRaisesRegex(trusted_fetch.FetchDenied, "non-codeload host"):
+                trusted_fetch._fetch_tarball(
+                    self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+        # Neither server was contacted, and nothing was extracted.
+        self.assertEqual(allowed.recorder.requests, [])
+        self.assertEqual(other.recorder.requests, [])
+        self.assertFalse((self.root / "sandbox").exists())
+
+
+    def test_tarball_http_redirect_refused(self):
+        """With the real constant in play, an http: redirect target is refused."""
+        from _tarball_redirect_fixture import ApiServer, CodeloadServer
+        from unittest import mock
+
+        # The real production constant is ("https", "codeload.github.com"); the API
+        # hands back an http: URL to that host. Under the real constant this is refused
+        # for scheme before any request is made.
+        api = ApiServer(location="http://codeload.github.com/steal.tar.gz")
+        self.addCleanup(api.close)
+        codeload = CodeloadServer(body=self.tarball)
+        self.addCleanup(codeload.close)
+
+        with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
+             mock.patch.object(trusted_fetch.gh, "API", api.base):
+            with self.assertRaisesRegex(trusted_fetch.FetchDenied, "non-codeload host"):
+                trusted_fetch._fetch_tarball(
+                    self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+        # Nothing was extracted.
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_tarball_second_redirect_refused(self):
+        """A redirect from the redirect target (a second hop) is refused."""
+        from _tarball_redirect_fixture import ApiServer, CodeloadServer
+
+        api = ApiServer()
+        self.addCleanup(api.close)
+        codeload = CodeloadServer(redirect="http://127.0.0.1:1/again.tar.gz")
+        self.addCleanup(codeload.close)
+        api.location = f"{codeload.base}/acme-widgets-{self.head}.tar.gz"
+
+        p_api, p_code, p_const = self._patch_redirect(api, codeload)
+        with p_api, p_code, p_const:
+            with self.assertRaisesRegex(trusted_fetch.FetchDenied, "GitHub response unavailable"):
+                trusted_fetch._fetch_tarball(
+                    self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+        # The codeload hop was attempted exactly once, and no second hop was made.
+        self.assertEqual(len(codeload.recorder.requests), 1)
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_tarball_direct_200_still_works(self):
+        """No redirect at all (200 direct) still returns the bounded body."""
+        from _tarball_redirect_fixture import ApiServer, CodeloadServer
+        from unittest import mock
+
+        api = ApiServer(direct=self.tarball)
+        self.addCleanup(api.close)
+        codeload = CodeloadServer()   # never contacted
+        self.addCleanup(codeload.close)
+
+        with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
+             mock.patch.object(trusted_fetch.gh, "API", api.base):
+            archive = trusted_fetch._fetch_tarball(
+                self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+        self.assertEqual(archive, self.tarball)
+        self.assertEqual(codeload.recorder.requests, [])
 
 if __name__ == "__main__":
     unittest.main()

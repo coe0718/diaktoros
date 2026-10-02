@@ -44,6 +44,24 @@ from worker_wait import wait_for_workers  # noqa: E402
 HEAD = 'a' * 40
 REPO = 'acme/widgets'
 
+
+def tarball(blobs: dict) -> bytes:
+    """A GitHub-shaped tarball of the world's blobs: every member under ``{prefix}/``.
+
+    ``blobs`` maps ``name -> (oid, raw)``; the content is written verbatim so
+    ``trusted_fetch._extract`` verifies each blob's SHA against the tree.
+    """
+    import io
+    import tarfile
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode='w') as tar:
+        for name, (_oid, raw) in blobs.items():
+            info = tarfile.TarInfo(f'{REPO.replace("/", "-")}-{HEAD[:7]}/{name}')
+            info.size = len(raw)
+            info.mode = 0o644
+            tar.addfile(info, io.BytesIO(raw))
+    return buffer.getvalue()
+
 # The only seam: present solely in the disposable plugin copy the worker imports.
 SITECUSTOMIZE = r'''
 import errno, http.client, json, os, subprocess, sys
@@ -171,6 +189,9 @@ class World(http.server.BaseHTTPRequestHandler):
             oid = path.rsplit('/', 1)[-1]
             raw = next((raw for blob, raw in world['blobs'].values() if blob == oid), None)
             self._send(200 if raw is not None else 404, raw if raw is not None else b'')
+        elif path.startswith(base + '/tarball/'):
+            # #66: the whole head as one tarball (GitHub's {owner}-{repo}-{sha}/ prefix).
+            self._send(200, tarball(world['blobs']), 'application/x-gzip')
         elif path.endswith('/comments') or path.endswith('/commits') or path.endswith('/timeline'):
             self._send(200, [])
         else:
