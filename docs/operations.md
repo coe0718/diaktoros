@@ -93,6 +93,7 @@ registry is visible, but crash durability is unconfirmed; do not assume the oper
 hermes review-loop list                 # what is configured
 hermes review-loop status --loop name   # seats, profiles, routes, live runs, queue, breaches
 hermes review-loop explain --loop name --pr 123   # why that PR is not moving, and what is next
+hermes review-loop trace --loop name --delivery <id> --admin-token LOGIN   # dry-run one webhook through its gate
 hermes review-loop doctor --loop name   # preflight the install: profiles, seat models, tokens, routes, hooks, cron
 hermes review-loop models --seat reviewer --loop name   # what that seat's profile's provider offers (read-only)
 hermes review-loop settings             # the plugin-level defaults, and where each came from
@@ -733,6 +734,31 @@ Remove them wherever the gateway gets its environment: the systemd unit's `Envir
 shell profile, or the launching terminal. `REVIEW_LOOP_TEST_REAL_HOME`, `REVIEW_LOOP_TEST_USER_HOME`,
 `REVIEW_LOOP_TEST_SHIM_DIR` and `REVIEW_LOOP_TEST_FAKE_HERMES` are test-only too. None of them is
 ever needed by a real loop.
+
+## Why did that delivery start nothing? `trace`
+
+A gate that declines an event answers the gateway `[SILENT]` and exits 0, and Hermes logs nothing
+for that (#209). GitHub's webhook page then shows `200 {"status": "ignored", "reason": "script"}`
+for every delivery, the one that queued a run and the one that was refused alike. `trace` answers
+for one delivery:
+
+```bash
+hermes review-loop trace --loop name --delivery 40ac7f60-be4a-11f1-8969-4f6489738e63 --admin-token LOGIN
+hermes review-loop trace --loop name --payload saved.json --event pull_request
+```
+
+`--delivery` takes the numeric id or the `X-GitHub-Delivery` GUID from the hook's *Recent
+Deliveries* page. Reading deliveries needs a token with hook read access (`--admin-token`, the hook
+admin). `--payload` traces a saved payload instead.
+
+It runs the **real** gate script on the payload, in a child whose Hermes home is a temporary copy of
+this loop's: its config, state and a snapshot of the run ledger. The gate's own decisions are
+therefore exactly the live gate's. Anything that would leave the machine is listed instead of done:
+GitHub writes, gateway route POSTs, observer notices, and the drain or isolated worker it would
+start. GitHub reads are real, so the gate judges the PR as it is now. The output shows the
+delivery's facts, everything the gate logged, each `would …`, and one `outcome:` line:
+`would start a reviewer run`, `held — <why>`, or `declined — <why>`. The loop's real state is
+untouched, and the copy is deleted afterwards.
 
 ## When a gate crashes or runs out of time
 
