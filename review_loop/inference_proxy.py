@@ -410,7 +410,14 @@ class InferenceCapability:
                 not 1 <= quota <= MAX_CALLS):
             raise ValueError('invalid key, model or quota')
         self.contract = contract
-        self.endpoint = _NoRedirectConnection(upstream, contract.upstream_suffix)
+        self.process_backend = getattr(credential, 'backend', '') == 'directsdk'
+        if self.process_backend:
+            from .directsdk_backend import DirectSDKBackend, UPSTREAM
+            if upstream != UPSTREAM or api_mode != 'chat_completions':
+                raise ValueError('invalid DirectSDK destination or contract')
+            self.endpoint = DirectSDKBackend(credential.profile, credential.settings)
+        else:
+            self.endpoint = _NoRedirectConnection(upstream, contract.upstream_suffix)
         self.codex_backend = contract.mode == 'codex_responses' and is_codex_backend(upstream)
         self.credential = credential
         self.model = model
@@ -442,6 +449,8 @@ class InferenceCapability:
 
     def forward(self, body: bytes, sandbox_headers):
         """Send one policy-checked body upstream; refresh and retry once on a 401."""
+        if self.process_backend:
+            return self.endpoint.post(body, {})
         credential = self.credential.current()
         status, content_type, data = self.endpoint.post(body, self._headers(credential, sandbox_headers))
         if status == 401 and getattr(self.credential, 'refreshable', False):
@@ -500,6 +509,8 @@ class InferenceCapability:
                     _close(data)
                     self.send_error(502)
                     return
+                if hasattr(data, "set_peer"):
+                    data.set_peer(self.connection)
                 _relay(self, status, content_type, data)
 
             def do_GET(self):
@@ -515,6 +526,8 @@ class InferenceCapability:
         return self
 
     def __exit__(self, *_):
+        if self.process_backend:
+            self.endpoint.close()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()

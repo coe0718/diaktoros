@@ -11,6 +11,9 @@ sandbox has no host home and no credentials), so the **host** resolves it, right
   ``custom_providers``. It runs in a **separate process per seat**, with an environment built from
   scratch (no inherited provider variables), so one seat's credential can never satisfy another
   seat's resolution. The key comes back over a pipe and lives only in the host inference proxy.
+* the DirectSDK experimental provider is a host-only process backend: its installed Python
+  client owns native CLI login and tool projection; the sandbox uses the ordinary bounded
+  chat-completions socket and dummy credential. No native auth file is copied.
 * the result must be one of the inference proxy's wire contracts — ``chat_completions``,
   ``codex_responses`` or ``anthropic_messages`` (see ``inference_proxy.CONTRACTS``) — over HTTPS
   with a non-empty credential. API-key providers and the OAuth/subscription providers Hermes
@@ -374,11 +377,14 @@ class SeatInference:
 
     @property
     def auth_label(self) -> str:
+        if self.auth == "external_process":
+            return "native host process"
         return "OAuth (host-refreshed)" if self.auth == "oauth" else "API key"
 
     def identity(self) -> tuple:
         """Distinct (provider, model, endpoint, credential) — for once-per-resolution checks."""
         return (self.provider, self.model, self.upstream,
+                self.profile if self.auth == "external_process" else
                 hashlib.sha256(self.key.encode()).hexdigest())
 
     def describe(self) -> str:
@@ -396,6 +402,9 @@ class SeatInference:
     def credential_provider(self):
         """What the turn's proxy authenticates with: a static key, or a host-refreshed token."""
         from .inference_proxy import RefreshingCredential, StaticCredential
+        if self.auth == "external_process":
+            from .directsdk_backend import ProcessCredential
+            return ProcessCredential(self.profile, self.settings)
         if not self.refreshable or self.origin != "profile":
             return StaticCredential(self.credential())
         return RefreshingCredential(self.credential(), self._refresh)
@@ -791,13 +800,15 @@ try:
     from hermes_cli.auth import PROVIDER_REGISTRY
     entry = PROVIDER_REGISTRY.get(requested)
     auth_type = str(getattr(entry, "auth_type", "api_key")) if entry is not None else "api_key"
-    if auth_type != "api_key" and requested not in oauth_providers and requested not in anthropic_aliases:
+    if auth_type != "api_key" and requested not in oauth_providers and requested not in anthropic_aliases and requested != "claude-subscription-directsdk-experimental":
         refuse("provider " + requested + " authenticates by " + auth_type +
                ", which the inference proxy cannot refresh")
 except ImportError:
     pass
 
 def resolve():
+    if requested == "claude-subscription-directsdk-experimental":
+        os.environ["PATH"] = "/usr/local/bin:/usr/bin:/bin:" + os.path.join(os.environ["HOME"], ".local/bin")
     runtime = rp.resolve_runtime_provider()
     key = runtime.get("api_key")
     return runtime, key() if callable(key) else key, callable(key)
@@ -811,6 +822,13 @@ provider = str(runtime.get("provider") or "")
 if api_mode not in modes:
     refuse("provider " + (provider or requested) + " resolves to api_mode " + (api_mode or "?") +
            ", which the inference proxy cannot speak")
+
+if requested == "claude-subscription-directsdk-experimental":
+    if (provider != requested or api_mode != "chat_completions" or
+            runtime.get("base_url") != "process://" + requested or runtime.get("args")):
+        refuse("DirectSDK runtime has an unsupported process contract")
+    done(model=model, requested=requested, provider=provider, api_mode=api_mode,
+         base_url="process://" + requested, key="host-process", auth="external_process")
 
 if mode == "refresh" and stale and digest(key) == stale:
     # The host saw this very token rejected (or expiring): make Hermes rotate it, under Hermes's
@@ -1094,6 +1112,13 @@ def resolve_profile(profile: str, seat: str, settings: dict | None, *,
                              "which the inference proxy cannot forward — " + fixes["unsupported"])
     if not model:
         raise SeatModelError(f"{where}: no model.default set — `hermes -p {profile} model`")
+    if answer.get("auth") == "external_process":
+        from .directsdk_backend import PROVIDER, UPSTREAM
+        if requested != PROVIDER or provider != PROVIDER or api_mode != "chat_completions" or answer.get("base_url") != UPSTREAM:
+            raise SeatModelError(f"{where}: unsupported process backend")
+        return SeatInference(seat, profile, "profile", PROVIDER, model, UPSTREAM,
+                             "host-process", api_mode=api_mode, auth="external_process",
+                             client_identity="directsdk", settings=settings)
     if not key or "\n" in key or "\r" in key:
         raise SeatModelError(f"{where} ({requested}): resolved without a usable credential — "
                              f"{fixes['credential']}")
@@ -1137,6 +1162,8 @@ def resolve_seat(loop: dict, seat: str, settings: dict, *, resolver=None) -> Sea
 
 def expected_wire(requested: str, api_mode: str = "") -> tuple[str, str]:
     """``(api_mode, auth label)`` a provider is expected to resolve to — no credential lookup."""
+    if requested == "claude-subscription-directsdk-experimental":
+        return "chat_completions", "native host process (login checked by selftest)"
     if requested in OAUTH_PROVIDERS:
         return OAUTH_PROVIDERS[requested], "OAuth (host-refreshed)"
     if requested in ANTHROPIC_ALIASES:
