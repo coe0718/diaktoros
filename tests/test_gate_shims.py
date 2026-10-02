@@ -1839,7 +1839,7 @@ class CronJobRemedies(Base):
     job already exists; create only appends, so the broken job kept answering beside a duplicate.
     Each state's printed remedy, applied, must leave exactly one healthy watchdog job."""
 
-    NAME = "review loop watchdog (widgets)"
+    NAME = "review loop watchdog"  # the shared job name (#60): one job sweeps every loop
     BROKEN = {
         "completed": lambda j: j.update(state="completed", enabled=False),
         "paused": lambda j: j.update(state="paused", enabled=False,

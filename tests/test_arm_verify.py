@@ -618,7 +618,7 @@ class ScheduleFailureTests(unittest.TestCase):
         command = lines[1].split("run it yourself: ", 1)[1]
         self.assertEqual(shlex.split(command)[:6],
                          [str(self.hermes), "cron", "create", "15m", "--name",
-                          "review loop watchdog (widgets)"])
+                          "review loop watchdog"])
         subprocess.run(["bash", "-n", "-c", command], check=True)
 
     def test_init_exits_nonzero_when_the_job_was_not_created(self):
