@@ -27,6 +27,11 @@ _MAX_METADATA_RESPONSE = 256 * 1024
 _MAX_PATH_BYTES = 4096
 _CHUNK = 64 * 1024
 
+# The tarball endpoint 302-redirects to codeload.github.com, whose URL already carries a
+# short-lived token, so the reader's PAT must NOT travel there. The redirect target must be
+# exactly this origin; a test points it at loopback to run the real urllib path.
+_TARBALL_REDIRECT = ("https", "codeload.github.com")
+
 
 class FetchDenied(Exception):
     """The requested head cannot safely be staged."""
@@ -174,18 +179,20 @@ def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) ->
     """One GitHub call for the whole head: the commit's tarball, bounded by ``limit``.
 
     This replaces the old one-GET-per-blob export (≈1,660 calls for attest, against the read
-    token's 5,000/h budget). The credential stays host-side; GitHub's tarball endpoint
-    302-redirects to codeload.github.com. We follow exactly one redirect, only to
-    https://codeload.github.com/, and drop the Authorization header on the redirect
-    (codeload authenticates via the token in the URL). Nothing credentialed reaches the export.
+    token's 5,000/h budget). The credential stays host-side on the first request; GitHub's
+    tarball endpoint answers 302 to codeload.github.com, and urllib delivers a declined
+    redirect as an ``HTTPError`` (never as a 302 response). We take exactly one hop, only
+    to ``_TARBALL_REDIRECT``, and drop ``Authorization`` on it (codeload authenticates by the
+    token in its URL). Nothing credentialed reaches the export.
     """
     from .config import guard_network
     guard_network(f"{gh.API}/repos/{repo}/tarball/{head}")
 
-    # First request: to api.github.com with Authorization; do NOT follow redirects automatically.
+    # First request: to the API with Authorization; do NOT follow redirects automatically.
+    # A declined redirect is raised by urllib as HTTPError, caught below.
     class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
-            return None  # don't follow redirects
+            return None
 
     opener = urllib.request.build_opener(_NoRedirectHandler)
     try:
@@ -196,32 +203,58 @@ def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) ->
                      "X-GitHub-Api-Version": "2022-11-28",
                      "User-Agent": "hermes-review-loop"})
         with opener.open(req, timeout=30) as response:
-            status = response.status
-            location = response.headers.get("Location")
-            if status == 200:
-                # Direct response (no redirect) - read body
-                return _read_bounded(response, limit)
-            elif status == 302 and location:
-                # Redirect to codeload.github.com - verify and follow once without Authorization
-                parsed = urllib.parse.urlparse(location)
-                if parsed.scheme != "https" or parsed.hostname != "codeload.github.com":
-                    raise FetchDenied(f"tarball redirect to non-codeload host: {location}")
-                # Second request: to codeload WITHOUT Authorization; do NOT follow further redirects
-                class _NoRedirectHandler2(urllib.request.HTTPRedirectHandler):
-                    def redirect_request(self, req, fp, code, msg, headers, newurl):
-                        return None
-                opener2 = urllib.request.build_opener(_NoRedirectHandler2)
-                req2 = urllib.request.Request(
-                    location,
-                    headers={"Accept": "application/vnd.github+json",
-                             "X-GitHub-Api-Version": "2022-11-28",
-                             "User-Agent": "hermes-review-loop"})
-                with opener2.open(req2, timeout=30) as response2:
-                    if response2.status != 200:
-                        raise FetchDenied("GitHub response unavailable")
-                    return _read_bounded(response2, limit)
-            else:
+            if response.status != 200:
                 raise FetchDenied("GitHub response unavailable")
+            return _read_bounded(response, limit)
+    except urllib.error.HTTPError as exc:
+        # urllib raises here for a declined redirect; the error IS the open response.
+        if exc.code not in (301, 302, 303, 307, 308):
+            exc.close()
+            raise FetchDenied("GitHub response unavailable") from exc
+        location = exc.headers.get("Location")   # safe after close(): a property over .hdrs
+        exc.close()
+        if not location:
+            raise FetchDenied("GitHub response unavailable")
+        return _fetch_tarball_hop(location, limit)
+    except (OSError, ValueError, urllib.error.URLError, gh.GitHubError) as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()
+        raise FetchDenied("GitHub response unavailable") from exc
+
+
+def _fetch_tarball_hop(location: str, limit: int) -> bytes:
+    """Take the one allowed redirect hop: validate the target, then fetch it with no credential."""
+    from .config import guard_network
+    parsed = urllib.parse.urlparse(location)
+    allowed_scheme, allowed_host = _TARBALL_REDIRECT
+    if parsed.scheme != allowed_scheme or (parsed.hostname or "").lower() != allowed_host:
+        raise FetchDenied(f"tarball redirect to non-codeload host: {location}")
+    guard_network(location)   # the second URL is judged too, not only the first
+
+    # A second redirect is refused: this handler never follows one, so the hop lands or fails.
+    class _NoRedirectHandler2(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(_NoRedirectHandler2)
+    # No Authorization: codeload authenticates by the token already in the URL.
+    req = urllib.request.Request(
+        location,
+        headers={"Accept": "application/vnd.github+json",
+                 "X-GitHub-Api-Version": "2022-11-28",
+                 "User-Agent": "hermes-review-loop"})
+    try:
+        with opener.open(req, timeout=30) as response:
+            if response.status != 200:
+                raise FetchDenied("GitHub response unavailable")
+            return _read_bounded(response, limit)
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (301, 302, 303, 307, 308):
+            exc.close()
+            raise FetchDenied("GitHub response unavailable") from exc
+        # A redirect from the redirect target is a second hop: refused.
+        exc.close()
+        raise FetchDenied("GitHub response unavailable")
     except (OSError, ValueError, urllib.error.URLError, gh.GitHubError) as exc:
         if isinstance(exc, urllib.error.HTTPError):
             exc.close()

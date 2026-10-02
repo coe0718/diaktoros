@@ -143,6 +143,9 @@ class TrustedFetchTests(unittest.TestCase):
         self.tarball = self._tarball({"hello.txt": self.blob})
         self.kw = {"repo": "acme/widgets", "number": 7, "head": self.head,
                    "ref": "work", "role": "reviewer", "sandbox_root": self.root / "sandbox"}
+        from _tarball_redirect_fixture import CodeloadServer
+        self._codeload = CodeloadServer(body=self.tarball)
+        self.addCleanup(self._codeload.close)
 
     @staticmethod
     def _tarball(files: dict[str, bytes], *, prefix: str = "acme-widgets-aaaaaaa",
@@ -186,59 +189,20 @@ class TrustedFetchTests(unittest.TestCase):
         raise AssertionError(path)
 
     def stage(self, callback=None, **changes):
-        # Mock the HTTP layer for _fetch_tarball:
-        # 1. First request to api.github.com/repos/.../tarball/{head} returns 302 to codeload
-        # 2. Second request to codeload returns the tarball
+        # Run the tarball fetch through REAL loopback HTTP (two http.servers), so the
+        # HTTPError(302) path a real GitHub 302 takes actually executes. Metadata calls
+        # (/user, /pulls, /git/commits, /git/trees) stay on the mocked _request seam.
         import urllib.request
         from unittest import mock
-        import io
+        from _tarball_redirect_fixture import ApiServer
 
-        # Track calls to verify Authorization handling
-        fetch_calls = []
-
-        # Get tarball from callback if provided, else use default
-        tarball_bytes = self.tarball
-        # Note: tarball content is taken from self.tarball (set by test setUp or test method).
-        # The callback is only for _request API calls (/user, /pulls, /git/commits, /git/trees).
-
-        redirect_url = "https://codeload.github.com/acme/widgets/legacy.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        first_response = type("Resp", (), {
-            "status": 302,
-            "headers": {"Location": redirect_url},
-            "read": lambda self: b"",
-            "close": lambda self: None,
-            "__enter__": lambda self: self,
-            "__exit__": lambda *a: None,
-        })()
-        # Use BytesIO to simulate proper chunked reading
-        second_stream = io.BytesIO(tarball_bytes)
-        second_response = type("Resp", (), {
-            "status": 200,
-            "headers": {"Content-Length": str(len(tarball_bytes))},
-            "read": lambda self, n=-1: second_stream.read(n if n > 0 else -1),
-            "close": lambda self: None,
-            "__enter__": lambda self: self,
-            "__exit__": lambda *a: None,
-        })()
-
-        def fake_build_opener(*handlers):
-            class FakeOpener:
-                def open(self, req, timeout=30):
-                    fetch_calls.append(("opener", req.full_url, dict(req.headers)))
-                    # First opener call returns 302, second returns 200 with tarball
-                    if not hasattr(fake_build_opener, "call_count"):
-                        fake_build_opener.call_count = 0
-                    fake_build_opener.call_count += 1
-                    if fake_build_opener.call_count == 1:
-                        return first_response
-                    return second_response
-            return FakeOpener()
-
-        def fake_urlopen(req, timeout=30):
-            fetch_calls.append(("urlopen", req.full_url, dict(req.headers)))
-            return second_response
-
-        self._fetch_calls = fetch_calls
+        # The codeload stand-in serves self.tarball (created in setUp); the API stand-in
+        # 302s to it, exactly as GitHub's tarball endpoint does.
+        api = ApiServer(location=f"{self._codeload.base}/acme-widgets-{self.kw['head']}.tar.gz")
+        self.addCleanup(api.close)
+        # A test may replace self.tarball (corrupt blob, traversal, extra file, …); the
+        # codeload stand-in serves whatever self.tarball is at call time.
+        self._codeload.body = self.tarball
 
         # Also mock _request for the metadata API calls (/user, /pulls, /git/commits, /git/trees)
         def mock_request(loop, path, login, limit, accept):
@@ -248,10 +212,9 @@ class TrustedFetchTests(unittest.TestCase):
                     return result
             return self.response(loop, path, login, limit, accept)
 
-        with mock.patch.object(urllib.request, "build_opener", side_effect=fake_build_opener), \
-             mock.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen), \
-             mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
-             mock.patch.object(trusted_fetch.gh, "API", LOOPBACK_API), \
+        with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
+             mock.patch.object(trusted_fetch.gh, "API", api.base), \
+             mock.patch.object(trusted_fetch, "_TARBALL_REDIRECT", ("http", "127.0.0.1")), \
              mock.patch.object(trusted_fetch, "_request", side_effect=mock_request):
             result = trusted_fetch._stage(self.loop, **{**self.kw, **changes})
 
@@ -453,189 +416,131 @@ class TrustedFetchTests(unittest.TestCase):
         result = self.stage()
         self.assertEqual((result / "src" / "hello.txt").read_bytes(), self.blob)
 
-    # --- redirect behavior tests (PR #196 follow-up) ---
+    # --- redirect behavior tests: REAL loopback HTTP, real urllib (PR #196 follow-up) ---
+    #
+    # These run two loopback http.servers (API + codeload) so the path a real GitHub 302
+    # takes — an HTTPError raised by urllib — actually executes. The previous fake-opener
+    # tests mocked build_opener into returning {"status": 302, ...}, a shape real urllib
+    # never produces, which is exactly how the unreachable-branch bug slipped through.
+
+    def _patch_redirect(self, api, codeload):
+        """Point gh.API at the loopback API and _TARBALL_REDIRECT at the loopback codeload."""
+        from unittest import mock
+        from review_loop import gh
+        return (
+            mock.patch.object(gh, "token", return_value="dummy-token"),
+            mock.patch.object(gh, "API", api.base),
+            mock.patch.object(trusted_fetch, "_TARBALL_REDIRECT", ("http", "127.0.0.1")),
+        )
 
     def test_tarball_redirect_to_codeload_drops_authorization(self):
-        """The tarball endpoint 302s to codeload.github.com; Authorization must not leak there."""
-        import urllib.request
-        from unittest import mock
-        import io
-        from review_loop import gh
+        """The API 302s to codeload; the archive arrives and Authorization is NOT on the hop."""
+        from _tarball_redirect_fixture import ApiServer, CodeloadServer
 
-        loop = self.loop
-        tarball_bytes = self.tarball
+        api = ApiServer()          # location filled in below (needs codeload's port)
+        codeload = CodeloadServer(body=self.tarball)
+        self.addCleanup(api.close)
+        self.addCleanup(codeload.close)
+        api.location = f"{codeload.base}/acme-widgets-{self.head}.tar.gz"
 
-        # First response: 302 to codeload (https, not http)
-        redirect_url = "https://codeload.github.com/acme/widgets/legacy.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        first_response = type("Resp", (), {
-            "status": 302,
-            "headers": {"Location": redirect_url},
-            "read": lambda self: b"",
-            "close": lambda self: None,
-            "__enter__": lambda self: self,
-            "__exit__": lambda *a: None,
-        })()
-        # Second response: tarball content from codeload
-        second_stream = io.BytesIO(tarball_bytes)
-        second_response = type("Resp", (), {
-            "status": 200,
-            "headers": {"Content-Length": str(len(tarball_bytes))},
-            "read": lambda self, n=-1: second_stream.read(n if n > 0 else -1),
-            "close": lambda self: None,
-            "__enter__": lambda self: self,
-            "__exit__": lambda *a: None,
-        })()
+        p_api, p_code, p_const = self._patch_redirect(api, codeload)
+        with p_api, p_code, p_const:
+            archive = trusted_fetch._fetch_tarball(
+                self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
 
-        fetch_calls = []
-        build_opener_count = [0]
-
-        def fake_build_opener(*handlers):
-            build_opener_count[0] += 1
-            class FakeOpener:
-                def open(self, req, timeout=30):
-                    fetch_calls.append(("opener", req.full_url, dict(req.headers)))
-                    # First build_opener call (first request) returns 302
-                    # Second build_opener call (second request) returns 200 with tarball
-                    if build_opener_count[0] == 1:
-                        return first_response
-                    return second_response
-            return FakeOpener()
-
-        def fake_urlopen(req, timeout=30):
-            fetch_calls.append(("urlopen", req.full_url, dict(req.headers)))
-            raise AssertionError("urlopen should not be called directly")
-
-        with mock.patch.object(urllib.request, "build_opener", side_effect=fake_build_opener), \
-             mock.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen), \
-             mock.patch.object(gh, "token", return_value="dummy-token"), \
-             mock.patch.object(gh, "API", LOOPBACK_API):
-            archive = trusted_fetch._fetch_tarball(loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
-
-        self.assertEqual(archive, tarball_bytes)
-        # Verify Authorization was on first request but not on redirect
-        opener_calls = [c for c in fetch_calls if c[0] == "opener"]
-        self.assertEqual(len(opener_calls), 2)  # Two build_opener calls
-        self.assertIn("Authorization", opener_calls[0][2])
-        self.assertNotIn("Authorization", opener_calls[1][2])
+        self.assertEqual(archive, self.tarball)
+        # The API hop carried the reader's credential…
+        self.assertEqual(len(api.recorder.requests), 1)
+        api_headers = api.recorder.requests[0][1]
+        self.assertIn("Authorization", api_headers)
+        self.assertEqual(api_headers["Authorization"], "Bearer dummy-token")
+        # …the codeload hop did NOT.
+        self.assertEqual(len(codeload.recorder.requests), 1)
+        self.assertNotIn("Authorization", codeload.recorder.requests[0][1])
 
     def test_tarball_redirect_to_non_codeload_refused(self):
-        """A redirect to anything other than codeload.github.com is refused."""
-        import urllib.request
+        """A redirect to a host other than the allowed codeload origin is refused."""
+        from _tarball_redirect_fixture import ApiServer, CodeloadServer
         from unittest import mock
-        from review_loop import gh
 
-        loop = self.loop
-        redirect_url = "https://evil.example.com/steal.tar.gz"  # https but wrong host
-        first_response = type("Resp", (), {
-            "status": 302,
-            "headers": {"Location": redirect_url},
-            "read": lambda self: b"",
-            "close": lambda self: None,
-            "__enter__": lambda self: self,
-            "__exit__": lambda *a: None,
-        })()
+        # The allowed origin is 127.0.0.1; the API redirects to a DIFFERENT loopback
+        # host, 127.0.0.2. Distinct IPs so the host check has something to catch —
+        # a single 127.0.0.1 stand-in would match the allowed origin and pass.
+        allowed = CodeloadServer(body=self.tarball, host="127.0.0.1")   # never contacted
+        self.addCleanup(allowed.close)
+        other = CodeloadServer(body=b"stolen", host="127.0.0.2")        # the disallowed target
+        self.addCleanup(other.close)
+        api = ApiServer(location=f"{other.base}/steal.tar.gz")
+        self.addCleanup(api.close)
 
-        def fake_build_opener(*handlers):
-            class FakeOpener:
-                def open(self, req, timeout=30):
-                    return first_response
-            return FakeOpener()
-
-        def fake_urlopen(req, timeout=30):
-            raise AssertionError("should not follow redirect")
-
-        with mock.patch.object(urllib.request, "build_opener", side_effect=fake_build_opener), \
-             mock.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen), \
-             mock.patch.object(gh, "token", return_value="dummy-token"), \
-             mock.patch.object(gh, "API", LOOPBACK_API):
+        with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
+             mock.patch.object(trusted_fetch.gh, "API", api.base), \
+             mock.patch.object(trusted_fetch, "_TARBALL_REDIRECT", ("http", "127.0.0.1")):
             with self.assertRaisesRegex(trusted_fetch.FetchDenied, "non-codeload host"):
-                trusted_fetch._fetch_tarball(loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+                trusted_fetch._fetch_tarball(
+                    self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+        # Neither server was contacted, and nothing was extracted.
+        self.assertEqual(allowed.recorder.requests, [])
+        self.assertEqual(other.recorder.requests, [])
+        self.assertFalse((self.root / "sandbox").exists())
 
-    def test_tarball_multiple_redirects_refused(self):
-        """More than one redirect is refused (loop protection)."""
-        import urllib.request
-        from unittest import mock
-        from review_loop import gh
-
-        loop = self.loop
-        first_redirect = "https://codeload.github.com/acme/widgets/legacy.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        second_redirect = "https://codeload.github.com/another.tar.gz"
-        first_response = type("Resp", (), {
-            "status": 302,
-            "headers": {"Location": first_redirect},
-            "read": lambda self: b"",
-            "close": lambda self: None,
-            "__enter__": lambda self: self,
-            "__exit__": lambda *a: None,
-        })()
-        # Second request returns another redirect (which the no-redirect handler will not follow)
-        second_response = type("Resp", (), {
-            "status": 302,
-            "headers": {"Location": second_redirect},
-            "read": lambda self: b"",
-            "close": lambda self: None,
-            "__enter__": lambda self: self,
-            "__exit__": lambda *a: None,
-        })()
-
-        build_opener_count = [0]
-
-        def fake_build_opener(*handlers):
-            build_opener_count[0] += 1
-            class FakeOpener:
-                def open(self, req, timeout=30):
-                    # First build_opener call (first request) returns 302
-                    # Second build_opener call (second request) returns another 302
-                    if build_opener_count[0] == 1:
-                        return first_response
-                    return second_response
-            return FakeOpener()
-
-        def fake_urlopen(req, timeout=30):
-            raise AssertionError("urlopen should not be called directly")
-
-        with mock.patch.object(urllib.request, "build_opener", side_effect=fake_build_opener), \
-             mock.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen), \
-             mock.patch.object(gh, "token", return_value="dummy-token"), \
-             mock.patch.object(gh, "API", LOOPBACK_API):
-            # The second request returns a 302 which the no-redirect handler doesn't follow,
-            # so we get a non-200 status -> "GitHub response unavailable"
-            with self.assertRaisesRegex(trusted_fetch.FetchDenied, "GitHub response unavailable"):
-                trusted_fetch._fetch_tarball(loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
 
     def test_tarball_http_redirect_refused(self):
-        """A non-HTTPS redirect target is refused."""
-        import urllib.request
+        """With the real constant in play, an http: redirect target is refused."""
+        from _tarball_redirect_fixture import ApiServer, CodeloadServer
         from unittest import mock
-        from review_loop import gh
 
-        loop = self.loop
-        redirect_url = "http://codeload.github.com/steal.tar.gz"  # http, not https
-        first_response = type("Resp", (), {
-            "status": 302,
-            "headers": {"Location": redirect_url},
-            "read": lambda self: b"",
-            "close": lambda self: None,
-            "__enter__": lambda self: self,
-            "__exit__": lambda *a: None,
-        })()
+        # The real production constant is ("https", "codeload.github.com"); the API
+        # hands back an http: URL to that host. Under the real constant this is refused
+        # for scheme before any request is made.
+        api = ApiServer(location="http://codeload.github.com/steal.tar.gz")
+        self.addCleanup(api.close)
+        codeload = CodeloadServer(body=self.tarball)
+        self.addCleanup(codeload.close)
 
-        def fake_build_opener(*handlers):
-            class FakeOpener:
-                def open(self, req, timeout=30):
-                    return first_response
-            return FakeOpener()
-
-        def fake_urlopen(req, timeout=30):
-            raise AssertionError("should not follow redirect")
-
-        with mock.patch.object(urllib.request, "build_opener", side_effect=fake_build_opener), \
-             mock.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen), \
-             mock.patch.object(gh, "token", return_value="dummy-token"), \
-             mock.patch.object(gh, "API", LOOPBACK_API):
+        with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
+             mock.patch.object(trusted_fetch.gh, "API", api.base):
             with self.assertRaisesRegex(trusted_fetch.FetchDenied, "non-codeload host"):
-                trusted_fetch._fetch_tarball(loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+                trusted_fetch._fetch_tarball(
+                    self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+        # Nothing was extracted.
+        self.assertFalse((self.root / "sandbox").exists())
 
+    def test_tarball_second_redirect_refused(self):
+        """A redirect from the redirect target (a second hop) is refused."""
+        from _tarball_redirect_fixture import ApiServer, CodeloadServer
+
+        api = ApiServer()
+        self.addCleanup(api.close)
+        codeload = CodeloadServer(redirect="http://127.0.0.1:1/again.tar.gz")
+        self.addCleanup(codeload.close)
+        api.location = f"{codeload.base}/acme-widgets-{self.head}.tar.gz"
+
+        p_api, p_code, p_const = self._patch_redirect(api, codeload)
+        with p_api, p_code, p_const:
+            with self.assertRaisesRegex(trusted_fetch.FetchDenied, "GitHub response unavailable"):
+                trusted_fetch._fetch_tarball(
+                    self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+        # The codeload hop was attempted exactly once, and no second hop was made.
+        self.assertEqual(len(codeload.recorder.requests), 1)
+        self.assertFalse((self.root / "sandbox").exists())
+
+    def test_tarball_direct_200_still_works(self):
+        """No redirect at all (200 direct) still returns the bounded body."""
+        from _tarball_redirect_fixture import ApiServer, CodeloadServer
+        from unittest import mock
+
+        api = ApiServer(direct=self.tarball)
+        self.addCleanup(api.close)
+        codeload = CodeloadServer()   # never contacted
+        self.addCleanup(codeload.close)
+
+        with mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
+             mock.patch.object(trusted_fetch.gh, "API", api.base):
+            archive = trusted_fetch._fetch_tarball(
+                self.loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+        self.assertEqual(archive, self.tarball)
+        self.assertEqual(codeload.recorder.requests, [])
 
 if __name__ == "__main__":
     unittest.main()
