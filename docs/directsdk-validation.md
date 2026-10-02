@@ -1,5 +1,11 @@
 # DirectSDK backend validation and remaining scope
 
+**Current status:** text, streaming, a synthetic no-write sandbox reviewer turn, native
+history/tool-result replay and observed helper/native-child cancellation passed live.
+The receipts below are chronological; early failed/unverified statuses are superseded by
+the follow-up sections. The full offline suite still has the independently reproduced
+base leakguard fixture failure. Real GitHub/route/fixer/adjudicator operation is not claimed.
+
 Implementation base: `28e7eb5f4ac3494d4b26d12188669e68f99127fd`.
 Read-only upstream Hermes source inspected: `a7c2df3846f7d6040dd81b7573bd962da546222e`.
 Installed experimental DirectSDK source inspected: `ef73726cfaf2fa0ee041e55572f406e2c24fed83`.
@@ -77,6 +83,43 @@ repository context, and performed no repository writes or external posts. The te
 host tracer was not installed into production. These receipts supersede the earlier
 unverified text/streaming status; no live sandbox role turn, native tool-result round trip,
 carrier replay on a subsequent request, or forced native descendant cancellation was tested.
+
+## Live sandbox, replay and cancellation verification
+
+The separately authorized six-call integration budget used **five host inference calls**:
+
+- Production `trusted_turn.run_turn` launched real Hermes in bubblewrap against a disposable
+  synthetic repository, with the actual host DirectSDK client and native subscription.
+  It exited **0** and submitted **one authorized APPROVE verdict** to the production broker's
+  host-only `no_write` mode. The verdict contained the exact token read from the fixture file.
+- **Two requests replayed sandbox tool results** to the native client. The captured host request
+  shapes contained both the exact native assistant carrier and the fixture token in tool output.
+  This verifies a real sandbox file read, native history/tool-result replay and subsequent
+  verdict—not just an SDK-shaped fake response.
+- A separate live streaming request was cancelled only after observing a native child process.
+  **Two owned processes were observed** (helper and native child); after cancellation,
+  **zero remained live**, helper exit code was **1**, and cleanup took **0.086 seconds**.
+  PID start times were checked to avoid PID-reuse false positives. This is cancellation, not
+  normal completion. The probe makes no claim to have separately exercised every possible
+  late-spawned native grandchild shape.
+- **Zero GitHub writes**. All GitHub reads were an explicit synthetic fixture; unexpected
+  endpoints or any write method failed. No real PR authorization or live webhook/worker
+  dispatch was claimed. Fixture/export/work paths were disposable, with no real repository
+  contents or host credentials delivered to the model/sandbox.
+
+The host fixture enforced a shared cap of six calls across main/auxiliary requests and the
+cancellation probe, reduced output ceilings to 512 tokens, used a 180-second sandbox turn
+budget, and stopped with five calls. It kept production snapshot, containment, broker,
+inference socket, inert wire profile and installed native-client implementations unchanged;
+only repository/GitHub fixtures and stricter inference test limits were supplied.
+
+Local receipts: `/home/jeremy/.hermes/cache/scratch/directsdk-integration-receipt.json` and
+`/home/jeremy/.hermes/cache/scratch/directsdk-live-integration.log`.
+Opt-in fixture runner: `/home/jeremy/.hermes/cache/scratch/directsdk-live-integration.py`.
+Those files are host-local probes, not installed runtime/config changes.
+
+Still outside scope: real GitHub identity/ref authorization, live route-to-worker delivery,
+fixer publishing, adjudicator ruling, and native cancellation under every descendant race.
 
 ## Security maintenance notes
 
