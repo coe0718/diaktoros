@@ -14,7 +14,7 @@ from review_loop import directsdk_guard as guard
 
 class LaunchTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=os.environ['TMPDIR'])
+        self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.plugin = self.root / 'plugin'

@@ -43,7 +43,7 @@ class Stream:
 
 class NativeHostTests(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(dir=os.environ['TMPDIR'])
+        temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.home = self.root / 'home'

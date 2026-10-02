@@ -56,7 +56,7 @@ def post(cap, body, headers=None, path='/v1/chat/completions'):
 
 class HostCapabilityTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory(dir=os.environ['TMPDIR'])
+        tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         self.endpoints = []
