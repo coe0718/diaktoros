@@ -17,7 +17,7 @@ concurrency:
 env:
   # Bump deliberately with the Hermes version the loop runs on: `plugin-guard` scans the plugin with
   # this Hermes, and `installed-mode` runs the suite with it on the interpreter.
-  HERMES_PINNED: a7c2df3846f71a2c5a5d0f1e8d9a8b1c2d3e4f5a6
+  HERMES_PINNED: be5e9f72c6681af9dfb75bf480f08844f1499949
 
 jobs:
   tests:
