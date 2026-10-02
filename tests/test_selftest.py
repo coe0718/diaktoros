@@ -560,5 +560,21 @@ class RegistrationTests(unittest.TestCase):
             parser.parse_args(["selftest"])  # --loop is required
 
 
+
+class ProbeAnswer(unittest.TestCase):
+    def test_a_codex_stream_labelled_json_is_still_an_answer(self):
+        from review_loop import selftest as st
+        events = [{'type': 'response.output_text.delta', 'delta': 'OK'},
+                  {'type': 'response.completed', 'response': {'status': 'completed'}}]
+        stream = ''.join('event: ' + e['type'] + '\ndata: ' + json.dumps(e) + '\n\n'
+                         for e in events).encode()
+        for label in ('application/json', '', 'text/event-stream'):
+            with self.subTest(label=label):
+                self.assertEqual(st.probe_answer('codex_responses', label, stream), 'OK')
+        # Plain JSON is still read as JSON, and junk is still not an answer.
+        body = json.dumps({'output': [{'type': 'message', 'content': [{'text': 'OK'}]}]}).encode()
+        self.assertEqual(st.probe_answer('codex_responses', 'application/json', body), 'OK')
+        self.assertIsNone(st.probe_answer('codex_responses', 'application/json', b'<html>'))
+
 if __name__ == "__main__":
     unittest.main()

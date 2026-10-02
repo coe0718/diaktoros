@@ -607,7 +607,10 @@ def probe_body(api_mode: str, client_identity: str = "") -> bytes:
 def probe_answer(api_mode: str, content_type: str, data: bytes) -> str | None:
     """The reply text of a probe answer in ``api_mode``'s shape, or ``None`` if it is not one."""
     try:
-        if content_type.startswith("text/event-stream"):
+        # Judged by the body as well as the label: the proxy relays an event stream an upstream
+        # labelled JSON as a stream now, but a probe should not depend on that.
+        if (content_type.startswith("text/event-stream")
+                or data.lstrip().startswith((b"event:", b"data:", b":"))):
             text, done = [], False
             for line in data.decode("utf-8", "replace").splitlines():
                 if not line.startswith("data:") or line[5:].strip() in ("", "[DONE]"):

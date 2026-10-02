@@ -322,11 +322,29 @@ class _NoRedirectConnection:
         except BaseException:
             conn.close()
             raise
-        content_type = response.getheader('Content-Type', 'application/json')
+        content_type = response.getheader('Content-Type')
+        first = b''
+        if content_type is None or content_type.startswith('application/json'):
+            # The body decides, not the label: an event stream sent unlabelled or labelled JSON
+            # (as chatgpt.com's Codex backend was seen to) is still a stream, and buffering it as
+            # one JSON body would hand the client something no JSON parser accepts.
+            try:
+                first = _leading(response)
+            except BaseException:
+                conn.close()
+                raise
+            if first.lstrip().startswith(_SSE_STARTS):
+                content_type = 'text/event-stream'
+            elif content_type is None:
+                content_type = 'application/json'
 
         def chunks():
-            total = 0
+            total = len(first)
             try:
+                if total > MAX_RESPONSE:
+                    raise ProxyError('upstream response too large')
+                if first:
+                    yield first
                 while True:
                     data = response.read1(65536)
                     if not data:
@@ -338,6 +356,22 @@ class _NoRedirectConnection:
             finally:
                 conn.close()
         return response.status, content_type, chunks()
+
+
+# How an event stream's first line starts (a field, or a ``:`` comment). No JSON text starts so.
+_SSE_STARTS = (b'event:', b'data:', b'id:', b'retry:', b':')
+
+
+def _leading(response, limit: int = 4096) -> bytes:
+    """The body's first bytes, read until something other than whitespace (or EOF, or ``limit``)
+    arrived, so the shape can be judged from them; the caller relays them first."""
+    head = b''
+    while len(head) < limit and not head.strip():
+        data = response.read1(limit - len(head))
+        if not data:
+            break
+        head += data
+    return head
 
 
 def _chunks(data):
