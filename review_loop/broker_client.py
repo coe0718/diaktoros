@@ -28,6 +28,7 @@ import socket
 import stat
 
 SOCKET = '/run/review-loop/broker/broker.sock'
+TRIAGE_COMMENT_MAX = 1000          # run_supervisor.TRIAGE_COMMENT_MAX; this file runs standalone
 MAX_FRAME = 196 * 1024
 # A push or review is several GitHub calls plus git fetch/push (each up to 90s), all
 # host-side. Wait for the answer instead of timing out mid-write; the turn deadline is
@@ -160,9 +161,11 @@ def read_answers(path: str) -> str:
 
 
 def call(operation: str, *, verdict: str = '', body: str = '', manifest=None,
-         socket_path: str | None = None) -> dict:
+         labels: list | None = None, socket_path: str | None = None) -> dict:
     if operation == 'push':
         payload = {'operation': 'push', 'manifest': manifest}
+    elif operation == 'triage':
+        payload = {'operation': 'triage', 'labels': list(labels or []), 'body': body}
     elif operation in ('review', 'request_review', 'ruling'):
         payload = {'operation': operation, 'verdict': verdict, 'body': body}
     else:
@@ -225,7 +228,8 @@ def _push(parser: argparse.ArgumentParser, args: argparse.Namespace):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=('review', 'request_review', 'push', 'ruling'))
+    parser.add_argument('operation', choices=('review', 'request_review', 'push', 'ruling',
+                                              'triage'))
     parser.add_argument('--verdict', default='')
     parser.add_argument('--body-file')
     parser.add_argument('--manifest-file')
@@ -238,10 +242,28 @@ def main() -> None:
     parser.add_argument('--answers-file',
                         help=f'request_review: your answers to the findings (at most {MAX_ANSWERS} '
                              'bytes), posted once on the PR by the host as the fixer')
+    parser.add_argument('--label', action='append', default=[],
+                        help='triage: one label from the list in your instructions (repeatable)')
+    parser.add_argument('--comment-file',
+                        help=f'triage: one short comment ({TRIAGE_COMMENT_MAX} characters at '
+                             'most), only when the loop allows one')
     args = parser.parse_args()
     if args.answers_file and args.operation != 'request_review':
         parser.error('--answers-file is a request_review option')
-    if args.operation == 'push':
+    if (args.label or args.comment_file) and args.operation != 'triage':
+        parser.error('--label and --comment-file are triage options')
+    if args.operation == 'triage':
+        if (args.files or args.message is not None or args.message_file or args.dry_run
+                or args.verdict or args.body_file or args.manifest_file):
+            parser.error('triage takes only --label (repeatable) and --comment-file')
+        comment = ''
+        if args.comment_file:
+            comment = Path(args.comment_file).read_text().strip()
+            if len(comment) > TRIAGE_COMMENT_MAX:
+                parser.error(f'triage refused before sending (your write is unspent): the '
+                             f'comment is over {TRIAGE_COMMENT_MAX} characters')
+        operation = lambda: call('triage', labels=args.label, body=comment)
+    elif args.operation == 'push':
         operation = _push(parser, args)
     elif args.operation == 'request_review':
         if (args.files or args.message is not None or args.message_file or args.dry_run

@@ -21,7 +21,8 @@ TRAILER = f"Automated-By: hermes-review-loop ({REPO_URL})"
 # GitHub's limit on a review or comment body, in characters.
 GITHUB_BODY_MAX = 65536
 
-_SEAT_NAMES = {"reviewer": "reviewer seat", "fixer": "fixer seat", "adjudicator": "adjudicator"}
+_SEAT_NAMES = {"reviewer": "reviewer seat", "fixer": "fixer seat", "adjudicator": "adjudicator",
+               "triage": "issue triage"}
 # One ``Key: value`` line of a Git trailer block (git interpret-trailers' shape).
 _TRAILER_LINE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*: \S.*\Z")
 

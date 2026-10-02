@@ -67,9 +67,10 @@ MARKS = {VERIFIED: "✅", ABSENT: "❌", MISMATCH: "❌", UNKNOWN: "⚠️", SKI
 # looks for a filename nothing writes would report a healthy install as broken.
 SHIM_NAME = "review-loop-watchdog.py"
 PLUGIN_SCRIPTS = ("watchdog.py", "gate_reviewer.py", "gate_fixer.py",
-                  "gate_adjudicator.py", "cleanup.py")
-GATE_SCRIPT = {"reviewer": "gate_reviewer.py", "fixer": "gate_fixer.py"}
-GATE_EVENT = {"reviewer": "pull_request", "fixer": "pull_request_review"}
+                  "gate_adjudicator.py", "gate_triage.py", "cleanup.py")
+GATE_SCRIPT = {"reviewer": "gate_reviewer.py", "fixer": "gate_fixer.py",
+               "triage": "gate_triage.py"}
+GATE_EVENT = config.HOOK_EVENT
 
 
 class Check:
@@ -403,6 +404,28 @@ def _check_profile(name: str, seat: str) -> Check:
 
 def check_profile(loop: dict, seat: str) -> Check:
     return _check_profile(str(loop["seats"][seat].get("profile") or ""), seat)
+
+def check_triage(loop: dict) -> list[Check]:
+    """Issue triage (#213): the profile its model runs as, and the token it labels with."""
+    checks = [_check_profile(config.seat_profile(loop, "triage"), "triage")]
+    login = config.triage_login(loop)
+    path = gh.token_path(loop, login) if login else None
+    if path is None or not path.is_file() or path.stat().st_size == 0:
+        checks.append(Check("credential:triage", ABSENT,
+                            f"no nonempty token file mapped for the triage login {login or '?'}",
+                            f"map one: `hermes review-loop set --loop {loop['id']} --token "
+                            f"{login or '<login>'}=/path/to/pat` (it needs issues: write)"))
+    elif config.token_file_problem(str(path)):
+        checks.append(Check("credential:triage", MISMATCH,
+                            f"{login} → {_token_file_facts(path)}: "
+                            f"{config.token_file_problem(str(path))}", f"chmod 600 {path}"))
+    else:
+        triage = loop["triage"]
+        checks.append(Check("credential:triage", VERIFIED,
+                            f"{login} → {_token_file_facts(path)} · authors "
+                            f"{', '.join(triage['authors'])} · {len(triage['labels'])} labels"))
+    return checks
+
 
 def check_adjudicator_profile(loop: dict) -> Check:
     return _check_profile(str((loop.get("adjudicator") or {}).get("profile") or "default"),
@@ -751,7 +774,7 @@ def check_routes(loop: dict) -> list[Check]:
     if not isinstance(data, dict):
         return [Check("routes", MISMATCH, f"{path} must hold a JSON object of routes",
                       "repair the subscription file: the gateway can route nothing out of it")]
-    checks = [check_route(loop, data, seat) for seat in ("reviewer", "fixer")]
+    checks = [check_route(loop, data, seat) for seat in config.hook_roles(loop)]
     adjudicator = check_adjudicator_route(loop, data)
     if adjudicator:
         checks.append(adjudicator)
@@ -854,8 +877,8 @@ def _prompt_fix(loop: dict, name: str) -> str:
 
 
 def check_route(loop: dict, data: dict, seat: str) -> Check:
-    name = str(loop["seats"][seat].get("route") or "")
-    profile = str(loop["seats"][seat].get("profile") or "")
+    name = str(route_intent.routes_of(loop).get(seat) or "")
+    profile = config.seat_profile(loop, seat)
     if not name:
         return Check(f"route:{seat}", ABSENT, "no route named for this seat",
                      f"name the route as seats.{seat}.route in the loop config, then "
@@ -1487,8 +1510,8 @@ def check_hooks(loop: dict, offline: bool) -> list[Check]:
     wrong-hook hunt the preflight exists to prevent.
     """
     expected = []
-    for seat in ("reviewer", "fixer"):
-        name = str(loop["seats"][seat].get("route") or "")
+    for seat in config.hook_roles(loop):
+        name = str(route_intent.routes_of(loop).get(seat) or "")
         try:
             url = routes.url_for(name, str(loop.get("host") or "") or None) if name else None
         except config.ConfigError:
@@ -1852,6 +1875,8 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
         checks.append(check_credential(loop, seat))
     if str((loop.get("adjudicator") or {}).get("route") or ""):
         checks.append(check_adjudicator_profile(loop))
+    if config.triage_enabled(loop):
+        checks.extend(check_triage(loop))
     checks.extend(check_seat_models(loop))
     checks.extend(check_seat_extras(loop))
     checks.append(check_fixer_push(loop))

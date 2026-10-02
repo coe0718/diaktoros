@@ -791,6 +791,38 @@ a turn on a guess.
 The Claude-subscription DirectSDK backend (#204) gets no HTTP status from Claude Code, so a usage
 limit there still looks like an ordinary failure.
 
+## Issue triage
+
+Opt-in per loop: when an issue opens, a sandboxed triage seat reads it and applies labels from a
+fixed list, before any agent works on it.
+
+```bash
+hermes review-loop triage --loop name --enable --profile tuck --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token you
+hermes review-loop arm --loop name --admin-token you     # the issues hook is created paused
+hermes review-loop triage --loop name                    # show it
+hermes review-loop triage --loop name --disable --admin-token you
+```
+
+- **Only allowlisted authors.** The `issues` hook wakes the triage gate on `opened`. An issue
+  whose author is not in `--author` (repeatable) is dropped there, before GitHub is even
+  re-read, so spam or a prompt-injection attempt on a public repo never reaches a model. The
+  gate re-reads the issue: it must still be open, still an issue (not a PR), by the same author.
+- **Only listed labels.** The seat runs in the same sandbox as the others, with no credentials,
+  no network and an empty read-only `/work`. The issue's title and body are passed as data
+  (the body is clipped at 8000 characters). Its one write goes through the broker, which
+  refuses any label not in `--labels`, more than `--max-labels` (default 3), or a comment
+  unless `--comment on`. The issue text is untrusted, and this allowlist is the boundary.
+- **People win.** Labels are only ever added. If the issue already carries a label from the
+  list when the gate runs, or when the broker writes, triage writes nothing (`skipped`).
+- **Who labels.** `--login` (default: the reviewer seat) with its own token; it needs
+  `issues: write`. It can never be the reader.
+- **Cost.** One turn per new issue from an allowlisted author. Cap it with
+  `--daily-turns N`, the same pacing as the seats' `daily_turns`.
+
+Each triage is recorded in the run ledger before anything is written (`triage_results`:
+`posted`, `skipped`, `nothing`, `denied`, or `uncertain` when a write's outcome is unknown).
+A recorded triage is never re-run.
+
 ## When a gate crashes or runs out of time
 
 The Hermes gateway runs a gate synchronously inside the webhook request: payload on stdin, no
