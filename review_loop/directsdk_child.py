@@ -19,7 +19,6 @@ def main():
     package = types.ModuleType('_review_loop_directsdk')
     package.__path__ = [plugin]
     sys.modules[package.__name__] = package
-    module = importlib.import_module(package.__name__ + '.directsdk')
     # Profile-selected native login stays host-side. No API key, proxy, hook, Node/Python
     # preload or ambient provider environment reaches the native process.
     env = {key: os.environ[key] for key in ('HOME', 'PATH', 'LANG', 'TMPDIR') if key in os.environ}
@@ -32,6 +31,9 @@ def main():
         if not Path(config).is_absolute() or not Path(config).is_dir():
             raise ValueError('native config directory unavailable')
         env['CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR'] = config
+    from directsdk_guard import install_guard
+    install_guard(path, plugin)
+    module = importlib.import_module(package.__name__ + '.directsdk')
     client = module.Client(command=path, args=[], env=env, timeout=120)
 
     def cancel(*_):

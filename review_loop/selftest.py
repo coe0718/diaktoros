@@ -680,7 +680,8 @@ def _one_completion(report: Report, seats: str, inference) -> None:
                   "non-JSON answer) — try `curl -sS https://" + str(host) + "` from this host"}
     if process_backend:
         fixes[502] = (f"the host DirectSDK process failed; check the installed provider, native "
-                      f"Claude CLI and profile {inference.profile}'s native login/config directory")
+                      f"Claude CLI and profile {inference.profile}'s native login/config directory; "
+                      "the host launch lockdown refuses missing/unsafe flags or an unreviewed MCP inventory server")
     what = f"{seats}: {inference.describe()}"
     if status != 200:
         report.add(step, name, FAIL, f"HTTP {status} for {what}",

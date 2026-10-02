@@ -134,4 +134,35 @@ fixer publishing, adjudicator ruling, and native cancellation under every descen
 - Keep SDK cancellation through Client.close(): native Claude owns a separate process group,
   so killing only the helper group is insufficient for ordinary cancellation.
 
-This branch is for parent review, not deployment authorization. No push or PR was performed.
+## Independent host launch lockdown (PR #204 review fix)
+
+The helper installs review-loop's `subprocess.Popen` guard before importing the provider or
+constructing its client. Every launch must use the host-resolved Claude executable and the
+reviewed one-turn flag grammar: empty tools/settings sources, strict MCP configuration,
+`dontAsk`, one turn, no slash commands and no session persistence. Duplicate flags, equals-form
+flags, unknown flags and alternate executables/shell launches fail closed before spawning.
+MCP must name exactly the provider's inventory-only server, whose bytes are pinned to the
+reviewed ef73726 SHA-256; changed server code requires an explicit review-loop update. Settings
+may contain only the per-request generation environment entry, in the provider's private
+request directory. This protects against provider launch-contract drift, not intentionally
+malicious Python plugin code (installed plugins remain trusted host code).
+
+A refusal is a failed inference (HTTP 502); selftest names the lockdown in its remediation.
+The per-call timeout is 120 seconds, including long reasoning; exceeding it cancels the call.
+
+Tests exercise every required flag omission through the actual helper with a fake provider
+and a recording native executable; none starts a process. Recorded pinned argv passes,
+and unsafe additions, changed values, duplicates, malicious MCP/settings and server-code drift
+are rejected. The no-guard sensitivity control starts the same unsafe recording executable.
+The installed ef73726 provider's real generated argv also passed an offline interception at
+Popen; no native process or model call was started. Earlier live receipts precede this guard.
+
+Review-fix validation: targeted pytest **52 passed, 64 subtests passed**; independent guard
+unittest **6 passed**; canonical harness **1765/1765 checks passed**. Full offline pytest:
+**1180 passed, 18 skipped, 752 subtests passed, 1 failed**, the same previously base-reproduced
+`test_leakguard_children.py:278` PYTHONPATH fixture failure. The first foreground full-suite
+attempt timed out at 420 seconds; the notified background rerun completed in 511.09 seconds.
+Independent review found no blocker within the trusted-plugin launch-contract-drift scope.
+Non-blocking native-login isolation probes and installed-version diagnostics are tracked in #207.
+
+Published for parent review as PR #204; deployment and merge are not authorized by these receipts.
