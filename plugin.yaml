@@ -116,3 +116,8 @@ config_schema:
     type: str
     default: ""
     description: "Absolute path (~ allowed) to the file holding the adjudicator login's GitHub PAT — the path only, never the token itself. Must be your own mode-600 regular file, not shared with any other login. Blank = not set here"
+  attribution:
+    label: "Sign what the loop posts"
+    type: bool
+    default: true
+    description: "On: every review, comment and commit the loop itself posts ends with 'Automated by hermes-review-loop' and a link (commits get an Automated-By trailer). Off: nothing is added. Never touches what people or agents post by hand."

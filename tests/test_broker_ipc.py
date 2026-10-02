@@ -81,8 +81,12 @@ class BrokerIPCTests(unittest.TestCase):
                              {"ok": True, "result": {"accepted": True}})
         self.assertEqual([c[1] for c in self.calls if c[0] != "/user"], ["GET", "POST"])
         self.assertEqual(self.calls[3][-1], "read")
+        # The seat's body, signed by the host as the loop's own write (#197).
+        signed = ("verified\n\n---\n<sub>🤖 Automated by [hermes-review-loop]"
+                  "(https://github.com/coe0718/hermes-review-loop) · reviewer seat · head "
+                  f"`{HEAD[:7]}`</sub>")
         self.assertEqual(self.calls[4], (f"/repos/{REPO}/pulls/7/reviews", "POST",
-                         {"commit_id": HEAD, "event": "APPROVE", "body": "verified"}, "review"))
+                         {"commit_id": HEAD, "event": "APPROVE", "body": signed}, "review"))
         self.assertEqual(self.send(server, self.review())["error"], "run capability already used")
         self.assertEqual(len(self.calls), 5)
         audit = (self.root / "broker-audit.jsonl").read_text()

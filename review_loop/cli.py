@@ -19,8 +19,8 @@ import sys
 import time
 import tempfile
 
-from . import (config, doctor, gate, gate_shims, gh, observer, prompts, route_intent, routes,
-               state as state_mod)
+from . import (attribution, config, doctor, gate, gate_shims, gh, observer, prompts,
+               route_intent, routes, state as state_mod)
 
 SHIM_NAME = "review-loop-watchdog.py"
 
@@ -424,6 +424,12 @@ def _observer_check(loop: dict) -> None:
         raise config.ConfigError(
             "observer.deliver must be a real destination (telegram, discord, ...) — an observer "
             "route never wakes an agent, and the gateway refuses a deliver_only file target")
+
+
+def _attribution_arg(args, default):
+    """``--attribution on|off`` as a bool; ``default`` when the flag was not given (#197)."""
+    value = getattr(args, "attribution", None)
+    return default if value is None else value == "on"
 
 
 def _observer_args(args, loop_id: str) -> dict:
@@ -1576,6 +1582,8 @@ def cmd_init(args) -> int:
         "ttl_min": args.ttl_min, "inflight_ttl_min": args.inflight_ttl_min,
         "turn_budget_s": getattr(args, "turn_budget", None),
         "observer": _observer_args(args, args.id or args.repo.split("/")[-1]),
+        # Sign what the loop posts (#197): on unless --attribution off or the form says so.
+        "attribution": _attribution_arg(args, d["attribution"]),
     }
     # A seat-level capacity wins over the loop default, so only write it when it was asked for.
     for seat, value in _init_seat_concurrency(args, d).items():
@@ -1818,7 +1826,8 @@ def cmd_set(args) -> int:
               "clone": args.clone, "grace_min": args.grace_min,
               "marker_grace_min": args.marker_grace_min, "ttl_min": args.ttl_min,
               "inflight_ttl_min": args.inflight_ttl_min, "host": host,
-              "turn_budget_s": getattr(args, "turn_budget", None)}
+              "turn_budget_s": getattr(args, "turn_budget", None),
+              "attribution": _attribution_arg(args, None)}
     changes = {k: v for k, v in wanted.items()
                if v is not None and v != "" and v != loop.get(k)}
 
@@ -2485,6 +2494,9 @@ def cmd_status(args) -> int:
         print("  fixer push: " + ("ENABLED — operator accepted PR-metadata/ref race"
                                   if config.unattended_fixer_push_enabled(loop)
                                   else "off (unattended pushes disabled)"))
+        print("  signed:     " + ("on — what the loop posts says 'Automated by hermes-review-loop'"
+                                  if attribution.enabled(loop)
+                                  else "off (no footer or commit trailer)"))
         print(f"  state:      {st.dir}")
         print(f"  seats:      reviewer={loop['seats']['reviewer']['login']} "
               f"({loop['seats']['reviewer']['profile']}) · "
@@ -3506,6 +3518,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="how long a run may hold its seat slot")
         init.add_argument("--inflight-ttl-min", type=int, default=d["inflight_ttl_min"],
                           help="how long an in-flight mark blocks a second run at the same head")
+        init.add_argument("--attribution", choices=("on", "off"), default=None,
+                          help="sign what the loop posts with 'Automated by hermes-review-loop' "
+                               f"(default {'on' if d['attribution'] else 'off'})")
         init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
                           help="seconds one isolated seat turn may run, build and tests included "
                                f"(default {d['turn_budget_s']}; the sandbox is killed past it)")
@@ -3592,6 +3607,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--inflight-ttl-min", type=int)
         change.add_argument("--turn-budget", type=int,
                             help="seconds one isolated seat turn may run (loop default)")
+        change.add_argument("--attribution", choices=("on", "off"), default=None,
+                            help="sign what the loop posts ('Automated by hermes-review-loop'), "
+                                 "or stop")
         change.add_argument("--reviewer-turn-budget", type=int, default=None,
                             help="the reviewer seat's own turn budget in seconds")
         change.add_argument("--fixer-turn-budget", type=int, default=None,

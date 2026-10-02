@@ -238,7 +238,10 @@ def group_plugin_settings() -> None:
     for key, spec in config.SETTINGS_SCHEMA.items():
         declared = manifest.get(key) or {}
         check(f"  {key}: type agrees", declared.get("type"), spec["type"])
-        check(f"  {key}: default agrees", declared.get("default"), str(spec["default"]))
+        # YAML spells a boolean lowercase (``default: true``); every other default is its str().
+        want = (str(spec["default"]).lower() if isinstance(spec["default"], bool)
+                else str(spec["default"]))
+        check(f"  {key}: default agrees", declared.get("default"), want)
         check(f"  {key}: label agrees (the form shows the label, not the key)",
               declared.get("label"), spec["label"])
         check(f"  {key}: has a description", bool(declared.get("description")), True)

@@ -97,6 +97,7 @@ hermes review-loop apply --loop name    # push those defaults onto an existing l
 hermes review-loop apply --loop name --while-busy     # rebind even while a seat has a run out
 hermes review-loop set --loop name --reviewer-concurrency 2   # two reviews at once, one fix at a time
 hermes review-loop set --loop name --fixer-turn-budget 1800   # let a fix run (build + tests) for 30 minutes
+hermes review-loop set --loop name --attribution off   # stop signing what the loop posts (on by default)
 hermes review-loop arm --loop name      # arm/pause by flipping the repo hooks (--admin-token LOGIN)
 hermes review-loop arm --loop name --pause
 hermes review-loop drain --loop name --seat reviewer
@@ -199,6 +200,32 @@ through the [four-identity rule](#token-files-one-pat-per-account).
 
 Who serves each seat, and how the plugin-level defaults reach a loop, is covered in
 [Settings, in the desktop](settings.md).
+
+## What the loop signs
+
+Everything the loop itself posts says so, unless you turn it off:
+
+| write | how it is signed |
+|---|---|
+| the reviewer seat's review | a footer: `🤖 Automated by hermes-review-loop · reviewer seat (Vex) · head abc1234`, linking to this project |
+| the fixer seat's answers comment | the same footer, naming the fixer seat |
+| the adjudicator's ruling comment (with `seats.adjudicator.login`) | the same footer |
+| a commit the fixer seat pushes | an `Automated-By: hermes-review-loop (…)` trailer |
+
+The host adds it at the moment it sends the write, never the seat, so a seat can neither remove it
+nor pre-empt it. And it marks only what the loop sends: a PR your coding agent opens by hand, or a
+review a person writes, is never touched. The seat's agent name appears as letters, digits and
+spaces only. A footer cannot become a link, markup or a second line.
+
+It is a label for people reading the PR, not evidence: anyone can type the same words, so the loop
+never treats a footer as proof that it posted something. Its receipts and run ledger do that. When a
+seat reads the PR's history, the loop's own footers are dropped so the seat sees the words, not the
+label.
+
+Turn it off per loop with `hermes review-loop set --loop name --attribution off` (and back on with
+`on`), or for new loops in the settings form (**Sign what the loop posts**). `status` shows
+`signed: on|off`, and `doctor` has an `attribution` line. If the form names the setting, `apply`
+pushes it like any other knob, so set the form to match if you opt out with `set`.
 
 ## Token files: one PAT per account
 

@@ -110,6 +110,16 @@ def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
     return login
 
 
+def _signed(loop: dict, body: str, seat: str, head: str) -> str:
+    """``body`` as the loop posts it: with its attribution footer unless the loop opted out
+    (#197). Applied here, at the POST, so every write this module sends is signed exactly once."""
+    from . import attribution
+    try:
+        return attribution.stamp(loop, body, seat=seat, head=head)
+    except attribution.AttributionError as exc:
+        raise BrokerDenied(str(exc)) from None
+
+
 # A reviewer write must move the loop: an approval cues the merge, changes-requested wakes the
 # fixer. A COMMENT is neither, so it would spend the reviewer's one write and stall the PR.
 REVIEW_VERDICTS = ("APPROVE", "REQUEST_CHANGES")
@@ -131,7 +141,7 @@ def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
         if verdict not in REVIEW_VERDICTS or not body.strip():
             raise BrokerDenied("invalid review verdict or empty body")
         path = f"/repos/{repo}/pulls/{number}/reviews"
-        payload = {"commit_id": head, "event": verdict, "body": body}
+        payload = {"commit_id": head, "event": verdict, "body": _signed(loop, body, role, head)}
     else:
         if verdict or body:
             raise BrokerDenied("unexpected request-review fields")
@@ -222,7 +232,7 @@ def post_fixer_answers(loop: dict, *, repo: str, number: int, head: str, branch:
                        login: str, text: str) -> int:
     """POST one issue comment as the fixer identity; return its id or raise. Never retried."""
     result = gh.api(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
-                    body={"body": text}, login=login)
+                    body={"body": _signed(loop, text, "fixer", head)}, login=login)
     if not isinstance(result, dict) or type(result.get("id")) is not int:
         raise BrokerDenied("GitHub comment write did not return a successful response")
     _audit(loop, repo, number, head, branch, "fixer", "answers", login)
@@ -316,7 +326,7 @@ def post_ruling_comment(loop: dict, *, repo: str, number: int, head: str, branch
                         login: str, text: str) -> int:
     """POST one issue comment as the adjudicator identity; return its id or raise."""
     result = gh.api(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
-                    body={"body": text}, login=login)
+                    body={"body": _signed(loop, text, "adjudicator", head)}, login=login)
     if not isinstance(result, dict) or type(result.get("id")) is not int:
         raise BrokerDenied("GitHub comment write did not return a successful response")
     _audit(loop, repo, number, head, branch, "adjudicator", "ruling_comment", login)
