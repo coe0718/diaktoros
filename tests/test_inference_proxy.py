@@ -106,6 +106,63 @@ class TransportTests(unittest.TestCase):
                 upstream.server_close()
                 thread.join()
 
+    def test_an_event_stream_is_relayed_as_one_whatever_its_label(self):
+        # chatgpt.com's Codex backend was seen answering a streamed request with an event stream
+        # labelled application/json. Buffered and relabelled as JSON, no client could parse it
+        # (selftest reported "HTTP 200 … but not a codex_responses answer"). The body decides.
+        events = [{'type': 'response.created'}, {'type': 'response.output_text.delta', 'delta': 'OK'},
+                  {'type': 'response.completed', 'response': {'status': 'completed'}}]
+        stream = ''.join('event: ' + e['type'] + '\ndata: ' + json.dumps(e) + '\n\n'
+                         for e in events).encode()
+        cases = [('application/json', stream, 'text/event-stream'),
+                 (None, stream, 'text/event-stream'),
+                 (None, b'\n\n' + stream, 'text/event-stream'),      # leading blank lines
+                 (None, b'{"ok": true}', 'application/json'),           # unlabelled JSON stays JSON
+                 ('application/json', b'{"ok": true}', 'application/json')]
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d:
+            served = []
+
+            class Upstream(http.server.BaseHTTPRequestHandler):
+                def log_message(self, *_):
+                    pass
+
+                def do_POST(self):
+                    self.rfile.read(int(self.headers['Content-Length']))
+                    label, data, _ = served[-1]
+                    self.send_response(200)
+                    if label:
+                        self.send_header('Content-Type', label)
+                    self.send_header('Content-Length', str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+
+            upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+            thread = threading.Thread(target=upstream.serve_forever)
+            thread.start()
+            try:
+                with InferenceCapability(Path(d) / 'cap',
+                        f'http://127.0.0.1:{upstream.server_port}{PATH}',
+                        'DUMMY_KEY', model='fixed-model', quota=len(cases)) as cap:
+                    for case in cases:
+                        served.append(case)
+                        label, data, want = case
+                        with self.subTest(label=label, body=data[:12]):
+                            conn = _UnixHTTP(str(cap.socket_path))
+                            conn.request('POST', PATH, body=b'{"messages": []}')
+                            response = conn.getresponse()
+                            body = response.read()
+                            conn.close()
+                            self.assertEqual(response.status, 200)
+                            self.assertEqual(response.getheader('Content-Type'), want)
+                            self.assertEqual(body, data)
+                            # A stream is relayed as it arrives (no Content-Length framing).
+                            self.assertEqual(response.getheader('Content-Length') is None,
+                                             want == 'text/event-stream')
+            finally:
+                upstream.shutdown()
+                upstream.server_close()
+                thread.join()
+
     def test_rejects_unbounded_capability_settings(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d:
             for options in ({'model': ''}, {'model': 'fixed', 'quota': 1000000},
