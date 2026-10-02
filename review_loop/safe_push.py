@@ -18,7 +18,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
-from . import broker, config, gh, util
+from . import attribution, broker, config, gh, util
 
 MAX_FILES = 24
 MAX_CONTENT = 128 * 1024
@@ -292,8 +292,9 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
         _audit(loop, {**receipt, "new_head": created, "phase": "attempt"})
         new_head = created
     try:
-        _git_cas(loop, repo, branch, head, files, manifest["message"], login, identity,
-                 before_push=before_push)
+        # The trailer (#197) is added here, on the host, after the seat's message was validated.
+        _git_cas(loop, repo, branch, head, files, attribution.sign_commit(loop, manifest["message"]),
+                 login, identity, before_push=before_push)
     except Exception as exc:
         error = exc
     outcome = "unknown"

@@ -138,6 +138,12 @@ SETTINGS_SCHEMA: dict = {
                                               "never the token itself. Must be your own mode-600 "
                                               "regular file, not shared with any other login. "
                                               "Blank = not set here"},
+    "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
+                    "description": "On: every review, comment and commit the loop itself "
+                                   "posts ends with 'Automated by hermes-review-loop' and "
+                                   "a link (commits get an Automated-By trailer). Off: "
+                                   "nothing is added. Never touches what people or "
+                                   "agents post by hand."},
 }
 
 # Seat identity: *who* a seat is. A profile decides the model, the budget and the credentials the
@@ -175,12 +181,27 @@ def settings_defaults(settings: dict | None) -> dict:
         value = (settings or {}).get(key)
         if value is None or value == "":
             value = spec["default"]
-        try:
-            value = int(value) if spec["type"] == "int" else str(value)
-        except (TypeError, ValueError):
-            value = spec["default"]
+        if spec["type"] == "bool":
+            value = _bool_setting(value, spec["default"])
+        else:
+            try:
+                value = int(value) if spec["type"] == "int" else str(value)
+            except (TypeError, ValueError):
+                value = spec["default"]
         out[key] = value
     return out
+
+
+def _bool_setting(value, default: bool) -> bool:
+    """A form's boolean: a real bool, or the words a form or CLI may hand over; else ``default``."""
+    if isinstance(value, bool):
+        return value
+    word = str(value).strip().lower()
+    if word in ("true", "on", "yes", "1"):
+        return True
+    if word in ("false", "off", "no", "0"):
+        return False
+    return default
 
 
 def settings_loop_concurrency(d: dict) -> int:
@@ -254,6 +275,9 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
             overlaid[key] = value
     if loop_concurrency is not None:
         overlaid["concurrency"] = loop_concurrency
+    # Attribution (#197) moves only when the form names it, like every other knob.
+    if _form_value(settings, "attribution") is not None:
+        overlaid["attribution"] = d["attribution"]
     # Seat identity rides the same push: the form names who serves each seat, and a blank field
     # stays blank rather than unsetting what the loop already answered for itself.
     return apply_seats(overlaid, settings)
@@ -496,6 +520,7 @@ DEFAULTS: dict = {
     "turn_budget_s": 900,     # wall clock for one isolated seat turn (seats.<seat>.turn_budget_s wins)
     "host": "",
     "unattended_fixer_push": False,  # per-repository; never inherited from plugin settings
+    "attribution": True,      # sign what the loop posts (#197); false turns footer and trailer off
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
@@ -1250,6 +1275,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if type(loop["unattended_fixer_push"]) is not bool:
         raise ConfigError(f"{where}: 'unattended_fixer_push' must be a JSON boolean; "
                           "only explicit true authorizes unattended fixer pushes")
+    if type(loop["attribution"]) is not bool:
+        raise ConfigError(f"{where}: 'attribution' must be a JSON boolean (true signs what the "
+                          "loop posts; false turns it off)")
 
     repo = str(loop.get("repo") or "").strip()
     if repo.count("/") != 1:

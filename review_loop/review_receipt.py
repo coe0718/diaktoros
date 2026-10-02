@@ -116,6 +116,12 @@ def submit(loop, scope, ledger, verdict, body):
     if not isinstance(principal, dict) or type(principal.get('id')) is not int or principal['id'] <= 0 or str(principal.get('login', '')).casefold() != login.casefold():
         raise ReceiptDenied('reviewer identity changed')
     principal_id = principal['id']
+    # Signed (#197) before the durable point: a body that cannot be signed is never claimed or sent.
+    from . import attribution
+    try:
+        body = attribution.stamp(loop, body, seat='reviewer', head=scope.head)
+    except attribution.AttributionError as exc:
+        raise ReceiptDenied(str(exc)) from None
     ledger.claim(principal_id, verdict)  # No retry after this durable point, even if POST throws.
     endpoint = path + '/reviews'
     response = gh.api(loop, endpoint, method='POST', login=login,

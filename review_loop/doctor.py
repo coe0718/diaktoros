@@ -1402,6 +1402,20 @@ def check_fixer_push(loop: dict) -> Check:
                  f"`{config.fixer_push_enable_command(loop)}`")
 
 
+def check_attribution(loop: dict) -> Check:
+    """Whether what the loop posts is signed (#197). Both answers are valid; this only says which."""
+    from . import attribution
+    lid = shlex.quote(str(loop.get("id") or "<id>"))
+    if attribution.enabled(loop):
+        return Check("attribution", VERIFIED,
+                     "on — reviews, comments and commits the loop posts are signed 'Automated by "
+                     f"hermes-review-loop' (`hermes review-loop set --loop {lid} --attribution off` "
+                     "to stop)")
+    return Check("attribution", VERIFIED,
+                 "off — what the loop posts carries no 'Automated by hermes-review-loop' footer or "
+                 f"trailer (`hermes review-loop set --loop {lid} --attribution on` to sign it)")
+
+
 def check_state_dir(loop: dict) -> Check:
     path = pathlib.Path(str(loop["state_dir"])).expanduser()
     if path.exists() and not path.is_dir():
@@ -1841,6 +1855,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.extend(check_seat_models(loop))
     checks.extend(check_seat_extras(loop))
     checks.append(check_fixer_push(loop))
+    checks.append(check_attribution(loop))
     checks.append(check_sandbox_caps(loop))
     identity = check_adjudicator_identity(loop)
     if identity:

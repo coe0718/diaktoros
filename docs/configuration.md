@@ -56,6 +56,7 @@ See [Preflight](architecture.md#preflight-can-this-installation-run) and, for ex
 | `inflight_ttl_min` | `10` | how long a same-head burst is considered already handled |
 | `turn_budget_s` | `900` | wall-clock seconds one isolated seat turn may run — read the PR, build, run tests, submit. The whole turn is up to 930 s longer (300 s dependency prefetch before it, 30 s kill grace and up to 600 s broker drain after); that seat's stall grace and lock TTL follow the total. See [Turn budget](#turn-budget-how-long-one-turn-may-run). Plugin setting `turn_budget_s`; `init`/`set --turn-budget N` |
 | `seats.<seat>.turn_budget_s` | loop default | this seat's own budget (`reviewer`, `fixer`, `adjudicator`), overriding `turn_budget_s`. `init`/`set --reviewer-turn-budget N` / `--fixer-turn-budget N`; the adjudicator's is set in the file |
+| `attribution` | `true` | sign what the loop itself posts: its reviews, the fixer's answers comment and the ruling comment end with "🤖 Automated by hermes-review-loop" (linking here), and the fixer's commits carry an `Automated-By:` trailer. `false` adds nothing. A JSON boolean; see [What the loop signs](operations.md#what-the-loop-signs). Plugin setting `attribution`; `init`/`set --attribution on\|off` |
 | `observer` | `{}` | the read-only observer feed. `{}` means no feed, and the loop is untouched by its absence — see [The observer feed](#the-observer-feed) |
 
 ## Turn budget: how long one turn may run
@@ -213,6 +214,7 @@ hermes review-loop apply --loop <id>             # write it
 | `adjudicator_login` | — | `seats.adjudicator.login`, on a loop that already has an `adjudicator.route` |
 | `adjudicator_token_file` | — | `tokens[<adjudicator login>]` — a **path** only, same checks, and not shared with any other login |
 | `clone`, `base`, `host` | —, `main`, unset | the same loop keys; a blank host in the form preserves an existing loop's explicit host |
+| `attribution` | on | `attribution`, only when the form names it |
 | `grace_min`, `ttl_min`, `inflight_ttl_min` | 35, 45, 10 | the same loop keys |
 
 Settings are per profile (`plugins.entries.hermes-review-loop.settings`, written through Hermes'

@@ -35,6 +35,7 @@ The plugin declares a `config_schema`, so it has a settings form at
 | `inflight_ttl_min` | 10 | how long a mark blocks a second run at the same head |
 | `turn_budget_s` | 900 | seconds one isolated seat turn may run (Hermes's `--run-budget`; the sandbox is killed shortly after) |
 | `host` | unset | your gateway's webhook origin; required for `init`, or supply `--host` |
+| `attribution` | on | sign what the loop posts with "Automated by hermes-review-loop" (off: nothing is added) |
 
 The form shows friendly labels (`Reviews at once`, `Reviewer's Hermes profile`, `Clone path
 (required above 1)`); the keys in the table are what `hermes review-loop settings` prints and what
