@@ -1813,8 +1813,10 @@ def cmd_init(args) -> int:
     # The seats never hold a GitHub token: every write goes through the host broker with the token
     # files mapped above, so a GH_TOKEN in a seat profile's .env is only an extra copy to leak.
     lid = loop["id"]
-    steps = [f"create the runtime file {config.home() / 'review-loop-runtime.json'} "
-             "(docs/configuration.md; selftest names anything missing)",
+    runtime = config.home() / "review-loop-runtime.json"
+    steps = ([f"create the runtime file {runtime} (`hermes review-loop setup --repo "
+              f"{shlex.quote(loop['repo'])}` detects and writes it)"]
+             if not runtime.exists() else []) + [
              f"hermes review-loop doctor --loop {lid}",
              f"hermes review-loop selftest --loop {lid} --no-model, then --pr N, then --pr N --live-turn"]
     if not config.unattended_fixer_push_enabled(loop):
@@ -1834,6 +1836,229 @@ def cmd_init(args) -> int:
     print("  Seat tokens live only in the token files mapped above; a seat profile needs no "
           "GH_TOKEN.")
     return 0 if shims_ok else 1
+
+
+# The root ``hermes review-loop`` parser, kept by register_cli so ``setup`` runs the other verbs
+# through the very parser (and settings defaults) the operator would.
+_PARSER: argparse.ArgumentParser | None = None
+
+
+def _verb(*argv: str) -> int:
+    """Run another ``hermes review-loop`` verb in-process; argparse refusing it is exit 2."""
+    try:
+        parsed = _PARSER.parse_args(list(argv))
+    except SystemExit:
+        return 2
+    return parsed.func(parsed)
+
+
+def _ask(question: str, default: str, interactive: bool) -> str:
+    """One answer: typed, or the default (always the default without a terminal)."""
+    if not interactive:
+        return default
+    try:
+        answer = input(f"   {question}{f' [{default}]' if default else ''}: ").strip()
+    except EOFError:
+        answer = ""
+    return answer or default
+
+
+def _agree(question: str, default: bool, interactive: bool, unattended: bool) -> bool:
+    """A yes/no; without a terminal (``--yes``) the answer is ``unattended``."""
+    if not interactive:
+        return unattended
+    try:
+        answer = input(f"   {question} [{'Y/n' if default else 'y/N'}]: ").strip().lower()
+    except EOFError:
+        answer = ""
+    return default if not answer else answer in ("y", "yes")
+
+
+def _setup_runtime(args, interactive: bool) -> bool:
+    """Step 1: keep the runtime file's working paths, detect the rest, write it 0600."""
+    from . import runtime_detect, seat_model
+    file = runtime_detect.path()
+    print(f"\n1. Runtime paths — {file}")
+    current, why = runtime_detect.read()
+    if why and why != "absent":
+        print(f"   the current file cannot be used ({why}); it will be replaced")
+    have = {key: current[key] for key in runtime_detect.HOST_KEYS
+            if current and isinstance(current.get(key), str) and current[key]}
+    broken = runtime_detect.problems(have) if have else {}
+    detected = runtime_detect.detect()
+    chosen, origin = {}, {}
+    for key in runtime_detect.HOST_KEYS:
+        given = getattr(args, key, None)
+        for source, value in (("given", given), ("kept", None if key in broken else have.get(key)),
+                              ("detected", detected.get(key)), ("kept", have.get(key))):
+            if value:
+                chosen[key], origin[key] = str(pathlib.Path(value).expanduser()), source
+                break
+    left = runtime_detect.problems(chosen)
+    for key in runtime_detect.HOST_KEYS:
+        if key in left:
+            print(f"   ❌ {key:<8} {left[key]} — pass --{key} PATH")
+        else:
+            print(f"   ✅ {key:<8} {chosen[key]} ({origin[key]})")
+    if left:
+        print("   not written: every path must check out first (the file is all or nothing)")
+        return False
+    settings = runtime_detect.merged(current, chosen)
+    try:
+        seat_model.parse_runtime(settings)
+    except ValueError as exc:
+        print(f"   ❌ the model overrides kept from the current file do not parse ({exc}); "
+              f"fix {file} by hand")
+        return False
+    private = (current is not None and not file.is_symlink()
+               and not file.stat().st_mode & 0o077)
+    if current == settings and private:
+        print("   in place — nothing to change")
+        return True
+    if args.dry_run:
+        print(f"   would write {file} (0600)")
+        return True
+    if not _agree(f"Write {file.name}?", True, interactive, True):
+        print("   not written")
+        return False
+    print(f"   written: {runtime_detect.write(settings)} (0600)")
+    return True
+
+
+def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[list[str], str]:
+    """Step 2's answers as the ``init`` command line, and the hook admin login ("" for none)."""
+    d = config.settings_defaults(_SETTINGS)
+    ask = lambda flag, question, default="": flag or _ask(question, default, interactive)  # noqa: E731
+    reviewer = ask(args.reviewer, "reviewer GitHub login (the account that reviews)",
+                   d["reviewer_login"])
+    fixer = ask(args.fixer, "fixer GitHub login (the account that pushes fixes)", d["fixer_login"])
+    reviewer_profile = ask(args.reviewer_profile, "reviewer's Hermes profile", d["reviewer_profile"])
+    fixer_profile = ask(args.fixer_profile, "fixer's Hermes profile", d["fixer_profile"])
+    reviewer_file = ask(args.reviewer_token, f"token file for {reviewer or 'the reviewer'}",
+                        d["reviewer_token_file"])
+    fixer_file = ask(args.fixer_token, f"token file for {fixer or 'the fixer'}",
+                     d["fixer_token_file"])
+    reader = ask(args.read_token, "reader login (its own account; the gates read GitHub as it)")
+    reader_file = ask(args.read_token_file, f"token file for {reader or 'the reader'}")
+    host = ask(args.host, "your gateway's webhook origin (https://…)", d["host"])
+    observer = (args.observer_profile if args.observer_profile is not None else
+                _ask("Hermes profile whose chat gets the loop's notices (blank: none)", "",
+                     interactive))
+    attribution = args.attribution or (
+        "on" if _agree("Sign what the loop posts ('Automated by hermes-review-loop')?",
+                       d["attribution"], interactive, d["attribution"]) else "off")
+    admin = (args.admin_token if args.admin_token is not None else
+             _ask("hook admin login, to create the repo hooks (blank: add them yourself)", "",
+                  interactive))
+    admin_file = ""
+    if admin and admin.lower() not in {x.lower() for x in (reviewer, fixer, reader) if x}:
+        admin_file = ask(args.admin_token_file, f"token file for {admin}")
+    argv = ["init", f"--repo={repo}", f"--id={loop_id}", f"--reviewer={reviewer}",
+            f"--fixer={fixer}", f"--reviewer-profile={reviewer_profile}",
+            f"--fixer-profile={fixer_profile}", f"--read-token={reader}", f"--host={host}",
+            f"--attribution={attribution}"]
+    for login, file in ((reviewer, reviewer_file), (fixer, fixer_file), (reader, reader_file),
+                        (admin, admin_file)):
+        if login and file:
+            argv.append(f"--token={login}={pathlib.Path(file).expanduser()}")
+    if observer:
+        argv.append(f"--observer-profile={observer}")
+    if admin:
+        argv += ["--hooks", f"--admin-token={admin}"]   # created paused; step 5 arms them
+    return argv, admin
+
+
+def cmd_setup(args) -> int:
+    """A first install in one command, safe to re-run (#215).
+
+    1. the runtime file: working paths kept, the rest detected (``runtime_detect``), written 0600;
+    2. the loop: ``init``'s answers asked (the settings form's values as defaults), its dry run
+       shown and confirmed, then ``init`` itself — skipped when the loop already exists;
+    3. the shared watchdog job (created only if missing);
+    4. ``doctor`` and ``selftest --no-model``: any ❌ stops here, with its fix line above;
+    5. ``arm``, only on a clean pass and only when asked.
+
+    Every step runs the same code as its own verb, so ``setup`` adds no second path to keep right.
+    """
+    interactive = not args.yes
+    if interactive and not sys.stdin.isatty():
+        print("setup asks questions; with no terminal, pass --yes to take the flags and the plugin "
+              "settings as the answers")
+        return 2
+    repo = args.repo or _ask("GitHub repository (owner/name)", "", interactive)
+    if not repo or repo.count("/") != 1 or repo.startswith("/") or repo.endswith("/"):
+        print("setup needs the repository as owner/name (--repo)")
+        return 2
+    loop_id = args.id or repo.split("/")[-1]
+    print(f"hermes review-loop setup — {repo} (loop {loop_id!r}). Safe to re-run: what is already "
+          "in place is kept." + (" Dry run: nothing is written." if args.dry_run else ""))
+
+    runtime_ok = _setup_runtime(args, interactive)
+
+    print("\n2. The loop")
+    existing = (config.config_dir() / f"{loop_id}.json").exists()
+    admin = args.admin_token or ""
+    if existing:
+        try:
+            loop = config.load_id(loop_id)
+        except config.ConfigError as exc:
+            print(f"   ❌ loop {loop_id!r} exists but does not load: {exc}")
+            return 2
+        if loop["repo"].lower() != repo.lower():
+            print(f"   ❌ loop {loop_id!r} serves {loop['repo']}, not {repo} — pass --id to name "
+                  "a new loop")
+            return 2
+        print(f"   ✅ loop {loop_id!r} is configured — kept as it is (change it with `hermes "
+              f"review-loop set --loop {loop_id}`)")
+    else:
+        argv, admin = _setup_init_argv(args, repo, loop_id, interactive)
+        print("   init dry run:")
+        if _verb(*argv, "--dry-run") != 0:
+            print("\nsetup stopped: init refused the answers — fix what it names and re-run setup")
+            return 2
+        if args.dry_run:
+            print("\n3. would schedule the shared watchdog job (if missing)\n"
+                  "4. would run doctor and selftest --no-model\n5. would arm only when asked")
+            return 0
+        if not _agree("Install this loop?", True, interactive, True):
+            print("setup stopped: nothing installed")
+            return 1
+        if _verb(*argv) == 2:
+            print("\nsetup stopped: init failed — see above; re-running setup is safe")
+            return 2
+
+    print("\n3. The watchdog")
+    schedule = args.schedule or _ask("how often the watchdog sweeps", "15m", interactive)
+    deliver = args.watchdog_deliver or _ask("where its alerts go (local, telegram, …)", "local",
+                                            interactive)
+    if args.dry_run:
+        print(f"   would schedule the shared watchdog job ({schedule}, deliver={deliver}) "
+              "if it is missing")
+        return 0
+    lines, scheduled = _install_schedule(config.load_id(loop_id), schedule, deliver)
+    for line in lines:
+        print(f"   {'✅' if scheduled else '❌'} {line}")
+
+    print("\n4. Checks")
+    doctor_rc = _verb("doctor", f"--loop={loop_id}")
+    selftest_rc = _verb("selftest", f"--loop={loop_id}", "--no-model")
+    if doctor_rc or selftest_rc or not scheduled or not runtime_ok:
+        print("\nsetup stopped before arming: fix each ❌ above (its fix line says how), then "
+              f"re-run `hermes review-loop setup --repo {shlex.quote(repo)}` — it keeps what is done")
+        return 1
+
+    print("\n5. Arm")
+    if not (args.arm or _agree("Arm the repo hooks now? The loop goes live.", False,
+                               interactive, False)):
+        print(f"   not armed. When ready: hermes review-loop arm --loop {loop_id}"
+              + (f" --admin-token {admin}" if admin else ""))
+        return 0
+    if not admin:
+        admin = _ask("hook admin login", "", interactive)
+    rc = _verb("arm", f"--loop={loop_id}", *([f"--admin-token={admin}"] if admin else []))
+    print("\nsetup complete: the loop is live" if rc == 0 else
+          "\narm was not confirmed — see above; re-running setup is safe")
+    return rc
 
 
 def cmd_set(args) -> int:
@@ -3577,6 +3802,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         quietly offers zero subcommands: ``hermes review-loop list`` is "unrecognized arguments".)
         """
         sub = parser.add_subparsers(dest="command", metavar="<command>")
+        global _PARSER
+        _PARSER = parser
 
         def _usage(_args) -> int:      # bare `hermes review-loop` prints the commands, not an error
             parser.print_help()
@@ -3682,6 +3909,39 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--dry-run", action="store_true",
                           help="print the seat mapping and what would be written, write nothing")
         init.set_defaults(func=cmd_init)
+
+        first = sub.add_parser("setup", help="First install in one command: runtime paths, init, "
+                                             "watchdog, doctor, selftest, then arm when asked "
+                                             "(safe to re-run)")
+        first.add_argument("--repo", help="owner/name (asked when not given)")
+        first.add_argument("--id", help="loop id (default: the repository name)")
+        first.add_argument("--yes", action="store_true",
+                           help="no questions: the flags and the plugin settings are the answers, "
+                                "and every confirmation is yes (arming still needs --arm)")
+        first.add_argument("--dry-run", action="store_true", help="show every step, write nothing")
+        first.add_argument("--arm", action="store_true",
+                           help="arm the hooks after a clean doctor and selftest")
+        for flag, what in (("reviewer", "reviewer GitHub login"), ("fixer", "fixer GitHub login"),
+                           ("reviewer-profile", "reviewer's Hermes profile"),
+                           ("fixer-profile", "fixer's Hermes profile"),
+                           ("reviewer-token", "reviewer's token file"),
+                           ("fixer-token", "fixer's token file"),
+                           ("read-token", "reader login (its own account)"),
+                           ("read-token-file", "reader's token file"),
+                           ("host", "your gateway's webhook origin"),
+                           ("admin-token-file", "hook admin's token file"),
+                           ("schedule", "watchdog interval (default 15m)"),
+                           ("watchdog-deliver", "where watchdog alerts go (default local)")):
+            first.add_argument(f"--{flag}", default="", help=what)
+        first.add_argument("--admin-token", default=None,
+                           help="hook admin login: the hooks are created (paused) as it")
+        first.add_argument("--observer-profile", default=None,
+                           help="Hermes profile whose chat gets the loop's notices")
+        first.add_argument("--attribution", choices=("on", "off"), default=None)
+        for key in ("source", "venv", "runtime", "rust"):
+            first.add_argument(f"--{key}", default="",
+                               help=f"runtime file's {key} path (default: detected)")
+        first.set_defaults(func=cmd_setup)
 
         status = sub.add_parser("status", help="Show a loop's config and live state")
         status.add_argument("--loop", help="loop id (default: every configured loop)")

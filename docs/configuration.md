@@ -356,7 +356,9 @@ exactly as it was.
 ## Runtime file and seat models (`review-loop-runtime.json`)
 
 The isolated worker reads one private (0600) host file, `$HERMES_HOME/review-loop-runtime.json`.
-It names **host paths** — the model is not a runtime setting any more (issue #32):
+It names **host paths** — the model is not a runtime setting any more (issue #32).
+`hermes review-loop setup` detects them and writes the file (0600), keeping any path that still
+works and any model override already in it:
 
 ```json
 {"source": "/path/to/hermes-agent", "venv": "/path/to/hermes-agent/venv",

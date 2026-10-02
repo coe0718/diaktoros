@@ -273,7 +273,7 @@ class ReaderIdentityTests(_Loop):
         extra = {"explain": ["--pr", "1"], "fixer-push": ["--disable"],
                  "trace": ["--payload", "/nonexistent-payload.json"],
                  "models": ["--seat", "reviewer"], "retry": ["--pr", "1"],
-                 "init": ["--repo", "acme/other", "--dry-run"]}
+                 "init": ["--repo", "acme/other", "--dry-run"], "setup": ["--yes"]}
         self.assertIn("uninstall", verbs)
         self.assertIn("cleanup", verbs)
         for verb, sub in verbs.items():
