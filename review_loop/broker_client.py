@@ -166,6 +166,10 @@ def call(operation: str, *, verdict: str = '', body: str = '', manifest=None,
         payload = {'operation': 'push', 'manifest': manifest}
     elif operation == 'triage':
         payload = {'operation': 'triage', 'labels': list(labels or []), 'body': body}
+    elif operation == 'open_pr':
+        payload = {'operation': 'open_pr', 'manifest': manifest, 'title': verdict, 'body': body}
+    elif operation == 'issue_comment':
+        payload = {'operation': 'issue_comment', 'body': body}
     elif operation in ('review', 'request_review', 'ruling'):
         payload = {'operation': operation, 'verdict': verdict, 'body': body}
     else:
@@ -229,7 +233,7 @@ def _push(parser: argparse.ArgumentParser, args: argparse.Namespace):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('operation', choices=('review', 'request_review', 'push', 'ruling',
-                                              'triage'))
+                                              'triage', 'open_pr', 'issue_comment'))
     parser.add_argument('--verdict', default='')
     parser.add_argument('--body-file')
     parser.add_argument('--manifest-file')
@@ -242,6 +246,7 @@ def main() -> None:
     parser.add_argument('--answers-file',
                         help=f'request_review: your answers to the findings (at most {MAX_ANSWERS} '
                              'bytes), posted once on the PR by the host as the fixer')
+    parser.add_argument('--title', help='open_pr: the PR title (one line)')
     parser.add_argument('--label', action='append', default=[],
                         help='triage: one label from the list in your instructions (repeatable)')
     parser.add_argument('--comment-file',
@@ -252,7 +257,38 @@ def main() -> None:
         parser.error('--answers-file is a request_review option')
     if (args.label or args.comment_file) and args.operation != 'triage':
         parser.error('--label and --comment-file are triage options')
-    if args.operation == 'triage':
+    if args.title is not None and args.operation != 'open_pr':
+        parser.error('--title is an open_pr option')
+    if args.operation == 'open_pr':
+        if args.manifest_file or args.verdict or args.label or args.comment_file:
+            parser.error('open_pr takes --files, --message/--message-file, --title and --body-file')
+        if not args.title or not args.body_file:
+            parser.error('open_pr requires --title and --body-file (the PR description)')
+        if not args.files or (args.message is None) == (not args.message_file):
+            parser.error('open_pr requires --files <path>... and exactly one of --message or '
+                         '--message-file')
+        try:
+            message = (Path(args.message_file).read_text().rstrip('\n') if args.message_file
+                       else args.message)
+            manifest = build_manifest(args.files, message)
+            description = Path(args.body_file).read_text()
+        except (ManifestError, OSError, UnicodeError) as exc:
+            parser.error(f'open_pr refused before sending (your write is unspent): {exc}')
+        if args.dry_run:
+            summary = {'ok': True, 'dry_run': True, 'base_head': manifest['base_head'],
+                       'title': args.title,
+                       'files': [entry['path'] for entry in manifest['files']]}
+            operation = lambda: summary  # noqa: E731
+        else:
+            operation = lambda: call('open_pr', manifest=manifest, verdict=args.title,  # noqa: E731
+                                     body=description)
+    elif args.operation == 'issue_comment':
+        if (args.files or args.message is not None or args.message_file or args.dry_run
+                or args.verdict or args.manifest_file or not args.body_file):
+            parser.error('issue_comment takes only --body-file')
+        body = Path(args.body_file).read_text()
+        operation = lambda: call('issue_comment', body=body)  # noqa: E731
+    elif args.operation == 'triage':
         if (args.files or args.message is not None or args.message_file or args.dry_run
                 or args.verdict or args.body_file or args.manifest_file):
             parser.error('triage takes only --label (repeatable) and --comment-file')

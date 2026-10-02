@@ -249,7 +249,8 @@ class RunBroker:
                 conn.settimeout(5)
                 self.answers_outcome = None  # reported only on the request that sent them
                 try:
-                    self._dispatch(_read_line(conn, MAX_PUSH_REQUEST if self.scope.role == "fixer" else MAX_REQUEST))
+                    self._dispatch(_read_line(conn, MAX_PUSH_REQUEST if self.scope.role in
+                                              ("fixer", "issue_fixer") else MAX_REQUEST))
                     # Never relay arbitrary GitHub response fields into the namespace.
                     response = {"ok": True, "result": {"accepted": True}}
                     if self.answers_outcome:
@@ -282,6 +283,10 @@ class RunBroker:
         if self.scope.role == "triage" or (isinstance(request, dict)
                                            and request.get("operation") == "triage"):
             return self._triage(raw, request)
+        # An issue fix (#214): open_pr or issue_comment, only for that role, decided first.
+        if self.scope.role == "issue_fixer" or (isinstance(request, dict) and request.get(
+                "operation") in ("open_pr", "issue_comment")):
+            return self._issue_fix(raw, request)
         if isinstance(request, dict) and request.get("operation") == "push":
             if set(request) != {"operation", "manifest"} or self.scope.role != "fixer":
                 raise ProtocolError("operation out of scope")
@@ -639,6 +644,106 @@ class RunBroker:
         except Exception as exc:
             supervisor.triage_status(self.scope.run_id, "uncertain",
                                      error=f"delivery failed: {type(exc).__name__}")
+        return {"accepted": True}
+
+
+    def _issue_fix(self, raw: bytes, request: object) -> object:
+        """The issue fixer's one write (#214): a new branch, its PR and the review request — or,
+        when it could not fix the issue, one comment on the issue.
+
+        Validated before the capability is spent; recorded in the ledger before any write;
+        the branch push holds the push policy lock, like the fixer's, and its lease requires the
+        branch to be absent. A write whose outcome is unknown is recorded as uncertain and never
+        replayed.
+        """
+        from .run_supervisor import Supervisor
+        if self.scope.role != "issue_fixer" or not isinstance(request, dict):
+            raise ProtocolError("operation out of scope")
+        operation = request.get("operation")
+        if operation == "open_pr":
+            if set(request) != {"operation", "manifest", "title", "body"}:
+                raise ProtocolError("open_pr takes manifest, title and body")
+            title, body = request["title"], request["body"]
+            if (not isinstance(title, str) or not title.strip()
+                    or len(title) > broker.ISSUE_PR_TITLE_MAX
+                    or any(ord(ch) < 32 for ch in title)):
+                raise ProtocolError(f"the PR title must be one line of 1-"
+                                    f"{broker.ISSUE_PR_TITLE_MAX} characters; nothing was "
+                                    "written, resubmit")
+            safe_push._manifest(request["manifest"])
+        elif operation == "issue_comment":
+            if set(request) != {"operation", "body"} or len(raw) > MAX_REQUEST:
+                raise ProtocolError("issue_comment takes only a body")
+            body = request["body"]
+        else:
+            raise ProtocolError("operation out of scope")
+        if not isinstance(body, str) or not body.strip() or len(body.encode()) > broker.ANSWERS_MAX:
+            raise ProtocolError(f"the description must be non-empty text of at most "
+                                f"{broker.ANSWERS_MAX} bytes; nothing was written, resubmit")
+        if self._used:
+            raise ProtocolError("run capability already used")
+        if not self.scope.run_id or not self.scope.ledger_db:
+            raise ProtocolError("host run ledger unavailable")
+        self._used = True
+        supervisor = Supervisor(self.scope.ledger_db, create=False)
+        run_id, repo, number = self.scope.run_id, self.scope.repo, self.scope.number
+        with config.push_policy_lock():
+            current = config.by_repo(repo)
+            if (current is None or current.get("id") != self._loop.get("id")
+                    or current.get("state_dir") != self._loop.get("state_dir")
+                    or not config.issue_fixes_enabled(current)):
+                raise ProtocolError("issue fixes are not enabled by the host operator")
+            supervisor.record_issue_fix(run_id, repo, number, self.scope.head,
+                                        "pr" if operation == "open_pr" else "comment",
+                                        self.scope.branch)
+            self.completed = True
+            if operation == "issue_comment":
+                return self._issue_comment(current, supervisor, body.strip())
+            try:
+                pushed = safe_push.open_branch(current, repo=repo, number=number,
+                                               base=self.scope.head, branch=self.scope.branch,
+                                               manifest=request["manifest"])
+            except safe_push.PushFailure as exc:
+                supervisor.issue_fix_status(run_id, "uncertain", error=f"push {exc.outcome}")
+                raise ProtocolError("the push's outcome is unknown: do not retry; say so")
+            except broker.BrokerDenied as exc:
+                supervisor.issue_fix_status(run_id, "denied", error=str(exc)[:200])
+                raise
+        supervisor.issue_fix_status(run_id, "pushed", new_head=pushed["new_head"])
+        try:
+            pr = broker.open_issue_pr(current, repo=repo, number=number, branch=self.scope.branch,
+                                      title=title.strip(), body=body, login=pushed["login"])
+        except Exception as exc:
+            supervisor.issue_fix_status(run_id, "uncertain",
+                                        error=f"PR create outcome unknown: {type(exc).__name__}")
+            raise ProtocolError("the branch was pushed but the PR could not be confirmed: do "
+                                "not retry; say so")
+        supervisor.issue_fix_status(run_id, "opened", pr_number=pr)
+        try:
+            broker.request_issue_pr_review(current, repo=repo, pr=pr, login=pushed["login"])
+        except Exception as exc:
+            # The PR is open as the fixer, so the reviewer gate's `opened` still starts the loop.
+            supervisor.issue_fix_status(run_id, "opened",
+                                        error=f"review request not confirmed: {type(exc).__name__}")
+            return {"accepted": True}
+        supervisor.issue_fix_status(run_id, "requested")
+        return {"accepted": True}
+
+    def _issue_comment(self, loop: dict, supervisor, body: str) -> object:
+        run_id = self.scope.run_id
+        try:
+            login = broker.authorize_issue_fix(loop, repo=self.scope.repo, number=self.scope.number)
+        except broker.BrokerDenied as exc:
+            supervisor.issue_fix_status(run_id, "denied", error=str(exc)[:200])
+            raise
+        try:
+            comment = broker.post_issue_comment(loop, repo=self.scope.repo,
+                                                number=self.scope.number, login=login, body=body)
+        except Exception as exc:
+            supervisor.issue_fix_status(run_id, "uncertain",
+                                        error=f"POST outcome unknown: {type(exc).__name__}")
+            raise ProtocolError("the comment's outcome is unknown: do not retry; say so")
+        supervisor.issue_fix_status(run_id, "posted", comment_id=comment)
         return {"accepted": True}
 
 

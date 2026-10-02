@@ -94,7 +94,8 @@ def _identity(loop: dict, repo: str, number: int, head: str, ref: str, role: str
     if type(number) is not int or number <= 0 or not isinstance(head, str) or not _SHA.fullmatch(head):
         raise FetchDenied("invalid PR identity")
     # The adjudicator reads the same exact-head export; its mount is read-only (contained.py).
-    if role not in ("reviewer", "fixer", "adjudicator") or not isinstance(ref, str) or not ref or ref.startswith("-"):
+    if (role not in ("reviewer", "fixer", "adjudicator", "issue_fixer") or not isinstance(ref, str)
+            or not ref or ref.startswith("-")):
         raise FetchDenied("invalid role or ref")
     seats = loop.get("seats") or {}
     reader = loop.get("read_token")
@@ -342,9 +343,21 @@ def _extract(archive: bytes, directory: pathlib.Path,
             raise FetchDenied("blob size or hash mismatch")
 
 
+def _base_head(loop: dict, repo: str, head: str, reader: str) -> None:
+    """An issue fix's base commit (#214): ``head`` must still be on the loop's base branch."""
+    compare = _json(loop, f"/repos/{repo}/compare/{head}...{loop.get('base')}", reader)
+    if not isinstance(compare, dict) or compare.get("status") not in ("identical", "ahead"):
+        raise FetchDenied("base commit is no longer on the base branch")
+
+
 def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
            role: str, sandbox_root: pathlib.Path) -> pathlib.Path:
     reader = _identity(loop, repo, number, head, ref, role)
+    if role == "issue_fixer":
+        def live(*_args) -> None:
+            _base_head(loop, repo, head, reader)
+    else:
+        live = _live_head
     root = pathlib.Path(sandbox_root).absolute()
     token_paths = [path.resolve() for login in
                    (reader, loop["seats"]["reviewer"]["login"], loop["seats"]["fixer"]["login"])
@@ -352,7 +365,7 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
     if (root.exists() or root.is_symlink() or root.parent.resolve() != root.parent
             or any(root == token or root in token.parents for token in token_paths)):
         raise FetchDenied("sandbox root exists, follows a symlink or overlaps credential")
-    _live_head(loop, repo, number, head, ref, reader)
+    live(loop, repo, number, head, ref, reader)
     commit = _json(loop, f"/repos/{repo}/git/commits/{head}", reader)
     if not isinstance(commit, dict) or commit.get("sha") != head:
         raise FetchDenied("commit SHA mismatch")
@@ -366,7 +379,7 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
     if not isinstance(tree, dict) or tree.get("sha") != tree_sha:
         raise FetchDenied("tree SHA mismatch")
     entries = _entries(tree)
-    _live_head(loop, repo, number, head, ref, reader)
+    live(loop, repo, number, head, ref, reader)
     # Sibling on the same filesystem: none of the partial export is visible at root.
     with tempfile.TemporaryDirectory(prefix=".review-trusted-", dir=root.parent) as temp:
         private = pathlib.Path(temp)
@@ -375,7 +388,7 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
         directory = private / "repo"
         directory.mkdir(mode=0o700)
         _extract(archive, directory, entries)
-        _live_head(loop, repo, number, head, ref, reader)
+        live(loop, repo, number, head, ref, reader)
         if root.exists() or root.is_symlink():
             raise FetchDenied("sandbox root appeared during staging")
         _publish_exclusive(private, root)

@@ -7,8 +7,14 @@ before any model sees its text (spam and prompt injection on a public repo stop 
 The issue is re-read from GitHub first; one that is closed, is a pull request, changed author,
 or already carries a label from the triage list (a person got there first) is left alone.
 
+It also hands an issue to the fixer (#214): when a maintainer (``triage.maintainers``) applies
+``triage.fix_label`` to an open issue by an allowlisted author, and the repository's unattended
+fixer pushes are on, one isolated issue-fix turn is queued from the base branch's current commit.
+Only a person's ``labeled`` event counts, never the triage seat's own labels: ``fix_label`` is
+not one of the labels triage may apply.
+
 stdin : a GitHub webhook payload
-stdout: ``[SILENT]`` (an eligible issue queues an isolated triage turn)
+stdout: ``[SILENT]`` (an eligible issue queues an isolated turn)
 """
 
 from __future__ import annotations
@@ -23,6 +29,42 @@ from review_loop import config, gate, gh  # noqa: E402
 from review_loop.util import log, silence  # noqa: E402
 
 
+def fix(loop: dict, payload: dict) -> None:
+    """``labeled`` with the fix label, by a maintainer: queue one issue-fix turn (#214)."""
+    triage = loop["triage"]
+    label = str((payload.get("label") or {}).get("name") or "")
+    if not triage.get("fix_label") or label.casefold() != triage["fix_label"].casefold():
+        silence(f"issues labeled {label or '(no label)'}: not the fix label")
+    issue = payload.get("issue")
+    if not isinstance(issue, dict) or type(issue.get("number")) is not int or issue["number"] < 1:
+        silence("payload has no issue number")
+    number = issue["number"]
+    sender = str((payload.get("sender") or {}).get("login") or "").lower()
+    if sender not in triage.get("maintainers", []):
+        silence(f"issue #{number}: {sender or 'an unknown account'} applied the fix label, and "
+                "is not in triage.maintainers")
+    if not config.issue_fixes_enabled(loop):
+        silence(f"issue #{number}: issue fixes need unattended fixer pushes on — "
+                f"{config.fixer_push_enable_command(loop)}")
+    from review_loop import run_supervisor
+    try:
+        run_supervisor.issue_fix_issue(loop, number)
+    except Exception as exc:
+        silence(f"issue #{number} not handed to the fixer: {exc}")
+    ref = gh.api(loop, f"/repos/{loop['repo']}/git/ref/heads/{loop['base']}",
+                 login=loop["read_token"])
+    base = ((ref or {}).get("object") or {}).get("sha") if isinstance(ref, dict) else None
+    if not isinstance(base, str) or len(base) != 40:
+        silence(f"issue #{number}: base branch {loop['base']} unreadable (GitHub read failed)")
+    try:
+        outcome = gate.enqueue_isolated(loop, "issue_fixer", number, base, turn_key="issue-fix")
+    except Exception as exc:
+        silence(f"issue #{number} fix held: isolated worker unavailable: "
+                f"{type(exc).__name__}: {exc}")
+    log(f"issue #{number} handed to the fixer at {base[:7]}: {outcome}")
+    silence()
+
+
 def main() -> None:
     payload = json.load(sys.stdin)
     if "zen" in payload and "action" not in payload:
@@ -31,6 +73,8 @@ def main() -> None:
     triage = loop.get("triage") or {}
     if not triage.get("route"):
         silence("issue triage is off for this loop")
+    if payload.get("action") == "labeled":
+        fix(loop, payload)
     if payload.get("action") != "opened":
         silence(f"issues {payload.get('action') or '(no action)'}: only a new issue is triaged")
     issue = payload.get("issue")

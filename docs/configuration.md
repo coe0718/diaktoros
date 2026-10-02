@@ -247,6 +247,8 @@ Off unless the loop has a `triage` block. `hermes review-loop triage --enable` w
 | `max_labels` | 3 | at most this many labels per issue (1–10) |
 | `comment` | false | whether one short comment (≤ 1000 characters) may go with the labels |
 | `login` | the reviewer seat | the account that labels; needs `issues: write`, never the reader |
+| `fix_label` | — | a label a maintainer applies to hand an issue to the fixer (#214); not one of `labels`; needs unattended fixer pushes on |
+| `maintainers` | — | the logins whose applying `fix_label` counts (required with it) |
 
 `seats.triage` takes `daily_turns`, `turn_budget_s` and `concurrency` (default 1).
 

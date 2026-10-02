@@ -410,6 +410,16 @@ TOOLS = {
                'at all when none fits), adding `--comment-file /tmp/comment.txt` only if this loop '
                'allows a comment. You get exactly one triage write; you cannot review, push, close '
                'or edit the issue. '),
+    'issue_fixer': ('To open the PR, name the files you changed, a commit message, a PR title and a '
+                    'description file: `python -m review_loop.broker_client open_pr --files '
+                    'src/a.py src/b.py --message "..." --title "..." --body-file /tmp/pr.md` '
+                    '(paths are under `/work`; add `--dry-run` first to check it without spending '
+                    'the write). The same limits as a fixer push apply: at most '
+                    f'{safe_push.MAX_FILES} files, {safe_push.MAX_FILE // 1024} KiB per file and '
+                    f'{safe_push.MAX_CONTENT // 1024} KiB in total, whole regular files only, '
+                    'nothing under `.github/`. If you cannot fix the issue, instead run '
+                    '`python -m review_loop.broker_client issue_comment --body-file /tmp/why.md`. '
+                    'You get exactly one of the two; you cannot review, merge or close anything. '),
 }
 
 
@@ -523,7 +533,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
         (client / '__init__.py').touch()
         shutil.copyfile(Path(__file__).with_name('broker_client.py'), client / 'broker_client.py')
         shutil.copyfile(Path(__file__).with_name('wire.py'), client / 'wire.py')
-        if scope.role == 'fixer':
+        if scope.role in ('fixer', 'issue_fixer'):
             # Host-written and mounted read-only at /opt/client: the push helper's base_head.
             # A convenience, not an authority — the broker compares it with scope.head itself.
             turn = client.parent / Path(broker_client.TURN_FILE).name

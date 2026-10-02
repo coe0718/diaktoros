@@ -356,6 +356,8 @@ def seat_profile(loop: dict, role: str) -> str:
         return str((loop.get("adjudicator") or {}).get("profile") or "default")
     if role == "triage":
         return str((loop.get("triage") or {}).get("profile") or "")
+    if role == "issue_fixer":
+        role = "fixer"           # an issue fix runs as the fixer seat (#214)
     if role == "observer":
         observer = loop.get("observer") or {}
         if not str(observer.get("route") or "").strip():
@@ -369,6 +371,8 @@ def seat_login(loop: dict, role: str) -> str:
         return ""
     if role == "triage":
         return triage_login(loop)
+    if role == "issue_fixer":
+        role = "fixer"
     return str(((loop.get("seats") or {}).get(role) or {}).get("login") or "")
 
 
@@ -717,7 +721,7 @@ def seat_concurrency(loop: dict, seat: str) -> int:
     """
     seat_cfg = (loop.get("seats") or {}).get(seat) or {}
     value = seat_cfg.get("concurrency")
-    if (value is None or value == "") and seat not in ("adjudicator", "triage"):
+    if (value is None or value == "") and seat not in ("adjudicator", "triage", "issue_fixer"):
         # The loop default is documented as the default for the two *working* seats. A ruling
         # is rare and read-only; it never inherits a parallelism the operator chose for reviews.
         value = loop.get("concurrency", 1)
@@ -801,7 +805,11 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
 # A triage run has no PR head; the ledger's head column holds this marker instead, and the
 # run is keyed by the issue number (``pr``) with seat ``triage`` and turn key ``triage``.
 TRIAGE_HEAD = "issue"
-TRIAGE_KEYS = {"route", "profile", "authors", "labels", "max_labels", "comment", "login"}
+TRIAGE_KEYS = {"route", "profile", "authors", "labels", "max_labels", "comment", "login",
+               "fix_label", "maintainers"}
+# An issue-fix run (#214) is keyed by the issue and the base commit it starts from (``head``);
+# it pushes only to this branch, created fresh for the issue.
+ISSUE_FIX_BRANCH = "review-loop/issue-{number}"
 TRIAGE_LABEL = re.compile(r"[^\x00-\x1f,{}`]{1,50}\Z")
 TRIAGE_MAX_LABELS = 10
 TRIAGE_LABELS_MAX = 100
@@ -818,6 +826,13 @@ def triage_login(loop: dict) -> str:
         return ""
     return str(triage.get("login") or ((loop.get("seats") or {}).get("reviewer") or {}).get("login")
                or "").lower()
+
+
+def issue_fixes_enabled(loop: dict) -> bool:
+    """Whether a maintainer's ``fix_label`` hands an issue to the fixer (#214) — needs triage on
+    and the repository's unattended fixer pushes, which the operator opts into separately."""
+    return bool(triage_enabled(loop) and (loop.get("triage") or {}).get("fix_label")
+                and unattended_fixer_push_enabled(loop))
 
 
 def hook_roles(loop: dict) -> tuple[str, ...]:
@@ -868,6 +883,25 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
         if not isinstance(login, str) or login != login.strip() or not login:
             raise ConfigError(f"{where}: triage.login must be a GitHub login")
         out["login"] = login.lower()
+    fix_label = raw.get("fix_label")
+    if fix_label not in (None, ""):
+        if (not isinstance(fix_label, str) or not TRIAGE_LABEL.fullmatch(fix_label)
+                or fix_label != fix_label.strip()):
+            raise ConfigError(f"{where}: triage.fix_label must be one label name (no commas, "
+                              "braces, backticks or control characters)")
+        if fix_label.casefold() in {x.casefold() for x in out["labels"]}:
+            raise ConfigError(f"{where}: triage.fix_label must not be one of triage.labels — the "
+                              "triage seat could then hand issues to the fixer itself")
+        maintainers = raw.get("maintainers")
+        if (not isinstance(maintainers, list) or not maintainers
+                or not all(isinstance(m, str) and m.strip() for m in maintainers)):
+            raise ConfigError(f"{where}: triage.fix_label needs triage.maintainers: the logins "
+                              "whose applying it hands an issue to the fixer")
+        out["fix_label"] = fix_label
+        out["maintainers"] = sorted({m.strip().lower() for m in maintainers})
+    elif raw.get("maintainers") not in (None, []):
+        raise ConfigError(f"{where}: triage.maintainers only means something with "
+                          "triage.fix_label")
     who = out.get("login") or str((loop["seats"].get("reviewer") or {}).get("login") or "").lower()
     if not who:
         raise ConfigError(f"{where}: triage needs a login to label as (triage.login, or the "

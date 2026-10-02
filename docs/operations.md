@@ -849,6 +849,33 @@ Each triage is recorded in the run ledger before anything is written (`triage_re
 `posted`, `skipped`, `nothing`, `denied`, or `uncertain` when a write's outcome is unknown).
 A recorded triage is never re-run.
 
+### Issue fixes: a maintainer hands an issue to the fixer
+
+```bash
+hermes review-loop triage --loop name --enable --fix-label agent-fix --maintainer you
+```
+
+The loop's front door then becomes *issue → fix → PR → review → merge*:
+
+- **The trigger is a person.** When someone in `--maintainer` (repeatable) applies the fix label
+  to an open issue by an allowlisted author, one fixer turn is queued. The fix label can't be one
+  of the triage labels, so the triage seat can never trigger it. Nothing happens unless the
+  repository's unattended fixer pushes are on (`fixer-push --enable`, the same opt-in as fixing
+  PRs).
+- **The fixer works from the base.** The turn runs as the fixer seat's profile and login, in the
+  same sandbox. `/work` holds the base branch's commit from when the label was applied, and the
+  issue text is passed as data.
+- **One write, recorded first.** The write is either `open_pr` or `issue_comment`:
+  - `open_pr` pushes one commit to a **new** branch `review-loop/issue-N`. The push requires that
+    branch to be absent, so an existing branch is never overwritten. It then opens the PR
+    against the base as the fixer ("Fixes #N") and requests the reviewer seat, and the review
+    loop takes it from there.
+  - `issue_comment` is for when the fixer can't fix the issue: it explains why in one comment,
+    and no PR is opened.
+
+  Each write is recorded in `issue_fixes` before it happens. An unknown outcome is `uncertain`
+  and is never replayed.
+
 ## When a gate crashes or runs out of time
 
 The Hermes gateway runs a gate synchronously inside the webhook request: payload on stdin, no
