@@ -125,6 +125,78 @@ class TraceIsTheLiveGate(Base):
         self.assertRegex(out, r"would (start|queue)")
 
 
+class HarnessSeams(unittest.TestCase):
+    """#222: each of the harness's refusals is pinned, not only the process launch.
+
+    A probe stands in for the gate and tries all three ways out: a non-GET ``urlopen`` (how a
+    route POST, an observer notice or the start ping leaves), a ``gh`` write, and a GET, which must
+    pass. A loopback server counts what actually arrives.
+    """
+
+    def test_a_post_and_a_github_write_are_recorded_never_sent_and_a_get_passes(self):
+        import http.server
+        import subprocess
+        import tempfile
+        import threading
+        from review_loop import util
+        arrived = []
+
+        class Server(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_GET(self):
+                arrived.append("GET")
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def do_POST(self):
+                arrived.append("POST")
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        url = f"http://127.0.0.1:{server.server_port}/hook"
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = pathlib.Path(tmp) / "probe_gate.py"
+            probe.write_text(f"""
+import urllib.request
+from review_loop import gh
+try:
+    urllib.request.urlopen(urllib.request.Request({url!r}, data=b"{{}}", method="POST"), timeout=5)
+    print("post: sent")
+except Exception as exc:
+    print("post: refused", type(exc).__name__)
+answer = gh._request({{"read_token": "reader"}}, "/repos/acme/widgets/pulls/7/requested_reviewers",
+                     "POST", {{"reviewers": ["x"]}}, "reader", 5)
+print("gh:", answer.error)
+with urllib.request.urlopen({url!r}, timeout=5) as resp:
+    print("get:", resp.read().decode())
+""")
+            report = pathlib.Path(tmp) / "effects.json"
+            env = util.leak_guard_env({k: v for k, v in os.environ.items()
+                                       if k != "REVIEW_LOOP_GH_STUB"})
+            proc = subprocess.run([sys.executable, "-c", util.leak_guard_code(trace._HARNESS),
+                                   str(probe), str(trace.PLUGIN), str(report)],
+                                  input="{}", capture_output=True, text=True, timeout=60, env=env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            effects = json.loads(report.read_text())
+        self.assertIn("post: refused URLError", proc.stdout)
+        self.assertIn("gh: trace: dry run, not sent", proc.stdout)
+        self.assertIn("get: ok", proc.stdout)
+        self.assertEqual(arrived, ["GET"], "only the read may leave the machine")
+        self.assertIn(["send", "POST 127.0.0.1/hook"], effects)
+        self.assertIn(["github", "POST /repos/acme/widgets/pulls/7/requested_reviewers"], effects)
+
+
 class Delivery(unittest.TestCase):
     loop = {"id": "widgets", "repo": "acme/widgets", "read_token": "reader",
             "seats": {"reviewer": {"route": "widgets-review"}, "fixer": {"route": "widgets-fix"}},
