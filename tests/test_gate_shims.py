@@ -260,10 +260,87 @@ class GatewayResolvesEveryRoute(Base):
         before = shim.stat()
         self.assertEqual(gate_shims.install(config.load_id("widgets")), [])
         self.assertEqual(shim.stat().st_mtime_ns, before.st_mtime_ns)
-        shim.write_text(gate_shims.SHIM.format(marker=gate_shims.MARKER, target="/old/plugin/x.py"))
+        shim.write_text(gate_shims.SHIM.format(marker=gate_shims.MARKER, target="/old/plugin/x.py",
+                                               home=str(self.hermes)))
         lines = gate_shims.install(config.load_id("widgets"))
         self.assertEqual(lines, [f"gate shim rewrote: {shim}"])
         self.assertEqual(shim.read_text(), gate_shims.render("gate_reviewer.py"))
+
+
+_GATEWAY_ENV = textwrap.dedent("""
+    import json, os, sys
+    sys.path.insert(0, sys.argv[1])
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.environments.local import build_subprocess_env
+    # What the gateway does before running a route's script: enter the serving profile's scope
+    # (WebhookAdapter._profile_scope), then build the child env (webhook_filters.run_route_script).
+    token = set_hermes_home_override(str(get_profile_dir(sys.argv[2])))
+    try:
+        print(json.dumps(build_subprocess_env()))
+    finally:
+        reset_hermes_home_override(token)
+""")
+
+
+class ShimRunsUnderTheLoopsHome(Base):
+    """The gateway runs a ``/p/<profile>/`` route's script with HERMES_HOME = that profile's home.
+    The loop lives under the root, so the shim must run the gate there. Without it, on a real
+    gateway, every profile-routed gate found no loop and answered [SILENT], and the gateway does
+    not log a script that exits 0 (#209)."""
+
+    def probe(self) -> pathlib.Path:
+        probe = self.tmp / "plugin" / "scripts" / "gate_reviewer.py"
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_text(textwrap.dedent(f"""
+            import json, os, sys
+            sys.path.insert(0, {str(ROOT)!r})
+            from review_loop import config
+            print(json.dumps({{"hermes_home": os.environ.get("HERMES_HOME"),
+                              "home": os.environ.get("HOME"),
+                              "config_dir": str(config.config_dir())}}))
+        """))
+        return probe
+
+    def run_shim(self, env: dict) -> dict:
+        from review_loop import gate_shims
+        with patch.object(gate_shims, "plugin_script", return_value=self.probe()):
+            text = gate_shims.render("gate_reviewer.py")
+        shim = self.hermes / "profiles" / "vex" / "scripts" / "gate_reviewer.py"
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text(text)
+        proc = subprocess.run([sys.executable, str(shim)], input="{}", capture_output=True,
+                              text=True, cwd=shim.parent, env=env, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_the_gate_reads_the_root_loops_under_a_profile_scoped_env(self):
+        profile = self.hermes / "profiles" / "vex"
+        # The gateway's child env: the profile as HERMES_HOME, HOME moved, the real one alongside;
+        # and no REVIEW_LOOP_CONFIG_DIR, which only tests ever set.
+        env = {"PATH": os.environ["PATH"], "HERMES_HOME": str(profile),
+               "HOME": str(profile / "home"), "HERMES_REAL_HOME": str(self.home)}
+        seen = self.run_shim(env)
+        self.assertEqual(seen["hermes_home"], str(self.hermes))
+        self.assertEqual(seen["config_dir"], str(self.hermes / "review-loops.d"))
+        self.assertEqual(seen["home"], str(self.home))
+
+    def test_with_hermes_own_gateway_env(self):
+        """The same, with the env Hermes itself builds for a vex-scoped route script."""
+        if not (SOURCE / "tools" / "environments" / "local.py").exists():
+            skip_or_fail(self, f"no Hermes source at {SOURCE}")
+        base = {"PATH": os.environ["PATH"], "HOME": str(self.home), "HERMES_HOME": str(self.hermes)}
+        built = subprocess.run([real_python(), "-c", _GATEWAY_ENV, str(SOURCE), "vex"],
+                               capture_output=True, text=True, timeout=120, env=base,
+                               cwd=str(self.home))
+        if built.returncode != 0:
+            skip_or_fail(self, f"Hermes not importable from {SOURCE}: {built.stderr[-300:]}")
+        env = json.loads(built.stdout)
+        env.pop("REVIEW_LOOP_CONFIG_DIR", None)
+        self.assertNotEqual(env.get("HERMES_HOME"), str(self.hermes),
+                            "premise: Hermes scopes the script's HERMES_HOME to the profile")
+        seen = self.run_shim(env)
+        self.assertEqual(seen["config_dir"], str(self.hermes / "review-loops.d"))
 
 
 class ShimRunsThePluginScript(Base):
@@ -322,7 +399,8 @@ class ShimRunsThePluginScript(Base):
         shim_dir = self.tmp / "profile" / "scripts"
         shim_dir.mkdir(parents=True)
         shim = shim_dir / "probe.py"
-        shim.write_text(gate_shims.SHIM.format(marker=gate_shims.MARKER, target=str(probe)))
+        shim.write_text(gate_shims.SHIM.format(marker=gate_shims.MARKER, target=str(probe),
+                                               home=str(self.hermes)))
         via_shim = self.sh([sys.executable, str(shim)], shim_dir, "payload-bytes")
         direct = self.sh([sys.executable, str(probe)], plugin, "payload-bytes")
         self.assertEqual(via_shim.returncode, 3, via_shim.stderr)
@@ -333,7 +411,8 @@ class ShimRunsThePluginScript(Base):
         from review_loop import gate_shims
         shim = self.tmp / "shim.py"
         shim.write_text(gate_shims.SHIM.format(marker=gate_shims.MARKER,
-                                               target=str(self.tmp / "gone.py")))
+                                               target=str(self.tmp / "gone.py"),
+                                               home=str(self.hermes)))
         proc = self.sh([sys.executable, str(shim)], self.tmp, "{}")
         self.assertEqual(proc.returncode, 1)
         self.assertEqual(proc.stdout, "")
