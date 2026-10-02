@@ -602,7 +602,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 if observed is not None:
                     observed.update(returncode=result.returncode,
                                     stdout=result.stdout[-4000:], stderr=result.stderr[-4000:],
-                                    submissions=[dict(entry) for entry in broker.recorded])
+                                    submissions=[dict(entry) for entry in broker.recorded],
+                                    # The provider 429'd this turn: when its window reopens (#219).
+                                    rate_limited_until=getattr(inference, 'rate_limited_until',
+                                                               None))
                 if result.returncode == 0 and not broker.completed:
                     raise TurnDenied('agent exited without a confirmed scoped write')
                 return result.returncode

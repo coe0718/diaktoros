@@ -322,6 +322,9 @@ class _NoRedirectConnection:
         except BaseException:
             conn.close()
             raise
+        # Kept for the caller that has to read a 429's reset time (#219); never a credential:
+        # these are the upstream's *response* headers.
+        self.last_headers = {k.lower(): v for k, v in response.getheaders()}
         content_type = response.getheader('Content-Type')
         first = b''
         if content_type is None or content_type.startswith('application/json'):
@@ -420,6 +423,9 @@ class InferenceCapability:
             self.endpoint = _NoRedirectConnection(upstream, contract.upstream_suffix)
         self.codex_backend = contract.mode == 'codex_responses' and is_codex_backend(upstream)
         self.credential = credential
+        # When the upstream last answered 429, the time its usage window reopens (#219), so the
+        # host can hold the seat instead of retrying into a closed window.
+        self.rate_limited_until: float | None = None
         self.model = model
         self.quota = quota
         self.used = 0
@@ -460,6 +466,17 @@ class InferenceCapability:
                 return 401, 'application/json', iter([b'{"error": "upstream rejected the credential"}'])
             status, content_type, data = self.endpoint.post(body, self._headers(fresh, sandbox_headers))
         return status, content_type, data
+
+    def note_rate_limit(self, headers: dict, body: bytes) -> None:
+        """Record when a 429'd window reopens — only when the provider *says* when. A bare 429
+        (often a per-minute limit) stays an ordinary failure with the ordinary backoff: the
+        host never guesses a usage window."""
+        from . import pacing
+        until = pacing.parse_reset(headers or {}, body, time.time())
+        if until is None:
+            return
+        with self.lock:
+            self.rate_limited_until = max(self.rate_limited_until or 0.0, until)
 
     def __enter__(self):
         self.directory.mkdir(mode=0o700)
@@ -509,6 +526,14 @@ class InferenceCapability:
                     _close(data)
                     self.send_error(502)
                     return
+                if status == 429:
+                    # The provider's own 429 (the quota refusal above never reaches here): note
+                    # when its window reopens, then relay the answer unchanged.
+                    try:
+                        data = b''.join(_chunks(data))[:MAX_RESPONSE]
+                    except (OSError, ProxyError, http.client.HTTPException):
+                        data = b''
+                    capability.note_rate_limit(getattr(capability.endpoint, 'last_headers', {}), data)
                 if hasattr(data, "set_peer"):
                     data.set_peer(self.connection)
                 _relay(self, status, content_type, data)

@@ -679,6 +679,23 @@ def _check_budget(value, what: str, where: str) -> int:
     return budget
 
 
+DAILY_TURNS_MAX = 1000
+
+
+def _check_daily_turns(value, what: str, where: str) -> int:
+    """A per-seat daily turn cap (#219): a whole number of turns, 1–DAILY_TURNS_MAX."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= DAILY_TURNS_MAX:
+        raise ConfigError(f"{where}: {what} must be a whole number of turns, 1-{DAILY_TURNS_MAX} "
+                          f"(leave it out for no cap), got {value!r}")
+    return value
+
+
+def seat_daily_turns(loop: dict, seat: str) -> int | None:
+    """Turns ``seat`` may start per local day on this loop, or None (no cap) (#219)."""
+    value = (((loop.get("seats") or {}).get(seat)) or {}).get("daily_turns")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
 def seat_concurrency(loop: dict, seat: str) -> int:
     """How many PRs this seat may work at once.
 
@@ -716,10 +733,14 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
     """
     if raw is None or raw == {}:
         return {}
-    if not isinstance(raw, dict) or not set(raw) <= {"login", "concurrency", "turn_budget_s"}:
-        raise ConfigError(f"{where}: seats.adjudicator may only hold 'login', 'concurrency' and "
-                          "'turn_budget_s'")
+    if not isinstance(raw, dict) or not set(raw) <= {"login", "concurrency", "turn_budget_s",
+                                                     "daily_turns"}:
+        raise ConfigError(f"{where}: seats.adjudicator may only hold 'login', 'concurrency', "
+                          "'turn_budget_s' and 'daily_turns'")
     seat: dict = {}
+    if raw.get("daily_turns") not in (None, ""):
+        seat["daily_turns"] = _check_daily_turns(raw["daily_turns"],
+                                                 "seats.adjudicator.daily_turns", where)
     if raw.get("turn_budget_s") not in (None, ""):
         seat["turn_budget_s"] = _check_budget(raw["turn_budget_s"],
                                               "seats.adjudicator.turn_budget_s", where)
@@ -1382,6 +1403,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         if seats[seat].get("turn_budget_s") not in (None, ""):
             seats[seat]["turn_budget_s"] = _check_budget(
                 seats[seat]["turn_budget_s"], f"seats.{seat}.turn_budget_s", where)
+        if seats[seat].get("daily_turns") not in (None, ""):
+            seats[seat]["daily_turns"] = _check_daily_turns(
+                seats[seat]["daily_turns"], f"seats.{seat}.daily_turns", where)
 
     if not loop.get("clone"):
         # Above one run at once, isolation is not a preference: without a clone to isolate from,

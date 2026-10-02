@@ -963,6 +963,10 @@ def describe_run(row: dict, loop_id: str = 'LOOP') -> str:
 def next_step(row: dict, loop_id: str = 'LOOP') -> str:
     """What moves a failed, waiting, uncertain or push-policy-cancelled ``runs_view`` row on
     (#53)."""
+    if row['state'] == 'waiting' and str(row.get('error') or '').startswith('held: '):
+        due = max(0, int((row['retry_at'] or 0) - time.time()))
+        return (f"waits for the reset, no retry spent — starts in {due}s on the next event or "
+                "armed watchdog sweep")
     if row['state'] == 'waiting':
         due = max(0, int((row['retry_at'] or 0) - time.time()))
         return (f"attempt {(row['retries'] or 0) + 1} of {MAX_RETRIES} due in {due}s "
@@ -1988,7 +1992,8 @@ class Supervisor:
 
     def complete_uncertain(self, run_id: str, owner: str, rc: int | None,
                            error: str | None = None, *, stopped: bool = True,
-                           retry: bool = False, detail: str | None = None) -> str | None:
+                           retry: bool = False, detail: str | None = None,
+                           paced_until: float | None = None) -> str | None:
         """Record direct worker completion, including after lease expiry.
 
         Never use this for operator guesswork: only the owner after its child
@@ -1999,8 +2004,11 @@ class Supervisor:
         write*: with ``retry`` (a transient cause, or a non-zero sandbox exit) it waits for a
         backed-off relaunch, up to MAX_RETRIES, then fails. A fixer turn the policy held
         before launch (#81) is ``cancelled`` with that reason, like a claim-time policy
-        cancellation: no relaunch, listed and recovered by an operator ``retry``. Returns
-        the state written, or None when this owner no longer holds the run.
+        cancellation: no relaunch, listed and recovered by an operator ``retry``. A run
+        ``paced_until`` a time (#219: the seat's usage window is closed, or its daily cap is
+        reached) waits until then *without* spending a retry — it was never the turn's fault —
+        under the same rule: only when nothing was written. Returns the state written, or None
+        when this owner no longer holds the run.
         """
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -2024,6 +2032,8 @@ class Supervisor:
                 state = 'succeeded'
             elif policy_hold(error):
                 state = 'cancelled'   # the policy held this turn before it launched (#81)
+            elif paced_until is not None and write_records(con, run_id) is None:
+                state, retry_at = 'waiting', max(float(paced_until), time.time())
             elif retry and write_records(con, run_id) is None:
                 retries += 1
                 if retries < MAX_RETRIES:
@@ -2184,6 +2194,7 @@ class Supervisor:
         rc, error = None, None
         budget = int(self.budget_of(run_id))
         retry, stopped, observed, breach, claim = False, True, {}, None, None
+        paced_until, account = None, None
         try:
             assert self.production_config is not None
             try:
@@ -2218,6 +2229,24 @@ class Supervisor:
             except seat_model.SeatModelError as exc:
                 error = f"seat model unresolved: {exc}"[:600]
                 retry = retryable(exc)
+                return
+            # Pacing (#219): an account whose usage window is closed, or a seat past its daily
+            # cap, waits for the reset instead of launching a turn that would only 429.
+            from . import pacing
+            provider = str(getattr(inference, "provider", "") or "the provider")
+            account = pacing.account_key(provider, str(getattr(inference, "upstream", "") or ""),
+                                         str(getattr(inference, "profile", "") or ""))
+            closed = pacing.held(account)
+            cap = config.seat_daily_turns(loop, row['seat'])
+            if closed is not None:
+                paced_until = closed[0]
+                error = (f"held: {row['seat']} usage window ({provider}) — resumes "
+                         f"{pacing.when(closed[0])}")
+                return
+            if cap is not None and pacing.turns_today(loop['id'], row['seat']) >= cap:
+                paced_until = pacing.next_midnight()
+                error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
+                         f"{pacing.when(paced_until)}")
                 return
             reader = loop["read_token"]
             pr = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}', login=reader)
@@ -2290,6 +2319,7 @@ class Supervisor:
                                                          marker['rounds']) is None:
                     raise ValueError('breach marker already claimed or replaced')
                 breach = (state_mod.state_for(loop), marker['rounds'])
+            pacing.count_turn(loop['id'], row['seat'])
             rc = trusted_turn.run_turn(loop, scope, source=Path(settings["source"]),
                   venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
                   rust=Path(settings["rust"]), upstream=inference.upstream,
@@ -2305,6 +2335,14 @@ class Supervisor:
             # A non-zero sandbox exit with nothing on the write-ahead record is the model or
             # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
             retry = rc != 0
+            limited = observed.get('rate_limited_until')
+            if rc != 0 and isinstance(limited, (int, float)) and limited > time.time():
+                # The provider said its window is closed (#219): hold the account, and this run
+                # waits for the reset instead of spending its retries against the 429.
+                pacing.hold(account, limited, f"{provider} answered 429")
+                paced_until = limited
+                error = (f"held: {row['seat']} usage window ({provider}) — resumes "
+                         f"{pacing.when(limited)}")
         except trusted_turn.TurnBudgetExceeded as exc:
             # Name the clock (#49): an opaque "TimeoutExpired" hides that a setting killed the
             # turn. Never retried automatically: the same budget would most likely run out
@@ -2339,7 +2377,8 @@ class Supervisor:
         finally:
             state = self.complete_uncertain(
                 run_id, owner, rc, error, stopped=stopped, retry=retry,
-                detail=output_detail(observed.get('stdout'), observed.get('stderr')))
+                detail=output_detail(observed.get('stdout'), observed.get('stderr')),
+                paced_until=paced_until)
             if breach is not None and state in ('waiting', 'failed'):
                 # This run marked the breach 'adjudicating' and made no ruling: hand the
                 # marker back so its retry (or a re-arm) can claim it again.
