@@ -63,6 +63,21 @@ Follow-up targeted receipt: **19 passed, 1 skipped, 46 subtests passed** for the
 child/backend and inference-proxy files. Native inference remains unverified: no additional
 post-fix live request was made under the one-diagnostic-request permission.
 
+## Post-fix live verification
+
+With explicit permission for up to three additional tiny requests, all three passed:
+
+1. Host-diagnostic text probe through `selftest._one_completion`: **HTTP 200, reply OK**.
+2. Uninstrumented production selftest probe: **HTTP 200, reply OK**.
+3. Uninstrumented production socket/helper SSE probe: **HTTP 200, reply OK**, terminal
+   `[DONE]`, final finish reason, and the exact native history carrier present.
+
+Each requested 16 output tokens from `claude-sonnet-5[1m]`, used no tool schemas or
+repository context, and performed no repository writes or external posts. The temporary
+host tracer was not installed into production. These receipts supersede the earlier
+unverified text/streaming status; no live sandbox role turn, native tool-result round trip,
+carrier replay on a subsequent request, or forced native descendant cancellation was tested.
+
 ## Security maintenance notes
 
 - Preserve native reasoning using an inert registered ProviderProfile declaring the exact carrier
