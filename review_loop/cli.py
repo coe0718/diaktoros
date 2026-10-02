@@ -2745,6 +2745,47 @@ def cmd_retry(args) -> int:
     return 0 if rearmed and not refused else 2
 
 
+def cmd_trace(args) -> int:
+    """Dry-run one webhook through its gate: why it would, or would not, start a run (#216).
+
+    The gate script runs for real on a temporary copy of the loop's home, so the answer is the
+    live gate's own; nothing is posted, no run is started and the loop's state is untouched (see
+    ``review_loop.trace``). Exit 2 when it cannot be asked: an unknown loop, no such delivery, an
+    unreadable payload file, or an event or route this loop does not serve.
+    """
+    from . import trace
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"no such loop: {exc}")
+        return 2
+    admin = getattr(args, "admin_token", "") or None
+    if admin and gh.token_path(loop, admin) is None:
+        print(f"refused: --admin-token {admin!r} has no token file mapped on this loop — map it "
+              f"with `hermes review-loop set --loop {shlex.quote(loop['id'])} --token "
+              f"{shlex.quote(admin)}=/abs/path`")
+        return 2
+    try:
+        if args.delivery:
+            payload, event, route = trace.fetch_delivery(loop, args.delivery,
+                                                         admin or loop.get("read_token"))
+        else:
+            try:
+                payload = json.loads(pathlib.Path(args.payload).expanduser().read_text())
+            except (OSError, ValueError) as exc:
+                print(f"cannot read the payload file: {exc}")
+                return 2
+            if not isinstance(payload, dict):
+                print("cannot read the payload file: not a JSON object")
+                return 2
+            event, route = args.event or "pull_request", None
+        role = trace.role_for(loop, event, args.route or route)
+    except trace.TraceError as exc:
+        print(f"cannot trace: {exc}")
+        return 2
+    return trace.run(loop, payload, event, role)
+
+
 def cmd_explain(args) -> int:
     """Why one PR is not moving, and the one event that would move it.
 
@@ -3600,6 +3641,21 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         explain.add_argument("--loop", help="loop id (default: the only configured loop)")
         explain.add_argument("--pr", type=int, required=True, help="pull request number to explain")
         explain.set_defaults(func=cmd_explain)
+
+        tracer = sub.add_parser("trace", help="Dry-run one webhook through its gate: why it would "
+                                              "(or would not) start a run")
+        tracer.add_argument("--loop", required=True)
+        source = tracer.add_mutually_exclusive_group(required=True)
+        source.add_argument("--delivery", help="a recorded delivery to this loop's hooks: GitHub's "
+                                               "numeric id or the X-GitHub-Delivery GUID")
+        source.add_argument("--payload", help="a webhook payload JSON file instead")
+        tracer.add_argument("--event", choices=("pull_request", "pull_request_review"),
+                            help="with --payload: the event it was (default pull_request)")
+        tracer.add_argument("--route", help="the route it was sent to (default: from the delivery's "
+                                            "hook, or the event)")
+        tracer.add_argument("--admin-token", default="",
+                            help="login whose token can read hook deliveries (admin:repo_hook or repo)")
+        tracer.set_defaults(func=cmd_trace)
 
         preflight = sub.add_parser("doctor", help="Preflight a loop read-only: profiles, tokens, "
                                                   "routes, hooks, scripts, cron, clone")

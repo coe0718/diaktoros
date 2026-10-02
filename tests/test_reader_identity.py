@@ -271,6 +271,7 @@ class ReaderIdentityTests(_Loop):
         verbs = next(a for a in parser._actions
                      if isinstance(a, argparse._SubParsersAction)).choices
         extra = {"explain": ["--pr", "1"], "fixer-push": ["--disable"],
+                 "trace": ["--payload", "/nonexistent-payload.json"],
                  "models": ["--seat", "reviewer"], "retry": ["--pr", "1"],
                  "init": ["--repo", "acme/other", "--dry-run"]}
         self.assertIn("uninstall", verbs)
