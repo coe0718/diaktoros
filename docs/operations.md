@@ -103,6 +103,7 @@ hermes review-loop apply --loop name --while-busy     # rebind even while a seat
 hermes review-loop set --loop name --reviewer-concurrency 2   # two reviews at once, one fix at a time
 hermes review-loop set --loop name --fixer-turn-budget 1800   # let a fix run (build + tests) for 30 minutes
 hermes review-loop set --loop name --attribution off   # stop signing what the loop posts (on by default)
+hermes review-loop set --loop name --reviewer-daily-turns 20   # at most 20 reviewer turns a day (0 = no cap)
 hermes review-loop arm --loop name      # arm/pause by flipping the repo hooks (--admin-token LOGIN)
 hermes review-loop arm --loop name --pause
 hermes review-loop drain --loop name --seat reviewer
@@ -759,6 +760,36 @@ start. GitHub reads are real, so the gate judges the PR as it is now. The output
 delivery's facts, everything the gate logged, each `would …`, and one `outcome:` line:
 `would start a reviewer run`, `held — <why>`, or `declined — <why>`. The loop's real state is
 untouched, and the copy is deleted afterwards.
+
+## Pacing: usage windows and daily caps
+
+A seat on a subscription (Codex, a Claude subscription, `xai-oauth`, `qwen-oauth`, `nous`) draws on
+the same plan and usage window as your own use of that account. When the provider answers **429**,
+the host inference proxy reads when the window reopens: `Retry-After`, the provider's rate-limit
+reset headers (`anthropic-ratelimit-*-reset`, `x-ratelimit-reset-*`, `x-codex-…-reset…`), or the
+Codex usage-limit answer's `resets_in_seconds`/`resets_at`. It never believes a wait longer than a
+week. A **bare 429 that names no reset** is not guessed into a window: it's an ordinary failure
+with the ordinary backoff, which suits a per-minute limit. When a reset *is* named:
+
+- **The turn waits rather than fails.** A turn that ended on that 429 goes to `waiting` until the
+  reset, *without spending a retry* (ordinary failures still back off 2m → 4m → 8m → 16m, then
+  fail).
+- **The account is held.** A new turn for the same account (provider, endpoint and profile) is not
+  launched into the closed window; it waits for the same reset.
+- **Explain and status say so.** `explain` shows `held: fixer usage window (openai-codex) — resumes
+  14:20; waits for the reset, no retry spent`, and `status` lists the hold.
+
+**Daily caps.** `seats.<seat>.daily_turns` caps how many turns a seat may start per local day on a
+loop, so loop traffic can't eat a whole day of your own quota. Past the cap, turns wait until
+midnight, again without spending a retry. Set it with `set --reviewer-daily-turns N` or
+`--fixer-daily-turns N`; `0` removes it. `status` shows today's count against the cap.
+
+The holds and counts live in `$HERMES_HOME/state/review-loop-pacing.json`: an account key, a time
+and a reason. Never a credential. If the file is unreadable, it counts as empty: pacing never stops
+a turn on a guess.
+
+The Claude-subscription DirectSDK backend (#204) gets no HTTP status from Claude Code, so a usage
+limit there still looks like an ordinary failure.
 
 ## When a gate crashes or runs out of time
 

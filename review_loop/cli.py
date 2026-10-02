@@ -1950,6 +1950,16 @@ def cmd_set(args) -> int:
         if value is not None and value != (seats[seat].get("turn_budget_s")):
             budget_changes[seat] = (config.turn_budget(loop, seat), value)
             seats[seat]["turn_budget_s"] = value
+    # A daily turn cap per seat (#219); 0 removes it. normalize refuses anything else.
+    for seat, value in (("reviewer", getattr(args, "reviewer_daily_turns", None)),
+                         ("fixer", getattr(args, "fixer_daily_turns", None))):
+        if value is None or (value or None) == config.seat_daily_turns(loop, seat):
+            continue
+        budget_changes[f"{seat} daily turns"] = (config.seat_daily_turns(loop, seat), value or None)
+        if value:
+            seats[seat]["daily_turns"] = value
+        else:
+            seats[seat].pop("daily_turns", None)
 
     # The observer is a nested block, so it is collected the same way the seats are: flags the
     # operator did not pass leave the existing answer alone, and a flag that means "drop it"
@@ -2085,7 +2095,10 @@ def cmd_set(args) -> int:
         was = config.seat_concurrency(loop, seat)
         print(f"  {seat} concurrency: {was} → {value}  (this seat only)")
     for seat, (was, value) in budget_changes.items():
-        print(f"  {seat} turn budget: {was}s → {value}s  (this seat only)")
+        if seat.endswith(" daily turns"):
+            print(f"  {seat}: {was or 'no cap'} → {value or 'no cap'}  (this seat only)")
+        else:
+            print(f"  {seat} turn budget: {was}s → {value}s  (this seat only)")
     if read_after != read_before:
         print(f"  read_token: {read_before or '(none)'} → {read_after}")
     if read_after and _token_ref(loop, read_after) != _token_ref(updated, read_after):
@@ -2108,7 +2121,8 @@ def cmd_set(args) -> int:
                 print(f"  note: {seat} has its own turn budget "
                       f"({updated['seats'][seat]['turn_budget_s']}s) — the loop default does not "
                       "apply to it")
-    if "turn_budget_s" in changes or budget_changes:
+    if "turn_budget_s" in changes or any(not key.endswith(" daily turns")
+                                         for key in budget_changes):
         print("  turn budget now: " + _budget_line(updated)
               + "   (queued turns keep the budget they were enqueued with)")
 
@@ -2543,6 +2557,8 @@ def cmd_status(args) -> int:
             print(f"  note:       {line}")
         print(f"  clone:      {loop['clone'] or '(none)'}")
         print(f"  turn:       {_budget_line(loop)} per turn (killed past it)")
+        for line in _pacing_lines(loop):
+            print(f"  pacing:     {line}")
         print("  fixer push: " + ("ENABLED — operator accepted PR-metadata/ref race"
                                   if config.unattended_fixer_push_enabled(loop)
                                   else "off (unattended pushes disabled)"))
@@ -2784,6 +2800,32 @@ def cmd_trace(args) -> int:
         print(f"cannot trace: {exc}")
         return 2
     return trace.run(loop, payload, event, role)
+
+
+def _pacing_lines(loop: dict) -> list[str]:
+    """Daily caps and today's counts per seat, and any seat account held for its reset (#219)."""
+    from . import pacing
+    lines = []
+    caps = [(seat, config.seat_daily_turns(loop, seat)) for seat in ("reviewer", "fixer")]
+    if any(cap for _, cap in caps):
+        lines.append(" · ".join(f"{seat} {pacing.turns_today(loop['id'], seat)}/"
+                                f"{cap if cap else 'no cap'} today" for seat, cap in caps))
+    try:
+        holds = (json.loads(pacing.path().read_text()).get("holds") or {})
+    except (OSError, ValueError, AttributeError):
+        holds = {}
+    now = time.time()
+    # Only this loop's seat profiles: an account key is provider|endpoint|profile (pacing).
+    profiles = {str(((loop.get("seats") or {}).get(seat) or {}).get("profile") or "")
+                for seat in ("reviewer", "fixer")} | {
+                str((loop.get("adjudicator") or {}).get("profile") or "")}
+    for key, entry in sorted(holds.items()):
+        until = entry.get("until") if isinstance(entry, dict) else None
+        provider, profile = key.split("|", 1)[0], key.rsplit("|", 1)[-1]
+        if isinstance(until, (int, float)) and until > now and profile in profiles - {""}:
+            lines.append(f"held: {provider} as profile {profile} until {pacing.when(until)} "
+                         f"({entry.get('reason') or 'usage window'})")
+    return lines
 
 
 def cmd_explain(args) -> int:
@@ -3722,6 +3764,11 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                             help="the reviewer seat's own turn budget in seconds")
         change.add_argument("--fixer-turn-budget", type=int, default=None,
                             help="the fixer seat's own turn budget in seconds")
+        change.add_argument("--reviewer-daily-turns", type=int, default=None,
+                            help="most reviewer turns per day on this loop; later ones wait for "
+                                 "midnight (0 removes the cap)")
+        change.add_argument("--fixer-daily-turns", type=int, default=None,
+                            help="most fixer turns per day on this loop (0 removes the cap)")
         change.add_argument("--host", help="gateway webhook host")
         change.add_argument("--adjudicator-login", default=None,
                             help="optional fourth GitHub account the ruling is also posted as; "
