@@ -176,6 +176,67 @@ What each step proves, and how to read a failure, is in
 `hermes review-loop explain --loop ID --pr N` says why
 ([details](docs/operations.md#why-isnt-this-pr-moving)).
 
+## DirectSDK subscription seats (host process backend)
+
+A seat whose Hermes profile selects `claude-subscription-directsdk-experimental`
+uses the plugin's DirectSDK client **on the trusted host**, not inside bubblewrap.
+The seat resolves with `auth=external_process`, the fixed upstream
+`process://claude-subscription-directsdk-experimental`, and the public placeholder
+`host-process`. That placeholder is not a subscription credential. The sandbox
+still uses the ordinary chat-completions capability on its per-run Unix socket;
+`InferenceCapability` selects the host backend from the credential provider's
+`backend='directsdk'` marker. An arbitrary `process://` URL is not an HTTP upstream
+and does not enable this backend by itself.
+
+The host needs the experimental plugin and its native Claude prerequisite set up
+for the selected profile. Keep the plugin, native executable, profile state and
+subscription login on the host: do not copy them into the turn's snapshot, mount
+them into the sandbox, or put account secrets in the runtime model override. A
+missing plugin, invalid profile, unsupported configuration or native-client failure
+must hold/fail the turn rather than silently switch to an API-key provider. This
+is an experimental local integration, not a promise of provider policy approval
+or a substitute for testing the installation's subscription prerequisites.
+
+The process backend does not widen the sandbox's authority. Model selection,
+request/response bounds, output-token limits and per-run call quota remain host
+policy. Sandbox request fields must never become native executable arguments,
+working-directory choices, environment overrides, plugin paths or client-constructor
+options. Tools remain conversation data for Hermes; DirectSDK is not permission to
+run native Claude tools against the checkout. Host error replies must not expose
+subscription tokens, native stderr, local paths or inherited environment values.
+Streaming uses OpenAI-style SSE; closing a stream or capability must release the
+host-side request/client rather than leave a native inference process behind.
+Reviewer, fixer and adjudicator capabilities remain profile-bound and independently
+owned, even though inference runs on the same host. Native Claude authentication uses
+the OS user's existing native login by default. Different native accounts require
+an explicit `CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR` (or `CLAUDE_CONFIG_DIR`) in
+each seat profile's host-side environment; naming different Hermes profiles alone
+does not create separate native subscriptions. Host-selected executable overrides
+use `CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND`; sandbox requests cannot set these.
+
+A small **inert wire-profile plugin**, `review-loop-directsdk-wire`, is staged in
+the disposable sandbox home. It only declares the loopback HTTP endpoint and
+DirectSDK's native reasoning carrier type. It has no SDK, native executable,
+host paths or auth. This uses Hermes's provider-profile contract to preserve signed
+native history across sandbox tool iterations instead of treating the carrier as
+an unrelated custom-provider sidecar. Reasoning controls, tool calls/results,
+history and usage retain the installed provider's native projection.
+
+The existing bounds remain: 1,000,000-byte requests, 4,000,000-byte replies,
+4,096 output tokens and at most 32 reserved calls per turn. Nested output-token
+overrides and process-configuration kwargs are refused. A host helper request is
+limited to 120 seconds; disconnect, stream close and capability shutdown cancel
+its installed DirectSDK client and owned native process tree.
+
+The backend API is `DirectSDKBackend(profile, settings)`,
+`post(body, headers) -> (status, content_type, iterator_of_bytes)`, and `close()`.
+The public model wire contract is still `chat_completions`, not Anthropic Messages
+or a native CLI RPC exposed to the seat. Offline adversarial coverage lives in
+`tests/test_directsdk_backend.py`; it uses fake clients/processes and must not spend
+subscription quota. Offline success does **not** prove a live model request or
+native credential availability. `selftest --no-model` is the no-spend preflight;
+model-spending selftests remain an explicit operator decision.
+
 ## What the loop guarantees
 
 - **One PR, one seat.** A PR is held by the reviewer *or* the fixer, never both: a review never

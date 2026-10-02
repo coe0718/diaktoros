@@ -666,6 +666,7 @@ def _one_completion(report: Report, seats: str, inference) -> None:
     where = (f"profile {inference.profile}'s credential" if inference.origin == "profile"
              else "the override's key file")
     oauth = getattr(inference, "auth", "") == "oauth"
+    process_backend = getattr(inference, "auth", "") == "external_process"
     fixes = {401: (f"{where} was rejected even after a host refresh — log in again with "
                    f"`hermes -p {inference.profile} auth`" if oauth
                    else f"{where} was rejected — replace it"),
@@ -677,6 +678,10 @@ def _one_completion(report: Report, seats: str, inference) -> None:
                    "the provider rate-limited or the account is out of credit"),
              502: f"the proxy could not complete an HTTPS call to {host} (DNS, TLS, network, or a "
                   "non-JSON answer) — try `curl -sS https://" + str(host) + "` from this host"}
+    if process_backend:
+        fixes[502] = (f"the host DirectSDK process failed; check the installed provider, native "
+                      f"Claude CLI and profile {inference.profile}'s native login/config directory; "
+                      "the host launch lockdown refuses missing/unsafe flags or an unreviewed MCP inventory server")
     what = f"{seats}: {inference.describe()}"
     if status != 200:
         report.add(step, name, FAIL, f"HTTP {status} for {what}",

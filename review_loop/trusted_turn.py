@@ -445,6 +445,12 @@ def sandbox_config(model: str, api_mode: str = 'chat_completions',
     base = f'http://127.0.0.1:{inference_proxy.BRIDGE_PORT}'
     tail = 'plugins:\n  enabled: []\nmemory:\n  memory_enabled: false\n'
     name = json.dumps(model)
+    if api_mode == 'chat_completions' and client_identity == 'directsdk':
+        provider = 'review-loop-directsdk-wire'
+        return ('model:\n  provider: ' + provider + '\n  default: ' + name +
+                f'\n  base_url: {base}/v1\n  api_key: {SANDBOX_KEY}\n'
+                + 'plugins:\n  enabled: [' + provider + ']\nmemory:\n  memory_enabled: false\n',
+                f'OPENAI_API_KEY={SANDBOX_KEY}\n', provider)
     if api_mode == 'chat_completions':
         return ('model:\n  provider: custom\n  default: ' + name + f'\n  base_url: {base}/v1\n'
                 f'  api_key: {SANDBOX_KEY}\n' + tail, '', 'custom')
@@ -522,6 +528,12 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
         config_text, env_text, provider = sandbox_config(model, api_mode, client_identity)
         (home / 'config.yaml').write_text(config_text)
         (home / 'config.yaml').chmod(0o600)
+        if client_identity == 'directsdk':
+            wire = home / 'plugins' / 'review-loop-directsdk-wire'
+            wire.mkdir(mode=0o700, parents=True)
+            shutil.copyfile(Path(__file__).with_name('directsdk_wire.py'), wire / '__init__.py')
+            (wire / 'plugin.yaml').write_text(
+                'name: review-loop-directsdk-wire\nkind: model-provider\nversion: 0.1.0\nmanifest_version: 2\n')
         if env_text:
             (home / '.env').write_text(env_text)
             (home / '.env').chmod(0o600)
