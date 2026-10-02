@@ -13,6 +13,12 @@ reaches a scope at all through a multiplexed gateway at the root, the one that r
 ``webhook_subscriptions.json`` this plugin writes; a bare ``/webhooks/<name>`` route runs in the
 gateway's own home, the root. Both are ``config.profile_dir(route.profile)``.)
 
+That scope also reaches the script's **environment**: Hermes builds it with ``HERMES_HOME`` set to the
+serving profile's home. The loop's config, runtime file, run ledger and state are under the root
+home ``init`` wrote them to, so the shim pins ``HERMES_HOME`` back to that root (and ``HOME`` to
+``HERMES_REAL_HOME``) before it runs the gate. Without it, every ``/p/<name>/`` gate looked for its
+loop under the profile, found none and answered ``[SILENT]``, which the gateway does not log.
+
 So for every loop route, the plugin writes a small shim named after the gate into that profile's
 ``scripts/``. The shim ``runpy``s the plugin's own script by absolute path, with the script's own
 ``__file__``, ``sys.path[0]``, ``sys.argv[0]`` and working directory, in the same process — stdin,
@@ -48,6 +54,13 @@ import runpy
 import sys
 
 TARGET = {target!r}
+# The gateway runs this script with HERMES_HOME set to the *serving profile's* home (Hermes's
+# build_subprocess_env bridges the profile scope), and HOME per its home mode. The loop's config,
+# runtime file, ledger and state live under the Hermes home this shim was written for, so the gate
+# runs there; HERMES_REAL_HOME, which Hermes sets alongside, is the user's real HOME.
+os.environ["HERMES_HOME"] = {home!r}
+if os.environ.get("HERMES_REAL_HOME"):
+    os.environ["HOME"] = os.environ["HERMES_REAL_HOME"]
 if not os.path.isfile(TARGET):
     sys.stderr.write("hermes-review-loop: gate script missing: " + TARGET
                      + " — reinstall the plugin, then `hermes review-loop apply`\\n")
@@ -69,7 +82,8 @@ def plugin_script(script: str) -> pathlib.Path:
 
 
 def render(script: str) -> str:
-    return SHIM.format(marker=MARKER, target=str(plugin_script(script)))
+    """The shim for ``script``: the plugin's gate, run under the Hermes home the loop lives in."""
+    return SHIM.format(marker=MARKER, target=str(plugin_script(script)), home=str(config.home()))
 
 
 def home_for(profile: str | None) -> pathlib.Path:
