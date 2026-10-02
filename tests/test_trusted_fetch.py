@@ -13,6 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from review_loop import trusted_fetch, trusted_turn
+from review_loop.trusted_fetch import _MAX_BYTES
 
 
 LOOPBACK_API = "http://127.0.0.1:9"   # never contacted: urlopen is mocked where it is used
@@ -185,8 +186,78 @@ class TrustedFetchTests(unittest.TestCase):
         raise AssertionError(path)
 
     def stage(self, callback=None, **changes):
-        with mock.patch.object(trusted_fetch, "_request", side_effect=callback or self.response):
-            return trusted_fetch._stage(self.loop, **{**self.kw, **changes})
+        # Mock the HTTP layer for _fetch_tarball:
+        # 1. First request to api.github.com/repos/.../tarball/{head} returns 302 to codeload
+        # 2. Second request to codeload returns the tarball
+        import urllib.request
+        from unittest import mock
+        import io
+
+        # Track calls to verify Authorization handling
+        fetch_calls = []
+
+        # Get tarball from callback if provided, else use default
+        tarball_bytes = self.tarball
+        # Note: tarball content is taken from self.tarball (set by test setUp or test method).
+        # The callback is only for _request API calls (/user, /pulls, /git/commits, /git/trees).
+
+        redirect_url = "https://codeload.github.com/acme/widgets/legacy.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        first_response = type("Resp", (), {
+            "status": 302,
+            "headers": {"Location": redirect_url},
+            "read": lambda self: b"",
+            "close": lambda self: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda *a: None,
+        })()
+        # Use BytesIO to simulate proper chunked reading
+        second_stream = io.BytesIO(tarball_bytes)
+        second_response = type("Resp", (), {
+            "status": 200,
+            "headers": {"Content-Length": str(len(tarball_bytes))},
+            "read": lambda self, n=-1: second_stream.read(n if n > 0 else -1),
+            "close": lambda self: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda *a: None,
+        })()
+
+        def fake_build_opener(*handlers):
+            class FakeOpener:
+                def open(self, req, timeout=30):
+                    fetch_calls.append(("opener", req.full_url, dict(req.headers)))
+                    # First opener call returns 302, second returns 200 with tarball
+                    if not hasattr(fake_build_opener, "call_count"):
+                        fake_build_opener.call_count = 0
+                    fake_build_opener.call_count += 1
+                    if fake_build_opener.call_count == 1:
+                        return first_response
+                    return second_response
+            return FakeOpener()
+
+        def fake_urlopen(req, timeout=30):
+            fetch_calls.append(("urlopen", req.full_url, dict(req.headers)))
+            return second_response
+
+        self._fetch_calls = fetch_calls
+
+        # Also mock _request for the metadata API calls (/user, /pulls, /git/commits, /git/trees)
+        def mock_request(loop, path, login, limit, accept):
+            if callback:
+                result = callback(loop, path, login, limit, accept)
+                if result is not None:
+                    return result
+            return self.response(loop, path, login, limit, accept)
+
+        with mock.patch.object(urllib.request, "build_opener", side_effect=fake_build_opener), \
+             mock.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen), \
+             mock.patch.object(trusted_fetch.gh, "token", return_value="dummy-token"), \
+             mock.patch.object(trusted_fetch.gh, "API", LOOPBACK_API), \
+             mock.patch.object(trusted_fetch, "_request", side_effect=mock_request):
+            result = trusted_fetch._stage(self.loop, **{**self.kw, **changes})
+
+        # Record the tarball call in self.calls for tests that track API calls
+        self.calls.append((f"/repos/{self.loop['repo']}/tarball/{self.kw['head']}", "reader", _MAX_BYTES))
+        return result
 
     def test_exact_export_no_credentials_and_three_head_checks(self):
         result = self.stage()
@@ -305,10 +376,9 @@ class TrustedFetchTests(unittest.TestCase):
 
     def test_corrupt_blob_and_wrong_commit_rejected(self):
         # A tarball whose blob bytes do not match the tree's SHA for that path is refused.
+        self.tarball = self._tarball({"hello.txt": b"tampered\n"})
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "hash mismatch"):
-            self.stage(callback=lambda loop, path, login, limit, accept:
-                self._tarball({"hello.txt": b"tampered\n"}) if "/tarball/" in path
-                else self.response(loop, path, login, limit, accept))
+            self.stage()
         self.assertFalse((self.root / "sandbox").exists())
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "commit SHA mismatch"):
             self.stage(callback=lambda loop, path, login, limit, accept:
@@ -336,38 +406,31 @@ class TrustedFetchTests(unittest.TestCase):
 
     def test_a_tarball_with_a_path_traversal_is_refused(self):
         # #66: an archive member escaping the tree root must be refused, not written.
+        self.tarball = self._tarball({"hello.txt": self.blob}, traversal="../../etc/evil")
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "unsafe tree entry"):
-            self.stage(callback=lambda loop, path, login, limit, accept:
-                self._tarball({"hello.txt": self.blob},
-                              traversal="../../etc/evil") if "/tarball/" in path
-                else self.response(loop, path, login, limit, accept))
+            self.stage()
         self.assertFalse((self.root / "sandbox").exists())
 
     def test_a_tarball_with_a_symlink_is_refused(self):
         # The existing handling for symlinks (#69 still open) is kept: a symlink member is
         # refused rather than exported.
+        self.tarball = self._tarball({"hello.txt": self.blob}, symlink="link")
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "unsafe tree entry"):
-            self.stage(callback=lambda loop, path, login, limit, accept:
-                self._tarball({"hello.txt": self.blob},
-                              symlink="link") if "/tarball/" in path
-                else self.response(loop, path, login, limit, accept))
+            self.stage()
         self.assertFalse((self.root / "sandbox").exists())
 
     def test_a_tarball_with_an_extra_file_is_refused(self):
         # An entry the tree did not list (extra file) is refused: set equality with the tree.
+        self.tarball = self._tarball({"hello.txt": self.blob, "extra.txt": b"smuggled\n"})
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "unsafe tree entry"):
-            self.stage(callback=lambda loop, path, login, limit, accept:
-                self._tarball({"hello.txt": self.blob, "extra.txt": b"smuggled\n"})
-                if "/tarball/" in path
-                else self.response(loop, path, login, limit, accept))
+            self.stage()
         self.assertFalse((self.root / "sandbox").exists())
 
     def test_a_tarball_missing_a_tree_file_is_refused(self):
         # The tree lists hello.txt; an archive that omits it is refused (nothing matches).
+        self.tarball = self._tarball({})
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "hash mismatch"):
-            self.stage(callback=lambda loop, path, login, limit, accept:
-                self._tarball({}) if "/tarball/" in path
-                else self.response(loop, path, login, limit, accept))
+            self.stage()
         self.assertFalse((self.root / "sandbox").exists())
 
     def test_a_tarball_with_directory_entries_is_accepted(self):
@@ -389,6 +452,189 @@ class TrustedFetchTests(unittest.TestCase):
         self.tarball = buffer.getvalue()
         result = self.stage()
         self.assertEqual((result / "src" / "hello.txt").read_bytes(), self.blob)
+
+    # --- redirect behavior tests (PR #196 follow-up) ---
+
+    def test_tarball_redirect_to_codeload_drops_authorization(self):
+        """The tarball endpoint 302s to codeload.github.com; Authorization must not leak there."""
+        import urllib.request
+        from unittest import mock
+        import io
+        from review_loop import gh
+
+        loop = self.loop
+        tarball_bytes = self.tarball
+
+        # First response: 302 to codeload (https, not http)
+        redirect_url = "https://codeload.github.com/acme/widgets/legacy.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        first_response = type("Resp", (), {
+            "status": 302,
+            "headers": {"Location": redirect_url},
+            "read": lambda self: b"",
+            "close": lambda self: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda *a: None,
+        })()
+        # Second response: tarball content from codeload
+        second_stream = io.BytesIO(tarball_bytes)
+        second_response = type("Resp", (), {
+            "status": 200,
+            "headers": {"Content-Length": str(len(tarball_bytes))},
+            "read": lambda self, n=-1: second_stream.read(n if n > 0 else -1),
+            "close": lambda self: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda *a: None,
+        })()
+
+        fetch_calls = []
+        build_opener_count = [0]
+
+        def fake_build_opener(*handlers):
+            build_opener_count[0] += 1
+            class FakeOpener:
+                def open(self, req, timeout=30):
+                    fetch_calls.append(("opener", req.full_url, dict(req.headers)))
+                    # First build_opener call (first request) returns 302
+                    # Second build_opener call (second request) returns 200 with tarball
+                    if build_opener_count[0] == 1:
+                        return first_response
+                    return second_response
+            return FakeOpener()
+
+        def fake_urlopen(req, timeout=30):
+            fetch_calls.append(("urlopen", req.full_url, dict(req.headers)))
+            raise AssertionError("urlopen should not be called directly")
+
+        with mock.patch.object(urllib.request, "build_opener", side_effect=fake_build_opener), \
+             mock.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen), \
+             mock.patch.object(gh, "token", return_value="dummy-token"), \
+             mock.patch.object(gh, "API", LOOPBACK_API):
+            archive = trusted_fetch._fetch_tarball(loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+
+        self.assertEqual(archive, tarball_bytes)
+        # Verify Authorization was on first request but not on redirect
+        opener_calls = [c for c in fetch_calls if c[0] == "opener"]
+        self.assertEqual(len(opener_calls), 2)  # Two build_opener calls
+        self.assertIn("Authorization", opener_calls[0][2])
+        self.assertNotIn("Authorization", opener_calls[1][2])
+
+    def test_tarball_redirect_to_non_codeload_refused(self):
+        """A redirect to anything other than codeload.github.com is refused."""
+        import urllib.request
+        from unittest import mock
+        from review_loop import gh
+
+        loop = self.loop
+        redirect_url = "https://evil.example.com/steal.tar.gz"  # https but wrong host
+        first_response = type("Resp", (), {
+            "status": 302,
+            "headers": {"Location": redirect_url},
+            "read": lambda self: b"",
+            "close": lambda self: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda *a: None,
+        })()
+
+        def fake_build_opener(*handlers):
+            class FakeOpener:
+                def open(self, req, timeout=30):
+                    return first_response
+            return FakeOpener()
+
+        def fake_urlopen(req, timeout=30):
+            raise AssertionError("should not follow redirect")
+
+        with mock.patch.object(urllib.request, "build_opener", side_effect=fake_build_opener), \
+             mock.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen), \
+             mock.patch.object(gh, "token", return_value="dummy-token"), \
+             mock.patch.object(gh, "API", LOOPBACK_API):
+            with self.assertRaisesRegex(trusted_fetch.FetchDenied, "non-codeload host"):
+                trusted_fetch._fetch_tarball(loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+
+    def test_tarball_multiple_redirects_refused(self):
+        """More than one redirect is refused (loop protection)."""
+        import urllib.request
+        from unittest import mock
+        from review_loop import gh
+
+        loop = self.loop
+        first_redirect = "https://codeload.github.com/acme/widgets/legacy.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        second_redirect = "https://codeload.github.com/another.tar.gz"
+        first_response = type("Resp", (), {
+            "status": 302,
+            "headers": {"Location": first_redirect},
+            "read": lambda self: b"",
+            "close": lambda self: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda *a: None,
+        })()
+        # Second request returns another redirect (which the no-redirect handler will not follow)
+        second_response = type("Resp", (), {
+            "status": 302,
+            "headers": {"Location": second_redirect},
+            "read": lambda self: b"",
+            "close": lambda self: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda *a: None,
+        })()
+
+        build_opener_count = [0]
+
+        def fake_build_opener(*handlers):
+            build_opener_count[0] += 1
+            class FakeOpener:
+                def open(self, req, timeout=30):
+                    # First build_opener call (first request) returns 302
+                    # Second build_opener call (second request) returns another 302
+                    if build_opener_count[0] == 1:
+                        return first_response
+                    return second_response
+            return FakeOpener()
+
+        def fake_urlopen(req, timeout=30):
+            raise AssertionError("urlopen should not be called directly")
+
+        with mock.patch.object(urllib.request, "build_opener", side_effect=fake_build_opener), \
+             mock.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen), \
+             mock.patch.object(gh, "token", return_value="dummy-token"), \
+             mock.patch.object(gh, "API", LOOPBACK_API):
+            # The second request returns a 302 which the no-redirect handler doesn't follow,
+            # so we get a non-200 status -> "GitHub response unavailable"
+            with self.assertRaisesRegex(trusted_fetch.FetchDenied, "GitHub response unavailable"):
+                trusted_fetch._fetch_tarball(loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
+
+    def test_tarball_http_redirect_refused(self):
+        """A non-HTTPS redirect target is refused."""
+        import urllib.request
+        from unittest import mock
+        from review_loop import gh
+
+        loop = self.loop
+        redirect_url = "http://codeload.github.com/steal.tar.gz"  # http, not https
+        first_response = type("Resp", (), {
+            "status": 302,
+            "headers": {"Location": redirect_url},
+            "read": lambda self: b"",
+            "close": lambda self: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda *a: None,
+        })()
+
+        def fake_build_opener(*handlers):
+            class FakeOpener:
+                def open(self, req, timeout=30):
+                    return first_response
+            return FakeOpener()
+
+        def fake_urlopen(req, timeout=30):
+            raise AssertionError("should not follow redirect")
+
+        with mock.patch.object(urllib.request, "build_opener", side_effect=fake_build_opener), \
+             mock.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen), \
+             mock.patch.object(gh, "token", return_value="dummy-token"), \
+             mock.patch.object(gh, "API", LOOPBACK_API):
+            with self.assertRaisesRegex(trusted_fetch.FetchDenied, "non-codeload host"):
+                trusted_fetch._fetch_tarball(loop, "acme/widgets", "reader", self.head, _MAX_BYTES)
 
 
 if __name__ == "__main__":

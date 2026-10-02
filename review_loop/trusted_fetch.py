@@ -13,6 +13,7 @@ import re
 import tempfile
 import ctypes
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from . import gh
@@ -173,11 +174,74 @@ def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) ->
     """One GitHub call for the whole head: the commit's tarball, bounded by ``limit``.
 
     This replaces the old one-GET-per-blob export (≈1,660 calls for attest, against the read
-    token's 5,000/h budget). The credential stays host-side in the ``Authorization`` header
-    (``_request``); nothing credentialed reaches the export.
+    token's 5,000/h budget). The credential stays host-side; GitHub's tarball endpoint
+    302-redirects to codeload.github.com. We follow exactly one redirect, only to
+    https://codeload.github.com/, and drop the Authorization header on the redirect
+    (codeload authenticates via the token in the URL). Nothing credentialed reaches the export.
     """
-    return _request(loop, f"/repos/{repo}/tarball/{head}", reader, limit,
-                    "application/vnd.github+json")
+    from .config import guard_network
+    guard_network(f"{gh.API}/repos/{repo}/tarball/{head}")
+
+    # First request: to api.github.com with Authorization; do NOT follow redirects automatically.
+    class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None  # don't follow redirects
+
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    try:
+        req = urllib.request.Request(
+            f"{gh.API}/repos/{repo}/tarball/{head}",
+            headers={"Accept": "application/vnd.github+json",
+                     "Authorization": f"Bearer {gh.token(loop, reader)}",
+                     "X-GitHub-Api-Version": "2022-11-28",
+                     "User-Agent": "hermes-review-loop"})
+        with opener.open(req, timeout=30) as response:
+            status = response.status
+            location = response.headers.get("Location")
+            if status == 200:
+                # Direct response (no redirect) - read body
+                return _read_bounded(response, limit)
+            elif status == 302 and location:
+                # Redirect to codeload.github.com - verify and follow once without Authorization
+                parsed = urllib.parse.urlparse(location)
+                if parsed.scheme != "https" or parsed.hostname != "codeload.github.com":
+                    raise FetchDenied(f"tarball redirect to non-codeload host: {location}")
+                # Second request: to codeload WITHOUT Authorization; do NOT follow further redirects
+                class _NoRedirectHandler2(urllib.request.HTTPRedirectHandler):
+                    def redirect_request(self, req, fp, code, msg, headers, newurl):
+                        return None
+                opener2 = urllib.request.build_opener(_NoRedirectHandler2)
+                req2 = urllib.request.Request(
+                    location,
+                    headers={"Accept": "application/vnd.github+json",
+                             "X-GitHub-Api-Version": "2022-11-28",
+                             "User-Agent": "hermes-review-loop"})
+                with opener2.open(req2, timeout=30) as response2:
+                    if response2.status != 200:
+                        raise FetchDenied("GitHub response unavailable")
+                    return _read_bounded(response2, limit)
+            else:
+                raise FetchDenied("GitHub response unavailable")
+    except (OSError, ValueError, urllib.error.URLError, gh.GitHubError) as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()
+        raise FetchDenied("GitHub response unavailable") from exc
+
+
+def _read_bounded(response, limit: int) -> bytes:
+    """Read at most limit+1 bytes from response."""
+    if int(response.headers.get("Content-Length", "0")) > limit:
+        raise FetchDenied("GitHub response exceeds bounds")
+    chunks, remaining = [], limit + 1
+    while remaining:
+        chunk = response.read(min(_CHUNK, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    if remaining == 0:
+        raise FetchDenied("GitHub response exceeds bounds")
+    return b"".join(chunks)
 
 
 def _extract(archive: bytes, directory: pathlib.Path,
