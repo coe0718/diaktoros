@@ -126,6 +126,12 @@ is missing or broken. `--dry-run` shows every step and writes nothing. `--yes` a
 your flags and the settings form are the answers and every confirmation is yes, except arming,
 which still needs `--arm`. Without a terminal (in a script), it refuses unless you pass `--yes`.
 
+`setup` never turns on adjudication (it passes no `--adjudicator-route` to `init`) or issue
+triage. To add an adjudicator afterwards, add an `adjudicator` block to the loop file
+`~/.hermes/review-loops.d/name.json`, for example
+`"adjudicator": {"route": "name-breach", "profile": "tuck"}`, then write its route with
+`hermes review-loop apply --loop name --recreate-routes`. For triage, see [`triage`](#triage).
+
 <!-- flags:setup -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
@@ -160,9 +166,10 @@ which still needs `--arm`. Without a terminal (in a script), it refuses unless y
 Installs a new loop for one repository. In one transaction it writes:
 
 1. the loop config: `~/.hermes/review-loops.d/<id>.json`;
-2. the webhook routes in the gateway's registry: `<id>-review`, `<id>-fix`, plus `<id>-breach`
-   with `--adjudicator-route` and `<id>-observe` with `--observer-profile`. Each gets a fresh
-   secret;
+2. the webhook routes in the gateway's registry: `<id>-review`, `<id>-fix`, plus the adjudicator
+   route with `--adjudicator-route NAME` (any name; `<id>-breach` by convention) and `<id>-observe`
+   with `--observer-profile`. Each gets a fresh secret. The adjudicator route never wakes an agent
+   itself: naming it is what turns adjudication on;
 3. the gate shims in each seat profile's `scripts/` directory, the small files the gateway runs
    when a route is called;
 4. with `--hooks`, the two GitHub repo hooks, created **paused** (nothing happens until
@@ -253,7 +260,12 @@ hermes review-loop set --loop name --observer-events opened,verdict,approved,esc
 
 What it is for:
 
-- numbers: the verdict cap, concurrency, turn budgets, daily caps, the watchdog's patience;
+- numbers: the verdict cap, concurrency, turn budgets, daily caps, the watchdog's patience
+  (`--grace-min`, and `--marker-grace-min`: how long an adjudication may wait before the watchdog
+  reports it);
+- signing: `--attribution off` stops adding the "Automated by hermes-review-loop" footer and commit
+  trailer to what this loop posts, and `on` restores it (see
+  [what the loop signs](operations.md#what-the-loop-signs));
 - the reader account, or the adjudicator's comment account;
 - the gateway host (`--host`), which rewrites the routes' URLs;
 - the observer feed: its route, profile, destination and events, plus `--observer-mute` and
@@ -348,7 +360,7 @@ hermes review-loop fixer-push --loop name --disable
 ```
 
 `--acknowledge-pr-race` is required to enable it. Read
-[the push policy](issue-16-boundary.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent)
+[the push policy](security.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent)
 first: the host checks the PR right before every push, but a PR can still be closed or
 retargeted in the moment between that check and Git accepting the push. Enabling is refused
 while a fixer turn is running.
@@ -367,7 +379,8 @@ while a fixer turn is running.
 
 Turns **issue triage** on or off for one loop, or shows its settings. When an issue opens, a
 sandboxed triage seat reads it and adds labels from a fixed list, before any agent works on it.
-Off unless you turn it on.
+Off unless you turn it on. New to it? [Issue triage and issue fixes, step by step](issues.md)
+walks through the whole setup and a first test.
 
 ```bash
 hermes review-loop triage --loop name
@@ -398,7 +411,7 @@ the triage labels, so only a person can trigger it.
 hermes review-loop triage --loop name --enable --fix-label agent-fix --maintainer you
 ```
 
-Details: [Issue triage](operations.md#issue-triage) and
+Step by step: [issues.md](issues.md). Details: [Issue triage](operations.md#issue-triage) and
 [issue fixes](operations.md#issue-fixes-a-maintainer-hands-an-issue-to-the-fixer).
 
 <!-- flags:triage -->
@@ -443,8 +456,8 @@ hermes review-loop doctor --loop name --offline
 - `--repair` is the one write `doctor` can make: it puts this loop's own routes back from the
   plugin's record of them (same secret) when another tool overwrote or removed them.
 
-`doctor` never starts a turn and never fires a route: a test call to a seat's route would be a
-real agent run. To prove the isolated path end to end, use [`selftest`](#selftest).
+`doctor` never starts a turn and never fires a route: a test call to a seat's route could enqueue
+a real isolated seat turn. To prove the isolated path end to end, use [`selftest`](#selftest).
 `doctor` is the quick check; `selftest` is the authoritative one for the sandbox and models.
 
 <!-- flags:doctor -->
@@ -592,9 +605,12 @@ hermes review-loop trace --loop name --payload saved.json --event pull_request
   needs hook read access (`--admin-token`).
 - `--payload` replays a payload you saved to a file instead.
 
-The last line is the outcome: `would start a reviewer run`, `held — <why>` or `declined — <why>`.
-Anything the gate would send out (GitHub writes, a run starting, a notice) is listed as `would …`
-and never done. Your real state is untouched.
+The last line is the outcome: `would start a reviewer run` (or `would queue a … run`),
+`held — <why>` or `declined — <why>`. Anything the gate would send out (GitHub writes, a run
+starting, a notice) is listed as `would …` and never done. Your real state is untouched.
+
+`trace` cannot replay `issues` deliveries (issue triage and issue fixes) yet (#230). For those, see
+[an issue opened and nothing was labelled](troubleshooting.md#an-issue-opened-and-nothing-was-labelled).
 
 <!-- flags:trace -->
 | flag | value | default | what it does |

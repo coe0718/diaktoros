@@ -11,7 +11,9 @@ Terms used here:
   program can act as that account. GitHub has two kinds: **classic** (broad scopes such as `repo`)
   and **fine-grained** (per-repository permissions such as `pull_requests: read`).
 * **Seat** — one of the two agents in the loop: the **reviewer** or the **fixer**. Each seat acts
-  as its own GitHub account.
+  as its own GitHub account. The optional issue seats reuse these accounts: **triage** labels as
+  the reviewer's account by default, and an **issue fix** is the fixer working from an issue
+  ([issues](issues.md)).
 * **Token file** — a small file that holds one account's PAT and nothing else. The loop stores the
   file's *path*, never the token.
 
@@ -55,7 +57,9 @@ names, and by default it is the reader.
 | reviewer seat | `rev-bot` | posts one review per turn | yes (a review needs pull-request write) | `init --reviewer LOGIN` (and `--reviewer-seat` if you list several) plus `--token`; settings `reviewer_login`, `reviewer_token_file`; loop keys `reviewers`, `reviewer_seat`, `seats.reviewer.login` |
 | fixer seat | `dev-account` | pushes fix commits, answers the review, asks for review again. The PRs the loop works on must be opened by a login in the fixers allowlist — usually this one | yes (a fix is a commit) | `init --fixer LOGIN` plus `--token`; settings `fixer_login`, `fixer_token_file`; loop keys `fixers`, `seats.fixer.login` |
 | adjudicator comment login (optional) | `rule-bot` | posts the ruling as one PR comment | on a user-owned repo, yes (see below); on an org repo, `pull_requests: write` | `init --adjudicator-login LOGIN` (needs `--adjudicator-route`) plus `--token`; settings `adjudicator_login`, `adjudicator_token_file`; loop key `seats.adjudicator.login` |
-| hook admin (not a separate identity) | usually the reader | creates, arms, pauses and deletes the repo's two webhooks | hook write | `--admin-token LOGIN` on `init --hooks`, `arm`, `apply`, `uninstall`, `trace`, `selftest --ping`; default: the reader |
+| triage (optional, not a separate identity by default) | `rev-bot` (the reviewer seat's account) | adds labels to a new issue, and one short comment if you allow it | yes: `issues: write`. It can never be the reader | `triage --login LOGIN` (default: the reviewer seat) plus `--token` if that login has no file yet; loop key `triage.login` |
+| issue fixer (optional, not a separate identity) | `dev-account` (the fixer seat's account) | pushes a new branch `review-loop/issue-N`, opens a PR from it, requests the review, or comments on the issue when it cannot fix it | yes (a branch, a PR and an issue comment) | nothing extra: it is always the fixer seat; turned on with `triage --fix-label` |
+| hook admin (not a separate identity) | usually the reader | creates, arms, pauses and deletes the repo's two webhooks (three with triage on) | hook write | `--admin-token LOGIN` on `init --hooks`, `arm`, `apply`, `uninstall`, `trace`, `selftest --ping`, `triage --enable`/`--disable`; default: the reader |
 
 Why the adjudicator login needs write on a user-owned repo: a comment needs only read access, but
 a user-owned repo has no read-only collaborator grant, so any collaborator can write. That is a
@@ -144,6 +148,8 @@ Which kind of token each role needs (from
 | reviewer | **classic**, `repo` | `pull_requests: write` |
 | fixer | **classic**, `repo` | `contents: write`, `pull_requests: write` |
 | adjudicator login | **classic**, `repo` | `pull_requests: write` |
+| triage login (default: the reviewer's token) | **classic**, `repo` (the reviewer's token already has it) | add `issues: write` |
+| issue fixer (the fixer's token) | **classic**, `repo` (already has it) | `contents: write`, `pull_requests: write`, and add `issues: write` |
 
 Why classic for the collaborator seats on a user-owned repo: GitHub documents that a fine-grained
 token cannot contribute to repositories where the user is an outside or repository collaborator. A
@@ -154,10 +160,13 @@ fine-grained token. A separate `reader-bot` collaborator on a user-owned repo is
 like the seats, so it would need classic `repo` too.
 
 The reader reads pull requests, so its token needs **Pull requests** read access in both columns;
-`selftest`'s `github:repo` step checks it.
+`selftest`'s `github:repo` step checks it. With triage on, the reader also reads each new issue
+before a turn starts and again before the label is written, so a fine-grained reader on an org repo
+also needs `issues: read`. (On a user-owned repo the owner-reader's fine-grained token covers its
+own repo's issues once you add **Issues: Read-only**.)
 
 On GitHub's settings page, the `repository_hooks` permission is labelled **Webhooks**,
-`contents` is **Contents** and `pull_requests` is **Pull requests**. GitHub adds **Metadata:
+`contents` is **Contents**, `pull_requests` is **Pull requests** and `issues` is **Issues**. GitHub adds **Metadata:
 read-only** to every fine-grained token automatically.
 
 ### Fine-grained token (the reader, or any role on an org repo)
@@ -201,7 +210,8 @@ accounts should be dedicated accounts that are collaborators on this repo and no
 
 ### The hook admin's token
 
-`init --hooks`, `arm`, `arm --pause`, `apply --hooks` and `uninstall` edit the repo's webhooks.
+`init --hooks`, `arm`, `arm --pause`, `apply --hooks`, `uninstall` and
+`triage --enable`/`--disable --admin-token LOGIN` edit the repo's webhooks.
 They act as the `--admin-token` login, or as the reader when you pass none. That token needs hook
 **write** access: fine-grained `repository_hooks: write` (Webhooks: Read and write), classic
 `admin:repo_hook`, or classic `repo`, which already includes it.
@@ -210,8 +220,12 @@ It is `admin:repo_hook` and not the narrower `write:repo_hook`, because a failed
 back by deleting the hooks it created; a write-only token would leave an orphaned hook. The full
 reasoning is at the end of [Token scopes by role](operations.md#token-scopes-by-role).
 
+There are two webhooks, or three with triage on: `triage --enable --admin-token LOGIN` creates the
+third (for `issues` events, paused until `arm`), and `triage --disable --admin-token LOGIN` deletes
+it.
+
 If you want the reader's token to stay strictly read-only, leave `--hooks` off and add and toggle
-the two hooks by hand on GitHub — or, on an org repo, use a separate admin login with its own token
+the hooks by hand on GitHub — or, on an org repo, use a separate admin login with its own token
 file and pass `--admin-token` to every hook command.
 
 ## 4. Store the tokens safely
@@ -311,6 +325,28 @@ The README's [install example](../README.md#install) shows the common user-owned
 account is the reader *and* the hook admin (`--hooks --admin-token owner-account`), so the owner's
 token needs hook write.
 
+### With `setup`
+
+[`setup`](commands.md#setup) asks for the same accounts as `init`, one question at a time, with
+the settings form's values as defaults. In a script, pass them as flags with `--yes`:
+
+| flag | what it holds |
+| --- | --- |
+| `--reviewer-token PATH` | the reviewer's token file |
+| `--fixer-token PATH` | the fixer's token file |
+| `--read-token LOGIN` | the reader's login (its own account) |
+| `--read-token-file PATH` | the reader's token file |
+| `--admin-token LOGIN` | the hook admin's login; the hooks are created (paused) as it |
+| `--admin-token-file PATH` | the hook admin's token file |
+
+```bash
+hermes review-loop setup --repo owner/name --yes --reviewer rev-bot --fixer dev-account --reviewer-profile vex --fixer-profile drey --reviewer-token ~/.hermes/keys/rev-bot-pat --fixer-token ~/.hermes/keys/dev-account-pat --read-token reader-bot --read-token-file ~/.hermes/keys/reader-bot-pat --host https://your-gateway.example
+```
+
+`setup` sets up no adjudicator, triage or issue fixes. Triage and issue fixes are added later with
+`triage` ([issues](issues.md)); adding an adjudicator is described under
+[the switches](concepts.md#the-switches).
+
 ### With the settings form
 
 The desktop form at **Capabilities → Plugins → review loop** holds per-profile defaults for a new
@@ -372,6 +408,7 @@ Look for these lines, all ✅ (full example output in
 | `token:<login>` | one per mapped file: `(mode 600, non-empty)` |
 | `read_token` | `reader-bot (mapped in tokens; its own account and file)` |
 | `hook:<route>` | the read token could list the repo's hooks; ⚠️ unknown means it lacks hook read access |
+| `profile:triage`, `credential:triage` | only with triage on: the triage profile exists, and the triage login (the reviewer's by default) has a private, non-empty token file. The fix line reminds you it needs `issues: write` |
 
 `doctor` does not contact GitHub as each account — it says so: "identity and API access not
 checked". That is `selftest`'s job.
@@ -486,7 +523,7 @@ That is why:
 
 Scope alone cannot make a reviewer or adjudicator token safe on a user-owned repo: an account that
 can post a review can also push. What keeps a seat's token away from the agents is the
-[isolation boundary](issue-16-boundary.md): **seat tokens never enter the sandbox**. The agent runs
+[isolation boundary](security.md): **seat tokens never enter the sandbox**. The agent runs
 in a bubblewrap sandbox with no GitHub credential; the broker holds the token files on the host and
 makes each write itself after checking the live PR and the four distinct identities. `selftest`
 step 2 checks that the sandbox cannot read the PAT files.

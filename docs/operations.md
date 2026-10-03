@@ -1,8 +1,10 @@
 # Operating a loop
 
-Installing, checking and running a review loop once it is configured: what `init` writes, the
-day-to-day verbs, the `doctor` preflight, the `selftest` of the isolated turn path, `explain` for a
-PR that is not moving, and how a burst of PRs is queued. The keys themselves are in the
+Installing, checking and running a review loop once it is configured: the guided `setup`, what
+`init` writes, the day-to-day verbs, what the loop signs, the `doctor` preflight, the `selftest` of
+the isolated turn path, `explain` for a PR that is not moving, `trace` for a webhook that started
+nothing, pacing (usage windows and daily caps), issue triage and issue fixes, and how a burst of
+PRs is queued. The keys themselves are in the
 [configuration reference](configuration.md); the design behind each tool is in
 [architecture](architecture.md). The quick install is in the [README](../README.md#install).
 
@@ -47,12 +49,17 @@ running loop.
 `init` writes exactly four things, all of them visible and reversible:
 
 1. one loop config — `~/.hermes/review-loops.d/<id>.json`
-2. the webhook routes — `<id>-review` and `<id>-fix`, plus `<id>-breach` with
-   `--adjudicator-route` and `<id>-observe` with `--observer-profile` — into the gateway's own
-   `webhook_subscriptions.json` (generated prompts, generated secrets, file left at 0600)
+2. the webhook routes — `<id>-review` and `<id>-fix`, plus the adjudicator route with
+   `--adjudicator-route NAME` and `<id>-observe` with `--observer-profile` — into the gateway's own
+   `webhook_subscriptions.json` (generated prompts, generated secrets, file left at 0600). The
+   adjudicator route's name is yours to choose (`<id>-breach` by convention). Naming it is what
+   switches adjudication on; its gate always answers `[SILENT]`, because the ruling runs as an
+   isolated turn enqueued by the host, never through the route
 3. two GitHub hooks, on `pull_request` and `pull_request_review`, pointing at those routes —
    created **paused**, so nothing fires until `arm` (after `doctor` and `selftest`); `--arm` creates
-   them live instead
+   them live instead. Turning on [issue triage](#issue-triage) later with
+   `triage --enable --admin-token LOGIN` adds a third hook, on `issues`, also paused; `arm`,
+   `arm --pause` and `uninstall` act on it with the other two
 4. one cron job plus a 5-line shim in `~/.hermes/scripts/` that forwards to the plugin's watchdog
    (`--schedule`). It is **one shared job for every loop**: `hermes cron create --script` takes a
    filename and no arguments, so a job cannot carry `--loop <id>`, and the shim runs the watchdog
@@ -83,7 +90,7 @@ mitigates the race from its side — it does not close it:
   writer that read *before* a plugin publish and writes *after* it, can still drop a plugin edit
   (or a native one). The plugin's lost routes come back on the next armed sweep; a native edit
   the plugin overwrote in that window does not. Between sweeps a broken route can miss
-  deliveries. See [docs/issue-1-route-self-heal.md](issue-1-route-self-heal.md).
+  deliveries. See [the shared route registry](architecture.md#the-shared-route-registry-issue-1).
 
 If directory sync
 fails after replacement, the plugin raises `RegistryDurabilityError(published=True)`: the new
@@ -91,7 +98,12 @@ registry is visible, but crash durability is unconfirmed; do not assume the oper
 
 ## First run
 
-1. `init` the loop (above), then give each seat's profile its token file.
+1. `setup` (or `init`) the loop (above). Each account's PAT is mapped by login in the loop config
+   (`tokens`: a path, never the token), and only the host uses it: the host reads GitHub as the
+   reader, and every write goes through the host broker as the seat's own account. Seat profiles
+   hold no GitHub token, and a sandboxed turn never sees one. Make sure the private runtime file
+   `~/.hermes/review-loop-runtime.json` exists (`setup` writes it) and passes
+   `hermes review-loop selftest --loop name --no-model`.
 2. `hermes review-loop doctor --loop name` until every line is ✅ (or a ⚠️ you have decided on).
 3. **Decide the fix leg.** A new loop has unattended fixer pushes **off**, and while they are off a
    changes-requested verdict starts **no** fixer turn — a turn that cannot publish would only spend
@@ -105,7 +117,7 @@ registry is visible, but crash durability is unconfirmed; do not assume the oper
    ```
 
    Read the PR-metadata/ref race it acknowledges ([README](../README.md), and
-   [issue-16-boundary](issue-16-boundary.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent))
+   [security](security.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent))
    first. A verdict that was held before you opted in needs no new review: the next watchdog sweep
    (or `hermes review-loop drain --loop name --seat fixer`) re-checks that it is still the live
    latest verdict at the PR's current head and starts a fix run, admitted under the policy as it
@@ -214,7 +226,8 @@ at all (timed out, refused) is reported as unproven, never as green. After `arm`
 one and waits up to 10s for the delivery: `✅ … signature accepted`, `❌ … HTTP 401 — signature
 rejected` (exit 1), or `⚠️ no ping delivery seen` (nothing proven yet). A ping is harmless: the
 gateway checks its signature, then ignores it, because the loop's routes subscribe only to
-`pull_request` / `pull_request_review`. `doctor` never pings; `selftest` reads the recorded
+`pull_request` / `pull_request_review` (and, with triage on, the triage route to `issues`), never
+to `ping`. `doctor` never pings; `selftest` reads the recorded
 deliveries and pings only with `--ping` — only hooks at the loop's own route URLs, matched the way
 `arm` and `uninstall` match them, never another install's or another profile's hook on the same
 route name (its single
@@ -225,8 +238,9 @@ GitHub write, e.g.
 `--concurrency` (the default for both seats, except a seat given its own value), `--cap`, `--clone`, `--base`, `--grace-min`,
 `--ttl-min`, `--turn-budget` (and per seat `--reviewer-turn-budget` / `--fixer-turn-budget`) —
 through the same validation `init` uses, so a capacity above 1 without a clone is
-refused here exactly as it is at init. Prompts are rendered from the payload at fire time, so a
-change takes effect on the next event with nothing to re-install. The observer feed is changed the
+refused here exactly as it is at init. A seat's prompt is built by the worker when it launches
+the turn, from the loop config and a fresh GitHub read, so a change takes effect on the next turn
+with nothing to re-install. The observer feed is changed the
 same way: `--observer-profile`, `--observer-route`, `--observer-deliver`, `--observer-events`,
 `--observer-digest-min`, and `--observer-mute` / `--observer-unmute` / `--observer-disable`.
 
@@ -247,7 +261,10 @@ Everything the loop itself posts says so, unless you turn it off:
 | the reviewer seat's review | a footer: `🤖 Automated by hermes-review-loop · reviewer seat (Vex) · head abc1234`, linking to this project |
 | the fixer seat's answers comment | the same footer, naming the fixer seat |
 | the adjudicator's ruling comment (with `seats.adjudicator.login`) | the same footer |
-| a commit the fixer seat pushes | an `Automated-By: hermes-review-loop (…)` trailer |
+| a commit the fixer seat pushes (an issue fix's commit too) | an `Automated-By: hermes-review-loop (…)` trailer |
+| the triage comment (with `triage.comment`) | the footer, naming `issue triage` (labels carry no text, so they are not signed) |
+| an issue fix's PR description | the footer, naming the fixer seat (after the `Fixes #N` line) |
+| an issue fix's comment, when it could not fix the issue | the footer, naming the fixer seat |
 
 The host adds it at the moment it sends the write, never the seat, so a seat can neither remove it
 nor pre-empt it. And it marks only what the loop sends: a PR your coding agent opens by hand, or a
@@ -263,6 +280,21 @@ Turn it off per loop with `hermes review-loop set --loop name --attribution off`
 `on`), or for new loops in the settings form (**Sign what the loop posts**). `status` shows
 `signed: on|off`, and `doctor` has an `attribution` line. If the form names the setting, `apply`
 pushes it like any other knob, so set the form to match if you opt out with `set`.
+
+## How the reviewer grades findings
+
+The reviewer seat's prompt asks it to grade every finding **P0–P3**, with its evidence (the command
+and what it printed) and the `file:line` it is at, and to say whether the finding **blocks**:
+
+- **blocks**: a P0 or P1, a regression, silent data loss, the wrong agent woken, a false green on a
+  safety check, or a test or build the change breaks. Any blocking finding makes the verdict
+  `REQUEST_CHANGES`, which wakes the fixer.
+- **issue**: everything else (usually P2 or P3), real but not worth another round. With only
+  issue-tier findings the verdict is `APPROVE`, and the review lists them under **Issues to file**,
+  each with a suggested issue title, for you to file.
+
+A review must end in `APPROVE` or `REQUEST_CHANGES`; the broker refuses a comment-only review,
+because it would neither wake the fixer nor cue a merge.
 
 ## Token files: one PAT per account
 
@@ -319,7 +351,7 @@ makes.
 * **Scope cannot make a reviewer or an adjudicator safe.** If the account can post a review or a
   comment it can also push; there is no token shape on a user-owned repo that separates the two.
   What keeps a seat's write credential away from a turn is the
-  [boundary](issue-16-boundary.md) — the sandboxed agent never receives the token, and one seat's
+  [boundary](security.md) — the sandboxed agent never receives the token, and one seat's
   proxy holds only that seat's credential — plus one PAT per login, so a leak or a rotation touches
   one seat. Give the adjudicator its own file even though its account can push: the loop then never
   holds the credential a seat pushes with.
@@ -492,8 +524,8 @@ $ hermes review-loop doctor --loop widgets
   ❌ route:widgets-fix    wakes profile 'some-other-agent', but seats.fixer.profile is 'fixer-profile' — the wake would run the wrong agent
       fix: run `hermes review-loop apply --loop widgets` to rebind it to fixer-profile (its secret is kept)
   ✅ route:widgets-breach default · adjudication wake
-  ✅ scripts              /home/jeremy/projects/rl-15-doctor/scripts (watchdog, both gates, cleanup)
-  ❌ cron:shim            pinned to /opt/old/plugins/hermes-review-loop/scripts/watchdog.py, this install runs /home/jeremy/projects/rl-15-doctor/scripts/watchdog.py
+  ✅ scripts              /path/to/hermes-review-loop/scripts (watchdog, three gates, cleanup)
+  ❌ cron:shim            pinned to /opt/old/plugins/hermes-review-loop/scripts/watchdog.py, this install runs /path/to/hermes-review-loop/scripts/watchdog.py
       fix: `hermes review-loop apply --loop widgets --watchdog-shim` rewrites it from the plugin (the scheduled job runs it by name)
   ❌ cron:job             8f21c0 (review loop watchdog) is paused
       fix: `hermes cron resume 8f21c0`: a paused watchdog never reports a stall
@@ -523,6 +555,14 @@ hermes review-loop apply --loop widgets --watchdog-shim
 sink for the probe, a stubbed GitHub, a runtime venv without the `anthropic` package — with the
 demo home shortened to `doctor-demo` and the plugin checkout to `/path/to/hermes-review-loop`. A
 run against a live install prints the same lines with absolute paths and the real hook list.)
+
+Two lines say less than they check. `scripts` prints "three gates", but it checks six files:
+`watchdog.py`, the four gate scripts (`gate_reviewer.py`, `gate_fixer.py`, `gate_adjudicator.py`,
+`gate_triage.py`) and `cleanup.py`. `route:widgets-breach … adjudication wake` is the adjudicator
+route (its name is whatever `--adjudicator-route` gave it). Its gate always answers `[SILENT]`: the
+route's existence is what switches adjudication on, and the ruling itself runs as an isolated turn
+the host enqueues. With [issue triage](#issue-triage) on, `doctor` adds `profile:triage`,
+`credential:triage`, `model:triage`, `route:<id>-triage` and `hook:<id>-triage` lines.
 
 Each seat needs its own GitHub token, and that is deliberate: the token that reviews, the token
 that pushes and the token that reads are separate and revocable one at a time
@@ -562,7 +602,7 @@ A detached worker's stderr goes to `~/.hermes/state/review-loop-runs.sqlite.work
 | 2 bubblewrap | unprivileged user namespaces work; a probe in the real sandbox layout (committed source snapshot, configured venv/runtime/Rust) cannot read a dummy host secret, any model key file, each seat profile's `.env`/`auth.json`/`config.yaml`, the PATs, the runtime file, `~/.hermes/.env` or the loop config, and has no network or credential-like env |
 | 3 inference | one ~16-token request in the seat's own wire format (chat completion, Responses or Messages) through the host inference capability **per distinct seat resolution** (seats that share a profile's provider, model and credential share one call), each with that resolution's own credential; an OAuth seat's 401 is refreshed and retried once on the host before it is reported (`--no-model` skips it) |
 | 4 identities | read, reviewer, fixer (and optional adjudicator) PATs resolve via `/user` to the expected logins and distinct principals; the repo is readable |
-| 5 authorization | with `--pr N`: the broker's reviewer-write checks (`broker.authorize`, reads only) and the host receipt generation; then whether the seat can build that head: `build:rust:fetch` is the host prefetch of its `Cargo.lock` crates.io dependencies (a warning when refused or failed, since turns still run and the seat judges by reading; it prints the cache's size against its byte cap, and names a `REVIEW_LOOP_CRATE_CACHE_GIB` value it refused), and `build:rust` is an offline `cargo metadata --locked` inside the real sandbox layout with the cache mounted read-only ([dependency prefetch](issue-16-boundary.md#dependency-prefetch-issue-51-the-host-fetches-the-sandbox-builds-offline)) |
+| 5 authorization | with `--pr N`: the broker's reviewer-write checks (`broker.authorize`, reads only) and the host receipt generation; then whether the seat can build that head: `build:rust:fetch` is the host prefetch of its `Cargo.lock` crates.io dependencies (a warning when refused or failed, since turns still run and the seat judges by reading; it prints the cache's size against its byte cap, and names a `REVIEW_LOOP_CRATE_CACHE_GIB` value it refused), and `build:rust` is an offline `cargo metadata --locked` inside the real sandbox layout with the cache mounted read-only ([dependency prefetch](security.md#dependency-prefetch-issue-51-the-host-fetches-the-sandbox-builds-offline)) |
 | 6 supervisor | the ledger migrates and `status` reads; the route would accept the runtime file; `doctor`'s state dir, cron shim/job and gateway checks; the observer route |
 | 7 live turn | with `--live-turn --pr N`: a real isolated reviewer turn with the reviewer seat's resolved model, for the loop's reviewer `turn_budget_s` — the budget production enforces — unless `--timeout N` overrides it; the verdict and body the agent *would* submit are printed |
 
@@ -585,7 +625,7 @@ The live turn runs in the CLI process, not through the supervisor, so it adds no
 raises no operator notice; confirming alerts still needs a real enqueued turn and a watchdog sweep.
 
 The no-write guarantees and what the selftest does not prove are in
-[Issue #16: live verification](issue-16-boundary.md#live-verification-hermes-review-loop-selftest).
+[live verification](security.md#live-verification-hermes-review-loop-selftest).
 
 ## Sandbox size caps: the two writable mounts
 
@@ -595,8 +635,8 @@ that holds the loop's ledger.
 
 | Mount | Holds | Default | Override |
 | --- | --- | --- | --- |
-| `/work` | the checkout the seat builds and edits in (`CARGO_TARGET_DIR` points here) | 8 GiB | `REVIEW_LOOP_CHECKOUT_SIZE_GIB` |
-| `/tmp` | `TMPDIR`, `CARGO_HOME`/`RUSTUP_HOME`, an unwritable checkout's build target | 2 GiB | `REVIEW_LOOP_SCRATCH_SIZE_GIB` |
+| `/work` | the checkout the seat builds and edits in (`CARGO_TARGET_DIR` is `/work/target`). A seat that must not change the checkout (the adjudicator) gets it as a read-only bind instead, and its build target is a separate `/target` tmpfs of the same size | 8 GiB | `REVIEW_LOOP_CHECKOUT_SIZE_GIB` |
+| `/tmp` | `TMPDIR`, `CARGO_HOME`/`RUSTUP_HOME` | 2 GiB | `REVIEW_LOOP_SCRATCH_SIZE_GIB` |
 
 Both are sized against what real Rust workspaces build — a `patchhive/attest` debug target is
 2.2 GiB, two others 3.3 and 3.9 GiB — because a cap below a real target does not fail loudly: the
@@ -607,6 +647,13 @@ costs nothing. But they are charged against **RAM and swap**, not disk, so at th
 concurrency they are also a memory budget. `doctor`'s `sandbox:caps` line prints the two caps, the
 worst case at the loop's own concurrency, and the host's available memory beside them, and fails
 when the worst case is larger than what is available.
+
+The sandbox's `/etc` is not the host's either. Each launch gets a fresh one, staged by the host
+and removed with the run: a `passwd` and a `group` with one entry each, `agent`, for the uid and
+gid the sandbox runs as (home `/home/agent`), and an empty `alternatives` directory onto which
+the host's `/etc/alternatives` symlinks are bound read-only (Debian and Ubuntu find `cc` through
+them, and Rust cannot link without it). Nothing else comes from the host's `/etc`: tools that look
+up the current user (`getpass`, some build tools) find one, and no host account leaks in.
 
 ### Where to set an override
 
@@ -691,7 +738,7 @@ the run ledger: `fetching — started …` while a turn is still fetching (it is
 runs before the turn budget starts, so it is not a hung turn), then `ready` or `unavailable` with
 the reason — for example `the host crate cache would exceed 2 GiB (host limit
 REVIEW_LOOP_CRATE_CACHE_GIB)`, or a lockfile with git dependencies, which the host never fetches
-([dependency prefetch](issue-16-boundary.md#dependency-prefetch-issue-51-the-host-fetches-the-sandbox-builds-offline)).
+([dependency prefetch](security.md#dependency-prefetch-issue-51-the-host-fetches-the-sandbox-builds-offline)).
 `status` prints the same line for the loop's newest turns. The cap is a host setting: set
 `REVIEW_LOOP_CRATE_CACHE_GIB` (whole GiB, 1-1024, default 2) in the environment of the process
 that runs the supervisor (normally the gateway), and it applies from the next prefetch.
@@ -789,8 +836,13 @@ therefore exactly the live gate's. Anything that would leave the machine is list
 GitHub writes, gateway route POSTs, observer notices, and the drain or isolated worker it would
 start. GitHub reads are real, so the gate judges the PR as it is now. The output shows the
 delivery's facts, everything the gate logged, each `would …`, and one `outcome:` line:
-`would start a reviewer run`, `held — <why>`, or `declined — <why>`. The loop's real state is
-untouched, and the copy is deleted afterwards.
+`would start a <seat> run` (the gate would enqueue a turn and start the worker),
+`would queue a <seat> run` (it would enqueue one without starting a worker), `held — <why>`, or
+`declined — <why>`. The loop's real state is untouched, and the copy is deleted afterwards.
+
+`trace` takes `pull_request` and `pull_request_review` deliveries only. It cannot replay an
+`issues` delivery to the triage route yet (#230); for those, see
+[issue triage troubleshooting](troubleshooting.md#an-issue-opened-and-nothing-was-labelled).
 
 ## Pacing: usage windows and daily caps
 
@@ -825,7 +877,8 @@ limit there still looks like an ordinary failure.
 ## Issue triage
 
 Opt-in per loop: when an issue opens, a sandboxed triage seat reads it and applies labels from a
-fixed list, before any agent works on it.
+fixed list, before any agent works on it. New to it? [Issue triage and issue fixes, step by
+step](issues.md) walks through turning both on, testing them and turning them off.
 
 ```bash
 hermes review-loop triage --loop name --enable --profile tuck --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token you
@@ -913,8 +966,9 @@ own record instead:
   gate-triggered queue drain gets at most half the remaining time. The fit always keeps 1s for
   start-up and 3s for recording a failure. Recording never waits on a busy ledger past its
   share of those 3s: it falls through to the no-loop ledger, which every watchdog run sweeps.
-  `doctor` prints one `gate:timeout:<profile>` line for each profile hosting a loop route
-  (reviewer, fixer, adjudicator, observer). Each line names the gateway and file, flags any
+  `doctor` prints one `gate:timeout:<profile>` line for each profile hosting a reviewer, fixer,
+  adjudicator or observer route. The triage route's profile is not checked yet: if it is a
+  profile no other route uses, its gateway limit goes unreported. Each line names the gateway and file, flags any
   limit below 27s (the lowest that fits the full 20s budget, the 3s backstop, start-up and
   recording: `doctor` and the gate use the same arithmetic), flags a limit below 5s as too small for a gate even to record its own
   failure, and says which file to fix.
@@ -964,8 +1018,9 @@ own record instead:
   nothing is re-driven until it is armed again. The no-loop ledger
   (`~/.hermes/state/review-loop-gate-failures/`) is swept by every watchdog run, including one
   scoped with `--loop`.
-  Adjudicator failures are alerted but never re-driven, because that gate's output is its
-  dispatch. An entry resolves when the same event later
+  Adjudicator and triage gate failures are alerted but never re-driven: only the reviewer and
+  fixer gates are (`REDRIVABLE` in `gate_failures.py`). To re-run a triage or issue-fix event,
+  redeliver it from GitHub. An entry resolves when the same event later
   completes cleanly, whether through a re-drive or a manual redelivery from GitHub.
 * **`explain`** lists unresolved gate failures for the PR as blockers. It also lists the
   loop's failures whose payload named no PR, and the corrupt-copy entry, for every PR. It says
@@ -1007,8 +1062,10 @@ A failure is sorted by one question — *could it have written to GitHub?* — a
 host's own write-ahead records, never from an exit code. The sandbox holds no GitHub credential;
 its only writes go through the run's broker, which commits a record keyed by the run ID *before*
 the external call: a review-receipt claim (reviewer), a push intent/confirmation (fixer; its
-review request needs a confirmed push first) or a ruling (adjudicator; its optional PR comment
-follows the ruling). A run with any of those, or one ever quarantined as `uncertain`, may have
+review request needs a confirmed push first), a ruling (adjudicator; its optional PR comment
+follows the ruling), a triage result (triage, `triage_results`; its labels and comment follow it)
+or an issue-fix record (issue fixer, `issue_fixes`; its branch push, PR and review request, or its
+comment, follow it). A run with any of those, or one ever quarantined as `uncertain`, may have
 written. Anything else did not.
 
 ```
@@ -1019,11 +1076,15 @@ pending ──claim──► claimed ──► launching/running ──► succe
    │  │ fixer push not admitted / revoked: cancelled    (listed; an operator `retry` after
    │  │                                                   opting in re-admits it — see below)
    │                         │ failed, nothing on the write-ahead record
-   │                         ├─ transient (non-zero sandbox exit — model 429/5xx, OAuth refresh —,
-   │                         │  timeout, network, staging read): waiting, backoff 2m, 4m, 8m
+   │                         ├─ 429 that names its reset: waiting until the reset, no retry spent
+   │                         ├─ transient (non-zero sandbox exit — model 5xx or a bare 429,
+   │                         │  OAuth refresh —, timeout, network, staging read): waiting,
+   │                         │  backoff 2m, 4m, 8m
    ├──── backoff elapsed ────┘     … the 4th failure: failed (with a notice)
    │                         │ killed at its turn budget: failed at once (raise turn_budget_s)
-   ├──── redelivered event (≤8 failures) or `retry` ◄── failed / waiting / push-policy cancelled
+   ├──── redelivered event ◄── failed or cancelled, fewer than 8 retries spent (never a fixer
+   │                            run that was not admitted: only `retry` re-admits that)
+   ├──── `retry` ◄──────────── failed / waiting / push-policy cancelled
    │                         │ may have written, or a worker lost/still alive: uncertain
    └─ never ◄────────────────┘   (operator `reconcile` only; never replayed)
 ```
@@ -1053,21 +1114,32 @@ broker use. While pushes are still off, that retry is refused with the command t
 
 ## How it handles a burst
 
-Fifty PRs arrive in an hour. Ten of them wake the reviewer, and forty-one queue — the queue costs
-nothing but disk-less JSON. The moment a review ends, that slot is filled from the queue:
+Fifty PRs arrive in an hour, and the reviewer seat's concurrency is 10. Ten reviews run, and forty
+wait. Every accepted event is a row in the host run ledger; a row that has no free slot simply
+stays `pending`, which costs nothing but a ledger row. When a turn ends, its slot is filled from
+the pending rows:
 
 ```
 review #101 finishes (approve or changes-requested)
-  → its slot is freed
-  → the queue is drained immediately, up to the free slots
-  → the next queued PR's review starts
+  → its run leaves the running states, so its slot is free
+  → the finishing worker runs the ledger's recovery, which starts a worker for pending work
+  → that worker claims the oldest pending run the seat has room for, and its turn starts
 ```
 
-A slot is not freed by a timer. The **verdict** frees it, either kind; the fixer's **request** frees
-the fixer's. The watchdog sweep is only the backstop, and `ttl_min` is the last resort for a run that
-died without a verdict. Capacity is per seat, so `reviewer 10 · fixer 2` is a legitimate shape —
-reviews are cheap and parallel, fixes are not.
+A seat's capacity is counted from the ledger: the runs of that seat that are `claimed`,
+`launching`, `running` or `uncertain`. An `uncertain` run keeps its slot until you reconcile it,
+because nobody can tell whether it is still writing. Capacity is per seat, so `reviewer 10 · fixer 2`
+is a legitimate shape: reviews are cheap and parallel, fixes are not.
 
-Do the arithmetic before setting it high: each in-flight run is a whole agent plus its own clone and
-its own cold build. On a big Rust repo, ten at once is ten parallel builds — the machine, not GitHub,
-is what decides how high this number can go.
+Nothing is freed by a timer while a worker is alive. Each running worker holds a lease on its run
+and renews it with a heartbeat every few seconds. If the worker dies, the lease runs out, and the
+next recovery (the next event, another run finishing, or an armed watchdog sweep) acts on it: a run
+that was only claimed goes back to `pending`; a run that had started is marked `uncertain` and never
+launched again, since it may have written.
+
+Do the arithmetic before setting it high. Each turn gets its own copy of the code: the host fetches
+GitHub's tarball of the head and stages it read-only, and the sandbox copies it into its own
+size-capped `/work`
+([sandbox size caps](#sandbox-size-caps-the-two-writable-mounts)). Nothing is shared between turns,
+so each one is a whole agent plus its own cold build. On a big Rust repo, ten at once is ten parallel
+builds, and the machine's memory, not GitHub, decides how high this number can go.

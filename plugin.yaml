@@ -12,8 +12,8 @@ homepage: https://github.com/coe0718/hermes-review-loop
 license: MIT
 requires_hermes: ">=0.21.0"
 platforms:
+  # Linux only: every seat turn runs in bubblewrap (user namespaces), which macOS lacks.
   - linux
-  - darwin
 python_dependencies: []
 # Settings the operator can edit in the desktop (Capabilities → Plugins → review loop). They are
 # the defaults a NEW loop starts from, and what `hermes review-loop apply --loop <id>` pushes onto

@@ -22,7 +22,7 @@ part that must not be creative.
         │                    │
         └──── under the cap ─┘
                              │
-                    cap spent │ → adjudicator rules, human merges
+                    cap spent │ → you decide (an adjudicator rules first, if configured)
 ```
 
 ## Before you start
@@ -32,6 +32,12 @@ You need:
 - **Linux with [bubblewrap](https://github.com/containers/bubblewrap)** (`bwrap`). Every agent
   turn runs inside it, with no network and no credentials. Install it from your distribution
   (`dnf install bubblewrap`, `apt install bubblewrap`). `selftest` checks that it works.
+
+  **On macOS:** bubblewrap needs Linux kernel features macOS doesn't have, so the loop can't run
+  natively on a Mac yet. Run Hermes, and this plugin with it, inside a Linux VM: OrbStack, Lima,
+  Colima and UTM all work. Everything below then happens inside the VM, which also needs a public
+  HTTPS address for GitHub's webhooks. Native macOS support through a Docker or Podman sandbox is
+  planned (#256).
 - **Hermes Agent, installed from its Git checkout with a virtualenv.** The loop runs each turn
   with that checkout and venv, and records their paths in its private runtime file.
 - **A Rust toolchain** (`rustup`, or a system `cargo`). The sandbox mounts it so a seat can build
@@ -73,15 +79,15 @@ Every one of those is a *silent* failure, so this plugin makes each one loud or 
 
 | failure | what the loop does |
 |---|---|
-| push without a request | the gate only wakes the reviewer on an explicit request (and the fixer's prompt spells out the `gh api` call) |
+| push without a request | the gate only wakes the reviewer on an explicit request, and the fixer's turn has exactly two broker writes: one push, then one `request_review` |
 | fixer never pushes | the watchdog reports "changes requested N hours ago at head X, fixer never pushed" |
 | reviewer never posts | "head first observed N hours ago, 0 verdicts at this head" |
 | verdict ping-pong forever | the cap is counted in **verdicts**; hitting it hands the PR to an adjudicator instead of buying round four |
-| two runs, one clone | a seat is a capacity with a per-PR ledger; `concurrency: 2+` gives each PR its own clone, build dir and tmp dir, and an unisolatable run is queued rather than shared |
-| a run dies mid-way | the lock expires; a stalled head frees itself |
+| two runs, one clone | every turn gets its own sandbox and its own exact-head export of the PR, so parallel runs never share a checkout; the host run ledger enforces each seat's capacity |
+| a run dies mid-way | the run ledger holds each run on a lease its worker keeps renewing; a lost worker's run is marked `uncertain` (it may have written) and never replayed, while a failure before any write retries after 2, 4 and 8 minutes (four attempts in all) |
 | disk creep | a merged/closed PR runs the cleanup: worktrees, build dirs, logs, locks, counters |
 | another registry writer erased or rewrote a route | the watchdog restores it from the plugin's own intent record, same secret, and says so; `doctor` flags it; `doctor --repair` restores it now |
-| "did the loop ever run?" | every branch of every gate either fires or logs *why not*; the watchdog reads GitHub state directly instead of trusting anyone's summary |
+| "did the loop ever run?" | every branch of every gate either enqueues an isolated turn or logs *why not*; the watchdog reads GitHub state directly instead of trusting anyone's summary |
 
 ## Install
 
@@ -190,6 +196,7 @@ base):
 ```bash
 # 0. the private runtime file (host paths; each seat's model comes from its Hermes profile).
 #    Switch one of two: with it, an eligible event runs an isolated seat turn instead of being held.
+#    Skip this line if you ran `setup`: it already wrote the file.
 (umask 077; touch ~/.hermes/review-loop-runtime.json); chmod 600 ~/.hermes/review-loop-runtime.json; $EDITOR ~/.hermes/review-loop-runtime.json
 hermes review-loop doctor   --loop ID                       # installation preflight
 hermes review-loop selftest --loop ID --no-model            # 1,2,4,6: runtime, bwrap, identities, ledger — free
@@ -205,6 +212,30 @@ What each step proves, and how to read a failure, is in
 `hermes review-loop explain --loop ID --pr N` says why
 ([details](docs/operations.md#why-isnt-this-pr-moving)).
 
+Step 0 is for an install made with `init`: what the file holds, and how to write it by hand, is in
+[the runtime file](docs/configuration.md#runtime-file-and-seat-models-review-loop-runtimejson).
+
+## What else it can do
+
+Beyond the review loop itself, each of these is one command away:
+
+- **Issue triage and issue fixes.** New issues from authors you list get labels from a fixed list;
+  a maintainer's label can hand an issue to the fixer, which opens a PR the loop then reviews.
+  Off unless you turn it on. [Issues, step by step](docs/issues.md).
+- **`trace`.** Replays one webhook delivery without side effects and says why it started nothing.
+  [`trace`](docs/operations.md#why-did-that-delivery-start-nothing-trace).
+- **Pacing.** A subscription seat that hits its usage window waits for the reset instead of
+  failing, and `seats.<seat>.daily_turns` caps turns per day.
+  [Pacing](docs/operations.md#pacing-usage-windows-and-daily-caps).
+- **Signing.** What the loop posts carries a "🤖 Automated by hermes-review-loop" footer, and its
+  commits an `Automated-By:` trailer. On by default; `set --attribution off` turns it off.
+  [What the loop signs](docs/operations.md#what-the-loop-signs).
+- **Graded reviews.** The reviewer grades every finding P0–P3 and says whether it *blocks* or is an
+  *issue*. Only blocking findings request changes; an APPROVE may list the rest under
+  "Issues to file".
+- **`explain`, `retry`, `drain`.** Why a PR is not moving (read-only), re-arm a failed turn that
+  never wrote, and start queued work now. [Commands](docs/commands.md#when-something-is-stuck).
+
 ## What the loop guarantees
 
 - **One PR, one seat.** A PR is held by the reviewer *or* the fixer, never both: a review never
@@ -214,12 +245,13 @@ What each step proves, and how to read a failure, is in
 - **Capacity is per seat.** `reviewer 2 · fixer 1` means two reviews in flight and one fix — Drey
   and Vex are different models on different budgets, and wanting two reviews rarely means wanting
   two fixes. Everything above a seat's limit queues, and starts when a slot frees.
-- **Parallel only when it is safe.** A capacity above 1 gives every run its own clone and its own
-  build/temp dirs — per PR *and per seat*, because the two seats can overlap on one PR. A run that
-  cannot be isolated is queued, never started beside another.
+- **Parallel only when it is safe.** Every turn gets its own sandbox, with its own temporary root
+  and its own export of the PR at the exact head it was woken for, so parallel runs never share a
+  checkout. The host run ledger enforces each seat's capacity: a turn over the limit waits.
 - **The cap is a wall, not a suggestion.** `cap` verdicts, `cap - 1` fix turns. The verdict that
   reaches the cap escalates instead of buying another round. The human is the veto, not the
-  reviewer: the adjudicator rules and reports, and never merges or pushes.
+  reviewer: when the loop has an adjudicator route, the adjudicator rules and reports, and never
+  merges or pushes; without one the PR waits for you.
 - **One wake per head.** Every marker is keyed by PR *and* commit: a new commit is a new situation,
   the same commit is not. Redelivered webhooks do nothing.
 - **Unknown is not a guess.** If the review list cannot be read, the gate stays silent rather than
@@ -258,18 +290,25 @@ on.** The long version:
 > (`~/.hermes/review-loop-runtime.json`) that the worker needs, and `arm`, which turns on the
 > repo hooks `init --hooks` created paused. Without the file an eligible event is queued with
 > its reason and held; with it and the hooks armed, **a reviewer turn posts a real GitHub
-> review** as the reviewer login, and a spent cap runs the adjudicator. The fixer is the
-> exception: unattended fixer pushes stay **off** (below) until you opt in per loop. Each
-> run's checkout is a scratch copy, not a security boundary; the sandbox and broker are.
+> review** as the reviewer login, and, on a loop with an adjudicator route, a spent cap runs
+> the adjudicator. The fixer is the exception: unattended fixer pushes stay **off** (below)
+> until you opt in per loop. Each run's checkout is a scratch copy, not a security boundary;
+> the sandbox and broker are. The whole boundary is in [Security](docs/security.md).
 >
-> **Adjudication is isolated like the seats.** A spent cap enqueues an isolated
+> **Adjudication is isolated like the seats, and optional.** On a loop with an
+> `adjudicator.route`, a spent cap enqueues an isolated
 > adjudicator turn in the host run ledger (never the legacy gateway route, which
 > stays silent). It runs credentialless in the same sandbox, with a read-only
 > checkout, and can only submit one ruling (ACCEPT / REJECT / RESPEC + reason)
 > through the broker. The host records it, tells the operator (observer `ruling`
 > notice plus the watchdog outbox), and posts it as a PR comment only when a
 > distinct `seats.adjudicator.login` identity is configured. It never merges,
-> pushes or reviews. See [`docs/configuration.md#adjudication-the-isolated-ruling`](docs/configuration.md#adjudication-the-isolated-ruling).
+> pushes or reviews. Without a route the cap only writes the breach marker and the PR waits
+> for you. `init --adjudicator-route <id>-breach` turns it on; `setup` never does, and no `set`
+> flag adds it later. To add it to an existing loop, put
+> `"adjudicator": {"route": "<id>-breach", "profile": "<profile>"}` in the loop file, then run
+> `hermes review-loop apply --loop <id> --recreate-routes`. See
+> [adjudication](docs/configuration.md#adjudication-the-isolated-ruling).
 >
 > **Operator decision: unattended fixer pushes are off by default.** A changes-requested
 > verdict is held for you and no fixer turn starts until
@@ -281,7 +320,7 @@ on.** The long version:
 > update. The lease only compares `refs/heads/<branch>` to the old SHA, not GitHub PR
 > metadata, and a post-push readback can flag some transitions but cannot undo a published
 > commit. Do not call that an atomic PR policy; read
-> [the push policy](docs/issue-16-boundary.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent) before enabling it. With pushes off, make an
+> [the push policy](docs/security.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent) before enabling it. With pushes off, make an
 > individual fix by hand: inspect the live PR owner, state, draft flag, base/head repo, review
 > and intended diff, push, verify the exact PR/ref afterwards, and reconcile an ambiguous
 > outcome instead of retrying it.
@@ -347,56 +386,74 @@ subscription quota. Offline success does **not** prove a live model request or
 native credential availability. `selftest --no-model` is the no-spend preflight;
 model-spending selftests remain an explicit operator decision.
 
-## Status and honesty
+**Launch lockdown.** The host helper installs review-loop's own `subprocess.Popen` guard
+(`review_loop/directsdk_guard.py`) before it imports the provider, so every native launch must
+use the host-resolved Claude executable and the reviewed one-turn flag grammar (no tools, no
+setting sources, strict MCP config naming only the provider's pinned inventory server, `dontAsk`,
+one turn, no slash commands, no session persistence); anything else is refused before a process
+starts and surfaces as a failed inference (HTTP 502), which `selftest` names. This guards against
+the provider's launch contract drifting, not against deliberately malicious plugin code: installed
+plugins remain trusted host code.
 
-**Current branch:** the hermetic canonical harness now checks `[SILENT]`,
-held eligible turns, and the guarded breach marker instead of expecting legacy
-`FIRE` payloads or an adjudicator POST. The focused pytest suite also exercises
-an isolated worker with disposable credentials and local fakes. Neither suite
-proves a safe GitHub-side PR-metadata/ref transaction; see
-`docs/issue-16-boundary.md`. The historical claims below describe pre-hold live
-use and must not be used to certify this branch.
+**When you change this code, keep these rules:**
 
-Historical pre-hold evidence (not current rollout authorization):
+- Preserve native reasoning with the inert registered provider profile that declares the exact
+  carrier type. A generic custom HTTP route strips another provider's `.native_assistant` sidecar.
+- Keep DirectSDK client construction in the host helper. Never route sandbox JSON into the
+  command, args, environment, working directory, plugin paths, timeout or any other constructor
+  argument.
+- Native login defaults to the OS user's account. Distinct Hermes profiles need an explicit native
+  config directory to use different subscriptions; never copy auth stores.
+- Keep arbitrary `process://` URLs refused by the HTTP endpoint check. Only the exact named process
+  backend marker selects DirectSDK, under the existing request, model, token and call limits.
+- Cancel through the client's `close()`: native Claude runs in its own process group, so killing
+  only the helper's group does not stop it.
 
-- `python3 tests/run_tests.py` — full offline suite: every gate branch, the cap, the one-PR-one-
-  seat rule (including the handoff that must *not* deadlock the gates), per-seat capacity and
-  queueing, an approval freeing its slot and starting the next queued PR, **real isolation** (real
-  clones — one per PR *and* per seat — checked out at the head, with no token in them), the `set` /
-  `apply` / `settings` verbs (including the round trip a stranger's install depends on, and that
-  `plugin.yaml`'s `config_schema` still matches the keys the code reads), **seat identity** (the form
-  choosing reviewer/fixer/adjudicator profiles and logins, a preview that writes nothing, several
-  loops staying isolated from each other, an identity change refused while a seat is in flight and
-  staged — config *and* route — once it is not, and invalid mappings refused before any write),
-  the `doctor` preflight (missing profiles, tokens, routes, hooks or cron jobs fail with remediation;
-  an API-denied hooks read is `unknown`, never "absent"), all four watchdog stall shapes, `explain`'s
-  golden cases (in-flight/no-verdict/no-fix reviews, unrequested head, queued/full seat, spent
-  budget, paused loop, closed/missing PR, failed GitHub read) and its read-only proof, the route/hook
-  reconciliation rollback cases, the cleanup rails against a real git clone, and the observer feed
-  (one notice per verdict and handoff, no duplicate on redelivery, a 5xx destination never blocking
-  queue drain, escalation delivered before adjudication, and mute/digest/misconfiguration inert).
-- Live use on a private repository: two seats, dozens of PRs, review → verdict → fix → cleanup.
+## Status
 
-Not proven, and worth knowing before you trust it:
+**What the tests cover.** Two offline suites run in CI on Python 3.11 and 3.14:
 
-- The plugin's own `init` path has been exercised against a test gateway, not against every gateway
-  layout in the wild. The intended checks after `init` are `hermes plugins validate` and
-  `hermes review-loop doctor --loop <id>` — and `doctor` has itself only been run against the
-  suite's stubbed GitHub and isolated homes, not against a live repo's hook list. Check
-  `hermes review-loop status` after installation too.
-- **The seat-identity surfaces are exercised against local files, not the desktop form.** The suite
-  calls `register_cli` with a settings dict (the shape the form writes), so the plugin-side
-  behaviour — defaults, validation, preview, staged apply — is covered; whether the desktop renders
-  the new fields the way the manifest asks is not something these tests can see.
-- A live run that spans an identity change keeps the profile and login it started with. `--while-busy`
-  is honest about that but cannot retro-fit a run already in flight.
+- `tests/run_tests.py`, the harness: every gate branch (each answers `[SILENT]` and enqueues an
+  isolated turn or holds it with its reason), the cap and the breach marker, one PR one seat,
+  per-seat capacity and queueing, the watchdog's stall shapes and drains, `explain`'s golden cases
+  and its read-only proof, `set` / `apply` / `settings` and the manifest's `config_schema`, seat
+  identity and the four-identity rule, `doctor`, route self-heal, cleanup against real git, the
+  observer feed, and that every command in these docs still parses. It runs once standalone
+  (no Hermes importable) and once with a pinned Hermes installed.
+- The boundary suite, run through `tests/leakguard.py` (which also fails a test that leaks a file,
+  socket or child process): the broker, safe push, the exact-head fetch, the inference proxy, the
+  run supervisor and the bubblewrap sandbox itself, with disposable credentials and fake GitHub
+  and model servers. A separate CI job runs a real pinned Hermes inside bubblewrap.
+
+CI also runs Hermes's own plugin scanner (`plugin-guard`) on every change and fails on a
+**dangerous** verdict.
+
+**Live use.** On 2026-10-03 the loop ran end to end on this public repository: a fixer PR was
+reviewed about 80 seconds after it opened, changes were requested, the fixer pushed a fix and
+re-requested review, and the reviewer approved. The reviews were signed, and the observer feed
+posted its notices to Telegram.
+
+**Known limits.** Worth knowing before you trust it:
+
+- **Unattended fixer pushes are not atomic with PR metadata.** The broker checks the live PR before
+  it pushes, but a PR can close, change author or retarget between that read and the ref update.
+  That is why fixer pushes are off by default; see
+  [the push policy](docs/security.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent).
+- **The sandbox is a user namespace under the same UID.** bubblewrap hides credentials, the network
+  and the host's files from a turn, but the turn's processes still run as your user. A kernel or
+  bubblewrap escape would act as you.
+- **One gateway host per loop.** Each loop's routes live on the gateway named by its `host`. A fleet
+  of gateways is untested.
+- **The desktop settings form's rendering is untested.** The suite calls the plugin with the
+  settings dict the form writes, so defaults, validation, preview and staged apply are covered;
+  whether the desktop draws the fields the way `plugin.yaml` asks is not something the tests can see.
+- **Issue triage and issue fixes have not run live yet.** They are covered by the offline suites only.
+- A run that spans an identity change keeps the profile and login it started with. `--while-busy`
+  says so but cannot change a run already in flight.
 - Cleanup reports **file bytes removed** (`du`), which is not the same as disk recovered on a
-  compressed or reflink-sharing volume — quote the `df` delta too.
-- `explain` has been exercised by the suite and by hand against stubbed GitHub, not yet against a
-  live 2am stall. Its armed/paused line depends on the read token being able to see the repo's
-  hooks; where it cannot, the line says unknown instead of claiming the loop is parked.
-- One gateway host is assumed for the routes (`host` in each loop config). A fleet of gateways is
-  untested.
+  compressed or reflink-sharing volume: check `df` too.
+- `explain`'s armed/paused line needs the read token to see the repo's hooks; where it cannot, the
+  line says unknown instead of claiming the loop is parked.
 
 ## Running the tests
 
@@ -416,18 +473,17 @@ build it in both, and CI runs the suite once per mode.
 
 | page | what it covers |
 |---|---|
-| [docs/concepts.md](docs/concepts.md) | how it works in plain words: a glossary, one PR start to finish, the switches |
-| [docs/accounts.md](docs/accounts.md) | the GitHub accounts and tokens, step by step |
-| [docs/commands.md](docs/commands.md) | every command, what it changes, and every flag |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | symptom → cause → fix |
-| [docs/operations.md](docs/operations.md) | what `init` writes, everyday commands, the `doctor` preflight, `selftest`, `explain`, burst handling |
+| [docs/concepts.md](docs/concepts.md) | how it works: a glossary, one PR from start to finish, the switches, what the agents can and cannot do, where things live |
+| [docs/accounts.md](docs/accounts.md) | why several GitHub accounts, creating them and their tokens, storing tokens safely, checking them |
+| [docs/commands.md](docs/commands.md) | every `hermes review-loop` command, what it changes, and its flags (generated from the CLI) |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | symptom → cause → fix: nothing happened, held turns, failed or uncertain runs, the runtime file, notices |
+| [docs/issues.md](docs/issues.md) | issue triage and issue fixes, step by step: labelling new issues, handing an issue to the fixer |
+| [docs/operations.md](docs/operations.md) | what `init` writes, everyday commands, the `doctor` preflight, `selftest`, `explain`, `trace`, pacing, issue triage, what the loop signs, burst handling |
 | [docs/settings.md](docs/settings.md) | the desktop settings form, seat identity defaults, `settings` / `apply` |
 | [docs/observer.md](docs/observer.md) | the observer feed: notices to your phone, how to turn it on, its rules |
-| [docs/configuration.md](docs/configuration.md) | every loop-config key, the observer block, adjudication, plugin settings, state files, env overrides |
-| [docs/architecture.md](docs/architecture.md) | the seats, isolation, escalation, the watchdog, `explain`, observer and preflight design |
-| [docs/issue-16-boundary.md](docs/issue-16-boundary.md) | the isolated route-to-agent boundary (issue #16), selftest guarantees, remaining blockers |
-| [docs/issue-1-route-self-heal.md](docs/issue-1-route-self-heal.md) | the webhook-registry race (issue #1): self-heal and what it doesn't close |
-| [docs/stacked-submission-boundary.md](docs/stacked-submission-boundary.md) | the stacked reviewer submission boundary (not enabled) |
+| [docs/configuration.md](docs/configuration.md) | reference for every loop-config key, the observer block, adjudication, issue triage, plugin settings, seat identity, state files, environment overrides |
+| [docs/architecture.md](docs/architecture.md) | design: the seats, isolation, escalation, the watchdog, `explain`, the observer feed, preflight, the shared route registry, stacked PRs and retargets |
+| [docs/security.md](docs/security.md) | the security boundary: what runs where, the sandbox and the broker, dependency prefetch, `selftest`'s live verification, the unattended fixer push policy |
 | [docs/README.md](docs/README.md) | the same index, inside `docs/` |
 
 ## Repository layout
@@ -435,19 +491,37 @@ build it in both, and CI runs the suite once per mode.
 ```
 plugin.yaml                manifest (no hidden capabilities: no hooks, no tools, no middleware)
 __init__.py                registers the CLI and the skill
-review_loop/               the library: config, state, gh, routes (+ route_intent self-heal), prompts, gate runtime,
-                           observer, CLI, the read-only `doctor` preflight and the isolated-path
-                           `selftest`
-scripts/gate_reviewer.py   between a pull_request event and a review run
-scripts/gate_fixer.py      between a pull_request_review event and a fix run
+review_loop/               the library: config, state, gh, routes (+ route_intent self-heal), prompts,
+                           gate runtime, observer, CLI, the read-only `doctor` preflight, `selftest`,
+                           `explain` and `trace`
+  run_supervisor.py        the host run ledger (SQLite): capacity, leases, retries, the detached workers
+  trusted_turn.py          builds one isolated turn: temp root, prompt, tools, sandbox launch
+  contained.py             the bubblewrap launcher and its size-capped mounts
+  trusted_fetch.py         exports the PR at its exact head from a GitHub tarball, no `.git`, no token
+  deps.py                  host-side dependency prefetch (crates.io) into a bounded cache
+  broker.py, broker_ipc.py the host broker: the one-run Unix socket and the only GitHub writes
+  safe_push.py             the fixer's push: a whole-file manifest, compare-and-swap on the branch
+  inference_proxy.py       the per-turn model bridge; the credential stays on the host
+  seat_model.py            resolves each seat's model from its Hermes profile
+  pacing.py                usage-window holds and daily turn caps
+  attribution.py           the "Automated by hermes-review-loop" footer and commit trailer
+  runtime_detect.py        finds the host paths `setup` writes into the runtime file
+scripts/gate_reviewer.py   the reviewer route's gate: a pull_request event → an isolated reviewer turn
+scripts/gate_fixer.py      the fixer route's gate: a pull_request_review event → an isolated fixer turn
+scripts/gate_triage.py     the triage route's gate: an issues event → an isolated triage or issue-fix turn
+scripts/gate_adjudicator.py the legacy breach route: always silent (adjudication is enqueued by the gate)
+scripts/broker_client.py   the credentialless client a turn uses to ask the broker for its one write
 scripts/watchdog.py        cron: route self-heal, stall detection, stuck state, queue draining
 scripts/cleanup.py         merge/close: reclaim the PR's local disk
 scripts/observe.py         the observer route's adapter: republish the loop's notice, wake nobody
                            (the gateway runs a route's script only from the serving profile's
                            ~/.hermes[/profiles/<name>]/scripts, so init/apply put a shim there)
-skill/SKILL.md             the protocol the seats load
-tests/run_tests.py         the proof (stubbed GitHub, real HTTP sink, real git)
-docs/                      operations, settings, observer, architecture and configuration (see docs/README.md)
+skill/SKILL.md             reference text: the protocol the host writes into each seat's prompt
+                           (isolated turns run with plugins off and never load it)
+tests/run_tests.py         the offline harness (stubbed GitHub, real HTTP sink, real git)
+tests/leakguard.py         runs the boundary suite and fails any test that leaks a file, socket or child
+docs/                      concepts, accounts, commands, troubleshooting, issues, operations, settings,
+                           observer, configuration, architecture, security (see docs/README.md)
 catalog/                   the catalog entry this repo is intended to be listed by
 ```
 

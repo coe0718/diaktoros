@@ -20,8 +20,8 @@ requires_hermes: '>=0.21.0'
 docs_url: https://github.com/coe0718/hermes-review-loop#readme
 version: 0.1.0
 platforms:
+  # Linux only: every seat turn runs in bubblewrap (user namespaces), which macOS lacks.
   - linux
-  - darwin
 capabilities:
   provides_tools: []
   provides_hooks: []
