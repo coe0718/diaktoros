@@ -25,10 +25,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.13"]
+        # 3.11 is what the Hermes venv runs (the turns, gates and resolver); 3.14 is what Hermes
+        # ships for its own CLI (`hermes review-loop …` runs in that process), so test both ends.
+        python: ["3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       # No dependencies to install: the plugin is stdlib-only on purpose, and so are its tests.
@@ -66,11 +68,11 @@ jobs:
       - name: Skip Hermes main outside the scheduled run
         if: matrix.hermes == 'main' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         run: echo "Hermes main is scanned on the weekly schedule only."
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: matrix.hermes == 'pinned' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         with:
           path: plugin
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: matrix.hermes == 'pinned' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         with:
           repository: NousResearch/hermes-agent
@@ -78,10 +80,10 @@ jobs:
           path: hermes
           sparse-checkout: tools
           fetch-depth: 1
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: matrix.hermes == 'pinned' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Scan the plugin as `hermes plugins install` would
         if: matrix.hermes == 'pinned' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: python plugin/.github/scripts/plugin_guard.py hermes plugin
@@ -94,21 +96,21 @@ jobs:
   installed-mode:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: NousResearch/hermes-agent
           ref: ${{ env.HERMES_PINNED }}
           path: hermes
           fetch-depth: 1
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       # Hermes itself is not installed — it builds a native extension the resolver does not need —
       # but the two packages its pinned commit declares for this interpreter are, so the lane moves
       # only when the pin moves: croniter for stored cron expressions, ruamel.yaml for a profile's
       # config.yaml. (Hermes declares both for 3.14 and above, which is why this job runs there; the
-      # 3.11/3.13 standalone coverage lives in `tests`.)
+      # 3.11/3.14 standalone coverage lives in `tests`.)
       # HERMES_AGENT_SOURCE points the tests that drive Hermes's own code (the gateway's route-script
       # resolver, #105) at this checkout; REVIEW_LOOP_REQUIRE_HERMES_SOURCE turns their "no Hermes
       # here" skip into a failure, so that check cannot quietly vanish from this lane.
@@ -145,16 +147,16 @@ jobs:
       # lives in, which must hold nothing but that runtime.
       UV_PYTHON_PREFERENCE: only-managed
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: NousResearch/hermes-agent
           ref: ${{ env.HERMES_PINNED }}
           path: hermes
           fetch-depth: 1
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       # Ubuntu 24.04 denies unprivileged user namespaces through AppArmor; bwrap needs them.
       - name: Install bubblewrap and allow unprivileged user namespaces
         run: |
@@ -183,7 +185,7 @@ jobs:
           enable-cache: false
       - name: Point uv at a cache directory
         run: echo "UV_CACHE_DIR=$RUNNER_TEMP/uv-cache" >> "$GITHUB_ENV"
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         id: uv-cache
         with:
           path: ${{ runner.temp }}/uv-cache
@@ -199,7 +201,7 @@ jobs:
           uv venv --python "$py" hermes/venv
           cd hermes && UV_PROJECT_ENVIRONMENT="$HERMES_AGENT_SOURCE/venv" uv sync --frozen --no-dev --extra anthropic
           test -x "$HERMES_AGENT_SOURCE/venv/bin/hermes"
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v6
         if: steps.uv-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/uv-cache

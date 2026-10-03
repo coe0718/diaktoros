@@ -87,6 +87,25 @@ class Detection(unittest.TestCase):
             proxy.chmod(0o755)
             self.assertIsNone(runtime_detect._rust())
 
+    def test_a_packaged_install_finds_the_checkouts_own_venv(self):
+        """The `hermes` command runs on a bundled Python outside any venv (a packaged install):
+        the venv is the checkout's `venv/` (preferred over a developer's `.venv/`), and the
+        runtime is computed from it (first live setup, 2026-10-03)."""
+        venv = self.paths["venv"]
+        (self.paths["source"] / ".venv" / "bin").mkdir(parents=True)
+        (self.paths["source"] / ".venv" / "bin" / "python").write_text("")
+        (self.paths["source"] / ".venv" / "bin" / "hermes").write_text("")
+        bundled = self.root / "tools" / "python"
+        (bundled / "bin").mkdir(parents=True)
+        with patch.object(runtime_detect.sys, "prefix", str(bundled)), \
+                patch.object(runtime_detect.shutil, "which", return_value=None), \
+                patch.object(runtime_detect, "_source", return_value=self.paths["source"]), \
+                patch.object(runtime_detect, "_rust", return_value=self.paths["rust"]):
+            found = runtime_detect.detect()
+        self.assertEqual(found["venv"], str(venv))
+        self.assertEqual(found["runtime"], str(self.paths["runtime"]))
+        self.assertEqual(runtime_detect.problems(found), {})
+
     def test_each_wrong_path_is_named(self):
         bad = {"source": str(self.root), "venv": str(self.root), "runtime": str(self.root / "x"),
                "rust": str(self.root)}
@@ -215,6 +234,15 @@ class Setup(unittest.TestCase):
         self.assertEqual(written["seats"], {"reviewer": override})
         self.assertIn("(detected)", out)
         self.assertIn("(kept)", out)
+
+    def test_a_given_venv_brings_its_own_runtime(self):
+        """Only --venv given: the runtime is derived from that venv, not left for --runtime."""
+        argv = [a for a in self.flags() if not a.startswith("--runtime=")]
+        rc, out = self.setup_cli(*argv)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(json.loads(self.runtime_file.read_text())["runtime"],
+                         str(self.paths["runtime"]))
+        self.assertIn("(detected)", out)
 
     def test_a_path_that_cannot_be_found_is_named_and_nothing_is_armed(self):
         argv = [a for a in self.flags("--arm") if not a.startswith("--rust=")]

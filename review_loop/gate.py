@@ -178,20 +178,24 @@ def hold_fixer_push_off(loop: dict, st: state_mod.LoopState, number: int,
 
 
 def fixer_push_denial(loop: dict, context: str = "") -> str:
-    """The shared denial sentence for a loop that refuses every fixer write (#81), else ``""``.
+    """Why the host refuses every fixer write on this loop (#81), for the operator, else ``""``.
 
-    One source of truth: the queue hold's reason, the operator's ``next_turn`` notice and the
-    broker's own refusal all word this from ``broker_ipc.FIXER_WRITE_DENIED``, so the three
-    surfaces cannot drift apart. An unreadable policy read returns ``""`` — it must never drop
-    the enable command or the hold itself — and ``context`` prefixes the diagnostic.
+    One source of truth for the *reason*: the queue hold, the operator's ``next_turn`` notice
+    and the broker's refusal all name ``broker_ipc.policy_hold_reason``. Only the seat gets it
+    inside ``FIXER_WRITE_DENIED``, whose second half instructs the model ("say plainly in your
+    summary…"); the operator reads the reason alone. The plain push-off reason is not repeated:
+    the hold and the notice already say pushes are off and give the enable command. An
+    unreadable policy read returns ``""`` — it must never drop the enable command or the hold
+    itself — and ``context`` prefixes the diagnostic.
     """
     from . import broker_ipc
+    from .run_supervisor import FIXER_PUSH_OFF
     try:
         denial = broker_ipc.policy_hold_reason(loop)
     except Exception as exc:
         log(f"{context}fixer policy read failed: {type(exc).__name__}: {exc}")
         return ""
-    return broker_ipc.FIXER_WRITE_DENIED.format(reason=denial) if denial else ""
+    return "" if denial in ("", FIXER_PUSH_OFF) else denial
 
 
 def fixer_push_off_notice(loop: dict) -> str:

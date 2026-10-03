@@ -179,6 +179,21 @@ class SnapshotSecretTests(GitTree):
         self.assertFalse((destination / 'config/settings.json').exists())
 
 
+class EvalsAreNotExported(GitTree):
+    def test_hermes_evals_never_reach_the_sandbox(self):
+        """Hermes's evaluation suite is not run-time code, and its fixtures carry credential-
+        shaped values that only ever produced a selftest warning (first live setup)."""
+        self.write({'evals/slack_stream_wire_contract.py':
+                    'TOKEN = "xoxb-' + '1' * 12 + '-' + 'a' * 24 + '"\n',
+                    'evals/README.md': 'how to run the evals\n'})
+        self.git('add', '.')
+        self.commit('evals')
+        destination = self.export()
+        self.assertFalse((destination / 'evals').exists())
+        self.assertEqual(trusted_turn.exported_secrets(destination), ([], []))
+        self.assertTrue((destination / 'run_agent.py').is_file())
+
+
 class ExportedSnapshotProbeTests(GitTree):
     """``exported_secrets`` is what the selftest runs over the snapshot it just staged."""
 
