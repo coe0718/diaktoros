@@ -211,7 +211,7 @@ class FileListUnreadable(Base):
                 self.assertIn(answer.split()[1], change.record)          # the reason, visible
                 self.assertIn(self.WARNING, change.record)
                 self.assertIn("- changed files: unknown", change.record)
-                # One statement of the count, never also "GitHub reports 1 but lists 0" (Tuck):
+                # One statement of the count, never also "GitHub reports 1 but lists 0" (Arbiter):
                 # the host listed nothing because it read nothing.
                 [count] = [line for line in change.record.splitlines()
                            if line.startswith("- changed files:")]

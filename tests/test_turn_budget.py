@@ -447,7 +447,7 @@ class PerSeatClocks(unittest.TestCase):
         loop["seats"]["adjudicator"] = {"turn_budget_s": 14400}      # a 4 h adjudicator
         return loop
 
-    def test_tucks_repro_a_reviewer_claim_uses_the_reviewers_turn(self):
+    def test_arbiters_repro_a_reviewer_claim_uses_the_reviewers_turn(self):
         loop = self.loop()
         self.assertEqual(config.worst_turn_s(loop), 15330)            # the longest seat
         self.assertEqual(config.seat_ttl_s(loop, seat="reviewer", recorded=900), 45 * 60)

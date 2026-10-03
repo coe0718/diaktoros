@@ -142,7 +142,7 @@ class Health(unittest.TestCase):
         local = gate._explain_state(self.loop, self.st, "acme/widgets#7", 7, "", self.now)
         self.assertIn("gate_reviewer.py GET /repos/acme/widgets/pulls/7", local["github"])
 
-    # -- Tuck's notes on #99 -----------------------------------------------------------------
+    # -- Arbiter's notes on #99 -----------------------------------------------------------------
 
     def test_a_pretty_printed_error_body_stays_one_bounded_line(self):
         self.st.github_failure_record({"at": self.now - 60, "where": "gate_reviewer.py",

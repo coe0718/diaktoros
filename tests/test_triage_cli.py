@@ -42,7 +42,7 @@ class TriageVerb(unittest.TestCase):
         LOOP_FILE.unlink(missing_ok=True)
         self.addCleanup(LOOP_FILE.unlink, missing_ok=True)
         self.addCleanup(lambda: routes.restore_entries({ROUTE: None}))
-        (config.profiles_root() / "tuck").mkdir(parents=True, exist_ok=True)
+        (config.profiles_root() / "arbiter").mkdir(parents=True, exist_ok=True)
         rc, out = self.cli("init", "--repo", t.REPO, "--id", LOOP_ID, "--host", t.HOST,
                            "--reviewer", t.REVIEWER, "--fixer", t.FIXER,
                            "--reviewer-profile", "reviewer-profile",
@@ -55,7 +55,7 @@ class TriageVerb(unittest.TestCase):
         return t.run_cli(t.parser_for().parse_args(list(argv)))
 
     def enable(self, *extra) -> tuple[int, str]:
-        return self.cli("triage", "--loop", LOOP_ID, "--enable", "--profile", "tuck",
+        return self.cli("triage", "--loop", LOOP_ID, "--enable", "--profile", "arbiter",
                         "--author", "Owner", "--labels", "bug,docs,P1", *extra)
 
     def test_enable_writes_the_block_the_issues_route_and_the_shim(self):
@@ -66,9 +66,9 @@ class TriageVerb(unittest.TestCase):
         self.assertEqual(loop["triage"]["labels"], ["bug", "docs", "P1"])
         entry = routes.route(ROUTE)
         self.assertEqual((entry["events"], entry["script"]), (["issues"], "gate_triage.py"))
-        self.assertEqual(routes.route_profile(entry), "tuck")
+        self.assertEqual(routes.route_profile(entry), "arbiter")
         self.assertEqual(gate_shims.contract_drift(loop, "triage", entry), [])
-        shim = gate_shims.home_for("tuck") / "scripts" / "gate_triage.py"
+        shim = gate_shims.home_for("arbiter") / "scripts" / "gate_triage.py"
         self.assertTrue(shim.is_file(), out)
         self.assertIn("apply --loop", out)          # no admin token: says how to add the hook
         rc, out = self.cli("triage", "--loop", LOOP_ID)
@@ -79,7 +79,7 @@ class TriageVerb(unittest.TestCase):
         before = LOOP_FILE.read_bytes()
         for argv in (("--profile", "nobody"), ("--labels", "bug,{x}"), ("--login", t.READ_LOGIN)):
             with self.subTest(argv=argv):
-                rc, out = self.cli("triage", "--loop", LOOP_ID, "--enable", "--profile", "tuck",
+                rc, out = self.cli("triage", "--loop", LOOP_ID, "--enable", "--profile", "arbiter",
                                    "--author", "owner", "--labels", "bug", *argv)
                 self.assertEqual(rc, 2, out)
                 self.assertIn("refused", out)
@@ -95,7 +95,7 @@ class TriageVerb(unittest.TestCase):
         loop = config.load_id(LOOP_ID)
         self.assertEqual(loop["triage"], {})
         self.assertIsNone(routes.route(ROUTE))
-        self.assertFalse((gate_shims.home_for("tuck") / "scripts" / "gate_triage.py").exists())
+        self.assertFalse((gate_shims.home_for("arbiter") / "scripts" / "gate_triage.py").exists())
         self.assertTrue(routes.route(f"{LOOP_ID}-review"))
         self.assertIn("left", out)                  # the hook is named, not silently orphaned
 

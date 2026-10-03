@@ -607,8 +607,8 @@ class Config(unittest.TestCase):
             self.tokens[login] = str(root / f"{login}.pat")
         self.raw = {"repo": REPO, "fixers": ["fix"], "reviewers": ["rev"], "read_token": "rev",
                     "tokens": self.tokens, "state_dir": str(root / "state"),
-                    "seats": {"reviewer": {"route": "r", "profile": "vex", "login": "rev"},
-                              "fixer": {"route": "f", "profile": "drey", "login": "fix"}}}
+                    "seats": {"reviewer": {"route": "r", "profile": "critic", "login": "rev"},
+                              "fixer": {"route": "f", "profile": "coder", "login": "fix"}}}
 
     def load(self, adjudicator):
         raw = json.loads(json.dumps(self.raw))

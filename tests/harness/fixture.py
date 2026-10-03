@@ -370,7 +370,7 @@ def write_profiles(*names: str) -> None:
         profile = HOME / "profiles" / name
         profile.mkdir(parents=True, exist_ok=True)
         (profile / "config.yaml").write_text("model:\n  default: test-model\n")
-def observer_route(route: str = "widgets-observe", profile: str = "tuck-profile",
+def observer_route(route: str = "widgets-observe", profile: str = "arbiter-profile",
                    deliver: str = "telegram", events=None, mute: bool = False,
                    digest_min: int = 0, secret: bool = True, register: bool = True) -> dict:
     """Configure a loop's observer feed the way ``init --observer-*`` would, plus its route.
@@ -418,7 +418,7 @@ def reset(hooks_active: bool = True, prs: dict | None = None) -> dict:
     for path in (SUBS, WORLD_FILE):
         if path.exists():
             path.unlink()
-    write_profiles("reviewer-profile", "fixer-profile", "drey", "vex", "tuck")
+    write_profiles("reviewer-profile", "fixer-profile", "coder", "critic", "arbiter")
     make_clone()
     cfg = write_loop()
     subs = write_subs()

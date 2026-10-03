@@ -131,7 +131,7 @@ class Base(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.hermes.mkdir(parents=True)
         (self.hermes / "config.yaml").write_text("model: {}\n")
-        for profile in ("vex", "drey", "tuck"):
+        for profile in ("critic", "coder", "arbiter"):
             (self.hermes / "profiles" / profile).mkdir(parents=True)
             (self.hermes / "profiles" / profile / "config.yaml").write_text("model: {}\n")
         keys = self.home / "keys"
@@ -157,7 +157,7 @@ class Base(unittest.TestCase):
 
     def init_argv(self, repo="acme/widgets", *extra):
         return ["init", "--repo", repo, "--fixer", FIX, "--reviewer", REV,
-                "--reviewer-profile", "vex", "--fixer-profile", "drey",
+                "--reviewer-profile", "critic", "--fixer-profile", "coder",
                 "--read-token", READER, "--host", "https://gateway.example",
                 "--token", f"{READER}={self.pats['read']}",
                 "--token", f"{REV}={self.pats['rev']}",
@@ -170,11 +170,11 @@ class Base(unittest.TestCase):
 
     def full_install(self):
         return self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
-                            "--adjudicator-profile", "tuck", "--observer-profile", "default")
+                            "--adjudicator-profile", "arbiter", "--observer-profile", "default")
 
     def observer_install(self):
         return self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
-                            "--adjudicator-profile", "default", "--observer-profile", "tuck")
+                            "--adjudicator-profile", "default", "--observer-profile", "arbiter")
 
     def loop_routes(self, loop_id="widgets") -> dict:
         path = pathlib.Path(self.env["REVIEW_LOOP_SUBS"])
@@ -194,9 +194,9 @@ class GatewayResolvesEveryRoute(Base):
             self.assertIsNone(error, f"{name}: the gateway would drop every event: {error}")
             self.assertFalse((home / "scripts" / entry["script"]).is_symlink())
         # Each seat's gate lives in that seat's own profile home, not the root's.
-        self.assertTrue((self.hermes / "profiles/vex/scripts/gate_reviewer.py").is_file())
-        self.assertTrue((self.hermes / "profiles/drey/scripts/gate_fixer.py").is_file())
-        self.assertTrue((self.hermes / "profiles/tuck/scripts/gate_adjudicator.py").is_file())
+        self.assertTrue((self.hermes / "profiles/critic/scripts/gate_reviewer.py").is_file())
+        self.assertTrue((self.hermes / "profiles/coder/scripts/gate_fixer.py").is_file())
+        self.assertTrue((self.hermes / "profiles/arbiter/scripts/gate_adjudicator.py").is_file())
         self.assertTrue((self.hermes / "scripts/observe.py").is_file())
 
     def test_hermes_own_resolver_agrees(self):
@@ -214,7 +214,7 @@ class GatewayResolvesEveryRoute(Base):
         """The copy doctor uses must fail exactly where the gateway fails."""
         require_real_resolver(self)
         from review_loop import gate_shims
-        scripts = self.hermes / "profiles" / "vex" / "scripts"
+        scripts = self.hermes / "profiles" / "critic" / "scripts"
         scripts.mkdir(parents=True)
         (scripts / "real.py").write_text("print(1)\n")
         (scripts / "adir").mkdir()
@@ -223,9 +223,9 @@ class GatewayResolvesEveryRoute(Base):
         (scripts / "link.py").symlink_to(outside)
         (scripts / "inner-link.py").symlink_to(scripts / "real.py")
         cases = ["real.py", "missing.py", "adir", "link.py", "inner-link.py", "../config.yaml",
-                 str(outside), str(scripts / "real.py"), "~/.hermes/profiles/vex/scripts/real.py",
+                 str(outside), str(scripts / "real.py"), "~/.hermes/profiles/critic/scripts/real.py",
                  "", "  "]
-        pairs = [[profile, case] for profile in ("vex", "default") for case in cases]
+        pairs = [[profile, case] for profile in ("critic", "default") for case in cases]
         real = real_resolve(self, {**os.environ, **self.env}, pairs)
         for (profile, case), want in zip(pairs, real):
             home = gateway_home(self.hermes, profile)
@@ -237,13 +237,13 @@ class GatewayResolvesEveryRoute(Base):
         rc, out = self.run_cli(self.init_argv("acme/widgets"))  # a real loop for the id
         self.assertEqual(rc, 0, out)
         rc, out = self.run_cli(self.init_argv("acme/gizmos", "--id", "gizmos",
-                                              "--reviewer-profile", "tuck", "--dry-run"))
+                                              "--reviewer-profile", "arbiter", "--dry-run"))
         self.assertEqual(rc, 0, out)
-        self.assertIn(f"would write: {self.hermes / 'profiles/tuck/scripts/gate_reviewer.py'}", out)
-        self.assertFalse((self.hermes / "profiles/tuck/scripts").exists())
+        self.assertIn(f"would write: {self.hermes / 'profiles/arbiter/scripts/gate_reviewer.py'}", out)
+        self.assertFalse((self.hermes / "profiles/arbiter/scripts").exists())
 
     def test_foreign_file_is_refused_before_anything_is_written(self):
-        scripts = self.hermes / "profiles" / "vex" / "scripts"
+        scripts = self.hermes / "profiles" / "critic" / "scripts"
         scripts.mkdir(parents=True)
         (scripts / "gate_reviewer.py").write_text("print('mine')\n")
         rc, out = self.run_cli(self.init_argv())
@@ -256,7 +256,7 @@ class GatewayResolvesEveryRoute(Base):
     def test_init_is_idempotent_and_rewrites_a_stale_shim(self):
         from review_loop import gate_shims
         self.install()
-        shim = self.hermes / "profiles/vex/scripts/gate_reviewer.py"
+        shim = self.hermes / "profiles/critic/scripts/gate_reviewer.py"
         before = shim.stat()
         self.assertEqual(gate_shims.install(config.load_id("widgets")), [])
         self.assertEqual(shim.stat().st_mtime_ns, before.st_mtime_ns)
@@ -306,7 +306,7 @@ class ShimRunsUnderTheLoopsHome(Base):
         from review_loop import gate_shims
         with patch.object(gate_shims, "plugin_script", return_value=self.probe()):
             text = gate_shims.render("gate_reviewer.py")
-        shim = self.hermes / "profiles" / "vex" / "scripts" / "gate_reviewer.py"
+        shim = self.hermes / "profiles" / "critic" / "scripts" / "gate_reviewer.py"
         shim.parent.mkdir(parents=True, exist_ok=True)
         shim.write_text(text)
         proc = subprocess.run([sys.executable, str(shim)], input="{}", capture_output=True,
@@ -315,7 +315,7 @@ class ShimRunsUnderTheLoopsHome(Base):
         return json.loads(proc.stdout)
 
     def test_the_gate_reads_the_root_loops_under_a_profile_scoped_env(self):
-        profile = self.hermes / "profiles" / "vex"
+        profile = self.hermes / "profiles" / "critic"
         # The gateway's child env: the profile as HERMES_HOME, HOME moved, the real one alongside;
         # and no REVIEW_LOOP_CONFIG_DIR, which only tests ever set.
         env = {"PATH": os.environ["PATH"], "HERMES_HOME": str(profile),
@@ -326,11 +326,11 @@ class ShimRunsUnderTheLoopsHome(Base):
         self.assertEqual(seen["home"], str(self.home))
 
     def test_with_hermes_own_gateway_env(self):
-        """The same, with the env Hermes itself builds for a vex-scoped route script."""
+        """The same, with the env Hermes itself builds for a critic-scoped route script."""
         if not (SOURCE / "tools" / "environments" / "local.py").exists():
             skip_or_fail(self, f"no Hermes source at {SOURCE}")
         base = {"PATH": os.environ["PATH"], "HOME": str(self.home), "HERMES_HOME": str(self.hermes)}
-        built = subprocess.run([real_python(), "-c", _GATEWAY_ENV, str(SOURCE), "vex"],
+        built = subprocess.run([real_python(), "-c", _GATEWAY_ENV, str(SOURCE), "critic"],
                                capture_output=True, text=True, timeout=120, env=base,
                                cwd=str(self.home))
         if built.returncode != 0:
@@ -362,11 +362,11 @@ class ShimRunsThePluginScript(Base):
         cases = [
             ("observe.py", self.hermes, json.dumps(observed)),
             ("observe.py", self.hermes, json.dumps({"action": "opened"})),
-            ("gate_reviewer.py", self.hermes / "profiles/vex",
+            ("gate_reviewer.py", self.hermes / "profiles/critic",
              json.dumps({"action": "synchronize", "repository": {"full_name": "acme/widgets"},
                          "pull_request": {"number": 7, "head": {"sha": "a" * 40}}})),
-            ("gate_fixer.py", self.hermes / "profiles/drey", "not json"),
-            ("gate_adjudicator.py", self.hermes / "profiles/tuck",
+            ("gate_fixer.py", self.hermes / "profiles/coder", "not json"),
+            ("gate_adjudicator.py", self.hermes / "profiles/arbiter",
              json.dumps({"action": "opened", "repository": {"full_name": "acme/unknown"}})),
         ]
         for script, home, payload in cases:
@@ -437,13 +437,13 @@ class DoctorApplyUninstall(Base):
 
     def test_doctor_resolves_like_the_gateway_and_apply_repairs(self):
         self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
-                     "--adjudicator-profile", "tuck")
+                     "--adjudicator-profile", "arbiter")
         checks = self.gateway_checks()
         self.assertEqual(set(checks), {f"gateway-script:widgets-{r}"
                                        for r in ("review", "fix", "breach")})
         self.assertTrue(all(c.status == doctor.VERIFIED for c in checks.values()), checks)
 
-        shim = self.hermes / "profiles/vex/scripts/gate_reviewer.py"
+        shim = self.hermes / "profiles/critic/scripts/gate_reviewer.py"
         shim.unlink()
         check = self.gateway_checks()["gateway-script:widgets-review"]
         self.assertEqual(check.status, doctor.ABSENT)
@@ -467,7 +467,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(rc, 2, out)
         self.assertEqual(shim.read_text(), "print('someone else')\n")
 
-        link = self.hermes / "profiles/drey/scripts/gate_fixer.py"
+        link = self.hermes / "profiles/coder/scripts/gate_fixer.py"
         link.unlink()
         link.symlink_to(ROOT / "scripts" / "gate_fixer.py")
         check = self.gateway_checks()["gateway-script:widgets-fix"]
@@ -494,36 +494,36 @@ class DoctorApplyUninstall(Base):
 
     def test_hand_edited_registry_profile_is_a_mismatch_and_repair_fixes_it(self):
         self.install()
-        self.edit_registry(lambda d: d["widgets-review"].update(profile="tuck"))
+        self.edit_registry(lambda d: d["widgets-review"].update(profile="arbiter"))
         check = self.gateway_checks()["gateway-script:widgets-review"]
         self.assertEqual(check.status, doctor.MISMATCH, check.detail)
-        self.assertIn("registry runs tuck/gate_reviewer.py", check.detail)
-        self.assertIn("loop config says vex/gate_reviewer.py", check.detail)
+        self.assertIn("registry runs arbiter/gate_reviewer.py", check.detail)
+        self.assertIn("loop config says critic/gate_reviewer.py", check.detail)
         self.assertIn("hermes review-loop doctor --loop widgets --repair", check.fix)
         # Never silent: install writes the shim the gateway will run *and* says the two disagree.
         from review_loop import gate_shims
         lines = gate_shims.install(config.load_id("widgets"))
-        self.assertIn(f"gate shim wrote: {self.hermes / 'profiles/tuck/scripts/gate_reviewer.py'}",
+        self.assertIn(f"gate shim wrote: {self.hermes / 'profiles/arbiter/scripts/gate_reviewer.py'}",
                       lines)
-        self.assertTrue(any("registry runs tuck/gate_reviewer.py" in line for line in lines), lines)
+        self.assertTrue(any("registry runs arbiter/gate_reviewer.py" in line for line in lines), lines)
         # The named remedy, end to end.
         rc, out = self.run_cli(["doctor", "--loop", "widgets", "--repair", "--offline"])
         self.assertIn("widgets-review: had changed profile", out)
-        self.assertEqual(routes.route("widgets-review")["profile"], "vex")
+        self.assertEqual(routes.route("widgets-review")["profile"], "critic")
         check = self.gateway_checks()["gateway-script:widgets-review"]
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
 
     def test_hand_edited_config_profile_is_a_mismatch_and_apply_fixes_it(self):
         self.install()
-        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="arbiter"))
         check = self.gateway_checks()["gateway-script:widgets-review"]
         self.assertEqual(check.status, doctor.MISMATCH, check.detail)
-        self.assertIn("registry runs vex/gate_reviewer.py", check.detail)
-        self.assertIn("loop config says tuck/gate_reviewer.py", check.detail)
+        self.assertIn("registry runs critic/gate_reviewer.py", check.detail)
+        self.assertIn("loop config says arbiter/gate_reviewer.py", check.detail)
         self.assertIn("hermes review-loop apply --loop widgets", check.fix)
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(routes.route("widgets-review")["profile"], "tuck")
+        self.assertEqual(routes.route("widgets-review")["profile"], "arbiter")
         check = self.gateway_checks()["gateway-script:widgets-review"]
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
 
@@ -534,9 +534,9 @@ class DoctorApplyUninstall(Base):
         self.install()
         loop = config.load_id("widgets")
         loop["seats"]["reviewer"]["profile"] = ""
-        shim = self.hermes / "profiles/vex/scripts/gate_reviewer.py"
+        shim = self.hermes / "profiles/critic/scripts/gate_reviewer.py"
         shim.unlink()
-        self.assertEqual(gate_shims.wanted(loop) & {("vex", "gate_reviewer.py")}, set())
+        self.assertEqual(gate_shims.wanted(loop) & {("critic", "gate_reviewer.py")}, set())
         # Not the silent [] from the review: install writes the shim the gateway runs, and says why.
         lines = gate_shims.install(loop)
         self.assertIn(f"gate shim wrote: {shim}", lines)
@@ -546,14 +546,14 @@ class DoctorApplyUninstall(Base):
                  in gate_shims.live_checks(loop)}
         status, detail, fix = found["gateway-script:widgets-review"]
         self.assertEqual(status, "mismatch", detail)
-        self.assertIn("registry runs vex/gate_reviewer.py", detail)
+        self.assertIn("registry runs critic/gate_reviewer.py", detail)
         self.assertIn("under `seats.reviewer` in the loop config", fix)
         self.assertIn("hermes review-loop apply --loop widgets", fix)
         # On disk the loader refuses the blank profile by name; the named remedy clears it.
         self.edit_config(lambda d: d["seats"]["reviewer"].update(profile=""))
         with self.assertRaisesRegex(config.ConfigError, "seats.reviewer.profile is required"):
             config.load_id("widgets")
-        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="vex"))
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="critic"))
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
         check = self.gateway_checks()["gateway-script:widgets-review"]
@@ -564,7 +564,7 @@ class DoctorApplyUninstall(Base):
         self.edit_registry(lambda d: d.pop("widgets-fix"))
         check = self.gateway_checks()["gateway-script:widgets-fix"]
         self.assertEqual(check.status, doctor.ABSENT, check.detail)
-        self.assertIn("loop config says drey/gate_fixer.py", check.detail)
+        self.assertIn("loop config says coder/gate_fixer.py", check.detail)
         self.assertIn("registry holds no route", check.detail)
         self.assertIn("hermes review-loop doctor --loop widgets --repair", check.fix)
         self.run_cli(["doctor", "--loop", "widgets", "--repair", "--offline"])
@@ -575,21 +575,21 @@ class DoctorApplyUninstall(Base):
     # -- second review of #106 -------------------------------------------------------------
 
     def shims(self):
-        return [self.hermes / "profiles/vex/scripts/gate_reviewer.py",
-                self.hermes / "profiles/drey/scripts/gate_fixer.py"]
+        return [self.hermes / "profiles/critic/scripts/gate_reviewer.py",
+                self.hermes / "profiles/coder/scripts/gate_fixer.py"]
 
     def test_apply_reconciles_a_route_diverged_to_a_missing_profile(self):
-        """Tuck's repro: a live pair apply is about to rebind away must not block it."""
+        """Arbiter's repro: a live pair apply is about to rebind away must not block it."""
         self.install()
         self.edit_registry(lambda d: d["widgets-review"].update(profile="ghost"))
         for shim in self.shims():
             shim.unlink()
         rc, out = self.run_cli(["apply", "--loop", "widgets", "--dry-run"])
         self.assertEqual(rc, 0, out)
-        self.assertIn("route widgets-review: profile ghost → vex", out)
+        self.assertIn("route widgets-review: profile ghost → critic", out)
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(routes.route("widgets-review")["profile"], "vex")
+        self.assertEqual(routes.route("widgets-review")["profile"], "critic")
         for shim in self.shims():
             self.assertTrue(shim.is_file(), shim)
         self.assertTrue(all(c.status == doctor.VERIFIED for c in self.gateway_checks().values()))
@@ -597,23 +597,23 @@ class DoctorApplyUninstall(Base):
 
     def test_apply_rebinds_away_from_a_foreign_gate_file_but_never_writes_over_one(self):
         self.install()
-        foreign = self.hermes / "profiles/tuck/scripts/gate_reviewer.py"
+        foreign = self.hermes / "profiles/arbiter/scripts/gate_reviewer.py"
         foreign.parent.mkdir(parents=True)
-        foreign.write_text("print('tuck owns this')\n")
-        self.edit_registry(lambda d: d["widgets-review"].update(profile="tuck"))
+        foreign.write_text("print('arbiter owns this')\n")
+        self.edit_registry(lambda d: d["widgets-review"].update(profile="arbiter"))
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(routes.route("widgets-review")["profile"], "vex")
-        self.assertEqual(foreign.read_text(), "print('tuck owns this')\n")
+        self.assertEqual(routes.route("widgets-review")["profile"], "critic")
+        self.assertEqual(foreign.read_text(), "print('arbiter owns this')\n")
         # A foreign file on a pair apply *would* write still refuses, before anything moves.
-        mine = self.hermes / "profiles/vex/scripts/gate_reviewer.py"
-        mine.write_text("print('vex owns this')\n")
-        self.edit_registry(lambda d: d["widgets-review"].update(profile="tuck"))
+        mine = self.hermes / "profiles/critic/scripts/gate_reviewer.py"
+        mine.write_text("print('critic owns this')\n")
+        self.edit_registry(lambda d: d["widgets-review"].update(profile="arbiter"))
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 2, out)
         self.assertIn("not written by hermes-review-loop", out)
-        self.assertEqual(mine.read_text(), "print('vex owns this')\n")
-        self.assertEqual(routes.route("widgets-review")["profile"], "tuck")
+        self.assertEqual(mine.read_text(), "print('critic owns this')\n")
+        self.assertEqual(routes.route("widgets-review")["profile"], "arbiter")
 
     def test_init_dry_run_raises_no_false_alarm_for_routes_it_would_create(self):
         from review_loop import gate_shims
@@ -630,10 +630,10 @@ class DoctorApplyUninstall(Base):
         self.assertIn(gate_shims.GATEWAY_404_TAIL, gate_shims_src.read_text())
         # On an existing loop a real disagreement is still named.
         self.install()
-        self.edit_registry(lambda d: d["widgets-review"].update(profile="tuck"))
+        self.edit_registry(lambda d: d["widgets-review"].update(profile="arbiter"))
         rc, out = self.run_cli(self.init_argv("acme/widgets", "--dry-run"))
         self.assertEqual(rc, 0, out)
-        self.assertIn("registry runs tuck/gate_reviewer.py, loop config says vex/gate_reviewer.py",
+        self.assertIn("registry runs arbiter/gate_reviewer.py, loop config says critic/gate_reviewer.py",
                       out)
         self.assertNotIn(gate_shims.GATEWAY_404_TAIL, out)
 
@@ -724,7 +724,7 @@ class DoctorApplyUninstall(Base):
         self.install()
         route_intent.path(config.load_id("widgets")).unlink()
         self.edit_registry(lambda d: d.pop("widgets-fix"))
-        world = self.github_with_hook("https://gateway.example/p/drey/webhooks/widgets-fix")
+        world = self.github_with_hook("https://gateway.example/p/coder/webhooks/widgets-fix")
         remedy = "hermes review-loop apply --loop widgets --recreate-routes"
         checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
         for name in ("route:widgets-fix", "gateway-script:widgets-fix"):
@@ -745,11 +745,11 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(seen, [("PATCH", "admin-acct")])
         entry = routes.route("widgets-fix")
         self.assertEqual((entry["profile"], entry["script"], entry["secret"]),
-                         ("drey", "gate_fixer.py", "placeholder-recreated-key"))
+                         ("coder", "gate_fixer.py", "placeholder-recreated-key"))
         self.assertIn("hook 51", out)
         self.assertNotIn("placeholder-recreated-key", out, "never print a secret")
         self.assertEqual(self.hook_config(world),
-                         {"url": "https://gateway.example/p/drey/webhooks/widgets-fix",
+                         {"url": "https://gateway.example/p/coder/webhooks/widgets-fix",
                           "content_type": "json", "insecure_ssl": "0",
                           "secret": "placeholder-recreated-key"})
         checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
@@ -763,7 +763,7 @@ class DoctorApplyUninstall(Base):
         self.install()
         route_intent.path(config.load_id("widgets")).unlink()
         self.edit_registry(lambda d: d.pop("widgets-fix"))
-        world = self.github_with_hook("https://gateway.example/p/drey/webhooks/widgets-fix",
+        world = self.github_with_hook("https://gateway.example/p/coder/webhooks/widgets-fix",
                                       patch_fails=True)
         with patch("secrets.token_hex", return_value="placeholder-recreated-key"):
             rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
@@ -780,15 +780,15 @@ class DoctorApplyUninstall(Base):
         post to the old origin move with them, through #106's hook-move path."""
         self.install()
         self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
-        old_review = "https://gateway.example/p/vex/webhooks/widgets-review"
-        old_fix = "https://gateway.example/p/drey/webhooks/widgets-fix"
+        old_review = "https://gateway.example/p/critic/webhooks/widgets-review"
+        old_fix = "https://gateway.example/p/coder/webhooks/widgets-fix"
         world = self.github_with_hook(old_review, secret=REVIEW_KEY, hook_id=41,
                                       more=[(51, old_fix)],
                                       events=("pull_request", "pull_request_review"))
         rc, out = self.run_cli(["set", "--loop", "widgets", "--host", "https://moved.example"])
         self.assertEqual(rc, 0, out)
-        new_review = "https://moved.example/p/vex/webhooks/widgets-review"
-        new_fix = "https://moved.example/p/drey/webhooks/widgets-fix"
+        new_review = "https://moved.example/p/critic/webhooks/widgets-review"
+        new_fix = "https://moved.example/p/coder/webhooks/widgets-fix"
 
         rc, dry = self.run_cli(["apply", "--loop", "widgets", "--dry-run"])
         self.assertIn(f"hook 41 would move → {new_review}", dry)
@@ -819,14 +819,14 @@ class DoctorApplyUninstall(Base):
         """apply moving a hook to the seat's new profile sends the whole config, secret included."""
         self.install()
         self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
-        world = self.github_with_hook("https://gateway.example/p/vex/webhooks/widgets-review",
+        world = self.github_with_hook("https://gateway.example/p/critic/webhooks/widgets-review",
                                       secret=REVIEW_KEY, hook_id=41)
-        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="arbiter"))
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
-        self.assertIn("hook 41 → https://gateway.example/p/tuck/webhooks/widgets-review", out)
+        self.assertIn("hook 41 → https://gateway.example/p/arbiter/webhooks/widgets-review", out)
         self.assertEqual(self.hook_config(world),
-                         {"url": "https://gateway.example/p/tuck/webhooks/widgets-review",
+                         {"url": "https://gateway.example/p/arbiter/webhooks/widgets-review",
                           "content_type": "json", "insecure_ssl": "0",
                           "secret": REVIEW_KEY})
         self.assertNotIn(REVIEW_KEY, out, "never print a secret")
@@ -834,9 +834,9 @@ class DoctorApplyUninstall(Base):
     def test_apply_moves_hooks_as_the_admin_login(self):
         self.install()
         self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
-        self.github_with_hook("https://gateway.example/p/vex/webhooks/widgets-review",
+        self.github_with_hook("https://gateway.example/p/critic/webhooks/widgets-review",
                               secret=REVIEW_KEY, hook_id=41)
-        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="arbiter"))
         seen, recording = self.logins()
         with recording:
             rc, out = self.run_cli(["apply", "--loop", "widgets", "--admin-token", "admin-acct"])
@@ -848,24 +848,24 @@ class DoctorApplyUninstall(Base):
         from review_loop import route_intent
         self.install()
         self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
-        world = self.github_with_hook("https://gateway.example/p/vex/webhooks/widgets-review",
+        world = self.github_with_hook("https://gateway.example/p/critic/webhooks/widgets-review",
                                       secret=REVIEW_KEY, hook_id=41, insecure_ssl="1")
-        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="arbiter"))
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.hook_config(world)["insecure_ssl"], "1")
         # And the re-key of a recreated route.
         route_intent.path(config.load_id("widgets")).unlink()
         self.edit_registry(lambda d: d.pop("widgets-fix"))
-        world = self.github_with_hook("https://gateway.example/p/drey/webhooks/widgets-fix",
+        world = self.github_with_hook("https://gateway.example/p/coder/webhooks/widgets-fix",
                                       insecure_ssl="1")
         with patch("secrets.token_hex", return_value="placeholder-recreated-key"):
             rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.hook_config(world)["insecure_ssl"], "1")
 
-    OLD_FIX = "https://gateway.example/p/vex/webhooks/widgets-fix"      # a profile it left
-    NEW_FIX = "https://gateway.example/p/drey/webhooks/widgets-fix"
+    OLD_FIX = "https://gateway.example/p/critic/webhooks/widgets-fix"      # a profile it left
+    NEW_FIX = "https://gateway.example/p/coder/webhooks/widgets-fix"
 
     def lose_fix_route(self):
         from review_loop import route_intent
@@ -900,13 +900,13 @@ class DoctorApplyUninstall(Base):
     def test_a_hook_move_never_duplicates_a_hook_already_at_the_target(self):
         self.install()
         self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
-        old = "https://gateway.example/p/vex/webhooks/widgets-review"
-        new = "https://gateway.example/p/tuck/webhooks/widgets-review"
+        old = "https://gateway.example/p/critic/webhooks/widgets-review"
+        new = "https://gateway.example/p/arbiter/webhooks/widgets-review"
         world = self.github_with_hook(old, secret=REVIEW_KEY, hook_id=41, more=[(42, new)])
-        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="arbiter"))
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 1, out)
-        self.assertEqual(routes.route("widgets-review")["profile"], "tuck")
+        self.assertEqual(routes.route("widgets-review")["profile"], "arbiter")
         self.assertEqual(self.hook_config(world, 41)["url"], old, "the redundant hook is not moved")
         self.assertEqual(self.hook_config(world, 42)["url"], new)
         self.assertIn("hook 42 (active) is the one kept", out)
@@ -917,15 +917,15 @@ class DoctorApplyUninstall(Base):
                       if h["config"]["url"] == url)
 
     def test_a_paused_hook_at_the_target_never_beats_the_live_one(self):
-        """Tuck's probe: 41 live on the old URL, 42 paused on the target. The route must end with
+        """Arbiter's probe: 41 live on the old URL, 42 paused on the target. The route must end with
         its live hook on its URL, and the paused one named — never the other way round."""
         self.install()
         self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
-        old = "https://gateway.example/p/vex/webhooks/widgets-review"
-        new = "https://gateway.example/p/tuck/webhooks/widgets-review"
+        old = "https://gateway.example/p/critic/webhooks/widgets-review"
+        new = "https://gateway.example/p/arbiter/webhooks/widgets-review"
         world = self.github_with_hook(old, secret=REVIEW_KEY, hook_id=41,
                                       more=[(42, new, False)])
-        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="arbiter"))
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 1, out)
         self.assertEqual([h for h in self.hooks_on(world, new) if h[1]], [(41, True)],
@@ -938,10 +938,10 @@ class DoctorApplyUninstall(Base):
     def test_when_every_hook_is_on_the_old_url_exactly_one_moves(self):
         self.install()
         self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
-        old = "https://gateway.example/p/vex/webhooks/widgets-review"
-        new = "https://gateway.example/p/tuck/webhooks/widgets-review"
+        old = "https://gateway.example/p/critic/webhooks/widgets-review"
+        new = "https://gateway.example/p/arbiter/webhooks/widgets-review"
         world = self.github_with_hook(old, secret=REVIEW_KEY, hook_id=43, more=[(41, old)])
-        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="arbiter"))
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 1, out)
         self.assertEqual(self.hooks_on(world, new), [(41, True)], "the lowest id moves, alone")
@@ -950,7 +950,7 @@ class DoctorApplyUninstall(Base):
 
     def test_plain_apply_names_a_duplicate_already_on_the_current_url(self):
         self.install()
-        url = "https://gateway.example/p/vex/webhooks/widgets-review"
+        url = "https://gateway.example/p/critic/webhooks/widgets-review"
         world = self.github_with_hook(url, hook_id=43, more=[(41, url)])
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 1, out)
@@ -965,7 +965,7 @@ class DoctorApplyUninstall(Base):
 
     # -- a trailing slash: the gateway 404s it, so every surface must say so (review of 1f1fe28)
 
-    REVIEW_URL = "https://gateway.example/p/vex/webhooks/widgets-review"
+    REVIEW_URL = "https://gateway.example/p/critic/webhooks/widgets-review"
 
     def hook_check(self):
         loop = config.load_id("widgets")
@@ -1004,14 +1004,14 @@ class DoctorApplyUninstall(Base):
     def test_a_hook_move_accepts_the_old_url_with_a_trailing_slash(self):
         self.install()
         self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
-        new = "https://gateway.example/p/tuck/webhooks/widgets-review"
+        new = "https://gateway.example/p/arbiter/webhooks/widgets-review"
         world = self.github_with_hook(self.REVIEW_URL + "/", secret=REVIEW_KEY, hook_id=41)
-        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="tuck"))
+        self.edit_config(lambda d: d["seats"]["reviewer"].update(profile="arbiter"))
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.hook_config(world, 41)["url"], new)
 
-    FIX_URL = "https://gateway.example/p/drey/webhooks/widgets-fix"
+    FIX_URL = "https://gateway.example/p/coder/webhooks/widgets-fix"
 
     def test_a_trailing_slash_hook_is_not_armed_anywhere(self):
         """explain/watchdog (gate.hooks_read) and `arm` agree with doctor: the gateway 404s it."""
@@ -1053,11 +1053,11 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(rc, 0, out)
         self.assertEqual(json.loads(world.read_text())["patches"], 0, "a working hook is untouched")
         # Scheme and host compare case-insensitively; the path never does.
-        self.github_with_hook("HTTPS://Gateway.Example/p/vex/webhooks/widgets-review",
+        self.github_with_hook("HTTPS://Gateway.Example/p/critic/webhooks/widgets-review",
                               hook_id=41, events=("pull_request",),
                               more=[(42, self.FIX_URL, True, ("pull_request_review",))])
         self.assertEqual(gate.hooks_read(loop), (True, ""))
-        self.github_with_hook("https://gateway.example/p/vex/webhooks/Widgets-Review",
+        self.github_with_hook("https://gateway.example/p/critic/webhooks/Widgets-Review",
                               hook_id=41, events=("pull_request",),
                               more=[(42, self.FIX_URL, True, ("pull_request_review",))])
         self.assertEqual(gate.hooks_read(loop), (False, "reviewer"))
@@ -1110,25 +1110,25 @@ class DoctorApplyUninstall(Base):
 
     def test_uninstall_keeps_shims_another_loop_needs(self):
         self.install("acme/widgets")
-        self.install("acme/gizmos", "--id", "gizmos", "--fixer-profile", "tuck")
-        vex = self.hermes / "profiles/vex/scripts/gate_reviewer.py"
-        drey = self.hermes / "profiles/drey/scripts/gate_fixer.py"
-        tuck = self.hermes / "profiles/tuck/scripts/gate_fixer.py"
+        self.install("acme/gizmos", "--id", "gizmos", "--fixer-profile", "arbiter")
+        critic = self.hermes / "profiles/critic/scripts/gate_reviewer.py"
+        coder = self.hermes / "profiles/coder/scripts/gate_fixer.py"
+        arbiter = self.hermes / "profiles/arbiter/scripts/gate_fixer.py"
         rc, out = self.run_cli(["uninstall", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
-        self.assertTrue(vex.is_file(), "gizmos still routes its reviewer through vex")
-        self.assertFalse(drey.exists())
-        self.assertIn(f"gate shim removed: {drey}", out)
-        vex.write_text("print('hand edited')\n")      # not ours any more: never removed
+        self.assertTrue(critic.is_file(), "gizmos still routes its reviewer through critic")
+        self.assertFalse(coder.exists())
+        self.assertIn(f"gate shim removed: {coder}", out)
+        critic.write_text("print('hand edited')\n")      # not ours any more: never removed
         rc, out = self.run_cli(["uninstall", "--loop", "gizmos"])
         self.assertEqual(rc, 0, out)
-        self.assertFalse(tuck.exists())
-        self.assertEqual(vex.read_text(), "print('hand edited')\n")
+        self.assertFalse(arbiter.exists())
+        self.assertEqual(critic.read_text(), "print('hand edited')\n")
 
     def test_watchdog_heal_restores_a_deleted_shim(self):
         from review_loop import gate_shims
         self.install()
-        shim = self.hermes / "profiles/drey/scripts/gate_fixer.py"
+        shim = self.hermes / "profiles/coder/scripts/gate_fixer.py"
         shim.unlink()
         lines = gate_shims.heal(config.load_id("widgets"))
         self.assertTrue(shim.is_file())
@@ -1142,20 +1142,20 @@ class DoctorApplyUninstall(Base):
 
     def test_set_fails_loudly_when_the_observer_shim_cannot_be_written(self):
         self.install()
-        foreign = self.hermes / "profiles/tuck/scripts/observe.py"
+        foreign = self.hermes / "profiles/arbiter/scripts/observe.py"
         foreign.parent.mkdir(parents=True)
-        foreign.write_text("print('tuck owns this')\n")
-        rc, out = self.run_cli(["set", "--loop", "widgets", "--observer-profile", "tuck",
+        foreign.write_text("print('arbiter owns this')\n")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--observer-profile", "arbiter",
                                 "--observer-deliver", "telegram"])
         self.assertEqual(rc, 1, out)
         self.assertIn("gate shim install FAILED", out)
         self.assertIn("hermes review-loop apply --loop widgets", out)
-        self.assertEqual(foreign.read_text(), "print('tuck owns this')\n")
+        self.assertEqual(foreign.read_text(), "print('arbiter owns this')\n")
 
     def test_heal_says_what_the_gateway_does_for_each_refusal(self):
         from review_loop import gate_shims
         self.install()
-        shim = self.hermes / "profiles/vex/scripts/gate_reviewer.py"
+        shim = self.hermes / "profiles/critic/scripts/gate_reviewer.py"
         shim.write_text("print('someone else')\n")
         lines = "\n".join(gate_shims.heal(config.load_id("widgets")))
         self.assertIn("runs that instead of the gate", lines)
@@ -1179,11 +1179,11 @@ class ObserverApply(Base):
     def test_every_path_names_the_profile_init_wrote(self):
         self.observer_install()
         loop = config.load_id("widgets")
-        self.assertEqual(routes.route("widgets-observe")["profile"], "tuck")
-        self.assertEqual(config.seat_profile(loop, "observer"), "tuck")
+        self.assertEqual(routes.route("widgets-observe")["profile"], "arbiter")
+        self.assertEqual(config.seat_profile(loop, "observer"), "arbiter")
         from review_loop import gate_shims, observer
-        self.assertIn(("tuck", "observe.py"), gate_shims.wanted(loop))
-        self.assertEqual(observer.route_contract(loop)["profile"], "tuck")
+        self.assertIn(("arbiter", "observe.py"), gate_shims.wanted(loop))
+        self.assertEqual(observer.route_contract(loop)["profile"], "arbiter")
         self.assertEqual(cli._route_binds(loop, set(cli._routes_of(loop))), {})
 
     def test_no_observer_has_no_observer_profile(self):
@@ -1205,15 +1205,15 @@ class ObserverApply(Base):
     def test_apply_rebinds_a_drifted_observer_route_to_its_profile(self):
         self.observer_install()
         entry = routes.route("widgets-observe")
-        routes.new_route("widgets-observe", profile="drey", prompt=entry["prompt"],
+        routes.new_route("widgets-observe", profile="coder", prompt=entry["prompt"],
                          events=["pull_request"], script="observe.py",
                          deliver=entry.get("deliver", "telegram"), deliver_only=True,
                          host="https://gateway.example")
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
-        self.assertIn("route widgets-observe: profile drey → tuck", out)
-        self.assertIn("route widgets-observe rebound → profile tuck", out)
-        self.assertEqual(routes.route("widgets-observe")["profile"], "tuck")
+        self.assertIn("route widgets-observe: profile coder → arbiter", out)
+        self.assertIn("route widgets-observe rebound → profile arbiter", out)
+        self.assertEqual(routes.route("widgets-observe")["profile"], "arbiter")
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual((rc, "already matches the plugin settings" in out), (0, True), out)
 
@@ -1244,16 +1244,16 @@ class ObserverStatusDoctor(Base):
         check = self.route_check()
         self.assertIsNotNone(check, "doctor has no route check for the observer")
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
-        self.assertIn("tuck", check.detail)
+        self.assertIn("arbiter", check.detail)
         self.assertIn("matches intent record", check.detail)
 
     def test_doctor_flags_a_drifted_observer_profile_and_apply_clears_it(self):
         self.observer_install()
-        self.drift(profile="drey")
+        self.drift(profile="coder")
         check = self.route_check()
         self.assertEqual(check.status, doctor.MISMATCH)
-        self.assertIn("'drey'", check.detail)
-        self.assertIn("'tuck'", check.detail)
+        self.assertIn("'coder'", check.detail)
+        self.assertIn("'arbiter'", check.detail)
         self.assertIn("intent record", check.detail)
         self.assertTrue(check.fix)
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
@@ -1264,11 +1264,11 @@ class ObserverStatusDoctor(Base):
         from review_loop import route_intent
         self.observer_install()
         route_intent.path(config.load_id("widgets")).unlink()
-        self.drift(profile="drey")
+        self.drift(profile="coder")
         check = self.route_check()
         self.assertEqual(check.status, doctor.MISMATCH)
         self.assertIn("hermes review-loop apply --loop widgets", check.fix)
-        self.drift(profile="tuck", deliver_only=False)
+        self.drift(profile="arbiter", deliver_only=False)
         check = self.route_check()
         self.assertEqual(check.status, doctor.MISMATCH)
         self.assertIn("deliver_only", check.detail)
@@ -1290,9 +1290,9 @@ class ObserverStatusDoctor(Base):
 
     def test_status_lists_the_observer_route(self):
         self.observer_install()
-        self.assertIn("observer widgets-observe → tuck (ok)", self.status())
-        self.drift(profile="drey")
-        self.assertIn("observer widgets-observe → drey, not tuck: MISMATCH — "
+        self.assertIn("observer widgets-observe → arbiter (ok)", self.status())
+        self.drift(profile="coder")
+        self.assertIn("observer widgets-observe → coder, not arbiter: MISMATCH — "
                       "hermes review-loop apply --loop widgets", self.status())
         routes.remove_route("widgets-observe")
         line = self.status()
@@ -1303,7 +1303,7 @@ class ObserverStatusDoctor(Base):
         self.observer_install()
         rc, out = self.run_cli(["set", "--loop", "widgets", "--observer-mute"])
         self.assertEqual(rc, 0, out)
-        self.assertIn("observer widgets-observe → tuck (ok, muted)", self.status())
+        self.assertIn("observer widgets-observe → arbiter (ok, muted)", self.status())
 
     # -- review of #112: doctor and the feed read a route's profile the way the gateway does ----
 
@@ -1383,9 +1383,9 @@ class ObserverStatusDoctor(Base):
         self.assertEqual(checks["route:widgets-breach"].status, doctor.MISMATCH)
 
     def test_route_profile_matches_the_gateway_rule(self):
-        cases = [{}, {"profile": "default"}, {"profile": "tuck"}, {"profile": " tuck "},
+        cases = [{}, {"profile": "default"}, {"profile": "arbiter"}, {"profile": " arbiter "},
                  {"profile": ""}, {"profile": "  "}, {"profile": None}, {"profile": 7}]
-        expected = ["default", "default", "tuck", "tuck", None, None, None, None]
+        expected = ["default", "default", "arbiter", "arbiter", None, None, None, None]
         self.assertEqual([routes.route_profile(c) for c in cases], expected)
         source = SOURCE / "gateway" / "platforms" / "webhook.py"
         if not source.exists():
@@ -1401,7 +1401,7 @@ class ObserverStatusDoctor(Base):
         exec(compile(ast.Module([func], []), str(source), "exec"), scope)
         allows = scope["_route_allows_profile"]
         for case, ours in zip(cases, expected):
-            for requested in (None, "tuck"):
+            for requested in (None, "arbiter"):
                 self.assertEqual(allows(case, requested),
                                  ours is not None and ours == (requested or "default"),
                                  f"{case} for /p/{requested}")
@@ -1473,7 +1473,7 @@ class ObserverStatusDoctor(Base):
 
     def test_apply_dry_run_reports_the_divergence_the_real_apply_reports(self):
         self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
-                     "--adjudicator-profile", "tuck")
+                     "--adjudicator-profile", "arbiter")
         routes.remove_route("widgets-breach")
         settings = {"cap": 5}              # another change in flight
         rc_dry, dry = self.run_cli(["apply", "--loop", "widgets", "--dry-run"], settings=settings)
@@ -1493,9 +1493,9 @@ class ObserverStatusDoctor(Base):
         "profile null": lambda e: e.update(profile=None),
         "profile blank": lambda e: e.update(profile=""),
         "profile whitespace": lambda e: e.update(profile="   "),
-        "profile padded": lambda e: e.update(profile=" tuck "),
+        "profile padded": lambda e: e.update(profile=" arbiter "),
         "profile not a string": lambda e: e.update(profile=7),
-        "another profile": lambda e: e.update(profile="drey"),
+        "another profile": lambda e: e.update(profile="coder"),
         "deliver changed": lambda e: e.update(deliver="discord"),
         "deliver_extra added": lambda e: e.update(deliver_extra={"chat_id": "elsewhere"}),
         "deliver_only false": lambda e: e.update(deliver_only=False),
@@ -1576,7 +1576,7 @@ class ObserverStatusDoctor(Base):
             with self.subTest(route=name, with_record=with_record):
                 self.setUp()
                 self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
-                             "--adjudicator-profile", "tuck")
+                             "--adjudicator-profile", "arbiter")
                 if not with_record:
                     self.forget_intent()
                 self.edit_registry(name, lambda e: e.update(enabled=False))
@@ -1720,7 +1720,7 @@ class ObserverStatusDoctor(Base):
 
     def test_a_changed_gateway_origin_is_reconciled_by_the_printed_remedy(self):
         self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
-                     "--adjudicator-profile", "tuck")
+                     "--adjudicator-profile", "arbiter")
         rc, out = self.run_cli(["set", "--loop", "widgets", "--host", "https://moved.example"])
         self.assertEqual(rc, 0, out)
         checks = self.route_checks()
@@ -1743,8 +1743,8 @@ class ObserverStatusDoctor(Base):
             "secret removed": lambda e: e.pop("secret"),
             "events changed": lambda e: e.update(events=["push"]),
             "host elsewhere": lambda e: e.update(host="https://elsewhere.example"),
-            "another profile": lambda e: e.update(profile="drey" if e["profile"] != "drey"
-                                                  else "vex"),
+            "another profile": lambda e: e.update(profile="coder" if e["profile"] != "coder"
+                                                  else "critic"),
             "script foreign": lambda e: e.update(script="someone_elses.py"),
             "prompt foreign": lambda e: e.update(prompt="something else"),
         }
@@ -1753,7 +1753,7 @@ class ObserverStatusDoctor(Base):
                 with self.subTest(route=route, mutation=label):
                     self.setUp()
                     self.install("acme/widgets", "--adjudicator-route", "widgets-breach",
-                                 "--adjudicator-profile", "tuck")
+                                 "--adjudicator-profile", "arbiter")
                     self.forget_intent()
                     self.edit_registry(route, mutate)
                     failed = [c for c in self.route_checks().values()
@@ -1775,8 +1775,8 @@ class HookAndCronRemedies(Base):
     """Review of #112 at 4ee0596: `hook:*` and `cron:*` remedies told the operator to re-run init,
     which refuses an existing loop. Every one must now be a command that works, run as printed."""
 
-    REVIEW = "https://gateway.example/p/vex/webhooks/widgets-review"
-    FIX = "https://gateway.example/p/drey/webhooks/widgets-fix"
+    REVIEW = "https://gateway.example/p/critic/webhooks/widgets-review"
+    FIX = "https://gateway.example/p/coder/webhooks/widgets-fix"
 
     def world(self, hooks) -> pathlib.Path:
         """A stateful gh stub: list/GET/PATCH (config replaced wholesale, add_events)/POST/DELETE,
@@ -1850,7 +1850,7 @@ class HookAndCronRemedies(Base):
         review, fix = (1, self.REVIEW, ["pull_request"]), (2, self.FIX, ["pull_request_review"])
         cases = {
             "reviewer hook missing": [self.hook(*fix)],
-            "hook at another origin": [self.hook(1, "https://old.example/p/vex/webhooks/"
+            "hook at another origin": [self.hook(1, "https://old.example/p/critic/webhooks/"
                                                     "widgets-review", ["pull_request"]),
                                        self.hook(*fix)],
             "hook missing its event": [self.hook(1, self.REVIEW, ["push"]), self.hook(*fix)],

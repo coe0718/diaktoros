@@ -183,7 +183,7 @@ class Broker(unittest.TestCase):
 
 
 class UnreadableViewRecord(Broker):
-    """Tuck on #97: an unreadable view record must not read as 'whole' (fail closed, named)."""
+    """Arbiter on #97: an unreadable view record must not read as 'whole' (fail closed, named)."""
 
     def test_an_unreadable_ledger_refuses_the_approval_with_its_reason(self):
         scope = broker_ipc.RunScope(REPO, 7, HEAD, "reviewer", "fix-7", "run-x",
@@ -198,7 +198,7 @@ class UnreadableViewRecord(Broker):
 
 
 class FixerBroker(Broker):
-    """A fixer that could not see the whole change cannot push it either (Tuck on #97).
+    """A fixer that could not see the whole change cannot push it either (Arbiter on #97).
 
     The push is refused before the capability is spent and before any policy read or Git call;
     the fixer is told to publish its answers instead, and that one comment is its write.
@@ -301,7 +301,7 @@ class FixerBroker(Broker):
 
 
 class EveryLessThanWholeView(FixerBroker):
-    """Tuck on #97: a view truncated by DIFF_BYTES, or with an unnamed remainder past GitHub's
+    """Arbiter on #97: a view truncated by DIFF_BYTES, or with an unnamed remainder past GitHub's
     listing, is also partial — recorded, and enforced like the unreadable list."""
 
     def truncated(self, seat="reviewer"):
@@ -424,7 +424,7 @@ class HostRecordsTheView(pc.Base):
 
 
 class LaunchPathRefuses(pc.Base):
-    """Tuck on #97: the whole path composed — host pr_change -> ledger + scope -> real run_turn ->
+    """Arbiter on #97: the whole path composed — host pr_change -> ledger + scope -> real run_turn ->
     real RunBroker over its real socket -> real receipt ledger. Only GitHub REST, the sandbox
     process and the inference proxy are faked; the fake sandbox is the seat, talking to the
     broker with the real client."""

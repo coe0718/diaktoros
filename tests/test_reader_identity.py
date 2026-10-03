@@ -70,8 +70,7 @@ class _Home(unittest.TestCase):
                         side_effect=AssertionError("test reached the network"))
         offline.start()
         self.addCleanup(offline.stop)
-        # The README's generic example names (coder/critic/arbiter) beside the fixtures' own.
-        for profile in ("vex", "drey", "tuck", "coder", "critic", "arbiter"):
+        for profile in ("critic", "coder", "arbiter"):
             (self.hermes / "profiles" / profile).mkdir(parents=True)
             (self.hermes / "profiles" / profile / "config.yaml").write_text("model: {}\n")
         self.keys = self.hermes / "keys"
@@ -101,7 +100,7 @@ class _Home(unittest.TestCase):
 class _Loop(_Home):
     def init_argv(self, *extra, reader=READER, reader_file="read"):
         argv = ["init", "--repo", "acme/widgets", "--fixer", FIX, "--reviewer", REV,
-                "--reviewer-profile", "vex", "--fixer-profile", "drey",
+                "--reviewer-profile", "critic", "--fixer-profile", "coder",
                 "--host", "https://gateway.example",
                 "--token", f"{REV}={self.pat('rev')}", "--token", f"{FIX}={self.pat('fix')}"]
         if reader:
@@ -140,8 +139,8 @@ class ReadmeInstallTests(_Home):
         self.pat("rev-bot")
         self.pat("dev-account")
         rc, out = self.run_cli(["init", "--repo", "owner/name", "--fixer", "dev-account",
-                                "--reviewer", "rev-bot", "--fixer-profile", "drey",
-                                "--reviewer-profile", "vex",
+                                "--reviewer", "rev-bot", "--fixer-profile", "coder",
+                                "--reviewer-profile", "critic",
                                 "--token", f"rev-bot={self.keys / 'rev-bot-pat'}",
                                 "--token", f"dev-account={self.keys / 'dev-account-pat'}",
                                 "--read-token", "rev-bot", "--host", "https://gw.example",
@@ -169,7 +168,7 @@ class ReaderIdentityTests(_Loop):
 
     def test_init_refuses_a_reader_that_is_the_adjudicator_login(self):
         out = self.refused(self.init_argv("--adjudicator-route", "widgets-breach",
-                                          "--adjudicator-profile", "tuck",
+                                          "--adjudicator-profile", "arbiter",
                                           "--adjudicator-login", READER),
                            r"also the reader")
         self.assertIn("four-identity rule", out)
@@ -218,7 +217,7 @@ class ReaderIdentityTests(_Loop):
 
     def settings_matching(self, **changes):
         """A settings form that matches the installed loop, plus ``changes``."""
-        return {"reviewer_profile": "vex", "fixer_profile": "drey",
+        return {"reviewer_profile": "critic", "fixer_profile": "coder",
                 "reviewer_login": REV, "fixer_login": FIX,
                 "host": "https://gateway.example", **changes}
 
@@ -352,8 +351,8 @@ class ReaderIdentityTests(_Loop):
         # A healthy loop next to it: still ambiguous — the question may be about the bad one.
         (config.config_dir() / "clean.json").write_text(json.dumps(
             {**data, "id": "clean", "repo": "acme/clean", "read_token": READER,
-             "seats": {"reviewer": {"profile": "vex", "route": "clean-review"},
-                       "fixer": {"profile": "drey", "route": "clean-fix"}}}))
+             "seats": {"reviewer": {"profile": "critic", "route": "clean-review"},
+                       "fixer": {"profile": "coder", "route": "clean-fix"}}}))
         rc, out = self.run_cli(["explain", "--pr", "1"])
         self.assertEqual(rc, 2, out)
         self.assertIn("2 loops are configured (clean, widgets) — name one with --loop", out)
@@ -426,7 +425,7 @@ class ReaderIdentityTests(_Loop):
         data["read_token"] = "ghost-account"         # hand-edited; no tokens entry for it
         self.loop_file().write_text(json.dumps(data))
         before = self.loop_file().read_bytes()
-        settings = {"reviewer_profile": "vex", "fixer_profile": "drey", "reviewer_login": REV,
+        settings = {"reviewer_profile": "critic", "fixer_profile": "coder", "reviewer_login": REV,
                     "fixer_login": FIX, "host": "https://gateway.example", "cap": 5}
         rc, out = self.run_cli(["apply", "--loop", "widgets"], settings)
         self.assertEqual(rc, 2, out)
@@ -469,8 +468,8 @@ class HookWriteTests(_Loop):
                 return [{"id": n, "active": state[n], "events": [event], "config": {
                     "url": f"https://gateway.example/p/{profile}/webhooks/widgets-{r}",
                     "content_type": "json"}}
-                    for n, r, profile, event in ((1, "review", "vex", "pull_request"),
-                                                 (2, "fix", "drey", "pull_request_review"))], ""
+                    for n, r, profile, event in ((1, "review", "critic", "pull_request"),
+                                                 (2, "fix", "coder", "pull_request_review"))], ""
             hook_id = int(path.rsplit("/", 1)[-1])
             if method == "PATCH":
                 if patch_error:

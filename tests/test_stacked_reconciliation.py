@@ -237,7 +237,7 @@ class ReconciliationTest(unittest.TestCase):
         self.child["base"].update(ref="main", sha=A)
         with mock.patch.object(gate.gh, "reviews_read", return_value=([], "")):
             self.sweep([self.parent, self.child])
-        self.loop.update(reviewers=["vex", "human"], reviewer_seat="vex")
+        self.loop.update(reviewers=["critic", "human"], reviewer_seat="critic")
         approval = self.old_review(review_id=29)
         approval["user"].update(login="human", type="User")
         approval["submitted_at"] = "2099-01-01T00:00:00Z"
@@ -245,7 +245,7 @@ class ReconciliationTest(unittest.TestCase):
         self.assertEqual(self.st.transition_get(184).get("old_review_ids"), [])
         self.assertEqual(transition.current_reviews([approval], self.st.transition_get(184), self.loop), [approval])
         payload = {"action": "submitted", "number": 184, "pull_request": self.child,
-                   "review": approval, "sender": {"login": "vex"}}
+                   "review": approval, "sender": {"login": "critic"}}
         notices = []
         with mock.patch.object(fixer.sys, "stdin", io.StringIO(json.dumps(payload))), \
              contextlib.redirect_stdout(io.StringIO()), \
@@ -270,13 +270,13 @@ class ReconciliationTest(unittest.TestCase):
         self.assertFalse(any(n.get("next_turn") == "you merge" for n in notices), notices)
 
     def test_approval_live_retarget_same_head_cannot_announce_merge(self):
-        self.loop.update(reviewers=["vex"], reviewer_seat="vex")
+        self.loop.update(reviewers=["critic"], reviewer_seat="critic")
         direct = pr(184, "child", C, "main", A)
         direct.update(state="open", draft=False, user={"login": "fixer"})
         stacked = pr(184, "child", C, "parent", B)
         stacked.update(state="open", draft=False, user={"login": "fixer"})
         approval = {"id": 29, "state": "APPROVED", "commit_id": C,
-                    "submitted_at": "2024-01-01T00:00:00Z", "user": {"login": "vex"}}
+                    "submitted_at": "2024-01-01T00:00:00Z", "user": {"login": "critic"}}
         payload = {"action": "submitted", "number": 184, "pull_request": direct,
                    "review": approval}
         notices = []
@@ -293,13 +293,13 @@ class ReconciliationTest(unittest.TestCase):
         self.assertFalse(any(n.get("next_turn") == "you merge" for n in notices), notices)
 
     def test_approval_live_base_advance_same_head_cannot_announce_merge(self):
-        self.loop.update(reviewers=["vex"], reviewer_seat="vex")
+        self.loop.update(reviewers=["critic"], reviewer_seat="critic")
         direct = pr(184, "child", C, "main", A)
         direct.update(state="open", draft=False, user={"login": "fixer"})
         advanced = pr(184, "child", C, "main", B)
         advanced.update(state="open", draft=False, user={"login": "fixer"})
         approval = {"id": 29, "state": "APPROVED", "commit_id": C,
-                    "submitted_at": "2024-01-01T00:00:00Z", "user": {"login": "vex"}}
+                    "submitted_at": "2024-01-01T00:00:00Z", "user": {"login": "critic"}}
         payload = {"action": "submitted", "number": 184, "pull_request": direct,
                    "review": approval}
         notices = []
@@ -319,7 +319,7 @@ class ReconciliationTest(unittest.TestCase):
         self.sweep([self.parent, self.child])
         self.child["base"].update(ref="main", sha=A)
         self.sweep([self.parent, self.child])
-        self.child["requested_reviewers"] = [{"login": "vex"}]
+        self.child["requested_reviewers"] = [{"login": "critic"}]
         output, seat = self.human_request(self.child, [])
         # The request is not a receipt and never a second fresh turn: it can only re-drive
         # the transition's own reviewer turn, which the ledger dedups on its turn key.
@@ -334,12 +334,12 @@ class ReconciliationTest(unittest.TestCase):
 
     def human_request(self, snapshot, reviews):
         """Exercise the real reviewer route with a fake, strict GitHub read."""
-        self.loop.update(reviewers=["vex"], reviewer_seat="vex",
+        self.loop.update(reviewers=["critic"], reviewer_seat="critic",
                          seats={"reviewer": {"route": "review"}, "fixer": {"route": "fix"}})
         payload = {"action": "review_requested", "number": 184,
                    "repository": {"full_name": self.loop["repo"]},
                    "sender": {"login": "fixer"},
-                   "requested_reviewer": {"login": "vex"},
+                   "requested_reviewer": {"login": "critic"},
                    "pull_request": snapshot}
         output = io.StringIO()
         with mock.patch.object(reviewer.sys, "stdin", io.StringIO(json.dumps(payload))), \
@@ -360,7 +360,7 @@ class ReconciliationTest(unittest.TestCase):
         return output.getvalue(), seat
 
     def old_review(self, state="APPROVED", review_id=17):
-        return {"id": review_id, "user": {"login": "vex"}, "state": state,
+        return {"id": review_id, "user": {"login": "critic"}, "state": state,
                 "commit_id": C, "submitted_at": "2020-01-02T00:00:00Z"}
 
     def test_same_sha_retarget_does_not_replay_review_request_or_old_verdict(self):
@@ -455,11 +455,11 @@ class ReconciliationTest(unittest.TestCase):
         self.sweep([self.parent, self.child])
         self.child["base"].update(ref="main", sha=A)
         self.sweep([self.parent, self.child])
-        self.loop.update(reviewers=["vex"], reviewer_seat="vex",
+        self.loop.update(reviewers=["critic"], reviewer_seat="critic",
                          seats={"reviewer": {"route": "review"}, "fixer": {"route": "fix"}})
         approval = self.old_review()
         payload = {"action": "submitted", "number": 184, "pull_request": self.child,
-                   "review": approval, "sender": {"login": "vex"}}
+                   "review": approval, "sender": {"login": "critic"}}
         notices = []
         with mock.patch.object(fixer.sys, "stdin", io.StringIO(json.dumps(payload))), \
              contextlib.redirect_stdout(io.StringIO()), \

@@ -46,7 +46,7 @@ class TokenFileSettingsTests(unittest.TestCase):
             "REVIEW_LOOP_SUBS": str(self.hermes / "webhook_subscriptions.json")})
         env.start()
         self.addCleanup(env.stop)
-        for profile in ("vex", "drey", "tuck"):
+        for profile in ("critic", "coder", "arbiter"):
             (self.hermes / "profiles" / profile).mkdir(parents=True)
             (self.hermes / "profiles" / profile / "config.yaml").write_text("model: {}\n")
         self.keys = self.home / "keys"
@@ -80,14 +80,14 @@ class TokenFileSettingsTests(unittest.TestCase):
 
     def init_argv(self, *extra, adjudicator=True, tokens=True):
         argv = ["init", "--repo", "acme/widgets", "--fixer", FIX, "--reviewer", REV,
-                "--reviewer-profile", "vex", "--fixer-profile", "drey",
+                "--reviewer-profile", "critic", "--fixer-profile", "coder",
                 "--read-token", READER, "--host", "https://gateway.example"]
         if tokens:
             argv += ["--token", f"{READER}={self.pats['read']}",
                      "--token", f"{REV}={self.pats['rev']}",
                      "--token", f"{FIX}={self.pats['fix']}"]
         if adjudicator:
-            argv += ["--adjudicator-route", "widgets-breach", "--adjudicator-profile", "tuck"]
+            argv += ["--adjudicator-route", "widgets-breach", "--adjudicator-profile", "arbiter"]
         return argv + list(extra)
 
     def loop_file(self):

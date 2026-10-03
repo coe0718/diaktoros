@@ -67,7 +67,7 @@ class Store(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_a_hold_lasts_until_its_time_and_the_later_hold_wins(self):
-        key = pacing.account_key("openai-codex", "https://chatgpt.com/x", "vex")
+        key = pacing.account_key("openai-codex", "https://chatgpt.com/x", "critic")
         self.assertIsNone(pacing.held(key))
         pacing.hold(key, time.time() + 600, "first")
         pacing.hold(key, time.time() + 60, "earlier, ignored")
@@ -76,7 +76,7 @@ class Store(unittest.TestCase):
         self.assertEqual(reason, "first")
         self.assertIsNone(pacing.held(key, now=time.time() + 601))
         self.assertIsNone(pacing.held(pacing.account_key("openai-codex", "https://chatgpt.com/x",
-                                                         "drey")), "another profile's window")
+                                                         "coder")), "another profile's window")
 
     def test_turns_are_counted_per_loop_seat_and_day(self):
         self.assertEqual(pacing.turns_today("w", "reviewer"), 0)

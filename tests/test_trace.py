@@ -204,7 +204,7 @@ class Delivery(unittest.TestCase):
 
     def test_a_guid_is_found_on_the_loops_own_hook(self):
         hooks = [{"id": 5, "config": {"url": "https://gw.example/webhooks/other-route"}},
-                 {"id": 9, "config": {"url": "https://gw.example/p/vex/webhooks/widgets-review"}}]
+                 {"id": 9, "config": {"url": "https://gw.example/p/critic/webhooks/widgets-review"}}]
         seen = []
 
         def api(loop, path, method="GET", body=None, login=None):

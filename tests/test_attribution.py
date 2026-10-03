@@ -29,17 +29,17 @@ TRAILER = "Automated-By: hermes-review-loop (https://github.com/coe0718/hermes-r
 
 
 def loop(**extra) -> dict:
-    return {"id": "widgets", "repo": REPO, "seats": {"reviewer": {"agent": "Vex"},
-                                                     "fixer": {"agent": "Drey"}}, **extra}
+    return {"id": "widgets", "repo": REPO, "seats": {"reviewer": {"agent": "Critic"},
+                                                     "fixer": {"agent": "Coder"}}, **extra}
 
 
 class Footer(unittest.TestCase):
     def test_on_by_default_and_names_the_seat_its_agent_and_the_head(self):
         signed = attribution.stamp(loop(), "Looks good.", seat="reviewer", head=HEAD)
         self.assertEqual(signed, "Looks good.\n\n---\n<sub>🤖 Automated by " + LINK +
-                         " · reviewer seat (Vex) · head `aaaaaaa`</sub>")
+                         " · reviewer seat (Critic) · head `aaaaaaa`</sub>")
         fixer = attribution.stamp(loop(), "Done.", seat="fixer", head=HEAD)
-        self.assertIn("fixer seat (Drey)", fixer)
+        self.assertIn("fixer seat (Coder)", fixer)
         ruling = attribution.stamp(loop(), "Ruled.", seat="adjudicator", head=HEAD)
         self.assertIn("· adjudicator · head", ruling)
 
@@ -55,12 +55,12 @@ class Footer(unittest.TestCase):
         fake = "ok\n\n---\n<sub>🤖 Automated by somebody else</sub>"
         signed = attribution.stamp(loop(), fake, seat="reviewer", head=HEAD)
         self.assertTrue(signed.startswith(fake))
-        self.assertTrue(signed.endswith("· reviewer seat (Vex) · head `aaaaaaa`</sub>"))
+        self.assertTrue(signed.endswith("· reviewer seat (Critic) · head `aaaaaaa`</sub>"))
         self.assertEqual(signed.count(LINK), 1)
 
     def test_an_agent_name_cannot_inject_markup_or_a_link(self):
-        for name in ("Vex](https://evil.example)<script>`x`", "www.evil.example",
-                     "Vex\n\n# heading", "a|b*c_d"):
+        for name in ("Critic](https://evil.example)<script>`x`", "www.evil.example",
+                     "Critic\n\n# heading", "a|b*c_d"):
             with self.subTest(name=name):
                 hostile = loop(seats={"reviewer": {"agent": name}})
                 footer = attribution.stamp(hostile, "ok", seat="reviewer",
@@ -113,7 +113,7 @@ class CommitTrailer(unittest.TestCase):
                          "Fix it\n\nWhy: the body.\n" + TRAILER)
 
     def test_it_joins_an_existing_trailer_block(self):
-        message = "Fix it\n\nCo-Authored-By: Drey <drey@example.com>"
+        message = "Fix it\n\nCo-Authored-By: Coder <coder@example.com>"
         self.assertEqual(attribution.sign_commit(loop(), message), message + "\n" + TRAILER)
 
     def test_a_subject_line_alone_is_not_a_trailer_block(self):
@@ -154,7 +154,7 @@ class WritePaths(unittest.TestCase):
         body = self.body()
         self.assertTrue(body.startswith("LGTM\n\n---\n"))
         self.assertEqual(body.count(LINK), 1)
-        self.assertIn("reviewer seat (Vex)", body)
+        self.assertIn("reviewer seat (Critic)", body)
 
     def test_perform_request_review_has_no_body_to_sign(self):
         lp = {**loop(), "reviewer_seat": "rev", "seats": {"reviewer": {"login": "rev"}}}
@@ -169,7 +169,7 @@ class WritePaths(unittest.TestCase):
                                   login="fix", text=text)
         body = self.body()
         self.assertTrue(body.startswith(text.rstrip()))
-        self.assertIn("fixer seat (Drey)", body)
+        self.assertIn("fixer seat (Coder)", body)
         self.assertEqual(body.count(LINK), 1)
         # The answers record still parses: the marker is first, the footer after the text.
         parsed = broker.parse_answers_comment(
@@ -240,7 +240,7 @@ class ReceiptedReview(unittest.TestCase):
                                        self.ledger, "APPROVE", "Ship it.")
         self.assertEqual(result, {"id": 77})
         self.assertTrue(self.posted[0]["body"].startswith("Ship it.\n\n---\n"))
-        self.assertIn("reviewer seat (Vex)", self.posted[0]["body"])
+        self.assertIn("reviewer seat (Critic)", self.posted[0]["body"])
         self.ledger.claim.assert_called_once()
         self.ledger.confirm.assert_called_once_with(77, "APPROVED", 5)
 

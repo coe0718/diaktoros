@@ -30,7 +30,7 @@ REPO = "acme/widgets"
 PRINCIPAL = 11
 
 
-def review(review_id, state, *, head=C, minute=0, login="vex", user_id=PRINCIPAL):
+def review(review_id, state, *, head=C, minute=0, login="critic", user_id=PRINCIPAL):
     return {"id": review_id, "state": state, "commit_id": head, "body": f"review {review_id}",
             "submitted_at": f"2099-01-01T00:{minute:02d}:00Z",
             "user": {"login": login, "id": user_id, "type": "User"}}
@@ -46,7 +46,7 @@ class FreshReviewTest(unittest.TestCase):
         self.addCleanup(env.stop)
         self.loop = {"id": "fresh", "repo": REPO, "base": "main", "fixers": ["fixer"],
                      "unattended_fixer_push": True,
-                     "reviewers": ["vex"], "reviewer_seat": "vex", "state_dir": str(root / "state"),
+                     "reviewers": ["critic"], "reviewer_seat": "critic", "state_dir": str(root / "state"),
                      "cap": 3, "ttl_min": 60, "grace_min": 5, "marker_grace_min": 5,
                      "cooldown_h": 1, "inflight_ttl_min": 60, "read_token": "read",
                      "seats": {"reviewer": {"route": "review", "concurrency": 1},
@@ -156,11 +156,11 @@ class FreshReviewTest(unittest.TestCase):
 
     def verdict_event(self, review_body):
         return {"action": "submitted", "number": 184, "repository": {"full_name": REPO},
-                "pull_request": self.child, "review": review_body, "sender": {"login": "vex"}}
+                "pull_request": self.child, "review": review_body, "sender": {"login": "critic"}}
 
     def request_event(self):
         return {"action": "review_requested", "number": 184, "repository": {"full_name": REPO},
-                "sender": {"login": "fixer"}, "requested_reviewer": {"login": "vex"},
+                "sender": {"login": "fixer"}, "requested_reviewer": {"login": "critic"},
                 "pull_request": self.child}
 
     def merge_cues(self, calls):
@@ -260,7 +260,7 @@ class FreshReviewTest(unittest.TestCase):
 
     def test_unreceipted_or_misbound_post_boundary_reviews_are_ignored(self):
         self.merge_parent_and_retarget()
-        human = review(40, "APPROVED", minute=5, login="vex")
+        human = review(40, "APPROVED", minute=5, login="critic")
         wrong_principal = review(41, "APPROVED", minute=6)
         stacked_gen = review(42, "APPROVED", minute=7)
         other_head = review(43, "APPROVED", minute=8)

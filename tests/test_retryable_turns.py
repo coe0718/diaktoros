@@ -252,7 +252,7 @@ class ClaimTimeReads(Base):
     def test_502_at_claim_is_a_read_retry_then_the_run_succeeds(self):
         self.assertIsNone(self.claim(None))           # gh.api answers None for an HTTP 502
         row = self.s.get('review')
-        # A counted, visible, backed-off retry — never an invisible pending row (Tuck on #97).
+        # A counted, visible, backed-off retry — never an invisible pending row (Arbiter on #97).
         self.assertEqual((row['state'], row['attempts'], row['retries']), ('waiting', 0, 1))
         self.assertIn('claim-time read failed', row['error'])
         self.elapse()

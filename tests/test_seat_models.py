@@ -881,7 +881,7 @@ class ProviderExtras(Base):
         return self.extras(self.bare)["extras:reviewer"]
 
     def test_a_source_without_hermes_fails_the_model_line(self):
-        # Tuck, 255c875: the turn resolves through this same import, so it would be held.
+        # Arbiter, 255c875: the turn resolves through this same import, so it would be held.
         empty = self.root / "no-hermes-here"
         empty.mkdir()
         settings = {**self.settings, "source": str(empty)}
@@ -917,7 +917,7 @@ class ProviderExtras(Base):
         self.assertEqual(extras["extras:adjudicator"].status, doctor.UNKNOWN)
 
     def test_a_hermes_that_raises_fails_the_model_line(self):
-        # Tuck, bed4a28: Hermes WAS asked and raised reading the profile — the turn would fail the
+        # Arbiter, bed4a28: Hermes WAS asked and raised reading the profile — the turn would fail the
         # same way — so the model line is ❌ and the preflight exits 1, as before; ⚠️ is only for
         # "doctor could not ask" (a Hermes missing the functions).
         rt = self.root / "hermes-agent" / "hermes_cli" / "runtime_provider.py"
@@ -970,7 +970,7 @@ class ProviderExtras(Base):
                     {c.name: c for c in doctor.check_seat_models(self.loop)})
 
     def test_with_hermes_the_entry_decides_not_model_api_mode(self):
-        # Tuck's repro, as Hermes answers it: entry at api.anthropic.com, model.api_mode chat.
+        # Arbiter's repro, as Hermes answers it: entry at api.anthropic.com, model.api_mode chat.
         extras, models = self.with_answer(self.hermes_answer(
             {"url": "https://api.anthropic.com", "url_wire": "anthropic_messages"}))
         check = extras["extras:reviewer"]
@@ -1237,7 +1237,7 @@ class HermesAgreement(unittest.TestCase):
                                         "api_mode": "chat_completions"}}, {}),
         "bare-custom": ({"model": {"provider": "custom", "default": "m", "api_key": _DUMMY,
                                    "base_url": "https://api.anthropic.com"}}, {}),
-        # Tuck's review of 70e5765: routes a re-implementation got wrong
+        # Arbiter's review of 70e5765: routes a re-implementation got wrong
         "entry-alias-messages": ({"model": {"provider": "acme", "default": "m"},
                                   "providers": {"acme": {"base_url": "https://gw.test/v1",
                                                          "api_mode": "messages",

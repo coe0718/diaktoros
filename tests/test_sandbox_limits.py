@@ -277,7 +277,7 @@ class SandboxLimitTests(unittest.TestCase):
 
     def test_the_caps_hold_a_real_rust_build(self):
         """A cap under a real scoped build turns every Rust review into "could not verify"."""
-        # Measured on this host, each into a fresh target: a scoped `cargo test -p attest-core
+        # Measured on this host, each into a fresh target: a scoped `cargo test -p widgets-core
         # --no-run` is 2.4 GiB (154 rlibs; deps alone 1.8 GiB), a whole-workspace `cargo build`
         # plus `cargo test --no-run` is 8.0 GiB, and a mature clone's *accumulated* target reaches
         # 70 GB. The default is sized for the scoped build the prompt asks a seat to run; the floor

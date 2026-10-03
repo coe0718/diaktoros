@@ -573,7 +573,7 @@ class GateFailureTest(unittest.TestCase):
 
     # -- a failed gate never keeps a seat ------------------------------------------------------
 
-    # -- every layer the gateway reads (Tuck on 7cde354) -------------------------------------
+    # -- every layer the gateway reads (Arbiter on 7cde354) -------------------------------------
 
     def hang_stub(self) -> pathlib.Path:
         hang = t.TMP / "hang_stub.py"
@@ -600,7 +600,7 @@ class GateFailureTest(unittest.TestCase):
         self.assertEqual(self.doctor_lines()["gate:timeout:default"].status, doctor.MISMATCH)
 
     def test_a_gateway_killing_at_a_top_level_6s_still_gets_a_recorded_timeout(self):
-        # Tuck's end-to-end repro: the gateway kills the child at 6s; the gate hangs in a read.
+        # Arbiter's end-to-end repro: the gateway kills the child at 6s; the gate hangs in a read.
         self.gateway_config({"webhook": {"script_timeout_seconds": 6}})
         try:
             proc, elapsed = gateway_run("gate_reviewer.py", t.pr_payload(7),
@@ -656,7 +656,7 @@ class GateFailureTest(unittest.TestCase):
         self.addCleanup(gw.unlink, missing_ok=True)
 
     def test_an_undecodable_config_yaml_falls_back_to_gateway_json_end_to_end(self):
-        # Tuck's repro: config.yaml names 20 but cannot be decoded, so the real gateway drops it
+        # Arbiter's repro: config.yaml names 20 but cannot be decoded, so the real gateway drops it
         # and gateway.json's 6 wins. The gate must plan under 6s and record the timeout.
         for encoding, data in self.UNDECODABLE.items():
             with self.subTest(encoding=encoding):
@@ -729,7 +729,7 @@ class GateFailureTest(unittest.TestCase):
         self.assertIn("too small", check.detail)
 
     def test_a_held_ledger_lock_cannot_cost_the_record(self):
-        # Tuck's lock-held variant: 6s gateway, the gate hangs, and another process holds the
+        # Arbiter's lock-held variant: 6s gateway, the gate hangs, and another process holds the
         # loop ledger's lock through the record phase. Before: rc -9, nothing recorded.
         import fcntl
         self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 6}}})
@@ -1000,7 +1000,7 @@ class GateFailureTest(unittest.TestCase):
         gate_failures.sweep(ledger, "[w]", SCRIPTS, cooldown_s=3600, emit=said.append)
         self.assertEqual(len(said), 2)
 
-    # -- one event, one ledger (Tuck on faf21e9) ---------------------------------------------
+    # -- one event, one ledger (Arbiter on faf21e9) ---------------------------------------------
 
     def fault_gate(self, patch: str) -> subprocess.CompletedProcess:
         """A gate that crashes, with ``patch`` applied inside its process first."""
@@ -1151,7 +1151,7 @@ class GateFailureTest(unittest.TestCase):
         self.assertIn("neg_huge", data)                                # and its negative twin
 
     def test_an_owned_read_whose_entry_was_moved_aside_is_not_promised(self):
-        # Tuck's repro: a 502 failure owns its read; the ledger is torn and moved aside (which
+        # Arbiter's repro: a 502 failure owns its read; the ledger is torn and moved aside (which
         # discards the entry); the same event then completes cleanly.
         from unittest import mock
         from scripts import watchdog as wd
@@ -1217,7 +1217,7 @@ class GateFailureTest(unittest.TestCase):
             return wd.github_health(loop, state_mod.LoopState(loop), {}, time.time(), True, "")
 
     def test_an_owner_open_in_any_ledger_is_open(self):
-        # Tuck: the same key in both ledgers, owned_in naming the no-loop one; its copy resolved
+        # Arbiter: the same key in both ledgers, owned_in naming the no-loop one; its copy resolved
         # as a duplicate while the loop's copy is open — and later pruned by retention.
         key, loop = self.owned_502()
         st = state_mod.LoopState(loop)
@@ -1239,7 +1239,7 @@ class GateFailureTest(unittest.TestCase):
             fallback.path.write_text(json.dumps(data))
 
     def test_a_settled_duplicate_never_stands_in_for_the_owner(self):
-        # Tuck on 2b1b47b: the owner's ledger is lost (moved aside, unreadable, pruned) while the
+        # Arbiter on 2b1b47b: the owner's ledger is lost (moved aside, unreadable, pruned) while the
         # no-loop ledger holds the same key resolved *as a duplicate* — which never owned the read.
         for shape in ("moved aside", "unreadable", "pruned"):
             with self.subTest(shape=shape):
