@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from review_loop import ledger  # noqa: E402
-from review_loop import (broker, broker_ipc, config, gate, gh, run_supervisor,  # noqa: E402
+from review_loop import (broker, broker_ipc, config, gate, gh, run_supervisor, seat_model,  # noqa: E402
                          safe_push, trusted_turn)
 from review_loop.run_supervisor import Supervisor  # noqa: E402
 
@@ -289,6 +289,89 @@ class BrokerWrite(Base):
                                               "body": "x"}).encode())
         self.assertEqual(self.sup.issue_fix_result(self.run_id)["state"], "denied")
         self.assertEqual(self.posts(), [])
+
+
+class WorkerLaunch(Base):
+    """The real ``_run_production`` for an issue-fix row, with only the outside world faked: the
+    seat's model resolves through the real ``resolve_seat`` (the profile lookup is the fake), so a
+    seat name the resolver does not know fails here exactly as it would in production."""
+
+    def test_an_issue_fix_turn_resolves_the_fixers_model_and_launches(self):
+        sup, run_id = self.fix_row(state="launching")
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET owner='w' WHERE id=?", (run_id,))
+        resolved, launched = [], []
+        inference = mock.Mock(upstream="https://api.example/v1/chat/completions", key="k",
+                              model="m", api_mode="chat_completions", proxy_model="",
+                              client_identity="", provider="custom", profile="drey")
+        inference.credential_provider.return_value = None
+
+        def resolve_profile(profile, seat, settings):
+            resolved.append((profile, seat))
+            return inference
+
+        def run_turn(loop, scope, **kw):
+            launched.append((scope.role, scope.branch, scope.head))
+            return 0
+        sup.production_config = self.root / "runtime.json"
+        with mock.patch.object(seat_model, "load_runtime", return_value={
+                    "source": "/x", "venv": "/x", "runtime": "/x", "rust": "/x"}), \
+                mock.patch.object(seat_model, "resolve_profile",
+                                  side_effect=resolve_profile), \
+                mock.patch.object(config, "by_repo", return_value=self.loop), \
+                mock.patch.object(gh, "api", return_value=issue()), \
+                mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
+                mock.patch.object(sup, "recover"), \
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(self.root)}):
+            sup._run_production(run_id, "w")
+        with sup._connect() as con:
+            row = con.execute("SELECT state,error FROM runs WHERE id=?", (run_id,)).fetchone()
+        self.assertNotIn("seat model unresolved", row["error"] or "", dict(row))
+        self.assertEqual(resolved, [("drey", "fixer")])       # the fixer seat's own profile
+        self.assertEqual(launched, [("issue_fixer", "review-loop/issue-12", BASE)])
+
+
+class OpenBranchGuards(Base):
+    """#233: open_branch's own guards, each pinned — the branch name and the fixer's identity."""
+
+    def setUp(self):
+        super().setUp()
+        import base64
+        import hashlib
+        data = b"fixed\n"
+        self.manifest = {"base_head": BASE, "message": "Fix the typo",
+                         "files": [{"path": "README.md",
+                                    "content_b64": base64.b64encode(data).decode(),
+                                    "sha256": hashlib.sha256(data).hexdigest()}]}
+        self.user = {"login": "fix", "id": 3}
+        for target, name, value in (
+                (broker, "authorize_issue_fix", mock.Mock(return_value="fix")),
+                (safe_push, "_api", mock.Mock(side_effect=lambda loop, path, **kw: self.user)),
+                (safe_push, "_git_cas", mock.Mock(side_effect=AssertionError("no push")))):
+            patch = mock.patch.object(target, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def open(self, branch="review-loop/issue-12"):
+        return safe_push.open_branch(self.loop, repo=REPO, number=12, base=BASE, branch=branch,
+                                     manifest=self.manifest)
+
+    def test_only_the_issues_own_branch_may_be_pushed(self):
+        for branch in ("main", "review-loop/issue-13", "review-loop/issue-12/x", "fix-7"):
+            with self.subTest(branch=branch), self.assertRaisesRegex(broker.BrokerDenied,
+                                                                     "unsafe branch ref"):
+                self.open(branch)
+        safe_push._git_cas.assert_not_called()
+
+    def test_the_token_must_resolve_to_the_fixer_before_anything_is_built(self):
+        for user, reason in (({"login": "someone-else", "id": 3}, "fixer identity changed"),
+                             ({"login": "fix", "id": 0}, "fixer identity changed"),
+                             ({"login": "fix"}, "fixer identity changed")):
+            with self.subTest(user=user):
+                self.user = user
+                with self.assertRaisesRegex(broker.BrokerDenied, reason):
+                    self.open()
+        safe_push._git_cas.assert_not_called()
 
 
 class RealBareBranch(unittest.TestCase):

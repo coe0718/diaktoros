@@ -1938,7 +1938,10 @@ def _setup_runtime(args, interactive: bool) -> bool:
     broken = runtime_detect.problems(have) if have else {}
     detected = runtime_detect.detect()
     chosen, origin = {}, {}
-    for key in runtime_detect.HOST_KEYS:
+    # The runtime is derived from the venv actually chosen, so it is resolved last — explicitly,
+    # not by trusting HOST_KEYS to list "venv" before "runtime" (#242).
+    order = [key for key in runtime_detect.HOST_KEYS if key != "runtime"] + ["runtime"]
+    for key in order:
         if key == "runtime" and "venv" in chosen:
             # The runtime belongs to the venv actually chosen (given, kept or detected), never to
             # one detection found elsewhere.
@@ -4380,7 +4383,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="loop id (its config file name; `list` shows them)")
         retry.add_argument("--pr", type=int, required=True,
                            help="the pull request whose failed run to re-arm")
-        retry.add_argument("--seat", choices=["reviewer", "fixer", "adjudicator"],
+        retry.add_argument("--seat", choices=["reviewer", "fixer", "adjudicator", "triage",
+                                              "issue_fixer"],
                            help="only that seat's run (default: whichever failed at the PR's "
                                 "newest head)")
         retry.set_defaults(func=cmd_retry)

@@ -774,7 +774,7 @@ def triage_issue(loop: dict, number: int) -> dict:
     if issue.get('state') != 'open':
         raise ValueError('issue no longer open')
     author = str((issue.get('user') or {}).get('login') or '').lower()
-    if author not in triage.get('authors') or ():
+    if author not in (triage.get('authors') or ()):
         raise ValueError('issue author is not in triage.authors')
     present = {str((label or {}).get('name') or '').casefold()
                for label in issue.get('labels') or [] if isinstance(label, dict)}
@@ -2433,7 +2433,9 @@ class Supervisor:
             # borrows another seat's model or key. The key lives only in this turn's proxy; an
             # OAuth seat's token is re-resolved there (host-side) when it nears expiry or is rejected.
             try:
-                inference = seat_model.resolve_seat(loop, row["seat"], settings)
+                # An issue fix runs as the fixer seat (#214): its profile, its model, its account.
+                model_seat = "fixer" if row["seat"] == "issue_fixer" else row["seat"]
+                inference = seat_model.resolve_seat(loop, model_seat, settings)
             except seat_model.SeatModelError as exc:
                 error = f"seat model unresolved: {exc}"[:600]
                 retry = retryable(exc)

@@ -244,6 +244,22 @@ class Setup(unittest.TestCase):
                          str(self.paths["runtime"]))
         self.assertIn("(detected)", out)
 
+    def test_the_runtime_follows_the_chosen_venv_not_detection(self):
+        """#242: detection points at another venv's runtime; --venv names this one. The runtime
+        written is the given venv's, whatever order HOST_KEYS lists the keys in."""
+        other = self.root / "elsewhere-python"
+        (other / "bin").mkdir(parents=True)
+        argv = [a for a in self.flags() if not a.startswith("--runtime=")]
+        for keys in (runtime_detect.HOST_KEYS, ("source", "runtime", "venv", "rust")):
+            with self.subTest(order=keys):
+                self.runtime_file.unlink(missing_ok=True)
+                with patch.object(runtime_detect, "HOST_KEYS", keys), \
+                        patch.object(runtime_detect, "detect", return_value={"runtime": str(other)}):
+                    rc, out = self.setup_cli(*argv)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(json.loads(self.runtime_file.read_text())["runtime"],
+                                 str(self.paths["runtime"]))
+
     def test_a_path_that_cannot_be_found_is_named_and_nothing_is_armed(self):
         argv = [a for a in self.flags("--arm") if not a.startswith("--rust=")]
         rc, out = self.setup_cli(*argv)
