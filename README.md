@@ -89,6 +89,27 @@ Every one of those is a *silent* failure, so this plugin makes each one loud or 
 hermes plugins install coe0718/hermes-review-loop
 ```
 
+**The install asks you to confirm, and that's expected.** Hermes scans every plugin it installs
+and rates this one **caution**: well over a hundred findings, none critical. It prints them all, then asks
+`Install anyway? Only continue if you trust the source. [y/N]`. A plugin whose job is to run
+agents in a sandbox and drive `git` will always trip pattern-based checks. Here is what the
+findings are:
+
+| what the scanner reports | what it actually is |
+| --- | --- |
+| ~150 `execution` (runs another program) | the plugin starts `bwrap` (the sandbox), `git` (snapshots and pushes), `hermes cron` (the watchdog job), its own workers and Hermes's model resolver — and most hits are in `tests/`, which start sandboxes, fake GitHub servers and throwaway repos |
+| 4 high `privilege_escalation` in `selftest.py` | the *advice text* `selftest` prints when bubblewrap is not set up (`sudo sysctl …`, `sudo dnf install bubblewrap`); the plugin never runs `sudo` |
+| 1 high `traversal` in `trusted_turn.py` | `git -C /proc/self/fd/N` — reading the source through a pinned file descriptor so it cannot be swapped mid-snapshot |
+| 1 high `exfiltration` in a test | a test that tries to read Hermes's own secrets file **from inside the sandbox**, to prove it cannot |
+| `sudo apt-get …` in `.github/` | the CI workflow installing bubblewrap on the test runner |
+| a few in `docs/` | sentences that mention `git clone`, `.env` and the like |
+| `http://127.0.0.1:…` (low) | the sandbox's local bridge to the model, and test fixtures |
+
+Read the list yourself before answering `y`. CI runs the same scanner on every change (job
+`plugin-guard`), and a **dangerous** verdict — the one that blocks installs outright — fails the
+build. The Hermes Desktop app installs caution-rated plugins only from Hermes's reviewed plugin
+catalog; until this plugin is listed there, install it from a terminal.
+
 Then set up one loop per repository. `setup` does the whole first install, asking for each answer
 (the plugin settings form's values are the defaults):
 
