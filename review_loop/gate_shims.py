@@ -163,7 +163,7 @@ def recreate_fix(loop: dict) -> str:
 
 
 _GATE_EVENT = {"reviewer": "pull_request", "fixer": "pull_request_review",
-               "adjudicator": "pull_request"}
+               "adjudicator": "pull_request", "triage": "issues"}
 
 
 def contract_drift(loop: dict, role: str, entry: dict) -> list[str]:

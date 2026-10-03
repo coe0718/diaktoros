@@ -1103,7 +1103,7 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
     Read-only by default: the evidence is each hook's latest recorded delivery (doctor's check).
     With ``ping`` — the selftest's one, opt-in GitHub write — GitHub is asked to ping each hook
     and the answer is awaited (bounded): a ping authenticates at the gateway and is then ignored,
-    since the routes subscribe to pull_request / pull_request_review only.
+    since the routes subscribe to pull_request / pull_request_review / issues only.
     """
     from . import hook_ping
     step = "hooks"
@@ -1112,8 +1112,9 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
         report.add(step, "hooks:signature", WARN, f"cannot read the repo's hooks ({error})",
                    "give the read token hook read access (`read:repo_hook`, or `repo`)")
         return
-    names = {name: seat for seat, name in ((s, str(loop["seats"][s].get("route") or ""))
-                                           for s in ("reviewer", "fixer")) if name}
+    from . import route_intent
+    names = {name: seat for seat, name in ((s, str(route_intent.routes_of(loop).get(s) or ""))
+                                           for s in config.hook_roles(loop)) if name}
     try:
         # uninstall's matcher: route name *and* this loop's gateway origin, so another
         # install's hook on the same route name is never pinged or counted as this loop's.

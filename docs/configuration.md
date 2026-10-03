@@ -227,6 +227,29 @@ POST whose outcome is unknown — never retried automatically).
 If the enqueue fails (no private runtime file, ledger or spawn error), the marker stays
 `delivery-pending` and the watchdog retries it; a duplicate delivery is deduplicated by the ledger.
 
+## Issue triage (`triage`)
+
+Off unless the loop has a `triage` block. `hermes review-loop triage --enable` writes it
+([operations](operations.md#issue-triage)):
+
+```json
+"triage": {"route": "name-triage", "profile": "tuck", "authors": ["you"],
+           "labels": ["bug", "feature", "docs", "question", "P0", "P1", "P2", "P3"],
+           "max_labels": 3, "comment": false, "login": "rev-bot"}
+```
+
+| key | default | meaning |
+| --- | --- | --- |
+| `route` | — | the route on the `issues` event (runs `gate_triage.py`) |
+| `profile` | — | the Hermes profile whose model reads the issue |
+| `authors` | — | the logins whose new issues are triaged; anyone else's are ignored |
+| `labels` | — | the only labels triage may apply (1–100; no commas, braces or backticks) |
+| `max_labels` | 3 | at most this many labels per issue (1–10) |
+| `comment` | false | whether one short comment (≤ 1000 characters) may go with the labels |
+| `login` | the reviewer seat | the account that labels; needs `issues: write`, never the reader |
+
+`seats.triage` takes `daily_turns`, `turn_budget_s` and `concurrency` (default 1).
+
 ## Plugin settings (the desktop form)
 
 `plugin.yaml` declares a `config_schema`, so the desktop renders a form at **Capabilities → Plugins →
