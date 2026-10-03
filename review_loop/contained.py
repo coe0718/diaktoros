@@ -36,6 +36,7 @@ import selectors
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 MAX_CAPTURE = 256 * 1024
@@ -149,7 +150,8 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             client_code: Path | None = None,
             checkout_writable: bool = True,
             dependency_caches: dict[str, Path] | None = None,
-            review_dir: Path | None = None) -> list[str]:
+            review_dir: Path | None = None,
+            identity_dir: Path | None = None) -> list[str]:
     """Build an allowlisted mount namespace for the *entire* process tree.
 
     code must be a separately staged, audited, credentialless source snapshot;
@@ -183,6 +185,18 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
         if (review.is_symlink() or not review.is_dir() or diff.is_symlink()
                 or not diff.is_file() or list(review.iterdir()) != [diff]):
             raise ValueError('review mount must contain only the staged pr.diff')
+    identity_binds = []
+    if identity_dir is not None:
+        # The seat's user entry (#240): two host-written files naming only the sandbox's own uid,
+        # never the host's /etc/passwd. Without them the uid has no name, and pwd.getpwuid —
+        # this repo's own test bootstrap, getpass, some build tools — fails inside the turn.
+        identity = Path(identity_dir)
+        files = {identity / "passwd", identity / "group"}
+        if (identity.is_symlink() or not identity.is_dir() or set(identity.iterdir()) != files
+                or any(path.is_symlink() or not path.is_file() for path in files)):
+            raise ValueError("identity mount must hold only the staged passwd and group")
+        identity_binds = ["--ro-bind", str(identity / "passwd"), "/etc/passwd",
+                          "--ro-bind", str(identity / "group"), "/etc/group"]
     if client_code is not None and not (Path(client_code) / 'review_loop/broker_client.py').is_file():
         raise FileNotFoundError('staged broker client required')
     dependency_binds = []
@@ -218,6 +232,7 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             # Debian/Ubuntu resolve cc, c++ and friends through /etc/alternatives;
             # without it Rust cannot link. It holds only symlinks.
             "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
+            *identity_binds,
             "--proc", "/proc", "--dev", "/dev", *_sized_tmpfs("/tmp", SCRATCH_SIZE),
             "--dir", "/opt", *runtime_parents,
             "--ro-bind", str(runtime), str(runtime),
@@ -253,11 +268,36 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             "/work/target" if checkout_writable else "/target",
             "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH", "/opt/venv/bin:/opt/rust/bin:/usr/bin:/bin",
             "--setenv", "GIT_CONFIG_GLOBAL", "/dev/null", "--setenv", "GIT_CONFIG_SYSTEM", "/dev/null",
-            "--setenv", "GIT_TERMINAL_PROMPT", "0", "--setenv", *OFFLINE_ENV, "--chdir", "/work",
+            "--setenv", "GIT_TERMINAL_PROMPT", "0", "--setenv", "USER", SANDBOX_USER,
+            "--setenv", "LOGNAME", SANDBOX_USER, "--setenv", *OFFLINE_ENV, "--chdir", "/work",
             "--", *launch]
 
 
+SANDBOX_USER = "agent"
+
+
+def write_identity(directory: Path, uid: int | None = None, gid: int | None = None) -> Path:
+    """Write the sandbox's own ``passwd`` and ``group`` (#240): one entry each, for the uid and
+    gid the sandbox runs as (bubblewrap keeps the host's), named ``agent`` with ``/home/agent``.
+    Nothing is copied from the host's files. Returns ``directory``."""
+    uid = os.getuid() if uid is None else uid
+    gid = os.getgid() if gid is None else gid
+    directory = Path(directory)
+    (directory / "passwd").write_text(
+        f"{SANDBOX_USER}:x:{uid}:{gid}:review-loop seat:/home/agent:/bin/sh\n")
+    (directory / "group").write_text(f"{SANDBOX_USER}:x:{gid}:\n")
+    for name in ("passwd", "group"):
+        (directory / name).chmod(0o444)
+    return directory
+
+
 def run(*, timeout: int = 180, **kwargs) -> subprocess.CompletedProcess:
+    # Each launch gets its own user entry (#240), written fresh and removed with the run.
+    with tempfile.TemporaryDirectory(prefix="rl-id-") as identity:
+        return _run(timeout=timeout, identity_dir=write_identity(Path(identity)), **kwargs)
+
+
+def _run(*, timeout: int, **kwargs) -> subprocess.CompletedProcess:
     # Parent environment is discarded, not merely filtered by a fragile denylist.
     home = str(Path(kwargs["home"]).resolve(strict=True))
     argv = command(**kwargs)

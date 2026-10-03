@@ -52,7 +52,9 @@ MOUNT_POINTS = BINDS | {"--proc", "--dev", "--tmpfs", "--mqueue", "--dir", "--sy
 HOST_ENV = {"PATH", "HOME", "HERMES_HOME"}
 SANDBOX_ENV = {"HOME", "HERMES_HOME", "PYTHONPATH", "CARGO_HOME", "RUSTUP_HOME",
                "CARGO_TARGET_DIR", "TMPDIR", "PATH", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
-               "GIT_TERMINAL_PROMPT", contained.OFFLINE_ENV[0]}
+               "GIT_TERMINAL_PROMPT", contained.OFFLINE_ENV[0],
+               # The sandbox's own user name (#240), matching its staged /etc/passwd entry.
+               "USER", "LOGNAME"}
 # Distinct from #120's PARENT-PROCESS-LEAK marker, and deliberately nothing like a token.
 FAKE_CREDENTIALS = {"GH_TOKEN": "fake-env-marker-1", "GITHUB_TOKEN": "fake-env-marker-2",
                     "OPENROUTER_API_KEY": "fake-env-marker-3",
