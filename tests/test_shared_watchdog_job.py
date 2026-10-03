@@ -192,5 +192,52 @@ class SharedJobTests(unittest.TestCase):
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
 
 
+    # --- migration: init removes this loop's legacy job when it creates the shared one ------
+    def test_init_removes_this_loops_legacy_job_when_creating_the_shared_job(self):
+        """A pre-#60 install with one per-loop job: init must leave exactly one sweeper.
+
+        Without this, init creates the shared job and the stale legacy job keeps sweeping
+        every loop too, so the install sits at two sweepers until an operator removes the
+        legacy job by hand (#212).
+        """
+        store = self.home / "cron" / "jobs.json"
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"jobs": [
+            {"id": "legacy1", "name": "review loop watchdog (widgets)",
+             "script": cli.SHIM_NAME, "no_agent": True, "enabled": True, "state": "scheduled",
+             "schedule": {"kind": "interval", "minutes": 15},
+             "next_run_at": "2030-01-01T00:00:00+00:00"}]}))
+        lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+        self.assertTrue(ok, lines)
+        # Exactly one sweeper: the shared job; this loop's legacy job is gone.
+        self.assertEqual(len(self._shim_jobs()), 1, self.hermes.jobs)
+        self.assertEqual(self._shim_jobs()[0]["name"], cli.SHARED_JOB_NAME)
+        removed = [call for call in self.hermes.calls if call[:2] == ["cron", "remove"]]
+        self.assertEqual(removed, [["cron", "remove", "legacy1"]], removed)
+
+    def test_init_leaves_other_loops_legacy_jobs_alone(self):
+        """The shared job sweeps every loop, but each loop's own legacy job is only removed
+        by that loop's own init — a cross-loop removal would drop a sweeper someone still
+        relies on before they have run init themselves."""
+        store = self.home / "cron" / "jobs.json"
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"jobs": [
+            {"id": "legacy1", "name": "review loop watchdog (widgets)",
+             "script": cli.SHIM_NAME, "no_agent": True, "enabled": True, "state": "scheduled",
+             "schedule": {"kind": "interval", "minutes": 15},
+             "next_run_at": "2030-01-01T00:00:00+00:00"},
+            {"id": "legacy2", "name": "review loop watchdog (gadgets)",
+             "script": cli.SHIM_NAME, "no_agent": True, "enabled": True, "state": "scheduled",
+             "schedule": {"kind": "interval", "minutes": 15},
+             "next_run_at": "2030-01-01T00:00:00+00:00"}]}))
+        lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+        self.assertTrue(ok, lines)
+        removed = [call for call in self.hermes.calls if call[:2] == ["cron", "remove"]]
+        self.assertEqual(removed, [["cron", "remove", "legacy1"]], removed)
+        # gadgets' legacy job survives its own init.
+        names = {str(j.get("name")) for j in self.hermes.jobs}
+        self.assertIn("review loop watchdog (gadgets)", names)
+
+
 if __name__ == "__main__":
     unittest.main()

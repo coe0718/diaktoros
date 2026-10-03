@@ -1252,6 +1252,45 @@ def _write_watchdog_shim() -> pathlib.Path:
     return shim
 
 
+def _remove_legacy_jobs(loop: dict) -> list[str]:
+    """Remove this loop's pre-#60 per-loop watchdog job, if one exists.
+
+    Called when ``init`` creates (or finds) the shared job: without it the install sits at
+    two sweepers — the shared job and the stale per-loop one — until an operator removes the
+    stale job by hand. The shared job is what sweeps every loop; the legacy job is this
+    loop's own and is safe to remove here.
+    """
+    jobs, error = _cron_jobs(loop)
+    if jobs is None:
+        return [f"cron: could not check for a legacy job ({error})"]
+    legacy = [job for job in jobs
+              if str(job.get("name") or "").strip() == _legacy_job_name(loop)]
+    if not legacy:
+        return []
+    hermes = _hermes_bin()
+    if not hermes:
+        return ["cron: no `hermes` on PATH to remove the legacy job"]
+    lines = []
+    for job in legacy:
+        job_id = str(job.get("id") or "")
+        name = str(job.get("name") or "")
+        if not job_id:
+            lines.append(f"cron: legacy job {name!r} has no id; remove it by hand")
+            continue
+        try:
+            proc = subprocess.run([hermes, "cron", "remove", job_id],
+                                  capture_output=True, text=True, timeout=120)
+        except Exception as exc:
+            lines.append(f"cron: removing legacy job {job_id} failed ({exc})")
+            continue
+        if proc.returncode != 0:
+            lines.append(f"cron: removing legacy job {job_id} failed "
+                         f"({(proc.stderr or proc.stdout).strip()[:200]})")
+        else:
+            lines.append(f"removed the pre-#60 per-loop job: {job_id} ({name})")
+    return lines
+
+
 def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str], bool]:
     """A cron shim plus the one shared job, through the scheduler's own CLI.
 
@@ -1261,19 +1300,25 @@ def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str
     fallback command is shell-quoted — the job name has spaces — so it can be pasted as printed.
     """
     shim = _write_watchdog_shim()
+    legacy_lines = _remove_legacy_jobs(loop)
     if _shared_job_present():
-        return [f"watchdog already scheduled (shared job, deliver={deliver})", f"shim: {shim}"], True
+        lines = [f"watchdog already scheduled (shared job, deliver={deliver})", f"shim: {shim}"]
+        lines.extend(legacy_lines)
+        return lines, True
     hermes = _hermes_bin() or "hermes"
     cmd = [hermes, "cron", "create", schedule, "--name", SHARED_JOB_NAME,
            "--no-agent", "--script", SHIM_NAME, "--deliver", deliver]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except Exception as exc:
-        return [f"could not create the cron job: {exc}", f"run it yourself: {shlex.join(cmd)}"], False
+        return [f"could not create the cron job: {exc}",
+                f"run it yourself: {shlex.join(cmd)}"], False
     if proc.returncode != 0:
         return [f"cron create failed: {(proc.stderr or proc.stdout).strip()[:200]}",
                 f"run it yourself: {shlex.join(cmd)}"], False
-    return [f"scheduled the watchdog ({schedule}, deliver={deliver})", f"shim: {shim}"], True
+    lines = [f"scheduled the watchdog ({schedule}, deliver={deliver})", f"shim: {shim}"]
+    lines.extend(legacy_lines)
+    return lines, True
 
 
 def _install_shims(loop: dict, report: bool = True, pairs=None) -> bool:
