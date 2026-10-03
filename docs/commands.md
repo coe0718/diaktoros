@@ -388,7 +388,18 @@ hermes review-loop triage --loop name --disable --admin-token you
 - With `--admin-token`, `--enable` also creates the repo hook for `issues` events, paused: run
   [`arm`](#arm) afterwards. Without it, `apply --hooks` creates the hook later.
 
-Details: [Issue triage](operations.md#issue-triage).
+**Issue fixes.** With `--fix-label LABEL --maintainer LOGIN`, a maintainer applying that label
+to an allowlisted author's open issue hands it to the fixer seat. It opens a PR from a new branch
+`review-loop/issue-N` that the loop then reviews, or comments on the issue when it cannot fix it.
+This needs unattended fixer pushes on ([`fixer-push`](#fixer-push)), and the label can't be one of
+the triage labels, so only a person can trigger it.
+
+```bash
+hermes review-loop triage --loop name --enable --fix-label agent-fix --maintainer you
+```
+
+Details: [Issue triage](operations.md#issue-triage) and
+[issue fixes](operations.md#issue-fixes-a-maintainer-hands-an-issue-to-the-fixer).
 
 <!-- flags:triage -->
 | flag | value | default | what it does |
@@ -403,6 +414,8 @@ Details: [Issue triage](operations.md#issue-triage).
 | `--comment` | `on` \| `off` |  | allow one short comment with the labels (default off) |
 | `--login` | `LOGIN` |  | account that labels (default: the reviewer seat); needs issues: write, never the reader |
 | `--token` | `TOKEN` (repeatable) |  | login=/path/to/pat for --login (or --admin-token), if not mapped |
+| `--fix-label` | `FIX_LABEL` |  | a label a maintainer applies to hand an issue to the fixer (#214; needs unattended fixer pushes on); '' turns it off |
+| `--maintainer` | `MAINTAINER` (repeatable) |  | login whose applying --fix-label counts (repeatable) |
 | `--daily-turns` | `DAILY_TURNS` |  | at most this many triage turns per day (0 removes the cap) |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can create or delete repo hooks |
 | `--dry-run` |  |  | show the change, write nothing |
