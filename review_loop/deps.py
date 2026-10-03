@@ -71,7 +71,7 @@ MiB = 1024 ** 2
 GIB = 1024 ** 3
 # The crate cache's byte cap: a host limit (disk), so an environment setting of the process that
 # runs the supervisor, like the sandbox size caps; forwarded to the detached worker by
-# ``run_supervisor.HOST_LIMIT_ENV``. Sized from a real lockfile: patchhive/attest's 224 crates.io
+# ``run_supervisor.HOST_LIMIT_ENV``. Sized from a real lockfile: one workspace's 224 crates.io
 # crates are a 263 MB cache, so 2 GiB holds several generations of a large workspace.
 CAP_ENV = "REVIEW_LOOP_CRATE_CACHE_GIB"
 DEFAULT_CAP_GIB = 2

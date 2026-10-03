@@ -848,7 +848,7 @@ def check_build_fits(report: Report, loop: dict, number: int | None) -> None:
         report.add(step, "sandbox:build-fits", FAIL,
                    f"/work is {_gib(contained.CHECKOUT_SIZE)}, under the "
                    f"{_gib(contained.SCOPED_BUILD_FLOOR)} a scoped build needs "
-                   "(measured 2.4 GiB for attest-core)",
+                   "(measured 2.4 GiB for a real workspace's largest crate)",
                    "raise REVIEW_LOOP_CHECKOUT_SIZE_GIB in the environment the gateway runs in, "
                    "restart it, and confirm with `doctor`")
         return

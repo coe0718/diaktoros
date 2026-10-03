@@ -304,12 +304,12 @@ later `arm`:
 ```bash
 hermes review-loop init --repo owner/name \
   --fixer dev-account --reviewer rev-bot \
-  --fixer-profile drey --reviewer-profile vex \
+  --fixer-profile coder --reviewer-profile critic \
   --read-token reader-bot \
   --token reader-bot=~/.hermes/keys/reader-bot-pat \
   --token rev-bot=~/.hermes/keys/rev-bot-pat \
   --token dev-account=~/.hermes/keys/dev-account-pat \
-  --adjudicator-route name-breach --adjudicator-profile tuck \
+  --adjudicator-route name-breach --adjudicator-profile arbiter \
   --adjudicator-login rule-bot --token rule-bot=~/.hermes/keys/rule-bot-pat \
   --host https://your-gateway.example
 ```
@@ -318,7 +318,7 @@ Preview first with `--dry-run`. It prints a `credentials:` line showing which lo
 file, and writes nothing:
 
 ```bash
-hermes review-loop init --repo owner/name --fixer dev-account --reviewer rev-bot --fixer-profile drey --reviewer-profile vex --read-token reader-bot --token reader-bot=~/.hermes/keys/reader-bot-pat --token rev-bot=~/.hermes/keys/rev-bot-pat --token dev-account=~/.hermes/keys/dev-account-pat --host https://your-gateway.example --dry-run
+hermes review-loop init --repo owner/name --fixer dev-account --reviewer rev-bot --fixer-profile coder --reviewer-profile critic --read-token reader-bot --token reader-bot=~/.hermes/keys/reader-bot-pat --token rev-bot=~/.hermes/keys/rev-bot-pat --token dev-account=~/.hermes/keys/dev-account-pat --host https://your-gateway.example --dry-run
 ```
 
 The README's [install example](../README.md#install) shows the common user-owned shape: the owner
@@ -340,7 +340,7 @@ the settings form's values as defaults. In a script, pass them as flags with `--
 | `--admin-token-file PATH` | the hook admin's token file |
 
 ```bash
-hermes review-loop setup --repo owner/name --yes --reviewer rev-bot --fixer dev-account --reviewer-profile vex --fixer-profile drey --reviewer-token ~/.hermes/keys/rev-bot-pat --fixer-token ~/.hermes/keys/dev-account-pat --read-token reader-bot --read-token-file ~/.hermes/keys/reader-bot-pat --host https://your-gateway.example
+hermes review-loop setup --repo owner/name --yes --reviewer rev-bot --fixer dev-account --reviewer-profile critic --fixer-profile coder --reviewer-token ~/.hermes/keys/rev-bot-pat --fixer-token ~/.hermes/keys/dev-account-pat --read-token reader-bot --read-token-file ~/.hermes/keys/reader-bot-pat --host https://your-gateway.example
 ```
 
 `setup` sets up no adjudicator, triage or issue fixes. Triage and issue fixes are added later with

@@ -9,7 +9,7 @@ to the plugin directory a previous upgrade left behind. A loop that looks armed 
 a seat — or cannot post a verdict — is the failure this plugin exists to make loud, so the
 preflight answers it before anyone arms anything:
 
-    hermes review-loop doctor --loop attest
+    hermes review-loop doctor --loop name
 
 One line per check, in one of these states:
 

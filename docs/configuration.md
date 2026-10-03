@@ -31,10 +31,10 @@ change it for you, with checks. The tables below explain every key.
   "reviewers": ["rev-bot"],
   "reviewer_seat": "rev-bot",
   "seats": {
-    "reviewer": {"route": "name-review", "profile": "vex", "login": "rev-bot", "agent": "Vex"},
-    "fixer": {"route": "name-fix", "profile": "drey", "login": "dev-account", "agent": "Drey"}
+    "reviewer": {"route": "name-review", "profile": "critic", "login": "rev-bot", "agent": "Critic"},
+    "fixer": {"route": "name-fix", "profile": "coder", "login": "dev-account", "agent": "Coder"}
   },
-  "adjudicator": {"route": "name-breach", "profile": "tuck"},
+  "adjudicator": {"route": "name-breach", "profile": "arbiter"},
   "read_token": "reader-bot",
   "tokens": {
     "reader-bot": "/home/you/.hermes/keys/reader-bot-pat",
@@ -45,7 +45,7 @@ change it for you, with checks. The tables below explain every key.
   "state_dir": "/home/you/.hermes/state/review-loops/name",
   "turn_budget_s": 900,
   "attribution": true,
-  "observer": {"route": "name-observe", "profile": "tuck", "deliver": "telegram"}
+  "observer": {"route": "name-observe", "profile": "arbiter", "deliver": "telegram"}
 }
 ```
 
@@ -92,7 +92,7 @@ which means off.
 | `inflight_ttl_min` | `10` | how long a same-head burst is considered already handled |
 | `turn_budget_s` | `900` | wall-clock seconds one isolated seat turn may run — read the PR, build, run tests, submit. The whole turn is up to 930 s longer (300 s dependency prefetch before it, 30 s kill grace and up to 600 s broker drain after); that seat's stall grace and lock TTL follow the total. See [Turn budget](#turn-budget-how-long-one-turn-may-run). Plugin setting `turn_budget_s`; `init`/`set --turn-budget N` |
 | `seats.<seat>.turn_budget_s` | loop default | this seat's own budget (`reviewer`, `fixer`, `adjudicator`), overriding `turn_budget_s`. `init`/`set --reviewer-turn-budget N` / `--fixer-turn-budget N`; the adjudicator's is set in the file |
-| `attribution` | `true` | sign what the loop itself posts: its reviews, the fixer's answers comment, the ruling comment, triage's comment, and an issue fix's PR description or issue comment end with a footer such as `🤖 Automated by hermes-review-loop · reviewer seat (Vex) · head abc1234` (linking here; the head is left out where there is none), and the commits the fixer pushes (issue fixes included) carry an `Automated-By:` trailer. `false` adds nothing. A JSON boolean; see [What the loop signs](operations.md#what-the-loop-signs). Plugin setting `attribution`; `init`/`set --attribution on\|off` |
+| `attribution` | `true` | sign what the loop itself posts: its reviews, the fixer's answers comment, the ruling comment, triage's comment, and an issue fix's PR description or issue comment end with a footer such as `🤖 Automated by hermes-review-loop · reviewer seat (Critic) · head abc1234` (linking here; the head is left out where there is none), and the commits the fixer pushes (issue fixes included) carry an `Automated-By:` trailer. `false` adds nothing. A JSON boolean; see [What the loop signs](operations.md#what-the-loop-signs). Plugin setting `attribution`; `init`/`set --attribution on\|off` |
 | `seats.<seat>.daily_turns` | no cap | the most turns this seat may start per local day on this loop (`reviewer`, `fixer`, `adjudicator`; 1–1000). Past it, turns wait until midnight without spending a retry — see [Pacing](operations.md#pacing-usage-windows-and-daily-caps). `set --reviewer-daily-turns N` / `--fixer-daily-turns N` (0 removes it); the adjudicator's is set in the file |
 | `unattended_fixer_push` | `false` | whether a fixer turn may push to the PR on its own. While `false` a "changes requested" verdict is held for you and no fixer turn starts. Change it only with `hermes review-loop fixer-push --loop ID --enable --acknowledge-pr-race` (or `--disable`); `set` and `apply` never touch it. A JSON boolean: only an explicit `true` enables it. See [the push policy](security.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent) |
 | `observer` | `{}` | the read-only observer feed. `{}` means no feed, and the loop is untouched by its absence — see [The observer feed](#the-observer-feed) |
@@ -165,7 +165,7 @@ The operator walkthrough (what a notice looks like, turning it on) is [the obser
 | `observer.mute` | `false` | stop delivering and keep the configuration (`--observer-mute` / `--observer-unmute`) |
 
 ```bash
-hermes review-loop set --loop <id> --observer-profile tuck        # turn it on, or move it
+hermes review-loop set --loop <id> --observer-profile arbiter        # turn it on, or move it
 hermes review-loop set --loop <id> --observer-route widgets-observe
 hermes review-loop set --loop <id> --observer-events verdict,escalation,closed
 hermes review-loop set --loop <id> --observer-digest-min 30
@@ -233,7 +233,7 @@ Off unless the loop has a `triage` block. `hermes review-loop triage --enable` w
 ([operations](operations.md#issue-triage)):
 
 ```json
-"triage": {"route": "name-triage", "profile": "tuck", "authors": ["you"],
+"triage": {"route": "name-triage", "profile": "arbiter", "authors": ["you"],
            "labels": ["bug", "feature", "docs", "question", "P0", "P1", "P2", "P3"],
            "max_labels": 3, "comment": false, "login": "rev-bot"}
 ```
@@ -364,10 +364,10 @@ event and cannot strand a run.
 `status` shows the mapping and checks it against the registry:
 
 ```
-  seats:      reviewer=vex-coat (vex) · fixer=drey-coe (drey)
-  adjudicator:tuck (route widgets-breach)
-  routes:     reviewer widgets-review → vex (ok) · fixer widgets-fix → drey (ok) · adjudicator widgets-breach → tuck (ok)
-  token refs: reviewer vex-coat → ~/.hermes/keys/vex-coat-pat · fixer drey-coe → ~/.hermes/keys/drey-coe-pat
+  seats:      reviewer=rev-bot (critic) · fixer=dev-account (coder)
+  adjudicator:arbiter (route widgets-breach)
+  routes:     reviewer widgets-review → critic (ok) · fixer widgets-fix → coder (ok) · adjudicator widgets-breach → arbiter (ok)
+  token refs: reviewer rev-bot → ~/.hermes/keys/rev-bot-pat · fixer dev-account → ~/.hermes/keys/dev-account-pat
 ```
 
 `MISMATCH — hermes review-loop apply --loop <id>` in that line means the config moved and the route

@@ -70,7 +70,7 @@ LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review req
 STALE_CLAIM_S = 15 * 60
 MAX_ATTEMPTS = 3
 
-# How long a delivery receipt is kept. Long enough that "was Tuck told?" is answerable for a
+# How long a delivery receipt is kept. Long enough that "was the operator told?" is answerable for a
 # month, short enough that the ledger stays a few kilobytes.
 RETENTION_S = 30 * 86400
 

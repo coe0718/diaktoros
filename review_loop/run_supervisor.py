@@ -924,7 +924,7 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
     re-arms it (a push-policy-cancelled fixer run under the policy in force at that moment)."""
     # A fixer run the push policy held (cancelled at claim, or held before its turn) is dead
-    # for its head until an operator acts, so it is listed too (Tuck on #97); a superseded
+    # for its head until an operator acts, so it is listed too (review on #97); a superseded
     # cancellation (head moved, PR closed) is not, since a new head gets its own turn.
     marks = ','.join('?' * len(POLICY_CANCELLATIONS))
     held = [FIXER_NOT_ADMITTED.split(":")[0] + "%", FIXER_PUSH_REVOKED.split(":")[0] + "%"]
@@ -2027,7 +2027,7 @@ class Supervisor:
             unavailable = None
             # retry_read: a legitimate wait (a draft), left pending. read_error: a read that
             # failed — counted and backed off like a failed turn, then failed with its reason,
-            # so it can never sit pending and invisible (#53, Tuck on #97).
+            # so it can never sit pending and invisible (#53, review on #97).
             retry_read = False
             read_error = ""
             superseded = None

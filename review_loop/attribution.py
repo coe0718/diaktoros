@@ -37,7 +37,7 @@ def enabled(loop: dict) -> bool:
 
 
 def _who(loop: dict, seat: str) -> str:
-    """``reviewer seat (Vex)``: the seat, and its agent's display name when the loop has one."""
+    """``reviewer seat (Critic)``: the seat, and its agent's display name when the loop has one."""
     name = _SEAT_NAMES.get(seat, seat)
     if seat in ("reviewer", "fixer"):
         agent = str((((loop.get("seats") or {}).get(seat)) or {}).get("agent") or "").strip()

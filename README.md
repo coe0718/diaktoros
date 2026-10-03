@@ -48,7 +48,7 @@ You need:
   fixes, a *different* one that reviews them, and a reader (often your own account). Each one
   needs its own token. [Accounts and tokens, step by step](docs/accounts.md) walks through
   creating them.
-- **Two Hermes profiles** for the two agents (for example `drey` writes fixes and `vex` reviews),
+- **Two Hermes profiles** for the two agents (for example `coder` writes fixes and `critic` reviews),
   each with the model it should use.
 
 ## New here? Read in this order
@@ -137,7 +137,7 @@ hermes review-loop init \
   --repo owner/name \
   --fixer dev-account \
   --reviewer rev-bot \
-  --fixer-profile drey --reviewer-profile vex \
+  --fixer-profile coder --reviewer-profile critic \
   --cap 3 \
   --reviewer-concurrency 2 --fixer-concurrency 1 \
   --clone ~/projects/name \
@@ -242,8 +242,8 @@ Beyond the review loop itself, each of these is one command away:
   runs against a PR the fixer is mid-fix on. The handoff is what frees the other seat — the fixer's
   `review_requested` ends the fixer's turn, the reviewer's verdict ends the reviewer's. Any other
   trigger that arrives while the other seat holds the PR queues instead of starting.
-- **Capacity is per seat.** `reviewer 2 · fixer 1` means two reviews in flight and one fix — Drey
-  and Vex are different models on different budgets, and wanting two reviews rarely means wanting
+- **Capacity is per seat.** `reviewer 2 · fixer 1` means two reviews in flight and one fix — the two
+  seats are usually different models on different budgets, and wanting two reviews rarely means wanting
   two fixes. Everything above a seat's limit queues, and starts when a slot frees.
 - **Parallel only when it is safe.** Every turn gets its own sandbox, with its own temporary root
   and its own export of the PR at the exact head it was woken for, so parallel runs never share a

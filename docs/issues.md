@@ -15,7 +15,7 @@ Issue fixes are part of triage: they need triage turned on first.
 
 This page walks through both. The examples use the repo `owner/name`, the loop id `name`, the fixer
 account `dev-account`, the reviewer account `rev-bot`, the reader account `reader-bot`, and the
-Hermes profiles `drey` (fixer), `vex` (reviewer) and `tuck` (triage). Replace `you` with your own
+Hermes profiles `coder` (fixer), `critic` (reviewer) and `arbiter` (triage). Replace `you` with your own
 GitHub login. Every command and flag is also in the [command reference](commands.md#triage).
 
 ## What each one does, and who can start it
@@ -64,7 +64,7 @@ You need:
    - it can never be the reader (`reader-bot`): `triage --enable` refuses that;
    - the broker checks that the token really belongs to that login before every write.
 4. **A Hermes profile for the triage model.** Any existing profile works. Triage has no
-   distinctness rule, so it can be the reviewer's profile (`vex`) or another one (`tuck`). The
+   distinctness rule, so it can be the reviewer's profile (`critic`) or another one (`arbiter`). The
    profile must exist; `triage --enable` refuses a profile name it can't find. A cheap, fast model
    is usually enough: triage reads one issue and picks labels.
 5. **The labels.** Decide the list triage may choose from. If a label doesn't exist in the
@@ -83,7 +83,7 @@ You need:
    write, and writes nothing:
 
    ```bash
-   hermes review-loop triage --loop name --enable --profile tuck --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token reader-bot --dry-run
+   hermes review-loop triage --loop name --enable --profile arbiter --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token reader-bot --dry-run
    ```
 
    `--author` is repeatable: pass it once for each login whose issues should be triaged. Add
@@ -93,7 +93,7 @@ You need:
 2. **Turn it on.** The same command without `--dry-run`:
 
    ```bash
-   hermes review-loop triage --loop name --enable --profile tuck --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token reader-bot
+   hermes review-loop triage --loop name --enable --profile arbiter --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token reader-bot
    ```
 
    It writes the `triage` block into the loop config, a new webhook route `name-triage` (with its
@@ -189,7 +189,7 @@ answering review verdicts on its own.
       carry the fix label. It reads the head commit of the loop's base branch (`main`) and queues
       one issue-fix turn from that commit.
    2. The turn runs in the same sandbox as every other seat, as the **fixer seat**: the fixer's
-      profile (`drey`) and model. `/work` holds the base branch at that commit, and the issue's
+      profile (`coder`) and model. `/work` holds the base branch at that commit, and the issue's
       title and body are passed as data. It may build and run tests, like a normal fixer turn.
    3. If it fixed the issue, the host pushes one commit to a **new** branch `review-loop/issue-N`.
       The push requires the branch not to exist, so it never overwrites anything. The commit

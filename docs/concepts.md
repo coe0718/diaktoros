@@ -8,7 +8,7 @@ stuck, see [troubleshooting.md](troubleshooting.md).
 
 The examples use the same names as the rest of the docs: the repository `owner/name`, the loop id
 `name`, the fixer login `dev-account`, the reviewer login `rev-bot`, the reader login
-`reader-bot`, and the Hermes profiles `drey` (fixer), `vex` (reviewer) and `tuck` (adjudicator and
+`reader-bot`, and the Hermes profiles `coder` (fixer), `critic` (reviewer) and `arbiter` (adjudicator and
 observer).
 
 ## What the loop is for
@@ -63,8 +63,8 @@ Both are turned on with `triage`; the step-by-step guide is [issues.md](issues.m
 
 - The **login** is the GitHub account the seat acts as, such as `rev-bot`. Reviews, pushes and
   comments appear on GitHub under this account.
-- The **profile** is the Hermes profile the turn runs as, such as `vex`. The profile decides which
-  model and which model credentials are used. Change a seat's model with `hermes -p vex model`.
+- The **profile** is the Hermes profile the turn runs as, such as `critic`. The profile decides which
+  model and which model credentials are used. Change a seat's model with `hermes -p critic model`.
 - The **agent name** (`seats.<seat>.agent`) is only a display name used in prompts and in the
   signature on what the loop posts. It defaults to the profile name.
 
@@ -251,7 +251,7 @@ loop. Its messages go wherever `init --watchdog-deliver` sends cron output (the 
 
 **The observer feed.** An optional stream of short notices to a chat, one per transition: `opened`,
 `handoff`, `verdict`, `approved`, `escalation`, `ruling`, `stall` and `closed`. Turn it on with
-`--observer-profile tuck`; the default destination is Telegram. It is read-only: no agent runs on
+`--observer-profile arbiter`; the default destination is Telegram. It is read-only: no agent runs on
 it, it holds no seat, and a failed delivery never blocks the loop. See [observer.md](observer.md).
 
 ### Diagnostic commands
@@ -294,7 +294,7 @@ adjudicator route. The accounts are `dev-account` (fixer), `rev-bot` (reviewer) 
 
 ### 2. The reviewer turn runs
 
-- **Who acts:** the `vex` profile's model, in the sandbox. Its review is posted as `rev-bot`.
+- **Who acts:** the `critic` profile's model, in the sandbox. Its review is posted as `rev-bot`.
 - **What triggers it:** the worker picks up the queued turn as soon as the reviewer seat has a free
   slot and nobody else holds this PR.
 - **What happens:** the worker re-reads the PR. If it closed or moved to a new commit, the turn is
@@ -330,7 +330,7 @@ adjudicator route. The accounts are `dev-account` (fixer), `rev-bot` (reviewer) 
 
 ### 4. The fixer turn runs
 
-- **Who acts:** the `drey` profile's model, in the sandbox. Its push and comment appear as
+- **Who acts:** the `coder` profile's model, in the sandbox. Its push and comment appear as
   `dev-account`.
 - **What happens:** the agent reads the verdict, edits files in `/work`, and asks the broker to
   push. The push is exact-head: if someone else pushed to the branch meanwhile, it is refused rather
@@ -366,7 +366,7 @@ says the next step is you.
 
 ### 7. The adjudicator rules
 
-- **Who acts:** the adjudicator's profile (here `tuck`), in the sandbox, with a read-only copy of
+- **Who acts:** the adjudicator's profile (here `arbiter`), in the sandbox, with a read-only copy of
   the code.
 - **What happens:** the worker checks again that the PR is open, unchanged and still unapproved.
   The agent reads the reviewer's findings and the fixer's answers and submits one ruling through

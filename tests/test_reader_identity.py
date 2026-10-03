@@ -70,7 +70,8 @@ class _Home(unittest.TestCase):
                         side_effect=AssertionError("test reached the network"))
         offline.start()
         self.addCleanup(offline.stop)
-        for profile in ("vex", "drey", "tuck"):
+        # The README's generic example names (coder/critic/arbiter) beside the fixtures' own.
+        for profile in ("vex", "drey", "tuck", "coder", "critic", "arbiter"):
             (self.hermes / "profiles" / profile).mkdir(parents=True)
             (self.hermes / "profiles" / profile / "config.yaml").write_text("model: {}\n")
         self.keys = self.hermes / "keys"

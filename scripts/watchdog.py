@@ -24,8 +24,8 @@ that need no GitHub read (route self-heal, ledger notices, observer retries) kee
 sweep also warns before the read token's expiry date.
 
     watchdog.py                       # every configured loop
-    watchdog.py --loop attest         # one loop
-    watchdog.py --loop attest --drain --seat reviewer     # start a queued run, nothing else
+    watchdog.py --loop name           # one loop
+    watchdog.py --loop name --drain --seat reviewer     # start a queued run, nothing else
     REVIEW_LOOP_TEST=1 watchdog.py     # ignore the paused check, zero grace (real data)
 """
 

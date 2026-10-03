@@ -30,8 +30,8 @@ adjudicator identity is configured, the PR).
 Turn it on at init, or add it to a loop that is already running:
 
 ```bash
-hermes review-loop init --repo owner/name ... --observer-profile tuck   # one flag turns it on
-hermes review-loop set --loop widgets --observer-profile tuck           # or add it later
+hermes review-loop init --repo owner/name ... --observer-profile arbiter   # one flag turns it on
+hermes review-loop set --loop widgets --observer-profile arbiter           # or add it later
 hermes review-loop set --loop widgets --observer-events verdict,escalation,closed
 hermes review-loop set --loop widgets --observer-digest-min 30          # batch instead of pinging
 hermes review-loop set --loop widgets --observer-mute                   # quiet, config kept
@@ -43,7 +43,7 @@ The flags write this block into the loop file, the only place the feed is config
 ```json
 "observer": {
   "route": "widgets-observe",
-  "profile": "tuck",
+  "profile": "arbiter",
   "deliver": "telegram",
   "events": ["opened", "handoff", "verdict", "approved", "escalation", "ruling", "stall", "closed"],
   "digest_min": 30

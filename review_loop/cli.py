@@ -205,7 +205,7 @@ def _install_routes(loop: dict, roles=None) -> dict:
 def _seat_lines(loop: dict, title: str = "seat mapping") -> list[str]:
     """The effective mapping: who serves each role, as what login, woken by which route.
 
-    This is the line an operator reads to answer "is Drey actually the fixer here?" without
+    This is the line an operator reads to answer "is the right agent actually the fixer here?" without
     opening two JSON files — so it shows the resolved values, including the route URL the profile
     is part of.
     """
@@ -2989,7 +2989,7 @@ def cmd_retry(args) -> int:
               + (f" for the {args.seat} seat" if args.seat else ""))
         return 2
     # Not a timestamp: the claim path bumps `updated` when it supersedes a row for a head the PR
-    # has since left, so `max(updated)` can name an abandoned head and offer nothing (Tuck, #126).
+    # has since left, so `max(updated)` can name an abandoned head and offer nothing (#126).
     # The newest head that still has an offerable row is the ledger-only answer; the PR's own head
     # is the tiebreaker when a supersession bump makes those two disagree (a gh read, or — when
     # that read fails — the newest offerable head: never the rewritten timestamp).
