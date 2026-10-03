@@ -446,7 +446,7 @@ class Lifecycle(unittest.TestCase):
         return home
 
     def test_status_after_a_wipe_does_not_swallow_the_report(self):
-        # Tuck's order: wipe the whole state dir, then the operator's own `status` command,
+        # Arbiter's order: wipe the whole state dir, then the operator's own `status` command,
         # then the watchdog. Every host open of the production ledger checks the config-dir
         # marker by default, reports before rewriting any marker, and the report survives.
         from scripts import watchdog
@@ -489,7 +489,7 @@ class Lifecycle(unittest.TestCase):
         return [line for line in own_lines(err) if "vanished" in line], swept.getvalue()
 
     def test_a_wipe_is_reported_whatever_spelling_names_the_ledger(self):
-        # Identity is the file, not the string (Tuck, #113): a symlinked alias of the Hermes
+        # Identity is the file, not the string (Arbiter, #113): a symlinked alias of the Hermes
         # home, used by HERMES_HOME or by the status argument, is the same ledger.
         real = self.root / "real-home"
         alias = self.root / "alias-home"

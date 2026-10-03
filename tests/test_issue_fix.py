@@ -55,11 +55,11 @@ class Base(unittest.TestCase):
         self.raw = {"id": "widgets", "repo": REPO, "fixers": ["fix"], "reviewers": ["review"],
                     "tokens": tokens, "read_token": "read", "host": "https://gw.example",
                     "state_dir": str(self.root / "state"), "unattended_fixer_push": True,
-                    "seats": {"reviewer": {"route": "widgets-review", "profile": "vex",
+                    "seats": {"reviewer": {"route": "widgets-review", "profile": "critic",
                                            "login": "review"},
-                              "fixer": {"route": "widgets-fix", "profile": "drey",
+                              "fixer": {"route": "widgets-fix", "profile": "coder",
                                         "login": "fix"}},
-                    "triage": {"route": "widgets-triage", "profile": "tuck",
+                    "triage": {"route": "widgets-triage", "profile": "arbiter",
                                "authors": ["owner"], "labels": ["bug", "docs"],
                                "fix_label": LABEL, "maintainers": ["Jeremy"]}}
         self.loop = config.normalize(self.raw)
@@ -91,7 +91,7 @@ class Config(Base):
                 config.normalize({**self.raw, "triage": {**self.raw["triage"], **change}})
 
     def test_the_issue_fixer_is_the_fixer_seat(self):
-        self.assertEqual(config.seat_profile(self.loop, "issue_fixer"), "drey")
+        self.assertEqual(config.seat_profile(self.loop, "issue_fixer"), "coder")
         self.assertEqual(config.seat_login(self.loop, "issue_fixer"), "fix")
         self.assertEqual(config.seat_concurrency(self.loop, "issue_fixer"), 1)
 
@@ -303,7 +303,7 @@ class WorkerLaunch(Base):
         resolved, launched = [], []
         inference = mock.Mock(upstream="https://api.example/v1/chat/completions", key="k",
                               model="m", api_mode="chat_completions", proxy_model="",
-                              client_identity="", provider="custom", profile="drey")
+                              client_identity="", provider="custom", profile="coder")
         inference.credential_provider.return_value = None
 
         def resolve_profile(profile, seat, settings):
@@ -327,7 +327,7 @@ class WorkerLaunch(Base):
         with sup._connect() as con:
             row = con.execute("SELECT state,error FROM runs WHERE id=?", (run_id,)).fetchone()
         self.assertNotIn("seat model unresolved", row["error"] or "", dict(row))
-        self.assertEqual(resolved, [("drey", "fixer")])       # the fixer seat's own profile
+        self.assertEqual(resolved, [("coder", "fixer")])       # the fixer seat's own profile
         self.assertEqual(launched, [("issue_fixer", "review-loop/issue-12", BASE)])
 
 

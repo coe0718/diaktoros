@@ -52,11 +52,11 @@ class Base(unittest.TestCase):
         self.raw = {"id": "widgets", "repo": REPO, "fixers": ["fix"], "reviewers": ["review"],
                     "tokens": tokens, "read_token": "read", "host": "https://gw.example",
                     "state_dir": str(self.root / "state"),
-                    "seats": {"reviewer": {"route": "widgets-review", "profile": "vex",
+                    "seats": {"reviewer": {"route": "widgets-review", "profile": "critic",
                                            "login": "review"},
-                              "fixer": {"route": "widgets-fix", "profile": "drey",
+                              "fixer": {"route": "widgets-fix", "profile": "coder",
                                         "login": "fix"}},
-                    "triage": {"route": "widgets-triage", "profile": "tuck",
+                    "triage": {"route": "widgets-triage", "profile": "arbiter",
                                "authors": ["Owner"], "labels": list(LABELS)}}
         self.loop = config.normalize(self.raw)
         self.db = self.root / "runs.sqlite"

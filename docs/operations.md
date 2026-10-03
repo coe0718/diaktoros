@@ -258,7 +258,7 @@ Everything the loop itself posts says so, unless you turn it off:
 
 | write | how it is signed |
 |---|---|
-| the reviewer seat's review | a footer: `🤖 Automated by hermes-review-loop · reviewer seat (Vex) · head abc1234`, linking to this project |
+| the reviewer seat's review | a footer: `🤖 Automated by hermes-review-loop · reviewer seat (Critic) · head abc1234`, linking to this project |
 | the fixer seat's answers comment | the same footer, naming the fixer seat |
 | the adjudicator's ruling comment (with `seats.adjudicator.login`) | the same footer |
 | a commit the fixer seat pushes (an issue fix's commit too) | an `Automated-By: hermes-review-loop (…)` trailer |
@@ -308,12 +308,12 @@ chmod 600 ~/.hermes/keys/*-pat
 
 hermes review-loop init --repo owner/name \
   --fixer dev-account --reviewer rev-bot \
-  --fixer-profile drey --reviewer-profile vex \
+  --fixer-profile coder --reviewer-profile critic \
   --read-token reader-bot \
   --token reader-bot=~/.hermes/keys/reader-bot-pat \
   --token rev-bot=~/.hermes/keys/rev-bot-pat \
   --token dev-account=~/.hermes/keys/dev-account-pat \
-  --adjudicator-route name-breach --adjudicator-profile tuck \
+  --adjudicator-route name-breach --adjudicator-profile arbiter \
   --adjudicator-login rule-bot --token rule-bot=~/.hermes/keys/rule-bot-pat \
   --host https://your-gateway.example
 ```
@@ -406,9 +406,9 @@ previous upgrade left behind. Every one of those is a loop that looks armed and 
 seat — so `doctor` checks the installation itself, read-only, before anyone arms it:
 
 ```bash
-hermes review-loop doctor --loop attest             # one loop; without --loop it preflights them all
-hermes review-loop doctor --loop attest --offline   # skip the gateway probe and the hooks read
-hermes review-loop doctor --loop attest --strict    # an undecided check counts as a failure
+hermes review-loop doctor --loop name             # one loop; without --loop it preflights them all
+hermes review-loop doctor --loop name --offline   # skip the gateway probe and the hooks read
+hermes review-loop doctor --loop name --strict    # an undecided check counts as a failure
 ```
 
 One line per check, in one of these states:
@@ -433,7 +433,7 @@ It writes nothing — no config, no route registry, no state, no GitHub hook —
 with no intent record to restore it from (an install older than the record) is written back by
 
 ```
-hermes review-loop apply --loop attest --recreate-routes
+hermes review-loop apply --loop name --recreate-routes
 ```
 
 from the loop config, with a new secret — the old one left with the route — and one repo hook for
@@ -638,7 +638,7 @@ that holds the loop's ledger.
 | `/work` | the checkout the seat builds and edits in (`CARGO_TARGET_DIR` is `/work/target`). A seat that must not change the checkout (the adjudicator) gets it as a read-only bind instead, and its build target is a separate `/target` tmpfs of the same size | 8 GiB | `REVIEW_LOOP_CHECKOUT_SIZE_GIB` |
 | `/tmp` | `TMPDIR`, `CARGO_HOME`/`RUSTUP_HOME` | 2 GiB | `REVIEW_LOOP_SCRATCH_SIZE_GIB` |
 
-Both are sized against what real Rust workspaces build — a `patchhive/attest` debug target is
+Both are sized against what real Rust workspaces build — one real workspace's debug target is
 2.2 GiB, two others 3.3 and 3.9 GiB — because a cap below a real target does not fail loudly: the
 seat reports that it could not verify and every review requests changes.
 
@@ -881,7 +881,7 @@ fixed list, before any agent works on it. New to it? [Issue triage and issue fix
 step](issues.md) walks through turning both on, testing them and turning them off.
 
 ```bash
-hermes review-loop triage --loop name --enable --profile tuck --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token you
+hermes review-loop triage --loop name --enable --profile arbiter --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token you
 hermes review-loop arm --loop name --admin-token you     # the issues hook is created paused
 hermes review-loop triage --loop name                    # show it
 hermes review-loop triage --loop name --disable --admin-token you

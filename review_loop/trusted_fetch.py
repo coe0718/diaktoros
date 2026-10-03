@@ -179,7 +179,7 @@ def _entries(tree: dict) -> list[tuple[str, str, int, bool]]:
 def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) -> bytes:
     """One GitHub call for the whole head: the commit's tarball, bounded by ``limit``.
 
-    This replaces the old one-GET-per-blob export (≈1,660 calls for attest, against the read
+    This replaces the old one-GET-per-blob export (≈1,660 calls for a mid-sized repository, against the read
     token's 5,000/h budget). The credential stays host-side on the first request; GitHub's
     tarball endpoint answers 302 to codeload.github.com, and urllib delivers a declined
     redirect as an ``HTTPError`` (never as a 302 response). We take exactly one hop, only

@@ -65,7 +65,7 @@ def group_reviewer_gate() -> None:
     reset(prs={"7": pr(7)})
     # No hardcoded account outside the loop's own config may hand a PR to review.
     check_rejected("request from an unconfigured org account is silent", "gate_reviewer.py",
-                   pr_payload(sender="patchhive"))
+                   pr_payload(sender="org-admin"))
     check_rejected("a plain push (synchronize) is silent", "gate_reviewer.py",
                    pr_payload(action="synchronize"))
 

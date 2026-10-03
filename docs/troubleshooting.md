@@ -9,8 +9,8 @@ New to the words used here (seat, gate, route, hook, turn, head)? The
 [command reference](commands.md).
 
 The examples use the repo `owner/name`, the loop id `name`, the fixer account `dev-account`, the
-reviewer account `rev-bot`, the reader account `reader-bot`, and the Hermes profiles `drey`
-(fixer), `vex` (reviewer) and `tuck` (adjudicator/observer). Replace them with yours.
+reviewer account `rev-bot`, the reader account `reader-bot`, and the Hermes profiles `coder`
+(fixer), `critic` (reviewer) and `arbiter` (adjudicator/observer). Replace them with yours.
 
 ## First, three commands
 
@@ -331,7 +331,7 @@ adjudicator rule on future breaches, add an `adjudicator` block to the loop file
 `~/.hermes/review-loops.d/name.json`:
 
 ```json
-"adjudicator": {"route": "name-breach", "profile": "tuck"}
+"adjudicator": {"route": "name-breach", "profile": "arbiter"}
 ```
 
 then write the missing route and check it:
@@ -694,7 +694,7 @@ tools can edit that file too: Hermes's own CLI or dashboard, or another plugin. 
 the plugin's lock, so they can drop or change a loop route (#1).
 
 **What you see.** Events stop waking a seat. `doctor` shows a `route:` line as ❌, for example
-`wakes profile 'some-other-agent', but seats.fixer.profile is 'drey' — the wake would run the wrong
+`wakes profile 'some-other-agent', but seats.fixer.profile is 'coder' — the wake would run the wrong
 agent`, or the route is missing. GitHub deliveries may start failing with 404 or 401.
 
 **What happens by itself.** Every armed watchdog sweep compares the loop's routes with the
@@ -767,7 +767,7 @@ hooks gone.
   `.workers.log`), the pacing file `~/.hermes/state/review-loop-pacing.json`, the runtime file
   `~/.hermes/review-loop-runtime.json`, and your token files in `~/.hermes/keys/`. Remove them by
   hand once no loop is left, and revoke the tokens on GitHub.
-- **The Hermes profiles** (`drey`, `vex`, `tuck`) and the plugin itself. They are yours.
+- **The Hermes profiles** (`coder`, `critic`, `arbiter`) and the plugin itself. They are yours.
 - **Hooks**, if you passed `--keep-hooks`. They stay live and post to routes that no longer exist.
 
 **When it stops halfway.** If `uninstall` cannot delete a hook (a token without hook admin access)

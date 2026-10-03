@@ -24,7 +24,7 @@ def main():
     hooks = {1: routes.url_for_profile('reconcile-review', 'reviewer-profile', t.HOST),
              2: routes.url_for_profile('reconcile-fix', 'fixer-profile', t.HOST)}
     old_hooks = hooks.copy()
-    form = {'reviewer_profile': 'vex', 'fixer_profile': 'drey',
+    form = {'reviewer_profile': 'critic', 'fixer_profile': 'coder',
             'reviewer_login': t.REVIEWER, 'fixer_login': t.FIXER}
     apply = t.parser_for(form).parse_args(['apply', '--loop', 'reconcile'])
 
@@ -46,9 +46,9 @@ def main():
     with mock.patch.object(gh, 'api', side_effect=api):
         rc, out = t.run_cli(apply)
     assert rc == 0, out
-    assert hooks[1].endswith('/p/vex/webhooks/reconcile-review')
-    assert hooks[2].endswith('/p/drey/webhooks/reconcile-fix')
-    assert config.seat_profile(config.load_id('reconcile'), 'reviewer') == 'vex'
+    assert hooks[1].endswith('/p/critic/webhooks/reconcile-review')
+    assert hooks[2].endswith('/p/coder/webhooks/reconcile-fix')
+    assert config.seat_profile(config.load_id('reconcile'), 'reviewer') == 'critic'
     print('PASS both hook URLs and routes updated with config')
     config_path.write_bytes(before)
     routes.restore_entries(originals)
@@ -68,7 +68,7 @@ def main():
 
     actual_route = routes.route
     def stale(name):
-        if name == 'reconcile-fix' and routes.all_routes()[name]['profile'] == 'drey':
+        if name == 'reconcile-fix' and routes.all_routes()[name]['profile'] == 'coder':
             return originals[name]
         return actual_route(name)
     with mock.patch.object(gh, 'api', side_effect=api), mock.patch.object(routes, 'route', side_effect=stale):
@@ -100,13 +100,13 @@ def main():
     assert 'config unchanged' in out, out
 
     # An existing hook for our route at an unexpected profile must not be ignored.
-    hooks[1] = routes.url_for_profile('reconcile-review', 'tuck', t.HOST)
+    hooks[1] = routes.url_for_profile('reconcile-review', 'arbiter', t.HOST)
     with mock.patch.object(gh, 'api', side_effect=api):
         rc, out = t.run_cli(apply)
     assert rc == 2 and 'hook' in out.lower(), (rc, out)
     assert config_path.read_bytes() == before
     assert {name: routes.route(name) for name in originals} == originals
-    assert hooks[1].endswith('/p/tuck/webhooks/reconcile-review')
+    assert hooks[1].endswith('/p/arbiter/webhooks/reconcile-review')
     hooks.update(old_hooks)
     print('PASS unexpected installed hook profile fails closed')
 
@@ -123,7 +123,7 @@ def main():
     assert not config.profile_exists('empty-profile')
     print('PASS empty profile directory is not an installed profile')
 
-    init = t.parser_for({'reviewer_profile': 'vex', 'fixer_profile': 'drey'}).parse_args([
+    init = t.parser_for({'reviewer_profile': 'critic', 'fixer_profile': 'coder'}).parse_args([
         'init', '--repo', 'acme/reconcile', '--id', 'reconcile', '--host', t.HOST, *t.READER_ARGS,
         '--reviewer', t.REVIEWER, '--fixer', t.FIXER,
         '--token', f'{t.REVIEWER}={t.SEAT_PATS[0]}', '--token', f'{t.FIXER}={t.SEAT_PATS[1]}'])
@@ -132,7 +132,7 @@ def main():
         rc, out = t.run_cli(init)
     assert_old('init retry restores preexisting config and routes', rc)
 
-    new_init = t.parser_for({'reviewer_profile': 'vex', 'fixer_profile': 'drey'}).parse_args([
+    new_init = t.parser_for({'reviewer_profile': 'critic', 'fixer_profile': 'coder'}).parse_args([
         'init', '--repo', 'acme/newloop', '--id', 'newloop', '--host', t.HOST, *t.READER_ARGS,
         '--reviewer', t.REVIEWER, '--fixer', t.FIXER,
         '--token', f'{t.REVIEWER}={t.SEAT_PATS[0]}',
@@ -160,7 +160,7 @@ def main():
     assert 'ROLLBACK FAILED' not in out and 'cannot identify' not in out, out
     print('PASS init second hook failure removes first hook and local artifacts')
 
-    multi = t.parser_for({'reviewer_profile': 'vex', 'fixer_profile': 'drey',
+    multi = t.parser_for({'reviewer_profile': 'critic', 'fixer_profile': 'coder',
                           'reviewer_login': t.REVIEWER}).parse_args([
         'init', '--repo', 'acme/multi', '--host', t.HOST, *t.READER_ARGS,
         '--reviewer', 'backup-reviewer', '--reviewer', t.REVIEWER, '--fixer', t.FIXER,
@@ -174,18 +174,18 @@ def main():
     stable_form = {'reviewer_profile': 'reviewer-profile', 'fixer_profile': 'fixer-profile',
                    'reviewer_login': t.REVIEWER, 'fixer_login': t.FIXER}
     unchanged_apply = t.parser_for(stable_form).parse_args(['apply', '--loop', 'reconcile'])
-    routes.new_route('reconcile-review', profile='vex', prompt=cli.prompts.REVIEWER,
+    routes.new_route('reconcile-review', profile='critic', prompt=cli.prompts.REVIEWER,
                      events=['pull_request'], script='gate_reviewer.py', host=t.HOST,
                      deliver='discord')
     old_config = config_path.read_bytes()
     old_fixer = routes.route('reconcile-fix')
     stale_route = routes.route('reconcile-review')
-    hooks[1] = routes.url_for_profile('reconcile-review', 'vex', t.HOST)
+    hooks[1] = routes.url_for_profile('reconcile-review', 'critic', t.HOST)
     stale_hooks = hooks.copy()
     with mock.patch.object(gh, 'api', side_effect=api):
         rc, out = t.run_cli(t.parser_for(stable_form).parse_args(
             ['apply', '--loop', 'reconcile', '--dry-run']))
-    assert rc == 0 and 'profile vex → reviewer-profile' in out, (rc, out)
+    assert rc == 0 and 'profile critic → reviewer-profile' in out, (rc, out)
     assert routes.route('reconcile-review') == stale_route and hooks == stale_hooks
 
     # Reviewer probe: unchanged settings must update both the stale route and its GitHub hook.
@@ -208,7 +208,7 @@ def main():
     assert config_path.read_bytes() == old_config
     print('PASS unchanged settings roll back route and hook after ambiguous hook PATCH')
 
-    hooks[1] = routes.url_for_profile('reconcile-review', 'tuck', t.HOST)
+    hooks[1] = routes.url_for_profile('reconcile-review', 'arbiter', t.HOST)
     with mock.patch.object(gh, 'api', side_effect=api):
         rc, out = t.run_cli(unchanged_apply)
     assert rc == 2 and 'unexpected URL' in out, (rc, out)
@@ -225,7 +225,7 @@ def main():
 
     # A stale profile is not permission to overwrite a route with another gate's script.
     foreign = routes.route('reconcile-review')
-    routes.new_route('reconcile-review', profile='vex', prompt=cli.prompts.FIXER,
+    routes.new_route('reconcile-review', profile='critic', prompt=cli.prompts.FIXER,
                      events=['pull_request_review'], script='gate_fixer.py', host=t.HOST,
                      deliver='discord')
     foreign_snapshot = routes.route('reconcile-review')
@@ -238,7 +238,7 @@ def main():
     print('PASS unchanged-settings route repair refuses foreign gate ownership')
 
     # The configured fixer is the selected login, not merely one of the allowed fixers.
-    fixer_form = {'reviewer_profile': 'vex', 'fixer_profile': 'drey',
+    fixer_form = {'reviewer_profile': 'critic', 'fixer_profile': 'coder',
                   'reviewer_login': t.REVIEWER, 'fixer_login': t.FIXER}
     fixer_args = ['init', '--repo', 'acme/multifix', '--host', t.HOST, *t.READER_ARGS,
                   '--reviewer', t.REVIEWER, '--fixer', 'backup-fixer', '--fixer', t.FIXER,

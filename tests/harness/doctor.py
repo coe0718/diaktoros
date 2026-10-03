@@ -639,7 +639,7 @@ def group_doctor() -> None:
           and "breach marker" in out, True)
 
     install_doctor_fixture()
-    edit_subs(lambda subs: subs["widgets-breach"].update(profile="vex"))
+    edit_subs(lambda subs: subs["widgets-breach"].update(profile="critic"))
     rc, out = run_doctor("--loop", "widgets")
     check("an adjudicator route waking a seat fails", rc, 1)
     check("  and names adjudicator.profile", "❌ route:widgets-breach" in out

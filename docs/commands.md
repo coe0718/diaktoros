@@ -13,7 +13,7 @@ terminal.
 - `name` is a loop id: by default the repository's name, so `owner/name` gets the loop `name`.
   `hermes review-loop list` shows yours.
 - A **login** is a GitHub username, such as `rev-bot`. A **profile** is a Hermes profile name,
-  such as `vex`.
+  such as `critic`.
 - "**Read-only**" means the command changes nothing: no files, no routes, no GitHub writes. You
   can run it as often as you like.
 - **Exit codes:** `0` means it worked, `1` means it ran but found something you need to fix, and
@@ -129,7 +129,7 @@ which still needs `--arm`. Without a terminal (in a script), it refuses unless y
 `setup` never turns on adjudication (it passes no `--adjudicator-route` to `init`) or issue
 triage. To add an adjudicator afterwards, add an `adjudicator` block to the loop file
 `~/.hermes/review-loops.d/name.json`, for example
-`"adjudicator": {"route": "name-breach", "profile": "tuck"}`, then write its route with
+`"adjudicator": {"route": "name-breach", "profile": "arbiter"}`, then write its route with
 `hermes review-loop apply --loop name --recreate-routes`. For triage, see [`triage`](#triage).
 
 <!-- flags:setup -->
@@ -182,7 +182,7 @@ and each has its own token file, and no route name belongs to someone else. A re
 writes nothing. If a later step fails, the earlier ones are rolled back.
 
 ```bash
-hermes review-loop init --repo owner/name --fixer dev-account --reviewer rev-bot --fixer-profile drey --reviewer-profile vex --read-token reader-bot --token reader-bot=~/.hermes/keys/reader-bot-pat --token rev-bot=~/.hermes/keys/rev-bot-pat --token dev-account=~/.hermes/keys/dev-account-pat --host https://your-gateway.example --hooks --admin-token reader-bot --schedule 15m --dry-run
+hermes review-loop init --repo owner/name --fixer dev-account --reviewer rev-bot --fixer-profile coder --reviewer-profile critic --read-token reader-bot --token reader-bot=~/.hermes/keys/reader-bot-pat --token rev-bot=~/.hermes/keys/rev-bot-pat --token dev-account=~/.hermes/keys/dev-account-pat --host https://your-gateway.example --hooks --admin-token reader-bot --schedule 15m --dry-run
 ```
 
 **Always run it with `--dry-run` first.** That prints the seat mapping, the route URLs and the
@@ -384,8 +384,8 @@ walks through the whole setup and a first test.
 
 ```bash
 hermes review-loop triage --loop name
-hermes review-loop triage --loop name --enable --profile tuck --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --dry-run
-hermes review-loop triage --loop name --enable --profile tuck --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token you
+hermes review-loop triage --loop name --enable --profile arbiter --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --dry-run
+hermes review-loop triage --loop name --enable --profile arbiter --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token you
 hermes review-loop triage --loop name --disable --admin-token you
 ```
 
@@ -513,10 +513,10 @@ uses a credential.
 
 ```bash
 hermes review-loop models --seat reviewer --loop name
-hermes review-loop models --profile vex
+hermes review-loop models --profile critic
 ```
 
-To change the model a seat uses, change that profile's model in Hermes (`hermes -p vex model`).
+To change the model a seat uses, change that profile's model in Hermes (`hermes -p critic model`).
 The loop always uses the seat profile's model.
 
 <!-- flags:models -->

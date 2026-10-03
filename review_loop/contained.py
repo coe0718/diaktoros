@@ -58,7 +58,7 @@ OFFLINE_ENV = ("CARGO_NET_OFFLINE", "true")
 # space they used to be able to consume.
 #
 # The defaults are sized against what this loop actually builds, not against what a test writes:
-# a Rust debug target for the repos it watches is 2.2 GiB (patchhive/attest) and two other real
+# a Rust debug target for the repos it watches is 2.2 GiB (one real workspace) and two other real
 # workspaces' are 3.3 GiB and 3.9 GiB, all of which land in ``/work`` because ``CARGO_TARGET_DIR``
 # points there. A cap below a real target does not fail loudly — the seat reports "could not
 # verify" and every review requests changes, which is the failure the crate cache exists to fix.
@@ -115,7 +115,7 @@ SCRATCH_SIZE = _size_from_env("SCRATCH_SIZE", 2)
 CHECKOUT_SIZE = _size_from_env("CHECKOUT_SIZE", 8)
 
 # The smallest cap that still holds what a seat is told to build: a scoped `cargo test -p <crate>
-# --no-run` for the largest crate. Measured on this host, attest-core into a fresh target: 2.4 GiB
+# --no-run` for the largest crate. Measured on a real workspace's largest crate into a fresh target: 2.4 GiB
 # (154 rlibs; deps alone 1.8 GiB). For contrast, a whole-workspace `cargo build` plus
 # `cargo test --no-run` is 8.0 GiB, and a mature clone's *accumulated* target reaches tens of GB
 # (70 GB and 113 GB measured) — which is why a check that measures a working clone must not treat

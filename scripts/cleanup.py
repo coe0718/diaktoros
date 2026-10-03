@@ -63,7 +63,7 @@ def log(message: str, quiet: bool = False) -> None:
 
 # A path is attributable to a PR when it carries a "pr<number>" token with a boundary on both
 # sides, so pr1 can never claim pr151. The separator is optional on purpose: reviews in the
-# wild produce attest-pr152, pr152-wt and target-pr162-465aa9 alike.
+# wild produce widgets-pr152, pr152-wt and target-pr162-465aa9 alike.
 PR_IN_PATH = re.compile(r"(?:^|[^0-9a-z])pr[_-]?([0-9]{1,6})(?![0-9])", re.I)
 NEVER_TOUCH = re.compile(r"(phase3|phase4-evidence|evidence|soak|release-verification)", re.I)
 

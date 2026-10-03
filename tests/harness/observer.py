@@ -24,7 +24,7 @@ def group_observer() -> None:
     check("  exactly one notice", len(observer_posts()), 1)
     post = observer_posts()[0]
     check("  sent to the observer's own route", post["path"],
-          "/p/tuck-profile/webhooks/widgets-observe")
+          "/p/arbiter-profile/webhooks/widgets-observe")
     check("  signed with that route's secret", verify_sig(post, "widgets-observe"), True)
     block = notice(post)
     check("  event", block["event"], "handoff")
@@ -102,7 +102,7 @@ def group_observer() -> None:
     check("cap spent: no fix run", kind, "SILENT")
     check("  observer sees the pending marker but no unsafe adjudicator dispatch",
            [r["path"] for r in RECEIVED],
-           ["/p/tuck-profile/webhooks/widgets-observe"])
+           ["/p/arbiter-profile/webhooks/widgets-observe"])
     block = notice(observer_posts()[0])
     check("  event", block["event"], "escalation")
     check("  the spent budget, and who owns it now",
@@ -170,7 +170,7 @@ def group_observer() -> None:
 
     reset(prs={"7": pr(7)})
     cfg = json.loads((LOOPS_DIR / "widgets.json").read_text())
-    cfg["observer"] = {"profile": "tuck"}                     # a feed with nowhere to go
+    cfg["observer"] = {"profile": "arbiter"}                     # a feed with nowhere to go
     (LOOPS_DIR / "widgets.json").write_text(json.dumps(cfg))
     from review_loop import config as config_mod
     check("a route-less observer never refuses the loop",
@@ -397,7 +397,7 @@ def group_observer_cli() -> None:
                               "--fixer-profile", "fx", "--host", HOST,
                               "--token", f"{REVIEWER}={SEAT_PATS[0]}",
                               "--token", f"{FIXER}={SEAT_PATS[1]}", *READER_ARGS,
-                              "--observer-profile", "tuck"])
+                              "--observer-profile", "arbiter"])
     init_output = io.StringIO()
     with contextlib.redirect_stdout(init_output):
         rc = args.func(args)
@@ -406,13 +406,13 @@ def group_observer_cli() -> None:
     check("init with an observer profile succeeds", rc, 0)
     loop = config.load_id("feed")
     check("  the feed is on, named after the loop", loop["observer"]["route"], "feed-observe")
-    check("  for the profile that was named", loop["observer"]["profile"], "tuck")
+    check("  for the profile that was named", loop["observer"]["profile"], "arbiter")
     check("  delivered to telegram by default", loop["observer"]["deliver"], "telegram")
     subs = json.loads(SUBS.read_text())
     check("  its route exists, deliver-only (no agent)", subs["feed-observe"]["deliver_only"], True)
     check("  with the notice prompt", subs["feed-observe"]["prompt"], "{_observer.message}")
     check("  and the adapter script", subs["feed-observe"]["script"], "observe.py")
-    check("  bound to the observer's own profile", subs["feed-observe"]["profile"], "tuck")
+    check("  bound to the observer's own profile", subs["feed-observe"]["profile"], "arbiter")
     check("  the seats' routes are untouched",
           [subs[name].get("deliver_only") for name in ("feed-review", "feed-fix")], [None, None])
 
@@ -538,7 +538,7 @@ def group_observer_cli() -> None:
     with contextlib.redirect_stdout(buf):
         cli.cmd_status(ns(loop="widgets"))
     check("status names the destination and the profile",
-          "observer:   widgets-observe → telegram (profile tuck-profile)" in buf.getvalue(), True)
+          "observer:   widgets-observe → telegram (profile arbiter-profile)" in buf.getvalue(), True)
     check("  and what has been delivered", "0 delivered · 0 owed" in buf.getvalue(), True)
     state_file("inflight.json").write_text("{}")
     state_file("locks.json").write_text("{}")

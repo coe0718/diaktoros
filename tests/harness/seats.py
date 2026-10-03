@@ -34,7 +34,7 @@ def group_settings() -> None:
     check("  and it says what changed", "concurrency: 1 → 2" in out, True)
     check("  and the effective capacities", "parallel now: reviewer 2 · fixer 2" in out, True)
 
-    # per seat: Drey and Vex get their own numbers
+    # per seat: Coder and Critic get their own numbers
     rc, out = call(fixer_concurrency=1)
     check("fixer-only setting → accepted", rc, 0)
     check("  fixer written", file_loop()["seats"]["fixer"]["concurrency"], 1)
@@ -392,7 +392,7 @@ def group_seat_identity() -> None:
     reset(prs={})
     original_api = gh.api
     gh.api = lambda loop, path, **kw: [] if path.endswith("/hooks?per_page=100") else original_api(loop, path, **kw)
-    form = {"reviewer_profile": "vex", "fixer_profile": "drey", "adjudicator_profile": "tuck",
+    form = {"reviewer_profile": "critic", "fixer_profile": "coder", "adjudicator_profile": "arbiter",
             "reviewer_login": REVIEWER, "fixer_login": FIXER}
     parser = parser_for(form)
     init_args = ["init", "--repo", "acme/seats", "--fixer", FIXER, "--reviewer", REVIEWER,
@@ -402,9 +402,9 @@ def group_seat_identity() -> None:
 
     rc, out = run_cli(parser.parse_args([*init_args, "--dry-run"]))
     check("init --dry-run previews the loop", rc, 0)
-    check("  reviewer: the profile the form names", "profile vex" in out, True)
-    check("  fixer: the profile the form names", "profile drey" in out, True)
-    check("  adjudicator: the profile the form names", "profile tuck" in out, True)
+    check("  reviewer: the profile the form names", "profile critic" in out, True)
+    check("  fixer: the profile the form names", "profile coder" in out, True)
+    check("  adjudicator: the profile the form names", "profile arbiter" in out, True)
     check("  and it says nothing was written", "nothing written" in out, True)
     check("  no loop config was written", (LOOPS_DIR / "seats.json").exists(), False)
     check("  no route was written", "seats-review" in SUBS.read_text(), False)
@@ -413,9 +413,9 @@ def group_seat_identity() -> None:
     rc, out = run_cli(parser.parse_args(init_args))
     check("install succeeds", rc, 0)
     installed = subs()
-    check("  the reviewer route runs under vex", installed["seats-review"]["profile"], "vex")
-    check("  the fixer route runs under drey", installed["seats-fix"]["profile"], "drey")
-    check("  the adjudicator route runs under tuck", installed["seats-breach"]["profile"], "tuck")
+    check("  the reviewer route runs under critic", installed["seats-review"]["profile"], "critic")
+    check("  the fixer route runs under coder", installed["seats-fix"]["profile"], "coder")
+    check("  the adjudicator route runs under arbiter", installed["seats-breach"]["profile"], "arbiter")
     check("  and the other loops' routes are untouched",
           [{"description": subs()[n]["description"], "profile": subs()[n]["profile"],
             "secret": subs()[n]["secret"]} for n in untouched],
@@ -425,7 +425,7 @@ def group_seat_identity() -> None:
     seats_loop = config.load_id("seats")
     check("the loop records the same mapping",
           tuple(config.seat_profile(seats_loop, role) for role in config.ROUTE_ROLES),
-          ("vex", "drey", "tuck"))
+          ("critic", "coder", "arbiter"))
     check("  with the logins the form named",
           (config.seat_login(seats_loop, "reviewer"), config.seat_login(seats_loop, "fixer")),
           (REVIEWER, FIXER))
@@ -436,11 +436,11 @@ def group_seat_identity() -> None:
     with contextlib.redirect_stdout(buf):
         cli.cmd_status(ns(loop="seats"))
     status = buf.getvalue()
-    check("status shows who serves each seat", f"reviewer={REVIEWER} (vex)" in status, True)
-    check("  and the adjudicator", "adjudicator: tuck" in status, True)
-    check("  and that the review route agrees", "seats-review → vex (ok)" in status, True)
-    check("  and that the fix route agrees", "seats-fix → drey (ok)" in status, True)
-    check("  and that the adjudicator route agrees", "seats-breach → tuck (ok)" in status, True)
+    check("status shows who serves each seat", f"reviewer={REVIEWER} (critic)" in status, True)
+    check("  and the adjudicator", "adjudicator: arbiter" in status, True)
+    check("  and that the review route agrees", "seats-review → critic (ok)" in status, True)
+    check("  and that the fix route agrees", "seats-fix → coder (ok)" in status, True)
+    check("  and that the adjudicator route agrees", "seats-breach → arbiter (ok)" in status, True)
     check("  and where each seat's token is referenced",
           f"reviewer {REVIEWER} → {SEAT_PATS[0]}" in status, True)
 
@@ -467,7 +467,7 @@ def group_seat_identity() -> None:
     check("HTTP-only drain does not claim queued review started", "started the queued run" in out, False)
     check("  and it wakes the reviewer at the profile the form chose",
           RECEIVED[-1]["path"] if len(RECEIVED) > before else None,
-          "/p/vex/webhooks/seats-review")
+          "/p/critic/webhooks/seats-review")
     check("  with that route's secret", verify_sig(RECEIVED[-1], "seats-review"), True)
 
     section("seat identity — every surface shows the effective mapping")
@@ -476,17 +476,17 @@ def group_seat_identity() -> None:
         cli.cmd_settings(ns())
     shown = buf.getvalue()
     check("settings shows the form's seat mapping", "seat mapping" in shown, True)
-    check("  reviewer profile", "profile vex" in shown, True)
-    check("  fixer profile", "profile drey" in shown, True)
-    check("  adjudicator profile", "profile tuck" in shown, True)
-    check("  and resolves each loop against it", "reviewer rev-coach (vex)" in shown, True)
-    check("  including the adjudicator it would push", "adjudicator tuck" in shown, True)
+    check("  reviewer profile", "profile critic" in shown, True)
+    check("  fixer profile", "profile coder" in shown, True)
+    check("  adjudicator profile", "profile arbiter" in shown, True)
+    check("  and resolves each loop against it", "reviewer rev-coach (critic)" in shown, True)
+    check("  including the adjudicator it would push", "adjudicator arbiter" in shown, True)
 
     section("seat identity — a form that holds nothing rewrites nothing")
     reset(prs={})
-    north = make_loop("north", "acme/north", "vex", "drey")
+    north = make_loop("north", "acme/north", "critic", "coder")
     south = make_loop("south", "acme/south", "reviewer-profile", "fixer-profile")
-    east = make_loop("east", "acme/east", "vex", "drey", adjudicator="tuck")
+    east = make_loop("east", "acme/east", "critic", "coder", adjudicator="arbiter")
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -494,14 +494,14 @@ def group_seat_identity() -> None:
     shown = buf.getvalue()
     check("settings says which loops have no adjudicator",
           "adjudicator (none)" in shown, True)
-    check("  and shows the ones that do", "adjudicator tuck" in shown, True)
+    check("  and shows the ones that do", "adjudicator arbiter" in shown, True)
 
     rc, out = run_cli(parser_for({}).parse_args(["apply", "--loop", "east", "--dry-run"]))
     check("an empty form changes nothing", "already matches the plugin settings" in out, True)
     check("  and the seat keeps its own profile",
-          config.seat_profile(config.load_id("east"), "reviewer"), "vex")
+          config.seat_profile(config.load_id("east"), "reviewer"), "critic")
     check("  and its own adjudicator",
-          config.seat_profile(config.load_id("east"), "adjudicator"), "tuck")
+          config.seat_profile(config.load_id("east"), "adjudicator"), "arbiter")
 
     # A form with numbers only must not touch seats either: that is what "defaults, not a
     # subscription" means for identity, and it is the difference between a form and a takeover.
@@ -524,10 +524,10 @@ def group_seat_identity() -> None:
     # push the form onto 'south' only, in two steps: a refusal-free preview first
     rc, out = run_cli(parser_for(form).parse_args(["apply", "--loop", "south", "--dry-run"]))
     check("apply --dry-run explains the change", rc, 0)
-    check("  reviewer profile in the diff", "reviewer profile: reviewer-profile → vex" in out, True)
-    check("  fixer profile in the diff", "fixer profile: fixer-profile → drey" in out, True)
+    check("  reviewer profile in the diff", "reviewer profile: reviewer-profile → critic" in out, True)
+    check("  fixer profile in the diff", "fixer profile: fixer-profile → coder" in out, True)
     check("  the route rebind it needs",
-          "route south-review: profile reviewer-profile → vex" in out, True)
+          "route south-review: profile reviewer-profile → critic" in out, True)
     check("  and it says nothing was written", "nothing written" in out, True)
     check("  nothing was written", config.seat_profile(config.load_id("south"), "reviewer"),
           "reviewer-profile")
@@ -538,9 +538,9 @@ def group_seat_identity() -> None:
     north_snapshot, east_snapshot = loop_bytes("north"), loop_bytes("east")
     rc, out = run_cli(parser_for(form).parse_args(["apply", "--loop", "south"]))
     check("apply stages the change", rc, 0)
-    check("  seat moved", config.seat_profile(config.load_id("south"), "reviewer"), "vex")
-    check("  route rebound in the same operation", subs()["south-review"]["profile"], "vex")
-    check("  and it reports the rebind", "route south-review rebound → profile vex" in out, True)
+    check("  seat moved", config.seat_profile(config.load_id("south"), "reviewer"), "critic")
+    check("  route rebound in the same operation", subs()["south-review"]["profile"], "critic")
+    check("  and it reports the rebind", "route south-review rebound → profile critic" in out, True)
     check("  the route keeps its secret", subs()["south-review"]["secret"], secret_before)
     check("  a second apply is a no-op",
           "already matches the plugin settings"
@@ -548,12 +548,12 @@ def group_seat_identity() -> None:
     check("  loop A is untouched (byte-identical)", loop_bytes("north"), north_snapshot)
     check("  loop C is untouched (byte-identical)", loop_bytes("east"), east_snapshot)
     check("  and their routes still run their own profiles",
-          (subs()["north-review"]["profile"], subs()["east-review"]["profile"]), ("vex", "vex"))
+          (subs()["north-review"]["profile"], subs()["east-review"]["profile"]), ("critic", "critic"))
     check("  (A and C agree because they were configured that way, not because B leaked)",
           (config.seat_profile(config.load_id("north"), "reviewer"),
-           config.seat_profile(config.load_id("east"), "reviewer")), ("vex", "vex"))
+           config.seat_profile(config.load_id("east"), "reviewer")), ("critic", "critic"))
     check("  and B is the one that moved",
-          config.seat_profile(config.load_id("south"), "fixer"), "drey")
+          config.seat_profile(config.load_id("south"), "fixer"), "coder")
 
     section("seat identity — a seat mid-run is not rewritten underneath itself")
     busy = make_loop("busy", "acme/busy", "reviewer-profile", "fixer-profile")
@@ -573,24 +573,24 @@ def group_seat_identity() -> None:
     check("  (a dry run is still allowed while a seat is busy)", rc, 0)
     rc, out = run_cli(parser_for(form).parse_args(["apply", "--loop", "busy", "--while-busy"]))
     check("--while-busy applies it anyway", rc, 0)
-    check("  seat moved", config.seat_profile(config.load_id("busy"), "reviewer"), "vex")
-    check("  route rebound", subs()["busy-review"]["profile"], "vex")
+    check("  seat moved", config.seat_profile(config.load_id("busy"), "reviewer"), "critic")
+    check("  route rebound", subs()["busy-review"]["profile"], "critic")
     check("  and it says the live run keeps its identity",
           "keeps the identity it started with" in out, True)
 
     section("seat identity — an invalid mapping fails before any side effect")
     # the loop the refusals below push onto, written the same way `init` writes one
-    make_loop("seats", "acme/seats", "vex", "drey", adjudicator="tuck")
+    make_loop("seats", "acme/seats", "critic", "coder", adjudicator="arbiter")
     for label, bad, expect in (
             ("a profile that does not exist", {"reviewer_profile": "ghost"},
              "no Hermes profile named 'ghost'"),
             ("a login outside the allowlist", {"reviewer_login": "stranger"},
              "is not in this loop's reviewers allowlist"),
-            ("one profile for both seats", {"reviewer_profile": "drey", "fixer_profile": "drey"},
-             "both run as profile 'drey'"),
-            ("an adjudicator that is one of the seats", {"adjudicator_profile": "vex"},
+            ("one profile for both seats", {"reviewer_profile": "coder", "fixer_profile": "coder"},
+             "both run as profile 'coder'"),
+            ("an adjudicator that is one of the seats", {"adjudicator_profile": "critic"},
              "the same as a seat it is meant to rule on"),
-            ("a seat moving onto the adjudicator's profile", {"reviewer_profile": "tuck"},
+            ("a seat moving onto the adjudicator's profile", {"reviewer_profile": "arbiter"},
              "the same as a seat it is meant to rule on"),
             ("an adjudicator profile that does not exist", {"adjudicator_profile": "ghost"},
              "no Hermes profile named 'ghost'")):
@@ -641,10 +641,10 @@ def group_seat_identity() -> None:
     section("seat identity — profile homes must be distinct real directories")
     profile_root = HOME / "profiles"
     alias = profile_root / "alias-fixer"
-    alias.symlink_to(profile_root / "vex", target_is_directory=True)
+    alias.symlink_to(profile_root / "critic", target_is_directory=True)
     check("a symlink to a profile is not a profile", config.profile_exists("alias-fixer"), False)
     for action in ("init", "apply"):
-        alias_form = {"reviewer_profile": "vex", "fixer_profile": "alias-fixer",
+        alias_form = {"reviewer_profile": "critic", "fixer_profile": "alias-fixer",
                       "reviewer_login": REVIEWER, "fixer_login": FIXER}
         alias_parser = parser_for(alias_form)
         if action == "init":
@@ -654,7 +654,7 @@ def group_seat_identity() -> None:
                     "--token", f"{FIXER}={SEAT_PATS[1]}", *READER_ARGS]
             fingerprint = SUBS.read_text()
         else:
-            make_loop("profile-alias", "acme/profile-alias", "vex", "drey")
+            make_loop("profile-alias", "acme/profile-alias", "critic", "coder")
             args = ["apply", "--loop", "profile-alias"]
             fingerprint = (loop_bytes("profile-alias"), SUBS.read_text())
         rc, out = run_cli(alias_parser.parse_args(args))
@@ -673,11 +673,11 @@ def group_seat_identity() -> None:
     # A bind mount can expose one inode under two non-symlink names. Simulate that
     # same-directory identity without requiring mount privileges, at the path seam.
     real_profile_dir = config.profile_dir
-    config.profile_dir = lambda name: (profile_root / "vex" if name == "drey"
+    config.profile_dir = lambda name: (profile_root / "critic" if name == "coder"
                                       else real_profile_dir(name))
     try:
         for action in ("init", "apply"):
-            alias_form = {"reviewer_profile": "vex", "fixer_profile": "drey",
+            alias_form = {"reviewer_profile": "critic", "fixer_profile": "coder",
                           "reviewer_login": REVIEWER, "fixer_login": FIXER}
             if action == "init":
                 args = ["init", "--repo", "acme/inode-alias", "--id", "inode-alias",
@@ -700,13 +700,13 @@ def group_seat_identity() -> None:
         config.profile_dir = real_profile_dir
 
     # The adjudicator has no login, but must not share the reviewed seat's home.
-    config.profile_dir = lambda name: (profile_root / "vex" if name == "tuck"
+    config.profile_dir = lambda name: (profile_root / "critic" if name == "arbiter"
                                       else real_profile_dir(name))
     try:
-        make_loop("adj-alias", "acme/adj-alias", "vex", "drey",
+        make_loop("adj-alias", "acme/adj-alias", "critic", "coder",
                   adjudicator="fixer-profile")
         before = (loop_bytes("adj-alias"), SUBS.read_text())
-        rc, out = run_cli(parser_for({"adjudicator_profile": "tuck"})
+        rc, out = run_cli(parser_for({"adjudicator_profile": "arbiter"})
                           .parse_args(["apply", "--loop", "adj-alias"]))
         check("adjudicator sharing reviewer home refused", rc, 2)
         check("  adjudicator identity reason", "same profile home" in out, True)

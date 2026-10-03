@@ -1,4 +1,4 @@
-"""Tuck on #97: a fixer run cancelled at claim (push not admitted / revoked) is visible and recoverable.
+"""Arbiter on #97: a fixer run cancelled at claim (push not admitted / revoked) is visible and recoverable.
 
 Before this, the row was dead for its head: status and explain did not list it, `retry` refused
 it ("nothing to retry"), and a redelivery re-armed it only for the claim to cancel it again. The
@@ -154,7 +154,7 @@ class CancelledFixer(unittest.TestCase):
         self.assertIn("--enable --acknowledge-pr-race", out.split("next:", 1)[1])
 
     def test_retry_never_rearms_a_superseded_cancellation(self):
-        # Tuck on #97: `retry` offered every cancelled row; a head that moved was "re-armed",
+        # Arbiter on #97: `retry` offered every cancelled row; a head that moved was "re-armed",
         # reported as success, and the claim cancelled it again. Only a push-policy cancellation
         # is the operator's to recover; a new head gets its own turn. The surfaces agree.
         self.sup.submit("rev-1", REPO, 7, HEAD, "reviewer")
@@ -175,7 +175,7 @@ class CancelledFixer(unittest.TestCase):
         self.assertEqual(self.row_of("reviewer")["state"], "cancelled")
 
     def test_an_unreadable_loop_config_is_a_named_refusal_not_a_crash(self):
-        # Tuck on #97: config.by_repo raises ConfigError (not a ValueError) — e.g. two loop files
+        # Arbiter on #97: config.by_repo raises ConfigError (not a ValueError) — e.g. two loop files
         # for one repo — and cmd_retry aborted with a traceback, skipping the other candidates.
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
         self.sup.submit("rev-1", REPO, 7, HEAD, "reviewer")
@@ -192,7 +192,7 @@ class CancelledFixer(unittest.TestCase):
         self.assertIn("reviewer #7 @ aaaaaaa re-armed", out)      # the other candidate still ran
 
     def test_one_predicate_for_the_view_the_step_and_retry(self):
-        # Tuck on #97: runs_view kept its own SQL copy (LIKE, case-insensitive) of the Python
+        # Arbiter on #97: runs_view kept its own SQL copy (LIKE, case-insensitive) of the Python
         # prefix test, so a "Fixer push revoked: …" row was listed with a retry remedy that
         # retry then refused. One definition, keyed off the constants, decides all three.
         from review_loop.run_supervisor import (POLICY_CANCELLATIONS, next_step,
@@ -226,7 +226,7 @@ class CancelledFixer(unittest.TestCase):
             "head needs a manual fix or a new commit"))
 
     def test_bare_retry_uses_the_head_the_pr_is_at_after_a_backwards_force_push(self):
-        # Tuck on #97: `retry` took the head of the last-*created* row. Head A, then B, then a
+        # Arbiter on #97: `retry` took the head of the last-*created* row. Head A, then B, then a
         # force-push back to A: A's old row is re-armed (not a new row) and fails again, so the
         # newest head is A even though B's row was created later.
         a, b = HEAD, "b" * 40

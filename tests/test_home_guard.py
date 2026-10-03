@@ -440,7 +440,7 @@ class CratesIoAllowlist(unittest.TestCase):
         self.assertEqual(deps.CRATES_IO_HOSTS, frozenset({"index.crates.io", "static.crates.io"}))
 
     def test_a_crate_named_like_a_registry_is_still_crates_io(self):
-        # A real lockfile (patchhive/attest) pins signal-hook-registry: a crate *name*, not a key.
+        # A real lockfile pins signal-hook-registry: a crate *name*, not a key.
         for name in ("signal-hook-registry", "registry", "source", "patch-rs", "replace_me"):
             with self.subTest(name):
                 lock = self.LOCK.replace('name = "itoa"', f'name = "{name}"')

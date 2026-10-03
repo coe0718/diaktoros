@@ -79,11 +79,11 @@ A seat is a **capacity, not a mutex**, and each seat has its own:
 | setting | effect |
 |---|---|
 | `concurrency` (loop) | the default limit for the reviewer and the fixer |
-| `seats.reviewer.concurrency` | the reviewer's own limit (vex: two reviews at once) |
-| `seats.fixer.concurrency` | the fixer's own limit (drey: one fix at a time) |
+| `seats.reviewer.concurrency` | the reviewer's own limit (critic: two reviews at once) |
+| `seats.fixer.concurrency` | the fixer's own limit (coder: one fix at a time) |
 
-`hermes review-loop set --reviewer-concurrency 2 --fixer-concurrency 1` means: *drey works on at
-most one PR at a time, vex reviews up to two at once, everything else queues.* A seat-level value
+`hermes review-loop set --reviewer-concurrency 2 --fixer-concurrency 1` means: *coder works on at
+most one PR at a time, critic reviews up to two at once, everything else queues.* A seat-level value
 wins over the loop default; `1` (serialized) is the fallback everywhere. The opt-in seats
 (adjudicator, triage, issue fixer) never inherit the loop default: they run one turn at a time.
 
@@ -102,7 +102,7 @@ written, so it keeps its PR and seat until an operator reconciles it
 ### Who serves a seat, and why the route is part of it
 
 The profile and the login are the seat's **identity**, and they are per loop like everything else:
-the same install can run Vex/Drey on one repository and a different pair on another. The plugin
+the same install can run one pair of profiles on one repository and a different pair on another. The plugin
 settings carry a per-profile *default* for them (`reviewer_profile`, `fixer_profile`,
 `reviewer_login`, `fixer_login`, `adjudicator_profile`); a new loop starts from it, and an existing
 loop only moves when `apply --loop <id>` pushes it. Blank means *not set here* — never "forget what
@@ -122,7 +122,7 @@ Two consequences worth stating plainly:
 * **A seat in flight is not rewritten underneath itself.** `apply` refuses an identity change while
   the seat it would move has a live run, and `--while-busy` is the explicit override — the run that
   is already out finishes under the identity it started with, and `status` is where that shows.
-* **The config and the route can disagree, so `status` prints both.** `reviewer widgets-review → vex
+* **The config and the route can disagree, so `status` prints both.** `reviewer widgets-review → critic
   (ok)` is the check; `MISMATCH — hermes review-loop apply --loop widgets` is the loop that would
   run as the old agent while every config file claims otherwise.
 
