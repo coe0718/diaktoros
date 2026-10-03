@@ -1300,10 +1300,9 @@ def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str
     fallback command is shell-quoted — the job name has spaces — so it can be pasted as printed.
     """
     shim = _write_watchdog_shim()
-    legacy_lines = _remove_legacy_jobs(loop)
     if _shared_job_present():
         lines = [f"watchdog already scheduled (shared job, deliver={deliver})", f"shim: {shim}"]
-        lines.extend(legacy_lines)
+        lines.extend(_remove_legacy_jobs(loop))
         return lines, True
     hermes = _hermes_bin() or "hermes"
     cmd = [hermes, "cron", "create", schedule, "--name", SHARED_JOB_NAME,
@@ -1317,7 +1316,9 @@ def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str
         return [f"cron create failed: {(proc.stderr or proc.stdout).strip()[:200]}",
                 f"run it yourself: {shlex.join(cmd)}"], False
     lines = [f"scheduled the watchdog ({schedule}, deliver={deliver})", f"shim: {shim}"]
-    lines.extend(legacy_lines)
+    # Only now — after the shared job is confirmed present or just created — remove this
+    # loop's legacy job. Removing it earlier would leave no sweeper if creation failed.
+    lines.extend(_remove_legacy_jobs(loop))
     return lines, True
 
 
