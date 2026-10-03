@@ -23,7 +23,7 @@ terminal.
 | I want to… | command |
 | --- | --- |
 | see my loops | [`list`](#list), [`status`](#status) |
-| install a loop | [`init`](#init) |
+| install a loop | [`setup`](#setup) (guided), or [`init`](#init) (flag by flag) |
 | check an install before going live | [`doctor`](#doctor), [`selftest`](#selftest) |
 | turn the loop on or off | [`arm`](#arm) |
 | change a setting | [`set`](#set), [`apply`](#apply), [`settings`](#settings) |
@@ -96,6 +96,63 @@ No flags.
 ---
 
 ## Installing and changing a loop
+
+### setup
+
+A first install in one command, and the easiest way to start. It walks through five steps, each
+using the same code as the command named in it:
+
+1. **Runtime paths.** It finds the Hermes checkout, its virtualenv, the Python installation and a
+   Rust toolchain, and writes the private runtime file `~/.hermes/review-loop-runtime.json`
+   (mode 600). A path already in the file that still works is kept; a broken one is replaced. The
+   file is written only when every path passes the same checks `selftest` makes.
+2. **The loop.** It asks the [`init`](#init) questions (repository, accounts, profiles, token
+   files, reader, gateway address, observer, signing, hook admin), with the settings form's values
+   as defaults. It shows `init`'s dry run, asks you to confirm, then runs `init`. A loop that
+   already exists is kept as it is.
+3. **The watchdog.** It schedules the shared watchdog job, only if it is missing.
+4. **Checks.** It runs [`doctor`](#doctor) and [`selftest --no-model`](#selftest). Any ❌ stops it
+   here, with the fix line above.
+5. **Arm.** Only after a clean pass, and only if you say yes (the question defaults to no).
+
+```bash
+hermes review-loop setup --repo owner/name
+hermes review-loop setup --repo owner/name --dry-run
+```
+
+Running it again is safe: whatever is already in place is kept, so a second run only repairs what
+is missing or broken. `--dry-run` shows every step and writes nothing. `--yes` asks no questions:
+your flags and the settings form are the answers and every confirmation is yes, except arming,
+which still needs `--arm`. Without a terminal (in a script), it refuses unless you pass `--yes`.
+
+<!-- flags:setup -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--repo` | `REPO` |  | owner/name (asked when not given) |
+| `--id` | `ID` |  | loop id (default: the repository name) |
+| `--yes` |  |  | no questions: the flags and the plugin settings are the answers, and every confirmation is yes (arming still needs --arm) |
+| `--dry-run` |  |  | show every step, write nothing |
+| `--arm` |  |  | arm the hooks after a clean doctor and selftest |
+| `--reviewer` | `REVIEWER` |  | reviewer GitHub login |
+| `--fixer` | `FIXER` |  | fixer GitHub login |
+| `--reviewer-profile` | `REVIEWER_PROFILE` |  | reviewer's Hermes profile |
+| `--fixer-profile` | `FIXER_PROFILE` |  | fixer's Hermes profile |
+| `--reviewer-token` | `REVIEWER_TOKEN` |  | reviewer's token file |
+| `--fixer-token` | `FIXER_TOKEN` |  | fixer's token file |
+| `--read-token` | `READ_TOKEN` |  | reader login (its own account) |
+| `--read-token-file` | `READ_TOKEN_FILE` |  | reader's token file |
+| `--host` | `HOST` |  | your gateway's webhook origin |
+| `--admin-token-file` | `ADMIN_TOKEN_FILE` |  | hook admin's token file |
+| `--schedule` | `SCHEDULE` |  | watchdog interval (default 15m) |
+| `--watchdog-deliver` | `WATCHDOG_DELIVER` |  | where watchdog alerts go (default local) |
+| `--admin-token` | `ADMIN_TOKEN` |  | hook admin login: the hooks are created (paused) as it |
+| `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile whose chat gets the loop's notices |
+| `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by hermes-review-loop' (default: the plugin setting, on) |
+| `--source` | `SOURCE` |  | runtime file's source path (default: detected) |
+| `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
+| `--runtime` | `RUNTIME` |  | runtime file's runtime path (default: detected) |
+| `--rust` | `RUST` |  | runtime file's rust path (default: detected) |
+<!-- /flags -->
 
 ### init
 

@@ -370,7 +370,7 @@ silently: the event is held or never arrives, and `doctor` or `explain` tells yo
 |---|---|---|---|
 | loop config | tells the loop which repository, accounts, profiles and limits to use | `hermes review-loop init` | no gate recognises the repository; nothing runs |
 | routes | let the gateway accept GitHub's events and run the gates | written by `init` | GitHub's delivery fails; `doctor` shows the route ❌ and the fix |
-| runtime file | lets the worker start isolated turns | create `~/.hermes/review-loop-runtime.json` yourself | an eligible event is **held** with the reason; `explain` shows it on its queue line; once the file exists, the next watchdog sweep (or `drain`) sends it to the gate again |
+| runtime file | lets the worker start isolated turns | `hermes review-loop setup` detects the paths and writes `~/.hermes/review-loop-runtime.json` (or write it yourself) | an eligible event is **held** with the reason; `explain` shows it on its queue line; once the file exists, the next watchdog sweep (or `drain`) sends it to the gate again |
 | hooks armed | lets GitHub send events at all | `hermes review-loop arm --loop name` | GitHub sends nothing; the watchdog stays silent; `explain` says the hooks are paused |
 | unattended fixer push | lets the fixer answer a verdict by pushing | `fixer-push --enable --acknowledge-pr-race` | changes-requested verdicts are **held** for you; `explain` says `operator decision` |
 

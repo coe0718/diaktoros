@@ -6,6 +6,31 @@ PR that is not moving, and how a burst of PRs is queued. The keys themselves are
 [configuration reference](configuration.md); the design behind each tool is in
 [architecture](architecture.md). The quick install is in the [README](../README.md#install).
 
+## First install: `setup`
+
+```bash
+hermes review-loop setup --repo owner/name                 # asks, showing each default
+hermes review-loop setup --repo owner/name --yes --read-token reader-bot --read-token-file ~/.hermes/keys/reader-bot-pat
+hermes review-loop setup --repo owner/name --dry-run       # every step, nothing written
+```
+
+One command, five steps, each the same code as its own verb:
+
+1. **Runtime paths.** `source` (the hermes-agent checkout), `venv` (the virtualenv Hermes runs
+   from), `runtime` (the directory holding both the venv interpreter's link and where it resolves,
+   e.g. uv's `…/uv/python`), and `rust` (rustup's default toolchain, else a `stable-*` one).
+   A path already in the file that still works is kept, and one that does not is replaced by
+   the detected one. `--source`, `--venv`, `--runtime` and `--rust` override detection. The file
+   is written only when every path checks out the way `selftest` checks it.
+2. **The loop.** The `init` answers (repo, seat logins and profiles, token files, reader, gateway
+   origin, observer, attribution, hook admin) are asked for, with the settings form's values as
+   defaults. `init --dry-run` is shown and confirmed, then `init` runs. With a hook admin login
+   the hooks are created paused. A loop that already exists is kept as it is; change it with
+   `set`.
+3. **The watchdog.** The shared job is created only if it is missing.
+4. **Checks.** `doctor` and `selftest --no-model` run. Any ❌ stops setup here.
+5. **Arm.** Only after a clean pass, and only when you answer yes (`--arm` with `--yes`).
+
 ## What `init` writes
 
 When the plugin settings name the seats (`fixer_profile`, `reviewer_profile`, `reviewer_login`,

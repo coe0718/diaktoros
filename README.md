@@ -89,7 +89,21 @@ Every one of those is a *silent* failure, so this plugin makes each one loud or 
 hermes plugins install coe0718/hermes-review-loop
 ```
 
-Then configure one loop per repository:
+Then set up one loop per repository. `setup` does the whole first install, asking for each answer
+(the plugin settings form's values are the defaults):
+
+```bash
+hermes review-loop setup --repo owner/name
+```
+
+It detects the runtime paths and writes `review-loop-runtime.json`, runs `init` (showing its dry run
+first), schedules the watchdog, runs `doctor` and `selftest --no-model`, and arms the hooks only
+after a clean pass and only if you say yes. Any ❌ stops it with its fix line. Re-running it is
+safe: whatever is already in place is kept, and a runtime path that stopped working is replaced.
+`--yes` takes the flags and the settings form as the answers (no questions), and `--dry-run` shows
+every step and writes nothing.
+
+`init` is the same install, flag by flag:
 
 ```bash
 hermes review-loop init \
