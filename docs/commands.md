@@ -28,6 +28,7 @@ terminal.
 | turn the loop on or off | [`arm`](#arm) |
 | change a setting | [`set`](#set), [`apply`](#apply), [`settings`](#settings) |
 | let the fixer push on its own | [`fixer-push`](#fixer-push) |
+| label new issues automatically | [`triage`](#triage) |
 | find out why a PR is not moving | [`explain`](#explain) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
@@ -360,6 +361,51 @@ while a fixer turn is running.
 | `--disable` |  |  | turn unattended pushes off (one of `--enable`, `--disable`) |
 | `--acknowledge-pr-race` |  |  | accept the residual non-atomic PR-metadata/ref race; required for --enable |
 | `--dry-run` |  |  | show action without writing |
+<!-- /flags -->
+
+### triage
+
+Turns **issue triage** on or off for one loop, or shows its settings. When an issue opens, a
+sandboxed triage seat reads it and adds labels from a fixed list, before any agent works on it.
+Off unless you turn it on.
+
+```bash
+hermes review-loop triage --loop name
+hermes review-loop triage --loop name --enable --profile tuck --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --dry-run
+hermes review-loop triage --loop name --enable --profile tuck --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token you
+hermes review-loop triage --loop name --disable --admin-token you
+```
+
+- **Only issues from `--author` logins are triaged.** Anyone else's issue is dropped before any
+  model sees it, so spam or a prompt-injection attempt on a public repository costs nothing.
+- **Only labels from `--labels` can be applied**, at most `--max-labels` per issue (default 3),
+  and a comment only with `--comment on`. The issue text is untrusted, and this list is the
+  boundary; the host broker enforces it, not the model.
+- **People win.** Labels are only ever added. If the issue already has a label from the list,
+  triage writes nothing.
+- **It labels as `--login`** (default: the reviewer seat's account), which needs `issues: write`
+  and can never be the reader.
+- With `--admin-token`, `--enable` also creates the repo hook for `issues` events, paused: run
+  [`arm`](#arm) afterwards. Without it, `apply --hooks` creates the hook later.
+
+Details: [Issue triage](operations.md#issue-triage).
+
+<!-- flags:triage -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
+| `--enable` |  |  | turn triage on (or change it): writes its route, shim and, with --admin-token, its issues hook (paused until arm) (one of `--enable`, `--disable`) |
+| `--disable` |  |  | turn triage off: removes its route, shim and (with --admin-token) hook (one of `--enable`, `--disable`) |
+| `--profile` | `PROFILE` |  | Hermes profile whose model triages |
+| `--author` | `AUTHOR` (repeatable) |  | GitHub login whose new issues are triaged (repeatable); anyone else's are ignored |
+| `--labels` | `LABELS` |  | comma-separated labels triage may apply, e.g. bug,feature,docs,question,P0,P1,P2,P3 |
+| `--max-labels` | `MAX_LABELS` |  | at most this many labels per issue (default 3) |
+| `--comment` | `on` \| `off` |  | allow one short comment with the labels (default off) |
+| `--login` | `LOGIN` |  | account that labels (default: the reviewer seat); needs issues: write, never the reader |
+| `--token` | `TOKEN` (repeatable) |  | login=/path/to/pat for --login (or --admin-token), if not mapped |
+| `--daily-turns` | `DAILY_TURNS` |  | at most this many triage turns per day (0 removes the cap) |
+| `--admin-token` | `ADMIN_TOKEN` |  | login whose token can create or delete repo hooks |
+| `--dry-run` |  |  | show the change, write nothing |
 <!-- /flags -->
 
 ---

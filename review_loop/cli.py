@@ -4267,7 +4267,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
 
         triage = sub.add_parser("triage", help="Issue triage for one loop: --enable, --disable, "
                                                "or show it (#213)")
-        triage.add_argument("--loop", required=True)
+        triage.add_argument("--loop", required=True,
+                            help="loop id (its config file name; `list` shows them)")
         switch = triage.add_mutually_exclusive_group()
         switch.add_argument("--enable", action="store_true",
                             help="turn triage on (or change it): writes its route, shim and, with "
