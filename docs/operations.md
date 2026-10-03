@@ -17,7 +17,8 @@ running loop.
 `init` writes exactly four things, all of them visible and reversible:
 
 1. one loop config — `~/.hermes/review-loops.d/<id>.json`
-2. three webhook routes — `<id>-review`, `<id>-fix`, `<id>-breach` — into the gateway's own
+2. the webhook routes — `<id>-review` and `<id>-fix`, plus `<id>-breach` with
+   `--adjudicator-route` and `<id>-observe` with `--observer-profile` — into the gateway's own
    `webhook_subscriptions.json` (generated prompts, generated secrets, file left at 0600)
 3. two GitHub hooks, on `pull_request` and `pull_request_review`, pointing at those routes —
    created **paused**, so nothing fires until `arm` (after `doctor` and `selftest`); `--arm` creates
@@ -298,7 +299,7 @@ move a repo you intend to run a loop on into an organization:
 
 | role | fine-grained permissions |
 | --- | --- |
-| reader | `contents: read`, `repository_hooks: read` |
+| reader | `contents: read`, `pull_requests: read`, `repository_hooks: read` |
 | reviewer | `pull_requests: write` |
 | fixer | `contents: write`, `pull_requests: write` |
 | adjudicator | `pull_requests: write` |
@@ -772,8 +773,8 @@ week. A **bare 429 that names no reset** is not guessed into a window: it's an o
 with the ordinary backoff, which suits a per-minute limit. When a reset *is* named:
 
 - **The turn waits rather than fails.** A turn that ended on that 429 goes to `waiting` until the
-  reset, *without spending a retry* (ordinary failures still back off 2m → 4m → 8m → 16m, then
-  fail).
+  reset, *without spending a retry*. Ordinary failures still back off 2m → 4m → 8m over four
+  attempts, then fail.
 - **The account is held.** A new turn for the same account (provider, endpoint and profile) is not
   launched into the closed window; it waits for the same reset.
 - **Explain and status say so.** `explain` shows `held: fixer usage window (openai-codex) — resumes

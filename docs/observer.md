@@ -12,7 +12,7 @@ it sends one short notice per transition to a chat you choose — Telegram, Disc
 that Hermes profile already talks:
 
 ```
-🔧 [widgets] #7 `aaaaaaa` fix pushed · review requested (dev-fixer) · round 1/3 · next: reviewer queued
+🔧 [widgets] #7 `aaaaaaa` fix pushed · review requested (dev-fixer) · round 2/3 · next: reviewer queued
 https://github.com/acme/widgets/pull/7
 ```
 
