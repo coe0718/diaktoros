@@ -2,7 +2,7 @@
 
 Also runs README's own install command through ``init --dry-run`` — parsing it is not enough
 (it parsed while every copy of it was refused), so the example is extracted from the file and
-validated against a fixture home holding exactly the profiles and token files it names.
+validated against a fixture home after its allowlisted placeholders resolve to fixture identities.
 
 Stdlib only, disposable HOME/HERMES_HOME; the "tokens" are obviously-fake sentinels.
 """
@@ -49,6 +49,27 @@ def readme_install_argv() -> list[str]:
                 command = command[:-1] + " " + lines[index].strip()
             return shlex.split(re.sub(r"^hermes\s+review-loop\s+", "", command), comments=True)
     raise AssertionError("README.md has no fenced `hermes review-loop init` example")
+
+
+def resolve_readme_install_placeholders(argv: list[str]) -> list[str]:
+    """Resolve only this example's documented placeholders, in memory and for tests only."""
+    replacements = {
+        "<owner>": "acme", "<repository>": "widgets",
+        "<reader-login>": READER, "<reviewer-login>": REV, "<fixer-login>": FIX,
+        "<reviewer-profile>": "critic", "<fixer-profile>": "coder",
+        "<gateway-host>": "gateway.example",
+    }
+
+    def replace(match):
+        placeholder = match.group(0)
+        if placeholder not in replacements:
+            raise AssertionError(f"unknown README install placeholder: {placeholder}")
+        return replacements[placeholder]
+
+    resolved = [re.sub(r"<[^<>]*>", replace, arg) for arg in argv]
+    if any("<" in arg or ">" in arg for arg in resolved):
+        raise AssertionError("unresolved README install placeholder")
+    return resolved
 
 
 class _Home(unittest.TestCase):
@@ -121,18 +142,46 @@ class _Loop(_Home):
 
 class ReadmeInstallTests(_Home):
     def test_readme_install_command_passes_init_dry_run(self):
-        argv = readme_install_argv()
+        readme = ROOT / "README.md"
+        before = readme.read_bytes()
+        documented_argv = readme_install_argv()
+        argv = resolve_readme_install_placeholders(documented_argv)
         self.assertEqual(argv[0], "init")
+        self.assertTrue(any("<" in arg for arg in documented_argv))
+        self.assertFalse(any("<" in arg or ">" in arg for arg in argv))
+        identities = [argv[argv.index(flag) + 1]
+                      for flag in ("--read-token", "--reviewer", "--fixer")]
+        self.assertEqual(identities, [READER, REV, FIX])
+        self.assertEqual(len(set(identities)), 3)
         # Every token file the example maps, created the way the docs say (mode 600).
+        logins, paths = [], []
         for value in [argv[i + 1] for i, arg in enumerate(argv) if arg == "--token"]:
             login, path = value.split("=", 1)
             target = Path(path).expanduser()
             self.assertEqual(target.parent, self.keys, f"{value}: expected under ~/.hermes/keys")
-            self.pat(target.name[:-len("-pat")])
+            self.assertEqual(target.name, f"{login}-pat")
+            self.assertEqual(self.pat(login), target)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            logins.append(login)
+            paths.append(target)
+        self.assertCountEqual(logins, identities)
+        self.assertEqual(len(set(paths)), 3)
         rc, out = self.run_cli([*argv, "--dry-run"])
         self.assertEqual(rc, 0, out)
         self.assertIn("nothing written", out)
         self.assertFalse(config.config_dir().exists() and any(config.config_dir().iterdir()))
+        self.assertEqual(readme.read_bytes(), before)
+        self.assertEqual(readme_install_argv(), documented_argv)
+
+    def test_readme_install_unknown_placeholders_are_refused(self):
+        for value in ("<unknown-login>", "<reader-login>=~/.hermes/keys/<unknown-path>-pat"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                    AssertionError, "unknown README install placeholder"):
+                resolve_readme_install_placeholders([value])
+        for value in ("<reader-login", "reader-login>"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                    AssertionError, "unresolved README install placeholder"):
+                resolve_readme_install_placeholders([value])
 
     def test_the_old_readme_shape_is_refused(self):
         """The shape README used to print (reader on the reviewer seat) stays refused."""
