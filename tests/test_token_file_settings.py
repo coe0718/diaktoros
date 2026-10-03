@@ -195,8 +195,19 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.assert_refused([*base, ADJ, "--token", f"{ADJ}=keys/adj.pat"],
                             r"not an absolute path")
         self.assert_refused(["set", "--loop", "widgets", "--token", f"{REV}={self.pats['rev2']}"],
-                            r"only maps the token file of the login named by --read-token or --adjudicator-login")
+                            r"is a seat or the current reader")
         self.assert_no_leak()
+
+    def test_set_maps_an_extra_login_such_as_a_hook_admin(self):
+        """`trace`/`uninstall` tell an operator to map an --admin-token login with `set --token`;
+        that advice must work for a login that is not a seat or the reader."""
+        self.install()
+        admin = self.pat("hook-admin", 0o600)
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--token", f"hook-admin={admin}"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.loop_json()["tokens"]["hook-admin"], str(admin))
+        self.assert_refused(["set", "--loop", "widgets", "--token", f"hook-admin={self.pat('x', 0o644)}"],
+                            r"group/other can read it")
 
     # -- plugin settings → apply / init -----------------------------------------------------
 

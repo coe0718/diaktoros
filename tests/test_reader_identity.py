@@ -449,7 +449,7 @@ class ReaderIdentityTests(_Loop):
         self.refused(["set", "--loop", "widgets", "--read-token", "loose",
                       "--token", f"loose={loose}"], r"group/other can read it")
         self.refused(["set", "--loop", "widgets", "--token", f"{REV}={self.keys / 'rev-pat'}"],
-                     r"only maps the token file of the login named by --read-token")
+                     r"is a seat or the current reader")
         self.assertEqual(self.loop_file().read_bytes(), before)
 
 

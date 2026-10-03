@@ -17,11 +17,12 @@ STALE = (r"disabled in this branch", r"worker config absent", r"Do not install t
 
 
 def _banner(text: str) -> str:
-    """The leading blockquote: every `>` line before the first paragraph that is not one."""
-    lines = text.splitlines()[1:]
+    """The safety blockquote: every `>` line of the first blockquote under "Safety model" (it led
+    the README until the docs pass moved the pitch and "Before you start" above it)."""
+    lines = text[text.index("## Safety model"):].splitlines()[1:]
     out = []
     for line in lines:
-        if line.startswith(">") or (not line.strip() and not out):
+        if line.startswith(">") or (out and not line.strip()):
             out.append(line.lstrip("> "))
         elif out:
             break

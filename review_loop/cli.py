@@ -1907,10 +1907,13 @@ def cmd_set(args) -> int:
         login = login.strip()
         owner = next((name for name in (adj_after, read_after if read_wanted is not None else "")
                       if name and login.lower() == name.lower()), "")
-        if not owner:
-            print(f"refused: `set --token` only maps the token file of the login named by "
-                  f"--read-token or --adjudicator-login; {login!r} is not it — seat token files "
-                  "move through the plugin settings and `apply`")
+        seat_logins = {config.seat_login(loop, seat).lower() for seat in config.SEAT_KEYS} - {""}
+        if not owner and login.lower() in seat_logins | {str(loop.get("read_token") or "").lower()}:
+            print(f"refused: `set --token` maps the token file of the login named by --read-token "
+                  f"or --adjudicator-login, or of an extra login such as a hook admin "
+                  f"(--admin-token); {login!r} is a seat or the current reader — seat token files "
+                  "move through the plugin settings and `apply`, and a reader moves with "
+                  "--read-token")
             return 2
         try:
             config.check_token_file(path, f"--token {login}")
@@ -1919,7 +1922,7 @@ def cmd_set(args) -> int:
             return 2
         for key in [k for k in tokens if str(k).lower() == login.lower()]:
             del tokens[key]
-        tokens[owner] = str(pathlib.Path(path.strip()).expanduser())
+        tokens[owner or login] = str(pathlib.Path(path.strip()).expanduser())
     # gh looks a login's file up by its exact key: keep the reader spelled as its mapping is.
     read_after = next((str(k) for k in tokens if str(k).lower() == read_after.lower()), read_after)
     tokens_changed = tokens != (loop.get("tokens") or {})
@@ -3612,10 +3615,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--fixer-concurrency", type=int, default=None,
                           help="PRs the fixer may work at once (overrides --concurrency; "
                                f"default: the loop's, settings {d['fixer_concurrency']})")
-        init.add_argument("--base", default=d["base"])
+        init.add_argument("--base", default=d["base"],
+                          help="the branch PRs target; only PRs against it are reviewed")
         init.add_argument("--clone", default=d["clone"], help="local clone the runs may use")
         init.add_argument("--root", action="append", default=[], help="a directory reviews may clean (repeatable)")
-        init.add_argument("--state-dir", default="")
+        init.add_argument("--state-dir", default="",
+                          help="where this loop keeps its state files (default: "
+                               "~/.hermes/state/review-loops/<id>)")
         init.add_argument("--token", action="append", default=[], help="login=/path/to/pat (repeatable)")
         init.add_argument("--read-token", default="",
                           help="required: login whose token reads GitHub — its own account, never "
@@ -3623,7 +3629,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--skill", default="",
                           help="skill the seats are told to load. A plugin-provided skill is "
                                "qualified, e.g. hermes-review-loop:review-loop")
-        init.add_argument("--adjudicator-route", default="")
+        init.add_argument("--adjudicator-route", default="",
+                          help="route name for the adjudicator (e.g. <id>-breach): setting it "
+                               "turns adjudication on when the verdict cap is spent")
         init.add_argument("--adjudicator-login", default=None,
                           help="optional fourth GitHub account the ruling is also posted as (needs "
                                "--adjudicator-route and its own --token LOGIN=/path)")
@@ -3648,7 +3656,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                "(0 = one notice per transition)")
         init.add_argument("--host", default=d["host"],
                           help="your gateway webhook origin (required unless set in plugin settings)")
-        init.add_argument("--grace-min", type=int, default=d["grace_min"])
+        init.add_argument("--grace-min", type=int, default=d["grace_min"],
+                          help="minutes a PR may sit quiet before the watchdog reports a stall")
         init.add_argument("--ttl-min", type=int, default=d["ttl_min"],
                           help="how long a run may hold its seat slot")
         init.add_argument("--inflight-ttl-min", type=int, default=d["inflight_ttl_min"],
@@ -3675,7 +3684,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.set_defaults(func=cmd_init)
 
         status = sub.add_parser("status", help="Show a loop's config and live state")
-        status.add_argument("--loop")
+        status.add_argument("--loop", help="loop id (default: every configured loop)")
         status.set_defaults(func=cmd_status)
 
         explain = sub.add_parser("explain",
@@ -3686,7 +3695,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
 
         tracer = sub.add_parser("trace", help="Dry-run one webhook through its gate: why it would "
                                               "(or would not) start a run")
-        tracer.add_argument("--loop", required=True)
+        tracer.add_argument("--loop", required=True,
+                            help="loop id (its config file name; `list` shows them)")
         source = tracer.add_mutually_exclusive_group(required=True)
         source.add_argument("--delivery", help="a recorded delivery to this loop's hooks: GitHub's "
                                                "numeric id or the X-GitHub-Delivery GUID")
@@ -3701,7 +3711,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
 
         preflight = sub.add_parser("doctor", help="Preflight a loop read-only: profiles, tokens, "
                                                   "routes, hooks, scripts, cron, clone")
-        preflight.add_argument("--loop")
+        preflight.add_argument("--loop", help="loop id (default: every configured loop)")
         preflight.add_argument("--offline", action="store_true",
                                help="skip the two network probes (gateway reachability, repo hooks)")
         preflight.add_argument("--strict", action="store_true",
@@ -3714,7 +3724,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         check = sub.add_parser("selftest", help="Verify the live isolated path step by step "
                                                 "(runtime, bwrap, model, identities, broker, ledger); "
                                                 "never writes to GitHub")
-        check.add_argument("--loop", required=True)
+        check.add_argument("--loop", required=True,
+                           help="loop id (its config file name; `list` shows them)")
         check.add_argument("--pr", type=int, help="dry-run the reviewer write authorization on this PR")
         check.add_argument("--no-model", action="store_true",
                            help="skip the one tiny real completion (costs a few tokens)")
@@ -3740,7 +3751,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         models.set_defaults(func=cmd_models)
 
         change = sub.add_parser("set", help="Change a loop's settings in place")
-        change.add_argument("--loop", required=True)
+        change.add_argument("--loop", required=True,
+                            help="loop id (its config file name; `list` shows them)")
         change.add_argument("--concurrency", type=int,
                             help="default PRs per seat at once (1 = serialized; above 1 needs a "
                                  "clone, since each run gets its own)")
@@ -3752,9 +3764,12 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--clone", help="local clone the runs isolate from")
         change.add_argument("--base", help="base branch the loop watches")
         change.add_argument("--grace-min", type=int, help="quiet minutes before the watchdog speaks")
-        change.add_argument("--marker-grace-min", type=int)
+        change.add_argument("--marker-grace-min", type=int,
+                            help="minutes an adjudication may sit claimed with no live run before "
+                                 "the watchdog reports it")
         change.add_argument("--ttl-min", type=int, help="how long a run may hold its slot")
-        change.add_argument("--inflight-ttl-min", type=int)
+        change.add_argument("--inflight-ttl-min", type=int,
+                            help="minutes an in-flight mark blocks a second run at the same head")
         change.add_argument("--turn-budget", type=int,
                             help="seconds one isolated seat turn may run (loop default)")
         change.add_argument("--attribution", choices=("on", "off"), default=None,
@@ -3799,7 +3814,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.set_defaults(func=cmd_set)
 
         apply_cmd = sub.add_parser("apply", help="Push the plugin settings onto a loop")
-        apply_cmd.add_argument("--loop", required=True)
+        apply_cmd.add_argument("--loop", required=True,
+                               help="loop id (its config file name; `list` shows them)")
         apply_cmd.add_argument("--dry-run", action="store_true",
                                help="show the diff without writing it")
         apply_cmd.add_argument("--while-busy", action="store_true",
@@ -3827,9 +3843,10 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         settings_cmd.set_defaults(func=cmd_settings)
 
         arm = sub.add_parser("arm", help="Activate the loop's GitHub hooks")
-        arm.add_argument("--loop")
+        arm.add_argument("--loop", help="loop id (default: every configured loop)")
         arm.add_argument("--pause", action="store_true", help="pause instead of arming")
-        arm.add_argument("--admin-token", default="")
+        arm.add_argument("--admin-token", default="",
+                         help="login whose token can edit the repo's hooks (default: the reader)")
         arm.set_defaults(func=cmd_arm)
 
         fixer_push = sub.add_parser("fixer-push", help="Explicit per-repository unattended fixer push policy")
@@ -3844,26 +3861,38 @@ def register_cli(ctx, settings: dict | None = None) -> None:
 
         retry = sub.add_parser("retry", help="Re-arm a PR's isolated run that failed before "
                                              "any GitHub write (refuses one that may have written)")
-        retry.add_argument("--loop", required=True)
-        retry.add_argument("--pr", type=int, required=True)
-        retry.add_argument("--seat", choices=["reviewer", "fixer", "adjudicator"])
+        retry.add_argument("--loop", required=True,
+                           help="loop id (its config file name; `list` shows them)")
+        retry.add_argument("--pr", type=int, required=True,
+                           help="the pull request whose failed run to re-arm")
+        retry.add_argument("--seat", choices=["reviewer", "fixer", "adjudicator"],
+                           help="only that seat's run (default: whichever failed at the PR's "
+                                "newest head)")
         retry.set_defaults(func=cmd_retry)
 
         drain = sub.add_parser("drain", help="Start a queued run once its seat is free")
-        drain.add_argument("--loop", required=True)
-        drain.add_argument("--seat", default="reviewer", choices=["reviewer", "fixer"])
+        drain.add_argument("--loop", required=True,
+                           help="loop id (its config file name; `list` shows them)")
+        drain.add_argument("--seat", default="reviewer", choices=["reviewer", "fixer"],
+                           help="which seat's queue to drain")
         drain.set_defaults(func=cmd_drain)
 
         cleanup = sub.add_parser("cleanup", help="Reclaim local disk for finished PRs")
-        cleanup.add_argument("--loop", required=True)
-        cleanup.add_argument("--pr", type=int)
-        cleanup.add_argument("--dry-run", action="store_true")
+        cleanup.add_argument("--loop", required=True,
+                             help="loop id (its config file name; `list` shows them)")
+        cleanup.add_argument("--pr", type=int,
+                             help="clean one closed PR (default: sweep every closed PR the clone "
+                                  "knows about)")
+        cleanup.add_argument("--dry-run", action="store_true",
+                             help="list what would be removed, remove nothing")
         cleanup.set_defaults(func=cmd_cleanup)
 
         uninstall = sub.add_parser("uninstall", help="Remove a loop: its repo hooks, cron job, "
                                    "routes and config (refuses rather than leave live hooks)")
-        uninstall.add_argument("--loop", required=True)
-        uninstall.add_argument("--keep-config", action="store_true")
+        uninstall.add_argument("--loop", required=True,
+                               help="loop id (its config file name; `list` shows them)")
+        uninstall.add_argument("--keep-config", action="store_true",
+                               help="remove hooks, cron job and routes but keep the loop config file")
         uninstall.add_argument("--admin-token", default="",
                                help="login whose token can delete hooks (admin:repo_hook or repo)")
         uninstall.add_argument("--keep-hooks", action="store_true",

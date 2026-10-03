@@ -1,41 +1,5 @@
 # hermes-review-loop
 
-> **What runs, and when (issue #16).** No gateway agent ever handles a PR event: every gate
-> answers `[SILENT]`, so Hermes never falls through to its normal credential-owning agent.
-> Seats run only as **isolated turns** — credentialless, in a bubblewrap sandbox, writing
-> through the host broker — and nothing runs until *both* switches in
-> [First run](#first-run-in-order) are on: the private runtime file
-> (`~/.hermes/review-loop-runtime.json`) that the worker needs, and `arm`, which turns on the
-> repo hooks `init --hooks` created paused. Without the file an eligible event is queued with
-> its reason and held; with it and the hooks armed, **a reviewer turn posts a real GitHub
-> review** as the reviewer login, and a spent cap runs the adjudicator. The fixer is the
-> exception: unattended fixer pushes stay **off** (below) until you opt in per loop. Each
-> run's checkout is a scratch copy, not a security boundary; the sandbox and broker are.
->
-> **Adjudication is isolated like the seats.** A spent cap enqueues an isolated
-> adjudicator turn in the host run ledger (never the legacy gateway route, which
-> stays silent). It runs credentialless in the same sandbox, with a read-only
-> checkout, and can only submit one ruling (ACCEPT / REJECT / RESPEC + reason)
-> through the broker. The host records it, tells the operator (observer `ruling`
-> notice plus the watchdog outbox), and posts it as a PR comment only when a
-> distinct `seats.adjudicator.login` identity is configured. It never merges,
-> pushes or reviews. See [`docs/configuration.md#adjudication-the-isolated-ruling`](docs/configuration.md#adjudication-the-isolated-ruling).
->
-> **Operator decision: unattended fixer pushes are off by default.** A changes-requested
-> verdict is held for you and no fixer turn starts until
-> `hermes review-loop fixer-push --loop ID --enable --acknowledge-pr-race`. The gate rejects
-> verdicts for PRs whose webhook author is not in `fixers`, and the credentialed broker reads
-> the live PR author before every fixer write and rejects missing/outsider authors. These
-> checks do not close the time-of-check race: a PR can close, become draft, change
-> author/target, or close and reopen after the final API read and before Git receives a ref
-> update. The lease only compares `refs/heads/<branch>` to the old SHA, not GitHub PR
-> metadata, and a post-push readback can flag some transitions but cannot undo a published
-> commit. Do not call that an atomic PR policy; read
-> [the push policy](docs/issue-16-boundary.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent) before enabling it. With pushes off, make an
-> individual fix by hand: inspect the live PR owner, state, draft flag, base/head repo, review
-> and intended diff, push, verify the exact PR/ref afterwards, and reconcile an ambiguous
-> outcome instead of retrying it.
-
 **Two agents review each other's pull requests, unattended — and every step in between is a
 script, not a model.**
 
@@ -60,6 +24,34 @@ part that must not be creative.
                              │
                     cap spent │ → adjudicator rules, human merges
 ```
+
+## Before you start
+
+You need:
+
+- **Linux with [bubblewrap](https://github.com/containers/bubblewrap)** (`bwrap`). Every agent
+  turn runs inside it, with no network and no credentials. Install it from your distribution
+  (`dnf install bubblewrap`, `apt install bubblewrap`). `selftest` checks that it works.
+- **Hermes Agent, installed from its Git checkout with a virtualenv.** The loop runs each turn
+  with that checkout and venv, and records their paths in its private runtime file.
+- **A Rust toolchain** (`rustup`, or a system `cargo`). The sandbox mounts it so a seat can build
+  and test Rust code.
+- **A Hermes gateway that GitHub can reach over HTTPS.** GitHub sends webhooks to it, so it needs
+  a public address, for example behind a tunnel or reverse proxy.
+- **A GitHub repository you administer,** and **three GitHub accounts**: the one that writes
+  fixes, a *different* one that reviews them, and a reader (often your own account). Each one
+  needs its own token. [Accounts and tokens, step by step](docs/accounts.md) walks through
+  creating them.
+- **Two Hermes profiles** for the two agents (for example `drey` writes fixes and `vex` reviews),
+  each with the model it should use.
+
+## New here? Read in this order
+
+1. [How it works](docs/concepts.md): the loop in plain words, and what every term means.
+2. [Accounts and tokens](docs/accounts.md): create the GitHub accounts and tokens.
+3. [Install](#install) and [First run](#first-run-in-order) below.
+4. [Command reference](docs/commands.md): every command and flag.
+5. [Troubleshooting](docs/troubleshooting.md), when something doesn't happen.
 
 ## Why it exists: unattended loops fail quietly
 
@@ -138,9 +130,10 @@ above. If that loop's hooks are edited without `--admin-token` (the default), `a
 (`repository_hooks: write`, `admin:repo_hook` or classic `repo`) — a read-only reader PAT means
 passing `--admin-token <owner login>` to those commands instead.
 
-Each `--token` is a *path* to one account's **classic** PAT (mode 600) — never the token itself, and
-never a fine-grained token, which GitHub refuses for a seat that is a collaborator on someone else's
-repo. See [token files](docs/operations.md#token-files-one-pat-per-account) and
+Each `--token` is a *path* to one account's PAT (mode 600), never the token itself. The two
+**seat** accounts need a **classic** PAT: GitHub refuses a fine-grained token for an account that
+is a collaborator on someone else's repository. The reader, when it is the repository owner, can
+use a read-only fine-grained token. See [token files](docs/operations.md#token-files-one-pat-per-account) and
 [scopes by role](docs/operations.md#token-scopes-by-role).
 
 Replace `--host` with the public origin of **your own** Hermes gateway (no path), or explicitly
@@ -148,8 +141,9 @@ set `host` in this plugin's settings. There is no shared webhook host. `init` re
 invalid host before writing the loop config or routes; `--hooks` never creates GitHub hooks in that
 case. Use HTTPS for a public GitHub webhook (HTTP is useful for local testing).
 
-`init` writes one loop config, three webhook routes, two GitHub hooks and one cron job — all visible
-and reversible; see [what `init` writes](docs/operations.md#what-init-writes) and the
+`init` writes one loop config, the webhook routes (one per seat, plus the adjudicator's with
+`--adjudicator-route` and the observer's with `--observer-profile`), two GitHub hooks and one cron
+job — all visible and reversible; see [what `init` writes](docs/operations.md#what-init-writes) and the
 [everyday commands](docs/operations.md#everyday-commands).
 
 ### First run, in order
@@ -176,7 +170,88 @@ What each step proves, and how to read a failure, is in
 `hermes review-loop explain --loop ID --pr N` says why
 ([details](docs/operations.md#why-isnt-this-pr-moving)).
 
-## DirectSDK subscription seats (host process backend)
+## What the loop guarantees
+
+- **One PR, one seat.** A PR is held by the reviewer *or* the fixer, never both: a review never
+  runs against a PR the fixer is mid-fix on. The handoff is what frees the other seat — the fixer's
+  `review_requested` ends the fixer's turn, the reviewer's verdict ends the reviewer's. Any other
+  trigger that arrives while the other seat holds the PR queues instead of starting.
+- **Capacity is per seat.** `reviewer 2 · fixer 1` means two reviews in flight and one fix — Drey
+  and Vex are different models on different budgets, and wanting two reviews rarely means wanting
+  two fixes. Everything above a seat's limit queues, and starts when a slot frees.
+- **Parallel only when it is safe.** A capacity above 1 gives every run its own clone and its own
+  build/temp dirs — per PR *and per seat*, because the two seats can overlap on one PR. A run that
+  cannot be isolated is queued, never started beside another.
+- **The cap is a wall, not a suggestion.** `cap` verdicts, `cap - 1` fix turns. The verdict that
+  reaches the cap escalates instead of buying another round. The human is the veto, not the
+  reviewer: the adjudicator rules and reports, and never merges or pushes.
+- **One wake per head.** Every marker is keyed by PR *and* commit: a new commit is a new situation,
+  the same commit is not. Redelivered webhooks do nothing.
+- **Unknown is not a guess.** If the review list cannot be read, the gate stays silent rather than
+  assuming round 1 — a skipped round beats a miscounted one.
+- **The watchdog is read-only until it has a reason.** Four stall shapes, read from GitHub state;
+  each armed sweep drains eligible queued runs when a seat is free, without waiting for a stall alert.
+  A queued head that no longer matches the PR is dropped, never silently retargeted.
+- **Asking why changes nothing.** `explain` reads GitHub and the loop's own files, reaches its
+  conclusion through the *same* predicates the gates run, and writes nothing at all — no queue
+  entry, no claim, no drain, no webhook POST, no token. Run it twice and the loop is byte-for-byte
+  as it was.
+- **Paused means silent; blind does not.** With the repo hooks off, the watchdog says nothing and
+  drains nothing: a parked loop must never spend a run. When it cannot read GitHub at all (a dead
+  or revoked token, a 5xx, no network) it still drains nothing, but says so — "cannot read GitHub as
+  <login>: HTTP 401 — token expired or revoked?" — every cooldown until reads work, and it warns a
+  week before the read token's `github-authentication-token-expiration` date.
+- **A seat is who the config says it is — or the loop refuses to run.** The profile it runs as, the
+  login it acts as and the route that wakes it are validated together before a config, a route or a
+  hook is written, and `status` prints the installed route next to the configured seat so a
+  half-applied identity change is visible instead of silent.
+- **The observer is not a seat.** An opt-in feed of short notices, emitted from the transitions the
+  loop already made, delivered by a `deliver_only` route with no agent behind it. A refused
+  delivery costs a retry — never a queue entry, a lock, or a turn; and with the feed off the loop
+  is byte-for-byte the loop without one.
+
+## Safety model: what runs, and what can write
+
+The short version: **no agent ever holds a GitHub credential, and nothing runs until you turn it
+on.** The long version:
+
+> **What runs, and when (issue #16).** No gateway agent ever handles a PR event: every gate
+> answers `[SILENT]`, so Hermes never falls through to its normal credential-owning agent.
+> Seats run only as **isolated turns** — credentialless, in a bubblewrap sandbox, writing
+> through the host broker — and nothing runs until *both* switches in
+> [First run](#first-run-in-order) are on: the private runtime file
+> (`~/.hermes/review-loop-runtime.json`) that the worker needs, and `arm`, which turns on the
+> repo hooks `init --hooks` created paused. Without the file an eligible event is queued with
+> its reason and held; with it and the hooks armed, **a reviewer turn posts a real GitHub
+> review** as the reviewer login, and a spent cap runs the adjudicator. The fixer is the
+> exception: unattended fixer pushes stay **off** (below) until you opt in per loop. Each
+> run's checkout is a scratch copy, not a security boundary; the sandbox and broker are.
+>
+> **Adjudication is isolated like the seats.** A spent cap enqueues an isolated
+> adjudicator turn in the host run ledger (never the legacy gateway route, which
+> stays silent). It runs credentialless in the same sandbox, with a read-only
+> checkout, and can only submit one ruling (ACCEPT / REJECT / RESPEC + reason)
+> through the broker. The host records it, tells the operator (observer `ruling`
+> notice plus the watchdog outbox), and posts it as a PR comment only when a
+> distinct `seats.adjudicator.login` identity is configured. It never merges,
+> pushes or reviews. See [`docs/configuration.md#adjudication-the-isolated-ruling`](docs/configuration.md#adjudication-the-isolated-ruling).
+>
+> **Operator decision: unattended fixer pushes are off by default.** A changes-requested
+> verdict is held for you and no fixer turn starts until
+> `hermes review-loop fixer-push --loop ID --enable --acknowledge-pr-race`. The gate rejects
+> verdicts for PRs whose webhook author is not in `fixers`, and the credentialed broker reads
+> the live PR author before every fixer write and rejects missing/outsider authors. These
+> checks do not close the time-of-check race: a PR can close, become draft, change
+> author/target, or close and reopen after the final API read and before Git receives a ref
+> update. The lease only compares `refs/heads/<branch>` to the old SHA, not GitHub PR
+> metadata, and a post-push readback can flag some transitions but cannot undo a published
+> commit. Do not call that an atomic PR policy; read
+> [the push policy](docs/issue-16-boundary.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent) before enabling it. With pushes off, make an
+> individual fix by hand: inspect the live PR owner, state, draft flag, base/head repo, review
+> and intended diff, push, verify the exact PR/ref afterwards, and reconcile an ambiguous
+> outcome instead of retrying it.
+
+## Advanced: Claude subscription seats (DirectSDK)
 
 A seat whose Hermes profile selects `claude-subscription-directsdk-experimental`
 uses the plugin's DirectSDK client **on the trusted host**, not inside bubblewrap.
@@ -236,46 +311,6 @@ or a native CLI RPC exposed to the seat. Offline adversarial coverage lives in
 subscription quota. Offline success does **not** prove a live model request or
 native credential availability. `selftest --no-model` is the no-spend preflight;
 model-spending selftests remain an explicit operator decision.
-
-## What the loop guarantees
-
-- **One PR, one seat.** A PR is held by the reviewer *or* the fixer, never both: a review never
-  runs against a PR the fixer is mid-fix on. The handoff is what frees the other seat — the fixer's
-  `review_requested` ends the fixer's turn, the reviewer's verdict ends the reviewer's. Any other
-  trigger that arrives while the other seat holds the PR queues instead of starting.
-- **Capacity is per seat.** `reviewer 2 · fixer 1` means two reviews in flight and one fix — Drey
-  and Vex are different models on different budgets, and wanting two reviews rarely means wanting
-  two fixes. Everything above a seat's limit queues, and starts when a slot frees.
-- **Parallel only when it is safe.** A capacity above 1 gives every run its own clone and its own
-  build/temp dirs — per PR *and per seat*, because the two seats can overlap on one PR. A run that
-  cannot be isolated is queued, never started beside another.
-- **The cap is a wall, not a suggestion.** `cap` verdicts, `cap - 1` fix turns. The verdict that
-  reaches the cap escalates instead of buying another round. The human is the veto, not the
-  reviewer: the adjudicator rules and reports, and never merges or pushes.
-- **One wake per head.** Every marker is keyed by PR *and* commit: a new commit is a new situation,
-  the same commit is not. Redelivered webhooks do nothing.
-- **Unknown is not a guess.** If the review list cannot be read, the gate stays silent rather than
-  assuming round 1 — a skipped round beats a miscounted one.
-- **The watchdog is read-only until it has a reason.** Four stall shapes, read from GitHub state;
-  each armed sweep drains eligible queued runs when a seat is free, without waiting for a stall alert.
-  A queued head that no longer matches the PR is dropped, never silently retargeted.
-- **Asking why changes nothing.** `explain` reads GitHub and the loop's own files, reaches its
-  conclusion through the *same* predicates the gates run, and writes nothing at all — no queue
-  entry, no claim, no drain, no webhook POST, no token. Run it twice and the loop is byte-for-byte
-  as it was.
-- **Paused means silent; blind does not.** With the repo hooks off, the watchdog says nothing and
-  drains nothing: a parked loop must never spend a run. When it cannot read GitHub at all (a dead
-  or revoked token, a 5xx, no network) it still drains nothing, but says so — "cannot read GitHub as
-  <login>: HTTP 401 — token expired or revoked?" — every cooldown until reads work, and it warns a
-  week before the read token's `github-authentication-token-expiration` date.
-- **A seat is who the config says it is — or the loop refuses to run.** The profile it runs as, the
-  login it acts as and the route that wakes it are validated together before a config, a route or a
-  hook is written, and `status` prints the installed route next to the configured seat so a
-  half-applied identity change is visible instead of silent.
-- **The observer is not a seat.** An opt-in feed of short notices, emitted from the transitions the
-  loop already made, delivered by a `deliver_only` route with no agent behind it. A refused
-  delivery costs a retry — never a queue entry, a lock, or a turn; and with the feed off the loop
-  is byte-for-byte the loop without one.
 
 ## Status and honesty
 
@@ -346,6 +381,10 @@ build it in both, and CI runs the suite once per mode.
 
 | page | what it covers |
 |---|---|
+| [docs/concepts.md](docs/concepts.md) | how it works in plain words: a glossary, one PR start to finish, the switches |
+| [docs/accounts.md](docs/accounts.md) | the GitHub accounts and tokens, step by step |
+| [docs/commands.md](docs/commands.md) | every command, what it changes, and every flag |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | symptom → cause → fix |
 | [docs/operations.md](docs/operations.md) | what `init` writes, everyday commands, the `doctor` preflight, `selftest`, `explain`, burst handling |
 | [docs/settings.md](docs/settings.md) | the desktop settings form, seat identity defaults, `settings` / `apply` |
 | [docs/observer.md](docs/observer.md) | the observer feed: notices to your phone, how to turn it on, its rules |

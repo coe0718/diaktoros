@@ -14,6 +14,44 @@ GitHub hooks, the cron shim and job, the clone and the gateway — and writes no
 See [Preflight](architecture.md#preflight-can-this-installation-run) and, for example output,
 [Operating a loop](operations.md#preflight-doctor).
 
+## A complete example
+
+What `init` writes for the repository `owner/name`, with the observer feed and adjudication on
+(the paths are examples). You rarely edit this by hand: `init`, `set`, `apply` and `fixer-push`
+change it for you, with checks. The tables below explain every key.
+
+```json
+{
+  "id": "name",
+  "repo": "owner/name",
+  "base": "main",
+  "cap": 3,
+  "concurrency": 1,
+  "fixers": ["dev-account"],
+  "reviewers": ["rev-bot"],
+  "reviewer_seat": "rev-bot",
+  "seats": {
+    "reviewer": {"route": "name-review", "profile": "vex", "login": "rev-bot", "agent": "Vex"},
+    "fixer": {"route": "name-fix", "profile": "drey", "login": "dev-account", "agent": "Drey"}
+  },
+  "adjudicator": {"route": "name-breach", "profile": "tuck"},
+  "read_token": "reader-bot",
+  "tokens": {
+    "reader-bot": "/home/you/.hermes/keys/reader-bot-pat",
+    "rev-bot": "/home/you/.hermes/keys/rev-bot-pat",
+    "dev-account": "/home/you/.hermes/keys/dev-account-pat"
+  },
+  "host": "https://your-gateway.example",
+  "state_dir": "/home/you/.hermes/state/review-loops/name",
+  "turn_budget_s": 900,
+  "attribution": true,
+  "observer": {"route": "name-observe", "profile": "tuck", "deliver": "telegram"}
+}
+```
+
+`tokens` holds **paths** to token files, never tokens. `unattended_fixer_push` is absent here,
+which means off.
+
 ## Required
 
 | key | meaning |
@@ -34,8 +72,6 @@ See [Preflight](architecture.md#preflight-can-this-installation-run) and, for ex
 | `cap` | `3` | verdicts allowed before escalation (`cap - 1` fix turns) |
 | `seats.<seat>.login` | first fixer/reviewer | the GitHub login that seat acts as; `init`/`apply` refuse one outside that seat's allowlist, and two seats may not share one |
 | `seats.<seat>.agent` | profile name | display name used in start-pings and prompts |
-| `seats.<seat>.channel` | profile's `DISCORD_HOME_CHANNEL` | where the start-ping goes |
-| `seats.<seat>.emoji` | 🔍 / 🔧 | cosmetic, for the ping |
 | `adjudicator.route` | — | enables adjudication: when the cap is spent an isolated adjudicator turn is enqueued in the host run ledger; omit to only write the marker. The legacy gateway route itself stays silent |
 | `adjudicator.profile` | `default` | profile of the legacy gateway route (validated against the seats; the isolated turn does not run as it) |
 | `seats.adjudicator.login` | unset | **optional** GitHub identity the ruling is *also* posted as, as a PR comment. Set it with `init`/`set --adjudicator-login LOGIN --token LOGIN=/abs/path` (`set --adjudicator-login ""` clears it) or the `adjudicator_login` setting. It needs its own `tokens` entry (an absolute, private 0600 file) and must be a fourth account: not the `read_token`, not either seat, not in `fixers`/`reviewers`, and not sharing a token file with any of them. The broker re-checks all of it (plus distinct `/user` principals and the live PR) before each comment. Without it rulings go to the operator only — not an error |
@@ -58,6 +94,7 @@ See [Preflight](architecture.md#preflight-can-this-installation-run) and, for ex
 | `seats.<seat>.turn_budget_s` | loop default | this seat's own budget (`reviewer`, `fixer`, `adjudicator`), overriding `turn_budget_s`. `init`/`set --reviewer-turn-budget N` / `--fixer-turn-budget N`; the adjudicator's is set in the file |
 | `attribution` | `true` | sign what the loop itself posts: its reviews, the fixer's answers comment and the ruling comment end with "🤖 Automated by hermes-review-loop" (linking here), and the fixer's commits carry an `Automated-By:` trailer. `false` adds nothing. A JSON boolean; see [What the loop signs](operations.md#what-the-loop-signs). Plugin setting `attribution`; `init`/`set --attribution on\|off` |
 | `seats.<seat>.daily_turns` | no cap | the most turns this seat may start per local day on this loop (`reviewer`, `fixer`, `adjudicator`; 1–1000). Past it, turns wait until midnight without spending a retry — see [Pacing](operations.md#pacing-usage-windows-and-daily-caps). `set --reviewer-daily-turns N` / `--fixer-daily-turns N` (0 removes it); the adjudicator's is set in the file |
+| `unattended_fixer_push` | `false` | whether a fixer turn may push to the PR on its own. While `false` a "changes requested" verdict is held for you and no fixer turn starts. Change it only with `hermes review-loop fixer-push --loop ID --enable --acknowledge-pr-race` (or `--disable`); `set` and `apply` never touch it. A JSON boolean: only an explicit `true` enables it. See [the push policy](issue-16-boundary.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent) |
 | `observer` | `{}` | the read-only observer feed. `{}` means no feed, and the loop is untouched by its absence — see [The observer feed](#the-observer-feed) |
 
 ## Turn budget: how long one turn may run
