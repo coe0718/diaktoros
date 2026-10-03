@@ -1,270 +1,235 @@
-# Issue triage and issue fixes, step by step
+# Issue triage and issue fixes
 
-A review loop starts at a pull request. Two optional features let it start one step earlier, at an
-issue:
+Two opt-in features start before a PR: triage chooses labels for a new issue; a maintainer
+can hand an issue to the fixer to propose a PR. Neither feature merges code or handles
+arbitrary ongoing issue conversations.
 
-- **Issue triage.** When someone you trust opens an issue, a sandboxed triage turn reads it and
-  adds labels from a list you choose (for example `bug`, `docs`, `P2`). It can also leave one
-  short comment, if you allow that.
-- **Issue fixes.** When a maintainer adds a special label (for example `agent-fix`) to an issue,
-  the fixer seat gets one turn to fix it. If it can, it opens a PR, and the normal review loop
-  takes over from there. If it can't, it explains why in one comment on the issue.
+## Contents
 
-Both are off until you turn them on, per loop, with one command: `hermes review-loop triage`.
-Issue fixes are part of triage: they need triage turned on first.
+- [Behavior and boundaries](#what-each-one-does-and-who-can-start-it)
+- [Prerequisites](#before-you-start)
+- [Enable triage](#turn-on-issue-triage)
+- [Enable issue fixes](#turn-on-issue-fixes)
+- [Costs and scheduling](#caps-and-costs)
+- [Inspect results](#inspect-results)
+- [Disable](#turn-it-off)
+- [Recovery](#when-it-doesnt-work)
+- [Current limits](#current-limits)
 
-This page walks through both. The examples use the repo `owner/name`, the loop id `name`, the fixer
-account `dev-account`, the reviewer account `rev-bot`, the reader account `reader-bot`, and the
-Hermes profiles `coder` (fixer), `critic` (reviewer) and `arbiter` (triage). Replace `you` with your own
-GitHub login. Every command and flag is also in the [command reference](commands.md#triage).
+Replace quoted angle-bracket placeholders with your values, brackets included.
+`--loop` always selects a saved loop ID. `--admin-token` names a mapped hook-admin login,
+not a token value. See [commands](commands.md) for the complete CLI reference.
 
 ## What each one does, and who can start it
 
-| | Issue triage | Issue fixes |
+| | Triage | Issue fix |
 | --- | --- | --- |
-| Starts when | an issue is **opened** | a label is **added** to an open issue |
-| Who can start it | the issue's author must be in `triage.authors` (`--author`) | the person who adds the label must be in `triage.maintainers` (`--maintainer`), the label must be `triage.fix_label` (`--fix-label`), and the issue's author must also be in `triage.authors` |
-| Runs as | the triage profile (`--profile`) | the fixer seat: its profile, model and GitHub account |
-| What it can write | labels from `triage.labels` (at most `max_labels`, default 3), plus one comment of at most 1000 characters only with `--comment on` | either one PR from a new branch `review-loop/issue-N`, or one comment on the issue |
-| Writes as | `triage.login` (default: the reviewer seat's account, `rev-bot`) | the fixer seat's account (`dev-account`) |
-| Extra opt-in | none | unattended fixer pushes must be on for the repository |
+| Trigger | `issues` webhook action `opened` | Action `labeled` with configured fix label |
+| Authorization | Author in `triage.authors` | Sender in `triage.maintainers`, author in `triage.authors` |
+| Live eligibility | Open issue, not PR, no configured triage label already present | Open issue, not PR, fix label still present, pushes enabled |
+| Model environment | Triage profile, empty read-only `/work` | Fixer profile/model/account, base commit checkout |
+| Write | Add allowlisted labels and optionally one short comment | One new-branch PR sequence or one cannot-fix comment |
+| Principal | Configured triage login, default reviewer login | Fixer login |
 
-A few rules hold for both:
+The host re-reads eligibility at the gate, before launch and before writing. Issue text
+is untrusted data: title is bounded and body clipped at 8000 characters. No model holds
+a GitHub credential. Broker policy restricts labels and comment permission, not merely
+prompt instructions. Triage never removes labels. If any label from the triage list is
+already present, it writes nothing—even if an earlier automation, not a human, added it.
 
-- **The issue text is untrusted.** Anyone can type anything into an issue, including instructions
-  aimed at a model. So the gate drops an issue from anyone outside `triage.authors` before any model
-  sees it. The issue's title and body reach the model as data (the body is clipped at 8000
-  characters), and the model's single write goes through the host broker, which enforces the rules
-  above whatever the model asks for. The model never holds a GitHub token.
-- **The broker enforces the label list.** A label not in `triage.labels`, more than `max_labels`
-  of them, or a comment while comments are off is refused before anything is written.
-- **People win.** Triage only ever *adds* labels; it never removes one. If the issue already
-  carries any label from `triage.labels` (a person got there first), triage writes nothing. That is
-  checked by the gate, again just before the turn starts, and again by the broker right before it
-  writes.
-- **The fix label can't be a triage label.** `normalize` refuses a `fix_label` that is also in
-  `labels`. So the triage turn can never hand an issue to the fixer: only a person can.
-- **One write per turn, recorded first.** Each triage and each issue fix is written to the host run
-  ledger before the GitHub write. A write whose outcome is unknown is marked `uncertain` and is
-  never replayed.
+The fix label cannot be a triage label. Only an allowlisted sender's labeling event
+triggers a fix; the feature does not inspect whether that sender is physically a human.
+Changing/reopening an issue or editing its text does not launch triage. A durable
+triage key deduplicates repeat opened deliveries; proven pre-write failures may re-arm,
+but recorded write outcomes are never blindly replayed.
 
 ## Before you start
 
-You need:
-
-1. **A working review loop for the repository.** `doctor` should be clean and the hooks armed.
-   If you don't have one yet, start with [`setup`](commands.md#setup).
-2. **The private runtime file**, `~/.hermes/review-loop-runtime.json`. Triage and issue-fix turns
-   are isolated turns like reviews, so without this file nothing can start. `setup` writes it;
-   `hermes review-loop selftest --loop name --no-model` checks it.
-3. **An account to label as.** By default triage labels as the reviewer seat's account (`rev-bot`),
-   which already has a token file mapped. To use another account, pass `--login LOGIN` and map its
-   token with `--token LOGIN=/path/to/pat`. Either way:
-   - the token needs `issues: write` on the repository (a classic `repo` token has it);
-   - it can never be the reader (`reader-bot`): `triage --enable` refuses that;
-   - the broker checks that the token really belongs to that login before every write.
-4. **A Hermes profile for the triage model.** Any existing profile works. Triage has no
-   distinctness rule, so it can be the reviewer's profile (`critic`) or another one (`arbiter`). The
-   profile must exist; `triage --enable` refuses a profile name it can't find. A cheap, fast model
-   is usually enough: triage reads one issue and picks labels.
-5. **The labels.** Decide the list triage may choose from. If a label doesn't exist in the
-   repository yet, GitHub normally creates it (grey, with no description) the first time it is
-   added. If you want colors and descriptions, create the labels on the repository's **Labels**
-   page first (`https://github.com/owner/name/labels`). Label names can be 1 to 50 characters
-   with no commas, braces, backticks or control characters, and you can list up to 100.
-6. **A login that can manage repo hooks** (`--admin-token`). Triage gets its own repo hook, on the
-   `issues` event. Creating it needs hook write access. The login must already have a token file
-   mapped on the loop (or pass `--token LOGIN=/path/to/pat` in the same command). The examples use
-   `reader-bot`, the repo owner's account in the README setup.
+1. Have a working review loop and a private `$HERMES_HOME/review-loop-runtime.json`.
+   Run [doctor and selftest](operations.md#preflight-doctor).
+2. Choose an existing triage Hermes profile. It can be the reviewer profile: triage
+   does not require a distinct model profile, but the selected model must resolve.
+3. Choose a triage writer with **issues write** permission and a mapped private token
+   belonging to that account. It cannot be the read/control account. The default is
+   the reviewer login, not the author who opened the issue.
+4. Choose trusted issue authors and a bounded label vocabulary. Label names are
+   validated (1–50 characters; no commas, braces, backticks or control characters;
+   up to 100 configured labels). Create repository labels ahead of time if you need
+   predictable colors/descriptions.
+5. Choose a mapped login able to manage hooks. The triage hook subscribes to `issues`;
+   route installation alone cannot receive GitHub events.
 
 ## Turn on issue triage
 
-1. **Preview the change.** `--dry-run` validates everything and prints the settings it would
-   write, and writes nothing:
+Preview the complete policy before enabling:
 
-   ```bash
-   hermes review-loop triage --loop name --enable --profile arbiter --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token reader-bot --dry-run
-   ```
+```bash
+hermes review-loop triage --loop "<loop-id>" --enable --profile "<triage-profile>" --login "<triage-login>" --author "<trusted-author-login>" --labels bug,docs,question --max-labels 3 --comment off --daily-turns 20 --admin-token "<hook-admin-login>" --dry-run
+```
 
-   `--author` is repeatable: pass it once for each login whose issues should be triaged. Add
-   `--comment on` to allow one short comment with the labels, `--max-labels N` (1 to 10) to change
-   the limit of 3, and `--login LOGIN` to label as an account other than the reviewer seat.
+| Option | Meaning |
+| --- | --- |
+| `--enable` | Write/enable the triage block and route |
+| `--profile` | Existing Hermes profile whose model performs triage |
+| `--login` | GitHub writer identity; omit to use current/default reviewer identity |
+| `--author` | Repeatable trusted issue-author login; a supplied list replaces the previous list |
+| `--labels` | Comma-separated allowed labels; supplied vocabulary replaces the previous one |
+| `--max-labels` | Maximum selections per turn, 1–10; default 3 |
+| `--comment off` | Labels only (default); `on` allows an optional comment, at most 1000 characters |
+| `--daily-turns` | Per-loop triage starts per local day; 0 removes the cap |
+| `--admin-token` | Mapped account that can create the repository hook |
+| `--dry-run` | Validate and print planned settings without changing state |
 
-2. **Turn it on.** The same command without `--dry-run`:
+If the writer is not mapped, add `--token "<triage-login>=<absolute-token-file>"` to the
+same command. `--token` is repeatable and refers to files, never literal credentials.
 
-   ```bash
-   hermes review-loop triage --loop name --enable --profile arbiter --author you --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token reader-bot
-   ```
+Run the preview command again **without `--dry-run`**. Configuration, route and shim
+are installed; with `--admin-token`, the issues hook is created **paused**. Without that
+option, install the hook later:
 
-   It writes the `triage` block into the loop config, a new webhook route `name-triage` (with its
-   own secret) and its gate shim, and, because you passed `--admin-token`, a repo hook on the
-   `issues` event. **The hook is created paused.** Without `--admin-token`, create the hook later
-   with `hermes review-loop apply --loop name --hooks --admin-token reader-bot`.
+```bash
+hermes review-loop apply --loop "<loop-id>" --hooks --admin-token "<hook-admin-login>"
+hermes review-loop arm --loop "<loop-id>" --admin-token "<hook-admin-login>"
+hermes review-loop doctor --loop "<loop-id>"
+hermes review-loop triage --loop "<loop-id>"
+```
 
-3. **Arm it.** `arm` turns on every hook the loop has, the triage hook included, then pings each
-   one and reports whether the gateway accepted its signature:
+`--hooks` asks apply to ensure repository hooks; review the other settings apply may
+change before running it. `arm` activates **every loop hook**, not just triage, and
+verifies signed pings. Doctor checks profile/model, route/hook and credential file;
+a local credential check does not prove issues-write permission. Triage with no
+`--enable`/`--disable` prints settings without updating them.
 
-   ```bash
-   hermes review-loop arm --loop name --admin-token reader-bot
-   ```
-
-4. **Check the install.**
-
-   ```bash
-   hermes review-loop doctor --loop name
-   ```
-
-   With triage on, `doctor` adds these lines. Each should be ✅:
-
-   - `profile:triage`: the triage profile exists;
-   - `credential:triage`: the triage login has a non-empty, private token file (it checks the file,
-     not the token's permissions);
-   - `model:triage`: the model the triage turn will use, from the triage profile;
-   - `route:name-triage`: the route is in the gateway's registry and wakes the right profile;
-   - `hook:name-triage`: the repo hook posts to that route on `issues`, and is active.
-
-5. **Look at the settings any time:**
-
-   ```bash
-   hermes review-loop triage --loop name
-   ```
-
-   It prints the route, profile and login, the authors, the labels, whether comments are allowed,
-   the daily cap, and whether issue fixes are on.
-
-6. **Test it.** From an account in `--author`, open a new issue on `owner/name`. Within a few
-   minutes (one isolated turn) you should see:
-
-   - labels from your list added to the issue, by the triage login (`rev-bot`);
-   - with `--comment on`, possibly one short comment from the same account, ending in the loop's
-     footer `🤖 Automated by hermes-review-loop · issue triage`. The model may also apply no label
-     at all, if none fits.
-
-   Triage sends **no observer notice** (#231), so nothing arrives in your chat. To see what
-   happened, read the run ledger, as shown in
-   [troubleshooting](troubleshooting.md#an-issue-opened-and-nothing-was-labelled). Each triage is
-   one row in `triage_results`, with the state `posted`, `skipped` (a person labelled it first),
-   `nothing` (no label fitted), `denied` (the broker refused it), or `uncertain` (the write's
-   outcome is unknown).
-
-An issue opened by anyone not in `--author` is dropped at the gate, and costs nothing. Editing,
-reopening or relabelling an issue does not start triage: only `opened` does. Each issue is
-triaged at most once.
+From an allowlisted author, open a new issue. Check labels/comment on GitHub and the
+ledger below. The model may choose no labels. There is no triage observer notice.
+A rejected author never reaches the model and costs no triage turn.
 
 ## Turn on issue fixes
 
-An issue fix pushes a commit and opens a PR without you, so it needs the same opt-in as the fixer
-answering review verdicts on its own.
+Triage must already be enabled. This feature **publishes a commit and opens a PR without
+another confirmation**, and shares the off-by-default fixer push policy.
 
-1. **Turn on unattended fixer pushes**, if they are not on already. Read the
-   [push policy](security.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent)
-   first: it is a host-operator decision, and it accepts a small race between the last check and
-   the push.
+```bash
+hermes review-loop fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
+hermes review-loop triage --loop "<loop-id>" --enable --fix-label "<fix-label>" --maintainer "<maintainer-login>" --dry-run
+hermes review-loop triage --loop "<loop-id>" --enable --fix-label "<fix-label>" --maintainer "<maintainer-login>"
+```
 
-   ```bash
-   hermes review-loop fixer-push --loop name --enable --acknowledge-pr-race
-   ```
+Read [push policy](operations.md#first-run) and [security](security.md) first.
+`--acknowledge-pr-race` acknowledges host-operator policy and the residual PR-metadata/ref
+race, not verified GitHub owner consent. Enabling also permits ordinary PR fixer turns.
+`--fix-label` identifies the separate handoff label; create it in the repository so
+maintainers can select it. `--maintainer` is repeatable; supplying it replaces the
+maintainer list, so include every intended sender. Unspecified existing triage settings
+are preserved. `--dry-run` previews without writing.
 
-   This also lets the fixer answer changes-requested reviews on its own, if it doesn't already.
+Test by applying the label from an allowlisted maintainer to an open issue by an
+allowlisted author. The gate reads the configured base branch's current commit and
+queues one `issue_fixer` turn keyed by issue and base commit. The turn uses the normal
+fixer profile and account, not a separate issue-fixer profile.
 
-2. **Create the fix label** on the repository's **Labels** page (for example `agent-fix`), so a
-   maintainer can pick it from the issue's sidebar. It must not be one of your triage labels.
+If a fix is possible, the broker:
 
-3. **Name the label and the maintainers.** Triage must already be on (the step above). Settings
-   you don't pass are kept:
+1. Records the intent before external writes.
+2. Pushes one commit to new branch `review-loop/issue-N` from the captured base SHA.
+   The branch must be absent; an existing branch is never overwritten.
+3. Opens a PR against the configured base, with `Fixes #N` in its description.
+4. Requests the configured reviewer. The opened PR then follows the regular review loop.
 
-   ```bash
-   hermes review-loop triage --loop name --enable --fix-label agent-fix --maintainer you --dry-run
-   hermes review-loop triage --loop name --enable --fix-label agent-fix --maintainer you
-   ```
+The file-write boundary adds/replaces whole files; no deletes, renames or `.github/`
+changes. Attribution is added unless disabled. If a fix is not possible, the turn can
+post one explanation on the issue instead of opening a PR. It is not guaranteed to
+solve the issue or complete all stages of the PR sequence.
 
-   `--maintainer` is repeatable. `hermes review-loop triage --loop name` then shows
-   `issue fixes: label 'agent-fix' by you hands an issue to the fixer`. If pushes are off, the same
-   line ends `OFF until unattended fixer pushes are on` and names the command.
-
-4. **Test it.** Open an issue from an account in `--author` (or use one that is already open), then
-   add the `agent-fix` label from an account in `--maintainer`. What happens:
-
-   1. The gate re-reads the issue: it must still be open, still by an allowlisted author, and still
-      carry the fix label. It reads the head commit of the loop's base branch (`main`) and queues
-      one issue-fix turn from that commit.
-   2. The turn runs in the same sandbox as every other seat, as the **fixer seat**: the fixer's
-      profile (`coder`) and model. `/work` holds the base branch at that commit, and the issue's
-      title and body are passed as data. It may build and run tests, like a normal fixer turn.
-   3. If it fixed the issue, the host pushes one commit to a **new** branch `review-loop/issue-N`.
-      The push requires the branch not to exist, so it never overwrites anything. The commit
-      carries the `Automated-By: hermes-review-loop (…)` trailer. Like every fixer push, it can add
-      or replace whole files only (no deletes or renames) and nothing under `.github/`.
-   4. The host opens a PR from that branch against the base, as the fixer account (`dev-account`),
-      with the fixer's description followed by `Fixes #N`, and requests a review from the reviewer
-      seat (`rev-bot`).
-   5. From here it is an ordinary loop PR: the reviewer reviews it, the fixer answers, and so on.
-      When it is merged into the default branch, GitHub closes the issue (the `Fixes #N` line).
-
-   If the fixer can't fix the issue (it is unclear, too large, or needs a decision), it opens no
-   PR. It posts **one comment** on the issue instead, as the fixer account, saying why.
-
-How issue-fix turns are run:
-
-- they use the fixer's profile and GitHub account (`dev-account`); there is no separate seat to
-  configure;
-- **one at a time** (concurrency 1);
-- each turn gets the loop's `turn_budget_s` (900 seconds unless you changed it), not the fixer
-  seat's own budget;
-- **no daily cap** applies to them;
-- each label application at a new base commit queues a new turn, but the second push is refused
-  while `review-loop/issue-N` still exists. Delete the old branch first if you want a new attempt.
+The host does not merge. GitHub's `Fixes #N` closing behavior applies when the PR is
+merged into the appropriate default-branch context, not merely because a PR was opened.
 
 ## Caps and costs
 
-- **Triage** costs one turn for each new issue from an allowlisted author, and nothing for anyone
-  else's. Cap it per day:
+Triage uses `seats.triage` concurrency/budget overrides (default concurrency one), and
+`--daily-turns` pacing. Over-cap work waits until local midnight without spending an
+error retry. Runtime/model/provider failure may prevent a scheduled turn from starting.
+See [configuration](configuration.md) for exact budget inheritance.
 
-  ```bash
-  hermes review-loop triage --loop name --enable --daily-turns 20
-  ```
+Issue fixes are serialized (concurrency one), use the loop-wide `turn_budget_s` (default
+900 seconds), and have **no daily cap**. A successful proposal adds the costs of the
+ordinary PR review loop. Removing/reapplying the fix label at the same base commit
+cannot create a second independent turn. At a new base commit it can create fresh work,
+but an existing `review-loop/issue-N` branch still prevents publication. Repeated
+labeling is not a safe recovery procedure after a possible write.
 
-  Past the cap, triage turns wait until local midnight without failing. `--daily-turns 0` removes
-  the cap. The cap counts per loop and resets at midnight. The triage seat's turn budget and
-  concurrency (default 1) are set in the loop file under `seats.triage` (`turn_budget_s`,
-  `concurrency`); see [configuration](configuration.md#issue-triage-triage).
-- **Issue fixes** cost one full fixer turn (often with a build and tests) per label application,
-  plus a normal review loop for the PR it opens. Only your maintainers can start one.
+## Inspect results
+
+Use the exact ledger path from your active Hermes home. These queries require `sqlite3`
+and use read-only mode. Replace `<issue-number>` with a positive integer before running.
+
+```bash
+sqlite3 -readonly "<ledger-path>" "SELECT r.id,r.pr,r.state,r.error,t.state,t.error,t.comment_id FROM runs r LEFT JOIN triage_results t ON t.run_id=r.id WHERE r.seat='triage' AND r.pr=<issue-number> ORDER BY r.created DESC;"
+sqlite3 -readonly "<ledger-path>" "SELECT r.id,r.pr,r.state,r.error,f.kind,f.state,f.branch,f.pr_number,f.comment_id,f.error FROM runs r LEFT JOIN issue_fixes f ON f.run_id=r.id WHERE r.seat='issue_fixer' AND r.pr=<issue-number> ORDER BY r.created DESC;"
+```
+
+`<ledger-path>` is `$HERMES_HOME/state/review-loop-runs.sqlite`. The left join keeps runs
+whose broker result does not exist yet. If multiple repos share that issue number,
+add a repository predicate using your own value; correlate with the loop's repo.
+`r.state` is supervisor state; the result-table state is the broker write stage.
+Triage broker acceptance means its result was durably recorded, **not that labels or
+a comment definitely appeared**: `_triage` returns acceptance even when the subsequent
+live delivery is skipped, denied or uncertain. Inspect `triage_results` and GitHub.
+Labels and an optional comment are separate API calls; labels can land while the
+comment outcome remains unknown.
+
+| Triage result | Meaning |
+| --- | --- |
+| `recorded`, `posting` | Durable record / external write in progress; investigate stale stage |
+| `posted` | Applied result recorded |
+| `skipped` | Live eligibility changed or a triage label was already present |
+| `nothing` | No allowed label chosen |
+| `denied` | Authorization refused; inspect error |
+| `uncertain` | Some write may have landed; never replay |
+
+Issue fixes record `recorded`, `pushed`, `opened`, `requested` for PR stages, or `posted`
+for the comment path; `denied` and `uncertain` expose refused/unknown outcomes. A PR
+can exist even though requesting review failed. Inspect its branch, PR and request
+separately; a nonterminal record is not proof that nothing was published.
 
 ## Turn it off
 
 ```bash
-hermes review-loop triage --loop name --disable --admin-token reader-bot
+hermes review-loop triage --loop "<loop-id>" --disable --admin-token "<hook-admin-login>"
+hermes review-loop triage --loop "<loop-id>" --enable --fix-label ''
 ```
 
-This removes the `triage` block from the loop config (so issue fixes stop too), the `name-triage`
-route, its gate shim, and, with `--admin-token`, the repo hook on `issues`. Without
-`--admin-token`, the hook stays on GitHub and gets 404s from now on: delete it under
-**Settings → Webhooks**, or run the command again with `--admin-token`.
-
-What stays: labels and comments already written, PRs already opened, the run ledger's records,
-the token mapping, any `seats.triage` settings in the loop file, and the unattended fixer push
-setting (turn that off separately with `hermes review-loop fixer-push --loop name --disable`).
-
-To turn off only issue fixes and keep triage, clear the fix label:
-
-```bash
-hermes review-loop triage --loop name --enable --fix-label ''
-```
+The first command disables triage **and issue fixes**, removing configuration, route
+and shim, and with hook-admin permission removing the repository issues hook. Without
+`--admin-token`, the hook stays and receives 404s; remove it on GitHub. The second
+command is an alternative: an empty `--fix-label` disables only issue fixes and preserves
+triage. Already posted labels/comments, opened PRs, ledger history, token mappings,
+`seats.triage` settings and fixer push permission remain. Revoke push permission separately
+with `fixer-push --loop "<loop-id>" --disable`. Do not assume disabling reverses an
+already accepted write or stops an in-flight child.
 
 ## When it doesn't work
 
-- [An issue opened and nothing was labelled](troubleshooting.md#an-issue-opened-and-nothing-was-labelled)
-- [A fix label was applied and no PR came](troubleshooting.md#a-fix-label-was-applied-and-no-pr-came)
+- [New issue has no labels](troubleshooting.md#an-issue-opened-and-nothing-was-labelled)
+- [Fix label produced no PR](troubleshooting.md#a-fix-label-was-applied-and-no-pr-came)
+- [Uncertain/post-write recovery](troubleshooting.md#a-run-says-uncertain)
+
+No run row usually means the gate rejected the event or could not enqueue; verify
+runtime, hook delivery and exact author/sender. If durable work exists, inspect it
+before redelivery. Proven pre-write work can use `retry --pr` with the issue number;
+`--seat triage` or `--seat issue_fixer` restricts the retry. A recorded or uncertain
+write is not replayable. Do not delete a branch or receipt simply to bypass the guard.
 
 ## Current limits
 
-- **`trace` can't replay `issues` deliveries yet** (#230). It handles `pull_request` and
-  `pull_request_review` deliveries only. Use the run ledger and GitHub's *Recent Deliveries* page
-  instead (see the troubleshooting sections above).
-- **No observer notices** for triage or issue fixes (#231). The PR an issue fix opens is an
-  ordinary loop PR, so it gets the usual notices from then on.
-- **`explain` is for PRs only.** It can't explain an issue. Once an issue fix has opened its PR,
-  `explain --pr N` works on that PR.
-- **`status` doesn't show triage.** Use `hermes review-loop triage --loop name` for the settings.
-  `status`'s pacing line counts the reviewer and fixer seats only.
+- Trace supports `pull_request` and `pull_request_review`, **not `issues`**.
+- Explain evaluates PRs, not issues; use it on the PR after a successful issue fix.
+- No observer events for triage/issue fixes. Failed isolated runs may reach the
+  watchdog operator outbox; absence of chat output proves nothing about issue success.
+- Status lacks a dedicated triage-settings/pacing summary; use `triage --loop` and
+  ledger queries. Generic run diagnostics are not a complete issue-results view.
+- Triage reads one bounded issue without repository code or a duplicate-issue search feed.
+- Fixes can only add/replace files through the broker and cannot overwrite the deterministic
+  branch. No automated reconciliation of a partial push/open/request sequence exists.
+- Adjudicator/triage gate failures are reported but are not automatically re-driven like
+  reviewer/fixer gate failures. Use repository Recent Deliveries only after inspecting state.

@@ -1,97 +1,172 @@
-# Watching from your phone (the observer feed)
+# Observer feed
 
-The operator-facing guide to the observer feed. Every `observer` key is in the
-[configuration reference](configuration.md#the-observer-feed); how the feed stays out of the loop is
-in [architecture](architecture.md#the-observer-feed-read-only-never-a-seat).
+The observer delivers short transition notices to an operator's configured chat. It is
+**not a review seat**: the delivery-only route starts no model conversation, holds no
+seat lock, and does not authorize a GitHub write. The review loop continues if the feed
+is absent, muted or broken.
 
-The two seats drive each other through GitHub; the observer lets you watch without taking part.
-Give a loop an **observer** and it sends one short notice per transition to a chat you choose —
-Telegram, Discord, wherever that Hermes profile already talks. An `opened`, `handoff` or `verdict`
-notice says the next turn is **queued** (it runs as an isolated turn when its seat is free) or held
-for you, not that a reviewer or fixer has already started. A turn is held instead of run only while
-the private runtime file is missing, or, for the fixer, while unattended fixer pushes are off.
-A notice looks like this:
+## Contents
 
-```
-🔧 [widgets] #7 `aaaaaaa` fix pushed · review requested (dev-fixer) · round 2/3 · next: reviewer queued
-https://github.com/acme/widgets/pull/7
-```
+- [Enable and tune](#enable-and-tune-the-feed)
+- [Events and meaning](#events-and-meaning)
+- [Privacy and destination binding](#privacy-and-destination-binding)
+- [Receipts and retries](#receipts-and-retries)
+- [Digests](#digests)
+- [Mute, disable and restore](#mute-disable-and-restore)
+- [Troubleshoot](#troubleshoot-the-feed)
+- [Source evidence](#source-evidence)
 
-That is the whole payload: the loop, the PR, the head at the recorded transition, the seat and
-event, the outcome, an optional next-turn hint, and a direct link to the PR. Delayed retries and
-digests omit next-turn hints because the PR or review may have changed since the transition.
-Never a token, an HMAC secret, a private diff, or a review body. Escalation reaches the observer
-after the cap marker is durable. On a loop with an adjudicator route it is sent before the
-adjudicator turn is enqueued and says `next: adjudicator delivery pending`, not that the
-adjudicator received it; without a route the next turn is `you`. A `ruling` notice carries the verdict
-and counts, never the adjudicator's reason text (that goes to the watchdog outbox and, when an
-adjudicator identity is configured, the PR).
+Replace quoted angle-bracket placeholders, including brackets, with your own values.
+`--loop` selects a saved loop ID. The settings live in its `observer` block; see
+[configuration](configuration.md) and [commands](commands.md) for the reference.
 
-Turn it on at init, or add it to a loop that is already running:
+## Enable and tune the feed
+
+Configure the desired platform/chat on the destination Hermes profile first, then:
 
 ```bash
-hermes review-loop init --repo owner/name ... --observer-profile arbiter   # one flag turns it on
-hermes review-loop set --loop widgets --observer-profile arbiter           # or add it later
-hermes review-loop set --loop widgets --observer-events verdict,escalation,closed
-hermes review-loop set --loop widgets --observer-digest-min 30          # batch instead of pinging
-hermes review-loop set --loop widgets --observer-mute                   # quiet, config kept
-hermes review-loop set --loop widgets --observer-disable                # stop/remove route; retain owed ledger and old destination binding
+hermes review-loop set --loop "<loop-id>" --observer-profile "<observer-profile>" --observer-deliver telegram
+hermes review-loop set --loop "<loop-id>" --observer-events verdict,escalation,ruling,closed
+hermes review-loop set --loop "<loop-id>" --observer-digest-min 30
+hermes review-loop status --loop "<loop-id>"
+hermes review-loop doctor --loop "<loop-id>"
 ```
 
-The flags write this block into the loop file, the only place the feed is configured:
+| Option | Effect |
+| --- | --- |
+| `--observer-profile` | Profile that owns the authorized destination; enables the feed |
+| `--observer-deliver telegram` | Gateway delivery platform; default Telegram, another configured adapter such as Discord can be selected |
+| `--observer-events` | Comma-separated event filter; blank means all events |
+| `--observer-digest-min 30` | Batch window in minutes; 0 means per-transition notices |
 
-```json
-"observer": {
-  "route": "widgets-observe",
-  "profile": "arbiter",
-  "deliver": "telegram",
-  "events": ["opened", "handoff", "verdict", "approved", "escalation", "ruling", "stall", "closed"],
-  "digest_min": 30
-}
+The default route is `<loop-id>-observe`. Use `--observer-route "<observer-route>"` if
+you need a distinct route name. Installing this route uses the gateway's signed POST
+mechanism but sets `deliver_only: true`; `observe.py` returns an already composed notice
+rather than waking a model. It is not an extra repository webhook and does not need
+GitHub `issues` events. Profile, platform, prompt/script, host and destination overrides
+must match the authorized delivery-only contract.
+
+Enabling does not promise backfill of events that happened while the feed was absent,
+muted or filtered. Verify one eligible **new** transition in your intended chat.
+
+## Events and meaning
+
+A notice contains loop/PR/head identity, event, bounded outcome, optional next-turn hint,
+and a PR link. It does not contain the diff, review body, GitHub credentials or HMAC secret.
+
+| Event | Meaning | Not a promise that… |
+| --- | --- | --- |
+| `opened` | Eligible PR needs first review | A reviewer has started |
+| `handoff` | Fix published and review requested | The new review has completed |
+| `verdict` | Changes requested | The fixer will run when pushes are off |
+| `approved` | Approval transition at a recorded head | Approval is still live or the PR can safely be merged now |
+| `escalation` | Durable cap marker | Adjudicator received/finished its turn |
+| `ruling` | Host recorded ACCEPT/REJECT/RESPEC | Code merged or the cap was reset |
+| `stall` | Watchdog decided a stall warrants reporting | The watchdog repaired the underlying defect |
+| `closed` | PR merged/closed and cleanup attempted | Cleanup reclaimed disk, or this was a loop-owned PR |
+
+Opened/handoff/verdict next hints describe queue admission or holds, not child start.
+Missing runtime and disabled fixer pushes are common holds; concurrency, pacing and
+live eligibility can still delay admitted turns. Escalation with an adjudicator route
+says delivery is pending until enqueue; without one, the operator owns the next step.
+Ruling notices omit the adjudicator's reason text; the operator outbox and optional
+PR ruling comment carry it.
+
+Approval's `next: you merge` hint is revalidated immediately before sending against
+current review identity, head/base and post-write holds. If verification fails, the
+hint is omitted. A later state change remains possible: inspect GitHub before merging.
+Retries and digests omit next-turn hints because the recorded transition may be stale.
+Closed notices apply to repository PR closures, not exclusively PRs this loop worked on.
+
+Issue triage and issue-fix runs produce **no observer transition notices**. The PR opened
+by a successful issue fix becomes a normal review-loop PR and can produce later notices.
+The watchdog's failed-run operator outbox is a different delivery path.
+
+## Privacy and destination binding
+
+A private PR link and repository identifiers still disclose metadata to chat recipients.
+Choose a destination whose membership/access policy matches the repository. The feed
+is not a confidentiality guarantee merely because it omits diffs.
+
+The route registry is mutable transport state, not authority to redirect private links.
+The host checks the configured gateway host, profile/platform, delivery-only contract
+and `deliver_extra` against loop-authorized values. Changes to a profile/chat/platform
+cannot silently deliver old owed notices to a new destination: unsettled receipts retain
+their destination binding and configuration changes can be refused while notices are owed.
+Inspect existing debt before moving a feed. Use the specific `doctor` remedy; do not
+hand-edit the registry or receipts to bypass a destination mismatch.
+
+## Receipts and retries
+
+Receipts live in `<state_dir>/observations.json`. Logical keys include loop, PR, head,
+event and event identity (review/round where applicable); repeated gates/deliveries do
+not create another notice for the same transition. Delivery IDs are retained for safe
+retry so the gateway can also deduplicate a logical send.
+
+| Receipt | Meaning | Action |
+| --- | --- | --- |
+| `queued` | Waiting for a digest window/sweep | Check watchdog and batching |
+| `digesting` | Member attached to an in-progress batch | Inspect batch receipt, do not send member again |
+| `pending` | Sender claimed delivery before POST | Wait; stale claims become uncertain |
+| `delivered` | Delivery success recorded | Check intended destination if not visible |
+| `failed` with proven pre-POST failure | Route/secret/destination unavailable before send | Fix route; bounded watchdog retry |
+| `uncertain` | POST may have landed, or sender died before receipt | Inspect chat/gateway logs manually; never blind replay |
+
+Only definite pre-POST failures retry automatically, up to three attempts. A timeout,
+5xx or other unconfirmed POST may have sent the message and is quarantined rather than
+replayed. Legacy failure receipts without proof of pre-POST failure become uncertain.
+These failures never consume a review seat or block PR admission, but may prevent an
+unsafe observer destination rebind.
+
+`status` aggregates delivered and owed records rather than proving end-user visibility.
+Inspect receipts for the exact error and batch membership when diagnosing a notice.
+There is no general observer replay/reconcile CLI: reconcile chat history and gateway
+records manually, preserve evidence, and do not delete receipt files to manufacture a
+new notice. Supervisor reconciliation does not reconcile observer receipts.
+
+## Digests
+
+A positive `digest_min` queues transitions until the oldest entry has aged past the
+window. The watchdog flushes them on a sweep; it is **not an independent timer** and
+30 minutes does not guarantee delivery at minute 30. No scheduled/working watchdog,
+no regular digest flush. Known-paused loop hooks skip the loop sweep, so queued batches
+can remain owed until normal sweeps resume. Batch claims precede POST; uncertain batches
+keep members attached rather than emitting duplicates separately.
+
+## Mute, disable and restore
+
+```bash
+hermes review-loop set --loop "<loop-id>" --observer-mute
+hermes review-loop set --loop "<loop-id>" --observer-unmute
+hermes review-loop set --loop "<loop-id>" --observer-disable
 ```
 
-`init` and `set` write the keys you asked for and nothing else: `mute: true` for a muted feed,
-`digest_min` above zero to batch, `events` to narrow the feed (leave it out for all of them).
+These are separate choices: `--observer-mute` keeps configuration but stops new sends
+and retries/flushes; `--observer-unmute` resumes that same feed. `--observer-disable`
+removes the live observer configuration/route, retaining owed history and the old
+destination binding. It does not declare debt delivered or erase uncertain sends.
+Restoring the original destination can resume safe owed delivery; moving to another
+chat is not permission to reroute old debt. Events suppressed while muted/disabled
+are not a guaranteed replay backlog.
 
-With `--observer-profile` (or `--observer-route`), `init` also installs the route (`<id>-observe`)
-through the seats' own mechanism — the same signed POST at the same gateway — but with
-`deliver_only: true` and a two-line prompt, because the notice is *already written*: nothing wakes
-an agent, and there is no third seat to hold a lock or take a turn. The eight transitions are:
+## Troubleshoot the feed
 
-* `opened`: a new PR needs its first look.
-* `handoff`: a fix was pushed and review requested.
-* `verdict`: a changes-requested verdict landed. The next turn is `fixer queued`, or, while
-  unattended fixer pushes are off (the default), `you — fixer held: unattended fixer pushes are
-  off`, followed by the command that turns them on.
-* `approved`: the reviewer approved.
-* `escalation`: the cap is spent. Next is the adjudicator when the loop has an adjudicator route,
-  otherwise you.
-* `ruling`: an isolated adjudicator's ruling was recorded.
-* `stall`: the watchdog decided a quiet PR is worth reporting.
-* `closed`: merged or abandoned; cleanup was attempted, but this notice does not confirm the disk
-  was reclaimed. It is sent for every PR closed in the repository, not only the ones the loop
-  worked on.
+| Symptom | Likely cause | Safe action |
+| --- | --- | --- |
+| No notices at all | Muted/absent/filter excludes event | Inspect status and filter; test a new included transition |
+| Route warning | Missing route/secret, unauthorized destination or contract mismatch | Run doctor and follow its route-specific remedy |
+| Digest late | No watchdog sweep, hooks paused, oldest entry not old enough | Inspect watchdog scheduling and receipts; don't resend members |
+| Notice owed after timeout | Outcome uncertain | Search intended chat and gateway logs; preserve receipt |
+| Destination change refused | Old owed/uncertain notices bound to prior chat | Inspect old debt; don't bypass binding by deleting state |
+| No notice for issue labels or proposal | Feature unsupported | Use issue/result ledger and GitHub, not observer expectation |
+| Closed notice but disk still used | Cleanup attempted, not confirmed | Use [disk troubleshooting](troubleshooting.md#disk-usage-keeps-growing) |
 
-Issue triage and issue-fix turns send no observer notices. When one fails, the watchdog's operator
-outbox reports it, like any other failed isolated run.
+The feed is emitted from host transitions, not agent prose. Do not treat an agent summary
+or an observer message as evidence of a completed write, a successful build, or merge safety.
 
-Four rules keep the feed from becoming a gate:
+## Source evidence
 
-* **Emitted from state, not from prose.** A notice is written by the gates and the watchdog at the
-  transition they just made, and a `ruling` notice by the host broker when it records the ruling.
-  Seats run no host scripts, so nothing is ever parsed out of an agent's summary or sent on the
-  strength of an agent's claim.
-* **One transition, one notice.** The ledger key is loop + PR + head + event + verdict/round
-  identity, so a redelivered webhook, a re-run gate or a retried sweep cannot produce a duplicate.
-* **Ambiguous delivery is not replayed.** A missing route or secret is a definite pre-POST failure
-  and the watchdog retries it (up to three attempts). A timeout or 5xx after posting may have sent
-  the notice; it remains `uncertain` in `status` for manual reconciliation, never automatically
-  retried. Legacy `failed` receipts without proof of a pre-POST failure are quarantined the same
-  way. Neither outcome consumes a seat or blocks the queue.
-* **Off means off.** No observer, a muted feed, an event filtered out: the loop behaves exactly as
-  it would with no observer at all. A misconfigured feed (a route that was never installed, or a
-  bare profile with no route) never refuses a loop — the seats keep running and `status` says what
-  is wrong with the feed.
-
-Private PRs are safe to watch this way: the link goes to the chat the operator configured for that
-profile, and nowhere else.
+Implementation boundaries: `review_loop/observer.py` (`route_contract`, `_target`,
+`notify`, `_deliver`, `retry`, `flush`), `scripts/observe.py`, CLI observer setters,
+`review_loop/state.py` receipt paths, and `scripts/watchdog.py` sweep callers.
+For run recovery rather than feed recovery, see [operations](operations.md#when-an-isolated-run-fails).

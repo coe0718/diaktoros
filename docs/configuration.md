@@ -1,603 +1,574 @@
 # Configuration reference
 
-One JSON file per loop under `~/.hermes/review-loops.d/` (override the directory with
-`REVIEW_LOOP_CONFIG_DIR`). Everything the loop knows about a repository is here, which is what lets
-one install serve several repositories with different seats, budgets and credentials.
+[Getting started](getting-started.md) · [Operations](operations.md) · [Security](security.md) · [Troubleshooting](troubleshooting.md)
 
-`hermes review-loop init` writes this file for you; hand-editing is fine, and the loader is strict
-on purpose — a loop that cannot be resolved to a repository, a base branch and two seats is a
-configuration error, not a run that guesses.
+Review-loop has three configuration layers: a repository's loop JSON, per-profile plugin defaults, and a private host runtime JSON. A Hermes profile supplies the seat's model; it is not an account credential embedded in the loop file. This reference describes the implemented loaders and their limits, not a JSON Schema that rejects every unknown key.
 
-Before arming a loop, `hermes review-loop doctor --loop <id>` checks that everything this file
-*names* actually exists — the seat profiles, the token files, the routes and their secrets, the
-GitHub hooks, the cron shim and job, the clone and the gateway — and writes nothing while doing it.
-See [Preflight](architecture.md#preflight-can-this-installation-run) and, for example output,
-[Operating a loop](operations.md#preflight-doctor).
+## Contents
 
-## A complete example
+- [Files and precedence](#files-and-precedence)
+- [Example loop file](#example-loop-file)
+- [Repository and identity keys](#repository-and-identity-keys)
+- [Capacity and pacing](#capacity-and-pacing)
+- [Timers and turn budgets](#timers-and-turn-budgets)
+- [Paths and cleanup boundaries](#paths-and-cleanup-boundaries)
+- [Write policy and attribution](#write-policy-and-attribution)
+- [Adjudication](#adjudication)
+- [Observer configuration](#observer-configuration)
+- [Issue triage and issue fixes](#issue-triage-and-issue-fixes)
+- [Plugin settings and safe application](#plugin-settings-and-safe-application)
+- [Runtime file and seat models](#runtime-file-and-seat-models-review-loop-runtimejson)
+- [Environment overrides](#environment-overrides)
+- [State files](#state-files)
+- [Validation and coverage limits](#validation-and-coverage-limits)
 
-What `init` writes for the repository `owner/name`, with the observer feed and adjudication on
-(the paths are examples). You rarely edit this by hand: `init`, `set`, `apply` and `fixer-push`
-change it for you, with checks. The tables below explain every key.
+## Files and precedence
+
+| Layer | Location | What it controls |
+|---|---|---|
+| Loop | `$HERMES_HOME/review-loops.d/<id>.json` | Repository, branches, identities, routes, budgets, policy, and per-loop state paths. `REVIEW_LOOP_CONFIG_DIR` overrides the directory. |
+| Plugin settings | `plugins.entries.hermes-review-loop.settings` in the active Hermes profile's configuration | Defaults for `init`; explicitly named values pushed to one existing loop by `apply`. |
+| Host runtime | `$HERMES_HOME/review-loop-runtime.json` | Four host installation paths and optional model overrides. |
+| Seat profile | The selected Hermes profile's configuration and authentication sources | Provider, model, endpoint, and credentials resolved on the host for that seat. |
+
+`HERMES_HOME` defaults to `~/.hermes`. In this document it means the home used by the review-loop host process; do not assume a command launched under another profile sees the same loops or runtime file.
+
+`init` writes a loop file. `set` changes a named loop; `apply` explicitly overlays plugin settings and coordinates identity changes with installed routes/hooks. `fixer-push` separately controls unattended writes. Changing the settings form alone does not update existing loops. See [Operations](operations.md) for lifecycle commands and [Concepts](concepts.md) for roles and review rounds.
+
+Use a regular, non-symlink `<id>.json` file whose `id` matches its filename. ID lookup rejects path components and `.`/`..`. One repository must have exactly one owning loop. Gates select ownership from the webhook's `repository.full_name`, not from a route's prompt or a sandbox request.
+
+A refused sibling file with a readable, different `repo` is skipped with a warning on the wake path. If an invalid file might own the event's repository—including unreadable JSON—or two files claim it, the gate fails closed. Read-only listings and the cron watchdog can report bad files while continuing with readable loops; operations acting on the entire set may instead refuse the set.
+
+## Example loop file
+
+Replace every quoted angle-bracket placeholder before use. These placeholders illustrate structure; they are not valid profile names, identities, or gateway origins. All credential entries below are **file paths, never token values**.
 
 ```json
 {
-  "id": "name",
-  "repo": "owner/name",
+  "id": "<loop-id>",
+  "repo": "<owner>/<repository>",
   "base": "main",
   "cap": 3,
-  "concurrency": 1,
-  "fixers": ["dev-account"],
-  "reviewers": ["rev-bot"],
-  "reviewer_seat": "rev-bot",
+  "fixers": ["<fixer-login>"],
+  "reviewers": ["<reviewer-login>"],
+  "reviewer_seat": "<reviewer-login>",
   "seats": {
-    "reviewer": {"route": "name-review", "profile": "critic", "login": "rev-bot", "agent": "Critic"},
-    "fixer": {"route": "name-fix", "profile": "coder", "login": "dev-account", "agent": "Coder"}
+    "reviewer": {
+      "route": "<reviewer-route>",
+      "profile": "<reviewer-profile>",
+      "login": "<reviewer-login>",
+      "agent": "<reviewer-display-name>"
+    },
+    "fixer": {
+      "route": "<fixer-route>",
+      "profile": "<fixer-profile>",
+      "login": "<fixer-login>",
+      "agent": "<fixer-display-name>"
+    }
   },
-  "adjudicator": {"route": "name-breach", "profile": "arbiter"},
-  "read_token": "reader-bot",
+  "read_token": "<reader-login>",
   "tokens": {
-    "reader-bot": "/home/you/.hermes/keys/reader-bot-pat",
-    "rev-bot": "/home/you/.hermes/keys/rev-bot-pat",
-    "dev-account": "/home/you/.hermes/keys/dev-account-pat"
+    "<reader-login>": "<absolute-reader-token-file>",
+    "<reviewer-login>": "<absolute-reviewer-token-file>",
+    "<fixer-login>": "<absolute-fixer-token-file>"
   },
-  "host": "https://your-gateway.example",
-  "state_dir": "/home/you/.hermes/state/review-loops/name",
+  "host": "<https-gateway-origin>",
+  "concurrency": 1,
   "turn_budget_s": 900,
-  "attribution": true,
-  "observer": {"route": "name-observe", "profile": "arbiter", "deliver": "telegram"}
+  "unattended_fixer_push": false,
+  "attribution": true
 }
 ```
 
-`tokens` holds **paths** to token files, never tokens. `unattended_fixer_push` is absent here,
-which means off.
+This example leaves adjudication, observer delivery, triage, cleanup roots, and seat-specific overrides off. Add those only when configured. Use [Accounts](accounts.md) for credential preparation and [Getting started](getting-started.md) for an installation sequence.
 
-## Required
+## Repository and identity keys
 
-| key | meaning |
-|---|---|
-| `repo` | `owner/name`. The gate selects the loop from the webhook payload's `repository.full_name`. |
-| `fixers` | GitHub logins allowed to open/push the PRs this loop works on. |
-| `reviewers` | GitHub logins whose verdicts count toward the budget. |
-| `seats.reviewer.route` / `seats.fixer.route` | the webhook routes that wake each seat. |
-| `seats.reviewer.profile` / `seats.fixer.profile` | the Hermes profile each run happens as; it must exist on this machine, and the two must differ. |
-| `reviewer_seat` | which reviewer login the reviewer route serves (a request aimed at anyone else is not this loop's business). Validated against `reviewers`: a route that serves a login this loop does not count is a loop that never wakes. |
+Defaults below are loader defaults unless explicitly marked as CLI behavior. A required operational mapping may be checked by installation/preflight or the broker rather than by `normalize()` alone.
 
-## Everything else
-
-| key | default | meaning |
+| Key | Default | Accepted value and behavior |
 |---|---|---|
-| `id` | repo name | loop id; also the prefix of the generated routes |
-| `base` | `main` | only PRs targeting this branch are in the loop |
-| `cap` | `3` | verdicts allowed before escalation (`cap - 1` fix turns); at least `2` |
-| `seats.<seat>.login` | reviewer: the first of `reviewers`; fixer: the only login in `fixers` (unset when there are several) | the GitHub login that seat acts as; `init`/`apply` refuse one outside that seat's allowlist, and two seats may not share one |
-| `seats.<seat>.agent` | profile name, capitalized | display name used in the seats' prompts and in the [attribution footer](operations.md#what-the-loop-signs) (letters, digits, spaces and `-` only there) |
-| `adjudicator.route` | — | enables adjudication: when the cap is spent an isolated adjudicator turn is enqueued in the host run ledger; omit to only write the marker and leave the PR to you. The legacy gateway route itself stays silent. `init --adjudicator-route <id>-breach` writes it; `setup` never does, and no `set` flag adds it later. To add it to an existing loop, write `"adjudicator": {"route": "<id>-breach", "profile": "<profile>"}` into the loop file, then run `hermes review-loop apply --loop <id> --recreate-routes` to install the route |
-| `adjudicator.profile` | `default` | the Hermes profile the isolated adjudicator turn's model is resolved from (see [seat models](#runtime-file-and-seat-models-review-loop-runtimejson)), and the profile its legacy route is bound to. Must differ from both seats |
-| `seats.adjudicator.login` | unset | **optional** GitHub identity the ruling is *also* posted as, as a PR comment. Set it with `init`/`set --adjudicator-login LOGIN --token LOGIN=/abs/path` (`set --adjudicator-login ""` clears it) or the `adjudicator_login` setting. It needs its own `tokens` entry (an absolute, private 0600 file) and must be a fourth account: not the `read_token`, not either seat, not in `fixers`/`reviewers`, and not sharing a token file with any of them. The broker re-checks all of it (plus distinct `/user` principals and the live PR) before each comment. Without it rulings go to the operator only — not an error |
-| `seats.adjudicator.concurrency` | `1` | isolated adjudicator turns at once. Does not inherit the loop-level `concurrency` |
-| `skill` | — | skill the seats are told to load |
-| `tokens` | `{}` | `login → path of a file containing that seat's PAT (mode 600)` |
-| `read_token` | — **required**: never inferred from `tokens` (`init` requires `--read-token`; a hand-edited file without it is refused on load, naming the key to add; `set --read-token LOGIN --token LOGIN=/abs/path` writes it into such a file; until then the gates and the cron watchdog skip that one file with a named warning and keep serving every other loop — a repo whose own file is refused gets no unattended action) | login whose token performs reads. Its own account and its own `tokens` file: never a seat's login or file, nor the adjudicator login (the four-identity rule). `init`/`set`/`apply` refuse it otherwise (`apply` on every run, even when nothing else changes), `doctor` fails it and `status` flags it; change it with `set --read-token LOGIN --token LOGIN=/abs/path` |
-| `clone` | — | the local clone reviews may use; cleanup prunes its worktrees |
-| `roots` | `[]` | directories the cleanup may ever touch. Anything outside them is out of scope. A root may be shared between loops: a child is only this loop's when its name carries both the PR (`pr7`) and the repository name (`widgets-pr7-target`). `/`, the home directory and its ancestors are refused. |
-| `concurrency` | `1` | default runs at once *per seat*, enforced by the host run ledger. `1` = serialized; above 1 still requires `clone` (the loader refuses it otherwise). Every isolated turn gets its own sandbox and its own exact-head export of the PR, so parallel runs never share a checkout. |
-| `seats.<seat>.concurrency` | loop default | this seat's own limit, overriding the default for good: while it is set, `concurrency` does not reach this seat. Written only when asked for — `init`/`set` with `--reviewer-concurrency N` / `--fixer-concurrency N`, or a settings form whose two seats differ. Before #76 `init` wrote `1` here for both seats on every loop; such a file keeps its value (it cannot be told from an explicit `1`), and `status` prints a `note:` for a seat pinned at 1 under a larger loop default, with the `set` that raises it. |
-| `state_dir` | `~/.hermes/state/review-loops/<id>` | locks, queue, in-flight marks, breach markers, artifacts, watchdog memory |
-| `host` | unset | your gateway's HTTP(S) webhook origin; `init` requires `--host` or an explicit plugin setting before it writes config/routes/hooks |
-| `grace_min` | `35` | how long a quiet head is allowed to sit before the watchdog speaks. Per seat it is raised to that seat's whole turn when the turn is longer (see [Turn budget](#turn-budget-how-long-one-turn-may-run)); 35 covers a whole default turn (1830 s). Before #98 the default was 25 |
-| `marker_grace_min` | `60` | how long a breach marker may wait for its adjudicator run (`awaiting-adjudication`) before the watchdog reports the PR parked. A marker being ruled on (`adjudicating`) is never a stall while its adjudicator run is live; with no live run it is reported only after the adjudicator's whole worst-case turn, or this, if longer (`doctor` prints both) |
-| `cooldown_h` | `6` | repeat suppression per stall: a stall (or stuck lock/queue entry) that persists is re-alerted once every `cooldown_h`; one that clears and later returns alerts at once |
-| `ttl_min` | `45` | seat-lock lifetime; past this a crashed run has lost its seat. Raised automatically, per seat, to that seat's whole worst-case turn, so a healthy long turn never loses its slot; the watchdog calls a claim dead at twice that |
-| `inflight_ttl_min` | `10` | how long a same-head burst is considered already handled |
-| `turn_budget_s` | `900` | wall-clock seconds one isolated seat turn may run — read the PR, build, run tests, submit. The whole turn is up to 930 s longer (300 s dependency prefetch before it, 30 s kill grace and up to 600 s broker drain after); that seat's stall grace and lock TTL follow the total. See [Turn budget](#turn-budget-how-long-one-turn-may-run). Plugin setting `turn_budget_s`; `init`/`set --turn-budget N` |
-| `seats.<seat>.turn_budget_s` | loop default | this seat's own budget (`reviewer`, `fixer`, `adjudicator`), overriding `turn_budget_s`. `init`/`set --reviewer-turn-budget N` / `--fixer-turn-budget N`; the adjudicator's is set in the file |
-| `attribution` | `true` | sign what the loop itself posts: its reviews, the fixer's answers comment, the ruling comment, triage's comment, and an issue fix's PR description or issue comment end with a footer such as `🤖 Automated by hermes-review-loop · reviewer seat (Critic) · head abc1234` (linking here; the head is left out where there is none), and the commits the fixer pushes (issue fixes included) carry an `Automated-By:` trailer. `false` adds nothing. A JSON boolean; see [What the loop signs](operations.md#what-the-loop-signs). Plugin setting `attribution`; `init`/`set --attribution on\|off` |
-| `seats.<seat>.daily_turns` | no cap | the most turns this seat may start per local day on this loop (`reviewer`, `fixer`, `adjudicator`; 1–1000). Past it, turns wait until midnight without spending a retry — see [Pacing](operations.md#pacing-usage-windows-and-daily-caps). `set --reviewer-daily-turns N` / `--fixer-daily-turns N` (0 removes it); the adjudicator's is set in the file |
-| `unattended_fixer_push` | `false` | whether a fixer turn may push to the PR on its own. While `false` a "changes requested" verdict is held for you and no fixer turn starts. Change it only with `hermes review-loop fixer-push --loop ID --enable --acknowledge-pr-race` (or `--disable`); `set` and `apply` never touch it. A JSON boolean: only an explicit `true` enables it. See [the push policy](security.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent) |
-| `observer` | `{}` | the read-only observer feed. `{}` means no feed, and the loop is untouched by its absence — see [The observer feed](#the-observer-feed) |
+| `repo` | Required | Repository full name in `owner/name` form. Normalization trims and lowercases it and checks that it contains exactly one slash; that check alone is not complete GitHub name validation. |
+| `id` | Repository name component | Loop identifier; must match the JSON filename on ID lookup. Prefer a simple filename-safe identifier; no path components. Generated route names use it as a prefix. |
+| `base` | `main` | Branch the loop serves. PRs based elsewhere do not receive ordinary reviewer/fixer authorization. Stacked PR visibility and same-head retarget boundaries are described in [Architecture](architecture.md). |
+| `cap` | `3` | Whole number at least `2`; no explicit loader maximum. Counted changes-requested verdicts spend this budget; comments, pending, and dismissed reviews do not. At the cap, no additional ordinary fix round is purchased: the PR is escalated unless approved. Normally this allows `cap - 1` fix turns. |
+| `fixers` | Required, non-empty | List of trusted GitHub logins whose PRs the loop serves. Values are lowercased. This is an authorization allowlist, not a list of profile names. |
+| `reviewers` | Required, non-empty | List of GitHub logins whose reviews count. Values are lowercased. |
+| `reviewer_seat` | Reviewer seat login | Login served by review requests. Required after fallback. Keep it aligned with `seats.reviewer.login` and included in `reviewers`; settings application updates the seat login and this selector together. The loader does not independently enforce their equality or this selector's allowlist membership. |
+| `seats.reviewer.route`, `seats.fixer.route` | Required | Non-empty route names; the two must differ even on load. Installed routes must be owned by this loop and run the correct role's gate. |
+| `seats.reviewer.profile`, `seats.fixer.profile` | Required | Hermes profiles used by the seats. Installation checks existence and independent profile homes. The reviewer and fixer must not share a profile or login. |
+| `seats.reviewer.login` | First `reviewers` entry | GitHub identity used by reviewer writes; must be allowlisted and have its own token mapping when installing/moving the seat. |
+| `seats.fixer.login` | Only `fixers` entry, otherwise empty | GitHub identity used by fixer writes. With multiple fixers, explicitly choose the seat login; membership in an author allowlist does not pick a write identity. |
+| `seats.<working-seat>.agent` | Profile name capitalized | Display name in prompts and attribution. Attribution sanitizes display text to letters, digits, spaces, and hyphens; this is not an account or model selector. |
+| `skill` | Empty | Optional skill the seats are instructed to load. It does not grant network access or broker permissions. |
+| `read_token` | Required; never inferred | Reader's own GitHub login. A file without it is refused; a first entry in `tokens` is never treated as the reader. |
+| `tokens` | `{}` | Mapping from login to a PAT file path. Installation needs the reader and both write identities mapped. Keep spelling consistent with the configured logins. |
+| `host` | Empty | Gateway HTTP(S) origin, optional on loader-only reads but required by `init`/installation. No path other than an optional trailing `/`, query, fragment, userinfo, whitespace, or malformed authority; explicit ports must be 1–65535. A trailing `/` is removed. Use HTTPS for public GitHub hooks. |
 
-## Turn budget: how long one turn may run
+A named profile must start with an ASCII letter or digit and then contain only letters, digits, `.`, `_`, or `-`. Installation accepts `default` as the launch Hermes home; other profiles need a non-symlink directory under `$HERMES_HOME/profiles/` with a non-empty `config.yaml`. It also compares actual profile directory identity, so different names do not make aliases independent.
 
-Every isolated seat turn (reviewer, fixer, adjudicator) runs against one wall clock, in seconds,
-60–14400, default **900**:
+### Credential separation
 
-- it is Hermes's `--run-budget`: at 80% Hermes tells the agent to wrap up, and its last request is
-  capped to the budget;
-- the sandbox is SIGKILLed 30 s after it (a grace so Hermes's own clean stop wins the race);
-- a broker request already in flight when the sandbox dies — a push is several GitHub calls plus a
-  git fetch and push — is let finish (up to 600 s) rather than abandoned, so a kill mid-push
-  resolves the push instead of leaving its intent open and quarantining the run as uncertain.
-  The worker's ledger heartbeat keeps the run's lease alive the whole time, however long the
-  budget: a healthy long turn is never swept as lost.
+The reader, reviewer, fixer, and optional adjudicator comment identity must be separate accounts with separate token files. Three identities suffice when rulings are operator-only. The adjudicator comment login must also be outside `fixers` and `reviewers`. File identity checks include resolved paths and, where available, filesystem identity: symlinks or hardlinks do not establish independence. Runtime broker checks additionally verify live `/user` principals before writes.
 
-The gate records the budget on the run's ledger row when it enqueues the turn, so whichever worker
-claims it (a worker spawned by another loop's event included) runs it on this loop's terms; a
-`set` changes turns enqueued after it. `status` and `doctor` print each seat's budget. A whole
-turn, launch to end, is the host dependency prefetch (bounded at 300 s, and run before the budget
-starts, so it never shortens it), then the budget, then the 30 s kill grace, then up to 600 s of
-broker drain for a write still in flight: the default 900 s budget is up to 1830 s (30.5 min).
+Token paths supplied through settings and the optional adjudicator identity are inspected for an absolute path (`~` expands), regular-file target, current-user ownership, and no group/other permissions. Mode `0600` is the recommended shape; the metadata check is not a requirement for an exact `0600` bit pattern. GitHub token-path inspection follows symlinks and checks their targets. General installation credential verification also reads mapped files to reject empty/unreadable credentials. Metadata inspection and model-description preflight are not the same as credential verification or a live selftest.
 
-Every age threshold the watchdog applies to a seat follows **that seat's** whole turn, never
-another seat's: its stall grace is `grace_min` raised to the seat's turn (a 1500 s fixer budget
-waits 41 min before "fixer never pushed", while the reviewer keeps the 35 min default); its
-seat-lock TTL is `ttl_min` raised the same way — on the budget the claim was taken with, so
-lowering `turn_budget_s` mid-turn cannot free a live seat early — and the watchdog calls a claim
-a run that died only at twice that. A breach marker being ruled on follows the adjudicator's turn
-(see `marker_grace_min`). `doctor` prints every one of these per seat and names each one a turn
-raised past your setting; there is nothing to tune by hand.
-A turn killed at its budget fails with
-`isolated turn failed: TimeoutExpired — killed at the Ns turn budget (sandbox stopped 30s past
-it) — raise turn_budget_s (hermes review-loop set …), then `retry``, shown by `status`,
-`explain` and the watchdog's operator notice. The whole sandbox process tree goes with it (a
-child that detached into its own session included), and the seat is free for the next turn at
-once. Such a turn is **not** retried automatically — the same budget would most likely run out
-again. If it made no write, once the budget is raised `hermes review-loop retry` (or a new event
-for the head) re-arms it, on the budget the loop has *then*. If a write finished during the drain
-(a push published after the kill), the reason says `after it wrote (fixer push recorded) — final:
-never replayed; a new head gets a fresh turn`: that run is final, and `retry` refuses it. If the
-drain itself runs out, the run is quarantined `uncertain` (a write may still land) and the reason
-names both clocks: `broker did not shut down within 600s after the sandbox was killed at the Ns
-turn budget …`. An adjudicator killed this way
-hands its breach marker back, so the re-armed ruling starts again. Only the sandbox's own clock
-is reported this way; any other timeout keeps its reason and its automatic retry.
-`selftest --live-turn` runs for the loop's reviewer budget unless `--timeout` says otherwise, so a
-passing selftest means the turn fits what production enforces.
-
-Before this setting (issue #49) every production turn got a hard-coded 120 s — too short for any
-review that builds and tests.
-
-## The observer feed
-
-An **observer** is a destination that hears about transitions without being part of them: a short
-notice per event, delivered to a chat, with no agent on the route and no seat to hold. It is opt-in
-per loop — no `observer` block, no feed — and it is the one block in this file the loader is
-*lenient* about, because a feed that cannot deliver must never refuse a loop that can run.
-The operator walkthrough (what a notice looks like, turning it on) is [the observer guide](observer.md).
-
-| key | default | meaning |
-|---|---|---|
-| `observer.route` | none | the gateway route each notice is POSTed to. `init` and `set` write `<id>-observe` when you name only a profile; the loader adds no default, so a hand-written block without a route is misconfigured: there is nowhere to deliver, and `status` says so |
-| `observer.profile` | `default` | the Hermes profile whose chat the route delivers into |
-| `observer.deliver` | `telegram` | the route's delivery target. `log` is refused by `init` / `set`, since it would deliver to nobody |
-| `observer.events` | all eight | any subset of `opened`, `handoff`, `verdict`, `approved`, `escalation`, `ruling`, `stall`, `closed`. An event left out is never sent, and never recorded as owed |
-| `observer.digest_min` | `0` | `0` sends one message per transition; above `0` batches them into one compact message at the next watchdog sweep |
-| `observer.mute` | `false` | stop delivering and keep the configuration (`--observer-mute` / `--observer-unmute`) |
+To repair a missing reader, `set` has a narrow path that first verifies the rest of the file as if the reader were present:
 
 ```bash
-hermes review-loop set --loop <id> --observer-profile arbiter        # turn it on, or move it
-hermes review-loop set --loop <id> --observer-route widgets-observe
-hermes review-loop set --loop <id> --observer-events verdict,escalation,closed
-hermes review-loop set --loop <id> --observer-digest-min 30
-hermes review-loop set --loop <id> --observer-mute                # --observer-unmute, --observer-disable
+hermes review-loop set --loop "<loop-id>" \
+  --read-token "<reader-login>" \
+  --token "<reader-login>=<absolute-reader-token-file>"
 ```
 
-`init --observer-profile <name>` writes the block and installs `<id>-observe` alongside the seats'
-routes, with the same signed POST at the same gateway origin — but `deliver_only: true` and a prompt
-that is just the notice, because by the time a route fires the message has already been written by
-the loop. The transitions it can send:
+Do not paste PATs into JSON, plugin settings, command arguments, issue text, or model prompts. See [Security](security.md) and [Accounts](accounts.md) for scopes and account isolation.
 
-| event | when it is sent |
-|---|---|
-| `opened` | a new PR needs its first look (also `ready_for_review` / `reopened`) |
-| `handoff` | the fixer pushed and requested review — the fixer's turn ended |
-| `verdict` | a changes-requested verdict landed: a fixer turn was queued, or, with unattended fixer pushes off (the default), the verdict is held for you |
-| `approved` | the reviewer approved (nothing else would free that seat) |
-| `escalation` | the cap is spent — sent after the durable marker. With an `adjudicator.route` it goes out before the adjudicator turn is enqueued (next: adjudicator delivery pending); without one, next is you |
-| `ruling` | an isolated adjudicator recorded its ruling (ACCEPT / REJECT / RESPEC) in the host ledger. The notice carries the verdict and counts only; the reason reaches the operator through the watchdog's outbox, which delivers every ruling even with no, a muted, or a filtered feed |
-| `stall` | the watchdog decided a quiet head is worth reporting |
-| `closed` | the PR was merged or abandoned and cleanup was attempted (sent for every PR closed in the repository) |
+## Capacity and pacing
 
-Consequences worth knowing:
+| Key | Default | Accepted value and behavior |
+|---|---|---|
+| `concurrency` | `1` | Whole number at least `1`, with no explicit loader maximum. Default simultaneous runs **per working seat**, not a combined loop-wide total. Effective reviewer/fixer capacity above `1` requires `clone`, even though production turns use isolated exports. |
+| `seats.reviewer.concurrency`, `seats.fixer.concurrency` | Loop `concurrency` | Whole number at least `1`. An explicit value pins that seat: later loop-wide changes do not override it. Missing, `null`, or empty values inherit. |
+| `seats.adjudicator.concurrency` | `1` | Whole number at least `1`; does not inherit loop capacity. |
+| `seats.triage.concurrency` | `1` | Whole number at least `1`; does not inherit loop capacity. |
+| `seats.<seat>.daily_turns` | No cap | JSON integer 1–1000 for `reviewer`, `fixer`, `adjudicator`, or `triage`. Booleans and numeric strings are refused. Omit to remove the cap; zero is not a valid stored cap. |
 
-* **One notice per transition.** Each notice is keyed by loop + PR + head + event + verdict/round
-  identity in `observations.json`, so a redelivered webhook, a re-run gate or a retried sweep cannot
-  produce a second ping.
-* **A failed delivery is recorded, not fatal.** A route that 500s, has no secret, or was never
-  installed leaves an entry with its reason (visible in `status` as *owed*) and is retried by the
-  next watchdog sweep, up to three attempts. The queue, the seats and the locks are never involved.
-* **No secrets in a ping.** A notice carries the loop id, PR number and URL, head, event, outcome,
-  next turn and a one-line summary — no PAT, no HMAC secret, no diff, no review body. The PR link is
-  private to whatever chat the operator configured for `observer.profile`.
-* **Disabling is safe at any time.** `--observer-mute` stops delivery; `--observer-disable` removes
-  the active block and route even with owed notices. The ledger and original destination binding
-  remain: queued notices stay owed but do not send while disabled, and re-enabling at a different
-  host, route, profile or delivery target is refused until they are settled. `status` shows the
-  outstanding count. A loop whose feed is broken logs the problem and runs its seats normally.
+The host run ledger enforces capacity. Every isolated turn receives its own exact-head export and sandbox, so increasing concurrency does not permit a shared writable checkout. One PR is not authorized for conflicting seats at once. Legacy files that explicitly pin each working seat to `1` retain those pins; `status` can explain why raising loop `concurrency` alone did not increase them.
 
-## Adjudication (the isolated ruling)
+Daily caps count turns started per loop/seat per **local day**. A capped turn waits until midnight without spending a retry. Provider usage-window holds are account-level and can affect several seats or loops using the same provider account. Subscription limits are shared with the operator's ordinary use; separate GitHub identities do not imply separate inference quotas. See [Operations](operations.md) for pacing status and recovery.
 
-When the cap is spent without an approval, the gate writes the durable breach marker and — if the
-loop has an `adjudicator.route` — enqueues an **isolated** adjudicator turn in the host run ledger
-(`$HERMES_HOME/state/review-loop-runs.sqlite`, turn `breach:<rounds>` at that head). It runs exactly
-like the other seats: a detached worker re-reads GitHub (PR open, not draft, same base, same head,
-author a configured fixer, the cap still spent, no approval at the head, a matching marker),
-exports the head read-only into bubblewrap, and gives the agent no credentials. Its only write is
-`python -m review_loop.broker_client ruling --verdict ACCEPT|REJECT|RESPEC --body-file PATH`,
-once. It never merges, pushes or reviews.
+```bash
+hermes review-loop set --loop "<loop-id>" --concurrency 2 --clone "<absolute-clone-path>"
+hermes review-loop set --loop "<loop-id>" --reviewer-concurrency 2 --fixer-concurrency 1
+hermes review-loop set --loop "<loop-id>" --reviewer-daily-turns 20
+hermes review-loop set --loop "<loop-id>" --reviewer-daily-turns 0
+```
 
-The host then, in order: records the ruling in the ledger (`rulings` table — this is the
-acknowledgement), sends a `ruling` observer notice, and — only when `seats.adjudicator.login` is
-configured — posts the ruling as a PR comment under that identity. Every ruling, with its reason,
-is also delivered by the watchdog's operator outbox (cron stdout), so the operator always hears
-of it. `python -m review_loop.run_supervisor rulings $HERMES_HOME/state/review-loop-runs.sqlite`
-lists recent rulings with their comment state (`none`, `denied`, `posted`, or `uncertain` for a
-POST whose outcome is unknown — never retried automatically).
+The last command removes the reviewer's stored cap. Adjudicator overrides are file-level settings; triage has its own CLI controls. `issue_fixer` has no independent persisted seat configuration; see [Issue triage and issue fixes](#issue-triage-and-issue-fixes).
 
-If the enqueue fails (no private runtime file, ledger or spawn error), the marker stays
-`delivery-pending` and the watchdog retries it; a duplicate delivery is deduplicated by the ledger.
+## Timers and turn budgets
 
-## Issue triage (`triage`)
+| Key | Default | Meaning |
+|---|---|---|
+| `turn_budget_s` | `900` | One agent turn's wall-clock budget, 60–14400 seconds. Includes reading, building, testing, and submission inside the turn, not host prefetch/drain. |
+| `seats.<seat>.turn_budget_s` | Loop budget | Override for reviewer, fixer, adjudicator, or triage; same 60–14400 range. Missing, `null`, or empty inherits. |
+| `grace_min` | `35` | Quiet-head stall grace in minutes, raised per seat to cover its whole worst-case turn. |
+| `marker_grace_min` | `60` | Grace for a marker awaiting adjudication. For an `adjudicating` marker without a live run, the threshold is at least the adjudicator's whole turn; with a live run it is not a stall. |
+| `cooldown_h` | `6` | Hours between repeated alerts for the same persistent stall or stuck entry. A cleared condition that returns can alert immediately. |
+| `ttl_min` | `45` | Seat-claim backstop in minutes, raised to the seat's whole worst-case turn. The watchdog's dead-claim threshold is twice that effective TTL. |
+| `inflight_ttl_min` | `10` | Minutes a same-head in-flight mark suppresses duplicate handling. The run ledger provides additional durable deduplication. |
 
-Off unless the loop has a `triage` block. `hermes review-loop triage --enable` writes it
-([operations](operations.md#issue-triage)):
+Use positive JSON integers for minute/hour timers. Unlike capacity and budget fields, the loop normalizer does **not** comprehensively type/range-check these timers. A malformed hand edit may survive load and fail in a consumer; zero can trigger fallback behavior in some consumers. This is not a supported way to disable a timer.
+
+Budgets accept values convertible to integer seconds within range, but use JSON integers: the current budget checker rejects booleans yet can truncate a fractional numeric value through `int()`. Do not rely on that coercion. `cap` and concurrency use a stricter whole-number check.
+
+### The complete turn clock
+
+A production turn can include:
+
+1. Host dependency prefetch, bounded at 300 seconds, before the agent budget starts.
+2. The selected seat budget, passed to Hermes as `--run-budget`.
+3. A 30-second sandbox kill grace after the agent budget.
+4. Up to 600 seconds of broker drain for a write already in flight.
+
+The default worst case is **1830 seconds (30.5 minutes)**. Grace/TTL calculations use the relevant seat's complete clock, not another seat's larger budget. The budget is recorded on the ledger row at enqueue; changing it affects new turns, not an already queued row. A claim's recorded budget prevents lowering a setting from shortening its live claim protection. The worker keeps its lease heartbeating through drain.
+
+Hermes prompts the agent to wrap up near 80% of its budget; the sandbox's complete process tree is killed after the kill grace. A budget-exhausted turn is not automatically replayed. If no write occurred, increase the budget and use `retry` or a new eligible event. If a write completed during drain, that run is final and retry refuses it; a new head can have a fresh turn. If broker drain cannot settle a possible write, the run becomes `uncertain` and requires reconciliation, not automatic replay. A killed adjudicator returns its marker for re-arming. Other timeouts retain their own failure/retry classification.
+
+```bash
+hermes review-loop set --loop "<loop-id>" --turn-budget 1200
+hermes review-loop set --loop "<loop-id>" --reviewer-turn-budget 1500 --fixer-turn-budget 1800
+hermes review-loop doctor --loop "<loop-id>"
+```
+
+`status` and `doctor` show effective seat budgets and raised thresholds. `selftest --live-turn` uses the reviewer budget unless `--timeout` overrides it. See [Troubleshooting](troubleshooting.md) for timeout and uncertain-write recovery.
+
+## Paths and cleanup boundaries
+
+| Key | Default | Behavior |
+|---|---|---|
+| `clone` | Empty | Optional local clone; required when effective reviewer/fixer concurrency exceeds `1`. Cleanup uses its registered worktrees. A loader accepting a path is not proof of a valid Git clone; preflight checks the installation. |
+| `roots` | `[]` | Dedicated cleanup discovery directories. Filesystem root, the current home directory, and ancestors of home are refused. Shared roots do not authorize deletion of another repository's PR artifacts. |
+| `state_dir` | `$HERMES_HOME/state/review-loops/<id>` | Per-loop locks, queues, markers, observations, diagnostics, run working directories, and dependency caches. Use a dedicated absolute path if overriding. |
+
+The `_path()` helper expands `~`; it does not generally expand shell variables inside JSON paths. Runtime host-path consumers use literal `Path` values, so use absolute paths there rather than `~` or `$VARIABLE` strings. Do not use relative paths merely because a loader can retain them: their meaning depends on the launch directory.
+
+Cleanup considers configured roots and the per-loop artifacts tree, rejects symlink components, and applies ownership checks. A plain child in a shared root must carry both the repository name and the PR token; a PR number alone is insufficient. Registered worktree ownership and detached-state checks also matter. The clone itself and unrelated paths are outside scope. These are discovery/deletion boundaries, not permission to delete every child. See [Security](security.md) for filesystem trust requirements.
+
+## Write policy and attribution
+
+| Key | Default | Accepted value and behavior |
+|---|---|---|
+| `unattended_fixer_push` | `false` | Strict JSON boolean. Only literal `true` in trusted host configuration opts into unattended fixer writes. Not inherited from plugin defaults. |
+| `attribution` | `true` | Strict JSON boolean. Adds footers to the loop's own reviews/comments/PR descriptions where applicable and an `Automated-By:` commit trailer. `false` adds neither. It does not rewrite manual posts. |
+
+While unattended fixer pushes are off, a changes-requested verdict is held for the operator: no fixer ledger row, worker, or model turn starts. The command below is the supported policy-change path; `set` and `apply` do not change this switch.
+
+```bash
+hermes review-loop fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
+hermes review-loop fixer-push --loop "<loop-id>" --disable
+hermes review-loop set --loop "<loop-id>" --attribution off
+```
+
+Enabling is **host-operator consent**, not proof that a PR owner or repository maintainer consented. The acknowledgement concerns the unavoidable race between checking a live PR and publishing. CLI policy writes serialize with broker admission/final push checks; uncoordinated manual edits are not an equivalent authorization mechanism. Opt-in does not upgrade old runs into write-authorized ones. See [Security](security.md) before enabling it.
+
+## Adjudication
+
+| Key | Default | Accepted value and behavior |
+|---|---|---|
+| `adjudicator` | `{}` | Disabled unless it has a route. A profile-only block normalizes to disabled; a nontrivial route-less block is refused. |
+| `adjudicator.route` | None | Enables an isolated ruling when the cap is spent. The legacy gateway route remains silent: it does not run a credential-owning adjudicator agent. |
+| `adjudicator.profile` | `default` when enabled | Profile used to resolve the ruling model; installation requires independence from both working seats. |
+| `seats.adjudicator.login` | Unset | Optional fourth GitHub identity used **only** to also post the ruling as a PR comment. Needs its own token mapping and private file. |
+| `seats.adjudicator.concurrency` | `1` | Independent capacity, not inherited from loop concurrency. |
+| `seats.adjudicator.turn_budget_s` | Loop budget | Ruling-turn budget override. |
+| `seats.adjudicator.daily_turns` | No cap | Optional local-day cap, 1–1000. |
+
+`seats.adjudicator` accepts only `login`, `concurrency`, `turn_budget_s`, and `daily_turns`. Its profile and enabling route belong in the separate `adjudicator` block, not in that seat object.
 
 ```json
-"triage": {"route": "name-triage", "profile": "arbiter", "authors": ["you"],
-           "labels": ["bug", "feature", "docs", "question", "P0", "P1", "P2", "P3"],
-           "max_labels": 3, "comment": false, "login": "rev-bot"}
+{
+  "adjudicator": {
+    "route": "<adjudicator-route>",
+    "profile": "<adjudicator-profile>"
+  },
+  "seats": {
+    "adjudicator": {
+      "login": "<adjudicator-login>",
+      "concurrency": 1,
+      "turn_budget_s": 1200,
+      "daily_turns": 10
+    }
+  }
+}
 ```
 
-| key | default | meaning |
-| --- | --- | --- |
-| `route` | — | the route on the `issues` event (runs `gate_triage.py`) |
-| `profile` | — | the Hermes profile whose model reads the issue |
-| `authors` | — | the logins whose new issues are triaged; anyone else's are ignored |
-| `labels` | — | the only labels triage may apply (1–100; no commas, braces or backticks) |
-| `max_labels` | 3 | at most this many labels per issue (1–10) |
-| `comment` | false | whether one short comment (≤ 1000 characters) may go with the labels |
-| `login` | the reviewer seat | the account that labels; needs `issues: write`, never the reader |
-| `fix_label` | — | a label a maintainer applies to hand an issue to the fixer (#214); not one of `labels`; needs unattended fixer pushes on. See the issue-fix seat below |
-| `maintainers` | — | the logins whose applying `fix_label` counts (required with it) |
+This is a fragment: merge it into the existing loop without replacing the working seats, and add the adjudicator's token path. Omit `login` and its token entirely for operator-only rulings.
 
-`seats.triage` takes `daily_turns`, `turn_budget_s` and `concurrency` (default 1).
-
-**The issue-fix seat.** An issue handed over with `fix_label` runs as its own seat, `issue_fixer`,
-which is not configured anywhere of its own:
-
-- it runs as the fixer seat's profile (its model) and the fixer seat's login (its writes);
-- one issue fix at a time (concurrency 1), whatever the fixer seat's own concurrency;
-- it runs on the loop's `turn_budget_s`, not `seats.fixer.turn_budget_s`;
-- it has no daily cap (`seats.fixer.daily_turns` does not count it);
-- it pushes only to a new branch `review-loop/issue-N`, never to an existing branch;
-- it starts only while `unattended_fixer_push` is `true`.
-
-The walkthrough is [Issues, step by step](issues.md).
-
-## Plugin settings (the desktop form)
-
-`plugin.yaml` declares a `config_schema`, so the desktop renders a form at **Capabilities → Plugins →
-review loop**. Those values are **defaults for a new loop**; pushing them onto an existing loop is
-explicit, because a form that quietly renumbers a running loop is a miserable thing to debug
-(the operator walkthrough is [Settings, in the desktop](settings.md)):
+`init --adjudicator-route` can create the route. `setup` does not add it, and `set` has no flag for adding the enabling route to an existing loop. Add the `adjudicator` block deliberately, then install it:
 
 ```bash
-hermes review-loop settings                      # what the form holds, [set] vs [default], per key
-hermes review-loop apply --loop <id> --dry-run   # the diff
-hermes review-loop apply --loop <id>             # write it
+hermes review-loop apply --loop "<loop-id>" --recreate-routes
+hermes review-loop set --loop "<loop-id>" \
+  --adjudicator-login "<adjudicator-login>" \
+  --token "<adjudicator-login>=<absolute-adjudicator-token-file>"
 ```
 
-| setting | default | lands on |
+`set --adjudicator-login ""` clears the comment identity. A settings form's blank identity instead means “leave unchanged.”
+
+The gate writes a durable breach marker, then enqueues a ruling keyed by `breach:<rounds>` at the head. The worker rechecks PR state, draft/base/head/author, spent cap, approval, and marker before exporting the head read-only. The adjudicator may record one `ACCEPT`, `REJECT`, or `RESPEC` ruling through the broker; it never merges, pushes, or submits a review. The host records the ruling, issues the observer notice, and optionally posts the PR comment. The watchdog's operator outbox carries every ruling's reason even with no feed, a muted feed, or event filtering.
+
+Without a route, only the marker is written and the operator decides what to do. Failed enqueue leaves `delivery-pending` for watchdog retry; ledger uniqueness deduplicates re-delivery. An ambiguous ruling-comment POST is `uncertain` and is not automatically retried.
+
+## Observer configuration
+
+The `observer` block is an optional **delivery-only feed**, not a model seat. It consumes no seat slot and has no agent on its route. `{}` or an absent block means no feed. See [Observer](observer.md) for notices, destination binding, and delivery recovery.
+
+| Key | Default | Accepted value and behavior |
 |---|---|---|
-| `cap` | 3 | `cap` |
-| `reviewer_concurrency` / `fixer_concurrency` | 1 | `concurrency` when the two agree; otherwise `concurrency: 1` and `seats.<seat>.concurrency` on the seat that differs. A seat equal to the loop default carries no value of its own, so a later `set --concurrency` still reaches it |
-| `reviewer_profile` / `fixer_profile` | — | `seats.<seat>.profile` (and `seats.<seat>.agent`, when the loop has not named one) |
-| `reviewer_login` | — | `seats.reviewer.login` **and** `reviewer_seat` — the login the review route serves |
-| `fixer_login` | — | `seats.fixer.login` |
-| `adjudicator_profile` | — | `adjudicator.profile`, on a loop that already has an `adjudicator.route` |
-| `reviewer_token_file` / `fixer_token_file` | — | `tokens[<that seat's login>]` — a **path** only; checked absolute, existing, yours, mode 600 before any write |
-| `adjudicator_login` | — | `seats.adjudicator.login`, on a loop that already has an `adjudicator.route` |
-| `adjudicator_token_file` | — | `tokens[<adjudicator login>]` — a **path** only, same checks, and not shared with any other login |
-| `clone`, `base`, `host` | —, `main`, unset | the same loop keys; a blank host in the form preserves an existing loop's explicit host |
-| `attribution` | on | `attribution`, only when the form names it |
-| `grace_min`, `ttl_min`, `inflight_ttl_min` | 35, 45, 10 | the same loop keys |
-| `turn_budget_s` | 900 | `turn_budget_s`, the loop-wide turn budget (a seat's own `seats.<seat>.turn_budget_s` still wins) |
+| `observer.route` | None | Required for a hand-written active feed. CLI `init`/`set` can generate `<id>-observe` when only a profile is named. |
+| `observer.profile` | `default` | Hermes profile supplying the delivery destination. |
+| `observer.deliver` | `telegram` | Gateway-supported real delivery target, such as `telegram` or `discord`. `init`/`set` refuse `log`: a delivery-only file/log destination cannot provide the feed. |
+| `observer.events` | All eight events | List or comma/whitespace-separated string. Missing or empty means **all**, not none. Normalization lowercases, deduplicates, and sorts strings. Unknown names are not rejected by this loader; only actual matching events send. |
+| `observer.digest_min` | `0` | Positive integer minutes batch notices for a watchdog flush; zero means immediate notices. Unparseable/non-positive values normalize to immediate mode. No explicit upper bound. |
+| `observer.mute` | `false` | Stop delivery while retaining configuration. Use a JSON boolean: this lenient loader uses truthiness, so the string `"false"` is truthy and would mute it. |
 
-Settings are per profile (`plugins.entries.hermes-review-loop.settings`, written through Hermes'
-single config writer), and `review_loop/config.py::SETTINGS_SCHEMA` mirrors the manifest — the suite
-fails if the two drift, because a form that writes keys nothing reads is worse than no form.
-
-Blank `clone` means *not set here*: it never erases the clone a loop already uses, since the cleanup
-prunes worktrees through that path. The rails still apply — `reviewer_concurrency: 2` with no clone
-is refused at `init`, at `set` and at `apply` alike.
-
-There is no built-in webhook host. Set `host` to your own gateway origin (for example,
-`https://your-gateway.example`) in the plugin settings, or pass `--host` to `init`; the CLI rejects
-missing, relative, and malformed hosts before writing any config or routes, even without `--hooks`.
-Existing loop files with an explicit `host` continue to load, and an unset form setting does not
-erase one when you run `apply`. A public GitHub webhook should use HTTPS.
-
-## Seat identity (who serves each seat)
-
-A seat is a **Hermes profile** (the model, its budget, its credentials) plus a **GitHub login** (the
-identity it acts as and the attribution its reviews carry). The form carries a per-profile default
-for both, plus an optional adjudicator profile; the allowlists, the route names and the adjudicator
-route stay per repository, because one form cannot honestly own every repository.
-
-A blank profile or login means **not set here**. It never unsets what a loop file says, so a
-repository that needs its own pair keeps it until somebody pushes the form onto that loop:
+| Event | Transition |
+|---|---|
+| `opened` | Initial look at opened, ready-for-review, or reopened PR. |
+| `handoff` | Fixer pushed and requested review. |
+| `verdict` | Changes requested: fixer queued or held for the operator under push-off policy. |
+| `approved` | Reviewer approved. |
+| `escalation` | Durable cap-breach marker written; next is adjudication or the operator. |
+| `ruling` | Isolated adjudicator recorded a ruling; the reason also reaches the operator outbox. |
+| `stall` | Watchdog reports a quiet/stuck head. |
+| `closed` | PR merged or abandoned and cleanup attempted; can be emitted for repository PRs outside ordinary author admission. |
 
 ```bash
-hermes review-loop settings                            # the form's mapping, and what each loop runs as now
-hermes review-loop init --repo owner/name --read-token reader-bot --token reader-bot=~/.hermes/keys/reader-bot-pat --dry-run    # preview seats + routes for a new loop
-hermes review-loop apply --loop name --dry-run         # what a push would change, including routes
-hermes review-loop apply --loop name                   # stage it: config and routes together
-hermes review-loop apply --loop name --while-busy      # ...even while a seat has a run out
+hermes review-loop set --loop "<loop-id>" --observer-profile "<observer-profile>"
+hermes review-loop set --loop "<loop-id>" --observer-route "<observer-route>"
+hermes review-loop set --loop "<loop-id>" --observer-events "verdict,escalation,closed"
+hermes review-loop set --loop "<loop-id>" --observer-digest-min 30
+hermes review-loop set --loop "<loop-id>" --observer-mute
+hermes review-loop set --loop "<loop-id>" --observer-unmute
+hermes review-loop set --loop "<loop-id>" --observer-disable
 ```
 
-**Validation, before anything is written.** `init` and `apply` refuse a mapping that cannot drive a
-run, and they refuse it *before* the loop config, the routes or the hooks are touched:
+A malformed feed is deliberately not a loop-load failure: unusable shape/missing route is reported as `misconfigured`, while seats can continue. Notices carry transition metadata and a PR link, not PATs, signing secrets, diffs, or review bodies. The destination can still reveal private repository metadata; choose its audience accordingly.
 
-| check | why |
-|---|---|
-| the profile exists (`~/.hermes/profiles/<name>`, or `default` for the launch profile) | otherwise the first event wakes nobody |
-| the login is in that loop's `fixers` / `reviewers` allowlist | a seat may only act as a login the repository already trusts |
-| reviewer and fixer differ in profile, in login, and in token file | one seat reviewing its own work is not a review |
-| an adjudicator differs from both seats | it is judging them |
-| every `tokens` mapping points at a real, non-empty file, and `read_token` is one of them | a missing PAT reads as an unauthenticated call, hours later, in a log nobody reads |
-| `read_token` is not a seat's login or the adjudicator login, and shares no seat's token file — checked by `apply` on the whole resulting config, not only on what it moves | the broker refuses every write while the reader wears a seat's hat — the loop would install and never post |
-| a token path from the settings form (and the adjudicator's) is absolute, yours, and mode 600 | a path is all the form may hold; a group-readable PAT is a shared credential |
-| a loop that maps tokens maps one for each seat it is writing | otherwise that seat pushes as the read identity |
-| a route is not claimed by another loop, and still runs this role's gate script | the registry is shared by every plugin on the host |
+Delivery is durably keyed by transition. Only definite **pre-POST** failures with explicit retryable evidence receive automatic retry, up to three attempts. A failed/ambiguous POST, stale delivery claim, or legacy failure without that evidence becomes `uncertain` for reconciliation; “HTTP 500” is not proof that nothing was delivered. Disabling/muting stops sending but does not erase owed records or their original destination binding. Re-enabling onto another host, route, profile, or target is refused while those records remain unsettled.
 
-Existence and allowlist membership are checked for the roles an operation *writes*: a loop created
-before this validation existed keeps loading when you tune its `cap`. Distinctness, credentials and
-route ownership always apply, because the unsafe shape is the combination.
+## Issue triage and issue fixes
 
-**Applying is staged, not half-applied.** A route URL carries the seat's profile
-(`/p/<profile>/webhooks/<route>`), so changing who serves a seat must also move its installed
-GitHub hook URL. `apply` first reads the repo hooks; if that listing is unavailable it refuses to
-move the profile. It snapshots the affected routes, rebinds and reads them back, updates matching
-hook URLs and reads each hook back, then writes the loop config. Any failed route write, readback,
-or hook update returns failure and attempts to restore prior routes and hook URLs; an incomplete
-rollback is reported loudly for manual repair. Other loops' routes and their secrets are untouched.
-`init` likewise restores the previous config bytes and owned routes if a retry fails partway
-through route installation. Installing or moving a seat requires token-file mappings for the
-read login and both seat logins before any installation writes.
+`triage` is off by default. An enabled block uses an `issues` webhook and `gate_triage.py`; it is separate from review events. See [Issues](issues.md) for enablement, label creation, and maintainer handoff.
 
-**A seat with a run in flight is not rewritten underneath itself.** `apply` refuses while the seat
-it would move has a live run, and says who is running and for how long. `--while-busy` is the
-explicit override: the change lands now, and that run finishes under the identity it started with.
-A new token-file path for a seat's login counts as moving that seat. Numeric knobs (`cap`, concurrency, timers) are not gated this way — they take effect on the next
-event and cannot strand a run.
-
-`status` shows the mapping and checks it against the registry:
-
-```
-  seats:      reviewer=rev-bot (critic) · fixer=dev-account (coder)
-  adjudicator:arbiter (route widgets-breach)
-  routes:     reviewer widgets-review → critic (ok) · fixer widgets-fix → coder (ok) · adjudicator widgets-breach → arbiter (ok)
-  token refs: reviewer rev-bot → ~/.hermes/keys/rev-bot-pat · fixer dev-account → ~/.hermes/keys/dev-account-pat
+```json
+{
+  "triage": {
+    "route": "<triage-route>",
+    "profile": "<triage-profile>",
+    "authors": ["<issue-author-login>"],
+    "labels": ["<allowed-label>"],
+    "max_labels": 3,
+    "comment": false,
+    "login": "<triage-login>"
+  }
+}
 ```
 
-`MISMATCH — hermes review-loop apply --loop <id>` in that line means the config moved and the route
-did not. Token values are never printed: only which login reads which file.
+| Key | Default | Accepted value and behavior |
+|---|---|---|
+| `triage.route`, `triage.profile` | Required when enabled | Non-empty route/profile; the profile supplies the model. |
+| `triage.authors` | Required | Non-empty list of non-blank author logins, trimmed/lowercased/deduplicated. Other authors are ignored before a model sees their issue. |
+| `triage.labels` | Required | 1–100 case-insensitively distinct label names, each 1–50 characters without surrounding whitespace, commas, braces, backticks, or control characters matched by the loader. Only these labels may be applied. |
+| `triage.max_labels` | `3` | JSON integer 1–10, not a boolean or string. Maximum labels applied to an issue. |
+| `triage.comment` | `false` | Strict JSON boolean; enables one optional comment of at most 1000 characters. |
+| `triage.login` | Reviewer seat login | Identity performing labels/comments; requires its own mapped token with `issues: write`, never the reader. It need not be a separate fourth adjudicator account. |
+| `triage.fix_label` | Unset | Maintainer-applied label that hands an issue to issue-fixing. Same label syntax; must **not** be among `triage.labels`, so triage cannot authorize its own fixes. |
+| `triage.maintainers` | Required with `fix_label` | Non-empty list of authorized label-applier logins. Refused when supplied without `fix_label`. |
+| `seats.triage.concurrency` | `1` | Whole number at least `1`. |
+| `seats.triage.turn_budget_s` | Loop budget | 60–14400 seconds. |
+| `seats.triage.daily_turns` | No cap | JSON integer 1–1000. |
 
-## State files (per loop, under `state_dir`)
+Only the listed keys are allowed in `triage`. `seats.triage` accepts only capacity, turn budget, and daily cap; put its identity in `triage.login` and model profile in `triage.profile`.
 
-| file | what it holds |
-|---|---|
-| `locks.json` | `{seat: {"repo#PR": {at, head, why, budget, run}}}` — the seat claim of each live isolated run, written by its worker at launch (with the run's budget and id) and removed when it ends — only by that run's own release, never by another run's; an `uncertain` run keeps it until `run_supervisor reconcile` frees it (with the head's in-flight mark). The run ledger enforces capacity; this is its visible copy |
-| `pending.json` | `{seat: {"repo#PR": {at, head, url, reason}}}` — held, not run: a turn the run ledger could not take (the private runtime was missing, say), or a changes-requested verdict held while unattended fixer pushes are off. The watchdog drains it |
-| `route-intent.json` | mode 0600: the plugin's private record of every route it installed for this loop, secret included. The watchdog and `doctor --repair` restore an erased or rewritten route from it ([the shared route registry](architecture.md#the-shared-route-registry-issue-1)) |
-| `inflight.json` | `{"review:PR:sha" / "fix:PR:sha": ts}` — a reviewer/fixer run for this head is live: marked by its worker at launch, cleared when it ends (and after `inflight_ttl_min` regardless) |
-| `breach.json` | `{"repo#PR": {head, rounds, cap, reason, at, status}}` — `delivery-pending` retries on a current-head watchdog sweep; `awaiting-adjudication` means the isolated adjudicator turn was enqueued in the run ledger (with no `adjudicator.route` only the marker is written and nothing is enqueued); `adjudicating` means the ruling run was claimed |
-| `watchdog.json` | `armed_since`, `{heads: {PR: {sha, observed_at, last_seen_at}}}` (null observation for baseline/invalid clocks; absent PR clocks retained 30 days since last seen). A missing, malformed, boolean, non-finite, or future `armed_since` re-arms at the first successful PR listing and baselines all current heads rather than trusting old observations; a failed listing leaves state and queue unchanged. Alert history and last run are also stored here. |
-| `watchdog.log` | one line per sweep, and per breach |
-| `gate-failures.json` | a gate that crashed, ran out of time, was stopped, or went silent after a failed GitHub read: the event, the error and a bounded traceback, with the payload kept under `gate-failures/`. The watchdog alerts on it and re-drives reviewer and fixer events (see [When a gate crashes](operations.md#when-a-gate-crashes-or-runs-out-of-time)) |
-| `github-reads.json` | the last GitHub call the loop could not make, for `explain`'s "last failed call" line |
-| `stack-transitions.json` | holds for a stacked PR retargeted onto the base at the same head: old reviews no longer count, and one fresh reviewer turn decides ([stacked PRs](architecture.md#stacked-prs-and-retargets)) |
-| `observations.json` | the observer feed's delivery ledger: `{"entries": {"<loop>:<PR>:<head>:<event>:<identity>": {status, message, url, attempts, error, retryable, batch, delivery}}}`. `failed` is retried only with explicit `retryable: true` evidence of a pre-POST failure; legacy failures without that evidence and ambiguous/stale claims become `uncertain` for manual reconciliation. `queued` waits for a digest; `pending` is claimed mid-delivery; `delivered` has a receipt. `delivery` is the id the notice was issued with: a retry of the same logical delivery reuses it, a distinct notice never does. |
-| `artifacts/<PR>/` | the per-PR workspace root of the older clone-per-run design; cleanup still removes it when the PR closes. Isolated turns do not use it: each builds in its own temporary sandbox root |
+### Issue-fixer inheritance
 
-Host-wide, under `$HERMES_HOME/state/` and shared by every loop:
+An authorized handoff uses the runtime seat `issue_fixer`, but that seat has no independent persisted configuration:
 
-| file | what it holds |
-|---|---|
-| `review-loop-runs.sqlite` | the run ledger: every isolated turn (state, lease, retries, budget, errors), the write-ahead records of every broker write, rulings, triage and issue-fix results. `python -m review_loop.run_supervisor status <path>` reads it |
-| `review-loop-runs.sqlite.workers.log` | the detached workers' stderr (one diagnostic line or a traceback), rotated once to `.1` past 256 KiB |
-| `review-loop-pacing.json` | usage-window holds per account (provider, endpoint and profile, never a credential) and per-day turn counts; see [Pacing](operations.md#pacing-usage-windows-and-daily-caps) |
+- Profile/model and GitHub write identity come from the fixer.
+- Capacity is one issue fix at a time, independently of fixer concurrency.
+- Budget comes from loop `turn_budget_s`, **not** `seats.fixer.turn_budget_s`.
+- No daily cap is inherited from `seats.fixer.daily_turns`.
+- It creates only a fresh branch `review-loop/issue-N`, not an existing branch.
+- It requires enabled triage, a configured `fix_label`, and `unattended_fixer_push: true`.
 
-`hermes review-loop status` prints the shape of these files, and `hermes review-loop explain --pr N`
-reads them (with the same predicates the gates use) to say why one PR is not moving. `explain` is
-read-only down to the byte: it uses the non-pruning readers, so asking twice leaves every file above
-exactly as it was.
+Do not add `seats.issue_fixer` and expect it to tune this behavior: normalization does not retain it as a configurable seat. Its inference resolution uses the fixer seat; the runtime override seat names likewise do not include `issue_fixer`.
+
+## Plugin settings and safe application
+
+The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plugins → review loop**. `review_loop/config.py::SETTINGS_SCHEMA` mirrors the manifest; tests check agreement. Settings are per Hermes profile and written through Hermes's configuration writer. See [Operations](operations.md) for the settings workflow.
+
+| Setting | New-loop default | Loop destination |
+|---|---|---|
+| `cap` | `3` | `cap` |
+| `reviewer_concurrency`, `fixer_concurrency` | `1` each | Working-seat capacities; placement rules below. |
+| `clone` | Blank | `clone`; blank preserves an existing clone. |
+| `base` | `main` | `base` |
+| `grace_min`, `ttl_min`, `inflight_ttl_min` | `35`, `45`, `10` | Same loop timer keys. |
+| `turn_budget_s` | `900` | Loop budget; explicit seat budgets still win. |
+| `host` | Blank | Gateway origin; blank preserves an existing explicit host. |
+| `reviewer_profile`, `fixer_profile` | Blank | Working-seat profiles; agent display name follows only when no explicit name exists. |
+| `reviewer_login` | Blank | `seats.reviewer.login` and `reviewer_seat` together. |
+| `fixer_login` | Blank | `seats.fixer.login`. |
+| `reviewer_token_file`, `fixer_token_file` | Blank | `tokens` entry for the selected login; path only, with metadata checks before writes. |
+| `adjudicator_profile` | Blank | `adjudicator.profile`, only on a loop already having an adjudicator route. |
+| `adjudicator_login`, `adjudicator_token_file` | Blank | Optional adjudicator comment identity/path, only when an adjudicator route exists. |
+| `attribution` | `true` | Overlay targets `attribution` when explicitly named; attribution-only CLI apply currently misses this change (see below). |
+
+**Attribution-only apply limitation:** `config.apply_settings` overlays this field, but CLI `_apply` omits it from the change list used to decide whether to publish loop JSON. A form push changing only attribution can report “already matches” without persisting it. Use `set --attribution on` or `set --attribution off`, with `--loop "<loop-id>"` selecting the exact loop, and verify `status`. Other persisted form changes may carry the overlay incidentally; do not depend on that.
+
+For a new loop, CLI flags and supplied settings contribute to its initial values. For `apply`, absent, blank, or whitespace-only form values mean **not set here**, not “reset to schema default.” An empty form leaves an existing loop's numbers and identities alone. Form booleans accept `true/on/yes/1` and `false/off/no/0`; loop JSON booleans remain strict. Invalid setting conversions can fall back to schema defaults before loop validation; do not use that as input validation for hand edits.
+
+Concurrency placement is significant:
+
+- Both seat values explicitly set and equal: write their value as loop `concurrency`, remove redundant seat pins.
+- Both explicitly set and different: loop default is `1`; only seats differing from it carry pins.
+- Only one set: change only that seat's pin; leave loop capacity and the other seat alone.
+- Neither set: leave all capacity values unchanged.
+
+Allowlists, route names, reader identity, observer/triage blocks, roots, marker grace, cooldown, daily caps, and unattended push consent are not settings-form subscriptions. A form does not own all repositories.
+
+```bash
+hermes review-loop settings
+hermes review-loop apply --loop "<loop-id>" --dry-run
+hermes review-loop apply --loop "<loop-id>"
+hermes review-loop apply --loop "<loop-id>" --while-busy
+```
+
+### Identity changes are staged
+
+Installation/application checks profiles, allowlist membership, identity/file distinctness, credentials, and route ownership before writing. Profile existence/allowlist checks can be scoped to the roles being changed for legacy compatibility; do not mistake a successful numeric-only update for a full installation audit. `apply` checks the resulting reader separation even when it did not move the reader.
+
+Moving a profile changes its webhook path (`/p/<profile>/webhooks/<route>`), so `apply` first reads repository hooks, snapshots owned routes, rebinds and reads routes back, updates and reads matching hooks back, then writes loop config. Failed writes/readbacks attempt rollback; incomplete rollback is reported for manual repair. Other loops' routes/secrets are not rewritten. `init` also restores previous owned state after partial route-installation failure.
+
+`apply` refuses identity/token-path moves for a live seat unless `--while-busy` explicitly overrides that protection. The old run finishes under the identity it started with. Numeric changes are not protected by this busy-seat guard; they do not change an existing row's recorded budget. A dry run previews changes; it is not proof that live hooks or providers will work.
+
+Use `doctor` for preflight, `status` for mapping/registry drift, and `selftest` only when ready for its live credential/provider probes. Ordinary `doctor` is read-only; `doctor --repair` is a different, state-changing operation. See [Troubleshooting](troubleshooting.md).
 
 ## Runtime file and seat models (`review-loop-runtime.json`)
 
-The isolated worker reads one private (0600) host file, `$HERMES_HOME/review-loop-runtime.json`.
-It names **host paths** — the model is not a runtime setting any more (issue #32).
-`hermes review-loop setup` detects them and writes the file (0600), keeping any path that still
-works and any model override already in it:
+The isolated worker requires a private regular host runtime file at `$HERMES_HOME/review-loop-runtime.json`. `setup` detects and atomically writes it with mode `0600`, preserving usable chosen paths and existing model overrides. Missing/invalid runtime configuration is a fail-closed hold, not permission to dispatch a gateway agent.
 
 ```json
-{"source": "/path/to/hermes-agent", "venv": "/path/to/hermes-agent/venv",
- "runtime": "/path/to/python-runtime", "rust": "~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu"}
+{
+  "source": "<absolute-hermes-source-path>",
+  "venv": "<absolute-hermes-venv-path>",
+  "runtime": "<absolute-python-installation-path>",
+  "rust": "<absolute-rust-toolchain-path>"
+}
 ```
 
-**The interpreter this names must be able to read YAML.** A seat's model is resolved by a child
-process running the `venv` above, and Hermes reads its configs with `ruamel.yaml`. A packaged
-install runs Hermes itself on a bundled python that ships **neither** `ruamel.yaml` nor PyYAML, so
-on such a host — with no runtime file naming a venv that has them — every seat reports
-`this interpreter (…) has no YAML library (looked for yaml and ruamel.yaml)` and is held before its
-turn starts. The reader tries `yaml`, then `ruamel.yaml`, then JSON (a JSON config is valid YAML),
-and names the interpreter it was when it has neither: a profile's `config.yaml` written as real
-YAML needs one of the first two.
+| Key | Requirements and detection |
+|---|---|
+| `source` | Hermes Git checkout with `run_agent.py` and `.git`. Detection uses the imported `hermes_cli` location, then the virtualenv's parent. |
+| `venv` | Has `bin/python` and `bin/hermes`. Detection tries the running interpreter's prefix, Hermes on `PATH`, then checkout `venv/` or `.venv/`. Packaged Hermes may run on a bundled interpreter outside this venv. |
+| `runtime` | Directory containing both the venv interpreter's literal symlink target and its resolved installation. Detection finds their common installation root, not `/`. This path is bound at its same absolute location in the sandbox. |
+| `rust` | Toolchain directory with `bin/cargo`. Detection prefers rustup's default, then stable/available toolchains, then a system cargo prefix; not the `~/.cargo/bin` rustup proxy. |
 
-**It must also have the provider's optional Hermes package.** The sandboxed Hermes runs on this
-`venv`, and some providers need a Hermes extra that a plain install leaves out: every seat on the
-Messages wire (`anthropic_messages` — a Claude subscription or API key on `anthropic`, MiniMax,
-Tencent TokenPlan, an endpoint ending in `/anthropic`, Kimi Code's `api.kimi.com/coding`, or an
-OpenCode model Hermes routes to Messages such as Zen's `claude-*`) imports the `anthropic`
-package, and without it the turn fails at model setup. `doctor` prints one `extras:<seat>` line
-per seat:
+These four keys are mandatory non-empty strings; extra top-level runtime keys are rejected. Path-shape parsing does not prove the installation is usable: detection/selftest check the filesystem and interpreter. Use absolute paths. Unlike GitHub token-path helpers, runtime host paths are not generally tilde-expanded by consumers.
 
-* ✅ the seat needs no extra, or `venv`'s own python can import it (`find_spec`, read-only);
-* ❌ it needs the extra and the package is missing — with the fix: `hermes pm install --extra
-  anthropic`, Hermes's own command for a missing extra, which installs into the venv Hermes
-  selects, so this `venv` must be that one (or have the extra installed itself);
-* ⚠️ the seat *may* need it — Hermes can move it onto the Messages wire depending on something
-  doctor does not read (`nous` with an `anthropic/*` model and `nous.anthropic_wire: auto`, whose
-  session may be promoted; `kimi-coding` with a Kimi Code key and no `base_url`/`api_mode` of its
-  own) — and the package is missing, with the same install command; or the provider could not be
-  read (a malformed `base_url` included), or the probe could not answer;
-* ➖ skipped when `model:<seat>` is already ❌ (the model is unresolved, so there is no provider
-  to check).
+### Model precedence
 
-`nous` with `nous.anthropic_wire: native` needs it outright; unset or `chat` never reaches the
-Messages wire. An explicit `model.api_mode` other than `anthropic_messages` wins over a Messages
-provider's default or an Anthropic-looking URL, as it does in Hermes — except for `anthropic`,
-`minimax-oauth`, `nous` and the built-in OpenCode providers, whose wire Hermes fixes itself. A
-**named custom provider** (`model.provider: <name>` with a `providers.<name>` or `custom_providers`
-entry) is decided by that entry, not by `model.api_mode`: the entry's `api_mode`/`transport`, else
-its URL. doctor does not re-implement that lookup: the describe step asks the runtime's own Hermes
-(`_get_named_custom_provider`, `_parse_api_mode`, `_detect_api_mode_for_url`,
-`opencode_model_api_mode`), read-only, with the lookup's one secret read answered empty so no
-credential is touched, and only endpoint and wire facts come back. A provider Hermes refuses (no
-enabled entry and not a built-in, a malformed entry, or an entry pinning a wire the proxy cannot
-speak) fails `model:<seat>`. An OpenCode-family entry with no `api_mode` of its own is ⚠️ "may
-need": Hermes derives its wire from the model unless the credential comes from a pool, which doctor
-does not read. When the runtime file's `source` has no importable Hermes, `model:<seat>` fails —
-the turn resolves its model through that same import, so it would be held — and `extras:<seat>` is
-skipped. When that Hermes lacks one of the functions doctor asks (a pin that moved them), both lines
-say Hermes was not asked: `model:<seat>` is ⚠️ with the missing names, and `extras:<seat>` is never
-✅ "needs no optional Hermes package" on doctor's own table (a seat whose provider a config entry
-might decide is ⚠️ "may need"). When Hermes *was* asked and raised — the turn would fail the same
-way — `model:<seat>` fails (❌, exit 1) with Hermes's reason. CI's `verticals` job compares these
-verdicts with the pinned Hermes's own resolver on a table of profiles, and fails if the comparison
-is skipped. To run it yourself against a Hermes checkout with its `venv/` (never point it at the
-install your gateway runs):
+For reviewer, fixer, adjudicator, and triage, resolution is:
+
+1. Runtime `seats.<seat>` override, if explicitly present.
+2. The seat's selected Hermes profile.
+3. Legacy runtime top-level `model`, `upstream`, and `key_file`, only if profile resolution fails.
+
+The normal path is each profile's model, resolved with Hermes's own provider/auth logic in a separate host child process. That child starts with a fresh environment, rather than inheriting another seat's key. Credentials remain in the host inference proxy; sandbox configuration contains the resolved model and local bridge with a dummy key. Change a profile's model with:
 
 ```bash
-HERMES_AGENT_SOURCE=/path/to/hermes-agent \
-  python -m unittest discover -v -s tests -p test_seat_models.py -k HermesAgreement
+hermes -p "<seat-profile>" model
+hermes review-loop models --profile "<seat-profile>"
+hermes review-loop models --seat reviewer --loop "<loop-id>"
 ```
 
-(By discovery from `tests/`: a dotted `tests.test_seat_models…` name can resolve to Hermes's own
-`tests` package when Hermes is on the path.) The provider→extra table, including those "possible"
-entries, is `HERMES_EXTRAS` in `review_loop/seat_model.py`.
+An unresolved seat never borrows another seat's credentials. With no explicit/legacy override it fails before its turn proceeds; the reason is recorded in the run ledger. Legacy fallback is warned about because all falling-back seats share one model/key.
 
-**Each seat runs its own Hermes profile's model.** Before a turn, the host resolves the seat's
-profile (`seats.reviewer.profile`, `seats.fixer.profile`, `adjudicator.profile`) with Hermes's own
-resolution — the profile's `config.yaml` `model` block, its `.env`/secret sources and `auth.json`
-credential pool, exactly as `hermes -p <profile> chat` would — in a separate process per seat whose
-environment is built from scratch. The key it returns lives only in that turn's host inference
-proxy; the sandbox's `config.yaml` names the seat's model and points at the local bridge with a
-dummy key. Changing a seat's model = `hermes -p <profile> model`.
-`hermes review-loop models --profile NAME` (or `--seat reviewer --loop ID`) lists, read-only, what
-that profile's provider offers in the Hermes model catalog.
+### Explicit model overrides
 
-**Supported providers, by wire format.** What decides support is the `api_mode` Hermes resolves
-the profile to; the inference proxy has one fixed contract per mode (sandbox path, host-chosen
-upstream path and headers, forced model, output-token cap in that mode's own field, quota,
-streamed answers relayed as they arrive — see `review_loop/inference_proxy.py`):
+A runtime `seats` object permits only `reviewer`, `fixer`, `adjudicator`, and `triage`. Each override must contain **exactly** these three non-empty strings:
 
-| `api_mode` | providers (examples) | credential | upstream (host-fixed) | sandbox speaks |
-|---|---|---|---|---|
-| `chat_completions` | `custom:<name>`, `openrouter`, `deepseek`, other API-key providers | API key (`Bearer`) | `…/chat/completions` | `provider: custom` → `/v1/chat/completions` |
-| `chat_completions` | `qwen-oauth`, `nous` (non-`anthropic/*` models) | OAuth (host-refreshed) | `…/chat/completions` | same |
-| `codex_responses` | `openai-codex` (ChatGPT subscription), `xai-oauth` | OAuth (host-refreshed) | `…/backend-api/codex/responses`, `…/v1/responses` | named provider `review-loop-seat`, `api_mode: codex_responses` → `/v1/responses` |
-| `codex_responses` | API-key providers Hermes routes to Responses (OpenAI, xAI keys) | API key | `…/responses` | same |
-| `anthropic_messages` | `anthropic` with a Claude Pro/Max **subscription** token | OAuth (host-refreshed), `Bearer` + Claude Code identity | `https://api.anthropic.com/v1/messages` | `provider: anthropic` at the bridge with a dummy OAuth-shaped token, so Hermes applies the Claude Code system prefix and `mcp__` tool names the subscription requires |
-| `anthropic_messages` | `anthropic` with a Console key, `minimax-oauth`, other Messages endpoints | API key (`x-api-key`) or `Bearer`, as Hermes decides | `…/v1/messages` | named provider `review-loop-seat`, `api_mode: anthropic_messages` → `/anthropic/v1/messages` |
+```json
+{
+  "seats": {
+    "reviewer": {
+      "model": "<model-id>",
+      "upstream": "<full-https-chat-completions-url>",
+      "key_file": "<absolute-model-key-file>"
+    }
+  }
+}
+```
 
-Host-chosen headers come from Hermes's own client code, resolved on the host: the Codex
-`ChatGPT-Account-ID`/`originator`/`User-Agent` set, Anthropic `anthropic-version`,
-`anthropic-beta` (plus `oauth-2025-04-20`, `claude-code/<version>` user agent and `x-app` for a
-subscription), the Qwen portal and OpenRouter headers. The sandbox's own `Authorization`,
-`x-api-key`, beta, account and user-agent headers are always dropped; only the Responses
-session-affinity headers `session_id`/`x-client-request-id` pass through. Caps: 4096 output tokens
-per chat completion (over-cap requests refused, as before); 16384 for Responses (refused over
-cap; on the ChatGPT Codex backend the field is validated and then **dropped**, because that backend
-rejects it — Hermes's own Codex client omits it too — so there the per-turn call quota and the
-subscription's own limits bound output); 16384 for Messages, **clamped** (Hermes always asks for the
-model's native ceiling, e.g. 64000) with any extended-thinking budget kept below it.
+This is a fragment to merge with all four host-path keys. `upstream` must be a full HTTPS endpoint ending in `/chat/completions`, without credentials, query, or fragment. `key_file` holds a non-empty single-line static key, is a regular non-symlink file owned by the current user, and has no group/other permissions. These model-key checks differ from GitHub token references, which can follow symlinks.
 
-**Claude subscription through DirectSDK (experimental).** A profile whose provider is
-`claude-subscription-directsdk-experimental` is not an HTTP upstream: the host proxy serves the
-seat through the plugin's DirectSDK client, run on the host with the native Claude login, while the
-sandbox still speaks `chat_completions` to its local bridge. It needs that experimental Hermes
-plugin and Claude's native client set up for the profile; see
-[Advanced: Claude subscription seats](../README.md#advanced-claude-subscription-seats-directsdk).
+Overrides always use `chat_completions` with a static key; OAuth seats come from profiles. A legacy top-level trio must supply all three keys or none. `setup` preserves overrides; it does not silently migrate or remove a legacy shared-model fallback.
 
-**Not supported**, refused before any credential is read or refreshed: Copilot (token exchange
-with its own client headers), Bedrock, Vertex, Azure Foundry and MoA (by name); a profile with
-`model.openai_runtime: codex_app_server` (the turn would be a codex subprocess with its own login)
-or `model.api_mode: bedrock_converse`; any other provider whose Hermes `auth_type` is not an API
-key; and a profile with no `model.provider` (auto-detect). Any other `api_mode` Hermes resolves to
-is refused after resolution, before the turn.
+### Interpreter dependencies and preflight limits
 
-**OAuth seats are refreshed on the host, never in the sandbox.** Hermes keeps the refresh token in
-the profile's `auth.json` (or Claude Code's / the Codex CLI's own store) under its own `auth.lock`;
-review-loop only ever receives the short-lived access token, over the resolver process's pipe,
-into the turn's proxy. The proxy re-runs the same isolated resolution when the token is within
-60 s of the expiry Hermes states (or, when Hermes states none, the token's own JWT `exp`), and once
-after an upstream 401 — asking Hermes to rotate exactly that rejected token — then retries the
-request once. Resolutions of one profile are serialized (thread lock + `flock` under
-`$HERMES_HOME/state/review-loop-seat-locks/`), so two seats sharing a profile never refresh in
-parallel; the second simply reads the token the first refreshed. The sandbox sees only a dummy key.
+The runtime venv's interpreter must read the seat's `config.yaml` and import Hermes from `source`. YAML reading tries PyYAML (`yaml`), then `ruamel.yaml`, then JSON (valid YAML). A real YAML file with neither parser cannot resolve. A packaged launch interpreter having no YAML package does not imply the selected runtime venv lacks one; check the actual interpreter named here.
 
-> **A subscription seat shares its rate limits with you.** A seat on `openai-codex`, a Claude
-> subscription, `xai-oauth`, `qwen-oauth` or `nous` draws on the same plan and usage window as your
-> own use of that account (and any other seat on the same profile). A busy loop can exhaust it — and
-> your own session can starve the loop. A 429 in `selftest` says so.
+Every `anthropic_messages` seat needs the `anthropic` optional Hermes package in that runtime venv. This includes Claude subscription/API-key seats, MiniMax, and any other provider Hermes resolves onto Messages. `doctor`'s `extras:<seat>` is:
 
-**Precedence, per seat:**
+- Pass when the required import is available or no extra is needed.
+- Fail when a known required package is absent.
+- Warn when the wire is credential/session-dependent or the probe cannot decide.
+- Skipped when the model itself is unresolved.
 
-1. `seats.<seat>` in the runtime file — `{"model", "upstream", "key_file"}` — an explicit
-   per-seat override (testing, or a profile whose provider the proxy cannot speak). `upstream` is the
-   full HTTPS `…/chat/completions` URL; `key_file` is a private one-line key file. Overrides are
-   always chat-completions with a static key; OAuth seats come from profiles.
-2. the seat's Hermes profile — the default.
-3. the legacy top-level `model` / `upstream` / `key_file` (the pre-#32 seven-key file) — used
-   **only** for a seat whose profile cannot be resolved, so existing runtime files keep working.
-   `doctor` and `selftest` warn whenever it is present or in effect: every seat that falls back to
-   it shares one model and one key.
+The documented install command is `hermes pm install --extra anthropic`; ensure it installs into the runtime venv used here. Named custom providers take their wire from their provider entry (`api_mode`/`transport` or URL), not simply `model.api_mode`. Built-in Anthropic, MiniMax OAuth, Nous, and OpenCode families can fix/derive their wire themselves. For example, Nous `anthropic/*` with `nous.anthropic_wire: native` needs Messages; `auto` can promote a session; unset/`chat` does not. Kimi Code without explicit endpoint/mode can depend on key type. OpenCode model-family decisions can depend on credential pooling. Doctor does not read those credentials to guess.
 
-Otherwise the turn is **held**: the run is marked `failed` before any GitHub read, with the reason
-in the ledger (`seat model unresolved: profile default (bedrock): …`), and it never falls back
-to another seat's model or key. `doctor` shows each seat's profile → provider / model with the
-expected `[api_mode, API key | OAuth (host-refreshed)]` (read-only, no credential lookup);
-`selftest` resolves the credential, shows the resolved `[api_mode, auth]`, and makes one tiny
-request in that wire format per distinct seat resolution.
+Description asks the selected runtime's own Hermes resolver helpers for endpoint/wire facts without credential lookup. If Hermes cannot be imported, the model fails; if required helper functions have moved, the result warns that Hermes was not asked rather than claiming agreement. A provider Hermes itself refuses fails preflight. Read-only model description is not proof of login validity, quota, or upstream success; `selftest` performs credential resolution and a small request per distinct resolution. See [Development](development.md) for pinned-Hermes agreement tests and [Troubleshooting](troubleshooting.md) for model failures.
+
+### Supported inference wires
+
+Support follows the **resolved `api_mode`**, not a promise that every provider name works. Upstream URLs/headers/model are host-selected. Streams relay as they arrive.
+
+| Resolved mode | Typical supported providers/auth | Sandbox request path | Host upstream suffix |
+|---|---|---|---|
+| `chat_completions` | API-key custom/OpenRouter/DeepSeek providers; `qwen-oauth`; Nous on chat wire | `/v1/chat/completions` | `/chat/completions` |
+| `codex_responses` | `openai-codex`, `xai-oauth`; API-key providers Hermes routes to Responses | `/v1/responses` | `/responses` (including the host-selected Codex backend path) |
+| `anthropic_messages` | `anthropic`/Claude aliases with subscription or API key; `minimax-oauth`; other Messages endpoints | `/anthropic/v1/messages`, except the Claude-subscription bridge's Anthropic client path | `/v1/messages` |
+
+A Claude subscription uses host-resolved Claude Code identity/headers and sandbox Anthropic configuration with a dummy OAuth-shaped token, preserving the system/tool-name conventions that subscription transport requires. API-key Messages seats use the named `review-loop-seat` provider at the bridge. Responses seats also use that named provider with their resolved wire.
+
+The proxy drops sandbox authorization, API-key, beta/account/user-agent headers; only permitted Responses session-affinity headers (`session_id`, `x-client-request-id`) pass through. Host Hermes supplies upstream authentication and provider headers. Production turns have a 32-call inference quota; this and output-token caps are proxy policy, not configurable loop JSON keys:
+
+- Chat completions: 4096 output tokens; requests above the cap are refused.
+- Responses: 16384; over-cap refused. On the ChatGPT Codex backend the validated token-limit field is dropped because that backend rejects it, so call quota and subscription limits—not that field—bound output.
+- Messages: 16384; requested limits are clamped, including extended-thinking budget adjustment below the ceiling.
+
+The experimental provider `claude-subscription-directsdk-experimental` is a host-process backend, not an HTTP upstream. It uses the plugin's DirectSDK client/native Claude login on the host; the sandbox still speaks chat completions to its bridge. It requires the experimental Hermes plugin and profile setup. Consult [Security](security.md) and [Troubleshooting](troubleshooting.md) before treating experimental transport as equivalent to an API-key provider.
+
+Refused provider names include `copilot`, `copilot-acp`, `github-copilot`, `bedrock`, `aws-bedrock`, `vertex`, `google-vertex`, `vertex-ai`, `gcp-vertex`, `vertexai`, `azure-foundry`, and `moa`. Auto-detected/missing `model.provider`, `model.openai_runtime: codex_app_server`, and `bedrock_converse` are not supported. Other non-API-key authentication types outside explicitly supported OAuth/process paths are refused; resolved modes outside the three proxied modes are refused. Name/config policy refusals occur before credential lookup where possible; an unknown resolved wire can only be refused after Hermes resolution.
+
+### OAuth refresh and shared limits
+
+OAuth refresh happens on the host through Hermes's own profile/auth stores and lock behavior. The sandbox never receives refresh tokens. The proxy resolves again within 60 seconds of reported expiry (or a JWT's expiry when needed), and once after upstream 401, requesting rotation of that rejected token and retrying once. Per-profile thread/file locks under `$HERMES_HOME/state/review-loop-seat-locks/` serialize concurrent refresh.
+
+`openai-codex`, Claude subscriptions, `xai-oauth`, `qwen-oauth`, and Nous draw from their configured accounts' existing plans/windows. A busy loop can exhaust the operator's subscription, and operator use can starve the loop. Setting more concurrency or changing GitHub accounts does not create more provider quota.
 
 ## Environment overrides
 
-| variable | effect |
+Set production limits in the environment of the process launching the supervisor, normally the gateway, then restart that process. The worker launcher propagates the three size-limit variables. A shell-only export does not reconfigure an already running gateway.
+
+| Variable | Default / accepted value | Effect |
+|---|---|---|
+| `HERMES_HOME` | `~/.hermes` | Host loop/runtime/state home; `~` expands. |
+| `REVIEW_LOOP_CONFIG_DIR` | `$HERMES_HOME/review-loops.d` | Alternative loop-file directory; `~` expands. |
+| `REVIEW_LOOP_SUBS` | Default gateway subscriptions location | Alternative subscription/route registry path; useful only when the serving gateway reads the same registry. |
+| `REVIEW_LOOP_HERMES` | `hermes` found on `PATH` | Hermes executable used when composing scheduler commands. |
+| `HERMES_REAL_HOME` | Current home | Operator-home hint used by runtime detection when a gateway profile has redirected `HOME`. |
+| `RUSTUP_HOME` | Operator home's `.rustup` | Toolchain discovery input to runtime detection. |
+| `REVIEW_LOOP_CHECKOUT_SIZE_GIB` | `8`; integer 1–1024 | Writable `/work` tmpfs cap for working seats; also `/target` build tmpfs cap when checkout is read-only. |
+| `REVIEW_LOOP_SCRATCH_SIZE_GIB` | `2`; integer 1–1024 | `/tmp` tmpfs for scratch, `TMPDIR`, `CARGO_HOME`, and `RUSTUP_HOME`. |
+| `REVIEW_LOOP_CRATE_CACHE_GIB` | `2`; integer 1–1024 | Per-repository host dependency-cache byte cap. Prefetch exceeding it is killed and its additions removed. |
+| `REVIEW_LOOP_GATE_BUDGET_S` | `20`; numeric seconds, `0 < value < 600` | Requested webhook gate clock; effective clock also fits the serving gateway script timeout. |
+| `REVIEW_LOOP_WATCHDOG_BUDGET_S` | `600`; numeric seconds, `0 < value <= 86400` | Watchdog sweep clock. A gate-initiated drain supplies a shorter budget from its remaining time. |
+
+Unparseable/out-of-range size limits fall back to defaults and are reported by `selftest`; mount-size refusals are also reported by `doctor`. They do not remove containment. Invalid gate/watchdog budgets fall back to defaults. The gate reads possible gateway timeout configurations and fits the smaller applicable limit when topology is ambiguous; increasing the requested budget alone cannot override the gateway's script timeout. See [Operations](operations.md).
+
+### Resource bounds are not complete host quotas
+
+The sandbox has no host networking; Cargo stays offline and prefetched registry data mounts read-only. Reviewer/fixer `/work` is a sized writable tmpfs populated from a read-only staged export. Adjudicator `/work` remains read-only and gets a separate sized `/target` for builds. The namespace root and `/dev` are read-only. Size values are caps, not reservations.
+
+Tmpfs sizes bound data, not all inode metadata or process memory. `/home/agent` is a per-turn **host-backed writable bind** for Hermes state/output; these size caps do not bound that filesystem. Set host service memory limits and disk quotas where required, and account for simultaneous seats. No JSON setting enables arbitrary host binds, disables containment, or grants the sandbox network access. See [Security](security.md).
+
+### Test-only and internal variables
+
+`REVIEW_LOOP_GH_STUB` substitutes a test executable for GitHub responses; live selftest refuses it. `REVIEW_LOOP_TEST` makes watchdog probes bypass pause/grace checks and can operate on real data: it is **not** a dry run and should not be inherited by production services.
+
+`REVIEW_LOOP_TEST_HOME_GUARD` plus `REVIEW_LOOP_TEST_GUARD_SENTINEL` arm the test harness's real-home/network tripwires; the guard variable alone does not. Related `REVIEW_LOOP_TEST_*`, `REVIEW_LOOP_GATE_REDRIVE`, `REVIEW_LOOP_WORKER`, sandbox workspace markers, `REVIEW_LOOP_TURN_BUDGET`, token-file handoff variables, and `REVIEW_LOOP_LEAK_LOG` are internal/test plumbing, not supported operator configuration. Follow [Development](development.md) rather than exporting them into a gateway.
+
+## State files
+
+State is operational data, not additional user configuration. Do not hand-edit locks, delivery statuses, or run rows to bypass admission or replay an uncertain write. See [Operations](operations.md) and [Troubleshooting](troubleshooting.md) for supported retry/reconcile paths.
+
+| Per-loop location under `state_dir` | Purpose |
 |---|---|
-| `HERMES_HOME` | where `.hermes` lives (default `~/.hermes`) |
-| `REVIEW_LOOP_CONFIG_DIR` | where loop configs live |
-| `REVIEW_LOOP_SUBS` | the gateway subscription file to read/write routes from |
-| `REVIEW_LOOP_GH_STUB` | test hook: an executable that answers API paths from argv |
-| `REVIEW_LOOP_TEST` | ignore the paused check and apply zero grace (real data, for a manual probe) |
-| `REVIEW_LOOP_CHECKOUT_SIZE_GIB` | size cap of a turn's `/work` tmpfs (the checkout and its build target), in GiB, 1–1024; default 8. See [Sandbox size caps](operations.md#sandbox-size-caps-the-two-writable-mounts) |
-| `REVIEW_LOOP_SCRATCH_SIZE_GIB` | size cap of a turn's `/tmp` tmpfs (`TMPDIR`, `CARGO_HOME`, `RUSTUP_HOME`), in GiB, 1–1024; default 2 |
-| `REVIEW_LOOP_CRATE_CACHE_GIB` | byte cap of each repository's host crate cache for the dependency prefetch, in GiB, 1–1024; default 2. A fetch that passes it is killed and its additions removed |
-| `REVIEW_LOOP_GATE_BUDGET_S` | seconds a gate may spend on one webhook before it gives up (recorded in `gate-failures.json`); default 20, must be under 600. The default, plus a 3 s backstop, stays under the gateway's default 30 s script timeout (`script_timeout_seconds`); raise it only if your gateway allows longer |
-| `REVIEW_LOOP_WATCHDOG_BUDGET_S` | seconds one watchdog run may spend before it stops and says so (the next cron run starts fresh); default 600, at most 86400. A gate that drains a seat sets it for the watchdog it starts, from what is left of its own budget |
+| `locks.json` | Visible copy of seat claims with head, timestamp, budget, and run identity; only the owning run releases its claim. An uncertain run retains its claim until reconciliation. Capacity is enforced by the host ledger. |
+| `pending.json` | Held turns, including runtime-unavailable and unattended-push-off holds; watchdog drains eligible entries. |
+| `inflight.json` | Same-head reviewer/fixer marks written/cleared by workers and subject to in-flight TTL. |
+| `breach.json` | Durable cap marker: `delivery-pending`, `awaiting-adjudication`, or `adjudicating`; current-head checks protect re-arming. |
+| `route-intent.json` | Private mode-0600 record of owned installed routes, **including signing secrets**. Watchdog/doctor repair uses it; never share it as a diagnostic attachment. |
+| `watchdog.json`, `watchdog.log` | Arming/head-observation clocks, alerts, sweep history and diagnostics. Invalid arming clocks re-baseline on a successful listing rather than pretending old heads are newly stalled. |
+| `gate-failures.json`, `gate-failures/` | Failed gate events, bounded errors/tracebacks, and saved payloads for reporting/re-drive. |
+| `github-reads.json` | Failed GitHub-read evidence used by diagnostics. |
+| `stack-transitions.json` | Same-head base-retarget holds/fresh-review boundaries; old approvals and verdicts cannot authorize the new situation. |
+| `observations.json` | Observer delivery ledger, receipts, attempts, destination binding, digest membership, and uncertain outcomes. |
+| `artifacts/<PR>/` | Legacy per-PR workspaces still eligible for cleanup; production isolated turns do not use a shared clone-per-run workspace here. |
+| `isolated-runs/`, `deps/` | Host-created private run work roots and dependency caches for isolated workers. |
 
-The three size caps are read by the process that runs the supervisor, normally the gateway, which
-passes them to its workers: set them in the gateway's environment and restart it. A value that
-cannot be parsed keeps the default and is named by `selftest` (and, for the two mount caps, by
-`doctor`).
+| Host-wide location under `$HERMES_HOME/state/` | Purpose |
+|---|---|
+| `review-loop-runs.sqlite` | Isolated run states/leases/budgets/retries, broker write-ahead records, rulings, triage, and issue-fix results. |
+| `review-loop-runs.sqlite.workers.log` | Detached worker diagnostics, rotated once to `.1` after 256 KiB. |
+| `review-loop-pacing.json` | Account usage-window holds and local-day start counts; account metadata, not credentials. |
+| `review-loop-seat-locks/` | Per-profile model-resolution/refresh serialization locks. |
 
-## Deliberate non-features
+`status` reports these structures; `explain` combines their non-pruning read views with live GitHub facts. It does not claim, prune, drain, or submit a write. Diagnostic files can still contain private repository metadata even when credentials are redacted. See [Architecture](architecture.md) for ledger ownership and [Security](security.md) before exporting logs/state.
 
-- **No config_schema for *loop* config.** The interesting configuration is per repository, so a
-  per-profile form cannot own it — the form carries the plugin-level defaults (including the seat
-  profiles/logins above), and the loop file stays plain JSON you can read and diff. Pushing those
-  defaults onto a loop is explicit (`apply --loop <id>`), never a subscription; blank fields never
-  erase a loop's own answer.
-- **No loop-specific editor in the plugin.** The form is a per-profile default, not a per-repository
-  editor: it cannot claim to live-edit every loop. The one-loop-at-a-time path is
-  `apply --loop <id>` (same validation, same staged route rebind), and a dashboard editor for a
-  single loop would have to be built on top of that path, not beside it.
-- **No auto-update, no telemetry, and no network beyond GitHub, your own gateway, your seats'
-  model providers (called from the host inference proxy, including OAuth token refreshes) and
-  crates.io (the host's dependency prefetch).**
-- **No agent on the observer route, and no observer seat.** The feed's route is `deliver_only` with a
-  pre-written prompt — a notice is not an instruction to anybody, it is a message the loop already
-  wrote — so it never consumes a seat, holds a lock, or takes a queue slot. The route's job is to
-  republish that message; what it cannot do is decide anything.
-- **No deploy/hosting integration and no model provider assumptions.** The seats are Hermes profiles;
-  what model each profile runs is the operator's business.
+## Validation and coverage limits
+
+The authoritative implementation is `review_loop/config.py`, with host-path detection in `runtime_detect.py`, model resolution in `seat_model.py`, containment in `contained.py`, and wake/admission behavior in `gate.py`. CLI installation, broker checks, the run supervisor, observer, watchdog, dependency prefetch, and cleanup add validations that cannot be inferred from a successfully parsed JSON file.
+
+Important boundaries:
+
+- Loop top-level and working-seat objects are not closed schemas: unknown keys can survive normalization without acquiring behavior. Conversely, unknown persisted seat objects such as `issue_fixer` are not retained as configurable seats.
+- `seats.adjudicator`, `seats.triage`, `triage`, and runtime files/override blocks have explicit allowed-key checks. Observer parsing is deliberately lenient.
+- Loader validation is not a complete credential, profile, route, hook, model-package, clone, or safety audit. Some identity checks are deferred/scoped for legacy updates; live principals and current PR facts are rechecked before writes.
+- No configuration selects automatic merging, makes an observer an agent, grants an adjudicator push/review permission, or turns an unknown write outcome into permission to retry.
+- This reference covers supported configuration surfaces and named operational state, not every internal/test environment variable or all provider-specific Hermes authentication options. Hermes provider behavior depends on the installed runtime revision; use preflight and live selftest rather than assuming a provider name proves compatibility.
+
+Before arming a changed loop, run `doctor` for the named installation checks and review `status`. Follow [Getting started](getting-started.md) for first setup, [Operations](operations.md) for arming/applying/recovery, [Troubleshooting](troubleshooting.md) for holds, [Issues](issues.md) for issue workflows, and [Development](development.md) for offline tests. Keep loop configuration operator-owned and out of repository-controlled sandbox input.
