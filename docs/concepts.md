@@ -43,15 +43,21 @@ run them, the round limit, and so on. It has an id (by default the repository na
 and one config file. One Hermes install can run several loops, one per repository. Almost every
 command takes `--loop name`.
 
-**Seat.** A role in the loop. There are three:
+**Seat.** A role in the loop. There are three core seats, and two more for issues that are off
+until you turn them on:
 
 | seat | what it does | what it can write |
 |---|---|---|
 | reviewer | reads the PR, builds and tests it, posts one verdict | one review: approve or request changes |
 | fixer | answers a changes-requested verdict with a fix | one push, then one review request (with an answers comment) |
 | adjudicator | rules when the round limit is spent | one ruling: ACCEPT, REJECT or RESPEC, with a reason |
+| triage (opt-in) | reads a new issue and labels it from a fixed list | labels from that list, and one short comment only if you allow it |
+| issue fixer (opt-in) | the fixer seat, handed an issue a maintainer labelled for it | either one PR from a new branch `review-loop/issue-N`, or one comment on the issue saying why it could not fix it |
 
-A seat is a role, not a particular agent. You decide who sits in each seat.
+A seat is a role, not a particular agent. You decide who sits in each seat. Triage runs as its own
+profile and labels as the reviewer's account unless you name another. The issue fixer is not a
+separate account or profile: it is the fixer seat working from an issue instead of a verdict.
+Both are turned on with `triage`; the step-by-step guide is [issues.md](issues.md).
 
 **Login, profile and agent name.** Each seat has three names, and they mean different things:
 
@@ -99,26 +105,32 @@ gateway's public address with `--host`. There is no shared gateway: it must be y
 **Route.** One named entry in the gateway's list of webhooks. A route says: at this URL, check
 this secret, run this script, as this profile. `init` creates one route per seat: `name-review`
 and `name-fix`, plus `name-breach` when you pass `--adjudicator-route`, and `name-observe` when you
-turn on the observer feed. A route's URL contains its profile (`/p/<profile>/webhooks/<route>`), so
+turn on the observer feed. `triage --enable` adds `name-triage`, which serves both triage and
+issue fixes. A route's URL contains its profile (`/p/<profile>/webhooks/<route>`), so
 moving a seat to another profile also moves its route. `status` shows each route next to the seat
 it should serve and says `MISMATCH` if they disagree.
 
 **Repo hook.** The webhook on the GitHub repository that sends events to a route. `init --hooks`
 creates two of them: one for `pull_request` events (to the reviewer's route) and one for
-`pull_request_review` events (to the fixer's route). A hook is either:
+`pull_request_review` events (to the fixer's route). With triage on, a third one sends `issues`
+events to the triage route; `triage --enable --admin-token LOGIN` creates it. A hook is either:
 
 - **paused** (inactive): GitHub sends nothing. This is how `init --hooks` creates them, so that
   nothing happens before you have checked the install.
 - **armed** (active): GitHub sends every matching event. `arm` turns them on and `arm --pause`
-  turns them off again.
+  turns them off again. The triage hook is created paused too, and `arm` turns it on with the
+  others.
 
 A paused loop is fully silent: no events arrive, and the watchdog neither reports stalls nor starts
 queued work.
 
 **Gate.** The script a route runs for each event (`scripts/gate_reviewer.py`,
-`scripts/gate_fixer.py`). A gate decides whether the event should start a turn. It checks the
-facts again against GitHub (is the PR still open, is this still the newest commit, who wrote it,
-how many rounds are spent) and then either queues a turn or declines.
+`scripts/gate_fixer.py`, and `scripts/gate_triage.py` with triage on). A gate decides whether the
+event should start a turn. It checks the facts again against GitHub (is the PR still open, is this
+still the newest commit, who wrote it, how many rounds are spent) and then either queues a turn or
+declines. `scripts/gate_adjudicator.py` is legacy: older installs may still have a `name-breach`
+route that runs it, and it always declines. An adjudicator turn is queued by the loop itself when
+the cap is spent, and only on a loop with an adjudicator route.
 
 **Why gates always answer `[SILENT]`.** Whatever a gate decides, it prints `[SILENT]` and exits 0.
 That tells the gateway not to start one of its own agents for the event. This matters: a normal
@@ -147,11 +159,13 @@ reach GitHub. Before each write it checks the live PR again (same commit, still 
 author, four distinct accounts) and refuses anything else.
 
 **Run ledger.** A SQLite database on the host, `~/.hermes/state/review-loop-runs.sqlite`, with one
-row per isolated turn and its state: pending, running, succeeded, waiting to retry, failed, or
+row per isolated turn and its state: pending, running, succeeded, waiting to retry, failed,
+cancelled (the PR closed or moved on, or a policy held the turn before it started) or
 `uncertain`. It also records what each turn wrote. It is what stops the same turn from running
-twice and what limits how many turns run at once. `uncertain` means a write may have reached
-GitHub; such a run is never retried on its own (see
-[when an isolated run fails](operations.md#when-an-isolated-run-fails)).
+twice and what limits how many turns run at once. A turn that fails before it wrote anything is
+retried on its own after 2, 4 and 8 minutes; if the fourth attempt also fails, the run is marked
+failed. (A turn that ran out of its turn budget is the exception: see below.) `uncertain` means a write may have reached GitHub; such a run is never retried on its own
+(see [when an isolated run fails](operations.md#when-an-isolated-run-fails)).
 
 **Runtime file.** A private file, `~/.hermes/review-loop-runtime.json` (mode 600), that tells the
 worker where things are on your machine: the Hermes source, its Python environment, a Python
@@ -187,6 +201,13 @@ per day on this loop, so the loop cannot eat your whole day's quota. Set it with
 comment is not a verdict: it neither counts nor wakes anyone. The reviewer seat is not allowed to
 post one.
 
+**How the reviewer grades.** The reviewer seat grades every finding P0 to P3 and marks it either
+**blocks** (a P0 or P1, a regression, silent data loss, the wrong agent woken, a false green on a
+safety check, or a build or test the change breaks) or **issue** (real, but not worth another
+round; usually P2 or P3). Any blocking finding makes the verdict "request changes". When every
+finding is issue-tier, the verdict is "approve", and the review lists them under **Issues to
+file**, each with a suggested title, for you to file.
+
 **The cap.** The round limit (`cap`, default 3). The loop counts changes-requested verdicts from
 reviewers, read from GitHub every time, never from a local counter. With `cap` 3 there are at most
 three verdicts and two fix turns. The verdict that reaches the cap does **not** start another fix.
@@ -208,7 +229,7 @@ names the command that turns it on. You turn it on per loop with
 `fixer-push --enable --acknowledge-pr-race`. The flag's name is deliberate: GitHub offers no way to
 check "this PR is still open and still yours" and push in one step, so a PR can change in the
 moment between the last check and the push. Read
-[the push policy](issue-16-boundary.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent)
+[the push policy](security.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent)
 before turning it on.
 
 **Attribution (signing).** Everything the loop itself posts is signed "Automated by
@@ -238,6 +259,7 @@ it, it holds no seat, and a failed delivery never blocks the loop. See [observer
 | command | the question it answers | writes anything? |
 |---|---|---|
 | `doctor` | Is this install wired correctly? Profiles, models, token files, routes, hooks, cron job, clone. | no (except `--repair`) |
+| `models` | Which models does a seat's Hermes profile offer? | no |
 | `selftest` | Can an isolated turn actually run here? Runtime file, sandbox, account identities, model, ledger. | never writes to GitHub |
 | `status` | What is this loop's shape right now? Seats, routes, live runs, queue, holds. | no |
 | `explain` | Why is this one PR not moving, and what single event has to happen next? | no, byte for byte |
@@ -373,13 +395,20 @@ silently: the event is held or never arrives, and `doctor` or `explain` tells yo
 | runtime file | lets the worker start isolated turns | `hermes review-loop setup` detects the paths and writes `~/.hermes/review-loop-runtime.json` (or write it yourself) | an eligible event is **held** with the reason; `explain` shows it on its queue line; once the file exists, the next watchdog sweep (or `drain`) sends it to the gate again |
 | hooks armed | lets GitHub send events at all | `hermes review-loop arm --loop name` | GitHub sends nothing; the watchdog stays silent; `explain` says the hooks are paused |
 | unattended fixer push | lets the fixer answer a verdict by pushing | `fixer-push --enable --acknowledge-pr-race` | changes-requested verdicts are **held** for you; `explain` says `operator decision` |
+| issue triage (opt-in) | labels new issues from allowlisted authors | `triage --enable` with `--profile`, `--author` and `--labels` | issues are not read at all |
+| issue fixes (opt-in) | a maintainer's label hands an issue to the fixer | `triage --enable --fix-label LABEL --maintainer LOGIN`; needs triage on and unattended fixer pushes on | the label does nothing |
 
 Two more are not strictly required but you almost certainly want them:
 
 - **The watchdog** (`init --schedule 15m`). Without it, nobody reports stalls, and held or
   queued work only moves when another event arrives or you run `drain`.
 - **The adjudicator route** (`init --adjudicator-route name-breach`). Without it, a spent cap only
-  writes a marker and waits for you.
+  writes a marker and waits for you. `setup` does not turn adjudication on. To add it to a loop
+  that `setup` made, add an `adjudicator` block (with `route` and `profile`) to the loop file, as
+  described in [adjudication](configuration.md#adjudication-the-isolated-ruling), then run
+  `hermes review-loop apply --loop name --recreate-routes`.
+
+Triage and issue fixes are covered step by step in [issues.md](issues.md).
 
 The recommended order is the one in the README's [first run](../README.md#first-run-in-order):
 write the runtime file, run `doctor`, run `selftest`, decide on fixer pushes, and arm last. In
@@ -413,9 +442,9 @@ an agent may try anything, and limits what "anything" can reach.
 | holds a GitHub token | ❌ none, ever. Tokens stay with the broker on the host. |
 | holds a model key | ❌ the model is reached through a host proxy on a socket; the sandbox sees only a dummy key |
 | reaches the network | ❌ none. Rust dependencies pinned in `Cargo.lock` are fetched by the host before the turn and mounted read-only. |
-| reads your files | ❌ only a copy of the PR's code, its diff and a throwaway home folder |
+| reads your files | ❌ only a copy of the PR's code, its diff and a throwaway home folder. Even `/etc` is written fresh by the host for each turn, with one user and one group and nothing copied from your machine's `/etc` |
 | writes to GitHub | only through the broker, and only what its seat allows |
-| writes more than its share | ❌ the reviewer gets one review; the fixer gets one push and then one review request; the adjudicator gets one ruling |
+| writes more than its share | ❌ the reviewer gets one review; the fixer gets one push and then one review request (or, when the host could not show it the whole change, only its answers comment); the adjudicator gets one ruling; triage gets one set of labels (and a comment if allowed); the issue fixer gets one PR or one issue comment |
 | pushes to the wrong commit | ❌ the push is refused if the branch moved |
 | edits `.github/`, `.gitmodules`, `.gitattributes` or `CODEOWNERS` | ❌ refused by the broker |
 | merges | ❌ no seat has a merge operation |
@@ -440,7 +469,12 @@ All paths below assume the default Hermes home, `~/.hermes` (set `HERMES_HOME` t
 | loop config | `~/.hermes/review-loops.d/<id>.json` | one per loop; plain JSON. `REVIEW_LOOP_CONFIG_DIR` moves the folder. [Every key](configuration.md) |
 | routes | `~/.hermes/webhook_subscriptions.json` | the gateway's own route list, shared with other plugins. `REVIEW_LOOP_SUBS` points elsewhere |
 | runtime file | `~/.hermes/review-loop-runtime.json` | you write it; mode 600 |
-| per-loop state | `~/.hermes/state/review-loops/<id>/` | default `state_dir`: seat claims, the held/queued list, in-flight marks, breach markers, watchdog memory, per-PR workspaces. [The files](configuration.md#state-files-per-loop-under-state_dir) |
+| per-loop state | `~/.hermes/state/review-loops/<id>/` | default `state_dir`: seat claims, the held/queued list, in-flight marks, breach markers, watchdog memory and the files below. [The files](configuration.md#state-files-per-loop-under-state_dir) |
+| isolated runs | `<state_dir>/isolated-runs/` | each isolated turn's own working folder on the host |
+| dependency cache | `<state_dir>/deps/` | Rust crates the host fetched for `Cargo.lock`, mounted read-only into the sandbox; mode 700 |
+| route intent | `<state_dir>/route-intent.json` | the routes this loop should have, so `doctor --repair` and the watchdog can put back a route another program erased |
+| broker audit | `<state_dir>/broker-audit.jsonl` | one line per GitHub write the broker made |
+| gate shims | `scripts/` in each serving profile's home (`~/.hermes/scripts/` for `default`, else `~/.hermes/profiles/<name>/scripts/`) | small files named after each gate (`gate_reviewer.py`, …); the gateway only runs scripts from there, and each one runs the plugin's own gate |
 | run ledger | `~/.hermes/state/review-loop-runs.sqlite` | every isolated turn, shared by all loops |
 | worker log | `~/.hermes/state/review-loop-runs.sqlite.workers.log` | a detached worker's errors |
 | pacing | `~/.hermes/state/review-loop-pacing.json` | usage-window holds and daily turn counts; never a credential |
@@ -449,8 +483,10 @@ All paths below assume the default Hermes home, `~/.hermes` (set `HERMES_HOME` t
 | Hermes profiles | `~/.hermes/profiles/<name>/` (`~/.hermes` itself for `default`) | each seat's model and model credentials |
 
 Inside a loop's state folder, the files you are most likely to meet are `locks.json` (who holds
-which PR), `pending.json` (turns held or waiting, with the reason), `breach.json` (PRs that spent
-their cap) and `gate-failures.json` (a gate that crashed or timed out). You should not need to edit
+which PR), `pending.json` (turns held or waiting, with the reason), `inflight.json` (heads a turn was
+recently started for, so a burst of events starts it once), `breach.json` (PRs that spent their cap), `observations.json` (the observer
+feed's record of what it sent), `github-reads.json` (the last GitHub read that failed) and
+`gate-failures.json` (a gate that crashed or timed out). You should not need to edit
 any of them: `status` and `explain` read them for you.
 
 To see the run ledger, run this from the plugin's directory:

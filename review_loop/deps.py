@@ -8,7 +8,7 @@ and the seat builds offline. When the prefetch is impossible or fails, the turn 
 seat is told plainly that dependencies are unavailable, so it judges by reading instead of treating
 "could not build" as a finding.
 
-Trust decision (see docs/issue-16-boundary.md, "Dependency prefetch"): the host never runs cargo
+Trust decision (see docs/security.md, "Dependency prefetch"): the host never runs cargo
 against the PR's own manifests. Everything the PR controls — ``Cargo.toml``, ``build.rs``,
 ``.cargo/config.toml``, ``rust-toolchain.toml``, ``[patch]`` and git dependencies — stays out of
 the host process. The host only *reads* ``Cargo.lock`` as data (``tomllib``), accepts nothing but

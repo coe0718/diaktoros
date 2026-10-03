@@ -77,6 +77,42 @@ loop. Details: [`trace`](operations.md#why-did-that-delivery-start-nothing-trace
 `selftest` is the fourth tool. It checks the isolated turn path (sandbox, models, identities)
 rather than the wiring; see [section 4](#doctor-is-all-green-but-selftest-fails).
 
+## `setup` stopped before the loop was live
+
+`setup` runs five steps (runtime file, loop, watchdog, checks, arm) and stops at the first one that
+fails, saying which. **Re-running it is safe**: whatever is already in place is kept, so a second
+run only does what is missing. `--dry-run` shows every step and writes nothing:
+
+```bash
+hermes review-loop setup --repo owner/name --dry-run
+hermes review-loop setup --repo owner/name
+```
+
+What it prints, and what to do:
+
+- **`setup asks questions; with no terminal, pass --yes …`.** You ran it from a script. Pass
+  `--yes` and give the answers as flags (`--reviewer`, `--fixer`, the profiles, the token files,
+  `--read-token`, `--host`, …); the settings form fills in the rest.
+- **A `❌` under `1. Runtime paths`** (`❌ venv … — pass --venv PATH`) and
+  `not written: every path must check out first`. It could not find or check a path. Pass the one
+  it names (`--source`, `--venv`, `--runtime` or `--rust`) and run it again. See
+  [runtime file problems](#runtime-file-problems).
+- **`setup stopped: init refused the answers`.** The `init` dry run above that line names the
+  problem: a profile that does not exist, two roles on one account or token file, a token file that
+  is not private. Fix it and run `setup` again.
+- **`loop 'name' serves owner/other, not owner/name — pass --id …`.** A loop with that id already
+  exists for another repository. Pass `--id` with a new id.
+- **`setup stopped before arming: fix each ❌ above`.** `doctor` or `selftest --no-model` (step 4)
+  found a problem, or the watchdog job could not be created. Each ❌ line has a `fix:` line under
+  it. Fix them, then run `setup` again.
+- **`not armed. When ready: hermes review-loop arm --loop name`.** Not an error. `setup` arms the
+  hooks only when you say yes (or pass `--arm` with `--yes`). Run the `arm` command it printed
+  when you are ready.
+
+`setup` never turns on adjudication or issue triage. See
+[the cap was spent and no ruling came](#the-cap-was-spent-and-no-ruling-came) and
+[issue triage](issues.md).
+
 ## I opened a PR or requested a review, and nothing happened
 
 **What you see.** No review appears. `status` shows no live run. GitHub's *Recent Deliveries* is
@@ -212,7 +248,15 @@ If *Recent Deliveries* shows something other than a 200, the gate never ran:
   Check that the gateway process is running, and that its public address (your tunnel or reverse
   proxy) reaches it.
 - **401 or 403**: the hook signs with a secret the route does not hold, usually a hook left over
-  from an earlier install. `doctor` fails that `route:` or `hook:` line and names the fix. See
+  from an earlier install. `doctor` fails that `route:` or `hook:` line and names the fix. To test
+  the signature right now instead of waiting for a real event, ask GitHub to ping each loop hook
+  (its one GitHub write; the gateway checks the signature and ignores the ping):
+
+  ```bash
+  hermes review-loop selftest --loop name --no-model --ping --admin-token reader-bot
+  ```
+
+  Each hook gets a line: `signature accepted`, or `HTTP 401 — signature rejected`. See
   [routes changed under you](#routes-were-overwritten-or-changed-under-you).
 - **404**: the hook posts to a URL no route serves (another profile, an old gateway, a trailing
   slash). `doctor` reports the hook as a mismatch with the cause.
@@ -241,7 +285,7 @@ would only spend a model conversation. The verdict is held for you instead.
 
 **Fix.** Read the PR-metadata race this acknowledges first
 ([README](../README.md) and
-[issue-16-boundary](issue-16-boundary.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent)).
+[security](security.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent)).
 Then:
 
 ```bash
@@ -268,7 +312,40 @@ rather keep pushes off, fix the PR by hand, push, and re-request the review.
   frees.
 - **The cap is reached.** After `cap` verdicts without an approval (3 by default) the PR goes to
   adjudication instead of another fix. `trace` shows `declined — cap reached on #12 — handed to
-  adjudication instead of a fix`.
+  adjudication instead of a fix`. An adjudicator only rules if the loop has an adjudicator route;
+  see [the cap was spent and no ruling came](#the-cap-was-spent-and-no-ruling-came).
+
+## The cap was spent and no ruling came
+
+**What you see.** A PR reached its verdict cap. No fixer turn starts and no adjudicator ruling
+arrives. `explain` ends with `next:       human adjudication: this loop has no adjudicator route, so
+the breach marker is the only record — rule by hand, then merge or close`.
+
+**Why.** Adjudication is on only when the loop has an adjudicator route (`--adjudicator-route NAME`
+at `init`; any name works, `name-breach` by convention). Without one, the loop writes the breach
+marker, sends the `escalation` notice (`next: you`), and stops: the decision is yours. `setup` never
+turns adjudication on, and `set` has no flag for it.
+
+**Fix.** For the PR that is already parked, decide by hand: merge it or close it. To have an
+adjudicator rule on future breaches, add an `adjudicator` block to the loop file
+`~/.hermes/review-loops.d/name.json`:
+
+```json
+"adjudicator": {"route": "name-breach", "profile": "tuck"}
+```
+
+then write the missing route and check it:
+
+```bash
+hermes review-loop apply --loop name --recreate-routes --dry-run
+hermes review-loop apply --loop name --recreate-routes
+hermes review-loop doctor --loop name
+```
+
+`doctor` then shows `route:name-breach … adjudication wake` and the `model:adjudicator` line. The
+route needs no repo hook: its gate always answers `[SILENT]`, and the ruling runs as an isolated
+turn the host enqueues when a PR spends its cap. More:
+[adjudication](configuration.md#adjudication-the-isolated-ruling).
 
 ## Runtime file problems
 
@@ -366,7 +443,8 @@ hermes review-loop selftest --loop name --pr 12               # + one tiny compl
 hermes review-loop selftest --loop name --pr 12 --live-turn   # + one real reviewer turn, never posted
 ```
 
-Each ❌ line is followed by a `fix:` line. `selftest` never writes to GitHub. What each step proves
+Each ❌ line is followed by a `fix:` line. `selftest` never writes to GitHub, except with `--ping`,
+which asks GitHub to ping the loop's hooks. What each step proves
 is in [`selftest`](operations.md#verifying-the-isolated-setup-selftest).
 
 ## A turn failed, is waiting, or was retried
@@ -406,8 +484,9 @@ hermes review-loop retry --loop name --pr 12
 ```
 
 `retry` re-arms the PR's failed and waiting turns at its newest head, resets their retry count and
-starts the worker. Add `--seat reviewer` or `--seat fixer` to pick one seat. It prints
-`re-armed (was failed: …)` for each turn and then `worker started`. It refuses a turn that may have
+starts the worker. Add `--seat reviewer`, `--seat fixer`, `--seat adjudicator`, `--seat triage` or
+`--seat issue_fixer` to pick one seat (for triage and issue fixes, `--pr` is the issue number). It
+prints `re-armed (was failed: …)` for each turn and then `worker started`. It refuses a turn that may have
 written and prints the `reconcile` command instead. A turn cancelled because the head moved or the
 PR closed is not offered: the new head gets its own turn.
 
@@ -459,6 +538,17 @@ the cap (`0` removes it):
 hermes review-loop set --loop name --reviewer-daily-turns 40
 hermes review-loop set --loop name --fixer-daily-turns 0
 ```
+
+`status` shows the count line only for the reviewer and fixer seats, and only when one of them
+has a cap. Issue triage has its own cap, shown by `hermes review-loop triage --loop name`
+(`daily cap N`); a triage turn past it waits with
+`held: triage daily turn cap (<N>) reached — resumes …`. Change it with:
+
+```bash
+hermes review-loop triage --loop name --enable --daily-turns 40
+```
+
+Issue-fix turns have no daily cap.
 
 ## A run says "uncertain"
 
@@ -577,7 +667,7 @@ by itself. So the loop keeps its own record.
 **What happens next by itself.** The watchdog re-runs the reviewer or fixer gate on the stored
 payload, up to 3 times. That is safe: the gate re-reads the live PR, and the run ledger ignores a
 second enqueue of the same turn. The entry resolves once the same event completes cleanly.
-Adjudicator gate failures are reported but never re-run. A loop whose hooks are paused still gets
+Adjudicator and triage gate failures are reported but never re-run: redeliver those from GitHub. A loop whose hooks are paused still gets
 the alerts, but nothing is re-run until it is armed.
 
 **Confirm and fix.**
@@ -631,8 +721,7 @@ bound to the wrong profile or at the wrong gateway origin, `doctor`'s `fix:` lin
 `hermes review-loop apply --loop name`, which rebinds it and keeps its secret.
 
 Always change routes through `set`, `apply` or `uninstall`. A route edited by hand elsewhere is put
-back by the next sweep. More: [the shared route registry](architecture.md#the-shared-route-registry-issue-1)
-and [issue-1-route-self-heal](issue-1-route-self-heal.md).
+back by the next sweep. More: [the shared route registry](architecture.md#the-shared-route-registry-issue-1).
 
 ## Disk usage keeps growing
 
@@ -694,6 +783,170 @@ must already have a token file mapped on the loop (at `init`, or with
 hermes review-loop uninstall --loop name
 hermes review-loop uninstall --loop name --admin-token admin-login --purge
 ```
+
+## An issue opened and nothing was labelled
+
+**What you see.** Someone opened an issue, and no triage labels appeared. Issue triage is opt-in;
+the step-by-step setup is in [issue triage and issue fixes](issues.md).
+
+`explain` and `trace` can't help here: `explain` is for PRs only, and `trace` cannot replay
+`issues` deliveries yet (#230). Triage sends no observer notice either (#231). Confirm with these
+instead:
+
+1. **Is triage on, and for whom?**
+
+   ```bash
+   hermes review-loop triage --loop name
+   ```
+
+   It prints `issue triage: off`, or the route, the `authors` and the `labels`.
+2. **Is the wiring right?**
+
+   ```bash
+   hermes review-loop doctor --loop name
+   ```
+
+   Look at `profile:triage`, `credential:triage`, `model:triage`, `route:name-triage` and
+   `hook:name-triage`.
+3. **Did GitHub deliver the event?** On GitHub, open *Settings → Webhooks*, pick the hook whose URL
+   ends in `/webhooks/name-triage`, and open *Recent Deliveries*. No delivery for the issue means
+   the hook is paused or missing. `200 {"status": "ignored", "reason": "script"}` means the gate
+   ran; it does not tell you what it decided.
+4. **Did a turn run, and what did it record?** Every triage turn is a row in the host run ledger,
+   keyed by the issue number. Failed, waiting and uncertain runs, with their reasons (run it from
+   the plugin's directory):
+
+   ```bash
+   python -m review_loop.run_supervisor status ~/.hermes/state/review-loop-runs.sqlite
+   ```
+
+   Every recent triage run and what it wrote (this needs the `sqlite3` command; it only reads):
+
+   ```bash
+   sqlite3 -readonly ~/.hermes/state/review-loop-runs.sqlite "SELECT r.pr, r.state, r.error, t.state, t.labels, t.error FROM runs r LEFT JOIN triage_results t ON t.run_id = r.id WHERE r.seat = 'triage' ORDER BY r.created DESC LIMIT 10"
+   ```
+
+   The triage states are `posted` (written), `skipped` (a person labelled it first, or the issue
+   changed), `nothing` (no label fitted), `denied` (the broker refused it, with the reason) and
+   `uncertain` (sent, outcome unknown; never replayed). No row at all means the gate did not queue
+   a turn.
+
+The causes, most common first:
+
+- **Triage is off.** Turn it on: [issue triage, step by step](issues.md#turn-on-issue-triage).
+- **The issues hook is paused or missing.** `triage --enable --admin-token …` creates the hook
+  paused. Arm it; if it is missing, create it first:
+
+  ```bash
+  hermes review-loop apply --loop name --hooks --admin-token reader-bot
+  hermes review-loop arm --loop name --admin-token reader-bot
+  ```
+
+- **The author is not in `triage.authors`.** Issues from anyone else are dropped at the gate, on
+  purpose. Add the login (the list you pass replaces the old one, so repeat every author):
+
+  ```bash
+  hermes review-loop triage --loop name --enable --author you --author teammate
+  ```
+
+- **It was not a new issue.** Only `opened` is triaged. Editing, reopening, transferring or
+  labelling an issue does not start triage, and each issue is triaged at most once.
+- **The issue changed before the turn ran.** The gate, the worker (just before launch) and the
+  broker (just before writing) each re-read it: an issue that was closed, turned out to be a pull
+  request, or changed author is left alone, and the ledger row says why.
+- **It already had a triage label.** If any label from your list is on the issue, a person got
+  there first, and triage writes nothing (`skipped`).
+- **No runtime file, or no worker could start.** The turn could not be queued, and nothing retries
+  it. Fix the runtime file ([runtime file problems](#runtime-file-problems)), then redeliver the
+  issue's `opened` delivery from the hook's *Recent Deliveries* page (**Redeliver**).
+- **The daily cap is spent.** The run is `waiting` with `held: triage daily turn cap (<N>) reached`.
+  It starts after midnight by itself. See [held by a daily cap](#held-by-a-daily-cap).
+- **The turn failed.** The ledger shows the reason, such as a model the triage profile cannot
+  resolve. Fix the cause, then re-arm it. Issues and PRs share GitHub's numbering, and the ledger
+  keys a triage run by the issue number, so `retry` takes the issue number as `--pr` (without
+  `--seat`):
+
+  ```bash
+  hermes review-loop retry --loop name --pr 45
+  ```
+
+- **The broker refused the write (`denied`).** Usually the labelling account: its token must be
+  the triage login's own (`rev-bot` by default), never the reader's, with `issues: write`.
+
+## A fix label was applied and no PR came
+
+**What you see.** A maintainer added the fix label (say `agent-fix`) to an issue, and no PR or
+comment followed. The setup is in [issue fixes](issues.md#turn-on-issue-fixes).
+
+**Confirm.** Start with the settings, then the ledger. The issue-fix run's seat is `issue_fixer`,
+keyed by the issue number:
+
+```bash
+hermes review-loop triage --loop name
+```
+
+```bash
+sqlite3 -readonly ~/.hermes/state/review-loop-runs.sqlite "SELECT r.pr, r.state, r.error, f.kind, f.state, f.branch, f.pr_number, f.error FROM runs r LEFT JOIN issue_fixes f ON f.run_id = r.id WHERE r.seat = 'issue_fixer' ORDER BY r.created DESC LIMIT 10"
+```
+
+The issue-fix states are `pushed`, `opened`, `requested` (the PR is open and the reviewer was
+asked), `posted` (it commented instead of fixing), `denied` and `uncertain`. No row at all means
+the gate queued nothing.
+
+The causes:
+
+- **Not the fix label.** `triage --loop name` prints `issue fixes: label 'agent-fix' by …`, or
+  `issue fixes: off`. The name must match (case does not matter).
+- **The account that added it is not a maintainer.** Only a label added by a login in
+  `triage.maintainers` counts. List everyone who may hand issues to the fixer (the list you pass
+  replaces the old one):
+
+  ```bash
+  hermes review-loop triage --loop name --enable --fix-label agent-fix --maintainer you --maintainer teammate
+  ```
+
+- **Unattended fixer pushes are off.** `triage --loop name` then ends that line with
+  `OFF until unattended fixer pushes are on`, and `doctor` shows `⚠️ fixer-push`. Read the
+  [push policy](security.md#unattended-fixer-push-policy-host-operator-not-github-owner-consent),
+  then:
+
+  ```bash
+  hermes review-loop fixer-push --loop name --enable --acknowledge-pr-race
+  ```
+
+  Then remove the label and add it again: the earlier event was dropped, not queued.
+- **The issue does not qualify.** It must be open, by an author in `triage.authors`, and still
+  carry the label when the turn starts and when the host writes.
+- **The base branch could not be read**, or **no worker could start** (no runtime file). Nothing
+  was queued. Fix the cause, then remove and re-add the label.
+- **The branch `review-loop/issue-N` already exists**, from an earlier attempt. The push requires
+  the branch to be absent, so it is refused and nothing is overwritten. Because the push had
+  started, the record says `uncertain` with `push unknown`: check the branch on GitHub (it still
+  points where it was), delete it if you want a new attempt, then remove and re-add the label.
+- **Re-adding the label at the same base commit starts no second turn.** One issue-fix turn runs
+  per issue and base commit. Re-adding the label only re-arms that turn if it failed without
+  writing anything; so does `hermes review-loop retry --loop name --pr N` (the issue number,
+  without `--seat`).
+- **`seat model unresolved: unknown seat 'issue_fixer'`.** A bug in versions before the fix in
+  PR #254: every issue-fix turn failed before it launched. Update the plugin.
+
+## The loop's posts carry a footer or trailer you did not expect
+
+Everything the loop posts is signed, unless you turn it off: reviews, the fixer's answers
+comments, ruling comments, triage comments, an issue fix's PR description and comment end with
+`🤖 Automated by hermes-review-loop · <seat>`, and commits the fixer pushes carry an
+`Automated-By: hermes-review-loop (…)` trailer. The host adds them when it sends the write, so a
+seat cannot remove them. Labels are not signed.
+
+To stop signing for one loop:
+
+```bash
+hermes review-loop set --loop name --attribution off
+```
+
+`status` shows `signed: off`, and `doctor`'s `attribution` line agrees. If the settings form also
+names the setting, set it there too, or the next `apply` turns signing back on. Details:
+[what the loop signs](operations.md#what-the-loop-signs).
 
 ## Still stuck?
 
