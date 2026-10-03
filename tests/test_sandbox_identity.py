@@ -1,9 +1,10 @@
 """The sandbox's uid has a user entry (#240), and it is the sandbox's own, never the host's.
 
-Found on the first live review (#238): bubblewrap keeps the host uid but mounted no /etc/passwd,
-so ``pwd.getpwuid`` failed inside the turn and the reviewer could not run this repo's tests (it
-improvised a shim). ``contained.run`` now writes a one-line ``passwd`` and ``group`` per launch
-and binds them read-only; nothing from the host's /etc is mounted.
+Found on the first live review (#238): bubblewrap keeps the host uid but the sandbox had no user
+database, so ``pwd.getpwuid`` failed inside the turn and the reviewer could not run this repo's
+tests (it improvised a shim). ``contained.run`` now stages the sandbox's whole ``/etc`` per launch
+— one user, one group, and an empty mount point for the alternatives symlink farm — and binds it
+read-only; nothing else from the host's ``/etc`` is mounted.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import os
@@ -19,7 +20,7 @@ from review_loop import contained  # noqa: E402
 
 PROBE = ("import getpass, grp, os, pwd; user = pwd.getpwuid(os.getuid()); "
          "print(user.pw_name, user.pw_dir, getpass.getuser(), grp.getgrgid(os.getgid()).gr_name, "
-         "sum(1 for _ in open('/etc/passwd')))")
+         "len(pwd.getpwall()), len(grp.getgrall()))")
 
 
 class Layout(unittest.TestCase):
@@ -34,36 +35,44 @@ class Layout(unittest.TestCase):
         self.dirs["query"] = self.root / "query"
         self.dirs["query"].write_text("q\n")
 
-    def identity(self) -> Path:
-        directory = self.root / "identity"
+    def etc(self) -> Path:
+        directory = self.root / "etc"
         directory.mkdir()
-        return contained.write_identity(directory, uid=1000, gid=1000)
+        return contained.write_etc(directory, uid=1000, gid=1000)
 
 
 class Command(Layout):
-    def test_the_identity_files_are_bound_read_only_and_nothing_else_from_etc(self):
-        identity = self.identity()
-        argv = contained.command(**self.dirs, entry=["/bin/true"], identity_dir=identity,
+    def test_the_sandbox_etc_is_the_staged_directory_and_nothing_from_the_host(self):
+        etc = self.etc()
+        argv = contained.command(**self.dirs, entry=["/bin/true"], etc_dir=etc,
                                  checkout_writable=False)
-        self.assertIn(("--ro-bind", str(identity / "passwd"), "/etc/passwd"),
-                      list(zip(argv, argv[1:], argv[2:])))
-        self.assertIn(("--ro-bind", str(identity / "group"), "/etc/group"),
-                      list(zip(argv, argv[1:], argv[2:])))
-        # Never a host file as the source: every bind whose target is under /etc is the staged
-        # identity or the alternatives symlink farm.
-        for flag, source, target in zip(argv, argv[1:], argv[2:]):
-            if flag in ("--ro-bind", "--ro-bind-try", "--bind") and target.startswith("/etc"):
-                self.assertTrue(source.startswith(str(identity)) or target == "/etc/alternatives",
-                                (flag, source, target))
-        self.assertEqual((identity / "passwd").read_text(),
+        binds = [(f, s, d) for f, s, d in zip(argv, argv[1:], argv[2:])
+                 if f in ("--ro-bind", "--ro-bind-try", "--bind")]
+        self.assertIn(("--ro-bind", str(etc), "/etc"), binds)
+        # The staged /etc first, then the host's alternatives symlink farm onto its empty mount
+        # point; no other bind targets anything under /etc, and none takes a host /etc source.
+        self.assertLess(binds.index(("--ro-bind", str(etc), "/etc")),
+                        binds.index(("--ro-bind-try", "/etc/alternatives", "/etc/alternatives")))
+        for flag, source, target in binds:
+            if target == "/etc" or target.startswith("/etc/"):
+                self.assertIn((source, target), {(str(etc), "/etc"),
+                                                 ("/etc/alternatives", "/etc/alternatives")})
+        self.assertEqual((etc / "passwd").read_text(),
                          "agent:x:1000:1000:review-loop seat:/home/agent:/bin/sh\n")
-        self.assertEqual((identity / "passwd").stat().st_mode & 0o777, 0o444)
+        self.assertEqual((etc / "group").read_text(), "agent:x:1000:\n")
+        self.assertEqual((etc / "passwd").stat().st_mode & 0o777, 0o444)
+        self.assertEqual(sorted(p.name for p in etc.iterdir()), ["alternatives", "group", "passwd"])
 
-    def test_an_identity_dir_holding_anything_else_is_refused(self):
-        identity = self.identity()
-        (identity / "shadow").write_text("x\n")
-        with self.assertRaisesRegex(ValueError, "only the staged passwd and group"):
-            contained.command(**self.dirs, entry=["/bin/true"], identity_dir=identity)
+    def test_a_staged_etc_holding_anything_else_is_refused(self):
+        for extra in ("shadow", "alternatives/x"):
+            with self.subTest(extra=extra):
+                etc = self.root / f"etc-{extra.replace('/', '-')}"
+                etc.mkdir()
+                contained.write_etc(etc, uid=1000, gid=1000)
+                (etc / "alternatives").chmod(0o755)
+                (etc / extra).write_text("x\n")
+                with self.assertRaisesRegex(ValueError, "only the staged user and group"):
+                    contained.command(**self.dirs, entry=["/bin/true"], etc_dir=etc)
 
 
 @unittest.skipUnless(shutil.which("bwrap") and Path("/usr/bin/python3").exists(),
@@ -78,9 +87,10 @@ class RealSandbox(Layout):
         if result.returncode != 0 and "namespace" in result.stderr.lower():
             self.skipTest(f"no unprivileged namespaces here: {result.stderr.strip()[:200]}")
         self.assertEqual(result.returncode, 0, result.stderr)
-        name, home, getuser, group, lines = result.stdout.split()
+        name, home, getuser, group, users, groups = result.stdout.split()
         self.assertEqual((name, home, getuser, group), ("agent", "/home/agent", "agent", "agent"))
-        self.assertEqual(lines, "1", "the host's /etc/passwd reached the sandbox")
+        # One user and one group: the host's user database never reaches the sandbox.
+        self.assertEqual((users, groups), ("1", "1"))
 
 
 if __name__ == "__main__":

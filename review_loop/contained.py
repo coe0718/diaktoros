@@ -151,7 +151,7 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             checkout_writable: bool = True,
             dependency_caches: dict[str, Path] | None = None,
             review_dir: Path | None = None,
-            identity_dir: Path | None = None) -> list[str]:
+            etc_dir: Path | None = None) -> list[str]:
     """Build an allowlisted mount namespace for the *entire* process tree.
 
     code must be a separately staged, audited, credentialless source snapshot;
@@ -185,18 +185,22 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
         if (review.is_symlink() or not review.is_dir() or diff.is_symlink()
                 or not diff.is_file() or list(review.iterdir()) != [diff]):
             raise ValueError('review mount must contain only the staged pr.diff')
-    identity_binds = []
-    if identity_dir is not None:
-        # The seat's user entry (#240): two host-written files naming only the sandbox's own uid,
-        # never the host's /etc/passwd. Without them the uid has no name, and pwd.getpwuid —
-        # this repo's own test bootstrap, getpass, some build tools — fails inside the turn.
-        identity = Path(identity_dir)
-        files = {identity / "passwd", identity / "group"}
-        if (identity.is_symlink() or not identity.is_dir() or set(identity.iterdir()) != files
-                or any(path.is_symlink() or not path.is_file() for path in files)):
-            raise ValueError("identity mount must hold only the staged passwd and group")
-        identity_binds = ["--ro-bind", str(identity / "passwd"), "/etc/passwd",
-                          "--ro-bind", str(identity / "group"), "/etc/group"]
+    etc_binds = []
+    if etc_dir is not None:
+        # The sandbox's /etc is a host-written directory (#240), never any part of the host's: the
+        # user and group entry for the sandbox's own uid, and an empty mount point the host's
+        # /etc/alternatives symlink farm is bound onto below. Without a user entry the uid has no
+        # name, and pwd.getpwuid — this repo's test bootstrap, getpass, some build tools — fails.
+        etc = Path(etc_dir)
+        entries = {etc / "passwd", etc / "group", etc / "alternatives"}
+        if (etc.is_symlink() or not etc.is_dir() or set(etc.iterdir()) != entries
+                or any(etc_file.is_symlink() or not etc_file.is_file()
+                       for etc_file in (etc / "passwd", etc / "group"))
+                or (etc / "alternatives").is_symlink() or not (etc / "alternatives").is_dir()
+                or any((etc / "alternatives").iterdir())):
+            raise ValueError("the sandbox /etc must hold only the staged user and group entries "
+                             "and an empty alternatives mount point")
+        etc_binds = ["--ro-bind", str(etc), "/etc"]
     if client_code is not None and not (Path(client_code) / 'review_loop/broker_client.py').is_file():
         raise FileNotFoundError('staged broker client required')
     dependency_binds = []
@@ -231,8 +235,8 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             "--ro-bind", "/lib", "/lib", "--ro-bind-try", "/lib64", "/lib64",
             # Debian/Ubuntu resolve cc, c++ and friends through /etc/alternatives;
             # without it Rust cannot link. It holds only symlinks.
+            *etc_binds,
             "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
-            *identity_binds,
             "--proc", "/proc", "--dev", "/dev", *_sized_tmpfs("/tmp", SCRATCH_SIZE),
             "--dir", "/opt", *runtime_parents,
             "--ro-bind", str(runtime), str(runtime),
@@ -276,10 +280,11 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
 SANDBOX_USER = "agent"
 
 
-def write_identity(directory: Path, uid: int | None = None, gid: int | None = None) -> Path:
-    """Write the sandbox's own ``passwd`` and ``group`` (#240): one entry each, for the uid and
-    gid the sandbox runs as (bubblewrap keeps the host's), named ``agent`` with ``/home/agent``.
-    Nothing is copied from the host's files. Returns ``directory``."""
+def write_etc(directory: Path, uid: int | None = None, gid: int | None = None) -> Path:
+    """Write the sandbox's whole ``/etc`` (#240): ``passwd`` and ``group`` with one entry each, for
+    the uid and gid the sandbox runs as (bubblewrap keeps the host's), named ``agent`` with
+    ``/home/agent``, and an empty ``alternatives`` mount point. Nothing is copied from the host.
+    Returns ``directory``."""
     uid = os.getuid() if uid is None else uid
     gid = os.getgid() if gid is None else gid
     directory = Path(directory)
@@ -288,13 +293,14 @@ def write_identity(directory: Path, uid: int | None = None, gid: int | None = No
     (directory / "group").write_text(f"{SANDBOX_USER}:x:{gid}:\n")
     for name in ("passwd", "group"):
         (directory / name).chmod(0o444)
+    (directory / "alternatives").mkdir(mode=0o555)
     return directory
 
 
 def run(*, timeout: int = 180, **kwargs) -> subprocess.CompletedProcess:
-    # Each launch gets its own user entry (#240), written fresh and removed with the run.
-    with tempfile.TemporaryDirectory(prefix="rl-id-") as identity:
-        return _run(timeout=timeout, identity_dir=write_identity(Path(identity)), **kwargs)
+    # Each launch gets its own /etc (#240), written fresh and removed with the run.
+    with tempfile.TemporaryDirectory(prefix="rl-etc-") as etc:
+        return _run(timeout=timeout, etc_dir=write_etc(Path(etc)), **kwargs)
 
 
 def _run(*, timeout: int, **kwargs) -> subprocess.CompletedProcess:
