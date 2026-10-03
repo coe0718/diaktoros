@@ -40,8 +40,17 @@ Your turn runs in a sandbox, not on the operator's machine:
    finding that was answered last round wastes the whole budget.
 2. Verify the claims yourself in `/work` — build it, run the tests it touches, reproduce what it
    says it fixed. A claim you did not check is not a finding, it is a rumor.
-3. Post **exactly one** verdict, `APPROVE` or `REQUEST_CHANGES`, with a body: for each finding the
-   severity, the evidence (the command and what it printed) and `file:line`.
+3. Post **exactly one** verdict, `APPROVE` or `REQUEST_CHANGES`, with a body: for each finding its
+   grade, the evidence (the command and what it printed) and `file:line`.
+
+   Grade every finding **P0–P3** and say whether it **blocks**:
+   - **blocks** — a P0 or P1, a regression, silent data loss, the wrong agent woken, a false
+     green on a safety check, or a test or build this change breaks. Any blocking finding makes
+     the verdict REQUEST_CHANGES.
+   - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
+     issue-tier findings the verdict is APPROVE; list them under a heading **Issues to file**,
+     each with a one-line suggested issue title, so the operator can file them.
+
 
    ```
    python -m review_loop.broker_client review --verdict REQUEST_CHANGES --body-file /work/review.txt
