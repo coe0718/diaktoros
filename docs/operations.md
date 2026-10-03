@@ -17,11 +17,16 @@ hermes review-loop setup --repo owner/name --dry-run       # every step, nothing
 One command, five steps, each the same code as its own verb:
 
 1. **Runtime paths.** `source` (the hermes-agent checkout), `venv` (the virtualenv Hermes runs
-   from), `runtime` (the directory holding both the venv interpreter's link and where it resolves,
-   e.g. uv's `…/uv/python`), and `rust` (rustup's default toolchain, else a `stable-*` one).
-   A path already in the file that still works is kept, and one that does not is replaced by
-   the detected one. `--source`, `--venv`, `--runtime` and `--rust` override detection. The file
-   is written only when every path checks out the way `selftest` checks it.
+   from; with a packaged install, whose `hermes` command runs on a bundled Python, that is the
+   checkout's own `venv/`, else `.venv/`), `runtime` (the directory holding both the venv
+   interpreter's link and where it resolves, e.g. Hermes's
+   `.hermes-runtime/python/generation-…` folder or uv's `…/uv/python`), and `rust` (rustup's
+   default toolchain, else a `stable-*` one). `runtime` is always worked out from the venv
+   actually chosen, so `--venv` alone is enough. A path already in the file that still works is
+   kept, and one that does not is replaced by the detected one. `--source`, `--venv`,
+   `--runtime` and `--rust` override detection. The file is written only when every path checks
+   out the way `selftest` checks it. When Hermes updates its bundled Python, the generation
+   folder changes: `doctor` and `selftest` flag the stale path, and re-running `setup` fixes it.
 2. **The loop.** The `init` answers (repo, seat logins and profiles, token files, reader, gateway
    origin, observer, attribution, hook admin) are asked for, with the settings form's values as
    defaults. `init --dry-run` is shown and confirmed, then `init` runs. With a hook admin login
