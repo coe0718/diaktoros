@@ -204,6 +204,7 @@ class Worker(Base):
 
     def test_a_triage_run_never_launches_on_a_stale_issue(self):
         for live, kind in ((issue(state="closed"), ValueError), (issue(labels=["bug"]), ValueError),
+                           (issue(author="someone-else"), ValueError),     # #229: the live author
                            (None, run_supervisor.RetryableError)):
             self.live = live
             with self.subTest(live=live), self.assertRaises(kind):
