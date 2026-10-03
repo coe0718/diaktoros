@@ -1888,6 +1888,11 @@ def _setup_runtime(args, interactive: bool) -> bool:
     detected = runtime_detect.detect()
     chosen, origin = {}, {}
     for key in runtime_detect.HOST_KEYS:
+        if key == "runtime" and "venv" in chosen:
+            # The runtime belongs to the venv actually chosen (given, kept or detected), never to
+            # one detection found elsewhere.
+            derived = runtime_detect.runtime_for(pathlib.Path(chosen["venv"]))
+            detected = {**detected, "runtime": str(derived)} if derived else detected
         given = getattr(args, key, None)
         for source, value in (("given", given), ("kept", None if key in broken else have.get(key)),
                               ("detected", detected.get(key)), ("kept", have.get(key))):

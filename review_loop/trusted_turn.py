@@ -123,8 +123,10 @@ _CODE_SUFFIXES = frozenset({'.py', '.jinja2', '.j2', '.html'})
 # content filter below still applies to it, so a key written inside one is still dropped.
 _PLUGIN_MANIFESTS = frozenset({'plugin.yaml', 'plugin.json'})
 _CONTENT_SUFFIXES = frozenset({'.md', '.txt', '.json', '.yaml', '.yml', '.toml'})
+# ``evals`` is Hermes's evaluation suite: never imported at run time (Hermes's own lint lists it
+# with tests/ and website/), and its fixtures carry credential-shaped test values.
 _EXCLUDED_COMPONENTS = frozenset({'.git', '.venv', 'venv', '__pycache__', 'tests', 'docs',
-                                  'website', 'node_modules', '.hermes', '.pytest_cache'})
+                                  'website', 'node_modules', '.hermes', '.pytest_cache', 'evals'})
 # Names that are a credential whatever else they are: the exact components the first, shape-blind
 # filter carried, kept because they catch a credential container a shape rule cannot.
 _CREDENTIAL_NAMES = frozenset({'.env', 'auth.json', 'config.yaml', 'credentials', 'id_rsa',
