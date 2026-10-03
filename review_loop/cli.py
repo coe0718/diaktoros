@@ -72,7 +72,7 @@ def routes_for(loop: dict) -> dict:
     """The conventional route names for a loop, and the names ``init`` writes."""
     return {"reviewer": f"{loop['id']}-review", "fixer": f"{loop['id']}-fix",
             "observer": f"{loop['id']}-observe",
-            "adjudicator": f"{loop['id']}-breach"}
+            "adjudicator": f"{loop['id']}-breach", "triage": f"{loop['id']}-triage"}
 
 
 def _routes_of(loop: dict) -> dict:
@@ -87,13 +87,11 @@ def _routes_of(loop: dict) -> dict:
 # Which gate script each role's route must run. Ownership is checked against this before a route
 # is written: the registry is shared with every other plugin on the host, and rebinding someone
 # else's route to our profile would be a silent takeover of their webhook.
-GATE_SCRIPT = {"reviewer": "gate_reviewer.py", "fixer": "gate_fixer.py",
-               "adjudicator": "gate_adjudicator.py", "observer": "observe.py"}
+GATE_SCRIPT = route_intent.GATE_SCRIPT
 
 
 # Each role's route prompt: together with the gate script, the proof that a route is ours.
-_ROUTE_PROMPT = {"reviewer": prompts.REVIEWER, "fixer": prompts.FIXER,
-                 "adjudicator": prompts.ADJUDICATOR, "observer": prompts.OBSERVER}
+_ROUTE_PROMPT = route_intent.ROUTE_PROMPT
 
 
 def _verify_routes(loop: dict, roles) -> None:
@@ -105,7 +103,7 @@ def _verify_routes(loop: dict, roles) -> None:
     artifact here that another plugin could own.
     """
     mine = _routes_of(loop)
-    route_roles = (*config.ROUTE_ROLES, "observer")
+    route_roles = (*config.ROUTED_ROLES, "observer")
     wanted = [role for role in route_roles if role in set(roles) and role in mine]
     names = [mine[role] for role in route_roles if role in mine]
     shared = sorted({name for name in names if names.count(name) > 1})
@@ -158,9 +156,9 @@ def _install_routes(loop: dict, roles=None) -> dict:
     names = _routes_of(loop)
     host = config.webhook_host(loop.get("host"), required=True)
     skill = loop.get("skill") or ""
-    wanted = (*config.ROUTE_ROLES, "observer") if roles is None else tuple(roles)
+    wanted = (*config.ROUTED_ROLES, "observer") if roles is None else tuple(roles)
     written: dict = {}
-    for role in config.ROUTE_ROLES:
+    for role in config.ROUTED_ROLES:
         if role not in wanted or role not in names:
             continue
         name = names[role]
@@ -178,6 +176,11 @@ def _install_routes(loop: dict, roles=None) -> dict:
                              deliver="discord",
                              description=f"{loop['repo']} — wake the fixer on a changes-requested "
                                           "verdict", **common)
+        elif role == "triage":
+            routes.new_route(name, profile=config.seat_profile(loop, "triage"),
+                             prompt=prompts.TRIAGE, events=["issues"], deliver="discord",
+                             description=f"{loop['repo']} — triage a new issue from an "
+                                          "allowlisted author", **common)
         else:
             adjudicator = loop.get("adjudicator") or {}
             routes.new_route(name, profile=config.seat_profile(loop, "adjudicator"),
@@ -465,15 +468,16 @@ def _observer_args(args, loop_id: str) -> dict:
 
 
 def _install_hooks(loop: dict, token_login: str | None, active: bool = False,
-                   seats=("reviewer", "fixer")) -> list[str]:
-    """Create the loop's repo hooks via the API (both, or only ``seats``). Needs hook write access
-    on the repo: classic ``repo``, or the narrower ``admin:repo_hook``."""
+                   seats=None) -> list[str]:
+    """Create the loop's repo hooks via the API (every hooked role, or only ``seats``). Needs hook
+    write access on the repo: classic ``repo``, or the narrower ``admin:repo_hook``."""
     names = _routes_of(loop)
     host = config.webhook_host(loop.get("host"), required=True)
-    # Validate both destinations and secrets before creating either external hook.
+    # Validate every destination and secret before creating any external hook.
     hooks = []
-    for seat, event in (("reviewer", "pull_request"), ("fixer", "pull_request_review")):
-        if seat not in seats:
+    for seat in config.hook_roles(loop):
+        event = config.HOOK_EVENT[seat]
+        if seats is not None and seat not in seats:
             continue
         route_name = names.get(seat, "")
         url = routes.url_for(route_name, host)
@@ -612,7 +616,7 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
     only one seat can hear.
     """
     names = _routes_of(loop)
-    seats = [(role, names[role]) for role in ("reviewer", "fixer") if names.get(role)]
+    seats = [(role, names[role]) for role in config.hook_roles(loop) if names.get(role)]
     wanted = tuple(name for _, name in seats)
     word = "active" if active else "paused"
     login = token_login or loop.get("read_token")
@@ -747,7 +751,7 @@ def _hook_moves(before: dict, after: dict, binds: dict, token_login: str | None 
     expected: dict[str, tuple[str, str]] = {}
     targets: dict[str, str] = {}
     unchanged: dict[str, str] = {}
-    for role in ("reviewer", "fixer"):
+    for role in config.hook_roles(after):
         name = names.get(role)
         if not name or name != _routes_of(before).get(role):
             continue
@@ -770,7 +774,7 @@ def _hook_moves(before: dict, after: dict, binds: dict, token_login: str | None 
             targets[role] = new
         else:
             unchanged[role] = new
-    route_names = {name: role for role, name in names.items() if role in ("reviewer", "fixer")}
+    route_names = {name: role for role, name in names.items() if role in config.hook_roles(after)}
     if not targets and not (check_only and unchanged):
         # Nothing moves: a settings push reads no hooks. Only plain `apply` (check_only) reads
         # them anyway, to name duplicates and repoint a slashed hook nothing else would report.
@@ -833,7 +837,7 @@ def _hook_origin(loop: dict, drifted: dict) -> dict:
     """
     hosts = {str((routes.route(name) or {}).get("host") or "").removesuffix("/")
              for role, (name, fields) in drifted.items()
-             if role in ("reviewer", "fixer") and "host" in fields}
+             if role in config.HOOK_EVENT and "host" in fields}
     if not hosts:
         return loop
     if len(hosts) > 1:
@@ -857,7 +861,8 @@ def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool) -> int:
         host = config.webhook_host(loop.get("host"), required=True)
         listing = _hook_listing(loop, token_login)
         plans, missing = [], []
-        for seat, event in (("reviewer", "pull_request"), ("fixer", "pull_request_review")):
+        for seat in config.hook_roles(loop):
+            event = config.HOOK_EVENT[seat]
             name = names.get(seat, "")
             url = routes.url_for(name, host) if name else None
             if not url or not (routes.route(name) or {}).get("secret"):
@@ -956,9 +961,9 @@ def _patch_hook_url(loop: dict, hook_id: int, url: str, login: str | None = None
 
 
 def _hook_route_names(loop: dict) -> set[str]:
-    """The route names a repo hook of this loop posts to (reviewer and fixer)."""
+    """The route names a repo hook of this loop posts to (both seats, and triage when on)."""
     return {name for role, name in _routes_of(loop).items()
-            if role in ("reviewer", "fixer") and name}
+            if role in config.hook_roles(loop) and name}
 
 
 # One matcher for every caller (doctor.split_route_hooks): arm and selftest --ping credit a hook
@@ -1888,6 +1893,11 @@ def _setup_runtime(args, interactive: bool) -> bool:
     detected = runtime_detect.detect()
     chosen, origin = {}, {}
     for key in runtime_detect.HOST_KEYS:
+        if key == "runtime" and "venv" in chosen:
+            # The runtime belongs to the venv actually chosen (given, kept or detected), never to
+            # one detection found elsewhere.
+            derived = runtime_detect.runtime_for(pathlib.Path(chosen["venv"]))
+            detected = {**detected, "runtime": str(derived)} if derived else detected
         given = getattr(args, key, None)
         for source, value in (("given", given), ("kept", None if key in broken else have.get(key)),
                               ("detected", detected.get(key)), ("kept", have.get(key))):
@@ -2808,7 +2818,7 @@ def cmd_status(args) -> int:
         # What the registry actually serves, next to what the config claims: those two facts can
         # disagree after a profile change, and this is the one place the operator would see it.
         print("  routes:     " + " · ".join(_route_state(loop, role)
-                                            for role in (*config.ROUTE_ROLES, "observer")
+                                            for role in (*config.ROUTED_ROLES, "observer")
                                             if role in _routes_of(loop)))
         refs = _credential_lines(loop)
         if refs:
@@ -3313,6 +3323,155 @@ def cmd_arm(args) -> int:
               "— the lines above show what GitHub reports now")
         return 1
     return 0
+
+
+def _triage_lines(loop: dict) -> list[str]:
+    triage = loop.get("triage") or {}
+    if not triage.get("route"):
+        return [f"[{loop['id']}] issue triage: off"]
+    seat = (loop.get("seats") or {}).get("triage") or {}
+    return [f"[{loop['id']}] issue triage: on — route {triage['route']} · profile "
+            f"{triage['profile']} · labels as {config.triage_login(loop)}",
+            f"  authors: {', '.join(triage['authors'])}",
+            f"  labels (at most {triage['max_labels']}): {', '.join(triage['labels'])}",
+            f"  comment: {'allowed' if triage['comment'] else 'off (labels only)'}"
+            + (f" · daily cap {seat['daily_turns']}" if seat.get("daily_turns") else "")]
+
+
+def cmd_triage(args) -> int:
+    """Turn issue triage (#213) on or off for one loop, or show it.
+
+    ``--enable`` writes the ``triage`` block, the triage route (a new secret) and its gate shim,
+    and with ``--admin-token`` the repo hook on ``issues`` (paused until ``arm``). ``--disable``
+    removes the route and shim, and with ``--admin-token`` the hook. Everything is validated
+    before the first write, and a failed route write puts the config back.
+    """
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"no such loop: {exc}")
+        return 2
+    if not (args.enable or args.disable):
+        for line in _triage_lines(loop):
+            print(line)
+        return 0
+    admin = args.admin_token or None
+    if admin and gh.token_path(loop, admin) is None and admin.lower() not in {
+            str(pair.split("=", 1)[0]).lower() for pair in args.token or []}:
+        print(f"refused: --admin-token {admin!r} has no token file mapped on this loop")
+        return 2
+    path = config.config_dir() / f"{loop['id']}.json"
+    previous_config = path.read_bytes()
+    old_name = (loop.get("triage") or {}).get("route") or ""
+    if args.disable:
+        if not old_name:
+            print(f"[{loop['id']}] issue triage already off")
+            return 0
+        updated = config.normalize({**loop, "triage": {}})
+        if args.dry_run:
+            print(f"[{loop['id']}] dry run — would turn issue triage off: remove route {old_name}"
+                  + (" and its repo hook" if admin else "") + "; nothing written")
+            return 0
+        hook_lines = []
+        if admin:
+            try:
+                listing = _hook_listing(loop, admin, require_active=False)
+                own, _other = doctor.split_route_hooks(loop, listing, [old_name], ownership=True)
+                for hook in own:
+                    gh.api(loop, f"/repos/{loop['repo']}/hooks/{hook['id']}", method="DELETE",
+                           login=admin)
+                left = [h for h in _hook_listing(loop, admin, require_active=False)
+                        if h.get("id") in {hook["id"] for hook in own}]
+                if left:
+                    raise config.ConfigError(f"hook(s) {', '.join(str(h['id']) for h in left)} "
+                                             "still present after DELETE")
+                hook_lines = [f"  hook {hook['id']} deleted" for hook in own]
+            except config.ConfigError as exc:
+                print(f"refused: the triage hook was not removed ({exc}); nothing else changed")
+                return 2
+        shims = gate_shims.remove({**loop, "seats": {}, "adjudicator": {}, "observer": {}},
+                                  [updated, *[other for other in config.all_loops()
+                                              if other["id"] != loop["id"]]])
+        _write_config(updated)
+        routes.restore_entries({old_name: None})
+        route_intent.forget(loop, [old_name])
+        print(f"[{loop['id']}] issue triage off: route {old_name} removed")
+        for line in hook_lines + [f"  {line}" for line in shims]:
+            print(line)
+        if not admin:
+            print(f"  the repo hook posting to {old_name} (if any) is left: it now gets 404s — "
+                  f"delete it on GitHub, or re-run with --admin-token LOGIN")
+        return 0
+
+    current = loop.get("triage") or {}
+    labels = ([x.strip() for x in args.labels.split(",") if x.strip()] if args.labels
+              else current.get("labels"))
+    block = {"route": old_name or routes_for(loop)["triage"],
+             "profile": args.profile or current.get("profile") or "",
+             "authors": args.author or current.get("authors") or [],
+             "labels": labels or [],
+             "max_labels": args.max_labels or current.get("max_labels", 3),
+             "comment": (args.comment == "on") if args.comment else current.get("comment", False)}
+    login = args.login or current.get("login")
+    if login:
+        block["login"] = login
+    tokens = dict(loop.get("tokens") or {})
+    for pair in args.token or []:
+        if "=" not in pair:
+            print(f"--token expects login=/path/to/pat, got {pair!r}")
+            return 2
+        who, file = pair.split("=", 1)
+        tokens[who] = str(pathlib.Path(file).expanduser())
+    seats = dict(loop.get("seats") or {})
+    if args.daily_turns is not None:
+        seat = {k: v for k, v in (seats.get("triage") or {}).items() if k != "daily_turns"}
+        if args.daily_turns:
+            seat["daily_turns"] = args.daily_turns
+        seats["triage"] = seat
+    try:
+        updated = config.normalize({**loop, "triage": block, "tokens": tokens, "seats": seats})
+        if not config.profile_exists(updated["triage"]["profile"]):
+            raise config.ConfigError(f"no Hermes profile named {updated['triage']['profile']!r} "
+                                     f"(looked in {config.profiles_root()})")
+        config.verify_credentials(updated, roles={"read"})
+        config.webhook_host(updated["host"], required=True)
+        _verify_routes(updated, {"triage"})
+    except config.ConfigError as exc:
+        print(f"refused: {exc}")
+        return 2
+    for line in _triage_lines(updated):
+        print(line)
+    if args.dry_run:
+        print(f"  dry run — would write route {updated['triage']['route']} (issues) and its gate "
+              "shim" + (", and the repo hook (paused)" if admin else "") + "; nothing written")
+        return 0
+    name = updated["triage"]["route"]
+    previous_route = routes.route(name)
+    try:
+        _write_config(updated)
+        _install_routes(updated, roles=("triage",))
+        route_intent.record_live(updated, [name])
+    except Exception as exc:
+        try:
+            routes.restore_entries({name: previous_route})
+            _restore_config(path, previous_config)
+        except Exception as rollback_exc:
+            print(f"ROLLBACK FAILED: {rollback_exc} — inspect {path} and route {name}")
+            return 2
+        print(f"triage install FAILED: {exc}; config and route restored")
+        return 2
+    print(f"  route written: {name}")
+    shims_ok = _install_shims(updated)
+    if admin:
+        rc = _ensure_hooks(updated, admin, dry_run=False)
+        if rc:
+            return rc
+        print(f"  next: hermes review-loop arm --loop {loop['id']} --admin-token {admin} "
+              "(the triage hook is created paused; arm turns every loop hook on)")
+    else:
+        print(f"  next: hermes review-loop apply --loop {loop['id']} --hooks --admin-token LOGIN "
+              "creates the issues hook (paused), then `arm`")
+    return 0 if shims_ok else 1
 
 def cmd_fixer_push(args) -> int:
     """Change only this repository's unattended push permission by explicit operator action."""
@@ -4110,6 +4269,39 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         arm.add_argument("--admin-token", default="",
                          help="login whose token can edit the repo's hooks (default: the reader)")
         arm.set_defaults(func=cmd_arm)
+
+        triage = sub.add_parser("triage", help="Issue triage for one loop: --enable, --disable, "
+                                               "or show it (#213)")
+        triage.add_argument("--loop", required=True,
+                            help="loop id (its config file name; `list` shows them)")
+        switch = triage.add_mutually_exclusive_group()
+        switch.add_argument("--enable", action="store_true",
+                            help="turn triage on (or change it): writes its route, shim and, with "
+                                 "--admin-token, its issues hook (paused until arm)")
+        switch.add_argument("--disable", action="store_true",
+                            help="turn triage off: removes its route, shim and (with --admin-token) hook")
+        triage.add_argument("--profile", default="", help="Hermes profile whose model triages")
+        triage.add_argument("--author", action="append", default=[],
+                            help="GitHub login whose new issues are triaged (repeatable); "
+                                 "anyone else's are ignored")
+        triage.add_argument("--labels", default="",
+                            help="comma-separated labels triage may apply, e.g. "
+                                 "bug,feature,docs,question,P0,P1,P2,P3")
+        triage.add_argument("--max-labels", type=int, default=None,
+                            help="at most this many labels per issue (default 3)")
+        triage.add_argument("--comment", choices=("on", "off"), default=None,
+                            help="allow one short comment with the labels (default off)")
+        triage.add_argument("--login", default="",
+                            help="account that labels (default: the reviewer seat); needs "
+                                 "issues: write, never the reader")
+        triage.add_argument("--token", action="append", default=[],
+                            help="login=/path/to/pat for --login (or --admin-token), if not mapped")
+        triage.add_argument("--daily-turns", type=int, default=None,
+                            help="at most this many triage turns per day (0 removes the cap)")
+        triage.add_argument("--admin-token", default="",
+                            help="login whose token can create or delete repo hooks")
+        triage.add_argument("--dry-run", action="store_true", help="show the change, write nothing")
+        triage.set_defaults(func=cmd_triage)
 
         fixer_push = sub.add_parser("fixer-push", help="Explicit per-repository unattended fixer push policy")
         fixer_push.add_argument("--loop", required=True, help="exact loop id (never all loops)")

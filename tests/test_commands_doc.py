@@ -22,6 +22,16 @@ class CommandsDoc(unittest.TestCase):
         self.assertEqual(commands_doc.render(text, root), text,
                          "flag tables are stale: run `python3 tests/commands_doc.py --write`")
 
+    def test_every_flag_says_what_it_does(self):
+        """A flag with no help is a blank cell in the reference and in --help (#236)."""
+        blank = [f"{verb} {action.option_strings[0]}"
+                 for verb, sub in commands_doc.verbs(commands_doc.parser()).items()
+                 for action in sub._actions
+                 if action.option_strings and not isinstance(action, commands_doc.argparse._HelpAction)
+                 and not (action.help or "").strip()]
+        self.assertEqual(blank, [], "give these flags help= text, then run "
+                                    "`python3 tests/commands_doc.py --write`")
+
     def test_every_command_is_in_the_quick_index(self):
         text = commands_doc.DOC.read_text()
         index = text.split("\n---\n", 1)[0]

@@ -313,6 +313,66 @@ def authorize_ruling_comment(loop: dict, *, repo: str, number: int, head: str,
     return login
 
 
+class TriageSkipped(BrokerDenied):
+    """The issue is no longer this triage's to label (a person labelled it, it closed, …)."""
+
+
+def authorize_triage(loop: dict, *, repo: str, number: int) -> str:
+    """Return the login triage writes as, or deny (#213).
+
+    The login is ``triage.login`` (else the reviewer seat's), never the reader; its token must
+    resolve to that very account. The issue is re-read as the reader: it must still be an open
+    issue (not a pull request) by an allowlisted author, with no label from the triage list —
+    a person who labelled it first wins, and the triage is skipped.
+    """
+    from . import config, run_supervisor
+    if not _REPO.fullmatch(repo) or repo != loop.get("repo"):
+        raise BrokerDenied("wrong repository")
+    if type(number) is not int or number <= 0:
+        raise BrokerDenied("invalid issue number")
+    login = config.triage_login(loop)
+    reader = str(loop.get("read_token") or "")
+    if not login or login.casefold() == reader.casefold():
+        raise BrokerDenied("no triage identity distinct from the reader")
+    if gh.token_path(loop, login) is None:
+        raise BrokerDenied("triage token mapping required")
+    try:
+        if not gh.token(loop, login):
+            raise BrokerDenied(f"empty token for {login}")
+    except gh.GitHubError as exc:
+        raise BrokerDenied(f"missing token for {login}") from exc
+    account = gh.api(loop, "/user", login=login)
+    if (not isinstance(account, dict) or not isinstance(account.get("login"), str)
+            or account["login"].casefold() != login.casefold()):
+        raise BrokerDenied("token principal cannot be verified")
+    try:
+        run_supervisor.triage_issue(loop, number)
+    except run_supervisor.RetryableError as exc:
+        raise BrokerDenied(str(exc)) from None
+    except ValueError as exc:
+        raise TriageSkipped(str(exc)) from None
+    return login
+
+
+def post_triage(loop: dict, *, repo: str, number: int, login: str, labels: list[str],
+                body: str) -> int | None:
+    """Add the labels (never removing one), then post the comment; the comment's id, or None."""
+    if labels:
+        result = gh.api(loop, f"/repos/{repo}/issues/{number}/labels", method="POST",
+                        body={"labels": list(labels)}, login=login)
+        if not isinstance(result, list):
+            raise BrokerDenied("GitHub label write did not return a successful response")
+        _audit(loop, repo, number, "", "", "triage", "labels", login)
+    if not body:
+        return None
+    result = gh.api(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
+                    body={"body": _signed(loop, body, "triage", "")}, login=login)
+    if not isinstance(result, dict) or type(result.get("id")) is not int:
+        raise BrokerDenied("GitHub comment write did not return a successful response")
+    _audit(loop, repo, number, "", "", "triage", "comment", login)
+    return result["id"]
+
+
 def ruling_comment_body(verdict: str, body: str, *, head: str, turn_key: str, run_id: str,
                         cap: object) -> str:
     rounds = turn_key.split(":", 1)[1] if turn_key.startswith("breach:") else "?"

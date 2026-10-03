@@ -278,6 +278,10 @@ class RunBroker:
         if self.scope.role == "adjudicator" or (isinstance(request, dict)
                                                 and request.get("operation") == "ruling"):
             return self._ruling(raw, request)
+        # Triage (#213) likewise: one operation, only for the triage role, decided first.
+        if self.scope.role == "triage" or (isinstance(request, dict)
+                                           and request.get("operation") == "triage"):
+            return self._triage(raw, request)
         if isinstance(request, dict) and request.get("operation") == "push":
             if set(request) != {"operation", "manifest"} or self.scope.role != "fixer":
                 raise ProtocolError("operation out of scope")
@@ -590,6 +594,93 @@ class RunBroker:
         return {"accepted": True}
 
 
+    def _triage(self, raw: bytes, request: object) -> object:
+        """Record the one triage (labels from the loop's list, an optional comment), then write it.
+
+        The issue text this turn read is untrusted, so this is the boundary: only labels the
+        operator listed, at most ``max_labels``, and a comment only where the loop allows one.
+        The response is ok once the triage is durable; the GitHub writes follow from the host's
+        current configuration and live issue, and their outcome is recorded, never retried.
+        """
+        from .run_supervisor import TRIAGE_COMMENT_MAX, Supervisor
+        if (self.scope.role != "triage" or not isinstance(request, dict)
+                or set(request) != {"operation", "labels", "body"}
+                or request["operation"] != "triage"):
+            raise ProtocolError("operation out of scope")
+        if len(raw) > MAX_REQUEST:
+            raise ProtocolError("request too large")
+        triage = self._loop.get("triage") or {}
+        allowed = {name.casefold(): name for name in triage.get("labels") or []}
+        most = triage.get("max_labels", 3)
+        labels, body = request["labels"], request["body"]
+        if (not isinstance(labels, list) or len(labels) > most
+                or not all(isinstance(x, str) and x.casefold() in allowed for x in labels)
+                or len({x.casefold() for x in labels}) != len(labels)):
+            raise ProtocolError(f"labels must be at most {most} distinct names from the loop's "
+                                "list; nothing was written, resubmit")
+        if not isinstance(body, str) or len(body.strip()) > TRIAGE_COMMENT_MAX:
+            raise ProtocolError(f"the comment must be text of at most {TRIAGE_COMMENT_MAX} "
+                                "characters; nothing was written, resubmit")
+        if body.strip() and not triage.get("comment"):
+            raise ProtocolError("this loop applies labels only — drop the comment; nothing was "
+                                "written, resubmit")
+        if self._used:
+            raise ProtocolError("run capability already used")
+        if not self.scope.run_id or not self.scope.ledger_db:
+            raise ProtocolError("host run ledger unavailable")
+        self._used = True
+        chosen = [allowed[x.casefold()] for x in labels]
+        supervisor = Supervisor(self.scope.ledger_db, create=False)
+        supervisor.record_triage(self.scope.run_id, self.scope.repo, self.scope.number, chosen,
+                                 body.strip())
+        self.completed = True
+        try:
+            _deliver_triage(self._loop, self.scope, supervisor, chosen, body.strip())
+        except Exception as exc:
+            supervisor.triage_status(self.scope.run_id, "uncertain",
+                                     error=f"delivery failed: {type(exc).__name__}")
+        return {"accepted": True}
+
+
+def _deliver_triage(launch_loop: dict, scope: RunScope, supervisor, labels: list[str],
+                    body: str) -> None:
+    """Write a recorded triage: re-authorize against the live issue, then labels, then comment."""
+    try:
+        loop = config.by_repo(scope.repo)
+    except Exception:
+        loop = None
+    if (loop is None or loop.get("id") != launch_loop.get("id")
+            or loop.get("state_dir") != launch_loop.get("state_dir")
+            or not config.triage_enabled(loop)):
+        supervisor.triage_status(scope.run_id, "denied", error="loop configuration changed")
+        return
+    if not labels and not body:
+        supervisor.triage_status(scope.run_id, "nothing")
+        return
+    try:
+        login = broker.authorize_triage(loop, repo=scope.repo, number=scope.number)
+    except broker.TriageSkipped as exc:
+        supervisor.triage_status(scope.run_id, "skipped", error=str(exc)[:200])
+        return
+    except broker.BrokerDenied as exc:
+        supervisor.triage_status(scope.run_id, "denied", error=str(exc)[:200])
+        return
+    except Exception as exc:
+        supervisor.triage_status(scope.run_id, "denied",
+                                 error=f"authorization failed: {type(exc).__name__}")
+        return
+    # Durable intent before the POSTs: a crash after it is reported as uncertain, never replayed.
+    supervisor.triage_status(scope.run_id, "posting")
+    try:
+        comment_id = broker.post_triage(loop, repo=scope.repo, number=scope.number, login=login,
+                                        labels=labels, body=body)
+    except Exception as exc:
+        supervisor.triage_status(scope.run_id, "uncertain",
+                                 error=f"POST outcome unknown: {type(exc).__name__}")
+        return
+    supervisor.triage_status(scope.run_id, "posted", comment_id=comment_id)
+
+
 def _deliver_ruling(launch_loop: dict, scope: RunScope, supervisor, turn_key: str,
                     verdict: str, body: str) -> None:
     """Observer notice (best effort), then the PR comment only for a configured identity."""
@@ -660,6 +751,8 @@ def request(operation: str, *, verdict: str = "", body: str = "",
     """Credentialless in-namespace caller; never accepts a target repo or token."""
     if operation == "push":
         payload = {"operation": operation, "manifest": manifest}
+    elif operation == "triage":
+        payload = {"operation": operation, "labels": list(manifest or []), "body": body}
     elif operation in ("review", "request_review", "ruling"):
         payload = {"operation": operation, "verdict": verdict, "body": body}
     else:

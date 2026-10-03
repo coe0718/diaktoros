@@ -159,6 +159,12 @@ TOKEN_FILE_SETTINGS: dict = {"reviewer": "reviewer_token_file", "fixer": "fixer_
 # Every role that can own a webhook route. The adjudicator is here but not in ``SEAT_KEYS``: it has
 # a route and a profile, and no login or allowlist of its own.
 ROUTE_ROLES = ("reviewer", "fixer", "adjudicator")
+# Every role a route can wake, issue triage (#213) included. Triage is opt-in per loop, so the
+# seat listings (``ROUTE_ROLES``) leave it out; route writing and ownership checks use this.
+ROUTED_ROLES = (*ROUTE_ROLES, "triage")
+# The GitHub event each hooked role's repo hook delivers (#213). The adjudicator has a route but no
+# repo hook (the loop wakes it itself), so it is not here.
+HOOK_EVENT = {"reviewer": "pull_request", "fixer": "pull_request_review", "triage": "issues"}
 # Gate scripts an older release of *this* plugin installed for a role. Before the dedicated
 # adjudicator gate (PR #21) the breach route ran gate_reviewer.py. Such a route is still ours —
 # its prompt proves it — so ``apply`` rebinds it in place instead of refusing it as foreign, and
@@ -348,6 +354,8 @@ def seat_profile(loop: dict, role: str) -> str:
     """
     if role == "adjudicator":
         return str((loop.get("adjudicator") or {}).get("profile") or "default")
+    if role == "triage":
+        return str((loop.get("triage") or {}).get("profile") or "")
     if role == "observer":
         observer = loop.get("observer") or {}
         if not str(observer.get("route") or "").strip():
@@ -359,6 +367,8 @@ def seat_profile(loop: dict, role: str) -> str:
 def seat_login(loop: dict, role: str) -> str:
     if role == "adjudicator":
         return ""
+    if role == "triage":
+        return triage_login(loop)
     return str(((loop.get("seats") or {}).get(role) or {}).get("login") or "")
 
 
@@ -502,6 +512,7 @@ DEFAULTS: dict = {
     "reviewer_seat": "",
     "seats": {},
     "adjudicator": {},
+    "triage": {},
     "observer": {},
     "skill": "",
     "read_token": "",
@@ -706,7 +717,7 @@ def seat_concurrency(loop: dict, seat: str) -> int:
     """
     seat_cfg = (loop.get("seats") or {}).get(seat) or {}
     value = seat_cfg.get("concurrency")
-    if (value is None or value == "") and seat != "adjudicator":
+    if (value is None or value == "") and seat not in ("adjudicator", "triage"):
         # The loop default is documented as the default for the two *working* seats. A ruling
         # is rare and read-only; it never inherits a parallelism the operator chose for reviews.
         value = loop.get("concurrency", 1)
@@ -782,6 +793,112 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
             raise ConfigError(f"{where}: the adjudicator and {other!r} read the same token file "
                               f"— {FOUR_IDENTITY_RULE}")
     seat["login"] = login
+    return seat
+
+
+# -- issue triage (#213) -----------------------------------------------------------------------
+
+# A triage run has no PR head; the ledger's head column holds this marker instead, and the
+# run is keyed by the issue number (``pr``) with seat ``triage`` and turn key ``triage``.
+TRIAGE_HEAD = "issue"
+TRIAGE_KEYS = {"route", "profile", "authors", "labels", "max_labels", "comment", "login"}
+TRIAGE_LABEL = re.compile(r"[^\x00-\x1f,{}`]{1,50}\Z")
+TRIAGE_MAX_LABELS = 10
+TRIAGE_LABELS_MAX = 100
+
+
+def triage_enabled(loop: dict) -> bool:
+    return bool((loop.get("triage") or {}).get("route"))
+
+
+def triage_login(loop: dict) -> str:
+    """The account triage labels (and comments) as: its own, else the reviewer seat's."""
+    triage = loop.get("triage") or {}
+    if not triage.get("route"):
+        return ""
+    return str(triage.get("login") or ((loop.get("seats") or {}).get("reviewer") or {}).get("login")
+               or "").lower()
+
+
+def hook_roles(loop: dict) -> tuple[str, ...]:
+    """The roles with a repo hook on this loop: both seats, and triage when it is on."""
+    return ("reviewer", "fixer") + (("triage",) if triage_enabled(loop) else ())
+
+
+def normalize_triage(raw, loop: dict, where: str) -> dict:
+    """Validate the ``triage`` block (#213), or ``{}`` when the loop does not triage issues.
+
+    Only issues from ``authors`` are ever shown to a model; its only output is labels from
+    ``labels`` (at most ``max_labels`` of them) and, when ``comment`` is true, one short comment.
+    """
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict) or not set(raw) <= TRIAGE_KEYS:
+        raise ConfigError(f"{where}: triage may only hold {', '.join(sorted(TRIAGE_KEYS))}")
+    route = str(raw.get("route") or "").strip()
+    profile = str(raw.get("profile") or "").strip()
+    if not route or not profile:
+        raise ConfigError(f"{where}: triage needs a route and a profile (the Hermes profile whose "
+                          "model reads the issue)")
+    authors = raw.get("authors")
+    if (not isinstance(authors, list) or not authors
+            or not all(isinstance(a, str) and a.strip() for a in authors)):
+        raise ConfigError(f"{where}: triage.authors must list the GitHub logins whose issues are "
+                          "triaged — anyone else's are ignored, before any model sees them")
+    labels = raw.get("labels")
+    if (not isinstance(labels, list) or not labels or len(labels) > TRIAGE_LABELS_MAX
+            or not all(isinstance(x, str) and TRIAGE_LABEL.fullmatch(x) and x == x.strip()
+                       for x in labels)
+            or len({x.casefold() for x in labels}) != len(labels)):
+        raise ConfigError(f"{where}: triage.labels must list 1-{TRIAGE_LABELS_MAX} distinct label "
+                          "names (1-50 characters; no commas, braces, backticks or control characters) — the only "
+                          "labels triage may apply")
+    max_labels = raw.get("max_labels", 3)
+    if (isinstance(max_labels, bool) or not isinstance(max_labels, int)
+            or not 1 <= max_labels <= TRIAGE_MAX_LABELS):
+        raise ConfigError(f"{where}: triage.max_labels must be 1-{TRIAGE_MAX_LABELS}")
+    comment = raw.get("comment", False)
+    if type(comment) is not bool:
+        raise ConfigError(f"{where}: triage.comment must be true or false")
+    out = {"route": route, "profile": profile,
+           "authors": sorted({a.strip().lower() for a in authors}), "labels": list(labels),
+           "max_labels": max_labels, "comment": comment}
+    login = raw.get("login")
+    if login not in (None, ""):
+        if not isinstance(login, str) or login != login.strip() or not login:
+            raise ConfigError(f"{where}: triage.login must be a GitHub login")
+        out["login"] = login.lower()
+    who = out.get("login") or str((loop["seats"].get("reviewer") or {}).get("login") or "").lower()
+    if not who:
+        raise ConfigError(f"{where}: triage needs a login to label as (triage.login, or the "
+                          "reviewer seat's)")
+    if who == str(loop.get("read_token") or "").lower():
+        raise ConfigError(f"{where}: triage would label as the reader {who!r} — the reader only "
+                          f"reads; {FOUR_IDENTITY_RULE}")
+    if not {str(k).lower() for k in loop.get("tokens") or {}} & {who}:
+        raise ConfigError(f"{where}: no token mapped for the triage login {who!r} — add --token "
+                          f"{who}=/path/to/pat (it needs issues: write on the repository)")
+    return out
+
+
+def _triage_seat(raw, where: str) -> dict:
+    """``seats.triage``: its turn budget, daily cap and concurrency — no login (see triage.login)."""
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict) or not set(raw) <= {"concurrency", "turn_budget_s", "daily_turns"}:
+        raise ConfigError(f"{where}: seats.triage may only hold 'concurrency', 'turn_budget_s' "
+                          "and 'daily_turns'")
+    seat: dict = {}
+    if raw.get("daily_turns") not in (None, ""):
+        seat["daily_turns"] = _check_daily_turns(raw["daily_turns"], "seats.triage.daily_turns",
+                                                 where)
+    if raw.get("turn_budget_s") not in (None, ""):
+        seat["turn_budget_s"] = _check_budget(raw["turn_budget_s"], "seats.triage.turn_budget_s",
+                                              where)
+    if raw.get("concurrency") not in (None, ""):
+        seat["concurrency"] = _as_int(raw["concurrency"], "seats.triage.concurrency", where)
+        if seat["concurrency"] < 1:
+            raise ConfigError(f"{where}: seats.triage.concurrency must be >= 1 (1 = serialized)")
     return seat
 
 
@@ -1372,6 +1489,10 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     adjudicator_seat = _adjudicator_seat(raw_seats.get("adjudicator"), loop, where)
     if adjudicator_seat:
         seats["adjudicator"] = adjudicator_seat
+    loop["triage"] = normalize_triage(loop.get("triage"), loop, where)
+    triage_seat = _triage_seat(raw_seats.get("triage"), where)
+    if triage_seat:
+        seats["triage"] = triage_seat
     loop["roots"] = [str(p) for p in (loop.get("roots") or [])]
     for root in loop["roots"]:
         reason = dangerous_root(root)

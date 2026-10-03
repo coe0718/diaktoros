@@ -123,8 +123,10 @@ _CODE_SUFFIXES = frozenset({'.py', '.jinja2', '.j2', '.html'})
 # content filter below still applies to it, so a key written inside one is still dropped.
 _PLUGIN_MANIFESTS = frozenset({'plugin.yaml', 'plugin.json'})
 _CONTENT_SUFFIXES = frozenset({'.md', '.txt', '.json', '.yaml', '.yml', '.toml'})
+# ``evals`` is Hermes's evaluation suite: never imported at run time (Hermes's own lint lists it
+# with tests/ and website/), and its fixtures carry credential-shaped test values.
 _EXCLUDED_COMPONENTS = frozenset({'.git', '.venv', 'venv', '__pycache__', 'tests', 'docs',
-                                  'website', 'node_modules', '.hermes', '.pytest_cache'})
+                                  'website', 'node_modules', '.hermes', '.pytest_cache', 'evals'})
 # Names that are a credential whatever else they are: the exact components the first, shape-blind
 # filter carried, kept because they catch a credential container a shape rule cannot.
 _CREDENTIAL_NAMES = frozenset({'.env', 'auth.json', 'config.yaml', 'credentials', 'id_rsa',
@@ -405,6 +407,11 @@ TOOLS = {
                     '`python -m review_loop.broker_client ruling --verdict ACCEPT '
                     '--body-file /tmp/ruling.txt` (or REJECT/RESPEC). An adjudicator gets '
                     'exactly one ruling and cannot review, push or merge. '),
+    'triage': ('To deliver your triage use `python -m review_loop.broker_client triage --label bug '
+               '--label P2` (one `--label` per label, from the list above, spelled exactly; none '
+               'at all when none fits), adding `--comment-file /tmp/comment.txt` only if this loop '
+               'allows a comment. You get exactly one triage write; you cannot review, push, close '
+               'or edit the issue. '),
 }
 
 
@@ -543,15 +550,23 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             review.mkdir(mode=0o700)
             (review / 'pr.diff').write_text(review_diff)
             (review / 'pr.diff').chmod(0o444)
-        checkout = trusted_fetch.stage(loop, repo=scope.repo, number=scope.number,
-                                       head=scope.head, ref=scope.branch, role=scope.role,
-                                       sandbox_root=root / 'export')
-        cache = dependency_cache(loop)
-        _report(progress, time.strftime('fetching — started %H:%M:%SZ', time.gmtime())
-                + f', bounded at {int(prefetch_timeout)}s, before the turn budget starts')
-        prefetched = deps.prepare(checkout, cache, Path(rust), timeout=prefetch_timeout)
+        if scope.role == 'triage':
+            # An issue has no tree (#213): /work is an empty, read-only directory, and there is
+            # nothing to fetch or build.
+            checkout = root / 'export'
+            checkout.mkdir(mode=0o700)
+            prefetched = []
+        else:
+            checkout = trusted_fetch.stage(loop, repo=scope.repo, number=scope.number,
+                                           head=scope.head, ref=scope.branch, role=scope.role,
+                                           sandbox_root=root / 'export')
+            cache = dependency_cache(loop)
+            _report(progress, time.strftime('fetching — started %H:%M:%SZ', time.gmtime())
+                    + f', bounded at {int(prefetch_timeout)}s, before the turn budget starts')
+            prefetched = deps.prepare(checkout, cache, Path(rust), timeout=prefetch_timeout)
         try:
-            _report(progress, deps.ledger_text(prefetched))
+            if prefetched:
+                _report(progress, deps.ledger_text(prefetched))
             if observed is not None:
                 observed['dependencies'] = [(r.ecosystem, r.status, r.reason) for r in prefetched]
             note = deps.seat_note(prefetched, scope.role)
@@ -595,7 +610,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                         dependency_caches={r.ecosystem: r.cache for r in prefetched if r.ready},
                         # A ruling is judgement, not a change: the adjudicator's tree is mounted
                         # read-only so nothing it runs can dress up the head it rules on.
-                        checkout_writable=scope.role != 'adjudicator')
+                        checkout_writable=scope.role not in ('adjudicator', 'triage'))
                 except subprocess.TimeoutExpired as exc:
                     # contained.run has already SIGKILLed the sandbox's process group.
                     raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None

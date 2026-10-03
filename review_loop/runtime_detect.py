@@ -3,7 +3,9 @@
 ``setup`` uses this so a first install never asks the operator to hand-write the runtime file:
 
 * ``venv``: the virtualenv Hermes runs from — this interpreter's own ``sys.prefix`` when it holds
-  ``bin/hermes`` (the plugin runs inside Hermes), else the one ``hermes`` on ``PATH`` lives in;
+  ``bin/hermes`` (the plugin runs inside Hermes), else the one ``hermes`` on ``PATH`` lives in,
+  else the checkout's own ``venv/`` or ``.venv/``. A packaged install runs the ``hermes`` command
+  on a bundled Python outside any venv, so the checkout is where its venv is found;
 * ``source``: the hermes-agent Git checkout — where ``hermes_cli`` is imported from, else the
   venv's parent — holding ``run_agent.py`` and ``.git``;
 * ``runtime``: the Python installation the venv's interpreter links into. The sandbox binds it at
@@ -42,16 +44,19 @@ def _real_home() -> Path:
     return Path(os.environ.get("HERMES_REAL_HOME") or Path.home())
 
 
-def _venv() -> Path | None:
-    prefix = Path(sys.prefix)
-    if (prefix / "bin" / "hermes").exists() and (prefix / "bin" / "python").exists():
-        return prefix
+def _is_hermes_venv(path: Path) -> bool:
+    return (path / "bin" / "hermes").exists() and (path / "bin" / "python").exists()
+
+
+def _venv(source: Path | None = None) -> Path | None:
+    candidates = [Path(sys.prefix)]
     found = shutil.which("hermes")
     if found:
-        candidate = Path(found).resolve().parent.parent
-        if (candidate / "bin" / "python").exists():
-            return candidate
-    return None
+        candidates.append(Path(found).resolve().parent.parent)
+    if source is not None:
+        # Hermes's installer makes ``venv``; ``.venv`` is a developer's. Prefer the installer's.
+        candidates += [source / "venv", source / ".venv"]
+    return next((c for c in candidates if _is_hermes_venv(c)), None)
 
 
 def _source(venv: Path | None) -> Path | None:
@@ -112,7 +117,10 @@ def _rust() -> Path | None:
 def detect() -> dict[str, str]:
     """The host paths found on this machine; a key that could not be found is left out."""
     venv = _venv()
-    found = {"source": _source(venv), "venv": venv,
+    source = _source(venv)
+    if venv is None:
+        venv = _venv(source)
+    found = {"source": source, "venv": venv,
              "runtime": runtime_for(venv) if venv else None, "rust": _rust()}
     return {key: str(value) for key, value in found.items() if value is not None}
 

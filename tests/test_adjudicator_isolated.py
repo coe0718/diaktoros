@@ -150,7 +150,7 @@ class Enqueue(Base):
         with mock.patch.object(Supervisor, "__init__", spy), \
              mock.patch.object(Supervisor, "_spawn"):
             gate.wake_adjudicator(self.loop, 7, HEAD, 3, "cap")
-        self.assertEqual(seen, {"reviewer": 1, "fixer": 1, "adjudicator": 1})
+        self.assertEqual(seen, {"reviewer": 1, "fixer": 1, "adjudicator": 1, "triage": 1})
 
 
 class Claim(Base):
