@@ -3381,7 +3381,13 @@ def _triage_lines(loop: dict) -> list[str]:
             f"  authors: {', '.join(triage['authors'])}",
             f"  labels (at most {triage['max_labels']}): {', '.join(triage['labels'])}",
             f"  comment: {'allowed' if triage['comment'] else 'off (labels only)'}"
-            + (f" · daily cap {seat['daily_turns']}" if seat.get("daily_turns") else "")]
+            + (f" · daily cap {seat['daily_turns']}" if seat.get("daily_turns") else ""),
+            (f"  issue fixes: label {triage['fix_label']!r} by "
+             f"{', '.join(triage['maintainers'])} hands an issue to the fixer"
+             + ("" if config.unattended_fixer_push_enabled(loop) else
+                f" — OFF until unattended fixer pushes are on: "
+                f"{config.fixer_push_enable_command(loop)}")) if triage.get("fix_label")
+            else "  issue fixes: off (--fix-label LABEL --maintainer LOGIN turns them on)"]
 
 
 def cmd_triage(args) -> int:
@@ -3461,6 +3467,10 @@ def cmd_triage(args) -> int:
     login = args.login or current.get("login")
     if login:
         block["login"] = login
+    fix_label = current.get("fix_label") if args.fix_label is None else args.fix_label
+    if fix_label:
+        block["fix_label"] = fix_label
+        block["maintainers"] = args.maintainer or current.get("maintainers") or []
     tokens = dict(loop.get("tokens") or {})
     for pair in args.token or []:
         if "=" not in pair:
@@ -4342,6 +4352,11 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                  "issues: write, never the reader")
         triage.add_argument("--token", action="append", default=[],
                             help="login=/path/to/pat for --login (or --admin-token), if not mapped")
+        triage.add_argument("--fix-label", default=None,
+                            help="a label a maintainer applies to hand an issue to the fixer "
+                                 "(#214; needs unattended fixer pushes on); '' turns it off")
+        triage.add_argument("--maintainer", action="append", default=[],
+                            help="login whose applying --fix-label counts (repeatable)")
         triage.add_argument("--daily-turns", type=int, default=None,
                             help="at most this many triage turns per day (0 removes the cap)")
         triage.add_argument("--admin-token", default="",

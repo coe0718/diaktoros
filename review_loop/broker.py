@@ -373,6 +373,84 @@ def post_triage(loop: dict, *, repo: str, number: int, login: str, labels: list[
     return result["id"]
 
 
+def authorize_issue_fix(loop: dict, *, repo: str, number: int) -> str:
+    """Return the fixer login an issue fix (#214) writes as, or deny.
+
+    The repository must have issue fixes on (which includes its unattended fixer pushes); the
+    fixer, reviewer and reader must be distinct accounts whose tokens resolve to themselves; and
+    the issue, re-read as the reader, must still be an open issue by an allowlisted author with
+    the fix label a maintainer applied.
+    """
+    from . import config, run_supervisor
+    if not _REPO.fullmatch(repo) or repo != loop.get("repo"):
+        raise BrokerDenied("wrong repository")
+    if type(number) is not int or number <= 0:
+        raise BrokerDenied("invalid issue number")
+    if not config.issue_fixes_enabled(loop):
+        raise BrokerDenied("issue fixes are not enabled by the host operator")
+    reader = str(loop.get("read_token") or "")
+    reviewer = config.seat_login(loop, "reviewer")
+    fixer = config.seat_login(loop, "fixer")
+    identities = (reader, reviewer, fixer)
+    if not all(identities) or len({i.casefold() for i in identities}) != 3:
+        raise BrokerDenied("read, reviewer and fixer must use distinct identities")
+    mapped = [gh.token_path(loop, identity) for identity in identities]
+    if any(path is None for path in mapped) or len({p.resolve() for p in mapped if p}) != 3:
+        raise BrokerDenied("read, reviewer and fixer must use distinct token files")
+    try:
+        if not gh.token(loop, fixer):
+            raise BrokerDenied(f"empty token for {fixer}")
+    except gh.GitHubError as exc:
+        raise BrokerDenied(f"missing token for {fixer}") from exc
+    account = gh.api(loop, "/user", login=fixer)
+    if (not isinstance(account, dict) or not isinstance(account.get("login"), str)
+            or account["login"].casefold() != fixer.casefold()):
+        raise BrokerDenied("token principal cannot be verified")
+    try:
+        run_supervisor.issue_fix_issue(loop, number)
+    except (run_supervisor.RetryableError, ValueError) as exc:
+        raise BrokerDenied(str(exc)) from None
+    return fixer
+
+
+ISSUE_PR_TITLE_MAX = 120
+
+
+def open_issue_pr(loop: dict, *, repo: str, number: int, branch: str, title: str, body: str,
+                  login: str) -> int:
+    """Open the issue fix's PR as the fixer, against the loop's base; its number, or raise."""
+    text = f"{body.strip()}\n\nFixes #{number}"
+    result = gh.api(loop, f"/repos/{repo}/pulls", method="POST", login=login,
+                    body={"title": title, "head": branch, "base": loop["base"],
+                          "body": _signed(loop, text, "fixer", ""), "draft": False})
+    if (not isinstance(result, dict) or type(result.get("number")) is not int
+            or (result.get("head") or {}).get("ref") != branch):
+        raise BrokerDenied("GitHub PR create did not return a successful response")
+    _audit(loop, repo, result["number"], "", branch, "issue_fixer", "open_pr", login)
+    return result["number"]
+
+
+def request_issue_pr_review(loop: dict, *, repo: str, pr: int, login: str) -> None:
+    """Ask the loop's reviewer seat to review the issue fix's PR, as the fixer (the handoff)."""
+    from . import config
+    reviewer = config.seat_login(loop, "reviewer")
+    result = gh.api(loop, f"/repos/{repo}/pulls/{pr}/requested_reviewers", method="POST",
+                    login=login, body={"reviewers": [reviewer]})
+    if not isinstance(result, dict) or type(result.get("number")) is not int:
+        raise BrokerDenied("GitHub review request did not return a successful response")
+    _audit(loop, repo, pr, "", "", "issue_fixer", "request_review", login)
+
+
+def post_issue_comment(loop: dict, *, repo: str, number: int, login: str, body: str) -> int:
+    """The issue fixer's one comment when it could not fix the issue; its id, or raise."""
+    result = gh.api(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
+                    body={"body": _signed(loop, body, "fixer", "")}, login=login)
+    if not isinstance(result, dict) or type(result.get("id")) is not int:
+        raise BrokerDenied("GitHub comment write did not return a successful response")
+    _audit(loop, repo, number, "", "", "issue_fixer", "issue_comment", login)
+    return result["id"]
+
+
 def ruling_comment_body(verdict: str, body: str, *, head: str, turn_key: str, run_id: str,
                         cap: object) -> str:
     rounds = turn_key.split(":", 1)[1] if turn_key.startswith("breach:") else "?"

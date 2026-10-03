@@ -141,8 +141,13 @@ _ASKPASS = ("import os,sys\nfrom pathlib import Path\n"
 
 def _git_cas(loop: dict, repo: str, branch: str, head: str,
              files: list[tuple[str, bytes]], message: str, login: str,
-             identity: dict, *, before_push=None, remote: str | None = None) -> str:
+             identity: dict, *, before_push=None, remote: str | None = None,
+             from_branch: str | None = None) -> str:
     """Fetch the advertised branch, construct local objects, and exact-lease push.
+
+    With ``from_branch`` (an issue fix, #214) the commit is built on ``head`` as found in that
+    advertised branch (``head`` must be one of its commits) and pushed to ``branch``, which must
+    not exist yet: the lease is "absent", so an existing branch is never overwritten.
 
     `remote` is a private local-fixture seam, never sourced from IPC or config.
     Only validated manifest paths/bytes reach Git's temporary private bare repo.
@@ -183,10 +188,16 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
         # Fetch an ADVERTISED ref, never a dangling object ID. Verify the exact
         # snapshot before constructing anything or attempting a ref mutation.
         ref = f"refs/heads/{branch}"
+        source = f"refs/heads/{from_branch}" if from_branch else ref
         run("--git-dir", str(bare), "fetch", "--no-tags", "--no-recurse-submodules",
-            url, f"{ref}:refs/heads/snapshot")
+            url, f"{source}:refs/heads/snapshot")
         snapshot = _sha(run("--git-dir", str(bare), "rev-parse", "refs/heads/snapshot").decode())
-        if snapshot != head:
+        if from_branch:
+            try:
+                run("--git-dir", str(bare), "merge-base", "--is-ancestor", head, snapshot)
+            except broker.BrokerDenied:
+                raise broker.BrokerDenied("base commit is not on the base branch") from None
+        elif snapshot != head:
             raise broker.BrokerDenied("fetched PR branch moved")
         parents = run("--git-dir", str(bare), "rev-list", "--parents", "-n", "1", head).decode().split()
         if not parents or parents[0] != head:
@@ -225,8 +236,9 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
             raise broker.BrokerDenied("local commit does not have exact expected parent")
         if before_push is not None:
             before_push(new_head)
+        lease = f"{ref}:" if from_branch else f"{ref}:{head}"
         run("--git-dir", str(bare), "push", "--porcelain",
-            f"--force-with-lease={ref}:{head}", url, f"{new_head}:{ref}")
+            f"--force-with-lease={lease}", url, f"{new_head}:{ref}")
         return new_head
 
 def push(loop: dict, *, repo: str, number: int, head: str, role: str,
@@ -325,5 +337,68 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     if error is not None or outcome != "published":
         failure = PushFailure(outcome) if attempt_started else broker.BrokerDenied(
             f"Git ref update not confirmed ({outcome})")
+        raise failure from error
+    return {**receipt, "new_head": new_head, "outcome": outcome}
+
+
+def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
+                manifest: object) -> dict:
+    """Push an issue fix (#214) as one commit on ``base`` to the new branch ``branch``.
+
+    Authorized against the live issue (``broker.authorize_issue_fix``) before construction and
+    again just before the push; the push's lease requires the branch to be absent, so an
+    existing branch (a second fix for the same issue) is refused, never overwritten. Opening the
+    PR is the caller's next step, after this returns a confirmed ref.
+    """
+    base_head, files = _manifest(manifest)
+    assert isinstance(manifest, dict)
+    if not config.issue_fixes_enabled(loop):
+        raise broker.BrokerDenied("issue fixes disabled")
+    if base_head != base:
+        raise broker.BrokerDenied("manifest base differs from the scoped base commit")
+    if branch != config.ISSUE_FIX_BRANCH.format(number=number):
+        raise broker.BrokerDenied("unsafe branch ref")
+    login = broker.authorize_issue_fix(loop, repo=repo, number=number)
+    seat = _api(loop, "/user", login=login)
+    if (not isinstance(seat.get("login"), str) or seat["login"].casefold() != login.casefold()
+            or type(seat.get("id")) is not int or seat["id"] <= 0):
+        raise broker.BrokerDenied("fixer identity changed")
+    identity = {"name": seat["login"],
+                "email": f"{seat['id']}+{seat['login']}@users.noreply.github.com"}
+    if not re.fullmatch(r"[A-Za-z0-9-]+", identity["name"]):
+        raise broker.BrokerDenied("invalid fixer identity")
+    ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
+    receipt = {"repo": repo, "pr": number, "old_head": base, "branch": branch,
+               "role": "issue_fixer", "login": login, "paths": [path for path, _ in files],
+               "operation": "issue_branch"}
+    new_head = None
+    attempt_started = False
+
+    def before_push(created: str) -> None:
+        nonlocal new_head, attempt_started
+        broker.authorize_issue_fix(loop, repo=repo, number=number)
+        attempt_started = True
+        _audit(loop, {**receipt, "new_head": created, "phase": "attempt"})
+        new_head = created
+    error = None
+    try:
+        _git_cas(loop, repo, branch, base, files, attribution.sign_commit(loop, manifest["message"]),
+                 login, identity, before_push=before_push, from_branch=loop["base"])
+    except Exception as exc:
+        error = exc
+    observed = None
+    try:
+        ref = gh.api(loop, ref_path, login=login)
+        if isinstance(ref, dict) and ref.get("ref") == f"refs/heads/{branch}":
+            observed = _sha((ref.get("object") or {}).get("sha"))
+    except Exception:
+        observed = None
+    outcome = "published" if new_head is not None and observed == new_head else "unknown"
+    if attempt_started:
+        _audit(loop, {**receipt, "new_head": new_head, "phase": "reconciled",
+                      "outcome": outcome, "observed_head": observed})
+    if error is not None or outcome != "published":
+        failure = PushFailure(outcome) if attempt_started else broker.BrokerDenied(
+            "Git ref update not confirmed (unchanged)")
         raise failure from error
     return {**receipt, "new_head": new_head, "outcome": outcome}
