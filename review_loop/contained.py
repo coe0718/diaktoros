@@ -36,6 +36,7 @@ import selectors
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 MAX_CAPTURE = 256 * 1024
@@ -149,7 +150,8 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             client_code: Path | None = None,
             checkout_writable: bool = True,
             dependency_caches: dict[str, Path] | None = None,
-            review_dir: Path | None = None) -> list[str]:
+            review_dir: Path | None = None,
+            etc_dir: Path | None = None) -> list[str]:
     """Build an allowlisted mount namespace for the *entire* process tree.
 
     code must be a separately staged, audited, credentialless source snapshot;
@@ -183,6 +185,22 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
         if (review.is_symlink() or not review.is_dir() or diff.is_symlink()
                 or not diff.is_file() or list(review.iterdir()) != [diff]):
             raise ValueError('review mount must contain only the staged pr.diff')
+    etc_binds = []
+    if etc_dir is not None:
+        # The sandbox's /etc is a host-written directory (#240), never any part of the host's: the
+        # user and group entry for the sandbox's own uid, and an empty mount point the host's
+        # /etc/alternatives symlink farm is bound onto below. Without a user entry the uid has no
+        # name, and pwd.getpwuid — this repo's test bootstrap, getpass, some build tools — fails.
+        etc = Path(etc_dir)
+        entries = {etc / "passwd", etc / "group", etc / "alternatives"}
+        if (etc.is_symlink() or not etc.is_dir() or set(etc.iterdir()) != entries
+                or any(etc_file.is_symlink() or not etc_file.is_file()
+                       for etc_file in (etc / "passwd", etc / "group"))
+                or (etc / "alternatives").is_symlink() or not (etc / "alternatives").is_dir()
+                or any((etc / "alternatives").iterdir())):
+            raise ValueError("the sandbox /etc must hold only the staged user and group entries "
+                             "and an empty alternatives mount point")
+        etc_binds = ["--ro-bind", str(etc), "/etc"]
     if client_code is not None and not (Path(client_code) / 'review_loop/broker_client.py').is_file():
         raise FileNotFoundError('staged broker client required')
     dependency_binds = []
@@ -217,6 +235,7 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             "--ro-bind", "/lib", "/lib", "--ro-bind-try", "/lib64", "/lib64",
             # Debian/Ubuntu resolve cc, c++ and friends through /etc/alternatives;
             # without it Rust cannot link. It holds only symlinks.
+            *etc_binds,
             "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
             "--proc", "/proc", "--dev", "/dev", *_sized_tmpfs("/tmp", SCRATCH_SIZE),
             "--dir", "/opt", *runtime_parents,
@@ -253,11 +272,38 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             "/work/target" if checkout_writable else "/target",
             "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH", "/opt/venv/bin:/opt/rust/bin:/usr/bin:/bin",
             "--setenv", "GIT_CONFIG_GLOBAL", "/dev/null", "--setenv", "GIT_CONFIG_SYSTEM", "/dev/null",
-            "--setenv", "GIT_TERMINAL_PROMPT", "0", "--setenv", *OFFLINE_ENV, "--chdir", "/work",
+            "--setenv", "GIT_TERMINAL_PROMPT", "0", "--setenv", "USER", SANDBOX_USER,
+            "--setenv", "LOGNAME", SANDBOX_USER, "--setenv", *OFFLINE_ENV, "--chdir", "/work",
             "--", *launch]
 
 
+SANDBOX_USER = "agent"
+
+
+def write_etc(directory: Path, uid: int | None = None, gid: int | None = None) -> Path:
+    """Write the sandbox's whole ``/etc`` (#240): ``passwd`` and ``group`` with one entry each, for
+    the uid and gid the sandbox runs as (bubblewrap keeps the host's), named ``agent`` with
+    ``/home/agent``, and an empty ``alternatives`` mount point. Nothing is copied from the host.
+    Returns ``directory``."""
+    uid = os.getuid() if uid is None else uid
+    gid = os.getgid() if gid is None else gid
+    directory = Path(directory)
+    (directory / "passwd").write_text(
+        f"{SANDBOX_USER}:x:{uid}:{gid}:review-loop seat:/home/agent:/bin/sh\n")
+    (directory / "group").write_text(f"{SANDBOX_USER}:x:{gid}:\n")
+    for name in ("passwd", "group"):
+        (directory / name).chmod(0o444)
+    (directory / "alternatives").mkdir(mode=0o555)
+    return directory
+
+
 def run(*, timeout: int = 180, **kwargs) -> subprocess.CompletedProcess:
+    # Each launch gets its own /etc (#240), written fresh and removed with the run.
+    with tempfile.TemporaryDirectory(prefix="rl-etc-") as etc:
+        return _run(timeout=timeout, etc_dir=write_etc(Path(etc)), **kwargs)
+
+
+def _run(*, timeout: int, **kwargs) -> subprocess.CompletedProcess:
     # Parent environment is discarded, not merely filtered by a fragile denylist.
     home = str(Path(kwargs["home"]).resolve(strict=True))
     argv = command(**kwargs)
