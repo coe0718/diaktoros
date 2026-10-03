@@ -34,6 +34,8 @@ class FakeHermes:
 
     ``create`` appends a job the way the real scheduler does (never replaces), so a duplicate
     is visible; ``remove`` deletes by id. The log lets a test count how many jobs were made.
+    When a ``FAIL_CREATE`` sentinel exists in the temp root, ``cron create`` exits non-zero
+    without touching the store, so a test can drive the shared-job-creation-fails path.
     """
 
     def __init__(self, home: Path):
@@ -48,6 +50,9 @@ class FakeHermes:
             "store = home / 'cron' / 'jobs.json'\n"
             "args = sys.argv[1:]\n"
             f"with open({str(self.log)!r}, 'a') as f: f.write(json.dumps(args) + '\\n')\n"
+            "if args[:2] == ['cron', 'create'] and (pathlib.Path(home) / 'FAIL_CREATE').exists():\n"
+            "    sys.stderr.write('cron create failed (FAIL_CREATE sentinel)')\n"
+            "    sys.exit(1)\n"
             "data = json.loads(store.read_text()) if store.exists() else {'jobs': []}\n"
             "jobs = data['jobs']\n"
             "if args[:1] == ['cron'] and len(args) >= 3:\n"
@@ -190,6 +195,78 @@ class SharedJobTests(unittest.TestCase):
         check = doctor.check_cron_job(config.load_id("widgets"))
         self.assertFalse(check.failed, check.detail)
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
+
+
+    # --- migration: init removes this loop's legacy job when it creates the shared one ------
+    def test_init_removes_this_loops_legacy_job_when_creating_the_shared_job(self):
+        """A pre-#60 install with one per-loop job: init must leave exactly one sweeper.
+
+        Without this, init creates the shared job and the stale legacy job keeps sweeping
+        every loop too, so the install sits at two sweepers until an operator removes the
+        legacy job by hand (#212).
+        """
+        store = self.home / "cron" / "jobs.json"
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"jobs": [
+            {"id": "legacy1", "name": "review loop watchdog (widgets)",
+             "script": cli.SHIM_NAME, "no_agent": True, "enabled": True, "state": "scheduled",
+             "schedule": {"kind": "interval", "minutes": 15},
+             "next_run_at": "2030-01-01T00:00:00+00:00"}]}))
+        lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+        self.assertTrue(ok, lines)
+        # Exactly one sweeper: the shared job; this loop's legacy job is gone.
+        self.assertEqual(len(self._shim_jobs()), 1, self.hermes.jobs)
+        self.assertEqual(self._shim_jobs()[0]["name"], cli.SHARED_JOB_NAME)
+        removed = [call for call in self.hermes.calls if call[:2] == ["cron", "remove"]]
+        self.assertEqual(removed, [["cron", "remove", "legacy1"]], removed)
+
+    def test_failed_create_leaves_the_legacy_job_scheduled(self):
+        """If the shared job cannot be created, init must not have removed the legacy job first.
+
+        The legacy job is the only sweeper on a pre-#60 install; removing it before
+        ``cron create`` is confirmed would leave no watchdog at all when creation fails
+        (cron CLI failure, no hermes, etc.).
+        """
+        store = self.home / "cron" / "jobs.json"
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"jobs": [
+            {"id": "legacy1", "name": "review loop watchdog (widgets)",
+             "script": cli.SHIM_NAME, "no_agent": True, "enabled": True, "state": "scheduled",
+             "schedule": {"kind": "interval", "minutes": 15},
+             "next_run_at": "2030-01-01T00:00:00+00:00"}]}))
+        # Make `cron create` fail; `cron remove` still works.
+        (self.home / "FAIL_CREATE").write_text("1")
+        lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+        self.assertFalse(ok, lines)
+        # The legacy job survived: it is still the one sweeper.
+        names = [str(j.get("name")) for j in self.hermes.jobs]
+        self.assertIn("review loop watchdog (widgets)", names, names)
+        # And no `cron remove` was ever issued for it.
+        removed = [call for call in self.hermes.calls if call[:2] == ["cron", "remove"]]
+        self.assertEqual(removed, [], removed)
+
+    def test_init_leaves_other_loops_legacy_jobs_alone(self):
+        """The shared job sweeps every loop, but each loop's own legacy job is only removed
+        by that loop's own init — a cross-loop removal would drop a sweeper someone still
+        relies on before they have run init themselves."""
+        store = self.home / "cron" / "jobs.json"
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"jobs": [
+            {"id": "legacy1", "name": "review loop watchdog (widgets)",
+             "script": cli.SHIM_NAME, "no_agent": True, "enabled": True, "state": "scheduled",
+             "schedule": {"kind": "interval", "minutes": 15},
+             "next_run_at": "2030-01-01T00:00:00+00:00"},
+            {"id": "legacy2", "name": "review loop watchdog (gadgets)",
+             "script": cli.SHIM_NAME, "no_agent": True, "enabled": True, "state": "scheduled",
+             "schedule": {"kind": "interval", "minutes": 15},
+             "next_run_at": "2030-01-01T00:00:00+00:00"}]}))
+        lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+        self.assertTrue(ok, lines)
+        removed = [call for call in self.hermes.calls if call[:2] == ["cron", "remove"]]
+        self.assertEqual(removed, [["cron", "remove", "legacy1"]], removed)
+        # gadgets' legacy job survives its own init.
+        names = {str(j.get("name")) for j in self.hermes.jobs}
+        self.assertIn("review loop watchdog (gadgets)", names)
 
 
 if __name__ == "__main__":
