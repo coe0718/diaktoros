@@ -25,7 +25,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.13"]
+        # 3.11 is what the Hermes venv runs (the turns, gates and resolver); 3.14 is what Hermes
+        # ships for its own CLI (`hermes review-loop …` runs in that process), so test both ends.
+        python: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -81,7 +83,7 @@ jobs:
       - uses: actions/setup-python@v5
         if: matrix.hermes == 'pinned' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Scan the plugin as `hermes plugins install` would
         if: matrix.hermes == 'pinned' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: python plugin/.github/scripts/plugin_guard.py hermes plugin
@@ -108,7 +110,7 @@ jobs:
       # but the two packages its pinned commit declares for this interpreter are, so the lane moves
       # only when the pin moves: croniter for stored cron expressions, ruamel.yaml for a profile's
       # config.yaml. (Hermes declares both for 3.14 and above, which is why this job runs there; the
-      # 3.11/3.13 standalone coverage lives in `tests`.)
+      # 3.11/3.14 standalone coverage lives in `tests`.)
       # HERMES_AGENT_SOURCE points the tests that drive Hermes's own code (the gateway's route-script
       # resolver, #105) at this checkout; REVIEW_LOOP_REQUIRE_HERMES_SOURCE turns their "no Hermes
       # here" skip into a failure, so that check cannot quietly vanish from this lane.
@@ -154,7 +156,7 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       # Ubuntu 24.04 denies unprivileged user namespaces through AppArmor; bwrap needs them.
       - name: Install bubblewrap and allow unprivileged user namespaces
         run: |
