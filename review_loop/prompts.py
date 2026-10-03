@@ -175,8 +175,15 @@ What to do:
    offline; if they are not, verify by reading instead.
 3. Write the review body to a file and submit it through the broker (command below). Your review
    must end with exactly one verdict, APPROVE or REQUEST_CHANGES — a comment-only review is
-   refused, because it would neither wake the fixer nor cue a merge. For every finding give the
-   severity, evidence (command plus observed output) and the `file:line` it lives at.
+   refused, because it would neither wake the fixer nor cue a merge. For every finding give its
+   grade, evidence (command plus observed output) and the `file:line` it lives at.
+   Grade every finding **P0–P3** and say whether it **blocks**:
+   - **blocks** — a P0 or P1, a regression, silent data loss, the wrong agent woken, a false
+     green on a safety check, or a test or build this change breaks. Any blocking finding makes
+     the verdict REQUEST_CHANGES.
+   - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
+     issue-tier findings the verdict is APPROVE; list them under a heading **Issues to file**,
+     each with a one-line suggested issue title, so the operator can file them.
 4. You get exactly one review write. The broker pins it to head {head}; if the head moved, the
    write is refused — say so rather than retrying. A verdict other than APPROVE or
    REQUEST_CHANGES is refused before anything is written: resubmit with a real verdict.

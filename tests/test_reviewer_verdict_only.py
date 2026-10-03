@@ -191,6 +191,24 @@ class VerdictOnlyInstructionTests(unittest.TestCase):
         self.assertIn("the verdict is REQUEST_CHANGES, naming exactly what could not be verified",
                       text)
 
+    def test_every_reviewer_surface_grades_findings_on_the_operators_scale(self):
+        """Findings are graded P0–P3 and blocks/issue — the operator's merge bar — not on a scale
+        the model invents (the first live review graded one "HIGH"). Only a blocking finding
+        requests changes; issue-tier findings ride on an approval as "Issues to file". The
+        gateway route prompt (prompts.REVIEWER) is left alone: it is the route's ownership proof
+        and is never rendered for a model."""
+        names = {n for _, n, _, _ in string.Formatter().parse(prompts.ISOLATED_REVIEWER) if n}
+        skill = (ROOT / "skill" / "SKILL.md").read_text()
+        for name, text in (("isolated", prompts.render_isolated("reviewer", **{n: "x" for n in names})),
+                           ("skill", skill)):
+            with self.subTest(surface=name):
+                self.assertIn("P0–P3", text)
+                self.assertIn("**blocks**", text)
+                self.assertIn("Any blocking finding makes\n     the verdict REQUEST_CHANGES", text)
+                self.assertIn("With only\n     issue-tier findings the verdict is APPROVE", text)
+                self.assertIn("**Issues to file**", text)
+                self.assertNotIn("give the\n   severity", text)
+
 
 if __name__ == "__main__":
     unittest.main()
