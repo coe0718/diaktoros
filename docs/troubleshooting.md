@@ -293,7 +293,13 @@ hermes review-loop selftest --loop name --no-model
 **What you see.** Turns are held (see [above](#the-turn-was-taken-but-held-no-runtime-file)).
 `selftest` shows `❌ runtime:file  no file at …` with a `fix:` line that writes a template.
 
-**Fix.** Create it private, then fill in the four paths:
+**Fix.** Let `setup` detect the paths and write it (it keeps everything else as it is):
+
+```bash
+hermes review-loop setup --repo owner/name
+```
+
+Or create it private by hand, then fill in the four paths:
 
 ```bash
 (umask 077; touch ~/.hermes/review-loop-runtime.json); chmod 600 ~/.hermes/review-loop-runtime.json; $EDITOR ~/.hermes/review-loop-runtime.json

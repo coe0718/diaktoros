@@ -3937,7 +3937,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="hook admin login: the hooks are created (paused) as it")
         first.add_argument("--observer-profile", default=None,
                            help="Hermes profile whose chat gets the loop's notices")
-        first.add_argument("--attribution", choices=("on", "off"), default=None)
+        first.add_argument("--attribution", choices=("on", "off"), default=None,
+                           help="sign what the loop posts with 'Automated by hermes-review-loop' "
+                                "(default: the plugin setting, on)")
         for key in ("source", "venv", "runtime", "rust"):
             first.add_argument(f"--{key}", default="",
                                help=f"runtime file's {key} path (default: detected)")
