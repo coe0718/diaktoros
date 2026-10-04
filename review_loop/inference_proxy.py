@@ -48,7 +48,13 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-MAX_REQUEST = 1_000_000
+# One model request as the agent sends it: the whole conversation so far, as JSON. 1 MB stopped
+# reviews of large files mid-turn (live, #281/#312: refused as "malformed", with no reason
+# recorded) and is a fraction of what a 1M-token context needs. Host memory, not policy, is what
+# this bounds. The in-sandbox bridge allows twice this, so an oversized request still reaches the
+# host, which refuses it *with its reason recorded* (``last_error``).
+MAX_REQUEST = 8_000_000
+BRIDGE_MAX_REQUEST = 2 * MAX_REQUEST
 MAX_RESPONSE = 4_000_000
 MAX_OUTPUT_TOKENS = 4096
 # The most model calls one turn's capability may grant: the largest step setting a seat may take
@@ -603,26 +609,35 @@ class InferenceCapability:
             def log_message(self, format, *args):
                 pass
 
+            def refuse(self, reason: str) -> None:
+                # Every refusal names itself host-side: the agent only ever sees a bare 400,
+                # which Hermes reports as "the provider rejected a malformed request".
+                capability.last_error = f'proxy refused: {reason}'
+                self.send_error(400)
+
             def do_POST(self):
                 length = self.headers.get('Content-Length', '')
-                if (self.headers.get('Transfer-Encoding') or
-                        not length.isdecimal() or not 0 < int(length) <= MAX_REQUEST):
-                    self.send_error(400)
+                if self.headers.get('Transfer-Encoding') or not length.isdecimal():
+                    self.refuse('request without a plain Content-Length')
+                    return
+                if not 0 < int(length) <= MAX_REQUEST:
+                    self.refuse(f'request of {int(length)} bytes is over the {MAX_REQUEST}-byte '
+                           'limit (the conversation has outgrown one request)')
                     return
                 body = self.rfile.read(int(length))
                 if self.path != capability.contract.local_path:
                     # Refused after reading the (bounded) body, so the client gets its 400
                     # instead of a reset while it is still sending.
-                    self.send_error(400)
+                    self.refuse(f'unexpected path {self.path[:80]!r}')
                     return
                 if len(body) != int(length):
-                    self.send_error(400)
+                    self.refuse('request body shorter than its Content-Length')
                     return
                 try:
                     body = bounded_request(body, capability.model, capability.contract,
                                            capability.codex_backend)
-                except ProxyError:
-                    self.send_error(400)
+                except ProxyError as exc:
+                    self.refuse(str(exc))
                     return
                 capability.last_activity = last_activity(body)
                 # Reserve quota before contacting provider, including failed requests. A
@@ -787,7 +802,7 @@ def bridge(entry: list[str], socket_path: str = '/opt/inference/model.sock') -> 
         def do_POST(self):
             length = self.headers.get('Content-Length', '')
             if (self.headers.get('Transfer-Encoding') or
-                    not length.isdecimal() or not 0 < int(length) <= MAX_REQUEST):
+                    not length.isdecimal() or not 0 < int(length) <= BRIDGE_MAX_REQUEST):
                 self.send_error(400)
                 return
             body = self.rfile.read(int(length))
