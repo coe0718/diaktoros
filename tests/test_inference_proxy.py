@@ -10,6 +10,7 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -19,6 +20,21 @@ from review_loop.inference_proxy import InferenceCapability, _UnixHTTP, PATH, MA
 from tests.hermes_prereqs import needs, skip_or_fail
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
+
+
+def settled(read, done, timeout=2.0):
+    """``read()`` once ``done(value)`` holds, or the last value at the deadline.
+
+    The proxy relays the upstream's answer, *then* records what it saw (``last_activity``,
+    ``last_error``) in the same handler thread: a client holding the response can look before
+    that thread has written. Production reads both only after the sandbox has exited.
+    """
+    deadline = time.monotonic() + timeout
+    value = read()
+    while not done(value) and time.monotonic() < deadline:
+        time.sleep(0.01)
+        value = read()
+    return value
 
 
 def live_threads(server):
@@ -93,9 +109,10 @@ class TransportTests(unittest.TestCase):
                 response = conn.getresponse()
                 response.read()
                 conn.close()
-                self.assertIn('call read_file: {"path": "src/a.py"}', cap.last_activity)
-                self.assertIn('result: def a(): pass', cap.last_activity)
-                self.assertIn('→ then call terminal: {"command": "make test"}', cap.last_activity)
+                activity = settled(lambda: cap.last_activity, lambda value: '→ then' in value)
+                self.assertIn('call read_file: {"path": "src/a.py"}', activity)
+                self.assertIn('result: def a(): pass', activity)
+                self.assertIn('→ then call terminal: {"command": "make test"}', activity)
         finally:
             upstream.shutdown()
             upstream.server_close()
@@ -133,8 +150,9 @@ class TransportTests(unittest.TestCase):
                 self.assertEqual(response.status, 400)       # relayed unchanged to the agent
                 response.read()
                 conn.close()
-                self.assertEqual(cap.last_error, 'HTTP 400: maximum context length is 131072 '
-                                                 'tokens; you sent 140000')
+                self.assertEqual(settled(lambda: cap.last_error, bool),
+                                 'HTTP 400: maximum context length is 131072 tokens; you sent '
+                                 '140000')
         finally:
             upstream.shutdown()
             upstream.server_close()
