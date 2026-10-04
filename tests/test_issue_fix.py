@@ -389,7 +389,7 @@ class OpenBranchExisting(OpenBranchGuards):
     def test_an_existing_branch_is_denied_before_any_write(self):
         self.read(({"ref": "refs/heads/review-loop/issue-12", "object": {"sha": "a" * 40}}, ""))
         with self.assertRaisesRegex(broker.BrokerDenied,
-                                    "review-loop/issue-12 already exists — delete it to retry"):
+                                    "review-loop/issue-12 already exists — inspect it, and see docs/issues.md"):
             self.open()
         safe_push._git_cas.assert_not_called()
 
