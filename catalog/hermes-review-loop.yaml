@@ -7,18 +7,25 @@
 name: hermes-review-loop
 repo: https://github.com/coe0718/hermes-review-loop
 sha: 0000000000000000000000000000000000000000   # replaced with the release commit at publish time
-description: Unattended PR review between two agents — one pushes, a different one reviews, the
-  budget is counted in verdicts, a watchdog reports silent stalls, and a finished PR gives its
-  local disk back. Disclosure — creates webhook routes and a cron job, calls the GitHub API with
-  repo-scope tokens you provide, and deletes local review artifacts for merged or closed PRs. With
-  an observer feed configured (opt-in per loop) it also posts short read-only notices about loop
-  transitions — PR URL, head, event, next turn — to the chat that feed names, and to nothing else.
+description: >-
+  Unattended GitHub pull-request review between two Hermes agents: one pushes fixes, a different one
+  reviews, rounds are capped in verdicts, a watchdog reports silent stalls, and the loop never
+  merges. Disclosure — runs Hermes agent turns unattended, each inside bubblewrap with terminal and
+  file tools but no credentials, no network and none of your secret files; only a host-side broker
+  writes to GitHub, with repo-scope tokens you provide in separate files; spawns host processes
+  (bwrap, git, hermes workers); downloads PR source archives and pinned Rust crates on the host;
+  creates webhook routes on your gateway and one cron watchdog job; deletes its own local review
+  artifacts for merged or closed PRs. Nothing runs until you arm a loop, and fixer pushes stay off
+  until you opt in. Opt-in extras — an observer that posts transition notices to the chat you name;
+  issue triage that labels issues; an experimental seat that uses your own Claude subscription
+  through its official client on the host (OAuth seats refresh through Hermes's own resolver). Linux
+  only.
 maintainer: coe0718
 tier: community
 category: automation
-requires_hermes: '>=0.21.0'
+requires_hermes: '>=0.21.5'
 docs_url: https://github.com/coe0718/hermes-review-loop#readme
-version: 0.1.0
+version: "0.1.0"
 platforms:
   # Linux only: every seat turn runs in bubblewrap (user namespaces), which macOS lacks.
   - linux

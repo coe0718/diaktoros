@@ -7,7 +7,7 @@ A Hermes plugin for bounded GitHub pull-request review: an isolated **reviewer**
 ## Before you start
 
 - Linux with working bubblewrap (`bwrap`) and unprivileged user namespaces. Native macOS turns are not supported; run Hermes and the plugin inside Linux instead.
-- Hermes **>=0.21.0** (manifest requirement), a Hermes Git checkout and working virtualenv, Python runtime and Rust toolchain for the isolated runtime. A version number alone does not prove sandbox/provider compatibility: run `selftest`.
+- Hermes **>=0.21.5** (manifest requirement), a Hermes Git checkout and working virtualenv, Python runtime and Rust toolchain for the isolated runtime. A version number alone does not prove sandbox/provider compatibility: run `selftest`.
 - Your own HTTPS-reachable Hermes gateway, and a repository whose hooks you can administer.
 - Separate reviewer and fixer Hermes profiles; three distinct GitHub accounts and token files: reader, reviewer and fixer. An adjudicator comment account is optional and must be distinct too.
 

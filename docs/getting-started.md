@@ -9,7 +9,7 @@ This guide installs one loop for one repository, verifies isolation before produ
 | Prerequisite | What to prepare | Why it matters |
 | --- | --- | --- |
 | Linux | Install `bwrap` from your distribution and enable working unprivileged user namespaces | Every seat turn uses bubblewrap; native macOS is unsupported. A Linux VM must run both Hermes and the plugin, not just hold the repository |
-| Hermes | Manifest requires >=0.21.0; keep a Git checkout with `run_agent.py`, `.git`, and a venv containing `bin/hermes` and `bin/python` | The isolated runtime mounts a filtered Hermes source snapshot and the environment; a desktop installation alone is not proof these paths exist |
+| Hermes | Manifest requires >=0.21.5; keep a Git checkout with `run_agent.py`, `.git`, and a venv containing `bin/hermes` and `bin/python` | The isolated runtime mounts a filtered Hermes source snapshot and the environment; a desktop installation alone is not proof these paths exist |
 | Python runtime | Directory containing the venv interpreter's target and resolved installation | Mounting only the venv can leave its Python symlink broken |
 | Rust | Actual toolchain directory with `bin/cargo` | Runtime verification expects it even if your first PR is not Rust; the rustup proxy directory is not the toolchain |
 | Gateway | Your public HTTPS origin, with webhook reception working | GitHub must reach your Hermes gateway; there is no shared host |

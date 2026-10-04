@@ -10,7 +10,7 @@ description: >-
 author: Jeremy Coe
 homepage: https://github.com/coe0718/hermes-review-loop
 license: MIT
-requires_hermes: ">=0.21.0"
+requires_hermes: ">=0.21.5"
 platforms:
   # Linux only: every seat turn runs in bubblewrap (user namespaces), which macOS lacks.
   - linux

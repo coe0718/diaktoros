@@ -88,6 +88,31 @@ jobs:
         if: matrix.hermes == 'pinned' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: python plugin/.github/scripts/plugin_guard.py hermes plugin
 
+  # The catalog's admission check, run here so a submission is never its first run: the plugin
+  # catalog's CI clones the pinned commit and runs `hermes plugins validate` — manifest,
+  # requires_hermes, a load in isolation, declared capabilities against what register() really
+  # registers, dependencies (none here) and the security scan. It runs Hermes's own reusable
+  # action from a checkout at HERMES_PINNED (#268): `uses:` takes no expressions, so a local path
+  # keeps the pin in one place without keeping a copy of the action's steps that could drift.
+  plugin-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: plugin
+      - uses: actions/checkout@v7
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ env.HERMES_PINNED }}
+          path: hermes
+          sparse-checkout: .github/actions/plugin-validate
+          fetch-depth: 1
+      - name: Validate the plugin as the catalog does
+        uses: ./hermes/.github/actions/plugin-validate
+        with:
+          path: plugin
+          hermes-ref: ${{ env.HERMES_PINNED }}
+
   # The suite runs in two modes, and they do not agree on every check. With Hermes importable a
   # seat's model resolves for real and stored cron expressions are validated — the mode every
   # installed machine is in, and not the one a stdlib-only image hands you. Only the other mode was
