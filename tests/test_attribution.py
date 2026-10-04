@@ -352,6 +352,19 @@ class Cli(unittest.TestCase):
         rc, out = self.cli("status", "--loop", LOOP_ID)
         self.assertIn("signed:     on", out)
 
+    def test_apply_saves_a_form_change_to_attribution_alone(self):
+        """The form's switch is a change apply must see, not "already matches"."""
+        self.assertEqual(self.init()[0], 0)
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"attribution": False})
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("already matches", out)
+        self.assertIs(self.written()["attribution"], False)
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"attribution": False})
+        self.assertIn("already matches", out)
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"attribution": True})
+        self.assertEqual(rc, 0, out)
+        self.assertIs(self.written()["attribution"], True)
+
 
 if __name__ == "__main__":
     unittest.main()
