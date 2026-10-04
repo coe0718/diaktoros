@@ -170,6 +170,19 @@ class Filing(Base):
         self.assertEqual(self.posts, [])
         self.assertTrue(self.send(server, title="ok", body="b", labels=["P3"])["ok"])
 
+    def test_a_label_outside_the_triage_list_is_refused_with_nothing_filed(self):
+        # The allowlist is what stops a finding being labelled into the fixer's queue.
+        _, run_id = self.run_row()
+        server = self.broker(run_id)
+        for labels in (["P0"], ["wontfix"], ["bug", "fix-me"], ["ready-for-fix"]):
+            with self.subTest(labels=labels):
+                answer = self.send(server, title="t", body="b", labels=labels)
+                self.assertFalse(answer["ok"], answer)
+                self.assertIn("triage list", json.dumps(answer))
+        self.assertEqual(self.posts, [])
+        with Supervisor(self.db)._connect() as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM filed_issues").fetchone()[0], 0)
+
     def test_one_title_per_pr_and_three_per_review(self):
         _, run_id = self.run_row()
         server = self.broker(run_id)
