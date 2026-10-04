@@ -84,6 +84,17 @@ CREATE TABLE IF NOT EXISTS review_receipts (
  generation TEXT NOT NULL, principal_id INTEGER NOT NULL,
  review_id INTEGER, verdict TEXT, created REAL NOT NULL, confirmed REAL
 );
+-- Issues a reviewer filed from its issue-tier findings (#247), recorded BEFORE the POST. One
+-- title per PR (title_key, normalized), so a retry or a later round never files the same finding
+-- twice; depth is the lineage: 1 for a finding on a person's PR, parent + 1 for a finding on a
+-- PR that fixed a filed issue. state: recorded → posted (issue_number), denied, or uncertain.
+CREATE TABLE IF NOT EXISTS filed_issues (
+ run_id TEXT NOT NULL REFERENCES runs(id), seq INTEGER NOT NULL, repo TEXT NOT NULL,
+ pr INTEGER NOT NULL, head TEXT NOT NULL, title TEXT NOT NULL, title_key TEXT NOT NULL,
+ depth INTEGER NOT NULL, state TEXT NOT NULL, issue_number INTEGER, error TEXT,
+ created REAL NOT NULL, updated REAL NOT NULL,
+ PRIMARY KEY (run_id, seq), UNIQUE (repo, pr, title_key)
+);
 -- Facts about the ledger itself for the operator outbox, e.g. that it vanished and was
 -- recreated empty. Delivered once by notify(), claim-before-send like every other notice.
 CREATE TABLE IF NOT EXISTS ledger_events (
@@ -725,6 +736,12 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
     comments, note = None, ''
     if seat == 'reviewer':
         facts['round'] = len(counted) + 1 if counted is not None else 'unknown (reviews unreadable)'
+        # The labels a filed issue may carry (#247): the loop's triage list, the same allowlist
+        # the broker enforces.
+        allowed = (loop.get('triage') or {}).get('labels') or []
+        facts['issue_labels'] = (('this list only: ' + ', '.join(f'`{x}`' for x in allowed))
+                                 if allowed else 'none (this loop has no label list: file '
+                                 'without labels)')
         comments, error = gh.issue_comments_read(loop, row['pr'])
         if comments is None:
             # A review can still be done without them; say so rather than imply there are none.
@@ -1540,6 +1557,52 @@ class Supervisor:
             con.execute('UPDATE triage_results SET state=?,error=COALESCE(?,error),'
                         'comment_id=COALESCE(?,comment_id),updated=? WHERE run_id=?',
                         (state, error, comment_id, time.time(), run_id))
+
+    def record_filed_issue(self, run_id: str, repo: str, number: int, head: str, title: str,
+                           depth: int, limit: int) -> int:
+        """Durably record one issue a live reviewer run may file (#247), before the POST.
+
+        Returns its sequence number in the run. Refused (``ValueError``) for any run but a live
+        reviewer on this PR and head, past ``limit`` issues in the run, or for a title already
+        filed on this PR (normalized) — so neither a retry nor a later round files it twice.
+        """
+        key = " ".join(title.casefold().split())
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            row = con.execute('SELECT repo,pr,head,seat,state,launch_intent FROM runs WHERE id=?',
+                              (run_id,)).fetchone()
+            if (row is None or (row['repo'], row['pr'], row['head'], row['seat']) !=
+                    (repo, number, head, 'reviewer') or row['launch_intent'] is None
+                    or row['state'] not in ('launching', 'running')):
+                raise ValueError('reviewer run identity unavailable')
+            if con.execute('SELECT 1 FROM filed_issues WHERE repo=? AND pr=? AND title_key=?',
+                           (repo, number, key)).fetchone():
+                raise ValueError('an issue with this title was already filed from this PR')
+            count = con.execute('SELECT COUNT(*) FROM filed_issues WHERE run_id=?',
+                                (run_id,)).fetchone()[0]
+            if count >= limit:
+                raise ValueError(f'at most {limit} issues per review')
+            now = time.time()
+            con.execute('INSERT INTO filed_issues(run_id,seq,repo,pr,head,title,title_key,depth,'
+                        'state,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                        (run_id, count + 1, repo, number, head, title, key, depth, 'recorded',
+                         now, now))
+            con.execute('COMMIT')
+            return count + 1
+
+    def filed_issue_status(self, run_id: str, seq: int, state: str, *,
+                           issue_number: int | None = None, error: str | None = None) -> None:
+        with self._connect() as con:
+            con.execute('UPDATE filed_issues SET state=?,issue_number=COALESCE(?,issue_number),'
+                        'error=COALESCE(?,error),updated=? WHERE run_id=? AND seq=?',
+                        (state, issue_number, error, time.time(), run_id, seq))
+
+    def filed_depth(self, repo: str, issue_number: int) -> int | None:
+        """The lineage depth of an issue a seat filed, or None for one a person opened."""
+        with self._connect() as con:
+            row = con.execute('SELECT depth FROM filed_issues WHERE repo=? AND issue_number=?',
+                              (repo, issue_number)).fetchone()
+        return row['depth'] if row is not None else None
 
     def record_issue_fix(self, run_id: str, repo: str, number: int, base: str, kind: str,
                          branch: str) -> None:

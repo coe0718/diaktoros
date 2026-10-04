@@ -39,10 +39,10 @@ def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
     if type(number) is not int or number <= 0 or not _SHA.fullmatch(head):
         raise BrokerDenied("invalid PR number or head SHA")
     if role not in ("reviewer", "fixer") or operation not in ("review", "request_review", "push",
-                                                              "answers"):
+                                                              "answers", "file_issue"):
         raise BrokerDenied("unsupported role or operation")
     if (role, operation) not in (("reviewer", "review"), ("fixer", "request_review"), ("fixer", "push"),
-                                 ("fixer", "answers")):
+                                 ("fixer", "answers"), ("reviewer", "file_issue")):
         raise BrokerDenied("operation not permitted for role")
     login = ((loop.get("seats") or {}).get(role) or {}).get("login")
     reader = loop.get("read_token")
@@ -449,6 +449,38 @@ def post_issue_comment(loop: dict, *, repo: str, number: int, login: str, body: 
         raise BrokerDenied("GitHub comment write did not return a successful response")
     _audit(loop, repo, number, "", "", "issue_fixer", "issue_comment", login)
     return result["id"]
+
+
+# What a reviewer may file from its issue-tier findings (#247): a few short issues, each a title,
+# a body and labels from the loop's triage list — nothing else (no assignee, no mention target, no
+# milestone, no edit to an existing issue).
+FILED_ISSUES_MAX = 3
+FILED_ISSUE_BODY_MAX = 6 * 1024
+
+
+def lineage_note(*, pr: int, head: str, depth: int) -> str:
+    """The host's line under a filed issue: where it came from, and how deep the chain is."""
+    note = (f"\n\n---\nFiled by the review loop's reviewer from PR #{pr} (head `{head[:7]}`). "
+            f"Lineage depth {depth}.")
+    if depth > 1:
+        note += (" This finding came from reviewing an automatic fix of a filed issue: a person "
+                 "decides whether it goes back to the fixer.")
+    return note
+
+
+def file_issue(loop: dict, *, repo: str, number: int, head: str, login: str, title: str,
+               body: str, labels: list[str], depth: int) -> int:
+    """POST one issue as the reviewer (#247): its number, or raise. Title, body and labels only."""
+    payload = {"title": title, "labels": labels,
+               "body": _signed(loop, body.strip() + lineage_note(pr=number, head=head,
+                                                                 depth=depth),
+                               "reviewer", head)}
+    result = gh.api(loop, f"/repos/{repo}/issues", method="POST", body=payload, login=login)
+    if (not isinstance(result, dict) or type(result.get("number")) is not int
+            or result["number"] <= 0 or "pull_request" in result):
+        raise BrokerDenied("GitHub issue write did not return a successful response")
+    _audit(loop, repo, number, head, "", "reviewer", "file_issue", login)
+    return result["number"]
 
 
 def ruling_comment_body(verdict: str, body: str, *, head: str, turn_key: str, run_id: str,
