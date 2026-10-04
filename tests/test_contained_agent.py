@@ -18,7 +18,9 @@ SOURCE = _home_guard.HERMES_AGENT_SOURCE
 
 class WholeAgentFixture(unittest.TestCase):
     def test_host_capture_bounds_both_streams_and_kills_noisy_child(self):
-        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+        # Runs plain python, not bwrap, so the host's bubblewrap check is answered here.
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory, \
+                mock.patch.object(contained, 'unavailable', return_value=''):
             home = Path(directory)
             for stream in ('stdout', 'stderr'):
                 with self.subTest(stream=stream):
@@ -102,6 +104,13 @@ memory:
             for secret_path in (pat, key):
                 self.assertIn(str(secret_path), tool_output)
             self.assertIn('No such file or directory', tool_output)
+            # The file tool's reader ran too, once per host path and per /proc route to it:
+            # every call got its own answer, and none of them carried a secret (#16).
+            answered = {m.get('tool_call_id') for row in requests
+                        for m in row['request'].get('messages', []) if m.get('role') == 'tool'}
+            file_calls = {f'call_file_read_{i}' for i in range(3 * 3)}
+            self.assertLessEqual(file_calls | {'call_host_read'}, answered)
+            self.assertIn('/proc/self/root' + str(pat), tool_output)
             self.assertIn('test result: ok', tool_output)
 
 

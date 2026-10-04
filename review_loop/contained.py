@@ -33,6 +33,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import selectors
+import shutil
 import signal
 import subprocess
 import sys
@@ -40,6 +41,8 @@ import tempfile
 import time
 
 MAX_CAPTURE = 256 * 1024
+# The only PATH the launch sees: the parent environment is discarded, so bwrap must be here.
+LAUNCH_PATH = "/usr/sbin:/usr/bin:/bin"
 
 # Where each ecosystem's host-prefetched dependency cache (``review_loop.deps``) is mounted, always
 # read-only, and the environment that keeps its tool offline. Fixed here, not by the caller: a
@@ -141,6 +144,19 @@ def _sized_tmpfs(destination: str, size: int) -> list[str]:
 
 class OutputLimitExceeded(RuntimeError):
     """The sandbox produced more output than the control plane will retain."""
+
+
+class ContainmentUnavailable(RuntimeError):
+    """No sandbox can start on this host. The turn is refused, never run without one (#16)."""
+
+
+def unavailable() -> str:
+    """Why no sandbox can start here, with the fix, or "" when bubblewrap is present."""
+    if shutil.which("bwrap", path=LAUNCH_PATH) is None:
+        return (f"bubblewrap (bwrap) is not installed in {LAUNCH_PATH}, and a turn never runs "
+                "without it: install the bubblewrap package, confirm with `hermes review-loop "
+                "selftest`, then `hermes review-loop retry`")
+    return ""
 
 
 def command(*, code: Path, venv: Path, runtime: Path, home: Path,
@@ -298,6 +314,11 @@ def write_etc(directory: Path, uid: int | None = None, gid: int | None = None) -
 
 
 def run(*, timeout: int = 180, **kwargs) -> subprocess.CompletedProcess:
+    # Refused by name before anything is staged or started (#16), not left to a bare
+    # FileNotFoundError from Popen.
+    missing = unavailable()
+    if missing:
+        raise ContainmentUnavailable(missing)
     # Each launch gets its own /etc (#240), written fresh and removed with the run.
     with tempfile.TemporaryDirectory(prefix="rl-etc-") as etc:
         return _run(timeout=timeout, etc_dir=write_etc(Path(etc)), **kwargs)
@@ -308,7 +329,7 @@ def _run(*, timeout: int, **kwargs) -> subprocess.CompletedProcess:
     home = str(Path(kwargs["home"]).resolve(strict=True))
     argv = command(**kwargs)
     process = subprocess.Popen(argv,
-                               env={"PATH": "/usr/sbin:/usr/bin:/bin", "HOME": home,
+                               env={"PATH": LAUNCH_PATH, "HOME": home,
                                     "HERMES_HOME": home},
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=True)

@@ -18,13 +18,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         messages = request.get('messages', [])
         has_tool_result = any(m.get('role') == 'tool' for m in messages)
         if not has_tool_result:
-            # A model-requested malicious tool call: test the actual Hermes dispatcher.
+            # Model-requested malicious tool calls: test the actual Hermes dispatcher, through
+            # both toolsets the seat gets (#16): the shell, and the file tool's own reader.
             host_paths = json.load(open('/home/agent/host-paths.json'))
-            command = ('cat ' + ' '.join(host_paths) + '; '
+            # Traversal: the same host paths reached through /proc's view of a root.
+            routed = [prefix + path for path in host_paths
+                      for prefix in ('/proc/self/root', '/proc/1/root')]
+            command = ('cat ' + ' '.join(host_paths + routed) + '; '
                        'git credential fill </dev/null; cargo test --offline')
+            calls = [('call_host_read', 'terminal', {'command': command})]
+            calls += [(f'call_file_read_{i}', 'read_file', {'path': path})
+                      for i, path in enumerate(host_paths + routed)]
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
-                'id': 'call_host_read', 'type': 'function', 'function': {
-                    'name': 'terminal', 'arguments': json.dumps({'command': command})}}]}
+                'id': call_id, 'type': 'function', 'function': {
+                    'name': name, 'arguments': json.dumps(arguments)}}
+                for call_id, name, arguments in calls]}
             finish = 'tool_calls'
         else:
             message = {'role': 'assistant', 'content': 'FIXTURE_DONE'}
