@@ -199,6 +199,7 @@ tail; worker stderr is beside the ledger in `.workers.log` with rotation.
 | Transient pre-write failure | Safe bounded retry/backoff | Fix service/read failure; allow next armed sweep |
 | Retry limit reached | Automatic budget exhausted | Fix cause, then operator retry if write-free |
 | Killed at turn budget | Whole turn exceeded recorded budget | Diagnose build/model time; raise appropriate seat budget before safe retry |
+| `turn exited with status 1`, output tail ends in a plan or summary with "no write" | The agent used its step or model-call cap (`trusted_turn.STEP_CAPS`) before writing; each retry starts from scratch | Read the tail: a task too large for one turn needs a narrower issue or review finding, not more retries |
 | 429 with reset time | Usage window closed | Wait until named reset; no retry spent |
 | Bare 429 without reset | No reliable window information | Ordinary failure/backoff, not guaranteed reset scheduling |
 | Daily cap reached | Starts delayed to local midnight | Wait or explicitly change cap; don't erase pacing ledger |

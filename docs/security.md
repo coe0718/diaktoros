@@ -102,7 +102,7 @@ Blocking control files is also not a guarantee that allowed code is harmless: or
 
 ## Inference policy and DirectSDK
 
-`inference_proxy.InferenceCapability` owns authentication and host-selected upstream/model. It enforces bounded request/response framing (1,000,000 and 4,000,000 bytes), a production quota of 32 calls and at most 8 concurrent connections. Authentication/framing headers are not accepted from the sandbox; allowed noncredential headers depend on the wire contract. HTTP upstream redirects are not followed. OAuth refresh and its retry happen in the host.
+`inference_proxy.InferenceCapability` owns authentication and host-selected upstream/model. It enforces bounded request/response framing (1,000,000 and 4,000,000 bytes), a per-turn model-call quota (32 for the reviewer, adjudicator and triage seats; 100 for the fixer and issue-fixer seats, which also get 80 agent steps instead of 24 — `trusted_turn.STEP_CAPS`) and at most 8 concurrent connections. The turn budget bounds every seat's wall clock regardless. Authentication/framing headers are not accepted from the sandbox; allowed noncredential headers depend on the wire contract. HTTP upstream redirects are not followed. OAuth refresh and its retry happen in the host.
 
 | Wire mode | Local endpoint | Output policy |
 |---|---|---|
