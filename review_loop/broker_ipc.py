@@ -786,6 +786,16 @@ class RunBroker:
             raise ProtocolError("run configuration changed")
         triage = current.get("triage") or {}
         allowed = {name.casefold(): name for name in triage.get("labels") or []}
+        # The fix label is a maintainer's hand-off to the fixer: a reviewer applying it would
+        # close the chain with no person in it. Refused here, on its own, rather than resting on
+        # normalize_triage keeping it out of triage.labels (#298).
+        fix = str(triage.get("fix_label") or "").casefold()
+        if fix:
+            allowed.pop(fix, None)
+            if isinstance(labels, list) and any(isinstance(x, str) and x.casefold() == fix
+                                                for x in labels):
+                raise ProtocolError("the fix label is a maintainer's hand-off to the fixer; a "
+                                    "reviewer never applies it — nothing was filed")
         if (not isinstance(labels, list) or not all(isinstance(x, str) for x in labels)
                 or len(labels) > int(triage.get("max_labels") or 3)
                 or any(x.casefold() not in allowed for x in labels)):
