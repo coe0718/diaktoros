@@ -12,6 +12,10 @@ gateway and no network. Every ``hermes review-loop …`` line inside a fenced co
 (placeholders normalised, ``#`` comments dropped) and parsed. ``python -m review_loop.<module>``
 and ``scripts/<name>.py`` references must exist, with the generated watchdog shim as the one
 exception — and it is named by the CLI rather than hard-coded here.
+
+The other direction too (#262): every ``docs/<file>.md#<anchor>`` the code, scripts, skill or
+manifest points a reader at must name a file that exists and a heading in it. A docs rewrite once
+deleted a section an error message linked to, and CI stayed green.
 """
 
 from __future__ import annotations
@@ -56,6 +60,43 @@ def _doc_files() -> list[pathlib.Path]:
     files = [ROOT / name for name in DOCS]
     files += sorted((ROOT / "docs").glob("*.md"))
     return [path for path in files if path.is_file()]
+
+
+# Where a reader is sent to the docs from outside them: error messages, help, the skill.
+LINK_SOURCES = ("review_loop/*.py", "scripts/*.py", "__init__.py", "skill/SKILL.md", "plugin.yaml")
+_DOC_LINK = re.compile(r"\bdocs/([\w-]+\.md)(?:#([\w-]+))?")
+
+
+def _slug(heading: str) -> str:
+    """GitHub's anchor for a heading: lowercase, punctuation dropped, each space a hyphen."""
+    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+
+
+def _anchors(path: pathlib.Path) -> set[str]:
+    """Every heading anchor in a Markdown file, with GitHub's -1, -2 suffixes for repeats."""
+    seen: dict[str, int] = {}
+    fenced = False
+    for line in path.read_text().splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        match = None if fenced else re.match(r"#{1,6}\s+(.+?)\s*#*\s*$", line)
+        if match:
+            slug = _slug(match.group(1))
+            count = seen.get(slug, 0)
+            seen[slug] = count + 1
+            if count:
+                seen[f"{slug}-{count}"] = 1
+    return set(seen)
+
+
+def _link_problem(target: str, anchor: str | None) -> str | None:
+    path = ROOT / "docs" / target
+    if not path.is_file():
+        return "no such file"
+    if anchor and anchor not in _anchors(path):
+        return f"no heading #{anchor}"
+    return None
 
 
 def _invocations(path: pathlib.Path):
@@ -168,6 +209,30 @@ def group_docs() -> None:
                                            text))):
             check(f"{path.relative_to(ROOT)}: scripts/{script} exists",
                   (ROOT / "scripts" / script).is_file() or script == cli_module.SHIM_NAME, True)
+
+
+    # Links into the docs from outside them (#262). First the checker: GitHub's slug rule, and a
+    # dead anchor and a missing file both caught — a sweep that cannot fail proves nothing.
+    check("a heading's anchor follows GitHub's slug rule",
+          _slug("The loop stops with `RealHomeError` — or not?"),
+          "the-loop-stops-with-realhomeerror--or-not")
+    sample = TMP / "anchor-sample.md"
+    sample.write_text("# Title\n## Retry\n```\n# not a heading\n```\n## Retry\n")
+    check("  repeats get -1 and fenced lines are not headings",
+          _anchors(sample), {"title", "retry", "retry-1"})
+    check("a link to a deleted section is caught",
+          _link_problem("operations.md", "no-such-section"), "no heading #no-such-section")
+    check("  and a link to a missing file", _link_problem("gone.md", None), "no such file")
+
+    links: set[tuple[str, str, str | None]] = set()
+    for pattern in LINK_SOURCES:
+        for path in sorted(ROOT.glob(pattern)):
+            for target, anchor in _DOC_LINK.findall(path.read_text()):
+                links.add((str(path.relative_to(ROOT)), target, anchor or None))
+    check("the code still links into the docs", any(a for _, _, a in links), True)
+    for rel, target, anchor in sorted(links, key=lambda link: (link[0], link[1], link[2] or "")):
+        shown = f"docs/{target}" + (f"#{anchor}" if anchor else "")
+        check(f"{rel} → {shown} resolves", _link_problem(target, anchor), None)
 
 
 GROUPS = {
