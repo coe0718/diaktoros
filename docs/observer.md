@@ -64,6 +64,14 @@ and a PR link. It does not contain the diff, review body, GitHub credentials or 
 | `ruling` | Host recorded ACCEPT/REJECT/RESPEC | Code merged or the cap was reset |
 | `stall` | Watchdog decided a stall warrants reporting | The watchdog repaired the underlying defect |
 | `closed` | PR merged/closed and cleanup attempted | Cleanup reclaimed disk, or this was a loop-owned PR |
+| `triaged` | Issue triage ended: labels applied, none fit, skipped, denied or uncertain (links the issue) | A person agrees with the labels |
+| `fixing` | A maintainer's fix label handed the issue to the fixer, or the handoff was held and why | The fix turn has started |
+| `fixed` | The issue-fix write ended: PR opened (and review requested), a could-not-fix comment, or an uncertain write | The PR passes review |
+| `failed` | An isolated run's first failed attempt (with the retry time) and its terminal `failed`/`uncertain` state; a usage-window hold is not a failure | The cause is transient, or a retry will work |
+
+The four last events were added after the first eight. A feed with an explicit `events` list
+does not get them until they are added to it (`set --observer-events …`); a feed with no list
+gets every event.
 
 Opened/handoff/verdict next hints describe queue admission or holds, not child start.
 Missing runtime and disabled fixer pushes are common holds; concurrency, pacing and

@@ -59,10 +59,20 @@ def fix(loop: dict, payload: dict) -> None:
     try:
         outcome = gate.enqueue_isolated(loop, "issue_fixer", number, base, turn_key="issue-fix")
     except Exception as exc:
-        silence(f"issue #{number} fix held: isolated worker unavailable: "
-                f"{type(exc).__name__}: {exc}")
+        reason = f"isolated worker unavailable: {type(exc).__name__}: {exc}"
+        _fix_notice(loop, number, base, f"held — {reason}")
+        silence(f"issue #{number} fix held: {reason}")
     log(f"issue #{number} handed to the fixer at {base[:7]}: {outcome}")
+    if outcome in ("enqueued", "rearmed", "pending"):
+        _fix_notice(loop, number, base, f"fix turn queued from {loop['base']} at {base[:7]}")
     silence()
+
+
+def _fix_notice(loop: dict, number: int, base: str, outcome: str) -> None:
+    """The observer's "handed to the fixer" notice (#231): once per issue and base."""
+    from review_loop import observer, state as state_mod
+    observer.notify(loop, state_mod.state_for(loop), "fixing", number, base, identity=base,
+                    outcome=outcome, issue=True)
 
 
 def main() -> None:
