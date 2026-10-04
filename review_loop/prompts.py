@@ -222,7 +222,9 @@ What to do:
    the finding is not a fix, and the next round will say so.
 2. Verify your fix in `/work`: build it and run the tests the finding touches. If the host's
    build environment note at the top says dependencies are unavailable, check it by reading and
-   say in your answers that it is unbuilt.
+   say in your answers that it is unbuilt. Only the touched tests, never the whole suite: this
+   turn has a fixed time budget and the PR's CI runs everything. Read large files by the parts
+   you need (`grep -n`, `sed -n`), not whole.
 3. Publish the fix through the broker's push (command below): name the files you changed and
    give a short commit message — the client builds the manifest and checks the limits before
    anything is sent (`--dry-run` checks without sending). A push adds or replaces whole files
@@ -302,7 +304,10 @@ What to do:
 
 1. Understand what the issue asks for and fix it in `/work`. Keep the change to what the issue
    needs. Verify it: build it and run the tests it touches. If the host's build environment note
-   at the top says dependencies are unavailable, check it by reading and say so.
+   at the top says dependencies are unavailable, check it by reading and say so. Only the touched
+   tests, never the whole suite: this turn has a fixed time budget and the PR's CI runs
+   everything. Read large files by the parts you need (`grep -n`, `sed -n`), not whole. Publish
+   once the fix and its tests are done; a turn that runs out of time publishes nothing.
 2. When it is fixed, open the PR through the broker's `open_pr` command (below): name the files
    you changed, a short commit message, a PR title, and a PR description file saying what you
    changed and how you verified it. The host pushes your commit to a new branch `{branch}` from

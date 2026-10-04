@@ -134,6 +134,7 @@ Do not paste PATs into JSON, plugin settings, command arguments, issue text, or 
 | `seats.adjudicator.concurrency` | `1` | Whole number at least `1`; does not inherit loop capacity. |
 | `seats.triage.concurrency` | `1` | Whole number at least `1`; does not inherit loop capacity. |
 | `seats.<seat>.daily_turns` | No cap | JSON integer 1–1000 for `reviewer`, `fixer`, `adjudicator`, or `triage`. Booleans and numeric strings are refused. Omit to remove the cap; zero is not a valid stored cap. |
+| `seats.<seat>.max_steps` | 24 (reviewer, adjudicator, triage); 80 (fixer) | Agent steps one turn may take, JSON integer 8–200, for any of those four seats. An issue fix takes the fixer's value. The turn's model-call quota follows (`steps + max(8, steps/4)`: 24 → 32, 80 → 100, 200 → 250). Set with `set --reviewer-max-steps N` / `--fixer-max-steps N` (0 returns to the default), or in the file for the adjudicator and triage. The turn budget still bounds the wall clock. |
 
 The host run ledger enforces capacity. Every isolated turn receives its own exact-head export and sandbox, so increasing concurrency does not permit a shared writable checkout. One PR is not authorized for conflicting seats at once. Legacy files that explicitly pin each working seat to `1` retain those pins; `status` can explain why raising loop `concurrency` alone did not increase them.
 
@@ -226,7 +227,7 @@ Enabling is **host-operator consent**, not proof that a PR owner or repository m
 | `seats.adjudicator.turn_budget_s` | Loop budget | Ruling-turn budget override. |
 | `seats.adjudicator.daily_turns` | No cap | Optional local-day cap, 1–1000. |
 
-`seats.adjudicator` accepts only `login`, `concurrency`, `turn_budget_s`, and `daily_turns`. Its profile and enabling route belong in the separate `adjudicator` block, not in that seat object.
+`seats.adjudicator` accepts only `login`, `concurrency`, `turn_budget_s`, `daily_turns`, and `max_steps`. Its profile and enabling route belong in the separate `adjudicator` block, not in that seat object.
 
 ```json
 {
@@ -332,7 +333,7 @@ Delivery is durably keyed by transition. Only definite **pre-POST** failures wit
 | `seats.triage.turn_budget_s` | Loop budget | 60–14400 seconds. |
 | `seats.triage.daily_turns` | No cap | JSON integer 1–1000. |
 
-Only the listed keys are allowed in `triage`. `seats.triage` accepts only capacity, turn budget, and daily cap; put its identity in `triage.login` and model profile in `triage.profile`.
+Only the listed keys are allowed in `triage`. `seats.triage` accepts only capacity, turn budget, daily cap, and `max_steps`; put its identity in `triage.login` and model profile in `triage.profile`.
 Concurrency and turn budget must be edited in the loop file; the `triage` command exposes
 `--daily-turns` but no capacity or budget flags.
 
@@ -344,6 +345,7 @@ An authorized handoff uses the runtime seat `issue_fixer`, but that seat has no 
 - Capacity is one issue fix at a time, independently of fixer concurrency.
 - Budget comes from loop `turn_budget_s`, **not** `seats.fixer.turn_budget_s`.
 - No daily cap is inherited from `seats.fixer.daily_turns`.
+- Agent steps **are** the fixer's: `seats.fixer.max_steps` (default 80) applies to issue fixes too.
 - It creates only a fresh branch `review-loop/issue-N`, not an existing branch.
 - It requires enabled triage, a configured `fix_label`, and `unattended_fixer_push: true`.
 

@@ -26,7 +26,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from review_loop import broker_ipc, contained, trusted_turn  # noqa: E402
+from review_loop import broker_ipc, config, contained, trusted_turn  # noqa: E402
 
 REPO = "acme/widgets"
 HEAD = "a" * 40
@@ -375,25 +375,35 @@ class ProductionLaunch(Base):
     def test_each_role_gets_its_own_step_and_model_call_caps(self):
         """A writing seat gets room to find its way into the code; a judging seat does not (#271).
 
-        The agent's step cap is on Hermes's command line, the model-call cap on the host proxy,
-        and both come from the one table, for every role run_turn accepts."""
-        self.assertEqual(set(trusted_turn.STEP_CAPS), set(trusted_turn.TOOLS))
-        for role, (steps, calls) in trusted_turn.STEP_CAPS.items():
+        The agent's step cap is on Hermes's command line, the model-call cap on the host proxy;
+        both come from the seat's ``max_steps`` setting or its role default, for every role."""
+        self.assertEqual(set(config.DEFAULT_MAX_STEPS), set(trusted_turn.TOOLS))
+        for role, default in config.DEFAULT_MAX_STEPS.items():
             with self.subTest(role=role):
-                seen = self.launch(role)
-                entry = seen["kwargs"]["entry"]
-                hermes = entry[entry.index("/opt/venv/bin/hermes"):]
-                self.assertEqual(hermes.count("--max-turns"), 1, hermes)
-                self.assertEqual(hermes[hermes.index("--max-turns") + 1], str(steps))
-                self.assertEqual(seen["quota"], calls)
-                self.assertGreaterEqual(calls, steps)
-                # The proxy refuses a quota above its ceiling at construction: a table entry it
-                # cannot grant fails every turn of that role (caught in the sandbox tests).
-                self.assertLessEqual(calls, trusted_turn.inference_proxy.MAX_CALLS)
-        # The judging seats keep the caps they shipped with; the writing seats get more.
-        self.assertEqual(trusted_turn.STEP_CAPS["reviewer"], (24, 32))
+                self.assertEqual(self.caps(role), (default, config.model_calls(default)))
+        self.assertEqual(config.DEFAULT_MAX_STEPS["reviewer"], 24)
+        self.assertEqual(config.model_calls(24), 32)              # what every seat shipped with
         for role in ("fixer", "issue_fixer"):
-            self.assertGreater(trusted_turn.STEP_CAPS[role][0], trusted_turn.STEP_CAPS["reviewer"][0])
+            self.assertGreater(config.DEFAULT_MAX_STEPS[role], config.DEFAULT_MAX_STEPS["reviewer"])
+        # The proxy refuses a quota above its ceiling at construction: the largest setting a seat
+        # may take must still be one it grants, or every turn of that seat would fail.
+        self.assertLessEqual(config.model_calls(config.MAX_STEPS_RANGE[1]),
+                             trusted_turn.inference_proxy.MAX_CALLS)
+
+    def test_a_seat_setting_moves_its_caps_and_an_issue_fix_takes_the_fixers(self):
+        self.loop["seats"] = {"reviewer": {"login": "rev", "max_steps": 40},
+                              "fixer": {"login": "fix", "max_steps": 150}}
+        self.assertEqual(self.caps("reviewer"), (40, 50))
+        self.assertEqual(self.caps("fixer"), (150, 187))
+        self.assertEqual(self.caps("issue_fixer"), (150, 187))
+        self.assertEqual(self.caps("adjudicator"), (24, 32))     # unset: its role default
+
+    def caps(self, role: str) -> tuple[int, int]:
+        seen = self.launch(role)
+        entry = seen["kwargs"]["entry"]
+        hermes = entry[entry.index("/opt/venv/bin/hermes"):]
+        self.assertEqual(hermes.count("--max-turns"), 1, hermes)
+        return int(hermes[hermes.index("--max-turns") + 1]), seen["quota"]
 
 
 class EnvironmentScrub(Base):
