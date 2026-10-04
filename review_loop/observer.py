@@ -50,7 +50,12 @@ from .util import log, now_iso
 
 # The transitions an observer may subscribe to. These names are the loop's vocabulary for what
 # happened; the same strings are what `--observer-events` accepts and what the ledger stores.
-EVENTS = ("opened", "handoff", "verdict", "approved", "escalation", "ruling", "stall", "closed")
+EVENTS = ("opened", "handoff", "verdict", "approved", "escalation", "ruling", "stall", "closed",
+          "triaged", "fixing", "fixed", "failed")
+# The issue-side events (#231) name an issue, not a PR: their link is /issues/N and they carry no
+# head. ``failed`` (any isolated run's first failed attempt, and its final state) names whichever
+# the run was about.
+ISSUE_EVENTS = frozenset({"triaged", "fixing", "fixed"})
 
 # The batched form: one message for many transitions (see ``observer.digest_min``).
 DIGEST_EVENT = "digest"
@@ -58,12 +63,15 @@ DIGEST_EVENT = "digest"
 # How a transition reads in a chat line. Derived from the event, never from the payload: an
 # observer that phrased things differently per call site would be a second, wrong source of truth.
 EMOJI = {"opened": "📬", "handoff": "🔧", "verdict": "🔍", "approved": "✅",
-         "escalation": "⚠️", "ruling": "⚖️", "stall": "⏳", "closed": "🧹", "digest": "🗂"}
+         "escalation": "⚠️", "ruling": "⚖️", "stall": "⏳", "closed": "🧹", "digest": "🗂",
+         "triaged": "🏷", "fixing": "🛠", "fixed": "📦", "failed": "❌"}
 LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review requested",
          "verdict": "review posted", "approved": "approved",
          "escalation": "loop stopped — cap spent", "ruling": "adjudicator ruled",
          "stall": "stalled",
-         "closed": "PR closed"}
+         "closed": "PR closed",
+         "triaged": "issue triaged", "fixing": "issue handed to the fixer",
+         "fixed": "issue fix", "failed": "run failed"}
 
 # A stale claim may have reached the gateway before its sender died. Never replay it:
 # without a receiver-side idempotency guarantee, a replay can ping twice.
@@ -364,14 +372,16 @@ def verified_turn(loop: dict, st, number, head: str, claim: str) -> str:
 
 
 def summarize(loop: dict, event: str, number, head: str, *, outcome: str = "",
-              next_turn: str = "", round_no=None, actor: str = "") -> str:
+              next_turn: str = "", round_no=None, actor: str = "", issue: bool = False) -> str:
     """The one-line summary of a transition: seat/event, head, outcome, next turn.
 
     No review body, no diff, no token, no secret — a ping carries the facts a person needs to
     decide whether to look, and the link to look at. Anything longer belongs on the PR.
     """
     emoji = EMOJI.get(event, "•")
-    parts = [f"{emoji} [{loop.get('id')}] #{number} `{(head or '')[:7]}` {LABEL.get(event, event)}"]
+    # An issue has no head of its own: the notice names the issue alone.
+    at = "" if issue else f" `{(head or '')[:7]}`"
+    parts = [f"{emoji} [{loop.get('id')}] #{number}{at} {LABEL.get(event, event)}"]
     if outcome:
         parts.append(f" — {outcome}")
     if actor:
@@ -434,7 +444,12 @@ def verified_base_sha(loop: dict, pr: object) -> str:
     return ""
 
 
-def block_for(loop: dict, event: str, number, head: str, text: str) -> dict:
+def link(loop: dict, number, issue: bool = False) -> str:
+    """Where a notice points: the issue for an issue-side notice, else the PR."""
+    return gh.issue_url(loop, number) if issue else gh.pr_url(loop, number)
+
+
+def block_for(loop: dict, event: str, number, head: str, text: str, url: str = "") -> dict:
     """The ``_observer`` block the route prompt renders (``{_observer.message}``).
 
     Shaped like the ``_loop`` block the seats get, and for the same reason: the gateway renders
@@ -442,7 +457,7 @@ def block_for(loop: dict, event: str, number, head: str, text: str) -> dict:
     the message must not carry (credentials, diffs) may be.
     """
     return {"event": event, "loop": loop.get("id"), "pr": number, "head": head,
-            "url": gh.pr_url(loop, number), "at": now_iso(), "message": text}
+            "url": url or gh.pr_url(loop, number), "at": now_iso(), "message": text}
 
 
 # -- delivery ------------------------------------------------------------------
@@ -501,7 +516,7 @@ def _receipt(st, key: str, delivered: bool, error: str = "", uncertain: bool = F
 
 def notify(loop: dict, st, event: str, number, head: str = "", *, identity: object = "",
            outcome: str = "", next_turn: str = "", round_no=None, actor: str = "",
-           base_sha: str = "") -> bool:
+           base_sha: str = "", issue: bool | None = None) -> bool:
     """Send one notice about one transition. Best effort, never fatal, never a gate.
 
     Returns ``True`` only when *this* call got a receipt. Every other outcome — no destination,
@@ -519,10 +534,13 @@ def notify(loop: dict, st, event: str, number, head: str = "", *, identity: obje
 
         # The caller's next turn is a claim, not evidence: the gate's hold path calls on_queued
         # too. Put a "queued" claim to the queue the gate just wrote before it reaches a phone.
+        if issue is None:
+            issue = event in ISSUE_EVENTS
         turn = verified_turn(loop, st, number, head, next_turn)
         summary = summarize(loop, event, number, head, outcome=outcome, next_turn=turn,
-                            round_no=round_no, actor=actor)
-        text = f"{summary}\n{gh.pr_url(loop, number)}"
+                            round_no=round_no, actor=actor, issue=issue)
+        url = link(loop, number, issue)
+        text = f"{summary}\n{url}"
         key = key_for(loop, number, head, event, identity)
         queued = bool((loop.get("observer") or {}).get("digest_min"))
         tag = f"{event}-{number}"
@@ -545,7 +563,7 @@ def notify(loop: dict, st, event: str, number, head: str = "", *, identity: obje
                                     "event": event, "number": number, "head": head,
                                     "identity": str(identity or ""), "summary": summary,
                                     "base_sha": base_sha,
-                                    "message": text, "url": gh.pr_url(loop, number),
+                                    "message": text, "url": url,
                                     "attempts": 0, "error": "", "at": now}
             if queued:
                 data["entries"][key]["queued_at"] = now
@@ -556,14 +574,14 @@ def notify(loop: dict, st, event: str, number, head: str = "", *, identity: obje
         if queued:
             log(f"observer: queued {event} #{number} for the next digest")
             return False
-        return _deliver(loop, st, key, text, tag, event, number, head, delivery)
+        return _deliver(loop, st, key, text, tag, event, number, head, delivery, url)
     except Exception as exc:
         log(f"observer: {event} notice for #{number} failed: {type(exc).__name__}: {exc}")
         return False
 
 
 def _deliver(loop: dict, st, key: str, text: str, tag: str, event: str, number, head: str,
-             delivery: str = "") -> bool:
+             delivery: str = "", url: str = "") -> bool:
     """POST one rendered notice and record the receipt. The claim already exists in the ledger."""
     if event == "approved" and " · next: you merge" in text:
         # An approval can be dismissed between the gate's check and this POST. A merge
@@ -594,8 +612,8 @@ def _deliver(loop: dict, st, key: str, text: str, tag: str, event: str, number, 
                 and latest and gh.review_state(latest) == "APPROVED"
                 and str(latest.get("id")) == entry.get("identity")):
             text = _without_next_turn(text)
-    delivered, error, uncertain = _post(loop, block_for(loop, event, number, head, text), tag,
-                                        delivery)
+    delivered, error, uncertain = _post(loop, block_for(loop, event, number, head, text, url),
+                                        tag, delivery)
     _receipt(st, key, delivered, error, uncertain)
     if delivered:
         log(f"observer: notified {event} #{number} at {(head or '')[:7]}")

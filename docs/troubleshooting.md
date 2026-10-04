@@ -378,7 +378,7 @@ hermes review-loop retry --loop "<loop-id>" --pr "<issue-number>" --seat triage
 ```
 
 Here `--pr` is the issue number; `--seat triage` restricts the retry. Recorded write
-results and uncertain outcomes cannot be re-armed. Triage has no observer notices.
+results and uncertain outcomes cannot be re-armed. With the observer's `triaged` event subscribed, every triage result is announced, `nothing` included.
 
 ## A fix label was applied and no PR came
 

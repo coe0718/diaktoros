@@ -1615,8 +1615,9 @@ class Supervisor:
             loop_id = (config.by_repo(row['repo']) or {}).get('id') or loop_id
         except Exception:
             pass                      # a notice must go out even if the config is unreadable
+        kind = "issues" if row['seat'] in ('triage', 'issue_fixer') else "pull"
         head = (f"⚠️ Review-loop worker {current['state']}: "
-                f"https://github.com/{row['repo']}/pull/{row['pr']} "
+                f"https://github.com/{row['repo']}/{kind}/{row['pr']} "
                 f"seat={row['seat']} head={row['head']} run={row['id']}. "
                 f"Reason: {current['error'] or 'worker outcome unavailable'}.")
         if current['detail']:
@@ -2615,7 +2616,46 @@ class Supervisor:
                 except Exception:
                     pass
             release_seat(claim, state)
+            self.failure_notice(run_id, state)
             self.recover()
+
+    def failure_notice(self, run_id: str, state: str | None) -> None:
+        """The observer's ``failed`` notice (#231): a run's first failed attempt, and its end.
+
+        The watchdog's operator outbox reports a run that ends failed or uncertain; this feed
+        also says so the moment the first attempt fails, while the run still waits to retry,
+        instead of after every retry is spent. One notice per run per kind (its first failure,
+        its terminal state); a usage-window hold is not a failure and is not reported. Facts
+        only: the host-written error, never the turn's own output. Best effort.
+        """
+        if state not in ("waiting", "failed", "uncertain"):
+            return
+        try:
+            with self._connect() as con:
+                row = con.execute("SELECT repo,pr,head,seat,error,retries,retry_at FROM runs "
+                                  "WHERE id=?", (run_id,)).fetchone()
+            if row is None:
+                return
+            if state == "waiting":
+                if (row["retries"] or 0) != 1:
+                    return               # a paced hold (retries unspent), or a later retry
+                when = (time.strftime("%H:%M", time.localtime(row["retry_at"]))
+                        if row["retry_at"] else "soon")
+                outcome = (f"{row['seat']} attempt 1 failed: {row['error']} — retrying at "
+                           f"{when}, up to {MAX_RETRIES} attempts")
+                kind = "first"
+            else:
+                outcome = f"{row['seat']} {state}: {row['error']}"
+                kind = state
+            from . import config, observer, state as state_mod
+            loop = config.by_repo(row["repo"])
+            if loop is None:
+                return
+            observer.notify(loop, state_mod.state_for(loop), "failed", row["pr"], row["head"],
+                            identity=f"{run_id}:{kind}", outcome=outcome[:400],
+                            issue=row["seat"] in ("triage", "issue_fixer"))
+        except Exception:
+            pass                         # a notice never changes the run
 
 
 def main():

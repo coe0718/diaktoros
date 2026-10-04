@@ -648,6 +648,23 @@ class RunBroker:
 
 
     def _issue_fix(self, raw: bytes, request: object) -> object:
+        """The issue fixer's one write, then the observer's notice of how it ended (#231).
+
+        Only a write the ledger recorded is announced: a request refused before that (a bad
+        manifest, a title too long) changed nothing and the seat may resubmit it.
+        """
+        try:
+            return self._issue_fix_write(raw, request)
+        finally:
+            outcome = _issue_fix_outcome(self.scope)
+            if outcome:
+                try:
+                    loop = config.by_repo(self.scope.repo)
+                except Exception:
+                    loop = None
+                _issue_notice(loop, self.scope, "fixed", outcome)
+
+    def _issue_fix_write(self, raw: bytes, request: object) -> object:
         """The issue fixer's one write (#214): a new branch, its PR and the review request — or,
         when it could not fix the issue, one comment on the issue.
 
@@ -747,8 +764,82 @@ class RunBroker:
         return {"accepted": True}
 
 
+def _issue_notice(loop: dict | None, scope: RunScope, event: str, outcome: str) -> None:
+    """The observer's issue-side notice (#231): best effort, once per run (keyed by its id)."""
+    if loop is None:
+        return
+    from . import observer, state as state_mod
+    try:
+        observer.notify(loop, state_mod.state_for(loop), event, scope.number, scope.head,
+                        identity=scope.run_id, outcome=outcome, issue=True)
+    except Exception:
+        pass                     # a notice never changes what was written
+
+
+def _issue_fix_outcome(scope: RunScope) -> str:
+    """The recorded issue-fix write, as a notice says it, or "" when nothing was recorded."""
+    if not scope.run_id or not scope.ledger_db:
+        return ""
+    from .run_supervisor import Supervisor
+    try:
+        with Supervisor(scope.ledger_db, create=False)._connect() as con:
+            row = con.execute("SELECT kind,state,pr_number,comment_id,error FROM issue_fixes "
+                              "WHERE run_id=?", (scope.run_id,)).fetchone()
+    except Exception:
+        return "write recorded; result unreadable — inspect the ledger"
+    if row is None:
+        return ""
+    state, error = row["state"], row["error"]
+    if row["kind"] == "pr" and row["pr_number"]:
+        pr = f"PR #{row['pr_number']} opened"
+        if state == "requested":
+            return f"{pr}, review requested"
+        return pr + (f" ({error})" if error else "")
+    if row["kind"] == "comment" and state == "posted":
+        return "could not fix it: the fixer commented on the issue instead"
+    return f"{state}" + (f": {error}" if error else "") + (
+        " — never replayed; inspect the branch and issue" if state == "uncertain" else "")
+
+
+def _triage_outcome(supervisor, run_id: str) -> str:
+    """The recorded triage result, as a notice says it: the labels, or why there are none."""
+    try:
+        with supervisor._connect() as con:
+            row = con.execute("SELECT state,error,labels,comment_id FROM triage_results "
+                              "WHERE run_id=?", (run_id,)).fetchone()
+    except Exception:
+        return "result unreadable"
+    if row is None:
+        return "no result recorded"
+    state = row["state"]
+    if state == "posted":
+        labels = row["labels"] or ""
+        try:
+            labels = ", ".join(json.loads(labels)) if labels.startswith("[") else labels
+        except ValueError:
+            pass
+        return (f"labelled {labels}" if labels else "commented") + (
+            " + comment" if row["comment_id"] and labels else "")
+    if state == "nothing":
+        return "no allowed label fit; nothing written"
+    return f"{state}" + (f": {row['error']}" if row["error"] else "")
+
+
 def _deliver_triage(launch_loop: dict, scope: RunScope, supervisor, labels: list[str],
                     body: str) -> None:
+    """Write a recorded triage, then tell the observer how it ended (#231)."""
+    try:
+        _write_triage(launch_loop, scope, supervisor, labels, body)
+    finally:
+        try:
+            loop = config.by_repo(scope.repo)
+        except Exception:
+            loop = None
+        _issue_notice(loop, scope, "triaged", _triage_outcome(supervisor, scope.run_id))
+
+
+def _write_triage(launch_loop: dict, scope: RunScope, supervisor, labels: list[str],
+                  body: str) -> None:
     """Write a recorded triage: re-authorize against the live issue, then labels, then comment."""
     try:
         loop = config.by_repo(scope.repo)

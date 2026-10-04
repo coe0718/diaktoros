@@ -272,7 +272,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `observer.route` | None | Required for a hand-written active feed. CLI `init`/`set` can generate `<id>-observe` when only a profile is named. |
 | `observer.profile` | `default` | Hermes profile supplying the delivery destination. |
 | `observer.deliver` | `telegram` | Gateway-supported real delivery target, such as `telegram` or `discord`. `init`/`set` refuse `log`: a delivery-only file/log destination cannot provide the feed. |
-| `observer.events` | All eight events | List or comma/whitespace-separated string. Missing or empty means **all**, not none. Normalization lowercases, deduplicates, and sorts strings. Unknown names remain stored without a misconfiguration warning; unknown-only input silently matches no transitions. Use the event names below. |
+| `observer.events` | All twelve events | List or comma/whitespace-separated string. Missing or empty means **all**, not none. Normalization lowercases, deduplicates, and sorts strings. Unknown names remain stored without a misconfiguration warning; unknown-only input silently matches no transitions. Use the event names below. |
 | `observer.digest_min` | `0` | Positive integer minutes batch notices for a watchdog flush. Unparseable/non-positive values silently normalize to immediate mode, not a misconfigured feed. CLI flags require integers. No explicit upper bound. |
 | `observer.mute` | `false` | Stop delivery while retaining configuration. Use a JSON boolean: this lenient loader uses truthiness, so the string `"false"` is truthy and would mute it. |
 
@@ -286,6 +286,10 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `ruling` | Isolated adjudicator recorded a ruling; the reason also reaches the operator outbox. |
 | `stall` | Watchdog reports a quiet/stuck head. |
 | `closed` | PR merged or abandoned and cleanup attempted; can be emitted for repository PRs outside ordinary author admission. |
+| `triaged` | Issue triage ended (labels, none fit, skipped, denied, uncertain). Links the issue. |
+| `fixing` | Fix label handed an issue to the fixer, or the handoff was held. Links the issue. |
+| `fixed` | Issue-fix write ended: PR opened/review requested, could-not-fix comment, or uncertain. Links the issue. |
+| `failed` | Any isolated run's first failed attempt and its terminal failed/uncertain state. Links the issue for triage and issue-fix runs. |
 
 ```bash
 hermes review-loop set --loop "<loop-id>" --observer-profile "<observer-profile>"

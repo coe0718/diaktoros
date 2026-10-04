@@ -102,7 +102,7 @@ a local credential check does not prove issues-write permission. Triage with no
 
 From an allowlisted author, open a new issue. Check labels/comment on GitHub and the
 ledger below. The model may choose no labels and optionally a comment; `nothing` means neither
-labels nor comment. There is no triage observer notice.
+labels nor comment. The observer's `triaged` notice reports every result, `nothing` included; `fixing`, `fixed` and `failed` cover issue fixes (see [observer](observer.md)).
 A rejected author never reaches the model and costs no triage turn.
 
 ## Turn on issue fixes

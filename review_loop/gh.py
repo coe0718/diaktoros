@@ -356,6 +356,11 @@ def pr_url(loop: dict, number: int) -> str:
     return f"https://github.com/{loop['repo']}/pull/{number}"
 
 
+def issue_url(loop: dict, number: int) -> str:
+    """An issue's canonical web URL: triage and issue-fix notices link here, not to /pull/."""
+    return f"https://github.com/{loop['repo']}/issues/{number}"
+
+
 def reviews_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
     """Read the entire review history, or return unknown without partial results.
 
