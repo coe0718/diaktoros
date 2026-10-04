@@ -158,6 +158,68 @@ class TransportTests(unittest.TestCase):
             upstream.server_close()
             thread.join()
 
+    def test_the_proxys_own_refusals_are_recorded_and_large_requests_fit(self):
+        """Live #312: a review of a 108 KB file died on a bare 400 the provider never sent —
+        the proxy refused a request over its old 1 MB limit and recorded nothing. Now the
+        limit fits a large conversation, and every refusal names itself."""
+        seen = []
+
+        class Upstream(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                seen.append(len(self.rfile.read(int(self.headers['Content-Length']))))
+                data = b'{}'
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+        thread = threading.Thread(target=upstream.serve_forever)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d, \
+                    InferenceCapability(Path(d) / 'cap',
+                                        f'http://127.0.0.1:{upstream.server_port}{PATH}',
+                                        'DUMMY_KEY', model='m', quota=3) as cap:
+                def send(body: bytes) -> int:
+                    conn = _UnixHTTP(str(cap.socket_path))
+                    conn.request('POST', PATH, body=body)
+                    response = conn.getresponse()
+                    response.read()
+                    conn.close()
+                    return response.status
+
+                # 2 MB of conversation: refused before, forwarded now.
+                big = json.dumps({'messages': [{'role': 'user', 'content': 'x' * 2_000_000}]})
+                self.assertEqual(send(big.encode()), 200)
+                self.assertEqual(cap.last_error, '')
+                # Over the limit: refused from the header alone, and the reason is on record.
+                with socket.socket(socket.AF_UNIX) as raw:
+                    raw.settimeout(5)
+                    raw.connect(str(cap.socket_path))
+                    raw.sendall(f'POST {PATH} HTTP/1.1\r\nHost: x\r\nContent-Length: '
+                                f'{inference_proxy.MAX_REQUEST + 1}\r\n\r\n'.encode())
+                    self.assertIn(b' 400 ', raw.recv(4096))
+                self.assertIn('proxy refused: request of', cap.last_error)
+                self.assertIn(f'over the {inference_proxy.MAX_REQUEST}-byte limit', cap.last_error)
+                # A malformed parameter names itself too.
+                self.assertEqual(send(json.dumps({'messages': [], 'n': 2}).encode()), 400)
+                self.assertEqual(cap.last_error,
+                                 'proxy refused: multiple completions are not permitted')
+                self.assertEqual(len(seen), 1)              # neither refusal reached upstream
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            thread.join()
+
+    def test_the_bridge_lets_an_oversized_request_reach_the_host(self):
+        # So the host, not the sandbox, refuses it — and records why.
+        self.assertGreater(inference_proxy.BRIDGE_MAX_REQUEST, inference_proxy.MAX_REQUEST)
+
     def test_provider_error_text_is_bounded_and_redacted(self):
         text = inference_proxy.provider_error(
             401, b'{"error": "invalid api key sk-proj-abcdefghijklmnopqrstuvwxyz0123"}')
