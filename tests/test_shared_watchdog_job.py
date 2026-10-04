@@ -220,6 +220,15 @@ class SharedJobTests(unittest.TestCase):
         self.assertIn("legacy2: every 15m, deliver local", check.fix)
         self.assertNotIn("--deliver local`", check.fix)
 
+    def test_migration_remedy_names_cron_schedule_without_every(self):
+        cron = self._legacy("legacy1", 30, "telegram")
+        cron["schedule"] = {"kind": "cron", "expr": "0 9 * * *", "display": "0 9 * * *"}
+        self._write_store([cron, self._legacy("legacy2", 15, "local")])
+        check = doctor.check_cron_job(config.load_id("widgets"))
+        self.assertIn("legacy1: 0 9 * * *, deliver telegram", check.fix)
+        self.assertNotIn("every 0 9", check.fix)
+        self.assertIn("legacy2: every 15m, deliver local", check.fix)
+
     def test_one_loop_one_per_loop_job_is_a_warning_two_loops_fail(self):
         for loop_id in ("gadgets", "gizmos"):
             (config.config_dir() / f"{loop_id}.json").unlink()

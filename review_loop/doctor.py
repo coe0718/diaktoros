@@ -152,6 +152,13 @@ def _job_schedule(entry: dict) -> str:
     return "15m"
 
 
+def _schedule_label(entry: dict) -> str:
+    """``every 30m`` for an interval schedule, the bare expression for a cron one."""
+    import re
+    schedule = _job_schedule(entry)
+    return f"every {schedule}" if re.fullmatch(r"\d+[smhd]", schedule) else schedule
+
+
 def _job_deliver(entry: dict) -> str:
     deliver = entry.get("deliver")
     return deliver.strip() if isinstance(deliver, str) and deliver.strip() else "local"
@@ -169,7 +176,7 @@ def migration_fix(loop: dict, shim_jobs: list) -> str:
         return (f"{removals}, then `hermes cron create {shlex.quote(schedule)} --name "
                 f"\"{name}\" --no-agent --script {SHIM_NAME} "
                 f"--deliver {shlex.quote(deliver)}`")
-    named = "; ".join(f"{e.get('id') or '?'}: every {_job_schedule(e)}, deliver "
+    named = "; ".join(f"{e.get('id') or '?'}: {_schedule_label(e)}, deliver "
                       f"{_job_deliver(e)}" for e in shim_jobs)
     return (f"the per-loop jobs disagree ({named}) — choose one schedule and one deliver "
             f"target, then {removals}, then `hermes cron create <schedule> --name "
