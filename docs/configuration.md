@@ -435,7 +435,7 @@ The normal path is each profile's model, resolved with Hermes's own provider/aut
 
 ```bash
 hermes -p "<seat-profile>" model
-hermes review-loop models --profile "<seat-profile>"
+hermes review-loop models --profile-name "<seat-profile>"
 hermes review-loop models --seat reviewer --loop "<loop-id>"
 ```
 

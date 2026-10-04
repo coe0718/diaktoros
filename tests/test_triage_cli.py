@@ -55,7 +55,7 @@ class TriageVerb(unittest.TestCase):
         return t.run_cli(t.parser_for().parse_args(list(argv)))
 
     def enable(self, *extra) -> tuple[int, str]:
-        return self.cli("triage", "--loop", LOOP_ID, "--enable", "--profile", "arbiter",
+        return self.cli("triage", "--loop", LOOP_ID, "--enable", "--triage-profile", "arbiter",
                         "--author", "Owner", "--labels", "bug,docs,P1", *extra)
 
     def test_enable_writes_the_block_the_issues_route_and_the_shim(self):
@@ -77,9 +77,9 @@ class TriageVerb(unittest.TestCase):
 
     def test_refusals_and_dry_run_write_nothing(self):
         before = LOOP_FILE.read_bytes()
-        for argv in (("--profile", "nobody"), ("--labels", "bug,{x}"), ("--login", t.READ_LOGIN)):
+        for argv in (("--triage-profile", "nobody"), ("--labels", "bug,{x}"), ("--login", t.READ_LOGIN)):
             with self.subTest(argv=argv):
-                rc, out = self.cli("triage", "--loop", LOOP_ID, "--enable", "--profile", "arbiter",
+                rc, out = self.cli("triage", "--loop", LOOP_ID, "--enable", "--triage-profile", "arbiter",
                                    "--author", "owner", "--labels", "bug", *argv)
                 self.assertEqual(rc, 2, out)
                 self.assertIn("refused", out)

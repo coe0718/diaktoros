@@ -64,13 +64,13 @@ but recorded write outcomes are never blindly replayed.
 Preview the complete policy before enabling:
 
 ```bash
-hermes review-loop triage --loop "<loop-id>" --enable --profile "<triage-profile>" --login "<triage-login>" --author "<trusted-author-login>" --labels bug,docs,question --max-labels 3 --comment off --daily-turns 20 --admin-token "<hook-admin-login>" --dry-run
+hermes review-loop triage --loop "<loop-id>" --enable --triage-profile "<triage-profile>" --login "<triage-login>" --author "<trusted-author-login>" --labels bug,docs,question --max-labels 3 --comment off --daily-turns 20 --admin-token "<hook-admin-login>" --dry-run
 ```
 
 | Option | Meaning |
 | --- | --- |
 | `--enable` | Write/enable the triage block and route |
-| `--profile` | Existing Hermes profile whose model performs triage |
+| `--triage-profile` | Existing Hermes profile whose model performs triage |
 | `--login` | GitHub writer identity; omit to use current/default reviewer identity |
 | `--author` | Repeatable trusted issue-author login; a supplied list replaces the previous list |
 | `--labels` | Comma-separated allowed labels; supplied vocabulary replaces the previous one |

@@ -8,6 +8,7 @@ that no GitHub write happened.** Never delete safety state to bypass a refusal.
 ## Contents
 
 - [First checks](#first-three-commands)
+- [Not a hermes command](#review-loop-is-not-a-hermes-command)
 - [Setup stopped](#setup-stopped-before-the-loop-was-live)
 - [PR did not start](#i-opened-a-pr-or-requested-a-review-and-nothing-happened)
 - [Fixer did not start](#changes-were-requested-but-the-fixer-never-ran)
@@ -58,6 +59,17 @@ examples starts a production model or writes GitHub. Use status for local queues
 ```bash
 hermes review-loop status --loop "<loop-id>"
 ```
+
+## "'review-loop' is not a `hermes` command"
+
+**Symptom:** `hermes review-loop …` says it is not a command, although `hermes plugins list`
+shows the plugin enabled and `hermes review-loop --help` works.
+**Cause:** the command line contains `-p NAME` or `--profile NAME`. `hermes` takes those from
+anywhere on its command line, after the subcommand too, and runs in that profile's Hermes home,
+where the plugin may not be enabled (or, worse, a different loop config is). No review-loop
+command uses those spellings: the triage seat's profile is `--triage-profile`, and
+`models` takes `--profile-name`.
+**Action:** remove the `-p`/`--profile` pair and use the command's own flag.
 
 ## `setup` stopped before the loop was live
 
