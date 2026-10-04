@@ -72,7 +72,7 @@ No setting named here is an extra CLI flag.
 | `--host` | HTTP(S) gateway origin, optional port, no path/query/fragment/userinfo | Fresh unset; `init` requires it even without hooks. HTTPS is recommended. Trailing slash stripped. `set` refuses clearing it. |
 | `--skill`, display-name options | String; fresh empty | Skill is a prompt instruction, not installed by this flag. Plugin skill identifier: `hermes-review-loop:review-loop`. Agent display names are cosmetic, not identities. |
 | `--attribution`, `--comment` | Exactly `on` or `off` | Attribution fresh on; triage comments fresh off. Attribution signs only plugin-mediated writes. |
-| Observer events | Comma-separated `opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed`; blank = all | Unknown names remain stored without a misconfiguration warning. Unknown-only input matches no transitions, so the feed is silent; use the listed names. |
+| Observer events | Comma-separated `opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held`; blank = all | Unknown names remain stored without a misconfiguration warning. Unknown-only input matches no transitions, so the feed is silent; use the listed names. |
 | Observer digest | Integer minutes; non-positive = per-transition, positive = watchdog-flushed batches | Negative values silently normalize to immediate delivery, not a misconfigured feed. Hand-edited unparseable values do the same; CLI flags require integers. Muting preserves configuration; disabling removes its route but retains delivery history. |
 | Delivery targets | Gateway/Hermes delivery string; observer fresh `telegram`, watchdog fresh `local` | Parser does not enumerate or verify configured destinations. Observer sends notices to another chat; verify privacy first. |
 | `--schedule` | Hermes cron schedule string, e.g. `15m`; init omitted = no cron, setup default `15m` | Delegated to Hermes cron parsing, not independently validated by plugin argparse. One shared watchdog job is reused. |
@@ -306,7 +306,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--observer-route` | `OBSERVER_ROUTE` |  | route name for the read-only observer feed (default: <id>-observe) |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile the observer feed belongs to (its chat) — naming one switches the feed on |
 | `--observer-deliver` | `OBSERVER_DELIVER` | `telegram` | where the gateway delivers the feed (telegram, discord, ...); the feed never wakes an agent |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed (default: all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held (default: all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per this many minutes (0 = one notice per transition) |
 | `--host` | `HOST` |  | your gateway webhook origin (required unless set in plugin settings) |
 | `--grace-min` | `GRACE_MIN` | `35` | minutes a PR may sit quiet before the watchdog reports a stall |
@@ -396,7 +396,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--observer-route` | `OBSERVER_ROUTE` |  | route the observer feed delivers through |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | profile that owns the observer destination |
 | `--observer-deliver` | `OBSERVER_DELIVER` |  | where the gateway delivers the feed (telegram, discord, ...) |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed (blank = all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held (blank = all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per N minutes (0 = per transition) |
 | `--observer-mute` |  |  | stop the feed without forgetting it |
 | `--observer-unmute` |  |  | resume a muted feed |
