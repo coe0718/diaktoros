@@ -277,7 +277,9 @@ class ChecklistTests(SelftestBase):
     def test_empty_model_reply_warns_with_reason(self):
         self.model_reply = ""
         rc, text = self.run_selftest()
+        self.assertEqual(rc, 0)  # a WARN is not a failure
         self.assertRegex(text, r"model:completion .*reply is empty")
+        self.assertIn("fix:", text)
         self.assertIn("16-token limit", text)
         self.assertNotRegex(text, r"✅ model:completion")
 
