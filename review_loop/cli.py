@@ -2523,7 +2523,7 @@ def _apply(args) -> int:
 
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
-                "turn_budget_s"):
+                "turn_budget_s", "attribution"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
