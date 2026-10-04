@@ -137,12 +137,37 @@ class FailureNotice(fixture.Base):
         self.set_run("waiting", 2)
         self.assertEqual(self.notices(sup, run_id, "waiting"), [])        # later retries: quiet
         self.set_run("waiting", 0)
-        self.assertEqual(self.notices(sup, run_id, "waiting"), [])        # a paced hold: not one
+        self.assertEqual(self.notices(sup, run_id, "waiting"), [])        # waiting, no error kind
         self.set_run("failed", 4, "retry limit (4 attempts): turn exited with status 1")
         [call] = self.notices(sup, run_id, "failed")
         self.assertEqual(call[1]["identity"], f"{run_id}:failed")
         self.assertIn("issue_fixer failed: retry limit", call[1]["outcome"])
         self.assertEqual(self.notices(sup, run_id, "succeeded"), [])
+
+    def test_a_hold_is_announced_once_with_when_and_how_to_run_it_sooner(self):
+        """Live 2026-10-04: two issue fixes sat behind the daily cap with only a 'queued'
+        notice; it looked like the fixer was working. A hold is not a failure, so it gets its
+        own event."""
+        sup, run_id = self.fix_row()
+        held = "held: issue_fixer daily turn cap (10) reached — resumes 2026-10-05 00:00"
+        self.set_run("waiting", 0, held)
+        [call] = self.notices(sup, run_id, "waiting")
+        args, kwargs = call
+        self.assertEqual(args[2], "held")
+        self.assertTrue(kwargs["issue"])
+        self.assertTrue(kwargs["identity"].startswith(f"{run_id}:held:"))
+        self.assertIn("daily turn cap (10) reached — resumes 2026-10-05 00:00", kwargs["outcome"])
+        self.assertIn("`triage --fix-daily-turns N`", kwargs["outcome"])
+        self.assertIn("`retry --pr 12 --seat issue_fixer`", kwargs["outcome"])
+        # A usage-window hold: when it resumes, no cap advice (raising a cap would not help).
+        window = "held: fixer usage window (anthropic) — resumes 18:40"
+        self.set_run("waiting", 2, window)              # a hold even after spent retries
+        [call] = self.notices(sup, run_id, "waiting")
+        self.assertEqual(call[0][2], "held")
+        self.assertIn("usage window", call[1]["outcome"])
+        self.assertNotIn("raise the cap", call[1]["outcome"])
+        self.assertIn("held", observer.EVENTS)
+        self.assertEqual(observer.EMOJI["held"], "⏸")
 
     def test_the_operator_notice_links_an_issue_as_an_issue(self):
         sup, run_id = self.fix_row()

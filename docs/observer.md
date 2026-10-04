@@ -67,9 +67,10 @@ and a PR link. It does not contain the diff, review body, GitHub credentials or 
 | `triaged` | Issue triage ended: labels applied, none fit, skipped, denied or uncertain (links the issue) | A person agrees with the labels |
 | `fixing` | A maintainer's fix label handed the issue to the fixer, or the handoff was held and why | The fix turn has started |
 | `fixed` | The issue-fix write ended: PR opened (and review requested), a could-not-fix comment, or an uncertain write | The PR passes review |
-| `failed` | An isolated run's first failed attempt (with the retry time) and its terminal `failed`/`uncertain` state; a usage-window hold is not a failure | The cause is transient, or a retry will work |
+| `failed` | An isolated run's first failed attempt (with the retry time) and its terminal `failed`/`uncertain` state | The cause is transient, or a retry will work |
+| `held` | A run is waiting without spending a retry: its seat's daily cap is reached, or its provider's usage window is closed. Says when it resumes and, for a cap, the flag that raises it and the `retry` that runs it sooner | It will run the moment the hold lifts (capacity and pacing still apply) |
 
-The four last events were added after the first eight. A feed with an explicit `events` list
+The five last events were added after the first eight. A feed with an explicit `events` list
 does not get them until they are added to it (`set --observer-events …`); a feed with no list
 gets every event.
 

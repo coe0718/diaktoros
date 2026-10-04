@@ -2688,8 +2688,11 @@ class Supervisor:
         The watchdog's operator outbox reports a run that ends failed or uncertain; this feed
         also says so the moment the first attempt fails, while the run still waits to retry,
         instead of after every retry is spent. One notice per run per kind (its first failure,
-        its terminal state); a usage-window hold is not a failure and is not reported. Facts
-        only: the host-written error, never the turn's own output. Best effort.
+        its terminal state). A hold — the seat's daily cap reached, or its provider's usage
+        window closed — is not a failure, but a silent one looked exactly like a turn still
+        running (live, 2026-10-04): it gets its own ``held`` notice, once per hold, with when it
+        resumes and how to run it sooner. Facts only: the host-written error, never the turn's
+        own output. Best effort.
         """
         if state not in ("waiting", "failed", "uncertain"):
             return
@@ -2699,9 +2702,22 @@ class Supervisor:
                                   "WHERE id=?", (run_id,)).fetchone()
             if row is None:
                 return
-            if state == "waiting":
+            event = "failed"
+            if state == "waiting" and str(row["error"] or "").startswith("held:"):
+                # A pacing hold (#219, #247): the run waits without spending a retry.
+                event, kind = "held", f"held:{int(row['retry_at'] or 0)}"
+                outcome = f"{row['seat']} {row['error']}"
+                if "daily turn cap" in str(row["error"]):
+                    flag = {"issue_fixer": "triage --fix-daily-turns N",
+                            "triage": "triage --daily-turns N",
+                            "reviewer": "set --reviewer-daily-turns N",
+                            "fixer": "set --fixer-daily-turns N"}.get(
+                        row["seat"], "seats.adjudicator.daily_turns in the loop file")
+                    outcome += (f" · to run it sooner, raise the cap (`{flag}`), then `retry "
+                                f"--pr {row['pr']} --seat {row['seat']}`")
+            elif state == "waiting":
                 if (row["retries"] or 0) != 1:
-                    return               # a paced hold (retries unspent), or a later retry
+                    return               # a later retry: the first one was already reported
                 when = (time.strftime("%H:%M", time.localtime(row["retry_at"]))
                         if row["retry_at"] else "soon")
                 outcome = (f"{row['seat']} attempt 1 failed: {row['error']} — retrying at "
@@ -2714,7 +2730,7 @@ class Supervisor:
             loop = config.by_repo(row["repo"])
             if loop is None:
                 return
-            observer.notify(loop, state_mod.state_for(loop), "failed", row["pr"], row["head"],
+            observer.notify(loop, state_mod.state_for(loop), event, row["pr"], row["head"],
                             identity=f"{run_id}:{kind}", outcome=outcome[:400],
                             issue=row["seat"] in ("triage", "issue_fixer"))
         except Exception:
