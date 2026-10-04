@@ -454,12 +454,21 @@ def env() -> dict:
 def run(script: str, payload: dict | None = None, *args: str,
         extra_env: dict | None = None) -> tuple[str, str, str]:
     cmd = [sys.executable, str(ROOT / "scripts" / script), *args]
-    proc = subprocess.run(cmd, input=json.dumps(payload) if payload else None,
-                          capture_output=True, text=True,
-                          env={**env(), **(extra_env or {})}, timeout=180)
+    try:
+        proc = subprocess.run(cmd, input=json.dumps(payload) if payload else None,
+                              capture_output=True, text=True,
+                              env={**env(), **(extra_env or {})}, timeout=180)
+    except subprocess.TimeoutExpired as exc:
+        err = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) \
+            else (exc.stderr or "")
+        return f"<{script} timed out after {exc.timeout:g}s; stderr: {err.strip()[-500:]}>", "", err
     out, err = proc.stdout.strip(), proc.stderr.strip()
     if out.startswith("[SILENT]"):
         kind = "SILENT"
+    elif not out:
+        # A gate that answers nothing was killed or crashed (e.g. its time budget under
+        # load); surface how, instead of an unexplained empty string.
+        kind = f"<{script} produced no output; exit {proc.returncode}; stderr: {err[-500:]}>"
     else:
         kind = out
     return kind, out, err
