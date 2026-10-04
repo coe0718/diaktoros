@@ -93,5 +93,29 @@ class RealSandbox(Layout):
         self.assertEqual((users, groups), ("1", "1"))
 
 
+    def test_multiprocessing_works_and_dev_stays_read_only(self):
+        """#297: a seat's tests could not create a multiprocessing lock — /dev/shm sat on the
+        read-only /dev. A sized tmpfs there makes it writable; /dev itself stays sealed."""
+        probe = ("import multiprocessing as m, os\n"
+                 "lock = m.Lock(); queue = m.Queue(); queue.put(41); lock.acquire(); lock.release()\n"
+                 "print('queue', queue.get() + 1)\n"
+                 "for path in ('/dev/shm/probe', '/dev/probe'):\n"
+                 "    try:\n"
+                 "        open(path, 'w').close(); print(path, 'writable')\n"
+                 "    except OSError as exc:\n"
+                 "        print(path, 'refused', exc.errno)\n")
+        try:
+            result = contained.run(**self.dirs, entry=["/usr/bin/python3", "-c", probe],
+                                   checkout_writable=False, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.skipTest(f"bubblewrap could not start here: {exc}")
+        if result.returncode != 0 and "namespace" in result.stderr.lower():
+            self.skipTest(f"no unprivileged namespaces here: {result.stderr.strip()[:200]}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("queue 42", result.stdout)
+        self.assertIn("/dev/shm/probe writable", result.stdout)
+        self.assertIn("/dev/probe refused 30", result.stdout)          # EROFS: still sealed
+
+
 if __name__ == "__main__":
     unittest.main()
