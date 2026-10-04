@@ -374,6 +374,36 @@ class OpenBranchGuards(Base):
         safe_push._git_cas.assert_not_called()
 
 
+class OpenBranchExisting(OpenBranchGuards):
+    """An existing review-loop/issue-N branch is a pre-write denial, not an uncertain push."""
+
+    def read(self, result):
+        patch = mock.patch.object(safe_push.gh, "fetch", mock.Mock(return_value=result))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_an_existing_branch_is_denied_before_any_write(self):
+        self.read(({"ref": "refs/heads/review-loop/issue-12", "object": {"sha": "a" * 40}}, ""))
+        with self.assertRaisesRegex(broker.BrokerDenied,
+                                    "review-loop/issue-12 already exists — delete it to retry"):
+            self.open()
+        safe_push._git_cas.assert_not_called()
+
+    def test_a_failed_read_is_denied_before_any_write(self):
+        for result in ((None, "HTTP 500"), (None, "URLError: down"), (None, ""), ([], "")):
+            with self.subTest(result=result):
+                self.read(result)
+                with self.assertRaises(broker.BrokerDenied):
+                    self.open()
+        safe_push._git_cas.assert_not_called()
+
+    def test_a_404_proceeds_to_the_push(self):
+        self.read((None, "HTTP 404 Not Found"))
+        with self.assertRaises(broker.BrokerDenied):    # the stubbed push fails; it was reached
+            self.open()
+        safe_push._git_cas.assert_called_once()
+
+
 class RealBareBranch(unittest.TestCase):
     """``_git_cas`` with ``from_branch``: one commit on the pinned base, to a branch that must
     not exist yet — real git, local bare repositories."""

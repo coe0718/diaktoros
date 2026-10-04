@@ -451,6 +451,15 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
                "role": "issue_fixer", "login": login, "paths": [path for path, _ in files],
                "operation": "issue_branch"}
     extra = {"patch": patch, "changed": receipt["paths"]} if patch is not None else {}
+    # Pre-write: an existing branch (a second fix attempt) is a knowable denial, not an
+    # uncertain push. The absent-branch lease below stays the guard against a race.
+    existing, read_error = gh.fetch(loop, ref_path, login=login)
+    if gh.status_of(read_error) == 404:
+        pass                                   # absent: proceed
+    elif read_error or not isinstance(existing, dict):
+        raise broker.BrokerDenied("could not check whether the fix branch exists")
+    else:
+        raise broker.BrokerDenied(f"{branch} already exists — delete it to retry")
     new_head = None
     attempt_started = False
 
