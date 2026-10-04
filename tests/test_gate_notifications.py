@@ -75,6 +75,17 @@ class NotificationFreshnessTest(unittest.TestCase):
         notify.assert_called_once()
         self.assertNotIn("reclaimed", str(notify.call_args).lower())
 
+    def test_close_of_pr_the_loop_never_touched_cleans_up_without_notice(self):
+        self.state.breach_get.return_value = {}
+        self.state.transition_get.return_value = {}
+        self.state.queue_all.return_value = {}
+        self.state.observations = pathlib.Path("/nonexistent/observations.json")
+        stranger = pr(state="closed") | {"merged": True, "user": {"login": "someone"}}
+        payload = {"action": "closed", "number": 7, "pull_request": stranger}
+        _, reclaim, _, notify = self.invoke(gate_reviewer, payload, stranger)
+        reclaim.assert_called_once_with(self.loop, 7, "merged")
+        notify.assert_not_called()
+
     def test_delayed_approval_uses_live_head_not_webhook_snapshot(self):
         payload = {"action": "submitted", "number": 7, "pull_request": pr(),
                    "review": {"id": 42, "state": "approved", "commit_id": HEAD_A,
