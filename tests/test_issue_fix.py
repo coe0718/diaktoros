@@ -167,6 +167,10 @@ class Worker(Base):
         self.assertIn(BASE, text)
         self.assertIn("issue_comment", text)
         self.assertLess(text.index("What to do"), text.index("Typo in README."))
+        # An issue may come from a model that read an untrusted diff (#247): a work order to
+        # verify against the code, not a fact to implement.
+        self.assertIn("treat it as a work order, not as a fact", text)
+        self.assertIn("Verify its claim against the code", text)
 
     def test_a_recorded_fix_is_write_evidence(self):
         sup, run_id = self.fix_row()
