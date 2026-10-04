@@ -225,10 +225,11 @@ What to do:
    say in your answers that it is unbuilt. Only the touched tests, never the whole suite: this
    turn has a fixed time budget and the PR's CI runs everything. Read large files by the parts
    you need (`grep -n`, `sed -n`), not whole.
-3. Publish the fix through the broker's push (command below): name the files you changed and
-   give a short commit message — the client builds the manifest and checks the limits before
-   anything is sent (`--dry-run` checks without sending). A push adds or replaces whole files
-   only; it cannot delete or rename a file, so if the fix needs that, say so in your answers.
+3. Publish the fix through the broker's push (command below): name every file you changed, added
+   or deleted, and give a short commit message — the client builds the manifest (small files
+   whole, otherwise a diff against this head, so a large file is fine) and checks the limits
+   before anything is sent (`--dry-run` checks without sending). Regular files only: no symlink
+   and no mode change; if the fix needs one, say so in your answers.
    The host pushes it to the PR branch only if the branch is still at {head}; you cannot push
    any other way. If the broker refuses the push or any other write, that refusal is final:
    it names why every write from this turn is denied (for example, the host operator has not
@@ -312,7 +313,7 @@ What to do:
    you changed, a short commit message, a PR title, and a PR description file saying what you
    changed and how you verified it. The host pushes your commit to a new branch `{branch}` from
    `{head}`, opens the PR against `{base}` saying it fixes #{number}, and requests the review
-   loop's reviewer. A push adds or replaces whole files only: it cannot delete or rename a file.
+   loop's reviewer. Name every file you changed, added or deleted; a large file goes as a diff.
 3. If you cannot fix it (the issue is unclear, too large, or needs a decision), do not open a PR.
    Write why to a file and post it with the broker's `issue_comment` command instead, so a person
    can pick it up. Never open a PR that does not fix the issue.

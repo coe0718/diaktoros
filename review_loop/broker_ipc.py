@@ -37,7 +37,9 @@ from . import broker, config, safe_push
 
 MAX_REQUEST = 16 * 1024
 MAX_BODY = 12 * 1024
-MAX_PUSH_REQUEST = 196 * 1024
+# A push line carries the whole manifest: a diff of up to safe_push.MAX_PATCH, base64-encoded
+# (#64), or whole files of up to MAX_CONTENT; both fit with room for the JSON around them.
+MAX_PUSH_REQUEST = 768 * 1024
 
 
 @dataclass(frozen=True)

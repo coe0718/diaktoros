@@ -5,7 +5,10 @@ Standard library only: this file is copied into the sandbox on its own.
 A fixer publishes with ``push --files <path>... --message-file <file>`` (or ``--message``): the
 client reads those files from ``/work``, builds the broker's manifest
 ``{base_head, message, files: [{path, content_b64, sha256}]}`` itself, and refuses anything the
-broker would refuse *before* the one write is spent. ``base_head`` comes from the turn file the
+broker would refuse *before* the one write is spent. When whole files do not fit (a large file, a
+deleted one, many of them) it sends a unified diff of ``/work`` against the read-only export of
+the same head instead, ``{base_head, message, patch_b64, sha256}`` (#64); the host applies it to
+that exact tree and checks every path it changed. ``base_head`` comes from the turn file the
 host writes, read-only, next to this client; the broker still compares it with the run's own
 scoped head, so a wrong value is refused, never trusted. ``push --manifest-file`` still sends a
 manifest built by hand.
@@ -29,7 +32,7 @@ import stat
 
 SOCKET = '/run/review-loop/broker/broker.sock'
 TRIAGE_COMMENT_MAX = 1000          # run_supervisor.TRIAGE_COMMENT_MAX; this file runs standalone
-MAX_FRAME = 196 * 1024
+MAX_FRAME = 768 * 1024           # broker_ipc.MAX_PUSH_REQUEST
 # A push or review is several GitHub calls plus git fetch/push (each up to 90s), all
 # host-side. Wait for the answer instead of timing out mid-write; the turn deadline is
 # the real bound.
@@ -37,6 +40,9 @@ WRITE_TIMEOUT = 900
 
 # The exported PR tree, and the host's read-only facts about this turn (``{"head": sha}``).
 WORK = '/work'
+# The read-only export the seat's /work was copied from (contained.EXPORT_DIR): the base a diff is
+# taken against.
+EXPORT = '/opt/export'
 TURN_FILE = '/opt/client/review-loop-turn.json'
 
 # The broker's own limits (review_loop.safe_push), repeated here only so an agent learns about a
@@ -45,6 +51,9 @@ MAX_FILES = 24
 MAX_FILE = 64 * 1024
 MAX_CONTENT = 128 * 1024
 MAX_MESSAGE = 240
+MAX_PATCH = 512 * 1024             # safe_push.MAX_PATCH
+MAX_PATCH_PATHS = 64               # safe_push.MAX_PATCH_PATHS
+MAX_DIFF_SOURCE = 16 * 1024 * 1024  # the largest file the client will read to diff
 # review_loop.broker.ANSWERS_MAX, and the broker's request line limit the answers travel in.
 MAX_ANSWERS = 8 * 1024
 MAX_REQUEST = 16 * 1024
@@ -76,26 +85,68 @@ def _repo_path(argument: str, work: str) -> str:
     return path
 
 
-def _read(work: str, path: str) -> bytes:
-    """The bytes of one regular file, never through a symlink anywhere along its path."""
-    current = work
+def _content(root: str, path: str, limit: int) -> tuple[bytes, str] | None:
+    """A regular file's bytes and Git mode under ``root``, or None when it does not exist.
+
+    Never through a symlink anywhere along its path; a file over ``limit`` is refused."""
+    current = root
     for part in path.split('/'):
         current = os.path.join(current, part)
         try:
             info = os.lstat(current)
         except FileNotFoundError:
-            raise ManifestError(f'{path}: no such file in {work} (a push cannot delete a file)') from None
+            return None
         if stat.S_ISLNK(info.st_mode):
             raise ManifestError(f'{path}: a symlink is on the path — a push writes regular files only')
     if not stat.S_ISREG(info.st_mode):
         raise ManifestError(f'{path}: not a regular file')
-    if info.st_size > MAX_FILE:
-        raise ManifestError(f'{path}: {info.st_size} bytes — a file may be at most {MAX_FILE}')
+    if info.st_size > limit:
+        raise ManifestError(f'{path}: {info.st_size} bytes — too large to publish (at most {limit})')
     with open(current, 'rb') as stream:
-        data = stream.read(MAX_FILE + 1)
-    if len(data) > MAX_FILE:
-        raise ManifestError(f'{path}: larger than {MAX_FILE} bytes')
-    return data
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ManifestError(f'{path}: larger than {limit} bytes')
+    return data, ('100755' if info.st_mode & stat.S_IXUSR else '100644')
+
+
+def _lines(path: str, data: bytes) -> list[str]:
+    if b'\0' in data:
+        raise ManifestError(f'{path}: a binary file can only be published whole, at most '
+                            f'{MAX_FILE} bytes')
+    try:
+        return data.decode('utf-8').splitlines(keepends=True)
+    except UnicodeDecodeError:
+        raise ManifestError(f'{path}: not UTF-8 text — it can only be published whole, at most '
+                            f'{MAX_FILE} bytes') from None
+
+
+def build_patch(paths: list[str], work: str, export: str) -> bytes:
+    """A unified diff (Git's format) of each path in ``work`` against ``export``: an edit, a new
+    file, or — a path gone from ``work`` — a deletion. Text files only."""
+    import difflib
+    out = []
+    for path in paths:
+        old = _content(export, path, MAX_DIFF_SOURCE)
+        new = _content(work, path, MAX_DIFF_SOURCE)
+        if old is None and new is None:
+            raise ManifestError(f'{path}: no such file in {work} or in the head it came from')
+        if old is not None and new is not None and old[0] == new[0]:
+            continue                       # unchanged: nothing to say about it
+        before = _lines(path, old[0]) if old is not None else []
+        after = _lines(path, new[0]) if new is not None else []
+        header = f'diff --git a/{path} b/{path}\n'
+        if old is None:
+            header += f'new file mode {new[1]}\n'
+        elif new is None:
+            header += f'deleted file mode {old[1]}\n'
+        out.append(header)
+        for line in difflib.unified_diff(before, after,
+                                         '/dev/null' if old is None else f'a/{path}',
+                                         '/dev/null' if new is None else f'b/{path}'):
+            out.append(line if line.endswith('\n') else line + '\n\\ No newline at end of file\n')
+    if not out:
+        raise ManifestError('nothing changed: every named file matches the head')
+    return ''.join(out).encode('utf-8')
 
 
 def turn_head(turn_file: str | None = None) -> str:
@@ -111,33 +162,59 @@ def turn_head(turn_file: str | None = None) -> str:
 
 
 def build_manifest(files: list[str], message: str, *, work: str | None = None,
-                   turn_file: str | None = None) -> dict:
-    """The push manifest for whole files under ``work``, or ``ManifestError`` naming the limit."""
-    work = work or WORK
+                   turn_file: str | None = None, export: str | None = None) -> dict:
+    """The push manifest for ``files`` under ``work``, or ``ManifestError`` naming the limit.
+
+    Whole files when every one exists and fits the whole-file limits (the original shape);
+    otherwise a unified diff against the export of the same head (#64), which carries large
+    files, deletions and up to MAX_PATCH_PATHS paths."""
+    work, export = work or WORK, export or EXPORT
     if not isinstance(message, str) or not message.strip() or '\x00' in message:
         raise ManifestError('the commit message must be non-empty text')
     if len(message.encode('utf-8')) > MAX_MESSAGE:
         raise ManifestError(f'the commit message is {len(message.encode("utf-8"))} bytes — '
                             f'at most {MAX_MESSAGE}')
-    if not 1 <= len(files) <= MAX_FILES:
-        raise ManifestError(f'{len(files)} files — a push carries 1 to {MAX_FILES}')
-    entries, seen, total = [], set(), 0
+    if not 1 <= len(files) <= MAX_PATCH_PATHS:
+        raise ManifestError(f'{len(files)} files — a push carries 1 to {MAX_PATCH_PATHS}')
+    paths, seen = [], set()
     for argument in files:
         path = _repo_path(argument, work)
         if path in seen:
             raise ManifestError(f'{path}: named twice')
         seen.add(path)
-        data = _read(work, path)
-        total += len(data)
-        if total > MAX_CONTENT:
-            raise ManifestError(f'the files add up to more than {MAX_CONTENT} bytes')
-        entries.append({'path': path, 'content_b64': base64.b64encode(data).decode('ascii'),
-                        'sha256': hashlib.sha256(data).hexdigest()})
+        paths.append(path)
     for path in seen:
         parts = path.split('/')
         if any('/'.join(parts[:n]) in seen for n in range(1, len(parts))):
             raise ManifestError(f'{path}: both a file and a directory in this push')
-    return {'base_head': turn_head(turn_file), 'message': message, 'files': entries}
+    whole, total = [], 0
+    for path in paths:
+        found = _content(work, path, MAX_DIFF_SOURCE)
+        if found is None or len(found[0]) > MAX_FILE:
+            whole = None
+            break
+        total += len(found[0])
+        whole.append((path, found[0]))
+    if whole is not None and len(whole) <= MAX_FILES and total <= MAX_CONTENT:
+        return {'base_head': turn_head(turn_file), 'message': message,
+                'files': [{'path': path, 'content_b64': base64.b64encode(data).decode('ascii'),
+                           'sha256': hashlib.sha256(data).hexdigest()} for path, data in whole]}
+    patch = build_patch(paths, work, export)
+    if len(patch) > MAX_PATCH:
+        raise ManifestError(f'the change is a {len(patch)}-byte diff — at most {MAX_PATCH}; '
+                            'publish a smaller change')
+    return {'base_head': turn_head(turn_file), 'message': message,
+            'patch_b64': base64.b64encode(patch).decode('ascii'),
+            'sha256': hashlib.sha256(patch).hexdigest()}
+
+
+def manifest_paths(manifest: dict) -> list[str]:
+    """The paths a built manifest publishes, for a dry run's summary."""
+    if 'files' in manifest:
+        return [entry['path'] for entry in manifest['files']]
+    import re as _re
+    text = base64.b64decode(manifest['patch_b64']).decode('utf-8')
+    return _re.findall(r'^diff --git a/(\S+) b/', text, _re.M)
 
 
 def read_answers(path: str) -> str:
@@ -224,8 +301,8 @@ def _push(parser: argparse.ArgumentParser, args: argparse.Namespace):
     if args.dry_run:
         summary = {'ok': True, 'dry_run': True, 'base_head': manifest['base_head'],
                    'message': manifest['message'],
-                   'files': [{'path': entry['path'], 'sha256': entry['sha256']}
-                             for entry in manifest['files']]}
+                   'as': 'diff' if 'patch_b64' in manifest else 'whole files',
+                   'files': manifest_paths(manifest)}
         return lambda: summary
     return lambda: call('push', manifest=manifest)
 
@@ -238,7 +315,8 @@ def main() -> None:
     parser.add_argument('--body-file')
     parser.add_argument('--manifest-file')
     parser.add_argument('--files', nargs='+', default=[],
-                        help='push: files under /work to publish, each as its whole new content')
+                        help='push/open_pr: every file you changed, added or deleted under /work '
+                             '(sent whole when small, else as a diff against the head)')
     parser.add_argument('--message', help='push: the commit message (at most 240 bytes)')
     parser.add_argument('--message-file', help='push: a file holding the commit message')
     parser.add_argument('--dry-run', action='store_true',
@@ -277,7 +355,8 @@ def main() -> None:
         if args.dry_run:
             summary = {'ok': True, 'dry_run': True, 'base_head': manifest['base_head'],
                        'title': args.title,
-                       'files': [entry['path'] for entry in manifest['files']]}
+                       'as': 'diff' if 'patch_b64' in manifest else 'whole files',
+                       'files': manifest_paths(manifest)}
             operation = lambda: summary  # noqa: E731
         else:
             operation = lambda: call('open_pr', manifest=manifest, verdict=args.title,  # noqa: E731
