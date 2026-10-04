@@ -137,6 +137,45 @@ def cron_fix(loop: dict) -> str:
             f"--script {SHIM_NAME} --deliver local`")
 
 
+def _job_schedule(entry: dict) -> str:
+    """A stored job's schedule in the form ``hermes cron create`` takes (``30m``, a cron expr)."""
+    sched = entry.get("schedule")
+    if isinstance(sched, dict):
+        minutes = sched.get("minutes")
+        if sched.get("kind") == "interval" and isinstance(minutes, int) and minutes > 0:
+            return f"{minutes}m"
+        expr = sched.get("expr")
+        if isinstance(expr, str) and expr.strip():
+            return expr.strip()
+    elif isinstance(sched, str) and sched.strip():
+        return sched.strip()
+    return "15m"
+
+
+def _job_deliver(entry: dict) -> str:
+    deliver = entry.get("deliver")
+    return deliver.strip() if isinstance(deliver, str) and deliver.strip() else "local"
+
+
+def migration_fix(loop: dict, shim_jobs: list) -> str:
+    """Remove the per-loop jobs, then create the shared one with the schedule and deliver target
+    the existing job(s) had. Jobs that disagree are named, not guessed between."""
+    import shlex
+    removals = "; ".join(f"`hermes cron remove {e.get('id')}`" for e in shim_jobs)
+    values = {(_job_schedule(e), _job_deliver(e)) for e in shim_jobs}
+    name = watchdog_job_name(loop)
+    if len(values) == 1:
+        schedule, deliver = next(iter(values))
+        return (f"{removals}, then `hermes cron create {shlex.quote(schedule)} --name "
+                f"\"{name}\" --no-agent --script {SHIM_NAME} "
+                f"--deliver {shlex.quote(deliver)}`")
+    named = "; ".join(f"{e.get('id') or '?'}: every {_job_schedule(e)}, deliver "
+                      f"{_job_deliver(e)}" for e in shim_jobs)
+    return (f"the per-loop jobs disagree ({named}) — choose one schedule and one deliver "
+            f"target, then {removals}, then `hermes cron create <schedule> --name "
+            f"\"{name}\" --no-agent --script {SHIM_NAME} --deliver <target>`")
+
+
 def cron_replace_fix(loop: dict, job_ids) -> str:
     """For a watchdog job that exists but cannot run as it should: remove it (every one, by its
     exact id), then create it. ``hermes cron create`` only appends — it never replaces a job of
@@ -1226,11 +1265,20 @@ def check_cron_job(loop: dict) -> Check:
                  and pathlib.Path(str(entry.get("script") or "")).name == SHIM_NAME]
     if not shared and shim_jobs:
         ids = ", ".join(str(entry.get("id") or "?") for entry in shim_jobs)
-        removals = "; ".join(f"`hermes cron remove {entry.get('id')}`" for entry in shim_jobs)
+        fix = migration_fix(loop, shim_jobs)
+        try:
+            loop_count = len(config.all_loops())
+        except Exception:
+            loop_count = 2
+        if len(shim_jobs) == 1 and loop_count <= 1:
+            # 1 job × 1 loop = 1 sweep: no N² cost yet, so not a blocker.
+            return Check("cron:job", UNKNOWN,
+                         f"1 per-loop watchdog job ({ids}) — fine for one loop; migrate to the "
+                         "one shared job when you add a second loop", fix)
         return Check("cron:job", MISMATCH,
                      f"{len(shim_jobs)} per-loop watchdog job(s) ({ids}) each sweep every loop "
                      f"(N jobs × N loops = N² sweeps per tick) — migrate to the one shared job",
-                     f"{removals}, then {cron_fix(loop)}")
+                     fix)
     job = shared[0] if shared else None
     if job is None:
         # A job the operator wrote by hand: same shim, a name that names the loop.

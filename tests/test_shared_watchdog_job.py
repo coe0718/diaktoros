@@ -190,6 +190,48 @@ class SharedJobTests(unittest.TestCase):
         self.assertIn("`hermes cron remove legacy2`", check.fix)
         self.assertIn(f'--name "{doctor.SHARED_JOB_NAME}"', check.fix)
 
+    def _legacy(self, job_id, minutes, deliver):
+        return {"id": job_id, "name": f"review loop watchdog ({job_id})",
+                "script": cli.SHIM_NAME, "no_agent": True, "enabled": True,
+                "state": "scheduled", "deliver": deliver,
+                "schedule": {"kind": "interval", "minutes": minutes},
+                "next_run_at": "2030-01-01T00:00:00+00:00"}
+
+    def _write_store(self, jobs):
+        store = self.home / "cron" / "jobs.json"
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"jobs": jobs}))
+
+    def test_migration_remedy_keeps_deliver_target_and_schedule(self):
+        self._write_store([self._legacy("legacy1", 30, "telegram")])
+        check = doctor.check_cron_job(config.load_id("widgets"))
+        self.assertTrue(check.failed, check.detail)   # three loops: N² applies
+        self.assertIn("cron create 30m", check.fix)
+        self.assertIn("--deliver telegram", check.fix)
+        self.assertNotIn("--deliver local", check.fix)
+
+    def test_migration_remedy_reports_disagreeing_jobs(self):
+        self._write_store([self._legacy("legacy1", 30, "telegram"),
+                           self._legacy("legacy2", 15, "local")])
+        check = doctor.check_cron_job(config.load_id("widgets"))
+        self.assertTrue(check.failed, check.detail)
+        self.assertIn("disagree", check.fix)
+        self.assertIn("legacy1: every 30m, deliver telegram", check.fix)
+        self.assertIn("legacy2: every 15m, deliver local", check.fix)
+        self.assertNotIn("--deliver local`", check.fix)
+
+    def test_one_loop_one_per_loop_job_is_a_warning_two_loops_fail(self):
+        for loop_id in ("gadgets", "gizmos"):
+            (config.config_dir() / f"{loop_id}.json").unlink()
+        self._write_store([self._legacy("legacy1", 30, "telegram")])
+        check = doctor.check_cron_job(config.load_id("widgets"))
+        self.assertFalse(check.failed, check.detail)
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("--deliver telegram", check.fix)
+        (config.config_dir() / "gadgets.json").write_text(json.dumps(raw_loop("gadgets")))
+        check = doctor.check_cron_job(config.load_id("widgets"))
+        self.assertTrue(check.failed, check.detail)
+
     def test_doctor_verifies_the_shared_job(self):
         cli._install_schedule({"id": "widgets"}, "15m", "local")
         check = doctor.check_cron_job(config.load_id("widgets"))
