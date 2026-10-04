@@ -27,8 +27,9 @@ import textwrap
 from . import config, gh, route_intent, routes, util
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
-# The two events a loop's repo hooks deliver, and the seat route each one feeds.
-EVENT_ROLE = {"pull_request": "reviewer", "pull_request_review": "fixer"}
+# The events a loop's repo hooks deliver, and the seat route each one feeds (``issues`` only
+# when the loop has a triage route: see ``role_for``).
+EVENT_ROLE = {"pull_request": "reviewer", "pull_request_review": "fixer", "issues": "triage"}
 MAX_DELIVERY_PAGES = 3
 # Not copied: the crate cache and isolated run trees are large and no gate reads them; the ledger
 # is copied by sqlite's backup API rather than byte for byte.
@@ -157,7 +158,11 @@ def role_for(loop: dict, event: str, route: str | None = None) -> str:
     if event not in EVENT_ROLE:
         raise TraceError(f"event {event!r} is not one the loop's repo hooks deliver "
                          f"({', '.join(EVENT_ROLE)})")
-    return EVENT_ROLE[event]
+    role = EVENT_ROLE[event]
+    if role == "triage" and "triage" not in route_intent.routes_of(loop):
+        raise TraceError(f"loop {loop['id']} has no triage route (issue triage is off), so an "
+                         f"{event!r} delivery reaches no gate")
+    return role
 
 
 def fetch_delivery(loop: dict, delivery: str, login: str | None) -> tuple[dict, str, str]:
@@ -206,6 +211,13 @@ def facts(event: str, payload: dict) -> list[str]:
     def who(value) -> str:
         return (value.get("login") if isinstance(value, dict) else None) or "?"
 
+    if event == "issues":
+        issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else {}
+        parts = [f"{event}/{payload.get('action') or '?'}", f"issue #{issue.get('number') or '?'}",
+                 f"sender {who(payload.get('sender'))}", f"author {who(issue.get('user'))}"]
+        if isinstance(payload.get("label"), dict):
+            parts.append(f"label {payload['label'].get('name') or '?'}")
+        return [" · ".join(parts)]
     number = pr.get("number") or payload.get("number") or "?"
     parts = [f"{event}/{payload.get('action') or '?'}", f"PR #{number}",
              f"sender {who(payload.get('sender'))}", f"author {who(pr.get('user'))}",
