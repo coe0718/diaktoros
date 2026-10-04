@@ -238,6 +238,20 @@ class Delivery(unittest.TestCase):
             with self.subTest(event=event, route=route), self.assertRaises(trace.TraceError):
                 trace.role_for(self.loop, event, route)
 
+    def test_an_issues_delivery_reaches_the_triage_gate_only_when_triage_is_on(self):
+        with self.assertRaises(trace.TraceError) as caught:     # widgets has no triage route
+            trace.role_for(self.loop, "issues")
+        self.assertIn("no triage route", str(caught.exception))
+        on = {**self.loop, "triage": {"route": "widgets-triage"}}
+        self.assertEqual(trace.role_for(on, "issues"), "triage")
+        self.assertEqual(trace.role_for(on, "x", "widgets-triage"), "triage")
+
+    def test_the_facts_of_an_issues_delivery(self):
+        body = {"action": "labeled", "issue": {"number": 12, "user": {"login": "owner"}},
+                "label": {"name": "fix"}, "sender": {"login": "maint"}}
+        self.assertEqual(trace.facts("issues", body),
+                         ["issues/labeled · issue #12 · sender maint · author owner · label fix"])
+
 
 if __name__ == "__main__":
     unittest.main()
