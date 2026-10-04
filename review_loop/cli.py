@@ -3274,7 +3274,7 @@ def cmd_models(args) -> int:
     """
     from . import doctor, seat_model
     if bool(args.profile) == bool(args.seat):
-        print("pass exactly one of --profile NAME or --seat reviewer|fixer|adjudicator")
+        print("pass exactly one of --profile-name NAME or --seat reviewer|fixer|adjudicator")
         return 2
     profile, seat = args.profile, args.seat
     if seat:
@@ -4224,7 +4224,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
 
         models = sub.add_parser("models", help="Read-only: list the models a seat's Hermes "
                                                "profile's provider offers (Hermes catalog)")
-        models.add_argument("--profile", help="Hermes profile name")
+        # Never `--profile`/`-p`: `hermes` takes those from anywhere on its command line to switch
+        # its own profile, so the plugin would never see them.
+        models.add_argument("--profile-name", dest="profile", help="Hermes profile name")
         models.add_argument("--seat", choices=("reviewer", "fixer", "adjudicator"),
                             help="use this seat's profile from the loop config")
         models.add_argument("--loop", help="loop id for --seat (default: the only loop)")
@@ -4339,7 +4341,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                  "--admin-token, its issues hook (paused until arm)")
         switch.add_argument("--disable", action="store_true",
                             help="turn triage off: removes its route, shim and (with --admin-token) hook")
-        triage.add_argument("--profile", default="", help="Hermes profile whose model triages")
+        triage.add_argument("--triage-profile", dest="profile", default="",
+                            help="Hermes profile whose model triages")
         triage.add_argument("--author", action="append", default=[],
                             help="GitHub login whose new issues are triaged (repeatable); "
                                  "anyone else's are ignored")

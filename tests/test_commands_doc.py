@@ -22,6 +22,16 @@ class CommandsDoc(unittest.TestCase):
         self.assertEqual(commands_doc.render(text, root), text,
                          "flag tables are stale: run `python3 tests/commands_doc.py --write`")
 
+    def test_no_flag_is_one_hermes_takes_for_itself(self):
+        """`hermes` reads -p/--profile from anywhere on its command line, after the subcommand
+        too, and switches its own profile: `triage --profile vex` ran in vex's Hermes home, where
+        the plugin was not even loaded. A plugin flag of that name can never reach the plugin."""
+        taken = [f"{verb} {flag}"
+                 for verb, sub in commands_doc.verbs(commands_doc.parser()).items()
+                 for action in sub._actions for flag in action.option_strings
+                 if flag in ("-p", "--profile")]
+        self.assertEqual(taken, [])
+
     def test_every_flag_says_what_it_does(self):
         """A flag with no help is a blank cell in the reference and in --help (#236)."""
         blank = [f"{verb} {action.option_strings[0]}"

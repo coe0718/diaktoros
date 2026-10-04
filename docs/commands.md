@@ -486,8 +486,8 @@ walks through the whole setup and a first test.
 
 ```bash
 hermes review-loop triage --loop "<loop-id>"
-hermes review-loop triage --loop "<loop-id>" --enable --profile "<triage-profile>" --author "<issue-author-login>" --labels bug,feature,docs,question,P0,P1,P2,P3 --dry-run
-hermes review-loop triage --loop "<loop-id>" --enable --profile "<triage-profile>" --author "<issue-author-login>" --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token "<hook-admin-login>"
+hermes review-loop triage --loop "<loop-id>" --enable --triage-profile "<triage-profile>" --author "<issue-author-login>" --labels bug,feature,docs,question,P0,P1,P2,P3 --dry-run
+hermes review-loop triage --loop "<loop-id>" --enable --triage-profile "<triage-profile>" --author "<issue-author-login>" --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token "<hook-admin-login>"
 hermes review-loop triage --loop "<loop-id>" --disable --admin-token "<hook-admin-login>"
 ```
 
@@ -539,7 +539,7 @@ may preserve activation; do not assume every update pauses a live hook.
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--enable` |  |  | turn triage on (or change it): writes its route, shim and, with --admin-token, its issues hook (paused until arm) (one of `--enable`, `--disable`) |
 | `--disable` |  |  | turn triage off: removes its route, shim and (with --admin-token) hook (one of `--enable`, `--disable`) |
-| `--profile` | `PROFILE` |  | Hermes profile whose model triages |
+| `--triage-profile` | `PROFILE` |  | Hermes profile whose model triages |
 | `--author` | `AUTHOR` (repeatable) |  | GitHub login whose new issues are triaged (repeatable); anyone else's are ignored |
 | `--labels` | `LABELS` |  | comma-separated labels triage may apply, e.g. bug,feature,docs,question,P0,P1,P2,P3 |
 | `--max-labels` | `MAX_LABELS` |  | at most this many labels per issue (default 3) |
@@ -642,13 +642,13 @@ uses a credential.
 
 ```bash
 hermes review-loop models --seat reviewer --loop "<loop-id>"
-hermes review-loop models --profile "<reviewer-profile>"
+hermes review-loop models --profile-name "<reviewer-profile>"
 ```
 
 To change the model a seat uses, change that profile's model in Hermes (`hermes -p "<reviewer-profile>" model`).
 Normally the loop uses the profile model; explicit runtime overrides and legacy fallback take precedence as documented in [Configuration](configuration.md).
 
-Pass exactly one of `--profile` or `--seat`; the handler, not an argparse mutually exclusive
+Pass exactly one of `--profile-name` or `--seat`; the handler, not an argparse mutually exclusive
 group, enforces this. `--loop` selects the seat's loop (omission requires exactly one loop);
 it has no role with an explicit profile. Catalog and profile-declared models are reported;
 this is not a live provider entitlement check. Exit 1 means profile/provider/catalog could
@@ -657,7 +657,7 @@ not supply models. The Hermes example's `-p` selects which profile's model to ch
 <!-- flags:models -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
-| `--profile` | `PROFILE` |  | Hermes profile name |
+| `--profile-name` | `PROFILE` |  | Hermes profile name |
 | `--seat` | `reviewer` \| `fixer` \| `adjudicator` |  | use this seat's profile from the loop config |
 | `--loop` | `LOOP` |  | loop id for --seat (default: the only loop) |
 <!-- /flags -->
