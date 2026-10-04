@@ -701,7 +701,7 @@ DAILY_TURNS_MAX = 1000
 # reads one diff and judges it fits the small default; one that must find its way into the code
 # and change it, from a review or from an issue alone, needs room. The turn budget still bounds
 # every turn's wall clock. Model calls follow from steps (``model_calls``).
-DEFAULT_MAX_STEPS = {"reviewer": 24, "adjudicator": 24, "triage": 24,
+DEFAULT_MAX_STEPS = {"reviewer": 60, "adjudicator": 40, "triage": 24,
                      "fixer": 80, "issue_fixer": 80}
 MAX_STEPS_RANGE = (8, 200)
 

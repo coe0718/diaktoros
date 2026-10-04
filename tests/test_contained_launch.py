@@ -14,7 +14,7 @@ it probes ``sandbox:secrets``, ``sandbox:network`` and ``sandbox:env`` on the re
 """
 from __future__ import annotations
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
-
+import contextlib
 import os
 from pathlib import Path
 import subprocess
@@ -136,7 +136,8 @@ class ProductionLaunch(Base):
             (self.root / name).mkdir()
 
     def launch(self, role: str, *, kill: subprocess.TimeoutExpired | None = None,
-               activity: str = "", observed: dict | None = None) -> dict:
+               activity: str = "", observed: dict | None = None, rc: int = 0,
+               provider_error: str = "") -> dict:
         """Run ``run_turn`` for ``role`` with the launcher spied; return what it was handed.
 
         ``kill``: the launcher raises it instead, as ``contained.run`` does at the budget; the
@@ -152,12 +153,13 @@ class ProductionLaunch(Base):
             seen["argv"] = contained.command(**{k: v for k, v in kw.items() if k != "timeout"})
             if kill is not None:
                 raise kill
-            return subprocess.CompletedProcess([], 0, "", "")
+            return subprocess.CompletedProcess([], rc, "agent output", "")
 
         class Inference:
             def __init__(self, directory, *a, **k):
                 self.directory = directory
                 self.last_activity = activity
+                self.last_error = provider_error
                 seen["quota"] = k.get("quota")
 
             def __enter__(self):
@@ -176,8 +178,9 @@ class ProductionLaunch(Base):
              mock.patch.object(trusted_turn.inference_proxy, "InferenceCapability", Inference), \
              mock.patch.object(contained.Path, "is_socket", return_value=True), \
              mock.patch.object(contained, "run", side_effect=run), \
-             self.assertRaises(trusted_turn.TurnBudgetExceeded if kill is not None
-                               else trusted_turn.TurnDenied):  # the spy: no scoped write
+             (self.assertRaises(trusted_turn.TurnBudgetExceeded if kill is not None
+                                else trusted_turn.TurnDenied) if kill is not None or rc == 0
+              else contextlib.nullcontext()):  # the spy: no scoped write
             trusted_turn.run_turn(self.loop, scope, source=self.root, venv=self.root / "venv",
                                   runtime=self.runtime, rust=self.root / "rust",
                                   upstream="https://model.invalid", key="k", model="m",
@@ -390,7 +393,10 @@ class ProductionLaunch(Base):
         for role, default in config.DEFAULT_MAX_STEPS.items():
             with self.subTest(role=role):
                 self.assertEqual(self.caps(role), (default, config.model_calls(default)))
-        self.assertEqual(config.DEFAULT_MAX_STEPS["reviewer"], 24)
+        # A reviewer that verifies (runs tests, reproduces) ran out at 24 live (#282) with its
+        # verdict written and unsubmitted; triage, which only reads one issue, keeps 24.
+        self.assertEqual((config.DEFAULT_MAX_STEPS["reviewer"], config.DEFAULT_MAX_STEPS["triage"]),
+                         (60, 24))
         self.assertEqual(config.model_calls(24), 32)              # what every seat shipped with
         for role in ("fixer", "issue_fixer"):
             self.assertGreater(config.DEFAULT_MAX_STEPS[role], config.DEFAULT_MAX_STEPS["reviewer"])
@@ -405,7 +411,7 @@ class ProductionLaunch(Base):
         self.assertEqual(self.caps("reviewer"), (40, 50))
         self.assertEqual(self.caps("fixer"), (150, 187))
         self.assertEqual(self.caps("issue_fixer"), (150, 187))
-        self.assertEqual(self.caps("adjudicator"), (24, 32))     # unset: its role default
+        self.assertEqual(self.caps("adjudicator"), (40, 50))     # unset: its role default
 
     def test_a_budget_kill_keeps_the_output_and_the_agents_last_step(self):
         """Live #271: two budget kills reported only that the clock ran out. The sandbox's
@@ -418,6 +424,17 @@ class ProductionLaunch(Base):
         self.assertIn("[last agent activity before the kill] call terminal", observed["stdout"])
         self.assertIn("run_tests.py", observed["stdout"])
         self.assertEqual(observed["stderr"], "session_id: x")
+
+    def test_a_failed_turn_names_the_providers_own_error(self):
+        """Live #281: Hermes said only "HTTP 400 — Error response"; the proxy kept why."""
+        observed = {}
+        self.launch("reviewer", rc=1, observed=observed,
+                    provider_error="HTTP 400: maximum context length is 131072 tokens")
+        self.assertIn("agent output", observed["stdout"])
+        self.assertIn("[last provider error] HTTP 400: maximum context length", observed["stdout"])
+        quiet = {}
+        self.launch("reviewer", rc=1, observed=quiet)               # no error recorded: no line
+        self.assertNotIn("[last provider error]", quiet["stdout"])
 
     def caps(self, role: str) -> tuple[int, int]:
         seen = self.launch(role)

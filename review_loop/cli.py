@@ -4293,7 +4293,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--fixer-daily-turns", type=int, default=None,
                             help="most fixer turns per day on this loop (0 removes the cap)")
         change.add_argument("--reviewer-max-steps", type=int, default=None,
-                            help="agent steps one reviewer turn may take, 8-200 (0 = default 24)")
+                            help="agent steps one reviewer turn may take, 8-200 (0 = default 60)")
         change.add_argument("--fixer-max-steps", type=int, default=None,
                             help="agent steps one fixer or issue-fix turn may take, 8-200 "
                                  "(0 = default 80)")

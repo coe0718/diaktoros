@@ -48,6 +48,12 @@ def dependency_cache(loop: dict) -> Path | None:
 KILL_GRACE_S = 30
 
 
+def _provider_note(inference) -> str:
+    """The provider's last error during this turn, as a line for the run's output tail."""
+    error = getattr(inference, 'last_error', '')
+    return f"\n[last provider error] {error}" if error else ""
+
+
 def _decoded(value) -> str:
     """Captured sandbox output as text, whatever form a timeout carried it in."""
     if isinstance(value, bytes):
@@ -642,12 +648,17 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                         doing = getattr(inference, 'last_activity', '')
                         observed.update(
                             stdout=_decoded(exc.output)[-4000:]
-                            + (f"\n[last agent activity before the kill] {doing}" if doing else ""),
+                            + (f"\n[last agent activity before the kill] {doing}" if doing else "")
+                            + _provider_note(inference),
                             stderr=_decoded(exc.stderr)[-4000:])
                     raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None
                 if observed is not None:
                     observed.update(returncode=result.returncode,
-                                    stdout=result.stdout[-4000:], stderr=result.stderr[-4000:],
+                                    # A failed turn names the provider's own error (#281: Hermes
+                                    # reported only "HTTP 400 — Error response").
+                                    stdout=result.stdout[-4000:]
+                                    + (_provider_note(inference) if result.returncode else ''),
+                                    stderr=result.stderr[-4000:],
                                     submissions=[dict(entry) for entry in broker.recorded],
                                     # The provider 429'd this turn: when its window reopens (#219).
                                     rate_limited_until=getattr(inference, 'rate_limited_until',
