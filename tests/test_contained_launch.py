@@ -151,6 +151,7 @@ class ProductionLaunch(Base):
         class Inference:
             def __init__(self, directory, *a, **k):
                 self.directory = directory
+                seen["quota"] = k.get("quota")
 
             def __enter__(self):
                 self.directory.mkdir()
@@ -369,6 +370,30 @@ class ProductionLaunch(Base):
                 self.assertEqual(hermes.count("-t"), 1, hermes)
                 self.assertEqual(hermes[hermes.index("-t") + 1], "terminal,file")
                 self.assertFalse([arg for arg in entry if arg.startswith("--toolset")], entry)
+
+
+    def test_each_role_gets_its_own_step_and_model_call_caps(self):
+        """A writing seat gets room to find its way into the code; a judging seat does not (#271).
+
+        The agent's step cap is on Hermes's command line, the model-call cap on the host proxy,
+        and both come from the one table, for every role run_turn accepts."""
+        self.assertEqual(set(trusted_turn.STEP_CAPS), set(trusted_turn.TOOLS))
+        for role, (steps, calls) in trusted_turn.STEP_CAPS.items():
+            with self.subTest(role=role):
+                seen = self.launch(role)
+                entry = seen["kwargs"]["entry"]
+                hermes = entry[entry.index("/opt/venv/bin/hermes"):]
+                self.assertEqual(hermes.count("--max-turns"), 1, hermes)
+                self.assertEqual(hermes[hermes.index("--max-turns") + 1], str(steps))
+                self.assertEqual(seen["quota"], calls)
+                self.assertGreaterEqual(calls, steps)
+                # The proxy refuses a quota above its ceiling at construction: a table entry it
+                # cannot grant fails every turn of that role (caught in the sandbox tests).
+                self.assertLessEqual(calls, trusted_turn.inference_proxy.MAX_CALLS)
+        # The judging seats keep the caps they shipped with; the writing seats get more.
+        self.assertEqual(trusted_turn.STEP_CAPS["reviewer"], (24, 32))
+        for role in ("fixer", "issue_fixer"):
+            self.assertGreater(trusted_turn.STEP_CAPS[role][0], trusted_turn.STEP_CAPS["reviewer"][0])
 
 
 class EnvironmentScrub(Base):

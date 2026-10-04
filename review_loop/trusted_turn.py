@@ -46,6 +46,13 @@ def dependency_cache(loop: dict) -> Path | None:
 # request to the budget. The sandbox is SIGKILLed only this long after, so Hermes's clean stop
 # wins the race instead of a kill landing mid-tool-call (#49).
 KILL_GRACE_S = 30
+# Per role: (agent steps, model calls through the proxy). A turn that reads one diff and returns a
+# verdict fits the small pair; a seat that must find its way into the code and then change it, from
+# a review's findings or from an issue alone, used every step exploring and ended with nothing
+# written (live, #271). The turn budget still bounds every role's wall clock and spend. The model
+# calls run a little above the steps: a step can make more than one (a retry, a compression).
+STEP_CAPS = {'reviewer': (24, 32), 'adjudicator': (24, 32), 'triage': (24, 32),
+             'fixer': (80, 100), 'issue_fixer': (80, 100)}
 # After the sandbox is gone, a broker request already in flight (a push is several GitHub calls
 # plus git fetch/push, each bounded at 90s) is let finish instead of abandoned: abandoning it
 # leaves the push intent unresolved and quarantines the run. The worker's heartbeat keeps the
@@ -597,7 +604,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 raise TurnDenied('scratch socket directory path too long')
             inference = stack.enter_context(inference_proxy.InferenceCapability(
                 sockets / 'i', upstream, None if credential is not None else key,
-                model=proxy_model or model, quota=32, api_mode=api_mode, credential=credential))
+                model=proxy_model or model, quota=STEP_CAPS[scope.role][1], api_mode=api_mode,
+                credential=credential))
             broker_root = sockets / 'b'
             broker_root.mkdir(mode=0o700)
             broker = stack.enter_context(broker_ipc.RunBroker(
@@ -609,7 +617,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                            'bridge', '--', '/opt/venv/bin/python', '/opt/venv/bin/hermes', 'chat',
                            '--query-file', '/opt/query', '--oneshot', '-Q',
                            '--provider', provider, '-m', model, '-t', 'terminal,file',
-                           '--ignore-rules', '--max-turns', '24', '--run-budget', str(timeout)]
+                           '--ignore-rules', '--max-turns', str(STEP_CAPS[scope.role][0]),
+                           '--run-budget', str(timeout)]
                 grace = KILL_GRACE_S
                 try:
                     result = contained.run(code=code, venv=venv, runtime=runtime,
