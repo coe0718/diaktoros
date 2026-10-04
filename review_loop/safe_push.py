@@ -425,8 +425,11 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
     """Push an issue fix (#214) as one commit on ``base`` to the new branch ``branch``.
 
     Authorized against the live issue (``broker.authorize_issue_fix``) before construction and
-    again just before the push; the push's lease requires the branch to be absent, so an
-    existing branch (a second fix for the same issue) is refused, never overwritten. Opening the
+    again just before the push. An existing branch (a second fix for the same issue) is denied
+    by a pre-write existence check, before any push; the push's lease, which requires the
+    branch to be absent, remains the guard against a race. It is never overwritten. Deleting
+    the branch alone does not make the run retryable (the ``issue_fixes`` row counts as write
+    evidence); see docs/issues.md for recovery. Opening the
     PR is the caller's next step, after this returns a confirmed ref.
     """
     base_head, files, patch = _manifest(manifest)
@@ -459,7 +462,8 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
     elif read_error or not isinstance(existing, dict):
         raise broker.BrokerDenied("could not check whether the fix branch exists")
     else:
-        raise broker.BrokerDenied(f"{branch} already exists — delete it to retry")
+        raise broker.BrokerDenied(f"{branch} already exists — inspect it, and see docs/issues.md "
+                                  "(uncertain/post-write recovery) before any new attempt")
     new_head = None
     attempt_started = False
 
