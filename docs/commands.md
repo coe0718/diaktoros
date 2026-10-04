@@ -72,8 +72,8 @@ No setting named here is an extra CLI flag.
 | `--host` | HTTP(S) gateway origin, optional port, no path/query/fragment/userinfo | Fresh unset; `init` requires it even without hooks. HTTPS is recommended. Trailing slash stripped. `set` refuses clearing it. |
 | `--skill`, display-name options | String; fresh empty | Skill is a prompt instruction, not installed by this flag. Plugin skill identifier: `hermes-review-loop:review-loop`. Agent display names are cosmetic, not identities. |
 | `--attribution`, `--comment` | Exactly `on` or `off` | Attribution fresh on; triage comments fresh off. Attribution signs only plugin-mediated writes. |
-| Observer events | Comma-separated `opened,handoff,verdict,approved,escalation,ruling,stall,closed`; blank = all | Unknown-only input yields a misconfigured feed rather than a working subscription; inspect `status`. |
-| Observer digest | Integer minutes; 0 = per-transition, positive = watchdog-flushed batches | Negative values mark observer misconfigured. Muting preserves configuration; disabling removes its route but retains delivery history. |
+| Observer events | Comma-separated `opened,handoff,verdict,approved,escalation,ruling,stall,closed`; blank = all | Unknown names remain stored without a misconfiguration warning. Unknown-only input matches no transitions, so the feed is silent; use the listed names. |
+| Observer digest | Integer minutes; non-positive = per-transition, positive = watchdog-flushed batches | Negative values silently normalize to immediate delivery, not a misconfigured feed. Hand-edited unparseable values do the same; CLI flags require integers. Muting preserves configuration; disabling removes its route but retains delivery history. |
 | Delivery targets | Gateway/Hermes delivery string; observer fresh `telegram`, watchdog fresh `local` | Parser does not enumerate or verify configured destinations. Observer sends notices to another chat; verify privacy first. |
 | `--schedule` | Hermes cron schedule string, e.g. `15m`; init omitted = no cron, setup default `15m` | Delegated to Hermes cron parsing, not independently validated by plugin argparse. One shared watchdog job is reused. |
 
@@ -187,10 +187,8 @@ your flags and the settings form are the answers and every confirmation is yes, 
 which still needs `--arm`. Without a terminal (in a script), it refuses unless you pass `--yes`.
 
 `setup` never turns on adjudication (it passes no `--adjudicator-route` to `init`) or issue
-triage. To add an adjudicator afterwards, add an `adjudicator` block to the loop file
-`"<hermes-home>/review-loops.d/<loop-id>.json"`, for example
-`"adjudicator": {"route": "<adjudicator-route>", "profile": "<adjudicator-profile>"}`, then write its route with
-`hermes review-loop apply --loop "<loop-id>" --recreate-routes`. For triage, see [`triage`](#triage).
+triage. To add an adjudicator afterwards, follow [the existing-loop instructions](configuration.md#adjudication).
+For triage, see [`triage`](#triage).
 
 **Defaults and limits.** Seat/login/host defaults come from the form; missing answers are
 prompted interactively. Token paths default to the form or a suggested key-file path. Runtime
@@ -435,9 +433,8 @@ read hook listings but do not make requested writes. Route/hook rebinds are read
 rolled back on failure; installed gate shims and explicitly requested route recreation have
 separate lifecycles, so inspect partial-failure output. Missing routes require intent repair
 or explicit recreation; apply never silently invents them.
-**Current implementation gap:** `apply_settings` overlays attribution, but `_apply` omits it
-from its change list. An attribution-only form change can report “already matches” without
-saving it; use `set --attribution on|off` for reliable attribution changes and verify status.
+To change signing explicitly, use `hermes review-loop set --loop "<loop-id>" --attribution on`
+or `--attribution off`, then verify `status`.
 A dry run also previews before the live busy-seat check; it is not proof a busy rebind will run.
 
 <!-- flags:apply -->
@@ -503,8 +500,9 @@ hermes review-loop triage --loop "<loop-id>" --disable --admin-token "<hook-admi
   triage writes nothing.
 - **It labels as `--login`** (default: the reviewer seat's account), which needs `issues: write`
   and can never be the reader.
-- With `--admin-token`, `--enable` also creates the repo hook for `issues` events, paused: run
-  [`arm`](#arm) afterwards. Without it, `apply --hooks` creates the hook later.
+- With `--admin-token`, `--enable` also reconciles the repo hook for `issues` events. A new hook
+  is created paused: run [`arm`](#arm) afterwards. An existing hook can remain active.
+  Without it, `apply --hooks` creates the hook later.
 
 **Issue fixes.** With `--fix-label LABEL --maintainer LOGIN`, a maintainer applying that label
 to an allowlisted author's open issue hands it to the fixer seat. It opens a PR from a new branch
@@ -524,6 +522,8 @@ subsequent enables reuse omitted values. Authors and maintainers are repeatable 
 lists, not append-to-old-list updates. Labels: 1–100 distinct names (case-insensitive), each
 1–50 characters, no comma, braces, backtick or control characters; `--max-labels` is 1–10,
 fresh default 3. The handler treats zero as omitted, not an allowed zero-label limit.
+Triage capacity and budget are file-only settings (`seats.triage.concurrency` and
+`seats.triage.turn_budget_s`); this command offers only `--daily-turns` for seat pacing.
 `--fix-label ""` disables issue handoff; a nonempty fix label must not be a triage label and
 requires maintainers. `--daily-turns 0` removes the triage cap. `--token` maps paths for the
 selected writing/admin identities; it never accepts token values. A first enable's default
@@ -564,6 +564,8 @@ the token files, the routes in the gateway's registry, the gate shims, the runti
 each seat's model (from its profile, without using a credential), the watchdog job, the clone,
 the state directory, the gateway's reachability and the repo hooks. Each line is ✅ verified,
 ❌ absent or mismatched (with a `fix:` line), or ⚠️ unknown (it could not tell).
+An unknown hook state is not a paused hook. Verify it with an authorized hook-admin account;
+see [account access and token permissions](accounts.md#choose-pat-type-and-permissions).
 
 ```bash
 hermes review-loop doctor --loop "<loop-id>"

@@ -43,6 +43,7 @@ The plugin uses token files and Python REST calls; **`gh auth login` is not requ
 | Role | User-owned repository | Fine-grained permissions when supported for an organization/resource owner |
 | --- | --- | --- |
 | Owner-reader | Fine-grained selected-repo token is appropriate | `contents: read`, `pull_requests: read`, `repository_hooks: read` |
+| Separate collaborator reader | Classic `repo`; cannot administer the owner's hooks, so hook state is **unknown**, not paused | Read-only fine-grained credentials can be used where the account/resource-owner model supports them |
 | Reviewer | Collaborator seats commonly require classic `repo` | `pull_requests: write` |
 | Fixer | Classic `repo` for collaborator seat | `contents: write`, `pull_requests: write` |
 | Adjudicator comment login | Classic `repo` for collaborator | `pull_requests: write` |

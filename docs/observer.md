@@ -130,7 +130,9 @@ A positive `digest_min` queues transitions until the oldest entry has aged past 
 window. The watchdog flushes them on a sweep; it is **not an independent timer** and
 30 minutes does not guarantee delivery at minute 30. No scheduled/working watchdog,
 no regular digest flush. Known-paused loop hooks skip the loop sweep, so queued batches
-can remain owed until normal sweeps resume. Batch claims precede POST; uncertain batches
+can remain owed until normal sweeps resume. That pause also skips route/shim self-heal,
+observer retries and pre-write worker retries, not just digest flush/PR scanning.
+Batch claims precede POST; uncertain batches
 keep members attached rather than emitting duplicates separately.
 
 ## Mute, disable and restore

@@ -212,6 +212,19 @@ the shell running selftest, and restart/reload through your normal service proce
 Production workers inherit them. Raising a cap increases disk exposure, not network
 permission; verify a fresh turn and the actual filesystem failure before increasing it.
 
+## The loop stops with RealHomeError or RealNetworkError
+
+These are **test-harness tripwires**, not production sandbox breach reports.
+They arm only when `REVIEW_LOOP_TEST_HOME_GUARD=1` **and**
+`REVIEW_LOOP_TEST_GUARD_SENTINEL` names an existing harness sentinel file
+(`review_loop/config.py:test_guard_active`). The variable alone does not arm them.
+
+In a real gateway, inspect its launch environment/service configuration for leaked test
+settings, unset `REVIEW_LOOP_TEST_HOME_GUARD` there, and restart the gateway through your
+normal service procedure. Clearing only the CLI shell does not fix the gateway's environment.
+In a real test run, keep the guards enabled and fix the escaped fixture/home/network access;
+never disable test guards to obtain a passing test or permit publication.
+
 ## Why isn't this PR moving?
 
 ```bash
@@ -307,8 +320,11 @@ hermes review-loop retry --loop "<loop-id>" --pr "<pr-number>" --seat reviewer
 
 `--seat` restricts candidates; omitted, it considers eligible problem runs at the newest
 offerable ledgered head. Retry resets automatic retry accounting, uses the current seat
-budget, and requests worker recovery. It refuses potentially written, uncertain and
-reconciled runs. It is not webhook replay.
+budget, and requests worker recovery. It only re-arms `failed`/`waiting` pre-write runs or the supported fixer push-policy
+cancellations; superseded cancellations are refused. Any review receipt, push intent or
+confirmation, ruling, triage result or issue-fix record prohibits retry, as does current
+uncertainty or an operator-reconciliation/post-write quarantine history. It is not webhook replay.
+Even a broker record marked denied or nothing is a record, not permission to re-arm.
 
 ### Reconcile an uncertain run only after inspection
 
@@ -324,10 +340,13 @@ python -m review_loop.run_supervisor reconcile "<ledger-path>" "<run-id>" --reas
 ```
 
 Use an environment where the module is installed, or run from the plugin checkout.
-`status` prints all run rows as JSON. `<ledger-path>` is the SQLite file, not a directory;
-the next positional argument is the exact run ID. `--reason` stores your investigation;
+`status` prints JSON for at most 100 problem rows, oldest first: failed, waiting,
+uncertain and supported push-policy cancellations, not every run. `<ledger-path>` is the SQLite file, not a directory;
+the next positional argument is the exact run ID. `--reason` stores your investigation (nonempty, at most 512 characters);
 `--acknowledge-no-live-worker` is mandatory and cannot replace checking the child.
-Reconciliation releases the uncertainty hold but **does not replay the old turn**.
+A missing launch intent also refuses reconciliation: worker identity cannot be established.
+An uncertain run retains its seat slot until reconciled; at concurrency one it can stall
+other work on that seat. Reconciliation releases the uncertainty hold but **does not replay the old turn**.
 It records an operator-reconciliation reason that still prohibits retry; a genuinely
 new head gets fresh work. Never delete receipts, launch intent, locks or the database
 to make retry pass. Host recreation after ledger loss reports missing history when
@@ -344,7 +363,9 @@ The shared watchdog requires no model conversation. It drains eligible queues, r
 due pre-write retries, restores recorded routes/shims, reports stalls/read failures,
 retries safe observer failures, flushes digests, and emits supervisor operator notices.
 The operator outbox is separate from the [observer](observer.md). Known-paused hooks
-suppress scan/drain; unreadable hooks warn instead of masquerading as a deliberate pause.
+skip the loop sweep, including scan/drain, route/shim self-heal, observer retries/digest
+flushes and pre-write worker retries. Recorded gate-failure alerts can still be reported
+without re-drive. Unreadable hooks warn instead of masquerading as a deliberate pause.
 Authentication failures alert immediately; other read failures alert after repeated
 sweeps, then on cooldown. A first successful armed sweep snapshots old heads rather
 than calling old history newly stalled. New head observations, not commit author dates,

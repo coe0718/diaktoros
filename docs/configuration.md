@@ -111,6 +111,8 @@ A named profile must start with an ASCII letter or digit and then contain only l
 
 The reader, reviewer, fixer, and optional adjudicator comment identity must be separate accounts with separate token files. Three identities suffice when rulings are operator-only. The adjudicator comment login must also be outside `fixers` and `reviewers`. File identity checks include resolved paths and, where available, filesystem identity: symlinks or hardlinks do not establish independence. Runtime broker checks additionally verify live `/user` principals before writes.
 
+On a user-owned repository, a separate reader account is a collaborator, not a read-only repository role, and commonly needs a classic `repo` PAT because of fine-grained collaborator restrictions. Repository access and token scope are separate from the reader's read-only loop role. Do not assume collaborator access grants hook administration; use an authorized, mapped hook admin where needed. An unknown hook listing/state is not evidence that hooks are paused. See [Accounts](accounts.md#choose-pat-type-and-permissions).
+
 Token paths supplied through settings and the optional adjudicator identity are inspected for an absolute path (`~` expands), regular-file target, current-user ownership, and no group/other permissions. Mode `0600` is the recommended shape; the metadata check is not a requirement for an exact `0600` bit pattern. GitHub token-path inspection follows symlinks and checks their targets. General installation credential verification also reads mapped files to reject empty/unreadable credentials. Metadata inspection and model-description preflight are not the same as credential verification or a live selftest.
 
 To repair a missing reader, `set` has a narrow path that first verifies the rest of the file as if the reader were present:
@@ -144,7 +146,7 @@ hermes review-loop set --loop "<loop-id>" --reviewer-daily-turns 20
 hermes review-loop set --loop "<loop-id>" --reviewer-daily-turns 0
 ```
 
-The last command removes the reviewer's stored cap. Adjudicator overrides are file-level settings; triage has its own CLI controls. `issue_fixer` has no independent persisted seat configuration; see [Issue triage and issue fixes](#issue-triage-and-issue-fixes).
+The last command removes the reviewer's stored cap. Adjudicator overrides are file-level settings. Triage concurrency and turn budget are also file-only; `triage --enable --daily-turns` changes its daily cap (zero removes it). `issue_fixer` has no independent persisted seat configuration; see [Issue triage and issue fixes](#issue-triage-and-issue-fixes).
 
 ## Timers and turn budgets
 
@@ -258,7 +260,7 @@ hermes review-loop set --loop "<loop-id>" \
 
 The gate writes a durable breach marker, then enqueues a ruling keyed by `breach:<rounds>` at the head. The worker rechecks PR state, draft/base/head/author, spent cap, approval, and marker before exporting the head read-only. The adjudicator may record one `ACCEPT`, `REJECT`, or `RESPEC` ruling through the broker; it never merges, pushes, or submits a review. The host records the ruling, issues the observer notice, and optionally posts the PR comment. The watchdog's operator outbox carries every ruling's reason even with no feed, a muted feed, or event filtering.
 
-Without a route, only the marker is written and the operator decides what to do. Failed enqueue leaves `delivery-pending` for watchdog retry; ledger uniqueness deduplicates re-delivery. An ambiguous ruling-comment POST is `uncertain` and is not automatically retried.
+Without a route, only the marker is written and the operator decides what to do; use [the existing-loop instructions above](#adjudication) to add adjudication later. Failed enqueue leaves `delivery-pending` for watchdog retry; ledger uniqueness deduplicates re-delivery. An ambiguous ruling-comment POST is `uncertain` and is not automatically retried.
 
 ## Observer configuration
 
@@ -269,8 +271,8 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `observer.route` | None | Required for a hand-written active feed. CLI `init`/`set` can generate `<id>-observe` when only a profile is named. |
 | `observer.profile` | `default` | Hermes profile supplying the delivery destination. |
 | `observer.deliver` | `telegram` | Gateway-supported real delivery target, such as `telegram` or `discord`. `init`/`set` refuse `log`: a delivery-only file/log destination cannot provide the feed. |
-| `observer.events` | All eight events | List or comma/whitespace-separated string. Missing or empty means **all**, not none. Normalization lowercases, deduplicates, and sorts strings. Unknown names are not rejected by this loader; only actual matching events send. |
-| `observer.digest_min` | `0` | Positive integer minutes batch notices for a watchdog flush; zero means immediate notices. Unparseable/non-positive values normalize to immediate mode. No explicit upper bound. |
+| `observer.events` | All eight events | List or comma/whitespace-separated string. Missing or empty means **all**, not none. Normalization lowercases, deduplicates, and sorts strings. Unknown names remain stored without a misconfiguration warning; unknown-only input silently matches no transitions. Use the event names below. |
+| `observer.digest_min` | `0` | Positive integer minutes batch notices for a watchdog flush. Unparseable/non-positive values silently normalize to immediate mode, not a misconfigured feed. CLI flags require integers. No explicit upper bound. |
 | `observer.mute` | `false` | Stop delivery while retaining configuration. Use a JSON boolean: this lenient loader uses truthiness, so the string `"false"` is truthy and would mute it. |
 
 | Event | Transition |
@@ -331,6 +333,8 @@ Delivery is durably keyed by transition. Only definite **pre-POST** failures wit
 | `seats.triage.daily_turns` | No cap | JSON integer 1–1000. |
 
 Only the listed keys are allowed in `triage`. `seats.triage` accepts only capacity, turn budget, and daily cap; put its identity in `triage.login` and model profile in `triage.profile`.
+Concurrency and turn budget must be edited in the loop file; the `triage` command exposes
+`--daily-turns` but no capacity or budget flags.
 
 ### Issue-fixer inheritance
 
@@ -364,9 +368,10 @@ The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plu
 | `reviewer_token_file`, `fixer_token_file` | Blank | `tokens` entry for the selected login; path only, with metadata checks before writes. |
 | `adjudicator_profile` | Blank | `adjudicator.profile`, only on a loop already having an adjudicator route. |
 | `adjudicator_login`, `adjudicator_token_file` | Blank | Optional adjudicator comment identity/path, only when an adjudicator route exists. |
-| `attribution` | `true` | Overlay targets `attribution` when explicitly named; attribution-only CLI apply currently misses this change (see below). |
+| `attribution` | `true` | Overlay targets `attribution` when explicitly named. For an explicit signing change, use `set --attribution on` or `off` for the named loop. |
 
-**Attribution-only apply limitation:** `config.apply_settings` overlays this field, but CLI `_apply` omits it from the change list used to decide whether to publish loop JSON. A form push changing only attribution can report “already matches” without persisting it. Use `set --attribution on` or `set --attribution off`, with `--loop "<loop-id>"` selecting the exact loop, and verify `status`. Other persisted form changes may carry the overlay incidentally; do not depend on that.
+Use `hermes review-loop set --loop "<loop-id>" --attribution on` or `--attribution off`
+to change signing, then verify `status`.
 
 For a new loop, CLI flags and supplied settings contribute to its initial values. For `apply`, absent, blank, or whitespace-only form values mean **not set here**, not “reset to schema default.” An empty form leaves an existing loop's numbers and identities alone. Form booleans accept `true/on/yes/1` and `false/off/no/0`; loop JSON booleans remain strict. Invalid setting conversions can fall back to schema defaults before loop validation; do not use that as input validation for hand edits.
 

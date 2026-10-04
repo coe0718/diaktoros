@@ -77,7 +77,7 @@ signed pings, not only the presence of a route.
 | Draft, wrong base or untrusted author | Explain live eligibility | Make intended PR eligible; don't broaden author policy to troubleshoot |
 | Request came from an unaccepted account | Trace gate outcome | Use an allowlisted sender and configured reviewer |
 | Pushed a commit but no review request | GitHub requested-reviewers and delivery action | Explicitly request the configured reviewer |
-| Missing/invalid private runtime | Doctor/selftest; gate error | Fix runtime before redelivery; inspect whether durable work already exists |
+| Missing/invalid private runtime | Doctor/selftest; gate error | Fix runtime, inspect durable work, then drain the reviewer queue; redeliver only if no work was admitted |
 | Same-head verdict/run already exists | Explain and ledger | Wait, answer current verdict, or inspect uncertain run; don't create duplicates |
 | Event never reached gateway | GitHub Recent Deliveries response, gateway log | Fix URL/profile/origin/signature; route name alone is insufficient |
 | Base situation changed | Explain stacked/base transition | Follow fresh-review requirement; old same-head verdict may not count |
@@ -118,7 +118,9 @@ permission. Do not treat a failed broker push as a harmless retryable model fail
 
 **Cause/action:**
 
-- No adjudicator route: the marker intentionally leaves the decision to you.
+- No adjudicator route: the marker intentionally leaves the decision to you. To add one
+  later, follow the loop-file block and `apply --recreate-routes` instructions in
+  [setup](commands.md#setup); do not reset the cap marker.
 - Delivery pending: watchdog retries eligible adjudicator enqueue; a marker is not
   confirmation that the model started.
 - Adjudicator running: allow its own turn budget, not the reviewer's shorter budget.
@@ -140,7 +142,7 @@ Both gateway and CLI must address the same home. Never place credentials in this
 | Mode rejected | File too broadly accessible | Restrict permissions using normal file administration; rerun selftest |
 | Runtime/source/venv path rejected | Moved checkout or changed bundled Python generation | Rerun setup and inspect detected runtime against selected venv |
 | Models resolve in host shell, not worker | Seat profile missing/unresolvable or inconsistent runtime | Inspect configured seat profile/provider/model; don't invent runtime model keys |
-| `RealHomeError` or `RealNetworkError` | Guard detected forbidden real-home/network access | Stop and investigate containment/fixture misuse; never disable guards to publish |
+| `RealHomeError` or `RealNetworkError` | Harness-only test guard is armed (variable plus sentinel) | In a real gateway, find/unset leaked test settings and restart; in tests, fix the fixture without disabling guards. See [tripwire recovery](operations.md#the-loop-stops-with-realhomeerror-or-realnetworkerror) |
 
 ```bash
 hermes review-loop selftest --loop "<loop-id>" --no-model
@@ -149,6 +151,13 @@ hermes review-loop selftest --loop "<loop-id>" --no-model
 `--no-model` skips the tiny paid completion but still exercises containment/runtime.
 A missing runtime can prevent enqueue entirely; a worker spawn failure after commit
 can instead leave a pending row. Determine which before asking GitHub to redeliver.
+After fixing the runtime, request scheduling for already queued reviewer work:
+
+```bash
+hermes review-loop drain --loop "<loop-id>" --seat reviewer
+```
+
+Drain rechecks eligibility; it does not bypass an uncertain run or a queue hold.
 
 ## doctor is all green but selftest fails
 
@@ -196,6 +205,8 @@ retry even when the process exited unsuccessfully. See [operations recovery](ope
 
 **Symptom:** lease/launch outcome unknown, ambiguous review claim, push intent or
 post-write quarantine. Later review/merge hints may be held even if a branch looks right.
+An uncertain run keeps its seat slot until reconciled; at concurrency one it can block
+other work on that seat.
 **Cause:** a worker may still be active, or an external write may have landed before
 its response/receipt was lost. Known accepted pushes can still require post-write checks.
 **Action:** preserve evidence, inspect exact external state, establish no worker remains,
@@ -208,8 +219,9 @@ python -m review_loop.run_supervisor reconcile "<ledger-path>" "<run-id>" --reas
 
 Run in the installed module environment or plugin checkout. `<ledger-path>` is the SQLite
 file; `<run-id>` is exact, not PR number. `--reason` records inspection of reviews,
-comments, remote refs, PR creation and review requests; the explicit acknowledgement
-is mandatory. A live/inaccessible PID blocks release. Reconcile releases the uncertainty
+comments, remote refs, PR creation and review requests (nonempty, at most 512 characters);
+the explicit acknowledgement is mandatory. A live/inaccessible PID or missing launch
+intent blocks release. Reconcile releases the uncertainty
 hold but does not replay the old turn or make it retryable. A new head gets fresh work.
 Observer uncertainty is different and has no general replay CLI; see [observer](observer.md).
 
@@ -222,16 +234,25 @@ are one observer notice per head.
 **Action:** inspect scheduled jobs and exact event/receipt identity. Keep one shared
 watchdog for all loops rather than a second job per loop. Do not delete observations
 or safety state to test deduplication. Two independent delivery paths are not necessarily
-a defect. An uncertain send is never permission to manually replay it blindly.
+a defect. To keep operator stall warnings but omit the observer's duplicate stall path,
+set an explicit event list without `stall` (a blank list means all events):
+
+```bash
+hermes review-loop set --loop "<loop-id>" --observer-events opened,handoff,verdict,approved,escalation,ruling,closed
+```
+
+An uncertain send is never permission to manually replay it blindly.
 
 ## "Claude Code is not installed" in resolver output
 
-**Cause:** the configured provider/backend relies on Claude Code or its DirectSDK
-integration, but the relevant runtime cannot find the required CLI/package. A host
-interactive PATH may differ from the worker's sanitized environment.
-**Action:** inspect the seat's real provider/model and backend requirements, install
-supported prerequisites in the runtime used by Hermes, then run selftest. Do not
-replace real CLI/module/provider names with guessed aliases. DirectSDK usage-limit
+**Cause:** the resolver starts with sanitized `PATH=/usr/bin:/bin`; a Hermes CLI probe
+can print this to stderr even when ordinary API-key or supported OAuth model resolution
+succeeds. The message alone is not a seat failure and does not require installing Claude Code.
+**Action:** inspect the actual resolver result and configured provider/model, then run
+selftest. Only the `claude-subscription-directsdk-experimental` backend here truly needs
+the native executable; its resolver extends PATH to `/usr/local/bin` and the user's
+`.local/bin`. If that backend fails, check its supported CLI/package in the host runtime.
+Do not replace real CLI/module/provider names with guessed aliases. DirectSDK usage-limit
 failures do not provide the same HTTP reset information as the inference-proxy path,
 so a subscription limit may appear as ordinary failure rather than a timed window hold.
 
@@ -332,7 +353,7 @@ hermes review-loop triage --loop "<loop-id>"
 | Closed/PR/changed author before execution | Live issue and ledger error | Expected eligibility refusal |
 | Runtime/enqueue failed | Gate log; run may be absent or pending | Fix cause; inspect durable state before redelivery |
 | Daily cap/model failure | Run error/deadline | Wait or repair proven pre-write failure |
-| Model selected no label | `triage_results` state `nothing` | Valid outcome, not a missing write |
+| Model selected no labels and no comment | `triage_results` state `nothing` | Valid no-write outcome; comment-only triage is not `nothing` |
 | Write denied/uncertain | Result error/stage | Fix authorization or reconcile; never blindly replay |
 
 Use the read-only queries in [issues](issues.md#inspect-results). There is no issues trace
@@ -363,7 +384,14 @@ use `retry --loop "<loop-id>" --pr "<issue-number>" --seat issue_fixer`; each op
 the same meaning as the triage retry above. An uncertain branch push is not fixed by
 deleting the branch and reapplying the label. If the event was rejected before enqueue,
 only after fixing the prerequisite and confirming no durable/possible write should
-an authorized maintainer reapply the label or redeliver the event.
+an authorized maintainer reapply the label or redeliver the event. For an intentional
+new attempt blocked by an existing `review-loop/issue-N` branch, first inspect the
+prior run, branch, PR, comments and review request. Only when that inspection establishes
+a safe new attempt (not an ambiguous or already published result), deliberately remove
+the inspected remote branch so the required absent-ref lease can pass, then reapply the
+label for eligible fresh work or retry an eligible pre-write run. Do not blindly delete
+remote branches: deletion neither erases broker records nor makes recorded work retryable.
+See [issue recovery](issues.md#when-it-doesnt-work).
 
 ## The loop's posts carry a footer or trailer you did not expect
 

@@ -18,11 +18,13 @@ A Hermes plugin for bounded GitHub pull-request review: an isolated **reviewer**
 Replace quoted angle-bracket placeholders before running examples. `ID` is the installed loop id; `N` is a PR number. No shared webhook host is provided.
 
 ```bash
-hermes plugins install "<plugin-owner>/<plugin-repository>"
+hermes plugins install coe0718/hermes-review-loop
 hermes review-loop setup --repo "<owner>/<repository>"
 ```
 
-The installation scanner may ask for confirmation: review its actual findings rather than treating a fixed rating or finding count as a guarantee. `setup` detects runtime paths, previews `init`, installs the requested wiring, schedules the watchdog and runs `doctor` plus `selftest --no-model`. It asks before arming; **decline arming until ready**. Name a hook admin to create paused hooks; leaving that answer blank requires manual hook creation. Re-running keeps an existing loop, not new flag values.
+The plugin currently receives a **caution** scanner verdict. A terminal install shows the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Review them before continuing: typical findings concern subprocess execution (`bwrap`, Git, workers and test fixtures), security-probe code, and setup advice mentioning privileged commands. A caution verdict is not a security audit; counts and classifications can change with the scanner version. **Install from a terminal until the plugin is in the reviewed catalog:** Desktop refuses caution-rated plugins from outside that catalog.
+
+`setup` detects runtime paths, previews `init`, installs the requested wiring, schedules the watchdog and runs `doctor` plus `selftest --no-model`. It asks before arming; **decline arming until ready**. Name a hook admin to create paused hooks. If that answer is blank and hooks are absent, `doctor` fails and setup prints **stopped before arming**, exiting 1; that is expected until you create the hooks manually. Re-running keeps an existing loop, not new flag values.
 
 The [complete onboarding guide](docs/getting-started.md) includes a reproducible noninteractive setup and a flag-by-flag `init` alternative. To preview explicit wiring instead of the wizard:
 
@@ -63,7 +65,7 @@ hermes review-loop selftest --loop ID --pr N --live-turn
 hermes review-loop arm --loop ID
 ```
 
-`--no-model` skips inference, **not GitHub reads**. The next two selftests spend model quota; the live-turn verdict is printed, not posted. `N` must be an eligible open, non-draft, same-repository PR targeting the loop's base. `arm` activates existing matching hooks, using the reader's token unless `--admin-token "<admin-login>"` is supplied. Full checks and their limitations: [Verify and arm](docs/getting-started.md#verify-and-arm).
+`--no-model` skips inference, **not GitHub reads**. The next two selftests spend model quota; the live-turn verdict is printed, not posted. `N` must be an eligible open, non-draft, same-repository PR targeting the loop's base. `arm` activates existing matching hooks and sends a GitHub ping to every hook—a GitHub write—using the reader's token unless `--admin-token "<admin-login>"` is supplied. It exits 1 if a ping is rejected; inspect the output and hook state before continuing. Full checks and their limitations: [Verify and arm](docs/getting-started.md#verify-and-arm).
 
 ## Safety model
 

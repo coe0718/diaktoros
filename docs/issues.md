@@ -101,7 +101,8 @@ a local credential check does not prove issues-write permission. Triage with no
 `--enable`/`--disable` prints settings without updating them.
 
 From an allowlisted author, open a new issue. Check labels/comment on GitHub and the
-ledger below. The model may choose no labels. There is no triage observer notice.
+ledger below. The model may choose no labels and optionally a comment; `nothing` means neither
+labels nor comment. There is no triage observer notice.
 A rejected author never reaches the model and costs no triage turn.
 
 ## Turn on issue fixes
@@ -183,7 +184,7 @@ comment outcome remains unknown.
 | `recorded`, `posting` | Durable record / external write in progress; investigate stale stage |
 | `posted` | Applied result recorded |
 | `skipped` | Live eligibility changed or a triage label was already present |
-| `nothing` | No allowed label chosen |
+| `nothing` | No labels and no comment selected; no write |
 | `denied` | Authorization refused; inspect error |
 | `uncertain` | Some write may have landed; never replay |
 
@@ -216,9 +217,22 @@ already accepted write or stops an in-flight child.
 
 No run row usually means the gate rejected the event or could not enqueue; verify
 runtime, hook delivery and exact author/sender. If durable work exists, inspect it
-before redelivery. Proven pre-write work can use `retry --pr` with the issue number;
-`--seat triage` or `--seat issue_fixer` restricts the retry. A recorded or uncertain
-write is not replayable. Do not delete a branch or receipt simply to bypass the guard.
+before redelivery. Proven pre-write `failed`/`waiting` work can use `retry --pr` with
+the issue number; `--seat triage` or `--seat issue_fixer` restricts the retry to that
+seat's eligible problem runs at the selected ledgered head/base. Superseded cancellations,
+uncertain runs and reconciled runs cannot be retried. **Any** `triage_results` or
+`issue_fixes` row prohibits re-arm, even if its state is `nothing`, `skipped` or `denied`;
+other review/push/ruling write evidence also prohibits replay. Inspect the queries above
+and actual GitHub state rather than treating a failed supervisor row as proof of no write.
+
+An intentional new issue-fix attempt also requires remote `review-loop/issue-N` to be
+absent. Inspect the earlier run, branch, PR, comments and review request first. Only
+when you have established a safe new attempt—not an ambiguous or already published
+result—deliberately remove that inspected remote branch, then have an authorized
+maintainer reapply the label for eligible fresh work (a new base for a distinct durable
+turn), or use `retry` for an eligible pre-write run. No branch is automatically deleted
+or overwritten. Deleting a branch cannot make a recorded/uncertain run retryable;
+never delete receipts or safety history to bypass this boundary.
 
 ## Current limits
 

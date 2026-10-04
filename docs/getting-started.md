@@ -35,14 +35,14 @@ Examples assume the operator/gateway Hermes home is `~/.hermes`. All commands mu
 ## Install the plugin
 
 ```bash
-hermes plugins install "<plugin-owner>/<plugin-repository>"
+hermes plugins install coe0718/hermes-review-loop
 ```
 
-The argument is the plugin's distribution owner/repository, **not** the repository to review. Review the installer scanner's actual findings and confirmation prompt. A scanner pass is not proof of safety: plugins execute trusted host code. Follow the current Hermes instructions if the desktop refuses an installation that requires explicit terminal confirmation.
+This is the plugin's actual distribution source, **not** the repository to review; reviewed-repository examples remain placeholders. The plugin currently receives a **caution** scanner verdict. A terminal install prints the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Typical findings concern subprocesses (`bwrap`, Git, workers and fixtures), security probes, and setup advice mentioning privileged commands; review the actual report rather than assuming a fixed finding count. Plugins execute trusted host code, so a scanner pass is not proof of safety. **Install from a terminal until the plugin is in the reviewed catalog:** Desktop does not install caution-rated plugins from outside that catalog.
 
 ## Choose one setup path
 
-Do not run `init` after `setup` has already created the same loop. `init` refuses an existing id; `setup` keeps existing configuration instead of applying new answers. Use [settings/apply](settings.md) and [commands](commands.md) for later changes.
+Do not use a real `init` run to change a loop already created by `setup`: it refuses an existing id. `init --dry-run` can still preview that id without writing. `setup` keeps existing configuration instead of applying new answers. Use [settings/apply](settings.md) and [commands](commands.md) for later changes.
 
 ### A. Guided setup (recommended)
 
@@ -50,7 +50,7 @@ Do not run `init` after `setup` has already created the same loop. `init` refuse
 hermes review-loop setup --repo "<owner>/<repository>"
 ```
 
-`--repo` names the repository to review; setup asks for omitted logins, profiles, token files, gateway origin and delivery choices. Provide a hook-admin login if you want setup to create paused GitHub hooks. A blank admin answer leaves hooks for manual creation. Decline the final arm prompt until you have finished verification.
+`--repo` names the repository to review; setup asks for omitted logins, profiles, token files, gateway origin and delivery choices. Provide a hook-admin login if you want setup to create paused GitHub hooks. A blank admin answer leaves hooks for manual creation. If those hooks are absent, `doctor` fails and setup prints **stopped before arming**, exiting 1; this is expected until you create them manually and rerun verification. Decline the final arm prompt until you have finished verification.
 
 Setup performs these steps in order:
 
@@ -176,13 +176,13 @@ hermes review-loop status --loop ID
 | --- | --- |
 | `doctor --loop ID` | Checks the selected loop's profiles/models, token files, routes, hooks, clone and watchdog wiring. File checks do not authenticate every account |
 | `selftest --no-model` | Runtime/sandbox and GitHub identity/access preflight; skips model requests, **not network reads**. May create local verification/ledger state |
-| `--pr N` | Adds read-only reviewer authorization/dependency checks for an eligible PR and tiny model completions unless `--no-model` |
+| `--pr N` | Adds read-only reviewer authorization and PR build/dependency checks. The model probe runs whenever `--no-model` is absent, with or without `--pr` |
 | `--live-turn --pr N` | Runs a real isolated reviewer/model turn; prints its proposed verdict, never posts it. Spends quota and can run build/test code in isolation |
-| `arm --loop ID` | Activates matching existing hooks. It does not create missing hooks or enable fixer pushes |
+| `arm --loop ID` | Activates matching existing hooks and sends each a GitHub ping (a write); exits 1 if a ping is rejected. Does not create missing hooks or enable fixer pushes |
 | `--admin-token` on `arm` | Hook editor login mapped in loop tokens; omit only if the reader already has hook write |
 | `status --loop ID` | Read back seats, route mapping, policy, live/queued runs and holds |
 
-Use an **open, non-draft, same-repository PR** authored by a fixer-allowlisted login and targeting the configured base. Review every failed or unknown check rather than counting green lines. `doctor --offline` skips network probes and therefore cannot prove public delivery. `selftest --ping` is an explicitly requested GitHub hook-ping write, unlike the checks above; it is not a blanket no-write test. See [operations](operations.md) for individual steps and [troubleshooting](troubleshooting.md) for failures.
+Use an **open, non-draft, same-repository PR** authored by a fixer-allowlisted login and targeting the configured base. Review every failed or unknown check rather than counting green lines. `doctor --offline` skips network probes and therefore cannot prove public delivery. `selftest --ping` explicitly requests a GitHub hook-ping write; ordinary selftest probes do not post a review. `arm` also pings hooks, so the full sequence above is not write-free. See [operations](operations.md) for individual steps and [troubleshooting](troubleshooting.md) for failures.
 
 ## Exercise the first production review
 
