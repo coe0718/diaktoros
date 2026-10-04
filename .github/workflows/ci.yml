@@ -88,6 +88,56 @@ jobs:
         if: matrix.hermes == 'pinned' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: python plugin/.github/scripts/plugin_guard.py hermes plugin
 
+  # The catalog's admission check, run here so a submission is never its first run: the plugin
+  # catalog's CI clones the pinned commit and runs `hermes plugins validate` — manifest,
+  # requires_hermes, a load in isolation, declared capabilities against what register() really
+  # registers, dependencies (none here) and the security scan. These steps are Hermes's own
+  # reusable action (.github/actions/plugin-validate) at HERMES_PINNED, inlined so the pin is
+  # not written twice.
+  plugin-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: plugin
+      - name: Prepare an isolated Hermes checkout at the pin
+        id: source
+        run: |
+          set -euo pipefail
+          source=$(mktemp -d "$RUNNER_TEMP/hermes-plugin-validator.XXXXXX")
+          git init -q "$source"
+          git -C "$source" remote add origin https://github.com/NousResearch/hermes-agent.git
+          git -C "$source" fetch -q --depth=1 -- origin "$HERMES_PINNED"
+          git -C "$source" checkout -q --detach FETCH_HEAD
+          printf 'source=%s\n' "$source" >> "$GITHUB_OUTPUT"
+          python3 -S "$source/scripts/ci/setup_toolchain.py" prepare --toolchain python --home "$source/.build/pm"
+      - name: Prepare the locked Python toolchain
+        env:
+          _SOURCE: ${{ steps.source.outputs.source }}
+        run: python3 -S "$_SOURCE/scripts/ci/setup_toolchain.py" install --toolchain python --home "$_SOURCE/.build/pm"
+      - name: Build the isolated validator runtime
+        id: runtime
+        working-directory: ${{ steps.source.outputs.source }}
+        env:
+          _SOURCE: ${{ steps.source.outputs.source }}
+        run: |
+          set -euo pipefail
+          "$HERMES_PYTHON" - <<'PY'
+          import os
+          from pathlib import Path
+          from pm import build_environment
+          source = Path(os.environ["_SOURCE"])
+          python = build_environment(source=source, out=source / ".build/validator", explicit=True)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"python={python}\n")
+          PY
+      - name: Validate the plugin as the catalog does
+        env:
+          _VALIDATOR_PYTHON: ${{ steps.runtime.outputs.python }}
+        run: |
+          set -euo pipefail
+          "$_VALIDATOR_PYTHON" -I -m hermes_cli.main plugins validate "$GITHUB_WORKSPACE/plugin"
+
   # The suite runs in two modes, and they do not agree on every check. With Hermes importable a
   # seat's model resolves for real and stored cron expressions are validated — the mode every
   # installed machine is in, and not the one a stdlib-only image hands you. Only the other mode was
