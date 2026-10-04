@@ -1,6 +1,7 @@
 """Credentialed, checkout-free, exact-head Git push for one scoped PR head.
 
-The sandbox supplies only bounded regular-file bytes; only the trusted broker uses
+The sandbox supplies only bounded regular-file bytes, or a bounded unified diff against the
+scoped head (#64: a one-line fix to a large file, a deletion); only the trusted broker uses
 Git in a fresh bare repository, with isolated configuration and an exact-head lease.
 """
 from __future__ import annotations
@@ -24,6 +25,12 @@ MAX_FILES = 24
 MAX_CONTENT = 128 * 1024
 MAX_FILE = 64 * 1024
 MAX_MESSAGE = 240
+# A diff manifest (#64): its decoded size, and how many paths it may change. A diff costs what the
+# change costs, so a large file is no longer out of reach; every changed path still passes the
+# same path rules as a whole file, and only regular files may be added, changed or deleted.
+MAX_PATCH = 512 * 1024
+MAX_PATCH_PATHS = 64
+_REGULAR = ("100644", "100755")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 SEGMENT = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
 
@@ -65,14 +72,35 @@ def _path(value: object) -> str:
     return value
 
 
-def _manifest(manifest: object) -> tuple[str, list[tuple[str, bytes]]]:
-    if not isinstance(manifest, dict) or set(manifest) != {"base_head", "message", "files"}:
+def _manifest(manifest: object) -> tuple[str, list[tuple[str, bytes]], bytes | None]:
+    """Validate a push manifest: ``(base, files, patch)``.
+
+    Two shapes. Whole files, ``{base_head, message, files}``, each file's new bytes; or a diff,
+    ``{base_head, message, patch_b64, sha256}``, a unified diff against ``base_head`` that the
+    host applies to that exact tree (``_git_cas``), where every path it changes is checked.
+    """
+    if not isinstance(manifest, dict) or set(manifest) not in (
+            {"base_head", "message", "files"}, {"base_head", "message", "patch_b64", "sha256"}):
         raise broker.BrokerDenied("invalid push manifest")
     base = _sha(manifest["base_head"])
-    message, files = manifest["message"], manifest["files"]
+    message = manifest["message"]
     if (not isinstance(message, str) or not message.strip() or "\x00" in message
-            or len(message.encode("utf-8")) > MAX_MESSAGE
-            or not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES):
+            or len(message.encode("utf-8")) > MAX_MESSAGE):
+        raise broker.BrokerDenied("invalid push message or file count")
+    if "patch_b64" in manifest:
+        encoded, digest = manifest["patch_b64"], manifest["sha256"]
+        if not isinstance(encoded, str) or len(encoded) > 4 * ((MAX_PATCH + 2) // 3):
+            raise broker.BrokerDenied("patch too large")
+        try:
+            patch = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            raise broker.BrokerDenied("invalid base64 content") from None
+        if (not patch or len(patch) > MAX_PATCH or not isinstance(digest, str)
+                or digest != hashlib.sha256(patch).hexdigest()):
+            raise broker.BrokerDenied("patch content mismatch")
+        return base, [], patch
+    files = manifest["files"]
+    if not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES:
         raise broker.BrokerDenied("invalid push message or file count")
     parsed = []
     total = 0
@@ -101,7 +129,37 @@ def _manifest(manifest: object) -> tuple[str, list[tuple[str, bytes]]]:
         parts = path.split("/")
         if any("/".join(parts[:n]) in seen for n in range(1, len(parts))):
             raise broker.BrokerDenied("file and directory conflict")
-    return base, parsed
+    return base, parsed, None
+
+
+def _changed_paths(raw: bytes) -> list[str]:
+    """Check every path a diff changed (``git diff-index --cached --raw -z`` output).
+
+    Only regular files may be added, changed or deleted — never a symlink, a submodule or any
+    other mode, on either side, and no mode change — and every path passes ``_path``: no repository control file,
+    nothing under ``.github``. Returns the changed paths, in order."""
+    fields = raw.split(b"\0")
+    paths = []
+    for index in range(0, len(fields) - 1, 2):
+        meta, path = fields[index].decode("ascii", "replace"), fields[index + 1]
+        if not meta.startswith(":"):
+            raise broker.BrokerDenied("unexpected diff record")
+        old_mode, new_mode = meta[1:].split()[:2]
+        if (old_mode not in _REGULAR + ("000000",) or new_mode not in _REGULAR + ("000000",)
+                or old_mode == new_mode == "000000"):
+            raise broker.BrokerDenied("patch changes a nonregular file")
+        if "000000" not in (old_mode, new_mode) and old_mode != new_mode:
+            # A whole-file push keeps a file's mode; so does a diff (no executable bit flipped).
+            raise broker.BrokerDenied("patch changes a file mode")
+        try:
+            paths.append(_path(path.decode("utf-8", errors="strict")))
+        except UnicodeDecodeError:
+            raise broker.BrokerDenied("unsafe file path") from None
+    if not paths:
+        raise broker.BrokerDenied("push has no changes")
+    if len(paths) > MAX_PATCH_PATHS:
+        raise broker.BrokerDenied("patch changes too many files")
+    return paths
 
 
 def _api(loop: dict, path: str, *, login: str, method: str = "GET", body=None) -> dict:
@@ -142,12 +200,18 @@ _ASKPASS = ("import os,sys\nfrom pathlib import Path\n"
 def _git_cas(loop: dict, repo: str, branch: str, head: str,
              files: list[tuple[str, bytes]], message: str, login: str,
              identity: dict, *, before_push=None, remote: str | None = None,
-             from_branch: str | None = None) -> str:
+             from_branch: str | None = None, patch: bytes | None = None,
+             changed: list | None = None) -> str:
     """Fetch the advertised branch, construct local objects, and exact-lease push.
 
     With ``from_branch`` (an issue fix, #214) the commit is built on ``head`` as found in that
     advertised branch (``head`` must be one of its commits) and pushed to ``branch``, which must
     not exist yet: the lease is "absent", so an existing branch is never overwritten.
+
+    With ``patch`` (#64) the commit is the base tree with that unified diff applied by Git
+    (``apply --cached``: index only, no worktree, no hooks, nothing outside the tree), and every
+    path it changed is then checked like a whole file's (``_changed_paths``); ``changed``, when
+    given, receives those paths for the audit record before ``before_push`` runs.
 
     `remote` is a private local-fixture seam, never sourced from IPC or config.
     Only validated manifest paths/bytes reach Git's temporary private bare repo.
@@ -225,6 +289,19 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
             mode = existing.get(path, "100644")
             run("--git-dir", str(bare), "update-index", "--add", "--cacheinfo",
                 f"{mode},{blob},{path}")
+        if patch is not None:
+            # Applied to the index of the exact base tree: Git refuses a hunk that does not fit,
+            # a path that escapes the tree and a path beyond a symlink; what it did change is
+            # then checked path by path, so the rules are the whole-file push's.
+            try:
+                run("--git-dir", str(bare), "apply", "--cached", "--check", "-", input=patch)
+                run("--git-dir", str(bare), "apply", "--cached", "-", input=patch)
+            except broker.BrokerDenied:
+                raise broker.BrokerDenied("patch does not apply to the scoped head") from None
+            paths = _changed_paths(run("--git-dir", str(bare), "diff-index", "--cached", "--raw",
+                                       "-z", "--no-renames", head))
+            if changed is not None:
+                changed.extend(paths)
         tree = _sha(run("--git-dir", str(bare), "write-tree").decode())
         base_tree = _sha(run("--git-dir", str(bare), "rev-parse", f"{head}^{{tree}}").decode())
         if tree == base_tree:
@@ -251,7 +328,7 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     The lease protects the branch SHA, not PR metadata: a close/retarget/draft
     transition after the final PR read and before receive-pack remains possible.
     """
-    base, files = _manifest(manifest)
+    base, files, patch = _manifest(manifest)
     assert isinstance(manifest, dict)  # _manifest rejects any other shape
     if not config.unattended_fixer_push_enabled(loop):
         raise broker.BrokerDenied("unattended fixer push disabled")
@@ -290,6 +367,8 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     receipt = {"repo": repo, "pr": number, "old_head": head,
                "branch": branch, "role": role, "login": login,
                "paths": [path for path, _ in files], "operation": "push"}
+    # A diff's paths are known once Git has applied it; they reach the receipt before the push.
+    extra = {"patch": patch, "changed": receipt["paths"]} if patch is not None else {}
     error = None
     new_head = None
     attempt_started = False
@@ -306,7 +385,7 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     try:
         # The trailer (#197) is added here, on the host, after the seat's message was validated.
         _git_cas(loop, repo, branch, head, files, attribution.sign_commit(loop, manifest["message"]),
-                 login, identity, before_push=before_push)
+                 login, identity, before_push=before_push, **extra)
     except Exception as exc:
         error = exc
     outcome = "unknown"
@@ -350,7 +429,7 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
     existing branch (a second fix for the same issue) is refused, never overwritten. Opening the
     PR is the caller's next step, after this returns a confirmed ref.
     """
-    base_head, files = _manifest(manifest)
+    base_head, files, patch = _manifest(manifest)
     assert isinstance(manifest, dict)
     if not config.issue_fixes_enabled(loop):
         raise broker.BrokerDenied("issue fixes disabled")
@@ -371,6 +450,7 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
     receipt = {"repo": repo, "pr": number, "old_head": base, "branch": branch,
                "role": "issue_fixer", "login": login, "paths": [path for path, _ in files],
                "operation": "issue_branch"}
+    extra = {"patch": patch, "changed": receipt["paths"]} if patch is not None else {}
     new_head = None
     attempt_started = False
 
@@ -383,7 +463,7 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
     error = None
     try:
         _git_cas(loop, repo, branch, base, files, attribution.sign_commit(loop, manifest["message"]),
-                 login, identity, before_push=before_push, from_branch=loop["base"])
+                 login, identity, before_push=before_push, from_branch=loop["base"], **extra)
     except Exception as exc:
         error = exc
     observed = None

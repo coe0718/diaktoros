@@ -84,7 +84,8 @@ Unattended fixer push is off until explicitly enabled with acknowledgement of th
 `safe_push._manifest` accepts exactly `base_head`, `message` and `files`, with these restrictions:
 
 - 1–24 unique whole-file entries; each has exactly `path`, `content_b64` and `sha256`.
-- Up to 64 KiB decoded per file and 128 KiB decoded in total; valid base64 and matching SHA-256 required.
+- Either whole files (up to 64 KiB decoded each, 128 KiB in total, 24 files) or one unified diff against the scoped head (up to 512 KiB decoded, 64 changed paths); valid base64 and matching SHA-256 required.
+- A diff is applied by Git to the index of a fresh copy of the exact scoped head (`git apply --cached`: no worktree, no hooks; Git refuses a hunk that does not fit, a path outside the tree and a path beyond a symlink). Every path it changed is then checked with the same rules as a whole file, and only regular files (`100644`/`100755`) may be added, changed or deleted: a symlink, a submodule or any other mode on either side is refused.
 - A nonblank, NUL-free commit message of at most 240 UTF-8 bytes before host attribution is appended.
 - Relative paths of at most 512 characters with 1–128-character `[A-Za-z0-9_.-]` segments; no empty, `.`/`..` or case-insensitive `.git` segments.
 - No top-level `.github` content; no `.gitmodules` or `.gitattributes` segment anywhere; no root `CODEOWNERS` or `docs/CODEOWNERS` (case-insensitive).

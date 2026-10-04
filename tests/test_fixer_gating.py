@@ -338,12 +338,18 @@ class PushHelper(unittest.TestCase):
         (self.work / "src").mkdir(parents=True)
         (self.work / "src" / "a.py").write_text("print('fixed')\n")
         (self.work / "README.md").write_text("docs\n")
+        # The read-only export /work was copied from: the base a diff is taken against (#64).
+        self.export = self.root / "export"
+        (self.export / "src").mkdir(parents=True)
+        (self.export / "src" / "a.py").write_text("print('broken')\n")
+        (self.export / "README.md").write_text("docs\n")
         self.turn = self.root / "turn.json"
         self.turn.write_text(json.dumps({"head": HEAD}))
         (self.root / "msg.txt").write_text("Fix the widget off-by-one\n")
         from review_loop import broker_client
         self.client = broker_client
-        for name, value in (("WORK", str(self.work)), ("TURN_FILE", str(self.turn))):
+        for name, value in (("WORK", str(self.work)), ("TURN_FILE", str(self.turn)),
+                            ("EXPORT", str(self.export))):
             patcher = mock.patch.object(broker_client, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -367,16 +373,27 @@ class PushHelper(unittest.TestCase):
         manifest = self.client.build_manifest(["src/a.py", str(self.work / "README.md")],
                                               "Fix the widget")
         self.assertEqual(set(manifest), {"base_head", "message", "files"})
-        base, files = safe_push._manifest(manifest)
+        base, files, patch = safe_push._manifest(manifest)
+        self.assertIsNone(patch)
         self.assertEqual(base, HEAD)
         self.assertEqual(files, [("src/a.py", b"print('fixed')\n"), ("README.md", b"docs\n")])
 
     def test_limits_mirror_the_broker(self):
         from review_loop import safe_push
+        from review_loop import broker_ipc
         self.assertEqual((self.client.MAX_FILES, self.client.MAX_FILE, self.client.MAX_CONTENT,
-                          self.client.MAX_MESSAGE),
+                          self.client.MAX_MESSAGE, self.client.MAX_PATCH,
+                          self.client.MAX_PATCH_PATHS, self.client.MAX_FRAME),
                          (safe_push.MAX_FILES, safe_push.MAX_FILE, safe_push.MAX_CONTENT,
-                          safe_push.MAX_MESSAGE))
+                          safe_push.MAX_MESSAGE, safe_push.MAX_PATCH, safe_push.MAX_PATCH_PATHS,
+                          broker_ipc.MAX_PUSH_REQUEST))
+        # The export a diff is taken against is where contained mounts it (the fixture patches
+        # the client's constant, so read the shipped one from its source).
+        import re
+        from review_loop import contained
+        source = (ROOT / "review_loop" / "broker_client.py").read_text()
+        self.assertEqual(re.search(r"^EXPORT = '([^']+)'", source, re.M).group(1),
+                         contained.EXPORT_DIR)
         self.assertEqual(self.client._CONTROL_FILES, safe_push.CONTROL_FILES)
         self.assertEqual(self.client._CONTROL_PATHS, safe_push.CONTROL_PATHS)
 
@@ -390,23 +407,24 @@ class PushHelper(unittest.TestCase):
         sock.assert_not_called()
 
     def test_refusals_happen_before_any_socket_call(self):
-        (self.work / "big.py").write_bytes(b"x" * (64 * 1024 + 1))
+        # A large *binary* file has no diff form; a large text file goes as a diff (#64).
+        (self.work / "big.bin").write_bytes(b"\0" * (64 * 1024 + 1))
         (self.work / ".github" / "workflows").mkdir(parents=True)
         (self.work / ".github" / "workflows" / "ci.yml").write_text("on: push\n")
         (self.work / "CODEOWNERS").write_text("* @me\n")
         (self.work / "link.py").symlink_to(self.work / "src" / "a.py")
         many = []
-        for i in range(25):
+        for i in range(65):
             (self.work / f"f{i}.py").write_text(str(i))
             many.append(f"f{i}.py")
         cases = {
-            "file too large": (["big.py"], "fix", "at most 65536"),
-            "too many files": (many, "fix", "1 to 24"),
+            "binary too large": (["big.bin"], "fix", "binary file can only be published whole"),
+            "too many files": (many, "fix", "1 to 64"),
             "message too long": (["src/a.py"], "x" * 241, "at most 240"),
             "empty message": (["src/a.py"], "  ", "non-empty"),
             "workflow": ([".github/workflows/ci.yml"], "fix", "control file"),
             "codeowners": (["CODEOWNERS"], "fix", "control file"),
-            "missing file": (["gone.py"], "fix", "cannot delete"),
+            "missing file": (["gone.py"], "fix", "no such file in"),
             "symlink": (["link.py"], "fix", "symlink"),
             "outside work": (["/etc/hostname"], "fix", "not a file under"),
             "duplicate": (["src/a.py", "src/a.py"], "fix", "named twice"),
@@ -452,11 +470,12 @@ class FixerInstructions(unittest.TestCase):
         from review_loop import prompts, trusted_turn
         text = trusted_turn.tool_instructions("fixer")
         for needle in ("broker_client push --files", "--message-file", "--dry-run",
-                       "24 files", "64 KiB", "128 KiB", "240 bytes", "cannot delete or rename",
+                       "64 files", "512 KiB", "64 KiB", "240 bytes", "changed, added or deleted",
+                       "a diff of `/work`", "no symlink and no mode change",
                        ".github/", "CODEOWNERS", "request_review", "--manifest-file",
-                       "content_b64", "no `.git`"):
+                       "content_b64", "patch_b64", "no `.git`"):
             self.assertIn(needle, text)
-        self.assertIn("cannot delete or rename", prompts.ISOLATED_FIXER)
+        self.assertIn("changed, added\n   or deleted", prompts.ISOLATED_FIXER)
         self.assertIn("--dry-run", prompts.ISOLATED_FIXER)
         # Other seats are not offered the helper.
         for role in ("reviewer", "adjudicator"):
