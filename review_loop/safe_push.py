@@ -425,12 +425,19 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
     """Push an issue fix (#214) as one commit on ``base`` to the new branch ``branch``.
 
     Authorized against the live issue (``broker.authorize_issue_fix``) before construction and
-    again just before the push. An existing branch (a second fix for the same issue) is denied
-    by a pre-write existence check, before any push; the push's lease, which requires the
-    branch to be absent, remains the guard against a race. It is never overwritten. Deleting
-    the branch alone does not make the run retryable (the ``issue_fixes`` row counts as write
-    evidence); see docs/issues.md for recovery. Opening the
-    PR is the caller's next step, after this returns a confirmed ref.
+    again just before the push. An existing branch (a second fix for the same issue) is refused,
+    never overwritten, by two guards with different jobs:
+
+    * a pre-write existence read (``GET .../git/ref/heads/<branch>``) whose 404 lets the run
+      proceed; a 200, any other read failure, or a non-dict payload denies before anything is
+      built or journaled. This turns a knowable second attempt into a pre-write denial
+      (recorded ``denied``, not ``uncertain``).
+    * the push's lease, which requires the branch to be absent. It covers the window between
+      that read and the push, i.e. a race.
+
+    Deleting the branch alone does not make the run retryable (the ``issue_fixes`` row counts as
+    write evidence); see docs/issues.md for recovery. Opening the PR is the caller's next step,
+    after this returns a confirmed ref.
     """
     base_head, files, patch = _manifest(manifest)
     assert isinstance(manifest, dict)
