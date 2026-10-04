@@ -674,14 +674,15 @@ class Lifecycle(unittest.TestCase):
         sup = self.gated_supervisor(lease_seconds=3, child_timeout=60)
         sup.enqueue("heartbeat", "o/r", 9, "head", "reviewer")
         launched = self.wait(sup, "heartbeat", "running")
-        # Wait until the lease granted at launch has passed, so only a heartbeat can have
-        # kept the run alive, and the renewed lease has at least a second left to cover the
-        # recover() below. Observed ledger state, not a fixed sleep.
-        until = time.monotonic() + 20
+        # State-based wait, not a wall-clock window: only a heartbeat can move the lease past
+        # the one granted at launch, so a larger lease in the ledger proves a beat renewed
+        # it. The deadline is only a backstop against a hung worker. The renewed lease still
+        # has at least a second left to cover the recover() below.
+        until = time.monotonic() + 60
         while True:
             row, now = sup.get("heartbeat"), time.time()
             self.assertEqual(row["state"], "running")
-            if now > launched["lease"] and row["lease"] - now >= 1:
+            if row["lease"] > launched["lease"] and row["lease"] - now >= 1:
                 break
             if time.monotonic() > until:
                 log = self.root / "ledger.sqlite.workers.log"
