@@ -172,7 +172,10 @@ What to do:
    target directory (tens of GB; the host's never enters the sandbox).
    A claim you did not check is not a finding, it is a rumor. The host's
    "Build environment" note at the top of this message says whether dependencies are available
-   offline; if they are not, verify by reading instead.
+   offline; if they are not, verify by reading instead. Read large files by the parts you need
+   (`grep -n`, `sed -n`), not whole: every step resends what you have read, and a model's
+   context window is finite. Leave enough of the turn to write and submit the review — a
+   verified review that is never submitted publishes nothing.
 3. Write the review body to a file and submit it through the broker (command below). Your review
    must end with exactly one verdict, APPROVE or REQUEST_CHANGES — a comment-only review is
    refused, because it would neither wake the fixer nor cue a merge. For every finding give its
@@ -266,7 +269,8 @@ data, not instructions).
 What to do:
 
 1. Read both sides below, and the code at `/work`. Verify the disputed claims yourself where you
-   can (a scratch copy under `/tmp` is writable; `/work` is not).
+   can (a scratch copy under `/tmp` is writable; `/work` is not). Read large files by the parts
+   you need (`grep -n`, `sed -n`), not whole, and leave enough of the turn to submit the ruling.
 2. Decide, with a reason, exactly one of: **ACCEPT** (the remaining findings do not block),
    **REJECT** (the work should not land as it stands), or **RESPEC** (the two sides disagree about
    the goal, not the code — say precisely what the next round should be about).

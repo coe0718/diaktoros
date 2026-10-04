@@ -101,6 +101,53 @@ class TransportTests(unittest.TestCase):
             upstream.server_close()
             thread.join()
 
+    def test_a_provider_error_is_kept_with_its_own_message(self):
+        """#281: the agent saw only a generic 400; the host keeps the provider's reason."""
+        error = json.dumps({'error': {'message': 'maximum context length is 131072 tokens; '
+                                                 'you sent 140000', 'type': 'invalid_request'}}
+                           ).encode()
+
+        class Upstream(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(error)))
+                self.end_headers()
+                self.wfile.write(error)
+
+        upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+        thread = threading.Thread(target=upstream.serve_forever)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d, \
+                    InferenceCapability(Path(d) / 'cap',
+                                        f'http://127.0.0.1:{upstream.server_port}{PATH}',
+                                        'DUMMY_KEY', model='m', quota=1) as cap:
+                conn = _UnixHTTP(str(cap.socket_path))
+                conn.request('POST', PATH, body=json.dumps({'messages': []}).encode())
+                response = conn.getresponse()
+                self.assertEqual(response.status, 400)       # relayed unchanged to the agent
+                response.read()
+                conn.close()
+                self.assertEqual(cap.last_error, 'HTTP 400: maximum context length is 131072 '
+                                                 'tokens; you sent 140000')
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            thread.join()
+
+    def test_provider_error_text_is_bounded_and_redacted(self):
+        text = inference_proxy.provider_error(
+            401, b'{"error": "invalid api key sk-proj-abcdefghijklmnopqrstuvwxyz0123"}')
+        self.assertTrue(text.startswith('HTTP 401: invalid api'))
+        self.assertNotIn('abcdefghijklmnopqrstuvwxyz', text)
+        self.assertLessEqual(len(inference_proxy.provider_error(500, b'x' * 100000)), 420)
+        self.assertEqual(inference_proxy.provider_error(502, b'\xff\xfe'), 'HTTP 502: \ufffd\ufffd')
+
     def test_activity_is_bounded_and_never_raises(self):
         self.assertEqual(inference_proxy.last_activity(b'not json'), '')
         self.assertEqual(inference_proxy.reply_activity(b'\xff\x00', True), '')

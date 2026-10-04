@@ -387,7 +387,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds |
 | `--reviewer-daily-turns` | `REVIEWER_DAILY_TURNS` |  | most reviewer turns per day on this loop; later ones wait for midnight (0 removes the cap) |
 | `--fixer-daily-turns` | `FIXER_DAILY_TURNS` |  | most fixer turns per day on this loop (0 removes the cap) |
-| `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 24) |
+| `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) |
 | `--host` | `HOST` |  | gateway webhook host |
 | `--adjudicator-login` | `ADJUDICATOR_LOGIN` |  | optional fourth GitHub account the ruling is also posted as; "" clears it (rulings go to the operator only) |

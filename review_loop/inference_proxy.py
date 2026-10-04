@@ -239,6 +239,30 @@ ACTIVITY_LIMIT = 1200
 REPLY_COPY = 64 * 1024
 
 
+_SECRETISH = re.compile(r'(?i)\b(?:sk|pk|rk|key|token|bearer)[-_a-z0-9]*[\s:=]*[A-Za-z0-9_\-\.]{16,}'
+                        r'|[A-Za-z0-9_\-]{40,}')
+
+
+def provider_error(status: int, raw: bytes) -> str:
+    """A failed upstream call, as an operator needs it: the status and the provider's message
+    (the JSON ``error.message`` when there is one), bounded and with anything key-shaped
+    redacted. Never raises."""
+    try:
+        text = raw.decode('utf-8', 'replace')
+        try:
+            payload = json.loads(text)
+            error = payload.get('error') if isinstance(payload, dict) else None
+            if isinstance(error, dict):
+                text = str(error.get('message') or error.get('type') or text)
+            elif isinstance(error, str):
+                text = error
+        except ValueError:
+            pass
+        return f'HTTP {status}: ' + _SECRETISH.sub('[REDACTED]', _text(text, 400))
+    except Exception:
+        return f'HTTP {status}'
+
+
 def reply_activity(raw: bytes, stream: bool) -> str:
     """The tool call(s) a model reply asked for — the step the agent is now running — from a
     bounded copy of the reply (buffered JSON or chat-completions SSE). Never raises."""
@@ -512,6 +536,10 @@ class InferenceCapability:
         # killed at its budget leaves no output of its own, and this is how the operator learns
         # whether it hung on a test, a build or the model.
         self.last_activity = ''
+        # The provider's own words the last time a call failed (HTTP status and a bounded,
+        # redacted body), host-side: the agent sees only a generic error, and an operator needs
+        # to know whether it was a context-length limit, a bad parameter or an outage.
+        self.last_error = ''
         self.model = model
         self.quota = quota
         self.used = 0
@@ -606,7 +634,8 @@ class InferenceCapability:
                     capability.used += 1
                 try:
                     status, content_type, data = capability.forward(body, self.headers)
-                except (OSError, ProxyError, http.client.HTTPException):
+                except (OSError, ProxyError, http.client.HTTPException) as exc:
+                    capability.last_error = f'upstream unreachable: {type(exc).__name__}'
                     self.send_error(502)
                     return
                 if not (content_type.startswith('application/json') or _is_stream(content_type)):
@@ -630,6 +659,8 @@ class InferenceCapability:
                     reply = reply_activity(bytes(seen), _is_stream(content_type))
                     capability.last_activity = (f"{capability.last_activity} → then {reply}"
                                                 if reply else capability.last_activity)
+                    if status >= 400:
+                        capability.last_error = provider_error(status, bytes(seen))
 
             def do_GET(self):
                 self.send_error(405)

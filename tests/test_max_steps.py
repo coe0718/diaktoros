@@ -25,13 +25,13 @@ LOOP_ID = "steps"
 
 class Resolution(unittest.TestCase):
     def test_role_defaults_and_seat_values(self):
-        self.assertEqual(config.max_steps({}, "reviewer"), 24)
+        self.assertEqual(config.max_steps({}, "reviewer"), 60)
         self.assertEqual(config.max_steps({}, "fixer"), 80)
         self.assertEqual(config.max_steps({}, "issue_fixer"), 80)
         loop = {"seats": {"fixer": {"max_steps": 150}, "triage": {"max_steps": 12}}}
         self.assertEqual(config.max_steps(loop, "issue_fixer"), 150)   # runs as the fixer seat
         self.assertEqual(config.max_steps(loop, "triage"), 12)
-        self.assertEqual(config.max_steps(loop, "reviewer"), 24)
+        self.assertEqual(config.max_steps(loop, "reviewer"), 60)
 
     def test_model_calls_follow_steps_and_fit_the_proxy(self):
         self.assertEqual([config.model_calls(n) for n in (8, 24, 80, 200)], [16, 32, 100, 250])
@@ -84,7 +84,7 @@ class Cli(unittest.TestCase):
         self.assertIn("fixer max steps: 80 → 150", out)
         self.assertEqual(self.seats()["fixer"]["max_steps"], 150)
         rc, out = self.cli("status", "--loop", LOOP_ID)
-        self.assertIn("steps:      reviewer 24 · fixer 150", out)
+        self.assertIn("steps:      reviewer 60 · fixer 150", out)
         rc, out = self.cli("set", "--loop", LOOP_ID, "--fixer-max-steps", "0")
         self.assertEqual(rc, 0, out)
         self.assertNotIn("max_steps", self.seats()["fixer"])
