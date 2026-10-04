@@ -452,12 +452,12 @@ def env() -> dict:
 
 
 def run(script: str, payload: dict | None = None, *args: str,
-        extra_env: dict | None = None) -> tuple[str, str, str]:
+        extra_env: dict | None = None, timeout: float = 180) -> tuple[str, str, str]:
     cmd = [sys.executable, str(ROOT / "scripts" / script), *args]
     try:
         proc = subprocess.run(cmd, input=json.dumps(payload) if payload else None,
                               capture_output=True, text=True,
-                              env={**env(), **(extra_env or {})}, timeout=180)
+                              env={**env(), **(extra_env or {})}, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         err = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) \
             else (exc.stderr or "")
