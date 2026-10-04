@@ -245,8 +245,9 @@ def check_turn_budget(loop: dict) -> Check:
            else " (raised to fit its turn)") for seat in stall_seats)
     lock = (per_seat("seat lock TTL", ttl_min, lambda seat: config.seat_ttl_s(loop, seat=seat))
             + "; 'that run died' after twice that")
-    text = (f"{detail} per isolated turn (sandbox killed past it); {whole} — grace_min "
-            f"{grace_min}m, ttl_min {ttl_min}m; {stall}; {lock}")
+    steps = " · ".join(f"{seat} {config.max_steps(loop, seat)}" for seat in seats)
+    text = (f"{detail} per isolated turn (sandbox killed past it); agent steps {steps}; {whole} "
+            f"— grace_min {grace_min}m, ttl_min {ttl_min}m; {stall}; {lock}")
     if "adjudicator" in seats:
         # The breach marker's stall clocks (#98): a ruling in flight is never a stall; one
         # claimed with no live run is, only after the adjudicator's whole turn.

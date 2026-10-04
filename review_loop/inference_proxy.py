@@ -51,10 +51,10 @@ from urllib.parse import urlsplit
 MAX_REQUEST = 1_000_000
 MAX_RESPONSE = 4_000_000
 MAX_OUTPUT_TOKENS = 4096
-# The most model calls one turn's capability may grant: the writing seats' share
-# (trusted_turn.STEP_CAPS), which a fix found from an issue alone needs (#271). Each call stays
-# bounded by MAX_REQUEST, MAX_OUTPUT_TOKENS and the turn's wall-clock budget.
-MAX_CALLS = 100
+# The most model calls one turn's capability may grant: the largest step setting a seat may take
+# (config.MAX_STEPS_RANGE, through config.model_calls), never more (#271). Each call stays bounded
+# by MAX_REQUEST, MAX_OUTPUT_TOKENS and the turn's wall-clock budget.
+MAX_CALLS = 250
 MAX_CONNECTIONS = 8
 CLIENT_TIMEOUT = 3
 UPSTREAM_TIMEOUT = 120

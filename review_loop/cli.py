@@ -2247,6 +2247,18 @@ def cmd_set(args) -> int:
             seats[seat]["daily_turns"] = value
         else:
             seats[seat].pop("daily_turns", None)
+    # Agent steps per turn (#271); 0 goes back to the seat's default. An issue fix takes the
+    # fixer's value. normalize refuses anything outside the range.
+    for seat, value in (("reviewer", getattr(args, "reviewer_max_steps", None)),
+                         ("fixer", getattr(args, "fixer_max_steps", None))):
+        if value is None or (value or config.DEFAULT_MAX_STEPS[seat]) == config.max_steps(loop, seat):
+            continue
+        budget_changes[f"{seat} max steps"] = (config.max_steps(loop, seat),
+                                               value or config.DEFAULT_MAX_STEPS[seat])
+        if value:
+            seats[seat]["max_steps"] = value
+        else:
+            seats[seat].pop("max_steps", None)
 
     # The observer is a nested block, so it is collected the same way the seats are: flags the
     # operator did not pass leave the existing answer alone, and a flag that means "drop it"
@@ -2384,6 +2396,8 @@ def cmd_set(args) -> int:
     for seat, (was, value) in budget_changes.items():
         if seat.endswith(" daily turns"):
             print(f"  {seat}: {was or 'no cap'} → {value or 'no cap'}  (this seat only)")
+        elif seat.endswith(" max steps"):
+            print(f"  {seat}: {was} → {value}  (this seat only; an issue fix takes the fixer's)")
         else:
             print(f"  {seat} turn budget: {was}s → {value}s  (this seat only)")
     if read_after != read_before:
@@ -2408,7 +2422,7 @@ def cmd_set(args) -> int:
                 print(f"  note: {seat} has its own turn budget "
                       f"({updated['seats'][seat]['turn_budget_s']}s) — the loop default does not "
                       "apply to it")
-    if "turn_budget_s" in changes or any(not key.endswith(" daily turns")
+    if "turn_budget_s" in changes or any(not key.endswith((" daily turns", " max steps"))
                                          for key in budget_changes):
         print("  turn budget now: " + _budget_line(updated)
               + "   (queued turns keep the budget they were enqueued with)")
@@ -2768,6 +2782,16 @@ def _budget_line(loop: dict) -> str:
     return " · ".join(f"{seat} {config.turn_budget(loop, seat)}s" for seat in seats)
 
 
+def _steps_line(loop: dict) -> str:
+    """Each seat's agent-step cap per turn (#271); an issue fix takes the fixer's."""
+    seats = ["reviewer", "fixer"]
+    if (loop.get("adjudicator") or {}).get("route"):
+        seats.append("adjudicator")
+    if (loop.get("triage") or {}).get("route"):
+        seats.append("triage")
+    return " · ".join(f"{seat} {config.max_steps(loop, seat)}" for seat in seats)
+
+
 def _readable_loops() -> tuple[list[dict], list[str]]:
     """Every loop that loads, plus one ``skipping <file>: <reason>`` line per one that does not.
 
@@ -2844,6 +2868,8 @@ def cmd_status(args) -> int:
             print(f"  note:       {line}")
         print(f"  clone:      {loop['clone'] or '(none)'}")
         print(f"  turn:       {_budget_line(loop)} per turn (killed past it)")
+        print(f"  steps:      {_steps_line(loop)} per turn (agent steps; `set --reviewer-max-steps "
+              "N`/`--fixer-max-steps N`)")
         for line in _pacing_lines(loop):
             print(f"  pacing:     {line}")
         print("  fixer push: " + ("ENABLED — operator accepted PR-metadata/ref race"
@@ -4266,6 +4292,11 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                  "midnight (0 removes the cap)")
         change.add_argument("--fixer-daily-turns", type=int, default=None,
                             help="most fixer turns per day on this loop (0 removes the cap)")
+        change.add_argument("--reviewer-max-steps", type=int, default=None,
+                            help="agent steps one reviewer turn may take, 8-200 (0 = default 24)")
+        change.add_argument("--fixer-max-steps", type=int, default=None,
+                            help="agent steps one fixer or issue-fix turn may take, 8-200 "
+                                 "(0 = default 80)")
         change.add_argument("--host", help="gateway webhook host")
         change.add_argument("--adjudicator-login", default=None,
                             help="optional fourth GitHub account the ruling is also posted as; "

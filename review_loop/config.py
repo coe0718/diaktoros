@@ -697,6 +697,38 @@ def _check_budget(value, what: str, where: str) -> int:
 
 DAILY_TURNS_MAX = 1000
 
+# Agent steps one isolated turn may take (#271), per role when the seat sets none. A seat that
+# reads one diff and judges it fits the small default; one that must find its way into the code
+# and change it, from a review or from an issue alone, needs room. The turn budget still bounds
+# every turn's wall clock. Model calls follow from steps (``model_calls``).
+DEFAULT_MAX_STEPS = {"reviewer": 24, "adjudicator": 24, "triage": 24,
+                     "fixer": 80, "issue_fixer": 80}
+MAX_STEPS_RANGE = (8, 200)
+
+
+def _check_max_steps(value, what: str, where: str) -> int:
+    low, high = MAX_STEPS_RANGE
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ConfigError(f"{where}: {what} must be a whole number of agent steps, {low}-{high} "
+                          f"(leave it out for the seat's default), got {value!r}")
+    return value
+
+
+def max_steps(loop: dict, role: str) -> int:
+    """Agent steps one ``role`` turn may take: the seat's own ``max_steps``, else the role's
+    default. An issue fix runs as the fixer seat (#214), so it takes the fixer's value."""
+    seat = "fixer" if role == "issue_fixer" else role
+    value = (((loop.get("seats") or {}).get(seat)) or {}).get("max_steps")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return DEFAULT_MAX_STEPS[role]
+
+
+def model_calls(steps: int) -> int:
+    """Model calls the turn's proxy grants for ``steps``: a margin above them, since a step can
+    make more than one call (a retry, a context compression). 24 -> 32, 80 -> 100, 200 -> 250."""
+    return steps + max(8, steps // 4)
+
 
 def _check_daily_turns(value, what: str, where: str) -> int:
     """A per-seat daily turn cap (#219): a whole number of turns, 1–DAILY_TURNS_MAX."""
@@ -750,10 +782,13 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
     if raw is None or raw == {}:
         return {}
     if not isinstance(raw, dict) or not set(raw) <= {"login", "concurrency", "turn_budget_s",
-                                                     "daily_turns"}:
+                                                     "daily_turns", "max_steps"}:
         raise ConfigError(f"{where}: seats.adjudicator may only hold 'login', 'concurrency', "
-                          "'turn_budget_s' and 'daily_turns'")
+                          "'turn_budget_s', 'daily_turns' and 'max_steps'")
     seat: dict = {}
+    if raw.get("max_steps") not in (None, ""):
+        seat["max_steps"] = _check_max_steps(raw["max_steps"], "seats.adjudicator.max_steps",
+                                             where)
     if raw.get("daily_turns") not in (None, ""):
         seat["daily_turns"] = _check_daily_turns(raw["daily_turns"],
                                                  "seats.adjudicator.daily_turns", where)
@@ -920,10 +955,13 @@ def _triage_seat(raw, where: str) -> dict:
     """``seats.triage``: its turn budget, daily cap and concurrency — no login (see triage.login)."""
     if raw in (None, {}):
         return {}
-    if not isinstance(raw, dict) or not set(raw) <= {"concurrency", "turn_budget_s", "daily_turns"}:
-        raise ConfigError(f"{where}: seats.triage may only hold 'concurrency', 'turn_budget_s' "
-                          "and 'daily_turns'")
+    if not isinstance(raw, dict) or not set(raw) <= {"concurrency", "turn_budget_s", "daily_turns",
+                                                     "max_steps"}:
+        raise ConfigError(f"{where}: seats.triage may only hold 'concurrency', 'turn_budget_s', "
+                          "'daily_turns' and 'max_steps'")
     seat: dict = {}
+    if raw.get("max_steps") not in (None, ""):
+        seat["max_steps"] = _check_max_steps(raw["max_steps"], "seats.triage.max_steps", where)
     if raw.get("daily_turns") not in (None, ""):
         seat["daily_turns"] = _check_daily_turns(raw["daily_turns"], "seats.triage.daily_turns",
                                                  where)
@@ -1562,6 +1600,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         if seats[seat].get("daily_turns") not in (None, ""):
             seats[seat]["daily_turns"] = _check_daily_turns(
                 seats[seat]["daily_turns"], f"seats.{seat}.daily_turns", where)
+        if seats[seat].get("max_steps") not in (None, ""):
+            seats[seat]["max_steps"] = _check_max_steps(
+                seats[seat]["max_steps"], f"seats.{seat}.max_steps", where)
 
     if not loop.get("clone"):
         # Above one run at once, isolation is not a preference: without a clone to isolate from,
