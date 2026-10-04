@@ -35,6 +35,18 @@ class WholeAgentFixture(unittest.TestCase):
             self.assertEqual((result.returncode, result.stdout, result.stderr),
                              (0, 'ok\n', 'warning\n'))
 
+    def test_a_timeout_carries_what_the_sandbox_printed(self):
+        # #271: the kill used to drop it; now the turn's last words go with the TimeoutExpired.
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory, \
+                mock.patch.object(contained, 'unavailable', return_value=''):
+            code = ("import sys,time; print('working on it', flush=True); "
+                    "print('a warning', file=sys.stderr, flush=True); time.sleep(30)")
+            with mock.patch.object(contained, 'command', return_value=[sys.executable, '-c', code]):
+                with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                    contained.run(home=Path(directory), timeout=2)
+        self.assertEqual(raised.exception.output, b'working on it\n')
+        self.assertEqual(raised.exception.stderr, b'a warning\n')
+
     @_home_guard.needs_real_hermes(bool(shutil.which('bwrap')),
                                    reason='bubblewrap or Hermes checkout unavailable')
     def test_real_agent_cannot_read_host_dummy_credentials(self):

@@ -135,8 +135,12 @@ class ProductionLaunch(Base):
         for name in ("venv", "rust"):
             (self.root / name).mkdir()
 
-    def launch(self, role: str) -> dict:
-        """Run ``run_turn`` for ``role`` with the launcher spied; return what it was handed."""
+    def launch(self, role: str, *, kill: subprocess.TimeoutExpired | None = None,
+               activity: str = "", observed: dict | None = None) -> dict:
+        """Run ``run_turn`` for ``role`` with the launcher spied; return what it was handed.
+
+        ``kill``: the launcher raises it instead, as ``contained.run`` does at the budget; the
+        proxy then reports ``activity`` as the agent's last step, into ``observed``."""
         seen = {}
 
         def stage(_loop, **kw):
@@ -146,11 +150,14 @@ class ProductionLaunch(Base):
         def run(**kw):
             seen["kwargs"] = kw
             seen["argv"] = contained.command(**{k: v for k, v in kw.items() if k != "timeout"})
+            if kill is not None:
+                raise kill
             return subprocess.CompletedProcess([], 0, "", "")
 
         class Inference:
             def __init__(self, directory, *a, **k):
                 self.directory = directory
+                self.last_activity = activity
                 seen["quota"] = k.get("quota")
 
             def __enter__(self):
@@ -169,11 +176,13 @@ class ProductionLaunch(Base):
              mock.patch.object(trusted_turn.inference_proxy, "InferenceCapability", Inference), \
              mock.patch.object(contained.Path, "is_socket", return_value=True), \
              mock.patch.object(contained, "run", side_effect=run), \
-             self.assertRaises(trusted_turn.TurnDenied):  # the spy confirms no scoped write
+             self.assertRaises(trusted_turn.TurnBudgetExceeded if kill is not None
+                               else trusted_turn.TurnDenied):  # the spy: no scoped write
             trusted_turn.run_turn(self.loop, scope, source=self.root, venv=self.root / "venv",
                                   runtime=self.runtime, rust=self.root / "rust",
                                   upstream="https://model.invalid", key="k", model="m",
-                                  prompt="PROMPT", timeout=5, work_root=self.root / "work")
+                                  prompt="PROMPT", timeout=5, work_root=self.root / "work",
+                                  observed=observed)
         self.assertIn("argv", seen, "run_turn never reached the launcher")
         return seen
 
@@ -397,6 +406,18 @@ class ProductionLaunch(Base):
         self.assertEqual(self.caps("fixer"), (150, 187))
         self.assertEqual(self.caps("issue_fixer"), (150, 187))
         self.assertEqual(self.caps("adjudicator"), (24, 32))     # unset: its role default
+
+    def test_a_budget_kill_keeps_the_output_and_the_agents_last_step(self):
+        """Live #271: two budget kills reported only that the clock ran out. The sandbox's
+        output so far and the agent's last step (as the proxy saw it) now go with the kill."""
+        observed = {}
+        kill = subprocess.TimeoutExpired(["bwrap"], 5, b"partial stdout", b"session_id: x")
+        self.launch("issue_fixer", kill=kill, observed=observed,
+                    activity='call terminal: {"command": "python tests/run_tests.py"}')
+        self.assertIn("partial stdout", observed["stdout"])
+        self.assertIn("[last agent activity before the kill] call terminal", observed["stdout"])
+        self.assertIn("run_tests.py", observed["stdout"])
+        self.assertEqual(observed["stderr"], "session_id: x")
 
     def caps(self, role: str) -> tuple[int, int]:
         seen = self.launch(role)
