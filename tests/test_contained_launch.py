@@ -83,8 +83,17 @@ def at_or_under(path: str, root: str) -> bool:
     return path == root or root in path.parents
 
 
+# Captured before any test patches it: the one test of the check itself runs the real one.
+REAL_UNAVAILABLE = contained.unavailable
+
+
 class Base(unittest.TestCase):
     def setUp(self):
+        # These pin the argv and env our code builds, so they run on a host with no bubblewrap
+        # too: its presence check is answered here, and pinned on its own below.
+        present = mock.patch.object(contained, "unavailable", return_value="")
+        present.start()
+        self.addCleanup(present.stop)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name).resolve()
@@ -333,6 +342,23 @@ class ProductionLaunch(Base):
                                side_effect=AssertionError("launched with network=True")), \
              self.assertRaisesRegex(ValueError, "network"):
             contained.run(**self.staged(), entry=["/bin/true"], network=True, timeout=5)
+
+    def test_a_host_without_bubblewrap_is_refused_before_anything_starts(self):
+        """#16: no sandbox, no turn — refused by name with the fix, never run without one."""
+        with mock.patch.object(contained, "unavailable", REAL_UNAVAILABLE), \
+             mock.patch.object(contained.shutil, "which", return_value=None) as which, \
+             mock.patch.object(contained.subprocess, "Popen",
+                               side_effect=AssertionError("launched without bubblewrap")), \
+             mock.patch.object(contained, "write_etc",
+                               side_effect=AssertionError("staged without bubblewrap")):
+            with self.assertRaises(contained.ContainmentUnavailable) as raised:
+                contained.run(**self.staged(), entry=["/bin/true"], timeout=5)
+        which.assert_called_with("bwrap", path=contained.LAUNCH_PATH)
+        self.assertIn("bubblewrap", str(raised.exception))
+        self.assertIn("hermes review-loop retry", str(raised.exception))
+        # A host fact, not a flake: the worker fails it once instead of spending its retries.
+        from review_loop import run_supervisor
+        self.assertFalse(run_supervisor.retryable(raised.exception))
 
     def test_hermes_gets_exactly_the_terminal_and_file_tools(self):
         for role in ("reviewer", "fixer", "adjudicator"):

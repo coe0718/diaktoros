@@ -142,6 +142,7 @@ Both gateway and CLI must address the same home. Never place credentials in this
 | Mode rejected | File too broadly accessible | Restrict permissions using normal file administration; rerun selftest |
 | Runtime/source/venv path rejected | Moved checkout or changed bundled Python generation | Rerun setup and inspect detected runtime against selected venv |
 | Models resolve in host shell, not worker | Seat profile missing/unresolvable or inconsistent runtime | Inspect configured seat profile/provider/model; don't invent runtime model keys |
+| `ContainmentUnavailable: bubblewrap (bwrap) is not installed` | The worker found no `bwrap` in `/usr/sbin:/usr/bin:/bin`; the turn was refused before anything started, never run unsandboxed | Install the bubblewrap package, confirm `selftest` passes `bwrap:installed`, then `retry` the run. It is not retried automatically |
 | `RealHomeError` or `RealNetworkError` | Harness-only test guard is armed (variable plus sentinel) | In a real gateway, find/unset leaked test settings and restart; in tests, fix the fixture without disabling guards. See [tripwire recovery](operations.md#the-loop-stops-with-realhomeerror-or-realnetworkerror) |
 
 ```bash
