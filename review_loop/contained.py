@@ -17,7 +17,10 @@ host's are named too, below:
   edits cannot reach even the staged copy. An unwritable ``/work`` stays a plain read-only bind
   of that export: an adjudicator's ruling is judgement, not a change.
 * The namespace root bubblewrap creates implicitly, and ``--dev``, are remounted read-only: both
-  are tmpfs mounts of nobody's chosen size.
+  are tmpfs mounts of nobody's chosen size. ``/dev/shm`` is the exception inside ``/dev``: a small
+  sized tmpfs of its own (``SHM_SIZE``), writable, because POSIX semaphores and shared memory live
+  there and a repository's tests that use ``multiprocessing`` cannot run without it (#297). The
+  read-only remount of ``/dev`` leaves that separate mount writable.
 
 Two things stay the host's, and they are the honest limit of an in-namespace fix:
 
@@ -115,6 +118,9 @@ def _size_from_env(name: str, gib: int) -> int:
 
 
 SCRATCH_SIZE = _size_from_env("SCRATCH_SIZE", 2)
+# /dev/shm (#297): semaphores and shared-memory segments for a seat's tests, not build output.
+# Fixed, not an override: it never holds more than a test suite's queues and locks.
+SHM_SIZE = 256 * 1024 ** 2
 CHECKOUT_SIZE = _size_from_env("CHECKOUT_SIZE", 8)
 
 # The smallest cap that still holds what a seat is told to build: a scoped `cargo test -p <crate>
@@ -253,7 +259,8 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             # without it Rust cannot link. It holds only symlinks.
             *etc_binds,
             "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
-            "--proc", "/proc", "--dev", "/dev", *_sized_tmpfs("/tmp", SCRATCH_SIZE),
+            "--proc", "/proc", "--dev", "/dev", *_sized_tmpfs("/dev/shm", SHM_SIZE),
+            *_sized_tmpfs("/tmp", SCRATCH_SIZE),
             "--dir", "/opt", *runtime_parents,
             "--ro-bind", str(runtime), str(runtime),
             "--ro-bind", str(venv), "/opt/venv",

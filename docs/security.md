@@ -37,6 +37,7 @@ The review-loop boundary is not a general sandbox for every Hermes gateway agent
 - `/proc` and a private `/dev` are created; root and `/dev` are remounted read-only after mounting.
 - Writable `/work` is a tmpfs populated from a read-only export. Adjudicator/triage `/work` is read-only; `/target` is a separate sized build target in that case.
 - `/tmp` is a sized tmpfs; Cargo registry caches are read-only mounts and `CARGO_NET_OFFLINE=true` is always set.
+- The root and `/dev` are remounted read-only. `/dev/shm` is a separate 256 MiB tmpfs, writable, so tests that use POSIX semaphores or shared memory (Python `multiprocessing`) run inside a turn. Nothing from the host is mounted there.
 - `/home/agent` is a writable, private per-turn **host bind**, not a disk-quota-enforced tmpfs.
 - The only broker/inference directories mounted into the sandbox contain their respective socket. Staged review diff and client files are read-only.
 

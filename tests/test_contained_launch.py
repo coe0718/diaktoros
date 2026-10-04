@@ -251,9 +251,10 @@ class ProductionLaunch(Base):
         # #160: ``--ro-bind /usr`` → ``--bind /usr`` (a writable host root) used to stay green. The
         # one writable host bind production makes is the turn's own staged home at /home/agent;
         # everything else from the host is read-only. The seat's other writable space is tmpfs
-        # (/tmp, and /work or /target), which is not a host path at all.
-        tmpfs = {"reviewer": {"/tmp", "/work"}, "fixer": {"/tmp", "/work"},
-                 "adjudicator": {"/tmp", "/target"}}
+        # (/tmp, and /work or /target), which is not a host path at all — and /dev/shm, a small
+        # tmpfs of its own so a seat's multiprocessing tests can run (#297).
+        tmpfs = {"reviewer": {"/tmp", "/work", "/dev/shm"}, "fixer": {"/tmp", "/work", "/dev/shm"},
+                 "adjudicator": {"/tmp", "/target", "/dev/shm"}}
         for role in ("reviewer", "fixer", "adjudicator"):
             with self.subTest(role=role):
                 seen = self.launch(role)
