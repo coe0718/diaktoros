@@ -46,6 +46,13 @@ def dependency_cache(loop: dict) -> Path | None:
 # request to the budget. The sandbox is SIGKILLed only this long after, so Hermes's clean stop
 # wins the race instead of a kill landing mid-tool-call (#49).
 KILL_GRACE_S = 30
+
+
+def _decoded(value) -> str:
+    """Captured sandbox output as text, whatever form a timeout carried it in."""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value or ""
 # After the sandbox is gone, a broker request already in flight (a push is several GitHub calls
 # plus git fetch/push, each bounded at 90s) is let finish instead of abandoned: abandoning it
 # leaves the push intent unresolved and quarantines the run. The worker's heartbeat keeps the
@@ -626,7 +633,15 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                         # read-only so nothing it runs can dress up the head it rules on.
                         checkout_writable=scope.role not in ('adjudicator', 'triage'))
                 except subprocess.TimeoutExpired as exc:
-                    # contained.run has already SIGKILLed the sandbox's process group.
+                    # contained.run has already SIGKILLed the sandbox's process group. Keep what
+                    # it printed and what the agent was last doing (the proxy saw its last call):
+                    # without them a budget kill says only that the clock ran out.
+                    if observed is not None:
+                        doing = getattr(inference, 'last_activity', '')
+                        observed.update(
+                            stdout=_decoded(exc.output)[-4000:]
+                            + (f"\n[last agent activity before the kill] {doing}" if doing else ""),
+                            stderr=_decoded(exc.stderr)[-4000:])
                     raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None
                 if observed is not None:
                     observed.update(returncode=result.returncode,

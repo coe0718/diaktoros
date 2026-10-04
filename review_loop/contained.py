@@ -342,7 +342,8 @@ def _run(*, timeout: int, **kwargs) -> subprocess.CompletedProcess:
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise subprocess.TimeoutExpired(argv, timeout)
+                    raise subprocess.TimeoutExpired(argv, timeout, bytes(output["stdout"]),
+                                                    bytes(output["stderr"]))
                 for key, _ in selector.select(remaining):
                     chunk = os.read(key.fileobj.fileno(), 65536)
                     if not chunk:
@@ -354,7 +355,10 @@ def _run(*, timeout: int, **kwargs) -> subprocess.CompletedProcess:
                     data.extend(chunk)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise subprocess.TimeoutExpired(argv, timeout)
+            # What the sandbox printed before the kill goes with it: a budget-killed turn is the
+            # one whose last output the operator needs most.
+            raise subprocess.TimeoutExpired(argv, timeout, bytes(output["stdout"]),
+                                            bytes(output["stderr"]))
         process.wait(timeout=remaining)
         return subprocess.CompletedProcess(argv, process.returncode,
                                            output["stdout"].decode(errors="replace"),

@@ -53,6 +53,61 @@ class TransportTests(unittest.TestCase):
                         for client in clients:
                             client.close()
 
+    def test_the_agents_last_step_is_recorded_from_its_request_and_the_reply(self):
+        """#271: a budget kill needs to say what the agent was doing. The proxy notes the last
+        tool call and result it forwarded, then the call the model answered with (streamed)."""
+        reply = (b'data: ' + json.dumps({'choices': [{'delta': {'tool_calls': [
+                     {'index': 0, 'function': {'name': 'terminal', 'arguments': ''}}]}}]}).encode()
+                 + b'\n\ndata: ' + json.dumps({'choices': [{'delta': {'tool_calls': [
+                     {'index': 0, 'function': {'arguments': '{"command": "make test"}'}}]}}]}
+                 ).encode() + b'\n\ndata: [DONE]\n\n')
+
+        class Upstream(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Content-Length', str(len(reply)))
+                self.end_headers()
+                self.wfile.write(reply)
+
+        upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+        thread = threading.Thread(target=upstream.serve_forever)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d, \
+                    InferenceCapability(Path(d) / 'cap',
+                                        f'http://127.0.0.1:{upstream.server_port}{PATH}',
+                                        'DUMMY_KEY', model='m', quota=1) as cap:
+                messages = [{'role': 'user', 'content': 'fix it'},
+                            {'role': 'assistant', 'content': None, 'tool_calls': [
+                                {'id': '1', 'type': 'function', 'function': {
+                                    'name': 'read_file', 'arguments': '{"path": "src/a.py"}'}}]},
+                            {'role': 'tool', 'tool_call_id': '1', 'content': 'def a(): pass'}]
+                conn = _UnixHTTP(str(cap.socket_path))
+                conn.request('POST', PATH, body=json.dumps({'messages': messages,
+                                                            'stream': True}).encode())
+                response = conn.getresponse()
+                response.read()
+                conn.close()
+                self.assertIn('call read_file: {"path": "src/a.py"}', cap.last_activity)
+                self.assertIn('result: def a(): pass', cap.last_activity)
+                self.assertIn('→ then call terminal: {"command": "make test"}', cap.last_activity)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            thread.join()
+
+    def test_activity_is_bounded_and_never_raises(self):
+        self.assertEqual(inference_proxy.last_activity(b'not json'), '')
+        self.assertEqual(inference_proxy.reply_activity(b'\xff\x00', True), '')
+        huge = json.dumps({'messages': [{'role': 'tool', 'content': 'x' * 100000}]}).encode()
+        self.assertLessEqual(len(inference_proxy.last_activity(huge)),
+                             inference_proxy.ACTIVITY_LIMIT)
+
     def test_adversarial_payloads_cannot_change_model_or_expand_budget(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as d:
             seen = []

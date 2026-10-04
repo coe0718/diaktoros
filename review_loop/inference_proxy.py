@@ -235,6 +235,85 @@ def _cap_field(payload: dict, name: str, contract: Contract) -> None:
         payload[name] = contract.cap
 
 
+ACTIVITY_LIMIT = 1200
+REPLY_COPY = 64 * 1024
+
+
+def reply_activity(raw: bytes, stream: bool) -> str:
+    """The tool call(s) a model reply asked for — the step the agent is now running — from a
+    bounded copy of the reply (buffered JSON or chat-completions SSE). Never raises."""
+    try:
+        calls: dict[int, dict] = {}
+        if stream:
+            for line in raw.decode(errors="replace").splitlines():
+                if not line.startswith("data:") or line.strip() == "data: [DONE]":
+                    continue
+                try:
+                    event = json.loads(line[5:])
+                except ValueError:
+                    continue
+                for choice in event.get("choices") or []:
+                    for delta in ((choice.get("delta") or {}).get("tool_calls") or []):
+                        slot = calls.setdefault(int(delta.get("index") or 0),
+                                                {"name": "", "arguments": ""})
+                        function = delta.get("function") or {}
+                        slot["name"] += function.get("name") or ""
+                        slot["arguments"] += function.get("arguments") or ""
+        else:
+            message = ((json.loads(raw).get("choices") or [{}])[0].get("message") or {})
+            for index, call in enumerate(message.get("tool_calls") or []):
+                function = (call or {}).get("function") or {}
+                calls[index] = {"name": function.get("name") or "",
+                                "arguments": function.get("arguments") or ""}
+        return "; ".join(f"call {slot['name'] or '?'}: {_text(slot['arguments'], 300)}"
+                         for _, slot in sorted(calls.items())[:3])
+    except Exception:
+        return ""
+
+
+def _text(value: object, limit: int) -> str:
+    """Model text or JSON, flattened to one bounded string (a part list becomes its text)."""
+    if isinstance(value, list):
+        value = " ".join(str(part.get("text") or part.get("content") or "")
+                         if isinstance(part, dict) else str(part) for part in value)
+    text = value if isinstance(value, str) else json.dumps(value, default=str)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def last_activity(body: bytes) -> str:
+    """The agent's latest step, from one validated request: its last tool call(s) and the
+    result it is about to read. Bounded; never raises (it is diagnostics, not policy).
+
+    Chat-completions shape (assistant ``tool_calls`` and ``tool`` messages); other wire shapes
+    fall back to the last message's text. The sandbox's own words: an operator diagnostic, not
+    a fact the loop acts on.
+    """
+    try:
+        payload = json.loads(body)
+        messages = payload.get("messages") or payload.get("input") or []
+        if not isinstance(messages, list) or not messages:
+            return ""
+        lines = []
+        for message in reversed(messages):
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") == "assistant" and message.get("tool_calls"):
+                for call in message["tool_calls"][:3]:
+                    function = (call or {}).get("function") or {}
+                    lines.append(f"call {function.get('name') or '?'}: "
+                                 f"{_text(function.get('arguments') or '', 300)}")
+                break
+        last = messages[-1] if isinstance(messages[-1], dict) else {}
+        if last.get("role") == "tool":
+            lines.append(f"result: {_text(last.get('content') or '', 500)}")
+        elif not lines:
+            lines.append(f"{last.get('role') or 'message'}: {_text(last.get('content') or '', 500)}")
+        return _text("\n".join(lines), ACTIVITY_LIMIT) if lines else ""
+    except Exception:
+        return ""
+
+
 def bounded_request(body: bytes, model: str, contract: Contract,
                     codex_backend: bool = False) -> bytes:
     """Validate one sandbox body for ``contract``; force the model and the output cap."""
@@ -429,6 +508,10 @@ class InferenceCapability:
         # When the upstream last answered 429, the time its usage window reopens (#219), so the
         # host can hold the seat instead of retrying into a closed window.
         self.rate_limited_until: float | None = None
+        # What the agent was last doing, read from its latest request (``last_activity``): a turn
+        # killed at its budget leaves no output of its own, and this is how the operator learns
+        # whether it hung on a test, a build or the model.
+        self.last_activity = ''
         self.model = model
         self.quota = quota
         self.used = 0
@@ -513,6 +596,7 @@ class InferenceCapability:
                 except ProxyError:
                     self.send_error(400)
                     return
+                capability.last_activity = last_activity(body)
                 # Reserve quota before contacting provider, including failed requests. A
                 # refresh-and-retry after a 401 is part of the same call.
                 with capability.lock:
@@ -539,7 +623,13 @@ class InferenceCapability:
                     capability.note_rate_limit(getattr(capability.endpoint, 'last_headers', {}), data)
                 if hasattr(data, "set_peer"):
                     data.set_peer(self.connection)
-                _relay(self, status, content_type, data)
+                seen = bytearray()
+                try:
+                    _relay(self, status, content_type, data, seen)
+                finally:
+                    reply = reply_activity(bytes(seen), _is_stream(content_type))
+                    capability.last_activity = (f"{capability.last_activity} → then {reply}"
+                                                if reply else capability.last_activity)
 
             def do_GET(self):
                 self.send_error(405)
@@ -564,11 +654,12 @@ class InferenceCapability:
         self.credential.close()
 
 
-def _relay(handler, status: int, content_type: str, data) -> None:
+def _relay(handler, status: int, content_type: str, data, seen: bytearray | None = None) -> None:
     """Answer ``handler`` with an upstream reply: buffered JSON, or SSE streamed as it arrives.
 
     A stream is sent without ``Content-Length`` and ends when the connection closes (HTTP/1.0
-    framing), so the client sees every event when the upstream sends it.
+    framing), so the client sees every event when the upstream sends it. ``seen``, when given,
+    receives a bounded copy of what was relayed (diagnostics: ``reply_activity``).
     """
     chunks = _chunks(data)
     try:
@@ -581,6 +672,8 @@ def _relay(handler, status: int, content_type: str, data) -> None:
             if len(body) > MAX_RESPONSE:
                 handler.send_error(502)
                 return
+            if seen is not None:
+                seen.extend(body[:REPLY_COPY])
             handler.send_response(status)
             handler.send_header('Content-Type', content_type)
             handler.send_header('Content-Length', str(len(body)))
@@ -597,6 +690,8 @@ def _relay(handler, status: int, content_type: str, data) -> None:
             for chunk in chunks:
                 handler.wfile.write(chunk)
                 handler.wfile.flush()
+                if seen is not None and len(seen) < REPLY_COPY:
+                    seen.extend(chunk[:REPLY_COPY - len(seen)])
         except (OSError, ProxyError, http.client.HTTPException):
             return  # truncated stream: the client sees an incomplete event stream
     finally:
