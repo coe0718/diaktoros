@@ -145,6 +145,31 @@ class Filing(Base):
         self.assertFalse(extra["ok"])                              # no other field, ever
         self.assertEqual(self.posts, [])
 
+    def test_a_label_outside_the_list_is_refused_by_the_allowlist(self):
+        """#298: the allowlist itself refuses it, not a later error — the message says why."""
+        _, run_id = self.run_row()
+        answer = self.send(self.broker(run_id), title="t", body="b", labels=["invented"])
+        self.assertFalse(answer["ok"])
+        self.assertIn("labels must come from the loop's triage list", answer["error"])
+        self.assertEqual(self.posts, [])
+
+    def test_the_fix_label_is_never_a_reviewers_even_if_planted_in_the_list(self):
+        """#298: a reviewer applying the fix label would hand its own finding to the fixer with
+        no person in between. Refused on its own, not because another module keeps it out of
+        triage.labels — here it is planted there, as a hand-edited loop file could."""
+        self.loop["triage"] = {**self.loop["triage"], "fix_label": "agent-fix",
+                               "labels": ["bug", "P3", "agent-fix"]}
+        _, run_id = self.run_row()
+        server = self.broker(run_id)
+        for spelling in ("agent-fix", "AGENT-FIX"):
+            with self.subTest(spelling):
+                answer = self.send(server, title=f"t {spelling}", body="b",
+                                   labels=["P3", spelling])
+                self.assertFalse(answer["ok"])
+                self.assertIn("maintainer's hand-off", answer["error"])
+        self.assertEqual(self.posts, [])
+        self.assertTrue(self.send(server, title="ok", body="b", labels=["P3"])["ok"])
+
     def test_one_title_per_pr_and_three_per_review(self):
         _, run_id = self.run_row()
         server = self.broker(run_id)
