@@ -129,6 +129,7 @@ class SelftestBase(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         self.model_status = 200
+        self.model_reply = "OK"
         self.model_keys = []
         self.head_files = {}
 
@@ -146,7 +147,7 @@ class SelftestBase(unittest.TestCase):
         payload = json.loads(body)
         self.assertEqual(payload["model"], "tiny-model")
         return (self.model_status, "application/json",
-                json.dumps({"choices": [{"message": {"content": "OK"}}]}).encode())
+                json.dumps({"choices": [{"message": {"content": self.model_reply}}]}).encode())
 
     def run_selftest(self, **kwargs):
         out = io.StringIO()
@@ -272,6 +273,13 @@ class ChecklistTests(SelftestBase):
         self.assertRegex(text, r"❌ model:completion .*HTTP 401")
         self.assertIn("was rejected", text)
         self.assert_no_secrets(text)
+
+    def test_empty_model_reply_warns_with_reason(self):
+        self.model_reply = ""
+        rc, text = self.run_selftest()
+        self.assertRegex(text, r"model:completion .*reply is empty")
+        self.assertIn("16-token limit", text)
+        self.assertNotRegex(text, r"✅ model:completion")
 
     def test_shared_principal_and_wrong_login_fail(self):
         self.fx.ids["fixer"] = 2

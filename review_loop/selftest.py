@@ -692,6 +692,13 @@ def _one_completion(report: Report, seats: str, inference) -> None:
         report.add(step, name, FAIL, f"{seats}: HTTP 200 via {host}, but not a {mode} answer",
                    f"upstream must speak {mode} at {inference.upstream}")
         return
+    if not answer.strip():
+        report.add(step, name, WARN,
+                   f"{what}: HTTP 200 but the reply is empty — the probe's 16-token limit was "
+                   "probably used up by the model's reasoning before any visible text",
+                   "the endpoint answers, but this probe cannot show the model produces text; "
+                   "try a non-reasoning model or check the provider's reasoning settings")
+        return
     report.add(step, name, PASS, f"HTTP 200 — {what}, reply {answer.strip()[:40]!r}")
 
 
