@@ -185,8 +185,11 @@ What to do:
      green on a safety check, or a test or build this change breaks. Any blocking finding makes
      the verdict REQUEST_CHANGES.
    - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
-     issue-tier findings the verdict is APPROVE; list them under a heading **Issues to file**,
-     each with a one-line suggested issue title, so the operator can file them.
+     issue-tier findings the verdict is APPROVE. File each one yourself, before the review,
+     through the broker's `file_issue` command (below): a one-line title, the finding with its
+     evidence and `file:line` as the body, and labels from {issue_labels}. List what you filed
+     in the review under **Issues filed**, with the numbers the broker returned; a finding the
+     broker refused to file goes under **Issues to file** instead, so the operator can.
 4. You get exactly one review write. The broker pins it to head {head}; if the head moved, the
    write is refused — say so rather than retrying. A verdict other than APPROVE or
    REQUEST_CHANGES is refused before anything is written: resubmit with a real verdict.

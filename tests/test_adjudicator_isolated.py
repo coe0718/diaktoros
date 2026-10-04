@@ -444,7 +444,8 @@ class Ruling(Base):
 class Prompts(Base):
     FACTS = {"repo": REPO, "pr": 7, "url": "https://github.com/acme/widgets/pull/7", "head": HEAD,
              "round": 3, "cap": 3, "reviewer_agent": "Rex", "fixer_agent": "Dee",
-             "reviewer": "review", "reason": "3/3 verdicts, no approval"}
+             "reviewer": "review", "reason": "3/3 verdicts, no approval",
+             "issue_labels": "this list only: `P3`"}
     FIELD = re.compile(r"\{[A-Za-z_][\w.]*\}")
 
     def test_every_role_renders_without_placeholders(self):

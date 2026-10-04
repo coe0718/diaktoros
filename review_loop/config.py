@@ -739,7 +739,14 @@ def _check_daily_turns(value, what: str, where: str) -> int:
 
 
 def seat_daily_turns(loop: dict, seat: str) -> int | None:
-    """Turns ``seat`` may start per local day on this loop, or None (no cap) (#219)."""
+    """Turns ``seat`` may start per local day on this loop, or None (no cap) (#219).
+
+    Issue fixes are always capped (#247): ``triage.fix_daily_turns``, else
+    ``DEFAULT_FIX_DAILY_TURNS``. They have no persisted seat of their own."""
+    if seat == "issue_fixer":
+        value = (loop.get("triage") or {}).get("fix_daily_turns")
+        return (value if isinstance(value, int) and not isinstance(value, bool) and value > 0
+                else DEFAULT_FIX_DAILY_TURNS)
     value = (((loop.get("seats") or {}).get(seat)) or {}).get("daily_turns")
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
@@ -842,7 +849,10 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
 # run is keyed by the issue number (``pr``) with seat ``triage`` and turn key ``triage``.
 TRIAGE_HEAD = "issue"
 TRIAGE_KEYS = {"route", "profile", "authors", "labels", "max_labels", "comment", "login",
-               "fix_label", "maintainers"}
+               "fix_label", "maintainers", "fix_daily_turns"}
+# Issue-fix turns per local day when the loop sets none (#247): the chain bound. Every issue fix
+# opens a new PR, so the per-PR verdict cap never limits how many happen; this does.
+DEFAULT_FIX_DAILY_TURNS = 10
 # An issue-fix run (#214) is keyed by the issue and the base commit it starts from (``head``);
 # it pushes only to this branch, created fresh for the issue.
 ISSUE_FIX_BRANCH = "review-loop/issue-{number}"
@@ -935,6 +945,9 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
                               "whose applying it hands an issue to the fixer")
         out["fix_label"] = fix_label
         out["maintainers"] = sorted({m.strip().lower() for m in maintainers})
+        if raw.get("fix_daily_turns") not in (None, ""):
+            out["fix_daily_turns"] = _check_daily_turns(raw["fix_daily_turns"],
+                                                        "triage.fix_daily_turns", where)
     elif raw.get("maintainers") not in (None, []):
         raise ConfigError(f"{where}: triage.maintainers only means something with "
                           "triage.fix_label")

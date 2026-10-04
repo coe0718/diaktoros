@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import socket
 import stat
@@ -251,10 +252,14 @@ class RunBroker:
                 conn.settimeout(5)
                 self.answers_outcome = None  # reported only on the request that sent them
                 try:
-                    self._dispatch(_read_line(conn, MAX_PUSH_REQUEST if self.scope.role in
-                                              ("fixer", "issue_fixer") else MAX_REQUEST))
-                    # Never relay arbitrary GitHub response fields into the namespace.
+                    outcome = self._dispatch(_read_line(
+                        conn, MAX_PUSH_REQUEST if self.scope.role in ("fixer", "issue_fixer")
+                        else MAX_REQUEST))
+                    # Never relay arbitrary GitHub response fields into the namespace. A filed
+                    # issue's number is the one exception: a host-checked int the reviewer cites.
                     response = {"ok": True, "result": {"accepted": True}}
+                    if isinstance(outcome, dict) and type(outcome.get("issue")) is int:
+                        response["result"]["issue"] = outcome["issue"]
                     if self.answers_outcome:
                         response["result"]["answers"] = self.answers_outcome
                 except (ProtocolError, broker.BrokerDenied, ValueError, UnicodeError, TimeoutError) as exc:
@@ -285,6 +290,10 @@ class RunBroker:
         if self.scope.role == "triage" or (isinstance(request, dict)
                                            and request.get("operation") == "triage"):
             return self._triage(raw, request)
+        # A reviewer's issue-tier findings as issues (#247): only for that role, never the
+        # review's own capability — the one review write is still spent only by the review.
+        if isinstance(request, dict) and request.get("operation") == "file_issue":
+            return self._file_issue(raw, request)
         # An issue fix (#214): open_pr or issue_comment, only for that role, decided first.
         if self.scope.role == "issue_fixer" or (isinstance(request, dict) and request.get(
                 "operation") in ("open_pr", "issue_comment")):
@@ -747,6 +756,73 @@ class RunBroker:
             return {"accepted": True}
         supervisor.issue_fix_status(run_id, "requested")
         return {"accepted": True}
+
+    def _file_issue(self, raw: bytes, request: object) -> object:
+        """File one issue from an issue-tier finding (#247), as the reviewer's own login.
+
+        Narrow on purpose: a title, a body and labels from the loop's triage list, at most
+        ``broker.FILED_ISSUES_MAX`` per run, one title per PR (a retry or a later round never
+        files it twice). Recorded in the ledger before the POST; an unknown outcome is uncertain
+        and never replayed. The issue carries its lineage (the PR, and how deep a chain of
+        automatic fixes it came from) so a later automatic hand-off can be bounded.
+        """
+        from .run_supervisor import Supervisor
+        if self.scope.role != "reviewer" or not isinstance(request, dict):
+            raise ProtocolError("operation out of scope")
+        if set(request) != {"operation", "title", "body", "labels"} or len(raw) > MAX_REQUEST:
+            raise ProtocolError("file_issue takes a title, a body and labels")
+        title, body, labels = request["title"], request["body"], request["labels"]
+        if (not isinstance(title, str) or not title.strip()
+                or len(title) > broker.ISSUE_PR_TITLE_MAX or any(ord(ch) < 32 for ch in title)):
+            raise ProtocolError(f"the issue title must be one line of 1-"
+                                f"{broker.ISSUE_PR_TITLE_MAX} characters; nothing was filed")
+        if (not isinstance(body, str) or not body.strip()
+                or len(body.encode()) > broker.FILED_ISSUE_BODY_MAX):
+            raise ProtocolError(f"the issue body must be non-empty text of at most "
+                                f"{broker.FILED_ISSUE_BODY_MAX} bytes; nothing was filed")
+        current = config.by_repo(self.scope.repo)
+        if (current is None or current.get("id") != self._loop.get("id")
+                or current.get("state_dir") != self._loop.get("state_dir")):
+            raise ProtocolError("run configuration changed")
+        triage = current.get("triage") or {}
+        allowed = {name.casefold(): name for name in triage.get("labels") or []}
+        if (not isinstance(labels, list) or not all(isinstance(x, str) for x in labels)
+                or len(labels) > int(triage.get("max_labels") or 3)
+                or any(x.casefold() not in allowed for x in labels)):
+            raise ProtocolError("labels must come from the loop's triage list "
+                                f"({', '.join(allowed.values()) or 'none configured'}); "
+                                "nothing was filed")
+        labels = list(dict.fromkeys(allowed[x.casefold()] for x in labels))
+        if not self.scope.run_id or not self.scope.ledger_db:
+            raise ProtocolError("host run ledger unavailable")
+        supervisor = Supervisor(self.scope.ledger_db, create=False)
+        # Lineage: a finding on a PR that fixed a filed issue is one generation deeper.
+        match = re.fullmatch(r"review-loop/issue-(\d+)", self.scope.branch or "")
+        parent = supervisor.filed_depth(self.scope.repo, int(match.group(1))) if match else None
+        depth = (parent or 0) + 1
+        login = broker.authorize(current, repo=self.scope.repo, number=self.scope.number,
+                                 head=self.scope.head, role="reviewer", branch=self.scope.branch,
+                                 operation="file_issue")
+        try:
+            seq = supervisor.record_filed_issue(self.scope.run_id, self.scope.repo,
+                                                self.scope.number, self.scope.head,
+                                                title.strip(), depth, broker.FILED_ISSUES_MAX)
+        except ValueError as exc:
+            raise ProtocolError(f"{exc}; nothing was filed")
+        try:
+            issue = broker.file_issue(current, repo=self.scope.repo, number=self.scope.number,
+                                      head=self.scope.head, login=login, title=title.strip(),
+                                      body=body, labels=labels, depth=depth)
+        except broker.BrokerDenied as exc:
+            supervisor.filed_issue_status(self.scope.run_id, seq, "uncertain",
+                                          error=str(exc)[:200])
+            raise ProtocolError("the issue's outcome is unknown: do not retry it; say so")
+        except Exception as exc:
+            supervisor.filed_issue_status(self.scope.run_id, seq, "uncertain",
+                                          error=f"POST outcome unknown: {type(exc).__name__}")
+            raise ProtocolError("the issue's outcome is unknown: do not retry it; say so")
+        supervisor.filed_issue_status(self.scope.run_id, seq, "posted", issue_number=issue)
+        return {"accepted": True, "issue": issue}
 
     def _issue_comment(self, loop: dict, supervisor, body: str) -> object:
         run_id = self.scope.run_id

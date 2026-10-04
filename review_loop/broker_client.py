@@ -56,6 +56,8 @@ MAX_PATCH_PATHS = 64               # safe_push.MAX_PATCH_PATHS
 MAX_DIFF_SOURCE = 16 * 1024 * 1024  # the largest file the client will read to diff
 # review_loop.broker.ANSWERS_MAX, and the broker's request line limit the answers travel in.
 MAX_ANSWERS = 8 * 1024
+FILED_ISSUE_BODY_MAX = 6 * 1024    # broker.FILED_ISSUE_BODY_MAX
+ISSUE_TITLE_MAX = 120              # broker.ISSUE_PR_TITLE_MAX
 MAX_REQUEST = 16 * 1024
 from review_loop.wire import ANSWERS_MARKER  # copied into the sandbox with this client
 _SHA = re.compile(r'[0-9a-f]{40}\Z')
@@ -247,6 +249,9 @@ def call(operation: str, *, verdict: str = '', body: str = '', manifest=None,
         payload = {'operation': 'open_pr', 'manifest': manifest, 'title': verdict, 'body': body}
     elif operation == 'issue_comment':
         payload = {'operation': 'issue_comment', 'body': body}
+    elif operation == 'file_issue':
+        payload = {'operation': 'file_issue', 'title': verdict, 'body': body,
+                   'labels': list(labels or [])}
     elif operation in ('review', 'request_review', 'ruling'):
         payload = {'operation': operation, 'verdict': verdict, 'body': body}
     else:
@@ -310,7 +315,8 @@ def _push(parser: argparse.ArgumentParser, args: argparse.Namespace):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('operation', choices=('review', 'request_review', 'push', 'ruling',
-                                              'triage', 'open_pr', 'issue_comment'))
+                                              'triage', 'open_pr', 'issue_comment',
+                                              'file_issue'))
     parser.add_argument('--verdict', default='')
     parser.add_argument('--body-file')
     parser.add_argument('--manifest-file')
@@ -324,19 +330,23 @@ def main() -> None:
     parser.add_argument('--answers-file',
                         help=f'request_review: your answers to the findings (at most {MAX_ANSWERS} '
                              'bytes), posted once on the PR by the host as the fixer')
-    parser.add_argument('--title', help='open_pr: the PR title (one line)')
+    parser.add_argument('--title', help='open_pr: the PR title; file_issue: the issue title '
+                                        '(one line)')
     parser.add_argument('--label', action='append', default=[],
-                        help='triage: one label from the list in your instructions (repeatable)')
+                        help='triage/file_issue: one label from the list in your instructions '
+                             '(repeatable)')
     parser.add_argument('--comment-file',
                         help=f'triage: one short comment ({TRIAGE_COMMENT_MAX} characters at '
                              'most), only when the loop allows one')
     args = parser.parse_args()
     if args.answers_file and args.operation != 'request_review':
         parser.error('--answers-file is a request_review option')
-    if (args.label or args.comment_file) and args.operation != 'triage':
-        parser.error('--label and --comment-file are triage options')
-    if args.title is not None and args.operation != 'open_pr':
-        parser.error('--title is an open_pr option')
+    if args.comment_file and args.operation != 'triage':
+        parser.error('--comment-file is a triage option')
+    if args.label and args.operation not in ('triage', 'file_issue'):
+        parser.error('--label is a triage or file_issue option')
+    if args.title is not None and args.operation not in ('open_pr', 'file_issue'):
+        parser.error('--title is an open_pr or file_issue option')
     if args.operation == 'open_pr':
         if args.manifest_file or args.verdict or args.label or args.comment_file:
             parser.error('open_pr takes --files, --message/--message-file, --title and --body-file')
@@ -361,6 +371,21 @@ def main() -> None:
         else:
             operation = lambda: call('open_pr', manifest=manifest, verdict=args.title,  # noqa: E731
                                      body=description)
+    elif args.operation == 'file_issue':
+        if (args.files or args.message is not None or args.message_file or args.dry_run
+                or args.verdict or args.manifest_file or args.comment_file
+                or not args.title or not args.body_file):
+            parser.error('file_issue takes --title, --body-file and optional --label (repeatable)')
+        title = args.title.strip()
+        body = Path(args.body_file).read_text()
+        if not title or len(title) > ISSUE_TITLE_MAX or any(ord(ch) < 32 for ch in title):
+            parser.error(f'file_issue refused before sending: the title must be one line of 1-'
+                         f'{ISSUE_TITLE_MAX} characters')
+        if not body.strip() or len(body.encode()) > FILED_ISSUE_BODY_MAX:
+            parser.error(f'file_issue refused before sending: the body must be non-empty and at '
+                         f'most {FILED_ISSUE_BODY_MAX} bytes')
+        operation = lambda: call('file_issue', verdict=title, body=body,  # noqa: E731
+                                 labels=args.label)
     elif args.operation == 'issue_comment':
         if (args.files or args.message is not None or args.message_file or args.dry_run
                 or args.verdict or args.manifest_file or not args.body_file):

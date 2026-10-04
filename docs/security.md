@@ -54,7 +54,7 @@ Repository export is an integrity check, not sanitization of source content. Any
 
 ## Scoped write policy
 
-The Unix socket identifies one host-created `RunScope`: repository, number, head, branch, role and host run metadata. The sandbox cannot supply a replacement URL, token, principal, reviewer or destination. Unknown request fields, wrong roles/operations, oversized frames and invalid payloads are refused. General REST frames are limited to 16 KiB and text bodies to 12 KiB; fixer/issue-fixer manifest frames have a separate 196-KiB ceiling.
+The Unix socket identifies one host-created `RunScope`: repository, number, head, branch, role and host run metadata. The sandbox cannot supply a replacement URL, token, principal, reviewer or destination. Unknown request fields, wrong roles/operations, oversized frames and invalid payloads are refused. General REST frames are limited to 16 KiB and text bodies to 12 KiB; fixer/issue-fixer manifest frames have a separate 768-KiB ceiling (a diff of up to 512 KiB, base64-encoded).
 
 For ordinary PR writes, `broker.authorize` verifies:
 
@@ -67,6 +67,7 @@ For ordinary PR writes, `broker.authorize` verifies:
 | Role | Accepted effect | Important restriction |
 |---|---|---|
 | `reviewer` | One review, `APPROVE` or `REQUEST_CHANGES`, with nonempty body | `COMMENT` is not a verdict; commit ID is pinned; production uses a host receipt |
+| `reviewer` (issues, #247) | Up to 3 new issues from its issue-tier findings, filed as the reviewer's own login | Title (one line, 120 chars), body (6 KiB) and labels from the loop's triage list only — no assignee, mention target, milestone or edit; re-authorized against the live PR like a review; recorded before the POST; one title per PR, so a retry never refiles; signed by the host with the PR and lineage depth; an unknown POST outcome is `uncertain`, never replayed |
 | `fixer` | One bounded push followed by one review request; optional answers comment attached to the handoff | Normally requires confirmed push first; host policy is reloaded at write time |
 | Partial-view `fixer` | Answers-only comment | Cannot push or request review of a nonexistent new push |
 | `adjudicator` | One durable `ACCEPT`, `REJECT` or `RESPEC` ruling | Optional notice/comment delivery is separate; no code edits, push or merge authority |

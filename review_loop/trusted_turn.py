@@ -25,7 +25,7 @@ import sys
 import tempfile
 import time
 
-from . import (broker_client, broker_ipc, config, contained, deps, gh, hostdirs,
+from . import (broker, broker_client, broker_ipc, config, contained, deps, gh, hostdirs,
                inference_proxy, safe_push, trusted_fetch)
 
 
@@ -391,7 +391,15 @@ TOOLS = {
     'reviewer': ('For your one authorized write use `python -m review_loop.broker_client review '
                  '--verdict APPROVE --body-file /work/review.txt` (or --verdict REQUEST_CHANGES). '
                  'The verdict must be exactly APPROVE or REQUEST_CHANGES; anything else is refused '
-                 'without spending the write. A reviewer gets exactly one write. '),
+                 'without spending the write. A reviewer gets exactly one review. Before it, file '
+                 'each issue-tier finding (one that does not block) as its own issue: '
+                 '`python -m review_loop.broker_client file_issue --title "..." --body-file '
+                 '/tmp/issue1.md --label P3` (one line title of at most 120 characters, a body of at '
+                 f'most {broker_client.FILED_ISSUE_BODY_MAX // 1024} KiB with the evidence and '
+                 '`file:line`, labels only from the list in your instructions, none if no list is '
+                 f'given; at most {broker.FILED_ISSUES_MAX} per review). It files as your account '
+                 'and answers with the issue number; a title already filed from this PR is '
+                 'refused. A blocking finding is never an issue: it is REQUEST_CHANGES. '),
     'fixer': ('To publish, name the files you changed and write a commit message: '
               '`python -m review_loop.broker_client push --files src/a.py src/b.py '
               '--message-file /tmp/commit.txt` (or `--message "..."`; paths are under `/work`). '

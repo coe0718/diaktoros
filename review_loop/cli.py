@@ -3413,6 +3413,7 @@ def _triage_lines(loop: dict) -> list[str]:
             + (f" · daily cap {seat['daily_turns']}" if seat.get("daily_turns") else ""),
             (f"  issue fixes: label {triage['fix_label']!r} by "
              f"{', '.join(triage['maintainers'])} hands an issue to the fixer"
+             f" · at most {config.seat_daily_turns(loop, 'issue_fixer')} a day"
              + ("" if config.unattended_fixer_push_enabled(loop) else
                 f" — OFF until unattended fixer pushes are on: "
                 f"{config.fixer_push_enable_command(loop)}")) if triage.get("fix_label")
@@ -3500,6 +3501,11 @@ def cmd_triage(args) -> int:
     if fix_label:
         block["fix_label"] = fix_label
         block["maintainers"] = args.maintainer or current.get("maintainers") or []
+        # The issue-fix daily cap (#247); omitted keeps the current one, 0 the default.
+        fix_cap = (current.get("fix_daily_turns") if args.fix_daily_turns is None
+                   else args.fix_daily_turns or None)
+        if fix_cap:
+            block["fix_daily_turns"] = fix_cap
     tokens = dict(loop.get("tokens") or {})
     for pair in args.token or []:
         if "=" not in pair:
@@ -4396,6 +4402,10 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                             help="login whose applying --fix-label counts (repeatable)")
         triage.add_argument("--daily-turns", type=int, default=None,
                             help="at most this many triage turns per day (0 removes the cap)")
+        triage.add_argument("--fix-daily-turns", type=int, default=None,
+                            help="at most this many issue-fix turns per day (0 = the default, "
+                                 f"{config.DEFAULT_FIX_DAILY_TURNS}); issue fixes are always "
+                                 "capped")
         triage.add_argument("--admin-token", default="",
                             help="login whose token can create or delete repo hooks")
         triage.add_argument("--dry-run", action="store_true", help="show the change, write nothing")

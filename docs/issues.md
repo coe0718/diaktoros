@@ -10,6 +10,7 @@ arbitrary ongoing issue conversations.
 - [Prerequisites](#before-you-start)
 - [Enable triage](#turn-on-issue-triage)
 - [Enable issue fixes](#turn-on-issue-fixes)
+- [Issues the reviewer files](#issues-the-reviewer-files)
 - [Costs and scheduling](#caps-and-costs)
 - [Inspect results](#inspect-results)
 - [Disable](#turn-it-off)
@@ -145,6 +146,26 @@ solve the issue or complete all stages of the PR sequence.
 The host does not merge. GitHub's `Fixes #N` closing behavior applies when the PR is
 merged into the appropriate default-branch context, not merely because a PR was opened.
 
+## Issues the reviewer files
+
+When a review finds something real that doesn't block (issue-tier, usually P2/P3), the reviewer
+files it as an issue itself, before submitting its review, instead of listing it for you to copy
+(#247). Each issue:
+
+- is filed as the **reviewer seat's own account**, so the history shows a machine filed it;
+- carries only a title, a body and labels from this loop's triage list (`triage.labels`); with no
+  list configured, it has no labels;
+- ends with a host-written line naming the PR it came from and its **lineage depth**: 1 for a
+  finding on a person's PR, one more for a finding on a PR that fixed a filed issue. Past depth 1
+  the issue says a person decides whether it goes back to the fixer.
+
+At most three per review, and one per title per PR, so a retried or later review never files the
+same finding twice. The review lists them under **Issues filed** with their numbers.
+
+A filed issue is an ordinary issue. If its author (the reviewer account) is in `triage.authors`
+and it already carries an allowed label, triage leaves it alone. It reaches the fixer only when a
+maintainer applies the fix label, so you stay in the loop.
+
 ## Caps and costs
 
 Triage uses `seats.triage` concurrency/budget overrides (default concurrency one), and
@@ -153,7 +174,9 @@ error retry. Runtime/model/provider failure may prevent a scheduled turn from st
 See [configuration](configuration.md) for exact budget inheritance.
 
 Issue fixes are serialized (concurrency one), use the loop-wide `turn_budget_s` (default
-900 seconds), and have **no daily cap**. A successful proposal adds the costs of the
+900 seconds), and are **always capped per day**: `triage.fix_daily_turns`, default 10
+(`triage --fix-daily-turns N`). Every fix opens a new PR, so the per-PR verdict cap never limits
+how many happen; this cap does. A successful proposal adds the costs of the
 ordinary PR review loop. Removing/reapplying the fix label at the same base commit
 cannot create a second independent turn. At a new base commit it can create fresh work,
 but an existing `review-loop/issue-N` branch still prevents publication. Repeated
