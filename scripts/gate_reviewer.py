@@ -31,6 +31,24 @@ from review_loop.util import log, silence  # noqa: E402
 ACTIONS = {"opened", "ready_for_review", "reopened", "review_requested"}
 
 
+def loop_worked_on(loop: dict, st, number: int, pr: dict) -> bool:
+    """Whether the loop has any stake in this PR: a fixer's, or one its state has an entry for."""
+    author = ((pr or {}).get("user") or {}).get("login") or ""
+    if author.lower() in {str(f).lower() for f in loop.get("fixers") or []}:
+        return True
+    try:
+        if st.breach_get(number) or st.transition_get(number):
+            return True
+        key = gate.seat_key(loop, number)
+        if any(isinstance(items, dict) and key in items for items in st.queue_all().values()):
+            return True
+        prefix = f"{loop.get('id') or loop.get('repo') or 'loop'}:{number}:"
+        data = json.loads(st.observations.read_text())
+        return any(k.startswith(prefix) for k in (data.get("entries") or {}))
+    except Exception:  # noqa: BLE001 - unreadable state: unknown, so stay quiet
+        return False
+
+
 def main() -> None:
     payload = json.load(sys.stdin)
     loop, st = gate.context(payload)
@@ -47,6 +65,9 @@ def main() -> None:
             silence("close event is stale or current PR state is unavailable")
         closing = "merged" if (current.get("merged") or current.get("merged_at")) else "closed"
         gate.reclaim(loop, number, closing)
+        # Cleanup above is unconditional; the notice is only for PRs the loop worked on.
+        if not loop_worked_on(loop, st, number, current):
+            silence()
         # Reclaim is best-effort and has no success receipt. Report the close, not freed disk.
         observer.notify(loop, st, "closed", number, (current.get("head") or {}).get("sha") or "",
                         identity=closing, outcome=closing, next_turn="nothing — cleanup attempted")
