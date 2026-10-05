@@ -116,6 +116,21 @@ config_schema:
     type: str
     default: ""
     description: "Absolute path (~ allowed) to the file holding the adjudicator login's GitHub PAT — the path only, never the token itself. Must be your own mode-600 regular file, not shared with any other login. Blank = not set here"
+  reviewer_max_steps:
+    label: "Reviewer's agent steps per turn"
+    type: str
+    default: ""
+    description: "Agent steps one reviewer turn may take, 8-200. Blank = not set here: the loop keeps its own value or the role default"
+  fixer_max_steps:
+    label: "Fixer's agent steps per turn"
+    type: str
+    default: ""
+    description: "Agent steps one fixer turn (and an issue fix) may take, 8-200. Blank = not set here: the loop keeps its own value or the role default"
+  fix_daily_turns:
+    label: "Issue-fix daily cap (turns)"
+    type: str
+    default: ""
+    description: "Issue-fix turns per local day, 1-1000. Needs the loop's triage.fix_label. Blank = not set here: the loop keeps its own value or the default"
   attribution:
     label: "Sign what the loop posts"
     type: bool

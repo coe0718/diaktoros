@@ -19,7 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from review_loop import attribution, broker, config, gh, review_receipt  # noqa: E402
+from review_loop import attribution, broker, config, gh, review_receipt, routes  # noqa: E402
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -364,6 +364,39 @@ class Cli(unittest.TestCase):
         rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"attribution": True})
         self.assertEqual(rc, 0, out)
         self.assertIs(self.written()["attribution"], True)
+
+    def test_apply_saves_each_turn_knob_alone_and_refuses_out_of_range(self):
+        """#309: each new form knob alone is a change, then matches; bad values are refused."""
+        self.assertEqual(self.init()[0], 0)
+        (config.profiles_root() / "arbiter").mkdir(parents=True, exist_ok=True)
+        self.addCleanup(lambda: routes.restore_entries({f"{LOOP_ID}-triage": None}))
+        rc, out = self.cli("triage", "--loop", LOOP_ID, "--enable", "--triage-profile", "arbiter",
+                           "--author", "Owner", "--labels", "bug,docs", "--fix-label", "hermes-fix",
+                           "--maintainer", "boss")
+        self.assertEqual(rc, 0, out)
+        for key, read, value in (
+                ("reviewer_max_steps", lambda w: w["seats"]["reviewer"]["max_steps"], "120"),
+                ("fixer_max_steps", lambda w: w["seats"]["fixer"]["max_steps"], 150),
+                ("fix_daily_turns", lambda w: w["triage"]["fix_daily_turns"], "7")):
+            rc, out = self.cli("apply", "--loop", LOOP_ID, settings={key: value})
+            self.assertEqual(rc, 0, out)
+            self.assertNotIn("already matches", out, key)
+            self.assertEqual(read(self.written()), int(value), key)
+            rc, out = self.cli("apply", "--loop", LOOP_ID, settings={key: value})
+            self.assertIn("already matches", out, key)
+        before = self.written()
+        for key, bad, msg in (("reviewer_max_steps", "7", "8-200"),
+                              ("fixer_max_steps", "201", "8-200"),
+                              ("fixer_max_steps", "abc", "8-200"),
+                              ("fix_daily_turns", "0", "1-1000"),
+                              ("fix_daily_turns", "1001", "1-1000")):
+            rc, out = self.cli("apply", "--loop", LOOP_ID, settings={key: bad})
+            self.assertEqual(rc, 2, out)
+            self.assertIn(msg, out)
+        self.assertEqual(self.written(), before)
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={})   # blank: not set here
+        self.assertIn("already matches", out)
+        self.assertEqual(self.written(), before)
 
 
 if __name__ == "__main__":
