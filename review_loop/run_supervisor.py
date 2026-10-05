@@ -143,6 +143,12 @@ MAX_ATTEMPTS = 3
 # call (see ``write_evidence``). A run with any of those, or one ever quarantined as
 # uncertain, is never re-armed.
 MAX_RETRIES = 4
+# Review after CI (#241): a reviewer turn whose head still has checks running waits, re-reading
+# CI every CI_POLL_S, for at most CI_WAIT_MAX_S from when the run was queued; then it reviews
+# anyway and its prompt says what never finished.
+CI_HOLD = "held: waiting for CI"
+CI_POLL_S = 90
+CI_WAIT_MAX_S = 60 * 60
 MAX_REARMS = 8
 RETRY_BASE = 120.0
 RETRY_CAP = 3600.0
@@ -2431,6 +2437,25 @@ class Supervisor:
             pass
         return True
 
+    held_for_ci = False
+
+    def linger_for_ci(self, sleep=time.sleep) -> None:
+        """After holding a review for CI, stay (no seat, no turn) until its next CI read is due,
+        then schedule it: GitHub sends this route no event when CI finishes (#241)."""
+        if not self.held_for_ci:
+            return
+        deadline = time.time() + CI_POLL_S + 30
+        while time.time() < deadline:
+            with self._connect() as con:
+                due = con.execute("SELECT MIN(retry_at) FROM runs WHERE state='waiting' AND "
+                                  "error LIKE ?", (CI_HOLD + '%',)).fetchone()[0]
+            if due is None:
+                return
+            if due <= time.time():
+                self.recover()
+                return
+            sleep(min(due - time.time(), deadline - time.time()) + 1)
+
     def budget_of(self, run_id: str) -> float:
         """The row's own turn budget; a legacy row without one gets this worker's child_timeout."""
         with self._connect() as con:
@@ -2589,6 +2614,18 @@ class Supervisor:
                 error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
                          f"{pacing.when(paced_until)}")
                 return
+            if (row['seat'] == 'reviewer' and config.review_after_ci(loop)
+                    and time.time() - row['created'] < CI_WAIT_MAX_S):
+                from . import ci
+                checks = ci.read(loop, row['head'])
+                if checks is not None and checks.pending:
+                    # Nothing spent: no model call, no daily turn, no retry. This worker stays
+                    # to re-queue it (linger_for_ci); the watchdog sweep is the backstop.
+                    paced_until = time.time() + CI_POLL_S
+                    error = (f"{CI_HOLD} on {row['head'][:7]} — {len(checks.pending)} "
+                             f"check(s) still running")
+                    self.held_for_ci = True
+                    return
             change = None
             if row['seat'] == 'triage':
                 # An issue, not a PR (#213): no head, no checkout, no change record. The host
@@ -2776,6 +2813,8 @@ class Supervisor:
             if row is None:
                 return
             event = "failed"
+            if state == "waiting" and str(row["error"] or "").startswith(CI_HOLD):
+                return                   # the normal wait for CI (#241): status and explain show it
             if state == "waiting" and str(row["error"] or "").startswith("held:"):
                 # A pacing hold (#219, #247): the run waits without spending a retry.
                 event, kind = "held", f"held:{int(row['retry_at'] or 0)}"
@@ -2888,6 +2927,7 @@ def main():
                              capacity=json.loads(a.capacity), lease_seconds=a.lease,
                              child_timeout=a.timeout, create=False)
         sup._run_one()
+        sup.linger_for_ci()
     except (HostStateGone, sqlite3.DatabaseError) as exc:
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         reason = exc if isinstance(exc, HostStateGone) else f"run ledger {a.db} unusable: {exc}"

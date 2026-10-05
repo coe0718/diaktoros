@@ -141,7 +141,9 @@ the turn: failed checks, checks still running, and how many passed. A failed che
 finding. At the write, the broker re-reads CI and refuses an APPROVE while any check run or
 commit status at the head has failed (a re-run that passed replaces its failure), or while CI
 cannot be read. The refusal spends nothing, so the reviewer's REQUEST_CHANGES in the same turn
-goes through. Checks still running don't block an approval.
+goes through. Checks still running don't block an approval. With `review_after_ci` on, a review
+doesn't start while the head's checks are running: it waits (up to an hour), so it sees them
+finish.
 
 Fixer answers
 are published as a bounded PR comment before a fresh review request; a final model

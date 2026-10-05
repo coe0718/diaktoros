@@ -77,7 +77,8 @@ Replace every quoted angle-bracket placeholder before use. These placeholders il
   "turn_budget_s": 900,
   "unattended_fixer_push": false,
   "attribution": true,
-  "fixer_check": ""
+  "fixer_check": "",
+  "review_after_ci": false
 }
 ```
 
@@ -204,6 +205,7 @@ Cleanup considers configured roots and the per-loop artifacts tree, rejects syml
 | Key | Default | Accepted value and behavior |
 |---|---|---|
 | `unattended_fixer_push` | `false` | Strict JSON boolean. Only literal `true` in trusted host configuration opts into unattended fixer writes. Not inherited from plugin defaults. |
+| `review_after_ci` | `false` | Strict JSON boolean. `true`: a reviewer turn whose head still has checks running waits instead of starting, with no model call, daily turn or retry spent, re-reading CI about every 90 seconds. It starts once nothing is running, or an hour after it was queued, and its prompt says what never finished. `status` and `explain` show the wait (`held: waiting for CI …`); no notice is sent for it. Set with `init`/`setup`/`set --review-after-ci on\|off` or the settings form. |
 | `fixer_check` | `""` | One command, one printable line of at most 500 characters (chain several with `&&`). Fixer and issue-fix turns are told to run it from `/work` and make it pass before they publish, besides the tests they touched: name the checks CI always runs (a lint, a suite-wide guard test) so a fix doesn't go red on them. `""` names none. Set with `init`/`setup --fixer-check`, `set --fixer-check` (`''` clears it) or the settings form. |
 | `attribution` | `true` | Strict JSON boolean. Adds footers to the loop's own reviews/comments/PR descriptions where applicable and an `Automated-By:` commit trailer. `false` adds neither. It does not rewrite manual posts. |
 
@@ -378,6 +380,7 @@ The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plu
 | `reviewer_token_file`, `fixer_token_file` | Blank | `tokens` entry for the selected login; path only, with metadata checks before writes. |
 | `adjudicator_profile` | Blank | `adjudicator.profile`, only on a loop already having an adjudicator route. |
 | `adjudicator_login`, `adjudicator_token_file` | Blank | Optional adjudicator comment identity/path, only when an adjudicator route exists. |
+| `review_after_ci` | `false` | Overlay targets `review_after_ci` when explicitly named. |
 | `fixer_check` | Blank | `fixer_check`; blank keeps the loop's own check. |
 | `attribution` | `true` | Overlay targets `attribution` when explicitly named. For an explicit signing change, use `set --attribution on` or `off` for the named loop. |
 

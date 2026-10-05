@@ -54,6 +54,7 @@ Defaults are for a fresh form; existing loops retain values when a field is abse
 | `fixer_token_file` | str / `""` | Owned private regular file; absolute path or `~` path | Maps the effective fixer login into `tokens`; path only, blank keeps mapping. |
 | `adjudicator_login` | str / `""` | Optional fourth GitHub login distinct from reader, seats and their allowlists | `seats.adjudicator.login`, only with an adjudicator route; adds a PR comment identity for rulings. Without it rulings remain operator/ledger output. |
 | `adjudicator_token_file` | str / `""` | Owned private regular file; absolute path or `~` path, not shared with another login | Maps the optional adjudicator comment login into `tokens`, only with an adjudicator route. Needs an effective adjudicator login. |
+| `review_after_ci` | bool / `false` | Boolean; CLI reader also recognizes boolean words | `review_after_ci`: a review waits while the head's checks are still running (up to an hour), then starts with their results. |
 | `fixer_check` | str / `""` | One printable line, at most 500 characters | `fixer_check`: one command the fixer and issue-fix turns run before publishing, besides the tests they touched. Blank keeps the loop's value; `set --fixer-check ''` clears it. |
 | `attribution` | bool / `true` | Boolean; CLI reader also recognizes boolean words | `attribution`; signs plugin-mediated reviews/comments and commit trailers. See the attribution-only apply limitation below. |
 
