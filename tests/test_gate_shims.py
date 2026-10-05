@@ -2008,6 +2008,24 @@ class CronJobRemedies(Base):
         commands = self.commands(check.fix)
         self.assertEqual([argv[1] for argv in commands], ["create"])
 
+    def test_an_unwritable_shim_is_refused_not_a_traceback(self):
+        self.install()
+        rc, out = self.run_cli(["apply", "--loop", "widgets", "--watchdog-shim"])
+        self.assertEqual(rc, 0, out)
+        shim = doctor.shim_path()
+        shim.chmod(0o444)
+        shim.parent.chmod(0o555)
+        try:
+            if os.access(shim, os.W_OK):
+                self.skipTest("running as a user that ignores file modes")
+            rc, out = self.run_cli(["apply", "--loop", "widgets", "--watchdog-shim"])
+        finally:
+            shim.parent.chmod(0o755)
+            shim.chmod(0o755)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("refused", out)
+        self.assertIn(str(shim), out)
+
     def test_the_printed_remedies_run_through_hermes_own_cron_cli(self):
         """Every state, driven through the pinned Hermes source's `hermes cron` parser and
         handlers in this disposable HOME (never the live install)."""
