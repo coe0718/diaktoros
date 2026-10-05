@@ -39,6 +39,8 @@ class TriageVerb(unittest.TestCase):
 
     def setUp(self):
         t.reset(prs={})
+        # The harness's own loop configures the same repo, and a repo has one loop (#63).
+        (t.LOOPS_DIR / "widgets.json").unlink(missing_ok=True)
         LOOP_FILE.unlink(missing_ok=True)
         self.addCleanup(LOOP_FILE.unlink, missing_ok=True)
         self.addCleanup(lambda: routes.restore_entries({ROUTE: None}))
