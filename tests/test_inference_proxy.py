@@ -267,8 +267,7 @@ class TransportTests(unittest.TestCase):
                         conn.close()
                         return status
 
-                    for payload in ([], None, {'max_tokens': MAX_OUTPUT_TOKENS + 1},
-                                    {'max_completion_tokens': MAX_OUTPUT_TOKENS + 1},
+                    for payload in ([], None,
                                     {'max_tokens': True}, {'max_completion_tokens': '999999'},
                                     {'max_tokens': 0}, {'n': 2}, {'n': True},
                                     {'best_of': 2}, {'max_tokens': 5,
@@ -287,6 +286,26 @@ class TransportTests(unittest.TestCase):
                 upstream.shutdown()
                 upstream.server_close()
                 thread.join()
+
+    def test_an_over_cap_output_limit_is_clamped_in_every_mode(self):
+        """Live #327: Hermes asked for more output than the cap and the proxy refused the whole
+        request (`invalid output token limit`), killing the turn. Every mode now clamps; only a
+        malformed limit is refused."""
+        for mode, path, field in (('chat_completions', '/v1/chat/completions', 'max_tokens'),
+                                  ('chat_completions', '/v1/chat/completions',
+                                   'max_completion_tokens'),
+                                  ('codex_responses', '/v1/responses', 'max_output_tokens')):
+            with self.subTest(mode=mode, field=field):
+                contract = inference_proxy.contract_for(mode)
+                self.assertTrue(contract.clamp)
+                body = inference_proxy.bounded_request(
+                    json.dumps({'model': 'x', field: contract.cap * 6}).encode(), 'm', contract)
+                self.assertEqual(json.loads(body)[field], contract.cap)
+                for bad in (0, -1, True, '99'):
+                    with self.assertRaises(inference_proxy.ProxyError):
+                        inference_proxy.bounded_request(
+                            json.dumps({'model': 'x', field: bad}).encode(), 'm', contract)
+        self.assertEqual(inference_proxy.MAX_OUTPUT_TOKENS, 16384)
 
     def test_an_event_stream_is_relayed_as_one_whatever_its_label(self):
         # chatgpt.com's Codex backend was seen answering a streamed request with an event stream

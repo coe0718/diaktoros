@@ -496,11 +496,11 @@ Support follows the **resolved `api_mode`**, not a promise that every provider n
 
 A Claude subscription uses host-resolved Claude Code identity/headers and sandbox Anthropic configuration with a dummy OAuth-shaped token, preserving the system/tool-name conventions that subscription transport requires. API-key Messages seats use the named `review-loop-seat` provider at the bridge. Responses seats also use that named provider with their resolved wire.
 
-The proxy drops sandbox authorization, API-key, beta/account/user-agent headers; only permitted Responses session-affinity headers (`session_id`, `x-client-request-id`) pass through. Host Hermes supplies upstream authentication and provider headers. Production turns have a 32-call inference quota; this and output-token caps are proxy policy, not configurable loop JSON keys:
+The proxy drops sandbox authorization, API-key, beta/account/user-agent headers; only permitted Responses session-affinity headers (`session_id`, `x-client-request-id`) pass through. Host Hermes supplies upstream authentication and provider headers. A turn's model-call quota follows its seat's agent steps (`seats.<seat>.max_steps`, see above). Output-token caps are proxy policy, not loop JSON keys. In every mode a request for more than the cap is **clamped** to it, never refused; only a malformed or ambiguous limit is refused:
 
-- Chat completions: 4096 output tokens; requests above the cap are refused.
-- Responses: 16384; over-cap refused. On the ChatGPT Codex backend the validated token-limit field is dropped because that backend rejects it, so call quota and subscription limits—not that field—bound output.
-- Messages: 16384; requested limits are clamped, including extended-thinking budget adjustment below the ceiling.
+- Chat completions: 16384 output tokens.
+- Responses: 16384. On the ChatGPT Codex backend the validated token-limit field is dropped because that backend rejects it, so call quota and subscription limits—not that field—bound output.
+- Messages: 16384, including extended-thinking budget adjustment below the ceiling.
 
 The experimental provider `claude-subscription-directsdk-experimental` is a host-process backend, not an HTTP upstream. It uses the plugin's DirectSDK client/native Claude login on the host; the sandbox still speaks chat completions to its bridge. It requires the experimental Hermes plugin and profile setup. Consult [Security](security.md) and [Troubleshooting](troubleshooting.md) before treating experimental transport as equivalent to an API-key provider.
 
