@@ -105,7 +105,6 @@ class HostCapabilityTests(unittest.TestCase):
             endpoint = self.endpoints[-1]
             for payload in ([], None, b'{broken', {'n': 2}, {'n': True},
                             {'max_tokens': True}, {'max_tokens': 0},
-                            {'max_tokens': 4097}, {'max_completion_tokens': 4097},
                             {'max_tokens': 1, 'max_completion_tokens': 1}):
                 with self.subTest(payload=payload):
                     self.assertEqual(post(cap, payload)[0], 400)
@@ -119,7 +118,7 @@ class HostCapabilityTests(unittest.TestCase):
             self.assertEqual(status, 200)
             body, headers = endpoint.requests[0]
             self.assertEqual(body['model'], 'claude-sonnet-4-6')
-            self.assertEqual(body['max_tokens'], 4096)
+            self.assertEqual(body['max_tokens'], inference_proxy.MAX_OUTPUT_TOKENS)
             self.assertNotIn('hostile', str(headers))
             self.assertEqual(post(cap, {})[0], 429)
             self.assertEqual(len(endpoint.requests), 1)

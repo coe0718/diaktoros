@@ -109,8 +109,8 @@ Blocking control files is also not a guarantee that allowed code is harmless: or
 
 | Wire mode | Local endpoint | Output policy |
 |---|---|---|
-| `chat_completions` | `/v1/chat/completions` | Default 4096 tokens; over-cap/ambiguous limits rejected; no multiple completions |
-| `codex_responses` | `/v1/responses` | Default 16384 tokens; over-cap limits rejected; background responses rejected |
+| `chat_completions` | `/v1/chat/completions` | 16384-token cap; larger limits clamped; malformed/ambiguous limits rejected; no multiple completions |
+| `codex_responses` | `/v1/responses` | 16384-token cap; larger limits clamped; malformed limits rejected; background responses rejected |
 | `anthropic_messages` | `/anthropic/v1/messages` | 16384-token cap; larger native limits clamped; thinking budget kept below output limit |
 
 **Codex subscription exception:** for the ChatGPT Codex backend, the proxy validates output-cap fields and then removes them because that backend rejects them; it also removes certain unsupported sampling/cache fields and sets `store=false`. Therefore the 16384 figure is not a provider-enforced output-token guarantee on that path. Response bytes, calls and wall-time limits still apply. These mechanisms are not an exact monetary spending cap.

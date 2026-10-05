@@ -128,7 +128,8 @@ class ModeContracts(Tmp):
                                     credential=StaticCredential(cred)) as cap:
             self.assertEqual(cap.contract.local_path, "/v1/responses")
             self.assertEqual(post(cap, {"model": "x"}, path="/v1/chat/completions")[0], 400)
-            self.assertEqual(post(cap, {"max_output_tokens": CONTRACTS["codex_responses"].cap + 1})[0], 400)
+            # Over the cap is clamped (test_inference_proxy); a malformed limit is still refused.
+            self.assertEqual(post(cap, {"max_output_tokens": 0})[0], 400)
             self.assertEqual(post(cap, {"background": True})[0], 400)
             self.assertEqual(cap.used, 0)
             self.assertEqual(post(cap, {"model": "attacker", "input": []}, self.ATTACK)[0], 200)
@@ -154,8 +155,11 @@ class ModeContracts(Tmp):
                         "store": True, "stream": True}).encode(), "gpt-seat", contract, True))
         self.assertEqual(body, {"model": "gpt-seat", "store": False, "stream": True})
         with self.assertRaises(inference_proxy.ProxyError):   # still validated before dropping
-            inference_proxy.bounded_request(json.dumps({"max_output_tokens": 10 ** 6}).encode(),
+            inference_proxy.bounded_request(json.dumps({"max_output_tokens": 0}).encode(),
                                             "gpt-seat", contract, True)
+        # An over-cap limit is clamped, then dropped like any other for this backend.
+        self.assertNotIn("max_output_tokens", json.loads(inference_proxy.bounded_request(
+            json.dumps({"max_output_tokens": 10 ** 6}).encode(), "gpt-seat", contract, True)))
         self.assertTrue(inference_proxy.is_codex_backend("https://chatgpt.com/backend-api/codex/responses"))
         self.assertFalse(inference_proxy.is_codex_backend("https://api.x.ai/v1/responses"))
 

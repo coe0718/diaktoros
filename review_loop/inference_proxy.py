@@ -56,7 +56,11 @@ from urllib.parse import urlsplit
 MAX_REQUEST = 8_000_000
 BRIDGE_MAX_REQUEST = 2 * MAX_REQUEST
 MAX_RESPONSE = 4_000_000
-MAX_OUTPUT_TOKENS = 4096
+# One reply's output ceiling on Chat Completions; the other modes' caps are set below. A request
+# for more is *clamped* to the cap in every mode, never refused: the cap bounds output either
+# way, and a refusal killed the turn (live: Hermes raised max_tokens on a long review and got
+# "proxy refused: invalid output token limit"). A malformed limit is still refused.
+MAX_OUTPUT_TOKENS = 16384
 # The most model calls one turn's capability may grant: the largest step setting a seat may take
 # (config.MAX_STEPS_RANGE, through config.model_calls), never more (#271). Each call stays bounded
 # by MAX_REQUEST, MAX_OUTPUT_TOKENS and the turn's wall-clock budget.
@@ -95,12 +99,12 @@ class Contract:
 CONTRACTS = {
     'chat_completions': Contract(
         'chat_completions', '/v1/chat/completions', '/chat/completions',
-        ('max_tokens', 'max_completion_tokens'), MAX_OUTPUT_TOKENS, 'max_tokens', False),
+        ('max_tokens', 'max_completion_tokens'), MAX_OUTPUT_TOKENS, 'max_tokens', True),
     # Hermes sends no output cap on Responses unless configured; reasoning tokens count against
     # it, so this mode's cap is larger. Session-affinity headers are the only sandbox headers.
     'codex_responses': Contract(
         'codex_responses', '/v1/responses', '/responses', ('max_output_tokens',), 16384,
-        'max_output_tokens', False, frozenset({'session_id', 'x-client-request-id'})),
+        'max_output_tokens', True, frozenset({'session_id', 'x-client-request-id'})),
     # Hermes always sends the model's native output ceiling (e.g. 64000) as max_tokens, so this
     # mode clamps to its cap (and keeps an extended-thinking budget below it) instead of refusing.
     'anthropic_messages': Contract(
