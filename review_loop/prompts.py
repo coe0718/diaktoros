@@ -154,6 +154,11 @@ Facts the host verified from GitHub immediately before this turn:
 - round **{round} of {cap}** — the budget is counted in verdicts, not in hours
 - head **{head}** — review *this* commit; it is exported, read-write, at `/work`
 
+`/work` holds the files of head {head}, exported and checked by the host, with no `.git` (by
+design, so a seat can never reach a Git credential path). The commit is already verified: read
+the diff at `/opt/review/pr.diff` and the files, and don't try `git`. A missing `.git` is not
+something to report.
+
 You run in a sandbox with no GitHub credentials and no network. The change itself (title,
 description, base, changed files with clipped patches), earlier verdicts on this PR and the
 fixer's published answers to them, as the host read them, are at the end of this message (they
@@ -221,6 +226,11 @@ Facts the host verified from GitHub immediately before this turn:
 
 - round **{round} of {cap}** — verdict {round}, requested by **{reviewer}**
 - head **{head}** — the verdict was written against this commit; it is exported at `/work`
+
+`/work` holds the files of head {head}, exported and checked by the host, with no `.git` (by
+design, so a seat can never reach a Git credential path). The commit is already verified: read
+the diff at `/opt/review/pr.diff` and the files, and don't try `git`. A missing `.git` is not
+something to report.
 
 You run in a sandbox with no GitHub credentials and no network. What this PR changes against
 its base (title, description, changed files with clipped patches), the verdict you are

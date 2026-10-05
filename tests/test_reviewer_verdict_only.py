@@ -192,6 +192,19 @@ class VerdictOnlyInstructionTests(unittest.TestCase):
         self.assertIn("the verdict is REQUEST_CHANGES, naming exactly what could not be verified",
                       text)
 
+    def test_isolated_prompts_say_work_has_no_git_and_carry_head(self):
+        sha = "d62875a3c3886dc56463cd0615281062940fadbf"
+        for role in ("reviewer", "fixer"):
+            template = prompts.ISOLATED[role]
+            names = {n for _, n, _, _ in string.Formatter().parse(template) if n}
+            facts = {n: "x" for n in names}
+            facts["head"] = sha
+            text = prompts.render_isolated(role, **facts)
+            with self.subTest(role=role):
+                self.assertIn(f"holds the files of head {sha}", text)
+                self.assertIn("with no `.git`", text)
+                self.assertIn("don't try `git`", text)
+
     def test_every_reviewer_surface_grades_findings_on_the_operators_scale(self):
         """Findings are graded P0–P3 and blocks/issue — the operator's merge bar — not on a scale
         the model invents (the first live review graded one "HIGH"). Only a blocking finding
