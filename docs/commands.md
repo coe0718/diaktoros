@@ -83,6 +83,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | I want to… | command |
 | --- | --- |
 | see my loops | [`list`](#list), [`status`](#status) |
+| see what a loop did this week, and how long turns took | [`stats`](#stats) |
 | install a loop | [`setup`](#setup) (guided), or [`init`](#init) (flag by flag) |
 | check an install before going live | [`doctor`](#doctor), [`selftest`](#selftest) |
 | turn the loop on or off | [`arm`](#arm) |
@@ -152,6 +153,39 @@ The form lives in the Hermes desktop app under **Capabilities → Plugins → re
 
 <!-- flags:settings -->
 No flags.
+<!-- /flags -->
+
+### stats
+
+What one loop did over a window, and how long it took. Two sources:
+
+- **The run ledger** (local; always shown): every seat turn in the window, by how it ended
+  (succeeded, failed, waiting, cancelled, uncertain), how many needed a retry, how long a
+  succeeded turn **ran**, and how long turns **waited** before starting (queues, daily caps,
+  usage windows, CI holds). GitHub cannot tell you how long a turn took; this can.
+- **GitHub**, with `--github`, read as the reader (one request per PR): PRs opened, merged and
+  still open, by author; open → merge time; each reviewer's verdicts and time to their first
+  review; and how many change-request rounds the loop's reviewer needed per PR.
+
+Read-only: the ledger is opened read-only, and GitHub is only read.
+
+```bash
+hermes review-loop stats --loop "<loop-id>"
+hermes review-loop stats --loop "<loop-id>" --since 30d --github --html ~/stats/index.html
+```
+
+`--json` prints the same data as JSON. `--html FILE` also writes one self-contained page, with no
+scripts or remote assets. Both hold totals and timings only, with no error text, paths or prompt
+content, so they are safe to publish: see [Publishing stats](operations.md#publishing-stats).
+
+<!-- flags:stats -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
+| `--since` | `SINCE` | `7d` | window start: 7d, 24h or a date like 2026-09-28 (default 7d) |
+| `--github` |  |  | also read the window's PRs and reviews from GitHub, as the reader (one request per PR) |
+| `--json` |  |  | print the data as JSON |
+| `--html` | `FILE` |  | also write one self-contained HTML page to FILE |
 <!-- /flags -->
 
 ---

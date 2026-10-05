@@ -3202,6 +3202,50 @@ def _pacing_lines(loop: dict) -> list[str]:
     return lines
 
 
+def cmd_stats(args) -> int:
+    """What one loop did since ``--since``: seat turns from the run ledger (how they ended, how
+    long they ran and waited) and, with ``--github``, its PRs and reviews read as the reader.
+
+    Read-only: the ledger is opened read-only and GitHub is only read. ``--html FILE`` writes one
+    self-contained page; ``--json`` prints the same data. Both hold totals and timings only, so
+    either can be published (docs/operations.md, "Publishing stats").
+    """
+    from . import run_supervisor, stats
+    try:
+        since = stats.parse_since(args.since)
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    if args.loop:
+        try:
+            loop = config.load_id(args.loop)
+        except config.ConfigError as exc:
+            print(f"no such loop: {exc}")
+            return 2
+    else:
+        loops, refused = config.readable_loops()
+        for loop_id, reason in refused:
+            print(f"skipping {loop_id}.json: {reason}")
+        names = [item["id"] for item in loops] + [loop_id for loop_id, _ in refused]
+        if len(names) > 1:
+            print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
+            return 2
+        if refused:
+            return 2
+        if not loops:
+            print(f"no loops configured in {config.config_dir()}")
+            return 2
+        loop = loops[0]
+    report = stats.collect(loop, run_supervisor.production_ledger(), since, args.github)
+    print(stats.as_json(report) if args.json else stats.text(report))
+    if args.html:
+        target = pathlib.Path(args.html).expanduser()
+        target.write_text(stats.as_html(report))
+        if not args.json:
+            print(f"\nwrote {target}")
+    return 0
+
+
 def cmd_explain(args) -> int:
     """Why one PR is not moving, and the one event that would move it.
 
@@ -4269,6 +4313,20 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         status = sub.add_parser("status", help="Show a loop's config and live state")
         status.add_argument("--loop", help="loop id (default: every configured loop)")
         status.set_defaults(func=cmd_status)
+
+        stats_cmd = sub.add_parser("stats", help="What the loop did over a window: seat turns, "
+                                                 "how long they ran, and (with --github) its PRs "
+                                                 "and reviews")
+        stats_cmd.add_argument("--loop", help="loop id (default: the only configured loop)")
+        stats_cmd.add_argument("--since", default="7d",
+                               help="window start: 7d, 24h or a date like 2026-09-28 (default 7d)")
+        stats_cmd.add_argument("--github", action="store_true",
+                               help="also read the window's PRs and reviews from GitHub, as the "
+                                    "reader (one request per PR)")
+        stats_cmd.add_argument("--json", action="store_true", help="print the data as JSON")
+        stats_cmd.add_argument("--html", metavar="FILE",
+                               help="also write one self-contained HTML page to FILE")
+        stats_cmd.set_defaults(func=cmd_stats)
 
         explain = sub.add_parser("explain",
                                  help="Why one PR is not moving, and what has to happen next")

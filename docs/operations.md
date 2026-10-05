@@ -19,6 +19,7 @@ incident recovery, and the decision to merge.
 - [Gate failures](#when-a-gate-crashes-or-runs-out-of-time)
 - [Run recovery](#when-an-isolated-run-fails)
 - [Bursts and watchdog](#how-it-handles-a-burst)
+- [Publishing stats](#publishing-stats)
 
 Replace quoted angle-bracket placeholders, including brackets, with your values.
 `--loop` is the saved loop ID, not a repo or profile. `--pr` is the numeric PR number
@@ -385,3 +386,32 @@ The default sweep budget is 600 seconds, per-read cap 20 seconds. Slow reads can
 remaining work; the next scheduled sweep starts fresh. The cron script may report
 failure while exiting zero: monitor output and state, not exit code alone. Never set
 `REVIEW_LOOP_TEST` in production: it bypasses pause checks and grace periods.
+
+## Publishing stats
+
+[`stats`](commands.md#stats) reports what a loop did: seat turns from the run ledger, and with
+`--github` its PRs and reviews. `--html FILE` writes one self-contained page (no scripts or remote
+assets) and `--json` the same data. Both hold totals and timings only, never error text, paths or
+prompt content, so either can be published. The page shows the seat accounts' and PR authors'
+logins, as GitHub does.
+
+The plugin never publishes anything itself: putting the page on the web is your step, with your
+own credentials. For GitHub Pages:
+
+1. Once, create a `gh-pages` branch in a repository you control, checked out at a path of your
+   choice (`~/review-loop-stats` here), and turn on Pages for that branch under **Settings →
+   Pages**. A public repository publishes the page to anyone.
+2. Refresh it on a schedule (a cron entry or a systemd timer), as the operator:
+
+   ```bash
+   #!/bin/sh
+   set -e
+   hermes review-loop stats --loop "<loop-id>" --since 30d --github --html ~/review-loop-stats/index.html
+   git -C ~/review-loop-stats add index.html
+   git -C ~/review-loop-stats commit -qm "stats $(date -u +%F)"
+   git -C ~/review-loop-stats push -q
+   ```
+
+The ledger's turn timings exist only on the host, which is why the page is built there. A
+repository that wants GitHub-side numbers alone can compute them in a scheduled Actions workflow
+instead; the ledger's columns are not on GitHub.
