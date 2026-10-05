@@ -1306,6 +1306,9 @@ class HermesAgreement(unittest.TestCase):
                                  {"OPENROUTER_API_KEY": _DUMMY}),
     }
 
+    # Size of CASES when this guard was added; raise it when cases are added.
+    MIN_CASES = 29
+
     def setUp(self):
         self.source = pathlib.Path(HERMES_SOURCE)
         self.venv = self.source / "venv"
@@ -1355,6 +1358,9 @@ class HermesAgreement(unittest.TestCase):
             for row in rows:
                 print(*row, file=sys.stderr)
         self.assertEqual(len(rows), len(self.CASES))
+        # The CI gate counts tests, not comparisons: an emptied or shrunk table would still print
+        # "Ran 1 test / OK". Pin the table's size so dropping cases is a deliberate edit.
+        self.assertGreaterEqual(len(rows), self.MIN_CASES)
         for name, hermes, status, mode, required, possible in rows:
             with self.subTest(name, hermes=hermes, status=status, mode=mode, required=required,
                               possible=possible):
