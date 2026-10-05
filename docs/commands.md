@@ -221,6 +221,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--admin-token` | `ADMIN_TOKEN` |  | hook admin login: the hooks are created (paused) as it |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile whose chat gets the loop's notices |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
+| `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default: the plugin setting, off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by hermes-review-loop' (default: the plugin setting, on) |
 | `--source` | `SOURCE` |  | runtime file's source path (default: detected) |
 | `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
@@ -313,6 +314,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--grace-min` | `GRACE_MIN` | `35` | minutes a PR may sit quiet before the watchdog reports a stall |
 | `--ttl-min` | `TTL_MIN` | `45` | how long a run may hold its seat slot |
 | `--inflight-ttl-min` | `INFLIGHT_TTL_MIN` | `10` | how long an in-flight mark blocks a second run at the same head |
+| `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by hermes-review-loop' (default on) |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
 | `--turn-budget` | `TURN_BUDGET` | `900` | seconds one isolated seat turn may run, build and tests included (default 900; the sandbox is killed past it) |
@@ -385,6 +387,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--inflight-ttl-min` | `INFLIGHT_TTL_MIN` |  | minutes an in-flight mark blocks a second run at the same head |
 | `--turn-budget` | `TURN_BUDGET` |  | seconds one isolated seat turn may run (loop default) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts ('Automated by hermes-review-loop'), or stop |
+| `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour), or start at once |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) |
 | `--reviewer-turn-budget` | `REVIEWER_TURN_BUDGET` |  | the reviewer seat's own turn budget in seconds |
 | `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds |

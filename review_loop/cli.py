@@ -441,6 +441,12 @@ def _observer_check(loop: dict) -> None:
             "route never wakes an agent, and the gateway refuses a deliver_only file target")
 
 
+def _on_off(args, name: str, default):
+    """An ``on|off`` flag as a bool; ``default`` when the flag was not given."""
+    value = getattr(args, name, None)
+    return default if value is None else value == "on"
+
+
 def _attribution_arg(args, default):
     """``--attribution on|off`` as a bool; ``default`` when the flag was not given (#197)."""
     value = getattr(args, "attribution", None)
@@ -1692,6 +1698,7 @@ def cmd_init(args) -> int:
         "observer": _observer_args(args, args.id or args.repo.split("/")[-1]),
         # Sign what the loop posts (#197): on unless --attribution off or the form says so.
         "attribution": _attribution_arg(args, d["attribution"]),
+        "review_after_ci": _on_off(args, "review_after_ci", d["review_after_ci"]),
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
                         else args.fixer_check),
@@ -2017,6 +2024,9 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     observer = (args.observer_profile if args.observer_profile is not None else
                 _ask("Hermes profile whose chat gets the loop's notices (blank: none)", "",
                      interactive))
+    after_ci = args.review_after_ci or (
+        "on" if _agree("Start each review after the head's CI finishes (up to an hour)?",
+                       d["review_after_ci"], interactive, d["review_after_ci"]) else "off")
     attribution = args.attribution or (
         "on" if _agree("Sign what the loop posts ('Automated by hermes-review-loop')?",
                        d["attribution"], interactive, d["attribution"]) else "off")
@@ -2032,7 +2042,7 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     argv = ["init", f"--repo={repo}", f"--id={loop_id}", f"--reviewer={reviewer}",
             f"--fixer={fixer}", f"--reviewer-profile={reviewer_profile}",
             f"--fixer-profile={fixer_profile}", f"--read-token={reader}", f"--host={host}",
-            f"--attribution={attribution}"]
+            f"--attribution={attribution}", f"--review-after-ci={after_ci}"]
     for login, file in ((reviewer, reviewer_file), (fixer, fixer_file), (reader, reader_file),
                         (admin, admin_file)):
         if login and file:
@@ -2181,7 +2191,8 @@ def cmd_set(args) -> int:
               "marker_grace_min": args.marker_grace_min, "ttl_min": args.ttl_min,
               "inflight_ttl_min": args.inflight_ttl_min, "host": host,
               "turn_budget_s": getattr(args, "turn_budget", None),
-              "attribution": _attribution_arg(args, None)}
+              "attribution": _attribution_arg(args, None),
+              "review_after_ci": _on_off(args, "review_after_ci", None)}
     changes = {k: v for k, v in wanted.items()
                if v is not None and v != "" and v != loop.get(k)}
     # '' is a real value here: it clears the check.
@@ -2567,7 +2578,7 @@ def _apply(args) -> int:
 
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
-                "turn_budget_s", "attribution", "fixer_check"):
+                "turn_budget_s", "attribution", "fixer_check", "review_after_ci"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -4182,6 +4193,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="how long a run may hold its seat slot")
         init.add_argument("--inflight-ttl-min", type=int, default=d["inflight_ttl_min"],
                           help="how long an in-flight mark blocks a second run at the same head")
+        init.add_argument("--review-after-ci", choices=("on", "off"), default=None,
+                          help="start each review after the head's checks finish (up to an hour) "
+                               f"(default {'on' if d['review_after_ci'] else 'off'})")
         init.add_argument("--attribution", choices=("on", "off"), default=None,
                           help="sign what the loop posts with 'Automated by hermes-review-loop' "
                                f"(default {'on' if d['attribution'] else 'off'})")
@@ -4234,6 +4248,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="Hermes profile whose chat gets the loop's notices")
         first.add_argument("--fixer-check", default=None,
                            help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
+        first.add_argument("--review-after-ci", choices=("on", "off"), default=None,
+                           help="start each review after the head's checks finish (up to an hour) (default: the plugin setting, off)")
         first.add_argument("--attribution", choices=("on", "off"), default=None,
                            help="sign what the loop posts with 'Automated by hermes-review-loop' "
                                 "(default: the plugin setting, on)")
@@ -4336,6 +4352,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--attribution", choices=("on", "off"), default=None,
                             help="sign what the loop posts ('Automated by hermes-review-loop'), "
                                  "or stop")
+        change.add_argument("--review-after-ci", choices=("on", "off"), default=None,
+                            help="start each review after the head's checks finish (up to an hour), "
+                                 "or start at once")
         change.add_argument("--fixer-check", default=None, help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none)")
         change.add_argument("--reviewer-turn-budget", type=int, default=None,
                             help="the reviewer seat's own turn budget in seconds")

@@ -136,6 +136,11 @@ config_schema:
     type: str
     default: ""
     description: "One command the fixer runs in the checkout before every push or issue-fix PR, besides the tests it touched: the checks CI always runs (chain several with &&). At most 500 characters, one line. Blank = not set here"
+  review_after_ci:
+    label: "Review after CI finishes"
+    type: bool
+    default: false
+    description: "On: a review waits while the head's checks are still running (up to an hour), then starts with their results. Off: it starts at once, and the reviewer sees whatever CI has finished so far."
   attribution:
     label: "Sign what the loop posts"
     type: bool

@@ -156,6 +156,11 @@ SETTINGS_SCHEMA: dict = {
                                    "push or issue-fix PR, besides the tests it touched: the "
                                    "checks CI always runs (chain several with &&). At most "
                                    "500 characters, one line. Blank = not set here"},
+    "review_after_ci": {"label": "Review after CI finishes", "type": "bool", "default": False,
+                        "description": "On: a review waits while the head's checks are still "
+                                       "running (up to an hour), then starts with their results. "
+                                       "Off: it starts at once, and the reviewer sees whatever CI "
+                                       "has finished so far."},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by hermes-review-loop' and "
@@ -312,6 +317,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     # Attribution (#197) moves only when the form names it, like every other knob.
     if _form_value(settings, "attribution") is not None:
         overlaid["attribution"] = d["attribution"]
+    if _form_value(settings, "review_after_ci") is not None:
+        overlaid["review_after_ci"] = d["review_after_ci"]
     if _form_value(settings, "fixer_check") is not None:
         overlaid["fixer_check"] = check_fixer_check(d["fixer_check"], "settings")
     # Turn knobs (#309): validated like the CLI/loop file, and only when the form names them.
@@ -582,6 +589,7 @@ DEFAULTS: dict = {
     "host": "",
     "unattended_fixer_push": False,  # per-repository; never inherited from plugin settings
     "attribution": True,      # sign what the loop posts (#197); false turns footer and trailer off
+    "review_after_ci": False,  # hold a review while the head's checks are still running (#241)
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
 }
 
@@ -1563,6 +1571,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         raise ConfigError(f"{where}: 'unattended_fixer_push' must be a JSON boolean; "
                           "only explicit true authorizes unattended fixer pushes")
     loop["fixer_check"] = check_fixer_check(loop["fixer_check"], where)
+    if type(loop["review_after_ci"]) is not bool:
+        raise ConfigError(f"{where}: 'review_after_ci' must be a JSON boolean (true holds a "
+                          "review until the head's checks finish)")
     if type(loop["attribution"]) is not bool:
         raise ConfigError(f"{where}: 'attribution' must be a JSON boolean (true signs what the "
                           "loop posts; false turns it off)")
@@ -1869,3 +1880,8 @@ def artifacts_dir(loop: dict, number: int) -> pathlib.Path:
 
 def clone_path(loop: dict) -> pathlib.Path | None:
     return _path(loop["clone"]) if loop.get("clone") else None
+
+
+def review_after_ci(loop: dict) -> bool:
+    """Whether a review waits for the head's checks to finish (#241). Off unless set."""
+    return loop.get("review_after_ci") is True
