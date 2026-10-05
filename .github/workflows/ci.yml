@@ -14,6 +14,9 @@ concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job runs on a pinned image (#364): ubuntu-latest moves to Ubuntu 26 from 2026-10-19, and the
+# verticals and installed-mode jobs depend on bubblewrap and unprivileged user namespaces, which a new
+# release can restrict. Move the pin in one deliberate PR, after 26.04 is tested.
 env:
   # Bump deliberately with the Hermes version the loop runs on: `plugin-guard` scans the plugin with
   # this Hermes, and `installed-mode` runs the suite with it on the interpreter.
@@ -21,7 +24,7 @@ env:
 
 jobs:
   tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -59,7 +62,7 @@ jobs:
   # with the same scanner, pinned to the Hermes commit the loop is verified against; the scheduled
   # run also scans with Hermes main, so a stricter upstream scanner shows up before an update does.
   plugin-guard:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -95,7 +98,7 @@ jobs:
   # action from a checkout at HERMES_PINNED (#268): `uses:` takes no expressions, so a local path
   # keeps the pin in one place without keeping a copy of the action's steps that could drift.
   plugin-validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -119,7 +122,7 @@ jobs:
   # ever run here, so the harness could call itself "a complete installation" while nine checks were
   # red on a real box. Run the same suite once with the pinned Hermes on the interpreter.
   installed-mode:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
@@ -163,7 +166,7 @@ jobs:
   # (REVIEW_LOOP_REQUIRE_HERMES_SOURCE), and a final step refuses any skip in these modules.
   # No credential is involved: every endpoint and token the tests touch is a fake.
   verticals:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       HERMES_AGENT_SOURCE: ${{ github.workspace }}/hermes
