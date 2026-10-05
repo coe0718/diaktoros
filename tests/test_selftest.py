@@ -279,7 +279,7 @@ class ChecklistTests(SelftestBase):
         rc, text = self.run_selftest()
         self.assertEqual(rc, 0)  # a WARN is not a failure
         self.assertRegex(text, r"model:completion .*reply is empty")
-        self.assertIn("fix:", text)
+        self.assertRegex(text, r"model:completion [^\n]*\n\s+fix: the endpoint answers")
         self.assertIn("16-token limit", text)
         self.assertNotRegex(text, r"✅ model:completion")
 
