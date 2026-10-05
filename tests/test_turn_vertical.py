@@ -4,6 +4,7 @@ The route subprocess is tested separately; this is not proof of a route-to-worke
 link. No real token, GitHub endpoint, model endpoint, or credential HOME is used.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import _ci_green  # noqa: E402  CI reads as green unless a test says otherwise
 import http.server
 import json
 import os
@@ -127,7 +128,7 @@ class WholeTurn(unittest.TestCase):
                                       text=True, capture_output=True, timeout=kw['timeout'])
             try:
                 with mock.patch.object(trusted_fetch, 'stage', side_effect=stage), \
-                     mock.patch.object(gh, 'api', side_effect=api), \
+                     mock.patch.object(gh, 'api', side_effect=_ci_green.green(api)), \
                      mock.patch.object(contained, 'run', side_effect=isolated_run):
                     rc = trusted_turn.run_turn(loop, scope, source=SOURCE, venv=venv,
                          runtime=runtime, rust=RUST,
