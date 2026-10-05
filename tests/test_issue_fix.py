@@ -105,12 +105,18 @@ class Gate(Base):
         spec.loader.exec_module(self.module)
         self.live = issue()
         self.enqueued = []
+        self.open_prs = []
+        self.posted = []
 
         def api(loop, path, method="GET", body=None, login=None):
             if path.endswith(f"/git/ref/heads/{self.loop['base']}"):
                 return {"ref": "refs/heads/main", "object": {"sha": BASE}}
+            if method == "POST":
+                self.posted.append((path, body, login))
+                return {"id": 1}
             return self.live
         for target, name, value in (
+                (gh, "open_prs_read", lambda loop: (self.open_prs, "")),
                 (gate, "context", lambda payload: (self.loop, None)),
                 (gh, "api", api),
                 (gate, "enqueue_isolated",
@@ -144,6 +150,29 @@ class Gate(Base):
         self.run_gate(self.labeled())
         self.live = issue(labels=())                            # removed again since
         self.run_gate(self.labeled())
+        self.assertEqual(self.enqueued, [])
+
+    def test_an_open_pr_that_already_fixes_the_issue_skips_it_with_one_comment(self):
+        self.open_prs = [{"number": 3, "body": "Fixes #120"}, {"number": 4, "body": "see #12"},
+                         {"number": 5, "body": "Intro\n\nCloses #12."}]
+        log = self.run_gate(self.labeled())
+        self.assertIn("PR #5 already fixes it", log)
+        self.assertEqual(self.enqueued, [])
+        self.assertEqual(len(self.posted), 1)
+        path, body, login = self.posted[0]
+        self.assertTrue(path.endswith("/issues/12/comments"))
+        self.assertEqual(body, {"body": "PR #5 already fixes this; not handing it to the fixer."})
+        self.assertEqual(login, "review")
+
+    def test_unrelated_open_prs_do_not_block_and_an_unreadable_listing_holds(self):
+        self.open_prs = [{"number": 3, "body": "Fixes #120"}, {"number": 4, "body": None}]
+        self.run_gate(self.labeled())
+        self.assertEqual(len(self.enqueued), 1)
+        self.assertEqual(self.posted, [])
+        self.enqueued.clear()
+        with mock.patch.object(gh, "open_prs_read", lambda loop: (None, "boom")):
+            log = self.run_gate(self.labeled())
+        self.assertIn("unreadable", log)
         self.assertEqual(self.enqueued, [])
 
     def test_without_unattended_pushes_the_label_is_named_not_acted_on(self):

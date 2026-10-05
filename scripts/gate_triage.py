@@ -21,12 +21,41 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from review_loop import config, gate, gh  # noqa: E402
 from review_loop.util import log, silence  # noqa: E402
+
+
+def closing_pr(loop: dict, number: int) -> int | None:
+    """The number of an open PR whose body says it fixes issue ``number``, else ``None``.
+
+    One listing read with the reader token. Raises ``RuntimeError`` when the listing is unknown.
+    """
+    prs, error = gh.open_prs_read(loop)
+    if prs is None:
+        raise RuntimeError(f"open PR listing unreadable: {error}")
+    repo = re.escape(str(loop["repo"]))
+    pattern = re.compile(
+        r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+"
+        rf"(?:(?:{repo})?#|https://github\.com/{repo}/issues/){number}(?!\d)", re.IGNORECASE)
+    for pr in prs:
+        if type(pr.get("number")) is int and pattern.search(str(pr.get("body") or "")):
+            return pr["number"]
+    return None
+
+
+def _skip_comment(loop: dict, number: int, pr: int) -> None:
+    """Say once, as the triage login, why the issue is not handed to the fixer (best effort)."""
+    login = config.triage_login(loop)
+    if not login:
+        return
+    gh.api(loop, f"/repos/{loop['repo']}/issues/{number}/comments", method="POST",
+           body={"body": f"PR #{pr} already fixes this; not handing it to the fixer."},
+           login=login)
 
 
 def fix(loop: dict, payload: dict) -> None:
@@ -51,6 +80,13 @@ def fix(loop: dict, payload: dict) -> None:
         run_supervisor.issue_fix_issue(loop, number)
     except Exception as exc:
         silence(f"issue #{number} not handed to the fixer: {exc}")
+    try:
+        existing = closing_pr(loop, number)
+    except RuntimeError as exc:
+        silence(f"issue #{number} not handed to the fixer: {exc}")
+    if existing is not None:
+        _skip_comment(loop, number, existing)
+        silence(f"issue #{number}: open PR #{existing} already fixes it; not handed to the fixer")
     ref = gh.api(loop, f"/repos/{loop['repo']}/git/ref/heads/{loop['base']}",
                  login=loop["read_token"])
     base = ((ref or {}).get("object") or {}).get("sha") if isinstance(ref, dict) else None
