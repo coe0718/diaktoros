@@ -25,7 +25,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from review_loop import gate, gh, observer, transition  # noqa: E402
+from review_loop import config, gate, gh, observer, transition  # noqa: E402
 from review_loop.util import log, silence  # noqa: E402
 
 ACTIONS = {"opened", "ready_for_review", "reopened", "review_requested"}
@@ -93,13 +93,16 @@ def main() -> None:
 
     sender = ((payload.get("sender") or {}).get("login") or "").lower()
     if action == "review_requested":
-        # Only an explicit request for THIS seat counts, and only from the fixer side: a
-        # request aimed at another reviewer, or from a stranger, is somebody else's business.
+        # Only an explicit request for THIS seat counts, and only from the fixer side or a loop
+        # maintainer (#375): a request aimed at another reviewer, or from a stranger, is
+        # somebody else's business.
         requested = ((payload.get("requested_reviewer") or {}).get("login") or "").lower()
         if requested != loop["reviewer_seat"]:
             silence(f"review requested from {requested or 'nobody'} — not this seat")
-        if sender not in set(loop["fixers"]) and sender not in loop["reviewers"]:
-            silence(f"sender {sender or 'unknown'} is not a fixer")
+        if (sender not in set(loop["fixers"]) and sender not in loop["reviewers"]
+                and sender not in config.maintainers(loop)):
+            silence(f"sender {sender or 'unknown'} is not a fixer, the reviewer or a maintainer "
+                    "(triage.maintainers)")
 
     if pr.get("draft"):
         silence("draft PR")
@@ -161,7 +164,11 @@ def main() -> None:
     # the fixer is finished with this PR, so it is what frees the fixer's slot. A review must never
     # start against a PR the fixer is still working — and everything else (opened, ready_for_review,
     # reopened) is *not* a handoff, so if the fixer still holds this PR the claim below queues us.
-    if action == "review_requested" and st.release_if("fixer", gate.seat_key(loop, number)):
+    # A maintainer's request (#375) asks for a review; it is not the fixer finishing, so it never
+    # frees the fixer's slot — if the fixer still holds the PR, the claim below queues the review.
+    handoff = action == "review_requested" and (sender in set(loop["fixers"])
+                                                or sender in loop["reviewers"])
+    if handoff and st.release_if("fixer", gate.seat_key(loop, number)):
         log(f"released fixer seat for {gate.seat_key(loop, number)}")
     gate.drain_seat(loop, "fixer")
 

@@ -61,7 +61,7 @@ Gates answer `[SILENT]` so Hermes does **not** launch a normal gateway agent for
 | Rule | Adjudicator route configured and current situation still eligible | Record/report ACCEPT, REJECT or RESPEC; optional comment; human decides |
 | Close or merge | Closure event and cleanup | Cancel/reconcile work and clean owned local artifacts; no automatic merge |
 
-Explicit `review_requested` events must name the configured reviewer seat and come from an allowlisted fixer/reviewer sender. Out-of-scope authors, fork PRs, draft PRs and wrong-base PRs do not qualify for the ordinary loop. Stacked PR/retarget handling has additional reconciliation rules; see [architecture](architecture.md), not assumptions based only on this simplified lifecycle.
+Explicit `review_requested` events must name the configured reviewer seat and come from an allowlisted fixer/reviewer sender, or from a loop maintainer (`triage.maintainers`). A maintainer's request asks for a fresh review at the current head; unlike the fixer's own request, it is not a hand-back, so it never frees a fixer that still holds the PR (the review queues behind it). Anyone else's request is ignored. Without maintainers, toggling the PR to draft and back starts a review too (`ready_for_review`). Out-of-scope authors, fork PRs, draft PRs and wrong-base PRs do not qualify for the ordinary loop. Stacked PR/retarget handling has additional reconciliation rules; see [architecture](architecture.md), not assumptions based only on this simplified lifecycle.
 
 ### Verdict budget, not a timer
 

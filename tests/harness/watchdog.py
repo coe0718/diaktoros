@@ -588,7 +588,9 @@ def group_explain() -> None:
     # A pending request is not a running reviewer. The same request event must be replayed.
     reset(prs={"7": pr(7, requested=SEAT)})
     rc, out = explain()
-    check("pending request without run: retry gate", "re-deliver the review_requested event" in out, True)
+    check("pending request without run: retry gate", "the pending request for" in out, True)
+    check("pending request without run: names who may ask (#375)",
+          "toggle the PR to draft and back" in out and "triage.maintainers" in out, True)
     check("pending request without run: no imaginary verdict", "next:       the reviewer's verdict" in out, False)
     check("pending request without run: pure kind", gate.explain(config.load_id("widgets"),
           state_mod.state_for(config.load_id("widgets")), 7,
@@ -703,7 +705,7 @@ def group_explain() -> None:
     check("pending marker below cap: no watchdog retry promised",
           "retry adjudicator delivery" in out, False)
     check("pending marker below cap: review request can be replayed",
-          "re-deliver the review_requested event" in out, True)
+          "the pending request for" in out, True)
     check("pending marker below cap: stale delivery not blocking",
           "adjudicator delivery pending" in out, False)
     check("old marker does not park new head", gate.breach_delivery_status(
@@ -729,7 +731,7 @@ def group_explain() -> None:
               any("parked awaiting adjudication" in b for b in report["blockers"]), False)
         check(f"dismissed third verdict / {status}: explain asks for gate replay",
               (report["next"]["kind"],
-               "re-deliver the review_requested event" in report["next"]["action"]),
+               "the pending request for" in report["next"]["action"]),
               ("retry", True))
         check(f"dismissed third verdict / {status}: marker stays diagnostic",
               report["escalation"].startswith(f"{status} at head bbbbbbb"), True)

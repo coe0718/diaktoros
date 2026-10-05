@@ -197,7 +197,7 @@ hermes review-loop status --loop ID
 
 Both commands inspect the selected loop; `--pr` chooses the exact PR. Verify the verdict **on GitHub at the expected commit**, not merely a successful webhook response. `[SILENT]` / an ignored-script response prevents gateway fallback and can describe either a declined event or a queued turn. `trace` explains a delivery; [operations](operations.md) explains monitoring and recovery.
 
-An approval leaves merging to you. A changes-requested verdict below the cap is held for your decision while fixer pushes are off. You can fix manually, verify the resulting ref/PR, and explicitly request review again.
+An approval leaves merging to you. A changes-requested verdict below the cap is held for your decision while fixer pushes are off. You can fix manually, verify the resulting ref/PR, and start a fresh review: request the reviewer seat as a loop maintainer (`triage.maintainers`), or toggle the PR to draft and back. A review request from an account that is not a fixer, the reviewer or a maintainer is ignored.
 
 ## Decide separately about unattended pushes
 

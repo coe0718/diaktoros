@@ -952,6 +952,13 @@ def issue_fixes_enabled(loop: dict) -> bool:
                 and unattended_fixer_push_enabled(loop))
 
 
+def maintainers(loop: dict) -> set[str]:
+    """The loop's maintainers (``triage.maintainers``, lowercased), trusted to direct it: hand an
+    issue to the fixer (#214) and ask the reviewer for a fresh review (#375). Empty without triage."""
+    names = (loop.get("triage") or {}).get("maintainers") or []
+    return {str(name).strip().lower() for name in names if str(name).strip()}
+
+
 def hook_roles(loop: dict) -> tuple[str, ...]:
     """The roles with a repo hook on this loop: both seats, and triage when it is on."""
     return ("reviewer", "fixer") + (("triage",) if triage_enabled(loop) else ())

@@ -1025,9 +1025,12 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                   "after checking why its run did not start — no fixer is running to push a fix")
     elif request_pending:
         kind = "retry"
-        action = (f"re-deliver the review_requested event for head {short} to the reviewer gate "
-                  f"after checking why the pending request for {loop['reviewer_seat']} did not "
-                  "start a run — no verdict can arrive without one")
+        action = (f"a review run for head {short}: the pending request for "
+                  f"{loop['reviewer_seat']} started none. A request counts only from a fixer, the "
+                  "reviewer or a maintainer (triage.maintainers); anyone else's is ignored. Ask "
+                  "again as one of them, or toggle the PR to draft and back (ready_for_review "
+                  f"starts a review); if it came from one, `trace --loop {loop['id']}` its "
+                  "delivery to see why the gate declined")
     else:
         kind = "review-request"
         detail = ("a fresh PR also wakes the reviewer on opened / ready_for_review, so re-driving "
