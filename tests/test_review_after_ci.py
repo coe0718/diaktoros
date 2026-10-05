@@ -91,11 +91,29 @@ class Hold(sm.Worker):
             seen, row, reads, _ = self.held()
         self.assertEqual((seen["role"], row[0], reads), ("reviewer", "succeeded", []))
 
-    def test_off_or_another_seat_never_reads_ci(self):
-        for seat, loop in (("reviewer", self.loop), ("fixer", self.ci_loop)):
-            with self.subTest(seat=seat):
-                seen, row, reads, _ = self.held(seat=seat, loop=loop)
-                self.assertEqual((seen["role"], row[0], reads), (seat, "succeeded", []))
+    def test_off_running_checks_review_now_and_another_seat_never_reads_ci(self):
+        seen, row, reads, _ = self.held(loop=self.loop)
+        self.assertEqual((seen["role"], row[0], reads), ("reviewer", "succeeded", [sm.HEAD]))
+        seen, row, reads, _ = self.held(seat="fixer", loop=self.ci_loop)
+        self.assertEqual((seen["role"], row[0], reads), ("fixer", "succeeded", []))
+
+    def test_a_cancelled_check_holds_every_review_and_says_so_once(self):
+        """#363: on or off, a cancelled check holds the review (its APPROVE would be refused)
+        and the one notice says to re-run it; a failed check never holds."""
+        cancelled = ci.CIState(cancelled=["tests (3.11)"], passed=["lint"])
+        for loop in (self.loop, self.ci_loop):
+            with self.subTest(after_ci=loop.get("review_after_ci", False)):
+                seen, row, _, notify = self.held(checks=cancelled, loop=loop)
+                self.assertEqual(seen, {})
+                self.assertEqual(row[0], "waiting")
+                self.assertTrue(row[1].startswith(CI_HOLD))
+                self.assertIn('1 check(s) cancelled, re-run them on GitHub ("tests (3.11)")', row[1])
+                notify.assert_called_once()
+                self.assertEqual(notify.call_args.args[2], "held")
+                self.assertTrue(notify.call_args.kwargs["identity"].endswith(":held:ci-cancelled"))
+                self.assertIn("cannot re-run CI itself", notify.call_args.kwargs["outcome"])
+        seen, row, _, _ = self.held(checks=ci.CIState(failed=["t"], cancelled=["c"]))
+        self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
 
 
 class Linger(unittest.TestCase):

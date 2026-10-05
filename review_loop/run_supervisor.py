@@ -2646,16 +2646,23 @@ class Supervisor:
                 error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
                          f"{pacing.when(paced_until)}")
                 return
-            if (row['seat'] == 'reviewer' and config.review_after_ci(loop)
-                    and time.time() - row['created'] < CI_WAIT_MAX_S):
+            if row['seat'] == 'reviewer' and time.time() - row['created'] < CI_WAIT_MAX_S:
+                # A cancelled check (#363) holds every review: the broker would refuse its
+                # APPROVE, so the turn could only spend tokens. Running checks hold it only with
+                # review_after_ci (#241). A failed check never holds: the review says why.
                 from . import ci
+                after_ci = config.review_after_ci(loop)
                 checks = ci.read(loop, row['head'])
-                if checks is not None and checks.pending:
+                if checks is not None and not checks.failed and (
+                        checks.cancelled or (after_ci and checks.pending)):
                     # Nothing spent: no model call, no daily turn, no retry. This worker stays
                     # to re-queue it (linger_for_ci); the watchdog sweep is the backstop.
                     paced_until = time.time() + CI_POLL_S
-                    error = (f"{CI_HOLD} on {row['head'][:7]} — {len(checks.pending)} "
-                             f"check(s) still running")
+                    error = (f"{CI_HOLD} on {row['head'][:7]} — "
+                             + (f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
+                                f"GitHub ({ci._names(checks.cancelled[:5])})"
+                                if checks.cancelled else
+                                f"{len(checks.pending)} check(s) still running"))[:600]
                     self.held_for_ci = True
                     return
             change = None
@@ -2846,8 +2853,13 @@ class Supervisor:
                 return
             event = "failed"
             if state == "waiting" and str(row["error"] or "").startswith(CI_HOLD):
-                return                   # the normal wait for CI (#241): status and explain show it
-            if state == "waiting" and str(row["error"] or "").startswith("held:"):
+                if "cancelled" not in str(row["error"]):
+                    return               # the normal wait for CI (#241): status and explain show it
+                # Cancelled checks wait on a person (#363): say so once per run, not per poll.
+                event, kind = "held", "held:ci-cancelled"
+                outcome = (f"{row['seat']} {row['error']} — the review starts once they pass; "
+                           "the loop cannot re-run CI itself")
+            elif state == "waiting" and str(row["error"] or "").startswith("held:"):
                 # A pacing hold (#219, #247): the run waits without spending a retry.
                 event, kind = "held", f"held:{int(row['retry_at'] or 0)}"
                 outcome = f"{row['seat']} {row['error']}"

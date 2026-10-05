@@ -68,7 +68,15 @@ class Read(unittest.TestCase):
         state, _ = read(runs=[run("tests", conclusion="failure", id=1), run("tests", id=2)])
         self.assertEqual((state.failed, state.passed), ([], ["tests"]))
         state, _ = read(runs=[run("tests", id=1), run("tests", conclusion="cancelled", id=2)])
-        self.assertEqual(state.failed, ["tests"])
+        self.assertEqual((state.failed, state.cancelled), ([], ["tests"]))
+
+    def test_cancelled_and_stale_are_their_own_state(self):
+        """#363: GitHub cancelled them (no runner acquired); a re-run, not a fix."""
+        state, _ = read(runs=[run("a", conclusion="cancelled"), run("b", conclusion="stale"),
+                              run("c", conclusion="timed_out"), run("d")])
+        self.assertEqual((state.cancelled, state.failed, state.passed), (["a", "b"], ["c"], ["d"]))
+        self.assertFalse(state.green)
+        self.assertFalse(ci.CIState(cancelled=["a"]).green)
 
     def test_unreadable_or_malformed_or_too_many_is_none(self):
         self.assertIsNone(read(runs=None)[0])
@@ -93,6 +101,12 @@ class Words(unittest.TestCase):
         self.assertIn("REQUEST_CHANGES", refusal)
         self.assertIn("Checks and Commit statuses read", ci.approval_refusal(None))
         self.assertEqual(ci.approval_refusal(ci.CIState(pending=["slow"])), "")
+        cancelled = ci.approval_refusal(ci.CIState(cancelled=["tests (3.11)"]))
+        self.assertIn('was cancelled ("tests (3.11)") and needs a re-run', cancelled)
+        self.assertIn("not a defect of the change", cancelled)
+        self.assertNotIn("naming the failed checks", cancelled)
+        both = ci.approval_refusal(ci.CIState(failed=["t"], cancelled=["c"]))
+        self.assertIn("CI has failed", both)                      # a failure is named first
 
     def test_section(self):
         text = ci.section(ci.CIState(failed=["t"], pending=["b"], passed=["a", "c"]))
@@ -100,6 +114,10 @@ class Words(unittest.TestCase):
         self.assertIn('**failed:** "t"', text)
         self.assertIn('**still running:** "b"', text)
         self.assertIn("passed: 2", text)
+        text = ci.section(ci.CIState(cancelled=["tests (3.11)"]))
+        self.assertIn('**cancelled** (needs a re-run; not a defect of the change): "tests (3.11)"',
+                      text)
+        self.assertNotIn("No checks", text)
         self.assertIn("refused until it can be read", ci.section(None))
         many = ci.section(ci.CIState(failed=[f"c{i}" for i in range(30)]))
         self.assertIn("and 10 more", many)
@@ -138,6 +156,15 @@ class Broker(pv.Broker):
         self.assertTrue(self.send(server, "REQUEST_CHANGES", "tests (3.11) fails")["ok"])
         self.assertEqual([p["event"] for p in self.posts], ["REQUEST_CHANGES"])
         self.assertTrue(server.completed)
+
+    def test_a_cancelled_check_refuses_approve_as_a_re_run(self):
+        self.runs = [run("tests (3.11)", conclusion="cancelled"), run("lint")]
+        sup, scope = self.ledgered("")
+        server = self.start(scope, require_receipt=True)
+        refused = self.send(server, "APPROVE")
+        self.assertIn("needs a re-run", refused["error"])
+        self.assertEqual(self.posts, [])
+        self.assertFalse(server.completed)
 
     def test_unreadable_ci_refuses_approve(self):
         self.runs = None

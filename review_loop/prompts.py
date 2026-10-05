@@ -198,7 +198,8 @@ What to do:
 4. **CI.** The head's CI state, as the host read it just before this turn, is in the **CI at
    this head** section below. A failed check is a blocking finding: the verdict is
    REQUEST_CHANGES, naming each failed check. The broker refuses an APPROVE while any check at
-   the head has failed, or while CI cannot be read. A check still running is not a pass: say
+   the head has failed, was cancelled, or while CI cannot be read. A **cancelled** check needs a
+   re-run, not a fix: never list it as a finding. A check still running is not a pass: say
    which ones you did not see finish.
 5. You get exactly one review write. The broker pins it to head {head}; if the head moved, the
    write is refused — say so rather than retrying. A verdict other than APPROVE or
