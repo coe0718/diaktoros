@@ -226,6 +226,26 @@ class ProductionWorker(unittest.TestCase):
         self.assertIn("no retry spent", run_supervisor.next_step(row))
         self.assertIsNotNone(pacing.held(self.account), "the account is held for the next turn")
 
+    def test_a_429d_turn_that_wrote_is_not_paced(self):
+        """Pacing is only for a run that wrote nothing: with a write-ahead record present the
+        run takes the existing path, and is never parked for a relaunch into a second write."""
+        reset = time.time() + 3600
+
+        def wrote_then_limited(_loop, scope, observed=None, **kw):
+            with closing(sqlite3.connect(self.home / "state" / "review-loop-runs.sqlite")) as con, con:
+                rid = con.execute("SELECT id FROM runs").fetchone()[0]
+                con.execute("INSERT INTO issue_fixes(run_id,repo,number,base,kind,branch,state,"
+                            "created,updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                            (rid, "acme/widgets", 8, HEAD, "fix",
+                             "fix-8", "pushing", time.time(), time.time()))
+            observed.update(rate_limited_until=reset)
+            return 1
+        row = self.run_production(wrote_then_limited)
+        self.assertEqual(self.turns, 1)
+        self.assertNotEqual(row["state"], "waiting")
+        self.assertIsNone(row["retry_at"])
+        self.assertEqual(row["state"], "failed")
+
     def test_a_closed_window_is_not_launched_into(self):
         pacing.hold(self.account, time.time() + 1800, "earlier 429")
         row = self.run_production(lambda *a, **k: self.fail("launched into a closed window"))
