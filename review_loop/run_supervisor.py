@@ -131,6 +131,7 @@ _MIGRATIONS = (
 # Worker stderr (one diagnostic line, or a traceback) goes to <ledger>.workers.log, rotated
 # once to .1 by the host when it passes this size.
 WORKER_LOG_MAX = 256 * 1024
+REVIEWED_PR_INELIGIBLE = 'reviewed_pr_ineligible:'
 ACTIVE = ("claimed", "launching", "running", "uncertain")
 MAX_ATTEMPTS = 3
 # Issue #53: a turn that failed before any external write is not dead. It waits
@@ -1416,6 +1417,23 @@ class Supervisor:
                         (f'post-write push quarantine: {outcome}', time.time(), run_id))
             con.execute('COMMIT')
 
+    def record_review_ineligible(self, run_id: str, reason: str) -> None:
+        """Name a review that posted and then found its PR closed, draft or retargeted.
+
+        The receipt is already ``posted``; the run's error carries the outcome so the
+        operator notice and the ``failed`` observer event can say what happened.
+        """
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            row = con.execute("SELECT 1 FROM review_receipts WHERE run_id=? AND state='posted'",
+                              (run_id,)).fetchone()
+            if row is None:
+                con.execute('COMMIT')
+                raise ValueError('no posted review receipt for this run')
+            con.execute('UPDATE runs SET error=?,updated=? WHERE id=?',
+                        (f'{REVIEWED_PR_INELIGIBLE} {reason}', time.time(), run_id))
+            con.execute('COMMIT')
+
     def begin_push(self, run_id: str, repo: str, pr: int, head: str) -> None:
         """Commit the push intent before any external ref mutation."""
         with self._connect() as con:
@@ -1728,6 +1746,10 @@ class Supervisor:
                 f"Reason: {current['error'] or 'worker outcome unavailable'}.")
         if current['detail']:
             head += f"\nTurn output (tail):\n{tail(current['detail'], 1200)}\n"
+        if str(current['error'] or '').startswith(REVIEWED_PR_INELIGIBLE):
+            return (head + " The review exists on GitHub and the PR changed under it; it is not "
+                    "counted as a clean verdict and this run is final (never retried or "
+                    "replayed). Inspect the PR and dismiss or keep the review as appropriate.")
         if wrote is None:
             # Nothing reached GitHub: the host's write-ahead records for this run are empty.
             return (head + f" No external write was made ({current['retries'] or 0} failed "
@@ -2342,13 +2364,19 @@ class Supervisor:
                                (run_id, owner)).fetchone()
             intent = con.execute('SELECT push_intent,retries FROM runs WHERE id=? AND owner=?',
                                  (run_id, owner)).fetchone()
+            current = con.execute('SELECT error FROM runs WHERE id=? AND owner=?',
+                                  (run_id, owner)).fetchone()
+            ineligible = (current is not None
+                          and (current['error'] or '').startswith(REVIEWED_PR_INELIGIBLE))
             quarantined = held is not None and (held['error'] or '').startswith('post-write push quarantine: ')
             post_write = quarantined or (intent is not None and intent['push_intent'] is not None)
             if rc not in (None, 0) and error is None:
                 error = f'turn exited with status {rc}'
             retries = (intent['retries'] or 0) if intent is not None else 0
             retry_at = None
-            if not stopped or ambiguous or post_write:
+            if ineligible and stopped and not ambiguous and not post_write:
+                state, error = 'failed', current['error']   # final: the review exists, never replayed
+            elif not stopped or ambiguous or post_write:
                 state = 'uncertain'
                 error = (held['error'] if quarantined else
                          'post-write push quarantine: unresolved push intent') if post_write else error

@@ -491,7 +491,18 @@ class RunBroker:
             from .review_receipt import ReceiptLedger, submit
             ledger = ReceiptLedger(self.scope.ledger_db, self.scope.run_id,
                                    self.scope.generation)
-            result = submit(self._loop, self.scope, ledger, verdict, body)
+            from .review_receipt import ReviewedPrIneligible
+            try:
+                result = submit(self._loop, self.scope, ledger, verdict, body)
+            except ReviewedPrIneligible as exc:
+                # The review exists on GitHub: name it on the run before answering the sandbox.
+                try:
+                    from .run_supervisor import Supervisor
+                    Supervisor(self.scope.ledger_db, create=False).record_review_ineligible(
+                        self.scope.run_id, exc.reason)
+                except Exception as persistence_error:
+                    raise ProtocolError('review outcome persistence failed') from persistence_error
+                raise
         else:
             if operation == 'review' and self.require_receipt:
                 raise ProtocolError('host review claim required')
