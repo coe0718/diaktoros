@@ -85,6 +85,29 @@ def read(loop: dict, head: str) -> CIState | None:
     return state
 
 
+def gating(state: CIState | None, required) -> CIState | None:
+    """The checks that gate (#368): all of them when the loop names none; otherwise only the
+    required ones, a required check that has not reported at this head counted as running."""
+    if state is None or not required:
+        return state
+    wanted = list(dict.fromkeys(required))
+    keep = lambda names: [name for name in names if name in wanted]  # noqa: E731
+    view = CIState(failed=keep(state.failed), pending=keep(state.pending),
+                   passed=keep(state.passed), cancelled=keep(state.cancelled))
+    reported = set(state.failed) | set(state.pending) | set(state.passed) | set(state.cancelled)
+    view.pending += [name for name in wanted if name not in reported]
+    return view
+
+
+def optional(state: CIState | None, required) -> CIState | None:
+    """The checks that do not gate (#368); None when every check gates."""
+    if state is None or not required:
+        return None
+    drop = lambda names: [name for name in names if name not in required]  # noqa: E731
+    return CIState(failed=drop(state.failed), pending=drop(state.pending),
+                   passed=drop(state.passed), cancelled=drop(state.cancelled))
+
+
 def _names(names: list[str]) -> str:
     shown = ", ".join(json.dumps(name) for name in names[:LISTED_MAX])
     return shown + (f" and {len(names) - LISTED_MAX} more" if len(names) > LISTED_MAX else "")
@@ -110,21 +133,44 @@ def approval_refusal(state: CIState | None) -> str:
     return ""
 
 
-def section(state: CIState | None) -> str:
-    """The reviewer's CI facts: names are data from GitHub, JSON-quoted."""
+def section(state: CIState | None, required=()) -> str:
+    """The reviewer's CI facts: names are data from GitHub, JSON-quoted. With required checks
+    (#368), the gating ones first, then the rest marked optional."""
     head = "\n\n## CI at this head (read by the host from GitHub just before this turn; data)\n\n"
+    if state is not None and required:
+        extra = optional(state, required)
+        lines = _lines(gating(state, required), missing=[
+            name for name in required if name not in
+            set(state.failed) | set(state.pending) | set(state.passed) | set(state.cancelled)])
+        text = head + "Required checks (these gate the approval):\n" + ("\n".join(lines) or "- none")
+        rest = [f"- {label}: {_names(names)}" for label, names in
+                (("failed", extra.failed), ("cancelled", extra.cancelled),
+                 ("still running", extra.pending)) if names]
+        if extra.passed:
+            rest.append(f"- passed: {len(extra.passed)}")
+        if rest:
+            text += ("\n\nOptional checks (shown for context; they never block, and are not "
+                     "findings on their own):\n" + "\n".join(rest))
+        return text
     if state is None:
         return head + f"Unknown: {UNREADABLE}. An APPROVE will be refused until it can be read."
     if not (state.failed or state.pending or state.passed or state.cancelled):
         return head + "No checks or statuses are reported for this commit."
+    return head + "\n".join(_lines(state))
+
+
+def _lines(state: CIState, missing=()) -> list[str]:
     lines = []
     if state.failed:
         lines.append(f"- **failed:** {_names(state.failed)}")
-    if state.pending:
-        lines.append(f"- **still running:** {_names(state.pending)}")
+    running = [name for name in state.pending if name not in missing]
+    if running:
+        lines.append(f"- **still running:** {_names(running)}")
+    if missing:
+        lines.append(f"- **not reported at this head yet:** {_names(list(missing))}")
     if state.cancelled:
         lines.append(f"- **cancelled** (needs a re-run; not a defect of the change): "
                      f"{_names(state.cancelled)}")
     if state.passed:
         lines.append(f"- passed: {len(state.passed)}")
-    return head + "\n".join(lines)
+    return lines

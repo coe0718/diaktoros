@@ -494,7 +494,9 @@ class RunBroker:
             # A live read of the head's CI, also before the capability is consumed: an approval
             # of a head whose checks failed is a false green, so the seat must request changes.
             from . import ci
-            refusal = ci.approval_refusal(ci.read(self._loop, self.scope.head))
+            # Only the operator's required checks gate it, when the loop names them (#368).
+            refusal = ci.approval_refusal(ci.gating(ci.read(self._loop, self.scope.head),
+                                                    config.required_checks(self._loop)))
             if refusal:
                 raise ProtocolError(refusal)
         # Consume BEFORE an external write: a lost response cannot lead to a replay.

@@ -131,6 +131,11 @@ config_schema:
     type: str
     default: ""
     description: "Issue-fix turns per local day, 1-1000. Needs the loop's triage.fix_label. Blank = not set here: the loop keeps its own value or the default"
+  required_checks:
+    label: "Required CI checks (comma-separated)"
+    type: str
+    default: ""
+    description: "The check runs or status contexts that gate an approval, named exactly as GitHub shows them, e.g. 'tests (3.11), lint'. Others are shown to the reviewer as optional and never block. Blank = not set here (an unset list means every check gates)"
   fixer_check:
     label: "Fixer's always-run check (command)"
     type: str
