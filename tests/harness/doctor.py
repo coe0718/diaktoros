@@ -1231,7 +1231,8 @@ def group_doctor() -> None:
         path.unlink()
     rc, out = run_doctor()
     check("no loops configured is not an error", (rc, out.strip()),
-          (0, f"no loops configured in {LOOPS_DIR}"))
+          (0, f"no loops configured in {LOOPS_DIR} — run "
+              "`hermes review-loop setup` to create one"))
     rc, out = run_doctor("--loop", "nope")
     check("an unknown loop is refused", rc, 2)
     check("  with the reason", "cannot preflight loop" in out, True)

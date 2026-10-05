@@ -1603,6 +1603,11 @@ def cmd_init(args) -> int:
             print(f"--token expects login=/path/to/pat, got {pair!r}")
             return 2
         login, path = pair.split("=", 1)
+        try:
+            config.check_token_file(path, f"--token {login}")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
         tokens[login] = path
 
     # Token-file paths from the settings form are checked before anything else is: a path that is
@@ -2888,6 +2893,9 @@ def cmd_status(args) -> int:
         loops, skipped = _readable_loops()
         for line in skipped:
             print(line)
+        if not loops and not skipped:
+            print(f"no loops configured in {config.config_dir()} — run "
+                  "`hermes review-loop setup` to create one")
     for loop in loops:
         from . import state as state_mod
 
@@ -3280,7 +3288,8 @@ def cmd_doctor(args) -> int:
         print(f"cannot preflight loop: {doctor._safe_report_text(str(exc))}")
         return 2
     if not loops:
-        print(f"no loops configured in {config.config_dir()}")
+        print(f"no loops configured in {config.config_dir()} — run "
+              "`hermes review-loop setup` to create one")
         return 0
     failed = 0
     for loop in loops:
