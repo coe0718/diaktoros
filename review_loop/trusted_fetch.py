@@ -136,7 +136,7 @@ def _live_head(loop: dict, repo: str, number: int, head: str, ref: str, reader: 
         raise FetchDenied("stale PR head")
 
 
-def _entries(tree: dict) -> list[tuple[str, str, int, bool]]:
+def _entries(tree: dict, skipped: list | None = None) -> list[tuple[str, str, int, bool]]:
     if not isinstance(tree, dict) or tree.get("truncated") is not False or not isinstance(tree.get("tree"), list):
         raise FetchDenied("truncated or invalid tree")
     entries, total, seen, files, parents = [], 0, set(), set(), set()
@@ -152,15 +152,23 @@ def _entries(tree: dict) -> list[tuple[str, str, int, bool]]:
         except UnicodeError as exc:
             raise FetchDenied("unsafe tree entry") from exc
         if (path_length > _MAX_PATH_BYTES
-                or any(not p or p in (".", "..") or p.casefold() in (".git", ".gitmodules")
+                or any(not p or p in (".", "..") or p.casefold() == ".git"
                        or "\\" in p or any(ord(c) < 32 or ord(c) == 127 for c in p) for p in parts)
                 or name in seen or (name in parents and kind != "tree")
                 or any("/".join(parts[:index]) in files
                                           for index in range(1, len(parts)))):
             raise FetchDenied("unsafe tree entry")
+        gitmodules = parts[-1].casefold() == ".gitmodules"
+        if (gitmodules and kind == "tree") or any(p.casefold() == ".gitmodules" for p in parts[:-1]):
+            raise FetchDenied("unsafe tree entry")
         seen.add(name)
         if len(seen) > _MAX_FILES:
             raise FetchDenied("tree exceeds export bounds")
+        if gitmodules or (kind, mode) in (("blob", "120000"), ("commit", "160000")):
+            # Symlinks, submodules and .gitmodules are not exported; the turn goes on without them.
+            if skipped is not None:
+                skipped.append(name)
+            continue
         parents.update("/".join(parts[:index]) for index in range(1, len(parts)))
         if kind == "tree" and mode == "040000":
             continue
@@ -279,7 +287,7 @@ def _read_bounded(response, limit: int) -> bytes:
 
 
 def _extract(archive: bytes, directory: pathlib.Path,
-             entries: list[tuple[str, str, int, bool]]) -> None:
+             entries: list[tuple[str, str, int, bool]], skipped=()) -> None:
     """Write the tarball's regular files into ``directory`` — nothing else.
 
     GitHub prefixes every member with ``{owner}-{repo}-{sha}/``; that one component is
@@ -309,6 +317,8 @@ def _extract(archive: bytes, directory: pathlib.Path,
                 if any(not p or p in (".", "..") or "\\" in p for p in parts):
                     raise FetchDenied("unsafe tree entry")
                 continue
+            if name in skipped and not member.isdev() and not member.isdir():
+                continue  # listed as "not exported" by _entries
             if (member.isdev() or member.issym() or member.islnk()
                     or any(not p or p in (".", "..") or "\\" in p for p in parts)
                     or name not in expected):
@@ -351,7 +361,8 @@ def _base_head(loop: dict, repo: str, head: str, reader: str) -> None:
 
 
 def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
-           role: str, sandbox_root: pathlib.Path) -> pathlib.Path:
+           role: str, sandbox_root: pathlib.Path,
+           not_exported: list | None = None) -> pathlib.Path:
     reader = _identity(loop, repo, number, head, ref, role)
     if role == "issue_fixer":
         def live(*_args) -> None:
@@ -378,7 +389,10 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
     tree = _json(loop, f"/repos/{repo}/git/trees/{tree_sha}?recursive=1", reader, _MAX_TREE_RESPONSE)
     if not isinstance(tree, dict) or tree.get("sha") != tree_sha:
         raise FetchDenied("tree SHA mismatch")
-    entries = _entries(tree)
+    skipped: list[str] = []
+    entries = _entries(tree, skipped)
+    if not_exported is not None:
+        not_exported.extend(skipped)
     live(loop, repo, number, head, ref, reader)
     # Sibling on the same filesystem: none of the partial export is visible at root.
     with tempfile.TemporaryDirectory(prefix=".review-trusted-", dir=root.parent) as temp:
@@ -387,7 +401,7 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
         archive = _fetch_tarball(loop, repo, reader, head, _MAX_BYTES)
         directory = private / "repo"
         directory.mkdir(mode=0o700)
-        _extract(archive, directory, entries)
+        _extract(archive, directory, entries, frozenset(skipped))
         live(loop, repo, number, head, ref, reader)
         if root.exists() or root.is_symlink():
             raise FetchDenied("sandbox root appeared during staging")
@@ -396,7 +410,12 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
 
 
 def stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
-          role: str, sandbox_root: pathlib.Path) -> pathlib.Path:
-    """Stage an exact same-repository PR head; return a credentialless checkout path."""
+          role: str, sandbox_root: pathlib.Path,
+          not_exported: list | None = None) -> pathlib.Path:
+    """Stage an exact same-repository PR head; return a credentialless checkout path.
+
+    Symlinks, submodules and ``.gitmodules`` are skipped; their paths are appended to
+    ``not_exported`` when given.
+    """
     return _stage(loop, repo=repo, number=number, head=head, ref=ref, role=role,
-                  sandbox_root=sandbox_root)
+                  sandbox_root=sandbox_root, not_exported=not_exported)
