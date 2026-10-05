@@ -446,12 +446,28 @@ class CratesIoAllowlist(unittest.TestCase):
                 lock = self.LOCK.replace('name = "itoa"', f'name = "{name}"')
                 self.check(manifest=deps.synthetic_manifest([(name, "1.0.18")]), lock=lock)
 
-    def test_manifest_registry_keys_and_sections_are_refused(self):
+    def test_parsed_manifest_registry_keys_and_tables_are_refused(self):
         for extra in ('x = { version = "1", registry = "x" }\n', 'y = { registry="x", version="1" }\n',
                       '[patch.crates-io]\nitoa = { path = "x" }\n',
                       '[source.crates-io]\nreplace-with = "m"\n', '[registries.m]\nindex = "x"\n',
-                      '[replace]\n"itoa:1.0.18" = { path = "x" }\n'):
+                      '[replace]\n"itoa:1.0.18" = { path = "x" }\n',
+                      # the same documents, spelled so a text match misses them
+                      'patch.crates-io.itoa = { path = "x" }\n', 'registries.m = { index = "x" }\n',
+                      '["patch".crates-io]\nitoa = { path = "x" }\n',
+                      'source.crates-io.replace-with = "m"\n',
+                      'replace."itoa:1.0.18".path = "x"\n',
+                      'x = { version = "1", "registry" = "x" }\n',
+                      "x = { version = \"1\", 'registry' = \"x\" }\n",
+                      'x = { version = "1", registry-index = "x" }\n', 'x = [\n'):
             with self.subTest(extra), self.assertRaises(config.RealNetworkError):
+                # A dotted top-level key must precede the first table, or it lands inside it.
+                top = extra.split(".")[0] in ("patch", "registries", "source", "replace")
+                self.check(manifest=extra + self.manifest if top else self.manifest + extra)
+
+    def test_toml_text_that_is_not_structure_is_allowed(self):
+        for extra in ('note = """\n[patch.crates-io]\n"""\n', 'exclude = ["a,registry = b"]\n',
+                      "note = 'x, registry = \"y\"'\n"):
+            with self.subTest(extra):
                 self.check(manifest=self.manifest + extra)
 
     def test_another_registry_is_refused(self):

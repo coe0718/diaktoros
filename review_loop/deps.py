@@ -375,6 +375,38 @@ def cargo_env(home: Path, cache: Path, rustc: Path, cargo: Path) -> dict:
 _CARGO_ENV_KEYS = frozenset(cargo_env(Path("/"), Path("/"), Path("/"), Path("/")))
 
 
+_CARGO_REDIRECT_TABLES = frozenset({"source", "registries", "patch", "replace"})
+_DEPENDENCY_TABLES = frozenset({"dependencies", "dev-dependencies", "build-dependencies"})
+
+
+def _manifest_redirects(manifest: str) -> bool:
+    """True if the *parsed* manifest could redirect cargo: a ``source``/``registries``/``patch``/
+    ``replace`` table, or a ``registry``/``registry-index`` key anywhere but as a crate name
+    (a key of a dependencies table). Decided on the TOML document, so quoting, dotted keys and
+    string contents cannot change the answer. A manifest that does not parse is refused."""
+    import tomllib
+    try:
+        document = tomllib.loads(manifest)
+    except (tomllib.TOMLDecodeError, ValueError):
+        return True
+    if not _CARGO_REDIRECT_TABLES.isdisjoint(document):
+        return True
+
+    def walk(node, crate_names=False) -> bool:
+        if isinstance(node, list):
+            return any(walk(item) for item in node)
+        if not isinstance(node, dict):
+            return False
+        for key, value in node.items():
+            if crate_names:
+                if walk(value):
+                    return True
+            elif key in ("registry", "registry-index") or walk(value, key in _DEPENDENCY_TABLES):
+                return True
+        return False
+    return walk(document)
+
+
 def guard_registry(env: dict, work: Path, cache: Path, manifest: str, locked: bytes) -> None:
     """Under the test guard, refuse a fetch that could reach anything but crates.io's own hosts.
 
@@ -383,7 +415,7 @@ def guard_registry(env: dict, work: Path, cache: Path, manifest: str, locked: by
     configuration before it runs, not its sockets: the environment is exactly ``cargo_env`` (no
     proxy, no other registry, no source replacement) with the sparse crates.io index; no cargo
     config file can apply (the package's ancestors, ``CARGO_HOME``, the scratch ``HOME``); the
-    manifest names no registry, source or patch; and every lockfile source is crates.io.
+    parsed manifest names no registry, source, patch or replace; and every lockfile source is crates.io.
     Outside the guard it does nothing: production already builds exactly this configuration.
     """
     from .config import _ARMED, RealNetworkError, test_guard_active
@@ -406,10 +438,7 @@ def guard_registry(env: dict, work: Path, cache: Path, manifest: str, locked: by
                 if path.exists()]
     if configs:
         why.append(f"a cargo config file could redirect it ({', '.join(configs)})")
-    # TOML structure only — a `registry`/`registry-index` key, or a [source], [registries], [patch]
-    # or [replace] table — never a crate name that merely contains the word (signal-hook-registry).
-    if (re.search(r"(?:^|[{,])\s*registry(?:-index)?\s*=", manifest, re.M)
-            or re.search(r"^\s*\[\s*(?:source|registries|patch|replace)\b", manifest, re.M)):
+    if _manifest_redirects(manifest):
         why.append("the manifest names a registry, source, patch or replace table")
     sources = set(re.findall(r'^source = "([^"]*)"', locked.decode("utf-8", "replace"), re.M))
     if sources - CRATES_IO:
