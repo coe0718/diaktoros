@@ -308,6 +308,12 @@ class Cli(unittest.TestCase):
         t.reset(prs={})
         LOOP_FILE.unlink(missing_ok=True)
         self.addCleanup(LOOP_FILE.unlink, missing_ok=True)
+        # The fixture's own loop owns t.REPO; init refuses a second loop for it.
+        fixture_loop = t.LOOPS_DIR / "widgets.json"
+        if fixture_loop.exists():
+            saved = fixture_loop.read_text()
+            fixture_loop.unlink()
+            self.addCleanup(fixture_loop.write_text, saved)
 
     def cli(self, *argv, settings=None) -> tuple[int, str]:
         return t.run_cli(t.parser_for(settings).parse_args(list(argv)))

@@ -1709,6 +1709,12 @@ def cmd_init(args) -> int:
                 "--read-token LOGIN names the account the gates read GitHub as (map its file with "
                 f"--token LOGIN=/path/to/pat) — {config.FOUR_IDENTITY_RULE}")
         loop = config.normalize(raw)
+        # One repo, one loop: a second id for it makes by_repo raise in every gate.
+        others = config.loop_ids_for_repo(loop["repo"], exclude=loop["id"])
+        if others:
+            raise config.ConfigError(
+                f"{loop['repo']} is already configured as loop {', '.join(repr(i) for i in others)}"
+                " — change it with `hermes review-loop set`, or remove it first")
         # Routes are installed even without --hooks; never write a partial loop with
         # route URLs that cannot resolve to this operator's own gateway.
         config.webhook_host(loop["host"], required=True)

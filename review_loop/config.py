@@ -1767,6 +1767,26 @@ def readable_loops() -> tuple[list[dict], list[tuple[str, str]]]:
     return loops, skipped
 
 
+def loop_ids_for_repo(full_name: str, exclude: str | None = None) -> list[str]:
+    """Ids of every config file naming ``full_name``, read raw so a file the loader refuses still
+    counts (it may own the repo). ``exclude`` leaves one id out."""
+    want = str(full_name or "").strip().lower()
+    directory = config_dir()
+    if not want or not directory.exists():
+        return []
+    ids = []
+    for path in sorted(directory.glob("*.json")):
+        if path.stem == exclude:
+            continue
+        try:
+            raw_repo = str(json.loads(path.read_text()).get("repo") or "").strip().lower()
+        except Exception:
+            continue
+        if raw_repo == want:
+            ids.append(path.stem)
+    return ids
+
+
 def loop_for_repo(full_name: str, warn=None) -> dict | None:
     """The one loop that owns ``full_name``, loading each file on its own — for the wake path.
 

@@ -247,6 +247,18 @@ def check_config(loop: dict) -> Check:
                  f"{path} (repo {loop['repo']}, cap {loop['cap']}, base {loop['base']})")
 
 
+def check_duplicate_repo(loop: dict) -> Check | None:
+    """Two loop ids for one repo make ``by_repo`` raise in every gate: events are dropped."""
+    others = config.loop_ids_for_repo(loop["repo"], exclude=loop["id"])
+    if not others:
+        return None
+    return Check("duplicate-repo", MISMATCH,
+                 f"{loop['repo']} is also configured as loop {', '.join(others)}: every gate "
+                 "refuses a repo with two loops, so its events are dropped",
+                 "keep one loop per repo: remove the extra config file(s) from "
+                 f"{config.config_dir()}")
+
+
 def check_turn_budget(loop: dict) -> Check:
     """The wall clock each isolated seat turn gets (#49), and every clock that judges it.
 
@@ -1925,6 +1937,9 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     """Every check, in the order an operator reads an install: what it is, who runs it, what
     wakes it, what schedules it, and where it works."""
     checks = [check_config(loop), check_turn_budget(loop)]
+    duplicate = check_duplicate_repo(loop)
+    if duplicate:
+        checks.append(duplicate)
     for seat in ("reviewer", "fixer"):
         checks.append(check_profile(loop, seat))
         checks.append(check_credential(loop, seat))
