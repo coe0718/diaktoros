@@ -127,6 +127,9 @@ _MIGRATIONS = (
     # The turn's wall clock, fixed at enqueue (#49). NULL on legacy rows: the worker's own
     # child_timeout applies to them.
     ("budget", "ALTER TABLE runs ADD COLUMN budget REAL", ()),
+    # When the latest attempt ended (``stats``): ``updated`` moves again on a re-arm or a
+    # reconcile, so it is not a turn's end. NULL on rows that ended before this column.
+    ("finished", "ALTER TABLE runs ADD COLUMN finished REAL", ()),
 )
 # Worker stderr (one diagnostic line, or a traceback) goes to <ledger>.workers.log, rotated
 # once to .1 by the host when it passes this size.
@@ -2369,9 +2372,10 @@ class Supervisor:
                 state = 'failed'
             changed = con.execute(
                 "UPDATE runs SET state=?, outcome=?, error=?, detail=?, "
-                "retries=?, retry_at=?, lease=NULL, updated=? WHERE id=? AND owner=? AND state IN "
-                "('launching','running','uncertain')",
-                (state, rc, error, detail, retries, retry_at, time.time(), run_id, owner)).rowcount
+                "retries=?, retry_at=?, lease=NULL, updated=?, finished=? WHERE id=? AND owner=? "
+                "AND state IN ('launching','running','uncertain')",
+                (state, rc, error, detail, retries, retry_at, time.time(), time.time(), run_id,
+                 owner)).rowcount
             con.execute("COMMIT")
         return state if changed else None
 
