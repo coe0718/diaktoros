@@ -2547,6 +2547,15 @@ def _apply(args) -> int:
         if was != now:
             changes.append((f"{seat} concurrency", was, now))
 
+    for seat in ("reviewer", "fixer"):
+        was, now = config.max_steps(loop, seat), config.max_steps(updated, seat)
+        if was != now:
+            changes.append((f"{seat} max steps", was, now))
+    was = config.seat_daily_turns(loop, "issue_fixer")
+    now = config.seat_daily_turns(updated, "issue_fixer")
+    if was != now:
+        changes.append(("fix daily turns", was, now))
+
     missing_routes = sorted(name for role, name in _routes_of(updated).items()
                             if role in touched and not routes.route(name))
 

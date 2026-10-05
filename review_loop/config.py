@@ -139,6 +139,18 @@ SETTINGS_SCHEMA: dict = {
                                               "never the token itself. Must be your own mode-600 "
                                               "regular file, not shared with any other login. "
                                               "Blank = not set here"},
+    "reviewer_max_steps": {"label": "Reviewer's agent steps per turn", "type": "str", "default": "",
+                           "description": "Agent steps one reviewer turn may take, 8-200. Blank = "
+                                          "not set here: the loop keeps its own value or the "
+                                          "role default"},
+    "fixer_max_steps": {"label": "Fixer's agent steps per turn", "type": "str", "default": "",
+                        "description": "Agent steps one fixer turn (and an issue fix) may take, "
+                                       "8-200. Blank = not set here: the loop keeps its own value "
+                                       "or the role default"},
+    "fix_daily_turns": {"label": "Issue-fix daily cap (turns)", "type": "str", "default": "",
+                        "description": "Issue-fix turns per local day, 1-1000. Needs the loop's "
+                                       "triage.fix_label. Blank = not set here: the loop keeps "
+                                       "its own value or the default"},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by hermes-review-loop' and "
@@ -230,6 +242,16 @@ def _form_value(settings: dict | None, key: str):
     return None if value is None or str(value).strip() == "" else value
 
 
+def _form_int(value):
+    """A form number: whole-number text becomes an int; anything else is left for the checker."""
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return value
+    return value
+
+
 def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     """The loop knobs the plugin settings own, overlaid on a raw (pre-``normalize``) loop dict.
 
@@ -285,6 +307,22 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     # Attribution (#197) moves only when the form names it, like every other knob.
     if _form_value(settings, "attribution") is not None:
         overlaid["attribution"] = d["attribution"]
+    # Turn knobs (#309): validated like the CLI/loop file, and only when the form names them.
+    for seat in ("reviewer", "fixer"):
+        raw_steps = _form_value(settings, f"{seat}_max_steps")
+        if raw_steps is not None:
+            seats.setdefault(seat, {})["max_steps"] = _check_max_steps(
+                _form_int(raw_steps), f"seats.{seat}.max_steps", "settings")
+    raw_cap = _form_value(settings, "fix_daily_turns")
+    if raw_cap is not None:
+        triage = dict(loop_raw.get("triage") or {})
+        if not triage.get("fix_label"):
+            raise ConfigError("settings: fix_daily_turns needs the loop's triage.fix_label — "
+                              "without it no issue is handed to the fixer, so there is nothing "
+                              "to cap")
+        triage["fix_daily_turns"] = _check_daily_turns(
+            _form_int(raw_cap), "triage.fix_daily_turns", "settings")
+        overlaid["triage"] = triage
     # Seat identity rides the same push: the form names who serves each seat, and a blank field
     # stays blank rather than unsetting what the loop already answered for itself.
     return apply_seats(overlaid, settings)
