@@ -787,6 +787,7 @@ class DoctorApplyUninstall(Base):
                                       events=("pull_request", "pull_request_review"))
         rc, out = self.run_cli(["set", "--loop", "widgets", "--host", "https://moved.example"])
         self.assertEqual(rc, 0, out)
+        self.assertIn("next: `hermes review-loop apply --loop widgets`", out)
         new_review = "https://moved.example/p/critic/webhooks/widgets-review"
         new_fix = "https://moved.example/p/coder/webhooks/widgets-fix"
 

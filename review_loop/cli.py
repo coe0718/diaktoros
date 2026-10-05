@@ -2415,6 +2415,9 @@ def cmd_set(args) -> int:
         print(f"  observer: {observer.describe(loop.get('observer') or {})} → "
               f"{observer.describe(updated.get('observer') or {})}")
     print(f"loop config updated: {path}")
+    if updated.get("host") != loop.get("host"):
+        print(f"  next: `hermes review-loop apply --loop {updated['id']}` "
+              "(rewrites the routes' origin; add --hooks to repoint the hooks)")
 
     if "turn_budget_s" in changes:
         for seat in ("reviewer", "fixer"):
