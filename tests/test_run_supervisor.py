@@ -805,6 +805,7 @@ class ReviewerClaimConcurrency(unittest.TestCase):
                 errors.append(exc)
                 return None
         with patch('review_loop.config.by_repo', return_value=self.loop), \
+             patch('review_loop.gh.reviews', return_value=[]), \
              patch('review_loop.gh.api', side_effect=slow_api):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                 first = pool.submit(claim)
@@ -834,6 +835,7 @@ class ReviewerClaimConcurrency(unittest.TestCase):
                 raise TimeoutError('test timed out waiting for release')
             return self.pull()
         with patch('review_loop.config.by_repo', return_value=self.loop), \
+             patch('review_loop.gh.reviews', return_value=[]), \
              patch('review_loop.gh.api', side_effect=slow_api):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(self.sup._claim)
@@ -856,6 +858,7 @@ class ReviewerClaimConcurrency(unittest.TestCase):
 
     def test_transient_generation_read_remains_pending_then_claims(self):
         with patch('review_loop.config.by_repo', return_value=self.loop), \
+             patch('review_loop.gh.reviews', return_value=[]), \
              patch('review_loop.gh.api', side_effect=[TimeoutError('temporary'), self.pull()]):
             self.assertIsNone(self.sup._claim())
             # Counted and backed off with its reason (#53): visible, bounded, not claimed.

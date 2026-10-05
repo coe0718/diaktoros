@@ -2152,6 +2152,22 @@ class Supervisor:
                             retry_read = True
                         else:
                             generation = generation_for(pr, loop, row['pr'], row['head'])
+                            # A review at this exact head already answers the turn (e.g. one
+                            # posted in the GitHub UI): a second would spend another round.
+                            # The same-head retarget's fresh-review turn exists to review
+                            # again at this head, so it is exempt.
+                            if not str(row['turn_key'] or '').startswith('retarget:'):
+                                from . import gate
+                                reviews = effective_reviews(loop, row, gh.reviews(loop, row['pr']),
+                                                            self.db)
+                                if not isinstance(reviews, list):
+                                    read_error = 'reviews or receipts unreadable (GitHub read failed)'
+                                else:
+                                    answered = [r for r in gate.reviews_at_head(reviews, loop, row['head'])
+                                                if gh.review_state(r) in ('APPROVED', 'CHANGES_REQUESTED')]
+                                    if answered:
+                                        who = gate.reviewer_login(answered[-1]) or 'a reviewer'
+                                        superseded = f'superseded: reviewed at this head by {who}'
                 except ReceiptDenied as exc:
                     unavailable = f'review generation unavailable: {exc}'
                 except Exception as exc:

@@ -415,6 +415,54 @@ class FreshReviewTest(unittest.TestCase):
         self.assertIsNotNone(claimed)
         self.assertEqual(claimed[0], run_id)
 
+    # -- a queued review is skipped when a review at its head already answers it ---------------
+
+    def claim_reviewer(self, turn_key, head=C):
+        run_id = uuid.uuid4().hex
+        with ledger.connect(self.db) as con:
+            if not con.execute("SELECT 1 FROM runs WHERE pr=184 AND head=? AND seat='reviewer' "
+                               "AND turn_key=?", (head, turn_key)).fetchone():
+                con.execute("INSERT INTO runs(id,delivery,repo,pr,head,seat,turn_key,state,created,"
+                            "updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                            (run_id, "rv-" + run_id, REPO, 184, head, "reviewer", turn_key,
+                             "pending", time.time(), time.time()))
+            run_id = con.execute("SELECT id FROM runs WHERE pr=184 AND head=? AND seat='reviewer' "
+                                 "AND turn_key=?", (head, turn_key)).fetchone()[0]
+            con.execute("UPDATE runs SET state='pending' WHERE id=?", (run_id,))
+        sup = Supervisor(self.db)
+        sup.production_config = pathlib.Path(self.temp.name) / "unused-config"
+        with mock.patch("review_loop.config.by_repo", return_value=self.loop), \
+             mock.patch("review_loop.gh.api", return_value=self.child), \
+             mock.patch("review_loop.review_receipt.generation_for", return_value="{}"), \
+             mock.patch("review_loop.gh.reviews", side_effect=lambda *_, **__: list(self.reviews)):
+            claimed = sup._claim()
+        with ledger.connect(self.db) as con:
+            delivery = con.execute("SELECT delivery FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+        return run_id, claimed, sup.get(delivery)
+
+    def test_queued_review_is_cancelled_when_a_review_exists_at_the_head(self):
+        self.reviews = [review(40, "CHANGES_REQUESTED", minute=5)]
+        _, claimed, row = self.claim_reviewer("")
+        self.assertIsNone(claimed)
+        self.assertEqual(row["state"], "cancelled")
+        self.assertEqual(row["error"], "superseded: reviewed at this head by critic")
+        self.assertFalse(row["retries"])
+
+    def test_review_at_an_older_head_does_not_cancel(self):
+        self.reviews = [review(41, "CHANGES_REQUESTED", head=B, minute=5)]
+        run_id, claimed, row = self.claim_reviewer("")
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed[0], run_id)
+
+    def test_fresh_review_turn_at_the_same_head_still_runs(self):
+        self.merge_parent_and_retarget()
+        key = transition.turn_key(self.st.transition_get(184))
+        self.reviews = self.old + [review(42, "CHANGES_REQUESTED", minute=9)]
+        self.receipt(42, "CHANGES_REQUESTED")
+        run_id, claimed, row = self.claim_reviewer(key)
+        self.assertIsNotNone(claimed, (row["state"], row["error"]))
+        self.assertEqual(claimed[0], run_id)
+
 
 if __name__ == "__main__":
     unittest.main()

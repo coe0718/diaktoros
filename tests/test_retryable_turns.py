@@ -246,7 +246,8 @@ class ClaimTimeReads(Base):
 
     def claim(self, pr):
         with patch('review_loop.config.by_repo', return_value=self.LOOP), \
-             patch('review_loop.gh.api', return_value=pr):
+             patch('review_loop.gh.api', return_value=pr), \
+             patch('review_loop.gh.reviews', return_value=[]):
             return self.s._claim()
 
     def test_502_at_claim_is_a_read_retry_then_the_run_succeeds(self):
