@@ -1,4 +1,5 @@
 """doctor's cron remedy keeps a known --deliver target (#70)."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import sys, pathlib, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from review_loop import doctor
