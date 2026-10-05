@@ -843,6 +843,7 @@ def owner_state(loop: dict, failure: dict) -> str:
         return ""
     key = owner.removeprefix("gate-failures:")
     paths: list[pathlib.Path] = []
+    paths_broken = False
     try:
         if failure.get("owned_in"):
             paths.append(pathlib.Path(str(failure["owned_in"])).parent)
@@ -850,8 +851,8 @@ def owner_state(loop: dict, failure: dict) -> str:
             paths.append(loop_ledger(loop).dir)
         paths.append(fallback_ledger().dir)
     except Exception:  # noqa: BLE001
-        pass
-    seen, resolved, unreadable = set(), False, False
+        paths_broken = True   # the candidate list is incomplete: never claim "gone"
+    seen, resolved, unreadable = set(), False, paths_broken
     for directory in paths:
         if directory in seen:
             continue

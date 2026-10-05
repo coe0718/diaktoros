@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
@@ -1293,6 +1294,13 @@ class GateFailureTest(unittest.TestCase):
         out, _ = self.normal_watchdog(self.switch_stub("world"))
         self.assertIn("/repos/acme/widgets/pulls/7", out.stdout)
         self.assertIn("could not be copied aside", out.stdout)
+
+    def test_a_failure_building_the_ledger_paths_is_unreadable_not_gone(self):
+        key, loop = self.owned_502()
+        st = state_mod.LoopState(loop)
+        failure = st.github_failure()
+        with mock.patch.object(gate_failures, "fallback_ledger", side_effect=OSError("boom")):
+            self.assertEqual(gate_failures.owner_state(loop, failure), "unreadable")
 
     def test_explain_promises_a_move_aside_only_when_one_can_happen(self):
         loop = config.load_id("widgets")
