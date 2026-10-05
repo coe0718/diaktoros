@@ -341,6 +341,17 @@ def retryable(exc: BaseException) -> bool:
         exc, (FileNotFoundError, PermissionError, IsADirectoryError, NotADirectoryError))
 
 
+UNPUBLISHED = 'agent exited without a confirmed scoped write'
+PUBLISH_NUDGE = ('**Your previous attempt at this turn ended without publishing anything: its work '
+                 'was discarded with its sandbox.** Nobody can publish for you. This time, finish '
+                 'the work and end the turn with the broker write described below.\n\n')
+
+
+def unpublished_before(row) -> bool:
+    """Whether this run's last attempt exited without calling the broker (#144)."""
+    return UNPUBLISHED in (row['error'] or '')
+
+
 def effective_reviews(loop: dict, row, reviews, ledger=None):
     """The PR's reviews as a seat may use them: after a same-head retarget, only
     host-receipted post-boundary reviews (``transition.effective_reviews``); ``None`` when
@@ -2641,6 +2652,8 @@ class Supervisor:
                                                              marker['rounds']) is None:
                         raise ValueError('breach marker already claimed or replaced')
                     breach = (state_mod.state_for(loop), marker['rounds'])
+            if unpublished_before(row):
+                prompt = PUBLISH_NUDGE + prompt
             pacing.count_turn(loop['id'], row['seat'])
             rc = trusted_turn.run_turn(loop, scope, source=Path(settings["source"]),
                   venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
@@ -2694,6 +2707,10 @@ class Supervisor:
             # (no credential is ever formatted into one), and bounded.
             error = f"isolated turn failed: {type(exc).__name__}: {exc}"[:600]
             retry = retryable(exc)
+            if isinstance(exc, trusted_turn.TurnUnpublished):
+                # The agent never called the broker (#144): nothing was refused or written, so
+                # one retry, nudged, is safe. A second such exit is a person's to look at.
+                retry = not unpublished_before(row)
             if isinstance(exc, trusted_turn.TurnDenied) and 'did not shut down' in str(exc):
                 stopped = False  # a live broker thread may still write: quarantine
         finally:

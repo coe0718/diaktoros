@@ -251,6 +251,9 @@ What to do:
    account first; that is how the next reviewer and, if the budget runs out, the adjudicator hear
    your side. Your final summary is not published anywhere.
 
+Your turn ends with those broker writes. Nobody can see `/work` or this sandbox, and it is
+discarded when you exit: there is no person to hand files to, so a fix you did not push is lost.
+
 Never mark your own work verified, and never claim a push or request succeeded without an ok
 response from the broker."""
 
@@ -329,6 +332,10 @@ What to do:
    can pick it up. Never open a PR that does not fix the issue.
 4. You get one write: `open_pr` or `issue_comment`. If the broker refuses it, that refusal is
    final: do not retry it, and say plainly in your summary that nothing was published.
+
+Your turn must end with that write: `open_pr` when it is fixed, `issue_comment` when it is not.
+Nobody can see `/work` or this sandbox, and it is discarded when you exit: there is no person to
+hand files to or to publish them for you, so a fix you did not publish is lost.
 
 Never claim the PR was opened without an ok response from the broker."""
 

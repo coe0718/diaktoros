@@ -185,6 +185,9 @@ class RunBroker:
         self._listener: socket.socket | None = None
         self._used = False
         self.completed = False
+        # How many requests reached the broker, refused ones included. Host memory only: a turn
+        # that exits having sent none never tried to publish (#144), so it is worth one retry.
+        self.requests = 0
         self._pushed_head: str | None = None
         # How the fixer's answers comment ended ('posted', 'uncertain', 'denied', 'unrecorded'),
         # a host-chosen word the sandbox may see; None when no answers were sent.
@@ -275,6 +278,7 @@ class RunBroker:
                     pass
 
     def _dispatch(self, raw: bytes) -> object:
+        self.requests += 1
         request = json.loads(raw)
         if self._no_write and not (isinstance(request, dict)
                                    and request.get("operation") == "review"):
