@@ -266,7 +266,7 @@ class TrustedFetchTests(unittest.TestCase):
 
     def test_truncated_malformed_and_unsafe_tree_rejected(self):
         valid = self.tree["tree"][0]
-        for change in ({"truncated": True},                        {"tree": [{**valid, "path": "../escape"}]},
+        for change in ({"truncated": True}, {"tree": [{**valid, "path": "../escape"}]},
                        {"tree": [{**valid, "size": trusted_fetch._MAX_BYTES + 1}]},
                        {"tree": [valid, valid]},
                        {"tree": [{**valid, "path": "dir"}, {**valid, "path": "dir/file"}]}):
@@ -389,6 +389,18 @@ class TrustedFetchTests(unittest.TestCase):
         with self.assertRaisesRegex(trusted_fetch.FetchDenied, "unsafe tree entry"):
             self.stage()
         self.assertFalse((self.root / "sandbox").exists())
+
+    def test_a_declared_symlink_is_skipped_never_written_and_reported(self):
+        # #69/#327: the tree declares `link` as a symlink, so staging skips it, does not write it,
+        # and names it for the caller. The undeclared case above stays refused.
+        self.tree["tree"].append({"path": "link", "mode": "120000", "type": "blob",
+                                  "sha": self.oid, "size": 11})
+        self.tarball = self._tarball({"hello.txt": self.blob}, symlink="link")
+        skipped = []
+        result = self.stage(not_exported=skipped)
+        self.assertEqual(skipped, ["link"])
+        self.assertTrue((result / "hello.txt").is_file())
+        self.assertFalse((result / "link").exists() or (result / "link").is_symlink())
 
     def test_a_tarball_with_an_extra_file_is_refused(self):
         # An entry the tree did not list (extra file) is refused: set equality with the tree.
