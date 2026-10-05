@@ -41,6 +41,12 @@ class Base(unittest.TestCase):
         t.CLONE.mkdir(parents=True, exist_ok=True)
         LOOP_FILE.unlink(missing_ok=True)
         self.addCleanup(LOOP_FILE.unlink, missing_ok=True)
+        # The fixture's own loop owns t.REPO; init now refuses a second loop for it.
+        fixture_loop = t.LOOPS_DIR / "widgets.json"
+        if fixture_loop.exists():
+            saved = fixture_loop.read_text()
+            fixture_loop.unlink()
+            self.addCleanup(fixture_loop.write_text, saved)
 
     def cli(self, *argv, settings=None) -> tuple[int, str]:
         return t.run_cli(t.parser_for(settings).parse_args(list(argv)))
@@ -164,6 +170,34 @@ class ExistingPinnedConfigTest(Base):
         rc, out = self.cli("status", "--loop", LOOP_ID)
         self.assertEqual(rc, 0, out)
         self.assertNotIn("is pinned at", out)
+
+
+class DuplicateRepoTest(Base):
+    OTHER = t.LOOPS_DIR / "conc-twin.json"
+
+    def test_init_refuses_repo_already_configured_and_doctor_flags_it(self):
+        from review_loop import doctor
+        rc, out = self.init("--concurrency", "1")
+        self.assertEqual(rc, 0, out)
+        self.addCleanup(self.OTHER.unlink, missing_ok=True)
+        rc, out = self.cli("init", "--repo", t.REPO, "--id", "conc-twin", "--host", t.HOST,
+                           "--reviewer", t.REVIEWER, "--fixer", t.FIXER,
+                           "--reviewer-profile", "reviewer-profile",
+                           "--fixer-profile", "fixer-profile",
+                           "--token", f"{t.REVIEWER}={t.SEAT_PATS[0]}",
+                           "--token", f"{t.FIXER}={t.SEAT_PATS[1]}", *t.READER_ARGS)
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"already configured as loop '{LOOP_ID}'", out)
+        self.assertFalse(self.OTHER.exists())
+        # doctor flags a duplicate that got there by hand
+        self.OTHER.write_text(LOOP_FILE.read_text())
+        loop = config.load_id(LOOP_ID)
+        check = doctor.check_duplicate_repo(loop)
+        self.assertIsNotNone(check)
+        self.assertTrue(check.failed)
+        self.assertIn("conc-twin", check.detail)
+        self.OTHER.unlink()
+        self.assertIsNone(doctor.check_duplicate_repo(loop))
 
 
 if __name__ == "__main__":

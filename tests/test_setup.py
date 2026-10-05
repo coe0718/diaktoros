@@ -128,6 +128,9 @@ class Setup(unittest.TestCase):
 
     def setUp(self):
         t.reset(prs={})
+        # The harness's own loop configures the same repo; setup refuses a second loop for a
+        # repo (#63), and this is a first install.
+        (t.LOOPS_DIR / "widgets.json").unlink(missing_ok=True)
         LOOP_FILE.unlink(missing_ok=True)
         self.addCleanup(LOOP_FILE.unlink, missing_ok=True)
         temp = tempfile.TemporaryDirectory()

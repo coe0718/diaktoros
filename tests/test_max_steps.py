@@ -64,6 +64,12 @@ class Cli(unittest.TestCase):
         self.file = config.config_dir() / f"{LOOP_ID}.json"
         self.file.unlink(missing_ok=True)
         self.addCleanup(self.file.unlink, missing_ok=True)
+        # The fixture's own loop owns t.REPO; init refuses a second loop for it.
+        fixture_loop = t.LOOPS_DIR / "widgets.json"
+        if fixture_loop.exists() and fixture_loop != self.file:
+            saved = fixture_loop.read_text()
+            fixture_loop.unlink()
+            self.addCleanup(fixture_loop.write_text, saved)
         rc, out = self.cli("init", "--repo", t.REPO, "--id", LOOP_ID, "--host", t.HOST,
                            "--reviewer", t.REVIEWER, "--fixer", t.FIXER,
                            "--reviewer-profile", "reviewer-profile",
