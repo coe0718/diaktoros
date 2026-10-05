@@ -589,10 +589,12 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             checkout = root / 'export'
             checkout.mkdir(mode=0o700)
             prefetched = []
+            not_exported = []
         else:
+            not_exported = []
             checkout = trusted_fetch.stage(loop, repo=scope.repo, number=scope.number,
                                            head=scope.head, ref=scope.branch, role=scope.role,
-                                           sandbox_root=root / 'export')
+                                           sandbox_root=root / 'export', not_exported=not_exported)
             cache = dependency_cache(loop)
             _report(progress, time.strftime('fetching — started %H:%M:%SZ', time.gmtime())
                     + f', bounded at {int(prefetch_timeout)}s, before the turn budget starts')
@@ -603,6 +605,11 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             if observed is not None:
                 observed['dependencies'] = [(r.ecosystem, r.status, r.reason) for r in prefetched]
             note = deps.seat_note(prefetched, scope.role)
+            if not_exported:
+                listed = ', '.join(not_exported[:50]) + (' …' if len(not_exported) > 50 else '')
+                note = ((note + '\n\n') if note else '') + (
+                    f'Not exported ({len(not_exported)}): symlinks, submodules and .gitmodules are '
+                    f'not in your checkout: {listed}')
             query = root / 'query.txt'
             # The note leads the message: the prompt ends with PR records (data a PR author can
             # shape), so a host fact placed after them could be imitated there.

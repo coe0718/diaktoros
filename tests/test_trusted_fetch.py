@@ -266,9 +266,7 @@ class TrustedFetchTests(unittest.TestCase):
 
     def test_truncated_malformed_and_unsafe_tree_rejected(self):
         valid = self.tree["tree"][0]
-        for change in ({"truncated": True}, {"tree": [{**valid, "mode": "120000"}]},
-                       {"tree": [{**valid, "type": "commit", "mode": "160000"}]},
-                       {"tree": [{**valid, "path": "../escape"}]},
+        for change in ({"truncated": True},                        {"tree": [{**valid, "path": "../escape"}]},
                        {"tree": [{**valid, "size": trusted_fetch._MAX_BYTES + 1}]},
                        {"tree": [valid, valid]},
                        {"tree": [{**valid, "path": "dir"}, {**valid, "path": "dir/file"}]}):
@@ -278,6 +276,16 @@ class TrustedFetchTests(unittest.TestCase):
         self.assertEqual(len(trusted_fetch._entries({**self.tree, "tree": [
             {"path": "dir", "mode": "040000", "type": "tree", "sha": self.tree_sha},
             {**valid, "path": "dir/file"}]})), 1)
+
+    def test_symlink_submodule_gitmodules_skipped_and_listed(self):
+        valid = self.tree["tree"][0]
+        skipped = []
+        entries = trusted_fetch._entries({**self.tree, "tree": [
+            valid, {**valid, "path": "link", "mode": "120000"},
+            {"path": "sub", "type": "commit", "mode": "160000", "sha": valid["sha"]},
+            {**valid, "path": ".gitmodules"}]}, skipped)
+        self.assertEqual([e[0] for e in entries], [valid["path"]])
+        self.assertEqual(skipped, ["link", "sub", ".gitmodules"])
 
     def test_principal_mismatch_including_seat_substitution(self):
         def mismatch(loop, path, login, limit, accept):
