@@ -1,5 +1,5 @@
 name: hermes-review-loop
-version: 0.1.0
+version: 0.1.1
 description: >-
   Review loop — unattended PR review between two agents: a fixer pushes, a different reviewer
   returns a verdict, the budget is counted in verdicts, a watchdog finds silent stalls, and a
