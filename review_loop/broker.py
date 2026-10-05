@@ -26,6 +26,35 @@ class BrokerDenied(Exception):
     """Fail closed: the requested operation is not authorized at this PR head."""
 
 
+_MESSAGE = re.compile(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)')
+_SECRETISH = re.compile(r"(?i)\b(?:sk|pk|rk|key|token|bearer|ghp|gho|ghs|github_pat)[-_a-z0-9]*[\s:=]*[A-Za-z0-9_\-\.]{16,}"
+                        r"|[A-Za-z0-9_\-]{40,}")
+
+
+def failure_reason(error: str) -> str:
+    """``HTTP <status>: <GitHub message>`` from ``gh.fetch``'s error, bounded and redacted."""
+    status = gh.status_of(error)
+    if status is None:
+        return gh.one_line(_SECRETISH.sub("[REDACTED]", error or ""), 160)
+    match = _MESSAGE.search(error)
+    text = match.group(1).replace('\\"', '"') if match else error.split(f"HTTP {status}", 1)[1]
+    text = gh.one_line(_SECRETISH.sub("[REDACTED]", text.strip()), 160)
+    return f"HTTP {status}: {text}" if text else f"HTTP {status}"
+
+
+def _write(loop: dict, path: str, method: str, body, login: str | None):
+    """``gh.api`` for a write: ``(payload, reason)``; reason says why it failed, if it did."""
+    gh._LAST.error = ""
+    data = gh.api(loop, path, method=method, body=body, login=login)
+    error = gh.last_error()
+    return data, failure_reason(error) if error else ""
+
+
+def _denied(message: str, why: str) -> BrokerDenied:
+    return BrokerDenied(f"{message}: {why}" if why else message)
+
+
+
 def authorize(loop: dict, *, repo: str, number: int, head: str, role: str,
               branch: str, operation: str, require_verdict: bool = True) -> str:
     """Return the seat login only after checking exact live PR identity and credentials.
@@ -150,9 +179,9 @@ def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
             raise BrokerDenied("reviewer seat mapping missing or inconsistent")
         path = f"/repos/{repo}/pulls/{number}/requested_reviewers"
         payload = {"reviewers": [seat]}
-    result = gh.api(loop, path, method="POST", body=payload, login=login)
+    result, why = _write(loop, path, method="POST", body=payload, login=login)
     if not isinstance(result, dict) or result.get("message") and result.get("documentation_url"):
-        raise BrokerDenied("GitHub write did not return a successful response")
+        raise _denied("GitHub write did not return a successful response", why)
     _audit(loop, repo, number, head, branch, role, operation, login)
     return result
 
@@ -231,10 +260,10 @@ def parse_answers_comment(comment: object, loop: dict) -> dict | None:
 def post_fixer_answers(loop: dict, *, repo: str, number: int, head: str, branch: str,
                        login: str, text: str) -> int:
     """POST one issue comment as the fixer identity; return its id or raise. Never retried."""
-    result = gh.api(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
+    result, why = _write(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
                     body={"body": _signed(loop, text, "fixer", head)}, login=login)
     if not isinstance(result, dict) or type(result.get("id")) is not int:
-        raise BrokerDenied("GitHub comment write did not return a successful response")
+        raise _denied("GitHub comment write did not return a successful response", why)
     _audit(loop, repo, number, head, branch, "fixer", "answers", login)
     return result["id"]
 
@@ -358,17 +387,17 @@ def post_triage(loop: dict, *, repo: str, number: int, login: str, labels: list[
                 body: str) -> int | None:
     """Add the labels (never removing one), then post the comment; the comment's id, or None."""
     if labels:
-        result = gh.api(loop, f"/repos/{repo}/issues/{number}/labels", method="POST",
+        result, why = _write(loop, f"/repos/{repo}/issues/{number}/labels", method="POST",
                         body={"labels": list(labels)}, login=login)
         if not isinstance(result, list):
-            raise BrokerDenied("GitHub label write did not return a successful response")
+            raise _denied("GitHub label write did not return a successful response", why)
         _audit(loop, repo, number, "", "", "triage", "labels", login)
     if not body:
         return None
-    result = gh.api(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
+    result, why = _write(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
                     body={"body": _signed(loop, body, "triage", "")}, login=login)
     if not isinstance(result, dict) or type(result.get("id")) is not int:
-        raise BrokerDenied("GitHub comment write did not return a successful response")
+        raise _denied("GitHub comment write did not return a successful response", why)
     _audit(loop, repo, number, "", "", "triage", "comment", login)
     return result["id"]
 
@@ -420,12 +449,12 @@ def open_issue_pr(loop: dict, *, repo: str, number: int, branch: str, title: str
                   login: str) -> int:
     """Open the issue fix's PR as the fixer, against the loop's base; its number, or raise."""
     text = f"{body.strip()}\n\nFixes #{number}"
-    result = gh.api(loop, f"/repos/{repo}/pulls", method="POST", login=login,
+    result, why = _write(loop, f"/repos/{repo}/pulls", method="POST", login=login,
                     body={"title": title, "head": branch, "base": loop["base"],
                           "body": _signed(loop, text, "fixer", ""), "draft": False})
     if (not isinstance(result, dict) or type(result.get("number")) is not int
             or (result.get("head") or {}).get("ref") != branch):
-        raise BrokerDenied("GitHub PR create did not return a successful response")
+        raise _denied("GitHub PR create did not return a successful response", why)
     _audit(loop, repo, result["number"], "", branch, "issue_fixer", "open_pr", login)
     return result["number"]
 
@@ -434,19 +463,19 @@ def request_issue_pr_review(loop: dict, *, repo: str, pr: int, login: str) -> No
     """Ask the loop's reviewer seat to review the issue fix's PR, as the fixer (the handoff)."""
     from . import config
     reviewer = config.seat_login(loop, "reviewer")
-    result = gh.api(loop, f"/repos/{repo}/pulls/{pr}/requested_reviewers", method="POST",
+    result, why = _write(loop, f"/repos/{repo}/pulls/{pr}/requested_reviewers", method="POST",
                     login=login, body={"reviewers": [reviewer]})
     if not isinstance(result, dict) or type(result.get("number")) is not int:
-        raise BrokerDenied("GitHub review request did not return a successful response")
+        raise _denied("GitHub review request did not return a successful response", why)
     _audit(loop, repo, pr, "", "", "issue_fixer", "request_review", login)
 
 
 def post_issue_comment(loop: dict, *, repo: str, number: int, login: str, body: str) -> int:
     """The issue fixer's one comment when it could not fix the issue; its id, or raise."""
-    result = gh.api(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
+    result, why = _write(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
                     body={"body": _signed(loop, body, "fixer", "")}, login=login)
     if not isinstance(result, dict) or type(result.get("id")) is not int:
-        raise BrokerDenied("GitHub comment write did not return a successful response")
+        raise _denied("GitHub comment write did not return a successful response", why)
     _audit(loop, repo, number, "", "", "issue_fixer", "issue_comment", login)
     return result["id"]
 
@@ -475,10 +504,10 @@ def file_issue(loop: dict, *, repo: str, number: int, head: str, login: str, tit
                "body": _signed(loop, body.strip() + lineage_note(pr=number, head=head,
                                                                  depth=depth),
                                "reviewer", head)}
-    result = gh.api(loop, f"/repos/{repo}/issues", method="POST", body=payload, login=login)
+    result, why = _write(loop, f"/repos/{repo}/issues", method="POST", body=payload, login=login)
     if (not isinstance(result, dict) or type(result.get("number")) is not int
             or result["number"] <= 0 or "pull_request" in result):
-        raise BrokerDenied("GitHub issue write did not return a successful response")
+        raise _denied("GitHub issue write did not return a successful response", why)
     _audit(loop, repo, number, head, "", "reviewer", "file_issue", login)
     return result["number"]
 
@@ -495,9 +524,9 @@ def ruling_comment_body(verdict: str, body: str, *, head: str, turn_key: str, ru
 def post_ruling_comment(loop: dict, *, repo: str, number: int, head: str, branch: str,
                         login: str, text: str) -> int:
     """POST one issue comment as the adjudicator identity; return its id or raise."""
-    result = gh.api(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
+    result, why = _write(loop, f"/repos/{repo}/issues/{number}/comments", method="POST",
                     body={"body": _signed(loop, text, "adjudicator", head)}, login=login)
     if not isinstance(result, dict) or type(result.get("id")) is not int:
-        raise BrokerDenied("GitHub comment write did not return a successful response")
+        raise _denied("GitHub comment write did not return a successful response", why)
     _audit(loop, repo, number, head, branch, "adjudicator", "ruling_comment", login)
     return result["id"]
