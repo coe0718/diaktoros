@@ -350,8 +350,6 @@ class ReconciliationTest(unittest.TestCase):
              mock.patch.object(reviewer.gate, "block_pr_agent", return_value=None) as seat, \
              mock.patch.object(reviewer.gate, "loop_block", return_value={"pr": 184}), \
              mock.patch.object(reviewer.gate, "drain_seat"), \
-             mock.patch.object(reviewer.gate, "start_text", return_value="fixture start"), \
-             mock.patch.object(reviewer.gate, "ping_start"), \
              mock.patch.object(reviewer.observer, "notify"):
             try:
                 reviewer.main()

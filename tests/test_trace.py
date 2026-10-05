@@ -129,7 +129,7 @@ class HarnessSeams(unittest.TestCase):
     """#222: each of the harness's refusals is pinned, not only the process launch.
 
     A probe stands in for the gate and tries all three ways out: a non-GET ``urlopen`` (how a
-    route POST, an observer notice or the start ping leaves), a ``gh`` write, and a GET, which must
+    route POST or an observer notice leaves), a ``gh`` write, and a GET, which must
     pass. A loopback server counts what actually arrives.
     """
 

@@ -104,9 +104,8 @@ def scripts_dir() -> pathlib.Path:
 def profile_dir(name: str) -> pathlib.Path:
     """A seat profile's home: the root itself for ``default``, else ``profiles/<name>``.
 
-    That is the layout the gateway uses, and it is also where the gates look for a seat's
-    ``.env`` (the start-ping reads ``<home>/profiles/<profile>/.env``), so "does this profile
-    exist" is answerable offline and without asking the gateway anything.
+    That is the layout the gateway uses, so "does this profile exist" is answerable offline and
+    without asking the gateway anything.
     """
     if not name or name == "default":
         return config.home()

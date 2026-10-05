@@ -25,16 +25,13 @@ gates deadlock against each other, each waiting for the other's hold to clear.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import json
 import os
 import pathlib
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 
-from . import config, gate_failures, gh, isolation, observer, routes, situation, transition, state as state_mod
+from . import config, gate_failures, gh, isolation, observer, situation, transition, state as state_mod
 from .util import iso_at, log, now_iso, silence
 
 
@@ -1172,52 +1169,6 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
     if outcome == "stale":
         log(f"#{number} @ {head[:7]} no longer current — not escalating")
 
-
-
-def ping_start(loop: dict, seat: str, text: str) -> None:
-    """Announce the run in the seat's own Discord channel before the agent spawns.
-
-    Reads that profile's ``.env`` (the gateway already has it) so no credentials are
-    duplicated in the loop config, and a failed ping never blocks a review.
-    """
-    seat_cfg = loop["seats"][seat]
-    profile = seat_cfg["profile"]
-    try:
-        env: dict[str, str] = {}
-        env_path = config.home() / "profiles" / profile / ".env"
-        for line in env_path.read_text().splitlines():
-            if line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            env[key.strip()] = value.strip()
-        token = env.get("DISCORD_BOT_TOKEN", "")
-        channel = seat_cfg.get("channel") or env.get("DISCORD_HOME_CHANNEL", "")
-        if not token or not channel:
-            raise RuntimeError(f"no Discord token/channel for profile {profile!r}")
-        body = json.dumps({"content": text, "allowed_mentions": {"parse": []}}).encode()
-        req = urllib.request.Request(
-            f"https://discord.com/api/v10/channels/{channel}/messages", data=body,
-            headers={"Authorization": f"Bot {token}", "Content-Type": "application/json",
-                     "User-Agent": "hermes-review-loop"})
-        config.guard_network(req.full_url)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if resp.status not in (200, 201):
-                raise RuntimeError(f"Discord HTTP {resp.status}")
-    except Exception as exc:
-        if isinstance(exc, urllib.error.HTTPError):
-            exc.close()   # it holds the response open
-        log(f"start-ping failed: {exc}")
-
-
-def start_text(loop: dict, seat: str, number: int, head: str, round_no: int,
-               note: str = "") -> str:
-    seat_cfg = loop["seats"][seat]
-    emoji = seat_cfg.get("emoji") or ("🔍" if seat == "reviewer" else "🔧")
-    verb = "starting review of" if seat == "reviewer" else "starting fixes on"
-    extra = f" {note}" if note else ""
-    return (f"{emoji} **{seat_cfg['agent']}** — {verb} PR #{number} "
-            f"(round {round_no}/{loop['cap']}, head `{head[:7]}`){extra}\n"
-            f"{pr_url(loop, number)}")
 
 
 def take_seat(loop: dict, st: state_mod.LoopState, seat: str, number: int, head: str,
