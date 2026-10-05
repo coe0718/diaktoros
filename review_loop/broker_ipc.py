@@ -172,6 +172,16 @@ def _denial_message(exc: Exception) -> str:
     return "write denied"
 
 
+def _why(exc: Exception) -> str:
+    """Why a GitHub write failed, for the ledger and the notice: ``HTTP <status>: <message>``
+    when the broker saw one, else the exception's type name."""
+    if isinstance(exc, broker.BrokerDenied):
+        text = str(exc)
+        at = text.find("HTTP ")
+        return (text[at:] if at >= 0 else text)[:200]
+    return type(exc).__name__
+
+
 def _read_line(conn: socket.socket, limit: int) -> bytes:
     data = bytearray()
     while len(data) <= limit:
@@ -569,7 +579,7 @@ class RunBroker:
         except Exception as exc:
             try:
                 supervisor.answers_status(self.scope.run_id, "uncertain",
-                                          error=f"POST outcome unknown: {type(exc).__name__}")
+                                          error=f"POST outcome unknown: {_why(exc)}")
             except Exception:
                 pass
             return "uncertain"
@@ -773,7 +783,7 @@ class RunBroker:
                                       title=title.strip(), body=body, login=pushed["login"])
         except Exception as exc:
             supervisor.issue_fix_status(run_id, "uncertain",
-                                        error=f"PR create outcome unknown: {type(exc).__name__}")
+                                        error=f"PR create outcome unknown: {_why(exc)}")
             raise ProtocolError("the branch was pushed but the PR could not be confirmed: do "
                                 "not retry; say so")
         supervisor.issue_fix_status(run_id, "opened", pr_number=pr)
@@ -782,7 +792,7 @@ class RunBroker:
         except Exception as exc:
             # The PR is open as the fixer, so the reviewer gate's `opened` still starts the loop.
             supervisor.issue_fix_status(run_id, "opened",
-                                        error=f"review request not confirmed: {type(exc).__name__}")
+                                        error=f"review request not confirmed: {_why(exc)}")
             return {"accepted": True}
         supervisor.issue_fix_status(run_id, "requested")
         return {"accepted": True}
@@ -859,7 +869,7 @@ class RunBroker:
             raise ProtocolError("the issue's outcome is unknown: do not retry it; say so")
         except Exception as exc:
             supervisor.filed_issue_status(self.scope.run_id, seq, "uncertain",
-                                          error=f"POST outcome unknown: {type(exc).__name__}")
+                                          error=f"POST outcome unknown: {_why(exc)}")
             raise ProtocolError("the issue's outcome is unknown: do not retry it; say so")
         supervisor.filed_issue_status(self.scope.run_id, seq, "posted", issue_number=issue)
         return {"accepted": True, "issue": issue}
@@ -876,7 +886,7 @@ class RunBroker:
                                                 number=self.scope.number, login=login, body=body)
         except Exception as exc:
             supervisor.issue_fix_status(run_id, "uncertain",
-                                        error=f"POST outcome unknown: {type(exc).__name__}")
+                                        error=f"POST outcome unknown: {_why(exc)}")
             raise ProtocolError("the comment's outcome is unknown: do not retry; say so")
         supervisor.issue_fix_status(run_id, "posted", comment_id=comment)
         return {"accepted": True}
@@ -990,7 +1000,7 @@ def _write_triage(launch_loop: dict, scope: RunScope, supervisor, labels: list[s
                                         labels=labels, body=body)
     except Exception as exc:
         supervisor.triage_status(scope.run_id, "uncertain",
-                                 error=f"POST outcome unknown: {type(exc).__name__}")
+                                 error=f"POST outcome unknown: {_why(exc)}")
         return
     supervisor.triage_status(scope.run_id, "posted", comment_id=comment_id)
 
@@ -1041,7 +1051,7 @@ def _deliver_ruling(launch_loop: dict, scope: RunScope, supervisor, turn_key: st
                                                           cap=loop["cap"]))
     except Exception as exc:
         supervisor.ruling_status(scope.run_id, comment="uncertain",
-                                 comment_error=f"POST outcome unknown: {type(exc).__name__}")
+                                 comment_error=f"POST outcome unknown: {_why(exc)}")
         return
     supervisor.ruling_status(scope.run_id, comment="posted", comment_id=comment_id)
 

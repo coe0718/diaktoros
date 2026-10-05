@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -313,10 +314,20 @@ def api(loop: dict, path: str, method: str = "GET", body=None, login: str | None
     read the review list must not guess how many rounds are left.
     """
     data, error = fetch(loop, path, method, body, login)
+    _LAST.error = error
     if error:
         log(f"gh {method} {path} failed: {error}")
         record_failure(loop, method, path, error, login)
     return data
+
+
+_LAST = threading.local()
+
+
+def last_error() -> str:
+    """The error of this thread's latest ``api`` call (empty when it succeeded): lets a writer
+    that must refuse on None say why without a second request."""
+    return getattr(_LAST, "error", "")
 
 
 # -- convenience --------------------------------------------------------------
