@@ -722,7 +722,7 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         out.append(f"fix: hook{'s' if len(miswired) > 1 else ''} {', '.join(map(str, miswired))}:"
                    f" `hermes review-loop doctor --loop {loop.get('id')}` names what each needs "
                    "(re-run init --hooks, or on GitHub set the event / content_type, or drop the "
-                   f"URL's trailing slash — `hermes review-loop apply --loop {loop.get('id')}` "
+                   f"URL's trailing slash — `hermes review-loop apply --hooks --loop {loop.get('id')}` "
                    "repoints a slashed hook), then run `arm` again")
     # The fix is per hook: one refused hook must not hide the retry advice another hook's 5xx
     # earned. Hooks that need the same fix share its line.
