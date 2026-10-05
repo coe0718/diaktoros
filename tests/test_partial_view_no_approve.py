@@ -7,6 +7,7 @@ with a refusal the seat reads; a REQUEST_CHANGES still goes through. Offline: Gi
 mocked, the socket is a real Unix domain socket and the ledger is the real SQLite run ledger.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import _ci_green  # noqa: E402  CI reads as green unless a test says otherwise
 import dataclasses
 import json
 import os
@@ -53,7 +54,7 @@ class Broker(unittest.TestCase):
                    "head": {"sha": HEAD, "ref": "fix-7", "repo": {"full_name": REPO}},
                    "base": {"ref": "main", "sha": BASE, "repo": {"full_name": REPO}}}
         self.posts = []
-        patch = mock.patch.object(gh, "api", side_effect=self.api)
+        patch = mock.patch.object(gh, "api", side_effect=_ci_green.green(self.api))
         patch.start()
         self.addCleanup(patch.stop)
 

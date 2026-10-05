@@ -474,6 +474,12 @@ class RunBroker:
                 # Before the capability is consumed and before any GitHub read or write: the seat
                 # was not shown the whole change, so it cannot approve it (#93, #110).
                 raise ProtocolError(PARTIAL_VIEW_REFUSAL.format(reason=reason[:300]))
+            # A live read of the head's CI, also before the capability is consumed: an approval
+            # of a head whose checks failed is a false green, so the seat must request changes.
+            from . import ci
+            refusal = ci.approval_refusal(ci.read(self._loop, self.scope.head))
+            if refusal:
+                raise ProtocolError(refusal)
         # Consume BEFORE an external write: a lost response cannot lead to a replay.
         self._used = True
         after_push = operation == "request_review" and bool(self._pushed_head)

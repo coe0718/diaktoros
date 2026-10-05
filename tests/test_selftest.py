@@ -3,6 +3,7 @@
 GitHub, the model provider and bubblewrap are all mocked; nothing here needs a network.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import _ci_green  # noqa: E402  CI reads as green unless a test says otherwise
 import argparse
 import io
 import json
@@ -485,7 +486,7 @@ class NoWriteBrokerTests(unittest.TestCase):
             if method != "GET":
                 raise AssertionError("POST attempted")
             return self.fx.fetch(loop, path, method, body, login)[0]
-        patch = mock.patch.object(gh, "api", side_effect=api)
+        patch = mock.patch.object(gh, "api", side_effect=_ci_green.green(api))
         patch.start()
         self.addCleanup(patch.stop)
 

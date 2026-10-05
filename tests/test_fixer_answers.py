@@ -4,6 +4,7 @@ The real RunBroker serves a real Unix socket; GitHub is an in-memory fake and th
 stub (the safe_push tests cover the ref write). No real GitHub, model, Hermes or ~/.hermes.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import _ci_green  # noqa: E402  CI reads as green unless a test says otherwise
 import base64
 import contextlib
 import hashlib
@@ -101,7 +102,8 @@ class Base(unittest.TestCase):
                      "seats": {"reviewer": {"login": "review", "agent": "Rex"},
                                "fixer": {"login": "fix", "agent": "Dee"}}}
         self.fake = FakeGitHub()
-        for target, name, side in ((gh, "api", self.fake.api), (gh, "fetch", self.fake.fetch)):
+        for target, name, side in ((gh, "api", _ci_green.green(self.fake.api)),
+                                   (gh, "fetch", self.fake.fetch)):
             patch = mock.patch.object(target, name, side_effect=side)
             patch.start()
             self.addCleanup(patch.stop)

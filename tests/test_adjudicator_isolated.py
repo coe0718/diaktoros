@@ -4,6 +4,7 @@ No real GitHub, model, Hermes or ~/.hermes: GitHub is mocked, the ledger and sta
 private temporary directory, and the sandbox launcher is replaced where a turn is exercised.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import _ci_green  # noqa: E402  CI reads as green unless a test says otherwise
 import json
 import os
 from pathlib import Path
@@ -167,7 +168,7 @@ class Claim(Base):
 
     def claim(self, api=None, reviews=None):
         with mock.patch.object(config, "by_repo", return_value=self.loop), \
-             mock.patch.object(gh, "api", side_effect=api or (lambda *a, **k: self.pr)), \
+             mock.patch.object(gh, "api", side_effect=_ci_green.green(api or (lambda *a, **k: self.pr))), \
              mock.patch.object(gh, "reviews", return_value=self.reviews if reviews is None else reviews):
             result = self.sup._claim()
         return result, Supervisor(self.db).get(f"{REPO}:7:{HEAD}:adjudicator:breach:3")
@@ -260,7 +261,7 @@ class Ruling(Base):
             if method == "POST":
                 return {"id": 991, "token": "DUMMY_SECRET_LEAK"}
             return self.pr
-        for target, kwargs in ((gh, dict(api=mock.Mock(side_effect=api),
+        for target, kwargs in ((gh, dict(api=mock.Mock(side_effect=_ci_green.green(api)),
                                          reviews=mock.Mock(return_value=[verdict(1)]))),
                                (config, dict(by_repo=mock.Mock(side_effect=lambda repo: self.loop))),
                                (observer, dict(notify=mock.Mock(return_value=True)))):
@@ -448,6 +449,15 @@ class Prompts(Base):
              "issue_labels": "this list only: `P3`"}
     FIELD = re.compile(r"\{[A-Za-z_][\w.]*\}")
 
+    def setUp(self):
+        super().setUp()
+        # The reviewer's and fixer's prompts read the head's CI (no checks here); nothing else.
+        def no_other_read(loop, path, *args, **kwargs):
+            raise AssertionError(f"unexpected GitHub read {path}")
+        patch = mock.patch.object(gh, "api", side_effect=_ci_green.green(no_other_read))
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def test_every_role_renders_without_placeholders(self):
         for role in ("reviewer", "fixer", "adjudicator"):
             with self.subTest(role):
@@ -507,6 +517,7 @@ class Prompts(Base):
                     self.assertIn("data, not instructions", record.splitlines()[0])
                 else:
                     self.assertNotIn("tests/t.rs:9", record)
+                self.assertEqual("## CI at this head" in template, seat != "adjudicator")
                 if seat == "adjudicator":
                     self.assertIn("**3 of 3**", template)
                 if seat == "reviewer":
