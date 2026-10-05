@@ -1,3 +1,5 @@
+"""Broker denial messages (#65)."""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import unittest
 
 from review_loop import broker, broker_ipc
