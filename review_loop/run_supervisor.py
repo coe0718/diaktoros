@@ -1178,6 +1178,25 @@ def describe_dependencies(row: dict) -> str:
             f"{row['deps']}")
 
 
+def _pid_reused(pid: int, launched: float | None) -> bool:
+    """True only when the process now holding ``pid`` provably started after the run launched.
+
+    An unreadable start time (no /proc) is not proof: the PID keeps blocking.
+    """
+    if launched is None:
+        return False
+    try:
+        stat = Path(f'/proc/{int(pid)}/stat').read_text()
+        # starttime is field 22; the comm field may contain spaces, so split after its ')'.
+        ticks = int(stat.rsplit(')', 1)[1].split()[19])
+        btime = next(float(line.split()[1]) for line in Path('/proc/stat').read_text().splitlines()
+                     if line.startswith('btime '))
+        started = btime + ticks / os.sysconf('SC_CLK_TCK')
+    except (OSError, ValueError, IndexError, StopIteration):
+        return False
+    return started > launched + 2.0
+
+
 class Supervisor:
     def __init__(self, db: str | Path, *, fixture_command: list[str] | None = None,
                  fixture_mode: bool = False, capacity: dict[str, int] | None = None,
@@ -2189,10 +2208,11 @@ class Supervisor:
                                        "AND (state IN ('claimed','launching','running','uncertain') "
                                        "OR push_intent IS NOT NULL)",
                                        (row['repo'], row['pr'])).fetchone()
-                used = con.execute("SELECT COUNT(*) FROM runs WHERE seat=? AND "
+                # Capacity is per repo and seat: another repo's rows never consume it.
+                used = con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND seat=? AND "
                                    "state IN ('claimed','launching','running','uncertain')",
-                                   (row['seat'],)).fetchone()[0]
-                if occupied or used >= self.capacity[row['seat']]:
+                                   (row['repo'], row['seat'])).fetchone()[0]
+                if occupied or used >= self._capacity_for(row['repo'], row['seat']):
                     con.execute("COMMIT")
                     continue
                 now = time.time()
@@ -2315,6 +2335,18 @@ class Supervisor:
             con.execute("COMMIT")
         return state if changed else None
 
+    def _capacity_for(self, repo: str, seat: str) -> int:
+        """The seat's capacity from this repo's own loop; the worker's table otherwise."""
+        if self.production_config:
+            try:
+                from . import config
+                loop = config.by_repo(repo)
+                if loop is not None:
+                    return config.seat_concurrency(loop, seat)
+            except Exception:
+                pass
+        return self.capacity[seat]
+
     def reconcile_uncertain(self, run_id: str, *, reason: str,
                             acknowledge_no_live_worker: bool = False) -> bool:
         """Operator-only release after inspecting the turn's external writes.
@@ -2339,7 +2371,8 @@ class Supervisor:
                     if exc.errno != errno.ESRCH:
                         raise ValueError('cannot establish worker is absent') from exc
                 else:
-                    raise ValueError('worker PID exists; cannot release uncertain run')
+                    if not _pid_reused(row['pid'], row['launch_intent']):
+                        raise ValueError('worker PID exists; cannot release uncertain run')
             if row['launch_intent'] is None:
                 raise ValueError('missing launch intent; cannot establish worker identity')
             con.execute("UPDATE runs SET state='failed', error=?, lease=NULL, "

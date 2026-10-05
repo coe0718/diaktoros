@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 from review_loop import ledger
@@ -26,11 +27,11 @@ class OperatorReconciliation(unittest.TestCase):
         self.row = self.sup.get('d')
         assert self.row is not None
 
-    def crash(self, state='running', pid=None):
+    def crash(self, state='running', pid=None, launch=1):
         with ledger.connect(self.db) as con:
             con.execute('UPDATE runs SET state=?,owner=?,attempts=1,lease=0, '
-                        'launch_intent=1,pid=? WHERE id=?',
-                        (state, 'lost-owner', pid, self.row['id']))
+                        'launch_intent=?,pid=? WHERE id=?',
+                        (state, 'lost-owner', launch, pid, self.row['id']))
         self.sup.recover()
 
     def cli(self, *args):
@@ -64,8 +65,24 @@ class OperatorReconciliation(unittest.TestCase):
         self.assertEqual(self.sup.get('d')['state'], 'failed')
         self.assertEqual(self.sup.get('waiting')['state'], 'pending')
 
+    def test_reused_pid_started_after_launch_does_not_block_reconciliation(self):
+        # The recorded PID is alive, but that process started long after the run launched.
+        self.crash(pid=os.getpid(), launch=1)
+        self.assertTrue(self.sup.reconcile_uncertain(
+            self.row['id'], reason='inspected', acknowledge_no_live_worker=True))
+        self.assertEqual(self.sup.get('d')['state'], 'failed')
+
+    def test_capacity_is_per_repo(self):
+        self.sup._spawn = lambda: None
+        self.sup.enqueue('other', 'owner/other', 5, 'def456', 'reviewer')
+        self.crash()   # owner/repo reviewer row is now uncertain
+        self.assertEqual(self.sup.get('d')['state'], 'uncertain')
+        claim = self.sup._claim()
+        self.assertIsNotNone(claim)
+        self.assertEqual(self.sup.get('other')['state'], 'claimed')
+
     def test_live_pid_blocks_reconciliation_even_after_stale_lease(self):
-        self.crash(pid=os.getpid())
+        self.crash(pid=os.getpid(), launch=time.time() + 5)
         with self.assertRaisesRegex(ValueError, 'PID exists'):
             self.sup.reconcile_uncertain(self.row['id'], reason='inspected',
                                          acknowledge_no_live_worker=True)
