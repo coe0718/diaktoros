@@ -15,6 +15,17 @@ class CronFixDeliver(unittest.TestCase):
         self.assertIn("--deliver telegram", out)
         self.assertNotIn("--deliver local", out)
 
+    def test_idless_job_addressed_by_name_not_question_mark(self):
+        name = "watchdog-x"
+        self.assertEqual(doctor._job_ref({"id": "j1", "name": "n"}, name), "j1")
+        self.assertEqual(doctor._job_ref({"id": "", "name": name}, name), name)
+        self.assertEqual(doctor._job_ref({}, name), name)
+        self.assertNotIn("remove ?", doctor.cron_replace_fix(
+            {"id": "x"}, [doctor._job_ref({"id": ""}, name)]))
+
+    def test_repair_fix_names_runnable_command(self):
+        self.assertNotIn("set/apply/uninstall", doctor.REPAIR_FIX)
+
 
 if __name__ == "__main__":
     unittest.main()

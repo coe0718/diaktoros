@@ -182,6 +182,12 @@ def migration_fix(loop: dict, shim_jobs: list) -> str:
             f"\"{name}\" --no-agent --script {SHIM_NAME} --deliver <target>`")
 
 
+def _job_ref(entry: dict, fallback: str) -> str:
+    """How a remedy addresses a job: its id, else (a hand-edited store) its name, else the
+    watchdog's name; never a literal ``?`` that ``hermes cron remove`` would reject."""
+    return str(entry.get("id") or "").strip() or str(entry.get("name") or "").strip() or fallback
+
+
 def cron_replace_fix(loop: dict, job_ids, deliver: str = "local") -> str:
     """For a watchdog job that exists but cannot run as it should: remove it (every one, by its
     exact id), then create it. ``hermes cron create`` only appends — it never replaces a job of
@@ -843,8 +849,9 @@ def check_routes(loop: dict) -> list[Check]:
 
 
 REPAIR_FIX = ("the next armed watchdog sweep restores it from the plugin's intent record with the "
-              "same secret — or run `hermes review-loop doctor --repair` now; if the change was "
-              "intended, make it through `hermes review-loop set/apply/uninstall` instead")
+              "same secret — or run `hermes review-loop doctor --repair` now (that one command "
+              "repairs it); if the change was intended, make it with the plugin's own commands "
+              "(`set`, `apply`, `uninstall`), not by hand")
 
 
 def _intent_overlay(loop: dict, data: dict, checks: list[Check]) -> list[Check]:
@@ -1307,8 +1314,8 @@ def check_cron_job(loop: dict) -> Check:
     if job is None:
         return Check("cron:job", ABSENT, f"no job named {wanted!r} in {path}",
                      cron_fix(loop))
-    job_id = str(job.get("id") or "?")
-    named = [str(entry.get("id") or "?") for entry in jobs if isinstance(entry, dict)
+    job_id = _job_ref(job, wanted)
+    named = [_job_ref(entry, wanted) for entry in jobs if isinstance(entry, dict)
              and str(entry.get("name") or "").strip() == wanted]
     if len(named) > 1:
         return Check("cron:job", MISMATCH,
@@ -1318,8 +1325,8 @@ def check_cron_job(loop: dict) -> Check:
     # More than one shim job total (a leftover legacy job beside the shared one) is the same
     # N-sweeps-per-tick problem: name the extras so they can be removed.
     if len(shim_jobs) > 1:
-        extra = [str(entry.get("id") or "?") for entry in shim_jobs
-                 if str(entry.get("id") or "?") != job_id]
+        extra = [_job_ref(entry, wanted) for entry in shim_jobs
+                 if _job_ref(entry, wanted) != job_id]
         removals = "; ".join(f"`hermes cron remove {extra_id}`" for extra_id in extra)
         return Check("cron:job", MISMATCH,
                      f"{len(shim_jobs)} jobs run {SHIM_NAME} "
