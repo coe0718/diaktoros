@@ -18,11 +18,13 @@ A Hermes plugin for bounded GitHub pull-request review: an isolated **reviewer**
 Replace quoted angle-bracket placeholders before running examples. `ID` is the installed loop id; `N` is a PR number. No shared webhook host is provided.
 
 ```bash
-hermes plugins install coe0718/hermes-review-loop
+hermes plugins install hermes-review-loop
 hermes review-loop setup --repo "<owner>/<repository>"
 ```
 
-The plugin currently receives a **caution** scanner verdict. A terminal install shows the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Review them before continuing: typical findings concern subprocess execution (`bwrap`, Git, workers and test fixtures), security-probe code, and setup advice mentioning privileged commands. A caution verdict is not a security audit; counts and classifications can change with the scanner version. **Install from a terminal until the plugin is in the reviewed catalog:** Desktop refuses caution-rated plugins from outside that catalog.
+The plugin is in the [Hermes plugin catalog](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog), so `hermes plugins install hermes-review-loop` installs the reviewed release at its pinned commit. Desktop can install it from the catalog too. Catalog updates arrive only through a reviewed pin bump.
+
+The install scanner rates the plugin **caution**. A catalog install accepts that without a prompt, because the catalog reviewed it at admission. Installing from the repository instead (`hermes plugins install coe0718/hermes-review-loop`) gets the current `main`, shows the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Typical findings concern subprocess execution (`bwrap`, Git, workers and test fixtures), security-probe code, and setup advice mentioning privileged commands. A caution verdict is not a security audit.
 
 `setup` detects runtime paths, previews `init`, installs the requested wiring, schedules the watchdog and runs `doctor` plus `selftest --no-model`. It asks before arming; **decline arming until ready**. Name a hook admin to create paused hooks. If that answer is blank and hooks are absent, `doctor` fails and setup prints **stopped before arming**, exiting 1; that is expected until you create the hooks manually. Re-running setup on an existing loop keeps its saved settings; use `set` or `apply` to change them.
 

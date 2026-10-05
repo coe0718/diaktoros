@@ -35,10 +35,12 @@ Examples assume the operator/gateway Hermes home is `~/.hermes`. All commands mu
 ## Install the plugin
 
 ```bash
-hermes plugins install coe0718/hermes-review-loop
+hermes plugins install hermes-review-loop
 ```
 
-This is the plugin's actual distribution source, **not** the repository to review; reviewed-repository examples remain placeholders. The plugin currently receives a **caution** scanner verdict. A terminal install prints the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Typical findings concern subprocesses (`bwrap`, Git, workers and fixtures), security probes, and setup advice mentioning privileged commands; review the actual report rather than assuming a fixed finding count. Plugins execute trusted host code, so a scanner pass is not proof of safety. **Install from a terminal until the plugin is in the reviewed catalog:** Desktop does not install caution-rated plugins from outside that catalog.
+This installs the plugin from the Hermes plugin catalog, at the commit the catalog reviewed and pinned; Desktop can install it from the catalog as well. It is the plugin, **not** the repository to review; reviewed-repository examples remain placeholders.
+
+The install scanner rates the plugin **caution**, which a catalog install accepts without a prompt. To run the current `main` instead, install from the repository: `hermes plugins install coe0718/hermes-review-loop`. That install prints the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Typical findings concern subprocesses (`bwrap`, Git, workers and fixtures), security probes, and setup advice mentioning privileged commands; review the actual report rather than assuming a fixed finding count. Plugins execute trusted host code, so a scanner pass is not proof of safety.
 
 ## Choose one setup path
 
