@@ -190,10 +190,15 @@ What to do:
      evidence and `file:line` as the body, and labels from {issue_labels}. List what you filed
      in the review under **Issues filed**, with the numbers the broker returned; a finding the
      broker refused to file goes under **Issues to file** instead, so the operator can.
-4. You get exactly one review write. The broker pins it to head {head}; if the head moved, the
+4. **CI.** The head's CI state, as the host read it just before this turn, is in the **CI at
+   this head** section below. A failed check is a blocking finding: the verdict is
+   REQUEST_CHANGES, naming each failed check. The broker refuses an APPROVE while any check at
+   the head has failed, or while CI cannot be read. A check still running is not a pass: say
+   which ones you did not see finish.
+5. You get exactly one review write. The broker pins it to head {head}; if the head moved, the
    write is refused — say so rather than retrying. A verdict other than APPROVE or
    REQUEST_CHANGES is refused before anything is written: resubmit with a real verdict.
-5. Finish with a 3-5 line summary: verdict, what you verified, what you did not verify.
+6. Finish with a 3-5 line summary: verdict, what you verified, what you did not verify.
 
 Never approve what you did not verify. If you are uncertain — something you could not verify —
 the verdict is REQUEST_CHANGES, naming exactly what could not be verified, instead of guessing.

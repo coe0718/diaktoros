@@ -189,6 +189,16 @@ elif "/requested_reviewers" in path:
     print("{}")
 elif path.endswith("/reviews?per_page=100"):
     print(json.dumps((world["prs"].get(str(n_of(path))) or {}).get("reviews", [])))
+elif re.search(r"/commits/([0-9a-f]+)/check-runs", path):
+    # The head's check runs (world "check_runs" per sha, default none); "ci_unreadable" fails it.
+    if world.get("ci_unreadable"):
+        sys.stderr.write("HTTP 403 Resource not accessible by personal access token")
+        sys.exit(1)
+    runs = (world.get("check_runs") or {}).get(re.search(r"/commits/([0-9a-f]+)/", path).group(1), [])
+    print(json.dumps({"total_count": len(runs), "check_runs": runs}))
+elif re.search(r"/commits/([0-9a-f]+)/status$", path):
+    sha = re.search(r"/commits/([0-9a-f]+)/", path).group(1)
+    print(json.dumps({"state": "success", "statuses": (world.get("statuses") or {}).get(sha, [])}))
 elif "/commits/" in path:
     sha = path.rsplit("/", 1)[1]
     print(json.dumps({"commit": {"committer": {"date": world.get("commit_dates", {}).get(sha, "2026-01-01T00:00:00Z")}}}))

@@ -6,6 +6,7 @@ PR. The broker refuses it before consuming the capability, so a retry in the sam
 Offline: GitHub REST is mocked; the socket is a real Unix domain socket.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import _ci_green  # noqa: E402  CI reads as green unless a test says otherwise
 import contextlib
 import io
 import json
@@ -50,7 +51,7 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
                    "head": {"sha": HEAD, "ref": "fix-7", "repo": {"full_name": REPO}},
                    "base": {"ref": "main", "sha": BASE, "repo": {"full_name": REPO}}}
         self.posts = []
-        patch = mock.patch.object(gh, "api", side_effect=self.api)
+        patch = mock.patch.object(gh, "api", side_effect=_ci_green.green(self.api))
         patch.start()
         self.addCleanup(patch.stop)
 

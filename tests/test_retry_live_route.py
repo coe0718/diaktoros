@@ -164,6 +164,10 @@ class World(http.server.BaseHTTPRequestHandler):
             self._send(200, [world['pr']] if page == 1 and world['pr']['state'] == 'open' else [])
         elif path == base + '/pulls/7/reviews':
             self._send(200, world['reviews'] if page == 1 else [])
+        elif path.startswith(base + '/commits/') and path.endswith('/check-runs'):
+            self._send(200, {'total_count': 0, 'check_runs': []})     # no CI reported: green
+        elif path.startswith(base + '/commits/') and path.endswith('/status'):
+            self._send(200, {'state': 'pending', 'statuses': []})
         elif path == base + '/pulls/7/files':
             # The change under review (#50): one modified file, one page.
             self._send(200, [{'filename': name, 'status': 'modified', 'additions': 1,

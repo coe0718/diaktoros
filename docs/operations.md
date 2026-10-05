@@ -135,6 +135,14 @@ REQUEST_CHANGES is a valid review verdict; a comment-only review cannot advance 
 Missing offline dependencies or insufficient sandbox build space are environment notes,
 not automatically PR defects; the seat must state what it did and did not verify. With
 nothing verified it still cannot approve. A partial change view cannot authorize approval.
+
+**CI.** The reviewer and fixer prompts carry the head's CI as the reader saw it just before
+the turn: failed checks, checks still running, and how many passed. A failed check is a blocking
+finding. At the write, the broker re-reads CI and refuses an APPROVE while any check run or
+commit status at the head has failed (a re-run that passed replaces its failure), or while CI
+cannot be read. The refusal spends nothing, so the reviewer's REQUEST_CHANGES in the same turn
+goes through. Checks still running don't block an approval.
+
 Fixer answers
 are published as a bounded PR comment before a fresh review request; a final model
 summary is not a receipt. At the cap, adjudication records `ACCEPT`, `REJECT` or `RESPEC`.
@@ -158,14 +166,14 @@ credentials into commands, chats, issues, profiles or diagnostic reports.
 
 | Role | Needed capabilities |
 | --- | --- |
-| Read/control | Read repository contents, PRs, reviews, issues and hook state needed by gates |
+| Read/control | Read repository contents, PRs, reviews, issues, hook state, check runs and commit statuses |
 | Hook administrator | Inspect/create/activate/delete repository webhooks |
 | Reviewer | Submit PR reviews; read contents |
 | Fixer | Write contents, PR comments and review requests; open PRs; issues write for issue comments |
 | Triage | Issues write for labels and optional comments |
 | Adjudicator with comment identity | Post PR conversation comments |
 
-Fine-grained permissions commonly include Contents, Pull requests, Issues and Webhooks
+Fine-grained permissions commonly include Contents, Pull requests, Issues, Webhooks, Checks and Commit statuses
 at the level appropriate to these operations; classic `repo` tokens bundle broad access.
 Use [accounts](accounts.md) for details. File-mode checks cannot establish GitHub scopes,
 repository access, expiry, SSO approval or identity. Do not use the read token as triage writer.

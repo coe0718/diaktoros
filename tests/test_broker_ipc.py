@@ -1,5 +1,6 @@
 """Scoped broker IPC: real UDS, strict frames, mocked GitHub REST and optional bwrap."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import _ci_green  # noqa: E402  CI reads as green unless a test says otherwise
 import json
 import os
 from pathlib import Path
@@ -43,7 +44,7 @@ class BrokerIPCTests(unittest.TestCase):
             if path == "/user":
                 return {"login": login, "id": {"read": 1, "review": 2, "fix": 3}[login]}
             return self.pr if method == "GET" else {"id": 9}
-        patch = mock.patch.object(gh, "api", side_effect=api)
+        patch = mock.patch.object(gh, "api", side_effect=_ci_green.green(api))
         patch.start()
         self.addCleanup(patch.stop)
         self.reviews = [{'id': 41, 'state': 'CHANGES_REQUESTED', 'commit_id': HEAD,
@@ -96,9 +97,9 @@ class BrokerIPCTests(unittest.TestCase):
 
     def test_arbitrary_github_response_is_not_relayed(self):
         server = self.start()
-        with mock.patch.object(gh, "api", side_effect=lambda loop, path, method="GET", **kw:
+        with mock.patch.object(gh, "api", side_effect=_ci_green.green(lambda loop, path, method="GET", **kw:
                                ({"login": kw.get("login"), "id": {"read": 1, "review": 2, "fix": 3}[kw.get("login")]}
-                                if path == "/user" else self.pr if method == "GET" else {"id": 9, "token": "DUMMY_SECRET_LEAK"})):
+                                if path == "/user" else self.pr if method == "GET" else {"id": 9, "token": "DUMMY_SECRET_LEAK"}))):
             response = self.send(server, self.review())
         self.assertEqual(response, {"ok": True, "result": {"accepted": True}})
         self.assertNotIn("DUMMY_SECRET_LEAK", json.dumps(response))

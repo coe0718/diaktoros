@@ -42,7 +42,7 @@ The plugin uses token files and Python REST calls; **`gh auth login` is not requ
 
 | Role | User-owned repository | Fine-grained permissions when supported for an organization/resource owner |
 | --- | --- | --- |
-| Owner-reader | Fine-grained selected-repo token is appropriate | `contents: read`, `pull_requests: read`, `repository_hooks: read` |
+| Owner-reader | Fine-grained selected-repo token is appropriate | `contents: read`, `pull_requests: read`, `repository_hooks: read`, `checks: read`, `statuses: read` |
 | Separate collaborator reader | Classic `repo`; cannot administer the owner's hooks, so hook state is **unknown**, not paused | Read-only fine-grained credentials can be used where the account/resource-owner model supports them |
 | Reviewer | Collaborator seats commonly require classic `repo` | `pull_requests: write` |
 | Fixer | Classic `repo` for collaborator seat | `contents: write`, `pull_requests: write` |
@@ -54,7 +54,7 @@ The plugin uses token files and Python REST calls; **`gh auth login` is not requ
 
 Fine-grained PATs have contribution restrictions for repository/outside collaborators; moving a repo into an organization does not automatically make every outside collaborator eligible. Verify account membership and current GitHub token policy. Dedicated accounts with classic `repo` should have access only to repositories the loop needs: classic scope extends to every repo that account can access.
 
-GitHub UI labels are **Contents**, **Pull requests**, **Webhooks** and **Issues**; Metadata read is normally implicit for fine-grained PATs. A reader also used as hook admin needs Webhooks **Read and write**, not just Read-only. Classic `admin:repo_hook` allows hook deletion for rollback/removal; the narrower `write:repo_hook` is not sufficient for that lifecycle. No `workflow`, `admin:org` or `delete_repo` scope is required by the loop; protected-path changes remain a human task.
+GitHub UI labels are **Contents**, **Pull requests**, **Webhooks**, **Issues**, **Checks** and **Commit statuses**. The reader reads a head's checks and statuses so the reviewer sees CI, and the broker refuses an APPROVE while a check has failed or CI cannot be read: a fine-grained reader without Checks and Commit statuses read access blocks every approval; Metadata read is normally implicit for fine-grained PATs. A reader also used as hook admin needs Webhooks **Read and write**, not just Read-only. Classic `admin:repo_hook` allows hook deletion for rollback/removal; the narrower `write:repo_hook` is not sufficient for that lifecycle. No `workflow`, `admin:org` or `delete_repo` scope is required by the loop; protected-path changes remain a human task.
 
 [Operations](operations.md) contains the detailed role/scopes rationale. Organization approval, SSO and branch protections can still reject an operation after token creation; validate them with the actual repository.
 

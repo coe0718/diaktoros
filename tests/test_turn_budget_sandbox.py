@@ -18,6 +18,7 @@ positive budget), and the kill grace is shortened to match, so the whole file ru
 """
 from __future__ import annotations
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import _ci_green  # noqa: E402  CI reads as green unless a test says otherwise
 
 import json
 import os
@@ -153,7 +154,7 @@ def driver(spec_path: str) -> None:
     trusted_turn.KILL_GRACE_S = spec['grace']
     with mock.patch.object(Supervisor, '_spawn', lambda self: spawned.append(time.time())), \
          mock.patch.object(config, 'by_repo', return_value=loop), \
-         mock.patch.object(gh, 'api', side_effect=api), \
+         mock.patch.object(gh, 'api', side_effect=_ci_green.green(api)), \
          mock.patch.object(gh, 'reviews', return_value=verdicts), \
          mock.patch.object(gh, 'pr_files_read', return_value=([{
              'filename': 'src/lib.rs', 'status': 'modified', 'additions': 1, 'deletions': 0,
