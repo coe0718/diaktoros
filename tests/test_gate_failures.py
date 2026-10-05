@@ -1298,7 +1298,9 @@ class GateFailureTest(unittest.TestCase):
     def test_a_failure_building_the_ledger_paths_is_unreadable_not_gone(self):
         key, loop = self.owned_502()
         st = state_mod.LoopState(loop)
-        failure = st.github_failure()
+        failure = dict(st.github_failure(), owned_by="gate-failures:no-such-key")
+        # No ledger holds this key, so only the broken path build separates gone from unreadable.
+        self.assertEqual(gate_failures.owner_state(loop, failure), "gone")
         with mock.patch.object(gate_failures, "fallback_ledger", side_effect=OSError("boom")):
             self.assertEqual(gate_failures.owner_state(loop, failure), "unreadable")
 
