@@ -556,7 +556,7 @@ State is operational data, not additional user configuration. Do not hand-edit l
 
 | Per-loop location under `state_dir` | Purpose |
 |---|---|
-| `locks.json` | Visible copy of seat claims with head, timestamp, budget, and run identity; only the owning run releases its claim. An uncertain run retains its claim until reconciliation. Capacity is enforced by the host ledger. |
+| `locks.json` | Visible copy of seat claims with head, timestamp, budget, and run identity; a run's own release frees only the claim that run wrote, but the gate handoffs (approval, verdict, review request, no-workspace requeue) free the seat's claim for that PR without naming a run, and a claim written before the run field existed carries none, so a release that names a run leaves it to its seat TTL. An uncertain run retains its claim until reconciliation. Capacity is enforced by the host ledger. |
 | `pending.json` | Held turns, including runtime-unavailable and unattended-push-off holds; watchdog drains eligible entries. |
 | `inflight.json` | Same-head reviewer/fixer marks written/cleared by workers and subject to in-flight TTL. |
 | `breach.json` | Durable cap marker: `delivery-pending`, `awaiting-adjudication`, or `adjudicating`; current-head checks protect re-arming. |
