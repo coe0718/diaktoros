@@ -22,6 +22,17 @@ class DenialMessageTests(unittest.TestCase):
             with self.subTest(reason):
                 self.assertEqual(self.msg(broker.BrokerDenied(reason)), "write denied")
 
+    def test_an_unconfirmed_push_never_reads_as_not_published(self):
+        """#351: the push landed, the PR lagged, and the seat was told "write denied"."""
+        from review_loop import safe_push
+        lagged = self.msg(safe_push.PushFailure("published_pr_unverified"))
+        self.assertIn("the branch moved to your commit", lagged)
+        self.assertIn("do not say it was not published", lagged)
+        for outcome in ("unknown", "unchanged", "anything-else"):
+            with self.subTest(outcome):
+                self.assertEqual(self.msg(safe_push.PushFailure(outcome)), broker_ipc.PUSH_UNKNOWN)
+        self.assertNotIn("write denied", lagged)
+
     def test_every_public_reason_is_a_known_constant_string(self):
         for reason in broker_ipc.PUBLIC_DENIALS:
             self.assertNotIn("{", reason)

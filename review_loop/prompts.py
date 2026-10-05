@@ -247,7 +247,9 @@ What to do:
    it names why every write from this turn is denied (for example, the host operator has not
    enabled unattended fixer pushes). Do not retry it and do not publish anything anywhere —
    write your answers as usual, then say plainly in your summary that the fix was **not
-   published** and quote the denial; never describe an unpublished fix as pushed or fixed.
+   published** and quote the denial; never describe an unpublished fix as pushed or fixed. The
+   one exception: a reply saying the push's outcome is **uncertain** or **unknown** means it may
+   have been published — do not retry, and say exactly what the broker said.
 4. Write your answers to a file: for each finding, fixed (with `file:line`), or why it is not a
    defect (with evidence), and what you deliberately did not change and why. At most 8 KiB. They
    are posted as a **public** PR comment: write for anyone who can read the PR.
@@ -338,7 +340,8 @@ What to do:
    Write why to a file and post it with the broker's `issue_comment` command instead, so a person
    can pick it up. Never open a PR that does not fix the issue.
 4. You get one write: `open_pr` or `issue_comment`. If the broker refuses it, that refusal is
-   final: do not retry it, and say plainly in your summary that nothing was published.
+   final: do not retry it, and say plainly in your summary that nothing was published — unless
+   its reply says the outcome is **uncertain** or **unknown**: then say exactly that.
 
 Your turn must end with that write: `open_pr` when it is fixed, `issue_comment` when it is not.
 Nobody can see `/work` or this sandbox, and it is discarded when you exit: there is no person to
