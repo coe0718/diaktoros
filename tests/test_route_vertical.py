@@ -202,6 +202,25 @@ class RouteSubprocess(unittest.TestCase):
                 urlopen.assert_not_called()
             self.assertNotIn("manual reconciliation", st.queue_items("reviewer")[key]["reason"])
 
+    def test_connection_refused_remains_retryable(self):
+        from review_loop import config, gh, routes, state
+        from scripts import watchdog
+        with mock.patch.dict(os.environ, self.env), \
+             mock.patch.object(gh, "pr", return_value=self.pr), \
+             mock.patch.object(gh, "reviews", return_value=[]):
+            loop = config.load_id("widgets")
+            st = state.LoopState(loop)
+            key = "acme/widgets#7"
+            st.queue_add("reviewer", key, HEAD, "url", "original")
+            err = routes.urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+            with mock.patch.object(routes, "target", return_value=("http://127.0.0.1:1/x", b"s")), \
+                 mock.patch.object(routes.config, "guard_network"), \
+                 mock.patch.object(routes.urllib.request, "urlopen", side_effect=err) as urlopen:
+                self.assertEqual(watchdog.drain(loop, st, "reviewer", quiet=True), 0)
+                self.assertEqual(watchdog.drain(loop, st, "reviewer", quiet=True), 0)
+                self.assertEqual(urlopen.call_count, 2)
+            self.assertNotIn("manual reconciliation", st.queue_items("reviewer")[key]["reason"])
+
     def test_stale_head_read_does_not_erase_replacement(self):
         from review_loop import config, gh, state
         from scripts import watchdog
