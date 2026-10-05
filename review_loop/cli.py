@@ -2486,7 +2486,15 @@ def cmd_apply(args) -> int:
         if args.dry_run:
             print(f"  would write the watchdog shim: {doctor.shim_path()}")
         else:
-            print(f"  watchdog shim written: {_write_watchdog_shim()}")
+            try:
+                print(f"  watchdog shim written: {_write_watchdog_shim()}")
+            except OSError as exc:
+                target = exc.filename or doctor.shim_path()
+                print(f"  refused: cannot write the watchdog shim at {target} "
+                      f"({exc.strerror or exc}); make it and its directory writable "
+                      f"(e.g. `chmod u+w -- {shlex.quote(str(target))}`) and re-run "
+                      "`apply --watchdog-shim`")
+                return 1
     if getattr(args, "hooks", False):
         rc = max(rc, _ensure_hooks(loop, getattr(args, "admin_token", "") or None, args.dry_run))
     return rc
