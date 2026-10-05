@@ -154,7 +154,6 @@ def _job_schedule(entry: dict) -> str:
 
 def _schedule_label(entry: dict) -> str:
     """``every 30m`` for an interval schedule, the bare expression for a cron one."""
-    import re
     schedule = _job_schedule(entry)
     return f"every {schedule}" if re.fullmatch(r"\d+[smhd]", schedule) else schedule
 
