@@ -474,8 +474,13 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False) -
             nonlocal attempted
             attempted = True
 
+        def clear_attempt() -> None:
+            nonlocal attempted
+            attempted = False
+
         posted = routes.fire(loop["seats"][seat]["route"], event, payload, tag,
-                             loop.get("host"), on_attempt=mark_attempt)
+                             loop.get("host"), on_attempt=mark_attempt,
+                             on_unsent=clear_attempt)
         # HTTP 2xx only acknowledges webhook receipt: the gate may have emitted [SILENT]
         # because no private runtime exists. Only the gate can remove its observed queue
         # entry, after Supervisor.enqueue succeeds. Never pop a replacement here.

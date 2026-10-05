@@ -16,6 +16,7 @@ import hmac
 import json
 import os
 import pathlib
+import socket
 import tempfile
 import time
 import urllib.error
@@ -357,11 +358,13 @@ def delivery_id(tag: str) -> str:
 
 
 def fire(name: str, event: str, payload: dict, tag: str, host: str | None = None,
-         *, expected: dict | None = None, on_attempt=None, delivery: str | None = None) -> bool:
+         *, expected: dict | None = None, on_attempt=None, on_unsent=None, delivery: str | None = None) -> bool:
     """POST a signed payload; on_attempt marks the boundary before transport I/O.
 
     A false result before that callback is known not delivered; a false result
-    after it may have reached the gateway and must not be blindly replayed.
+    after it may have reached the gateway and must not be blindly replayed. A failure that
+    provably happens before any byte is sent (DNS failure, connection refused) calls
+    ``on_unsent`` so the caller can withdraw the mark and keep the work retryable.
 
     ``delivery`` pins the ``X-GitHub-Delivery`` header. Leave it out for a notice the gateway has
     not seen — a distinct notice is a distinct delivery — and pass the id the first attempt used
@@ -382,9 +385,9 @@ def fire(name: str, event: str, payload: dict, tag: str, host: str | None = None
         "User-Agent": "hermes-review-loop",
     })
     try:
+        config.guard_network(req.full_url)
         if on_attempt is not None:
             on_attempt()
-        config.guard_network(req.full_url)
         with urllib.request.urlopen(req, timeout=20) as resp:
             log(f"fired {name} for {tag} (HTTP {resp.status})")
             return 200 <= resp.status < 300
@@ -392,6 +395,10 @@ def fire(name: str, event: str, payload: dict, tag: str, host: str | None = None
         if isinstance(exc, urllib.error.HTTPError):
             exc.close()   # it holds the response open
         log(f"could not fire {name} for {tag}: {exc}")
+        unsent = (ConnectionRefusedError, socket.gaierror)
+        if on_unsent is not None and not isinstance(exc, urllib.error.HTTPError) and (
+                isinstance(exc, unsent) or isinstance(getattr(exc, "reason", None), unsent)):
+            on_unsent()
         return False
 
 
