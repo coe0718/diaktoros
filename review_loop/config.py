@@ -151,6 +151,11 @@ SETTINGS_SCHEMA: dict = {
                         "description": "Issue-fix turns per local day, 1-1000. Needs the loop's "
                                        "triage.fix_label. Blank = not set here: the loop keeps "
                                        "its own value or the default"},
+    "fixer_check": {"label": "Fixer's always-run check (command)", "type": "str", "default": "",
+                    "description": "One command the fixer runs in the checkout before every "
+                                   "push or issue-fix PR, besides the tests it touched: the "
+                                   "checks CI always runs (chain several with &&). At most "
+                                   "500 characters, one line. Blank = not set here"},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by hermes-review-loop' and "
@@ -307,6 +312,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     # Attribution (#197) moves only when the form names it, like every other knob.
     if _form_value(settings, "attribution") is not None:
         overlaid["attribution"] = d["attribution"]
+    if _form_value(settings, "fixer_check") is not None:
+        overlaid["fixer_check"] = check_fixer_check(d["fixer_check"], "settings")
     # Turn knobs (#309): validated like the CLI/loop file, and only when the form names them.
     for seat in ("reviewer", "fixer"):
         raw_steps = _form_value(settings, f"{seat}_max_steps")
@@ -575,6 +582,7 @@ DEFAULTS: dict = {
     "host": "",
     "unattended_fixer_push": False,  # per-repository; never inherited from plugin settings
     "attribution": True,      # sign what the loop posts (#197); false turns footer and trailer off
+    "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
@@ -766,6 +774,23 @@ def model_calls(steps: int) -> int:
     """Model calls the turn's proxy grants for ``steps``: a margin above them, since a step can
     make more than one call (a retry, a context compression). 24 -> 32, 80 -> 100, 200 -> 250."""
     return steps + max(8, steps // 4)
+
+
+FIXER_CHECK_MAX = 500
+
+
+def check_fixer_check(value, where: str) -> str:
+    """The loop's always-run check: one printable line, at most ``FIXER_CHECK_MAX`` characters,
+    or "" for none. The operator's own text; it reaches the fixer as an instruction."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ConfigError(f"{where}: 'fixer_check' must be a string (one command, or \"\")")
+    value = value.strip()
+    if len(value) > FIXER_CHECK_MAX or not all(ch.isprintable() for ch in value):
+        raise ConfigError(f"{where}: 'fixer_check' must be one printable line of at most "
+                          f"{FIXER_CHECK_MAX} characters (chain commands with &&)")
+    return value
 
 
 def _check_daily_turns(value, what: str, where: str) -> int:
@@ -1537,6 +1562,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if type(loop["unattended_fixer_push"]) is not bool:
         raise ConfigError(f"{where}: 'unattended_fixer_push' must be a JSON boolean; "
                           "only explicit true authorizes unattended fixer pushes")
+    loop["fixer_check"] = check_fixer_check(loop["fixer_check"], where)
     if type(loop["attribution"]) is not bool:
         raise ConfigError(f"{where}: 'attribution' must be a JSON boolean (true signs what the "
                           "loop posts; false turns it off)")

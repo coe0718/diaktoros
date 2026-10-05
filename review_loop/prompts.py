@@ -229,8 +229,9 @@ What to do:
 2. Verify your fix in `/work`: build it and run the tests the finding touches. If the host's
    build environment note at the top says dependencies are unavailable, check it by reading and
    say in your answers that it is unbuilt. Only the touched tests, never the whole suite: this
-   turn has a fixed time budget and the PR's CI runs everything. Read large files by the parts
-   you need (`grep -n`, `sed -n`), not whole.
+   turn has a fixed time budget and the PR's CI runs everything. If an **always-run check**
+   follows this message, run it too and make it pass before you publish. Read large files by
+   the parts you need (`grep -n`, `sed -n`), not whole.
 3. Publish the fix through the broker's push (command below): name every file you changed, added
    or deleted, and give a short commit message — the client builds the manifest (small files
    whole, otherwise a diff against this head, so a large file is fine) and checks the limits
@@ -320,7 +321,8 @@ What to do:
    needs. Verify it: build it and run the tests it touches. If the host's build environment note
    at the top says dependencies are unavailable, check it by reading and say so. Only the touched
    tests, never the whole suite: this turn has a fixed time budget and the PR's CI runs
-   everything. Read large files by the parts you need (`grep -n`, `sed -n`), not whole. Publish
+   everything. If an **always-run check** follows this message, run it too and make it pass
+   before you publish. Read large files by the parts you need (`grep -n`, `sed -n`), not whole. Publish
    once the fix and its tests are done; a turn that runs out of time publishes nothing.
 2. When it is fixed, open the PR through the broker's `open_pr` command (below): name the files
    you changed, a short commit message, a PR title, and a PR description file saying what you
@@ -364,3 +366,17 @@ def render_isolated(role: str, **facts) -> str:
     if _FIELD.search(text):
         raise ValueError("isolated prompt left a field unrendered")
     return text
+
+
+def fixer_check_section(loop: dict) -> str:
+    """The loop's always-run check, as an instruction from the operator (#338 follow-up): the
+    repository checks CI runs on every change, which a fixer running only its touched tests would
+    otherwise miss. Empty when the loop names none. Appended after the rendered template, so a
+    command's own braces (``${VAR}``) are never mistaken for a template field."""
+    command = str(loop.get("fixer_check") or "").strip()
+    if not command:
+        return ""
+    return ("\n\n## Always-run check (set by the loop's operator)\n\n"
+            "CI runs this on every change. Before you publish, run it from `/work` and make it "
+            "pass, along with the tests you touched. If it cannot run in this sandbox, say so in "
+            "your answers or PR description.\n\n```sh\n" + command + "\n```")

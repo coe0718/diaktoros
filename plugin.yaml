@@ -131,6 +131,11 @@ config_schema:
     type: str
     default: ""
     description: "Issue-fix turns per local day, 1-1000. Needs the loop's triage.fix_label. Blank = not set here: the loop keeps its own value or the default"
+  fixer_check:
+    label: "Fixer's always-run check (command)"
+    type: str
+    default: ""
+    description: "One command the fixer runs in the checkout before every push or issue-fix PR, besides the tests it touched: the checks CI always runs (chain several with &&). At most 500 characters, one line. Blank = not set here"
   attribution:
     label: "Sign what the loop posts"
     type: bool

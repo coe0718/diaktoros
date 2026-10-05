@@ -1687,6 +1687,9 @@ def cmd_init(args) -> int:
         "observer": _observer_args(args, args.id or args.repo.split("/")[-1]),
         # Sign what the loop posts (#197): on unless --attribution off or the form says so.
         "attribution": _attribution_arg(args, d["attribution"]),
+        # The checks CI always runs, which a fixer running only its touched tests would miss.
+        "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
+                        else args.fixer_check),
     }
     # A seat-level capacity wins over the loop default, so only write it when it was asked for.
     for seat, value in _init_seat_concurrency(args, d).items():
@@ -2006,6 +2009,9 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     attribution = args.attribution or (
         "on" if _agree("Sign what the loop posts ('Automated by hermes-review-loop')?",
                        d["attribution"], interactive, d["attribution"]) else "off")
+    check = (args.fixer_check if args.fixer_check is not None else
+             _ask("a command the fixer always runs before publishing, the checks CI always runs "
+                  "(blank: none)", d["fixer_check"], interactive))
     admin = (args.admin_token if args.admin_token is not None else
              _ask("hook admin login, to create the repo hooks (blank: add them yourself)", "",
                   interactive))
@@ -2022,6 +2028,7 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
             argv.append(f"--token={login}={pathlib.Path(file).expanduser()}")
     if observer:
         argv.append(f"--observer-profile={observer}")
+    argv.append(f"--fixer-check={check}")
     if admin:
         argv += ["--hooks", f"--admin-token={admin}"]   # created paused; step 5 arms them
     return argv, admin
@@ -2166,6 +2173,15 @@ def cmd_set(args) -> int:
               "attribution": _attribution_arg(args, None)}
     changes = {k: v for k, v in wanted.items()
                if v is not None and v != "" and v != loop.get(k)}
+    # '' is a real value here: it clears the check.
+    if getattr(args, "fixer_check", None) is not None:
+        try:
+            check = config.check_fixer_check(args.fixer_check, "--fixer-check")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if check != (loop.get("fixer_check") or ""):
+            changes["fixer_check"] = check
 
     seats = {seat: dict(cfg) for seat, cfg in loop["seats"].items()}
     seat_changes = {}
@@ -2540,7 +2556,7 @@ def _apply(args) -> int:
 
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
-                "turn_budget_s", "attribution"):
+                "turn_budget_s", "attribution", "fixer_check"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -4154,6 +4170,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--attribution", choices=("on", "off"), default=None,
                           help="sign what the loop posts with 'Automated by hermes-review-loop' "
                                f"(default {'on' if d['attribution'] else 'off'})")
+        init.add_argument("--fixer-check", default=None,
+                          help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
         init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
                           help="seconds one isolated seat turn may run, build and tests included "
                                f"(default {d['turn_budget_s']}; the sandbox is killed past it)")
@@ -4199,6 +4217,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="hook admin login: the hooks are created (paused) as it")
         first.add_argument("--observer-profile", default=None,
                            help="Hermes profile whose chat gets the loop's notices")
+        first.add_argument("--fixer-check", default=None,
+                           help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
         first.add_argument("--attribution", choices=("on", "off"), default=None,
                            help="sign what the loop posts with 'Automated by hermes-review-loop' "
                                 "(default: the plugin setting, on)")
@@ -4301,6 +4321,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--attribution", choices=("on", "off"), default=None,
                             help="sign what the loop posts ('Automated by hermes-review-loop'), "
                                  "or stop")
+        change.add_argument("--fixer-check", default=None, help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none)")
         change.add_argument("--reviewer-turn-budget", type=int, default=None,
                             help="the reviewer seat's own turn budget in seconds")
         change.add_argument("--fixer-turn-budget", type=int, default=None,
