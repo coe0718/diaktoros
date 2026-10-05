@@ -273,8 +273,6 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
     error, status = "", None
     if probe.error:
         error, status = probe.error, probe.status if probe.status is not None else gh.status_of(probe.error)
-    elif armed is None:
-        error, status = f"hook list: {armed_error or 'unreadable'}", gh.status_of(armed_error)
     elif listing_error:
         # The open-PR listing is a read like the others: a 403 there (a token that can see the
         # hooks but not the pulls) is the same blindness, on the same cadence.
@@ -285,7 +283,6 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
     if error:
         said, alerted = _read_failed(
             loop, watch, now, who, error, status,
-            "Hook state unknown: stall scan and queue drain are skipped; " if armed is None else
             "Open PRs unknown: stall scan and queue drain are skipped; "
             if listing_error and not probe.error else "")
         lines.extend(said)
@@ -720,12 +717,17 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
                 held="not re-driven while the loop's hooks are paused; `hermes review-loop arm "
                      f"--loop {loop['id']}` resumes it, or re-deliver it from GitHub"))
         return lines
-    # Armed, or unknown because the hook list could not be read. Unknown is not paused: say so.
+    # Armed, or unknown because the hook list could not be read. Unknown is not paused: sweep
+    # normally and warn once per cooldown — never silence.
+    if armed is None and alert_due(watch, "hooks:unknown", now,
+                                   0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600):
+        lines.append(f"⚠️ Review loop [{loop['id']}] {loop['repo']}: hook state unreadable: "
+                     f"{gh.one_line(armed_error or 'no reason given', 200)} — sweeping anyway")
     # With the hooks confirmed, the open-PR listing is read here, before the health check, so
     # that a listing GitHub refuses counts as a failed read in the same sweep (a /user probe
     # that works must not announce "reads work again" while the listing is still refused).
     listing_errors: list[str] = []
-    prs = gh.open_prs(loop, errors=listing_errors) if armed else None
+    prs = gh.open_prs(loop, errors=listing_errors) if armed is not False else None
     health = None
     if not TEST:
         health = read_health(loop, st, watch, now, armed, armed_error,
@@ -744,21 +746,6 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
     if healed:
         lines.extend(healed)
         st.note("route self-heal: " + " | ".join(line.strip() for line in healed))
-
-    if armed is None:
-        # Blind: hooks unconfirmed, so nothing is drained or scanned (fail closed), but the
-        # observer's retries need no GitHub read and the alert above already said why.
-        if observer.retry(loop, st):
-            log("observer: retried an undelivered notice")
-        observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
-        watch["last_run"] = now_iso()
-        st.watch_save(watch)
-        st.note(f"run: blind — hook list unreadable ({armed_error or 'no reason given'})")
-        if loop.get("state_dir"):                 # gate failures still alert; re-drives wait
-            lines.extend(sweep_gate_failures(
-                gate_failures.loop_ledger(loop), f"[{loop['id']}] {loop['repo']}",
-                0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600, may_redrive=False))
-        return lines
 
     # Re-drive only while GitHub answers: a re-run during an outage would only fail again.
     # (The listing was read above, before the health check.)

@@ -72,11 +72,27 @@ class Health(unittest.TestCase):
         self.assertEqual(len(alert), 1, lines)
         self.assertIn("as rev-coach: HTTP 401", alert[0])
         self.assertIn("token expired or revoked?", alert[0])
-        self.assertIn("stall scan and queue drain are skipped", alert[0])
         heal.assert_called_once()           # route self-heal needs no GitHub read
-        retry.assert_called_once()          # nor do the observer's retries
-        listing.assert_not_called()         # unknown hooks: fail closed on scan and drain
+        listing.assert_called_once()        # unknown hooks: the sweep still runs
         self.assertEqual(self.st.watch()["github_read"]["status"], 401)
+
+    def test_unknown_sweeps_and_warns_once_per_cooldown(self):
+        hooks = (None, "HTTP 403 token cannot read hooks")
+        first, _, listing, _ = self.sweep(hooks=hooks, probe=OK)
+        warn = [line for line in first if "hook state unreadable" in line]
+        self.assertEqual(len(warn), 1, first)
+        self.assertIn("HTTP 403", warn[0])
+        listing.assert_called_once()
+        again, _, listing, _ = self.sweep(hooks=hooks, probe=OK, at=self.now + 15 * 60)
+        self.assertFalse(any("hook state unreadable" in line for line in again), again)
+        listing.assert_called_once()        # still sweeping, just not repeating itself
+        later, *_ = self.sweep(hooks=hooks, probe=OK, at=self.now + 6 * 3600 + 60)
+        self.assertEqual(len([l for l in later if "hook state unreadable" in l]), 1, later)
+
+    def test_active_sweeps_without_the_unknown_warning(self):
+        lines, _, listing, _ = self.sweep(hooks=(True, ""), probe=OK)
+        self.assertFalse(any("hook state unreadable" in line for line in lines), lines)
+        listing.assert_called_once()
 
     def test_paused_is_still_silent_and_reads_nothing_more(self):
         lines, heal, _, _ = self.sweep(hooks=(False, "reviewer, fixer"), probe=DEAD)

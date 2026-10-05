@@ -264,7 +264,14 @@ def route_name_of(url: str) -> str:
 
 def _url_parts(url: str) -> tuple[str, str, str]:
     parts = urllib.parse.urlsplit(str(url or ""))
-    return parts.scheme.lower(), parts.netloc.lower(), parts.path
+    scheme = parts.scheme.lower()
+    # Userinfo is not part of where the request goes, and the scheme's default port is the
+    # same origin as no port: ``https://gw:443/x`` and ``https://user@gw/x`` reach ``https://gw/x``.
+    host = parts.netloc.rpartition("@")[2].lower()
+    default = {"https": ":443", "http": ":80"}.get(scheme)
+    if default and host.endswith(default):
+        host = host[:-len(default)]
+    return scheme, host, parts.path
 
 
 def serves_route_url(hook_url: str, route_url: str) -> bool:
