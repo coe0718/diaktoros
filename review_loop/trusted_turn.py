@@ -81,6 +81,11 @@ class TurnDenied(Exception):
     pass
 
 
+class TurnUnpublished(TurnDenied):
+    """The agent exited cleanly without asking the broker for anything: no write was attempted,
+    so nothing was refused and nothing was written. The worker retries it once, with a nudge."""
+
+
 class TurnBudgetExceeded(subprocess.TimeoutExpired):
     """The sandbox outlived its turn budget and was SIGKILLed (whole process tree).
 
@@ -397,7 +402,9 @@ def _export_committed_source(source_fd: int, destination: Path) -> None:
 # invite a denied write at best, and it is the kind of prompt drift that later reads as permission.
 _COMMON = ('You have no GitHub credentials or network. Never claim a write succeeded without '
            'an ok response. A write can take minutes; if it times out, its outcome is unknown: '
-           'do not retry it, say so.')
+           'do not retry it, say so. Nobody can see `/work`, `/tmp` or this sandbox, and it is '
+           'discarded when you exit: there is no person to hand files to, and work you did not '
+           'publish through the broker is lost. End your turn with your write.')
 TOOLS = {
     'reviewer': ('For your one authorized write use `python -m review_loop.broker_client review '
                  '--verdict APPROVE --body-file /work/review.txt` (or --verdict REQUEST_CHANGES). '
@@ -692,6 +699,9 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                                     rate_limited_until=getattr(inference, 'rate_limited_until',
                                                                None))
                 if result.returncode == 0 and not broker.completed:
+                    if not broker.requests:
+                        raise TurnUnpublished('agent exited without a confirmed scoped write '
+                                              '(it never called the broker)')
                     raise TurnDenied('agent exited without a confirmed scoped write')
                 return result.returncode
             finally:

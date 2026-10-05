@@ -256,7 +256,7 @@ class Worker(Base):
              mock.patch.object(trusted_turn.inference_proxy, "InferenceCapability", Inference), \
              mock.patch.object(contained.Path, "is_socket", return_value=True), \
              mock.patch.object(contained, "run", side_effect=run), \
-             self.assertRaisesRegex(trusted_turn.TurnDenied, "without a confirmed scoped write"):
+             self.assertRaisesRegex(trusted_turn.TurnUnpublished, "never called the broker"):
             trusted_turn.run_turn(self.loop, scope, source=self.root, venv=self.root / "venv",
                                   runtime=self.root / "runtime", rust=self.root / "rust",
                                   upstream="https://model.invalid", key="k", model="m",

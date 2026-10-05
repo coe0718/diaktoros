@@ -263,6 +263,8 @@ class BrokerWrite(Base):
                 self.server._dispatch(raw)
         self.assertEqual((self.pushed, self.posts()), ([], []))
         self.assertIsNone(self.sup.issue_fix_result(self.run_id))
+        # Refused requests still count (#144): the agent tried, so its exit is not retried.
+        self.assertEqual(self.server.requests, 6)
 
     def test_turning_pushes_off_stops_the_write_before_the_record(self):
         self.loop = {**self.loop, "unattended_fixer_push": False}

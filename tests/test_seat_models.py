@@ -447,7 +447,7 @@ class Worker(Base):
     """The production worker hands run_turn the row's own seat resolution, or holds the run."""
 
     def run_seat(self, seat: str, settings: dict | None = None, loop: dict | None = None,
-                 turn=None, pr=None, calls: dict | None = None):
+                 turn=None, pr=None, calls: dict | None = None, prior_error=None):
         runtime = self.root / "runtime.json"
         runtime.write_text(json.dumps(settings or self.settings))
         runtime.chmod(0o600)
@@ -457,7 +457,7 @@ class Worker(Base):
         with ledger.connect(sup.db) as con:
             # A fixer row is launched only when admitted with pushes on (the gate holds it otherwise).
             con.execute("UPDATE runs SET state='launching', owner='w', generation='g', "
-                        "push_admitted=1 WHERE delivery=?", (f"d-{seat}",))
+                        "push_admitted=1, error=? WHERE delivery=?", (prior_error, f"d-{seat}"))
             run_id = con.execute("SELECT id FROM runs WHERE delivery=?", (f"d-{seat}",)).fetchone()[0]
         seen = {}
 
@@ -527,6 +527,28 @@ class Worker(Base):
         _, row, _ = self.run_seat("adjudicator", turn=exits(1), calls=calls)
         self.assertEqual(row, ("waiting", "turn exited with status 1"))
         self.assertEqual(len(calls["breach_resume"]), 1, "the marker is handed back for the retry")
+
+    def test_an_exit_that_never_called_the_broker_is_retried_once_with_a_nudge(self):
+        """#144: a turn that finished its work but never published (it never called the broker)
+        waits for one retry, whose prompt opens with the nudge; a second such exit fails."""
+        from review_loop import run_supervisor
+
+        def unpublished(kw):
+            raise trusted_turn.TurnUnpublished(run_supervisor.UNPUBLISHED
+                                               + " (it never called the broker)")
+        for seat in ("fixer", "reviewer"):
+            with self.subTest(seat=seat):
+                seen, row, _ = self.run_seat(seat, turn=unpublished)
+                self.assertEqual(seen["prompt"], "PROMPT")
+                self.assertEqual(row[0], "waiting")
+                self.assertIn("never called the broker", row[1])
+                seen, row, _ = self.run_seat(seat, turn=unpublished, prior_error=row[1])
+                self.assertEqual(seen["prompt"], run_supervisor.PUBLISH_NUDGE + "PROMPT")
+                self.assertEqual(row[0], "failed")
+        # An attempt that called the broker (a refused write) is never retried by this path.
+        _, row, _ = self.run_seat("reviewer", turn=lambda kw: (_ for _ in ()).throw(
+            trusted_turn.TurnDenied(run_supervisor.UNPUBLISHED)))
+        self.assertEqual(row[0], "failed")
 
     def test_each_seat_turn_runs_with_its_own_model_and_key(self):
         expected = {"reviewer": ("vendor/rev-model", KEYS["rev"], "openrouter.test"),
