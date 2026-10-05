@@ -17,6 +17,33 @@ class ReceiptDenied(ValueError):
     pass
 
 
+class ReviewedPrIneligible(ReceiptDenied):
+    """The review POST succeeded, then the PR read back closed, draft or retargeted.
+
+    Final: the review exists on GitHub, so the run is never retried or replayed.
+    """
+    OUTCOME = 'reviewed_pr_ineligible'
+
+    def __init__(self, reason):
+        super().__init__(f'{self.OUTCOME}: {reason}')
+        self.reason = reason
+
+
+def ineligibility(pr, loop, number):
+    """Why an eligible PR no longer is (closed, draft, retargeted to X), or ''."""
+    if not isinstance(pr, dict) or pr.get('number') != number:
+        return ''
+    if pr.get('state') != 'open':
+        return 'closed'
+    if pr.get('draft') is not False:
+        return 'draft'
+    base = pr.get('base')
+    ref = base.get('ref') if isinstance(base, dict) else None
+    if isinstance(ref, str) and ref != loop.get('base'):
+        return f'retargeted to {ref}'
+    return ''
+
+
 def generation_for(pr, loop, number, head):
     """Resolve an unstacked generation; reject unknown or retargeted bases."""
     if not isinstance(pr, dict) or type(pr.get('number')) is not int or pr['number'] != number or pr.get('state') != 'open' or pr.get('draft') is not False:
@@ -85,6 +112,18 @@ class ReceiptLedger:
                                             principal_id, time.time()))
             con.execute('COMMIT')
 
+    def mark_posted(self, review_id, verdict, principal_id):
+        """The review exists on GitHub but the PR became ineligible under it: not confirmed."""
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            changed = con.execute('UPDATE review_receipts SET state=?,review_id=?,verdict=? '
+                'WHERE run_id=? AND state=? AND generation=? AND principal_id=?',
+                ('posted', review_id, verdict, self.run_id, 'claimed',
+                 self.generation, principal_id)).rowcount
+            if changed != 1:
+                raise ReceiptDenied('receipt claim unavailable')
+            con.execute('COMMIT')
+
     def confirm(self, review_id, verdict, principal_id):
         if type(review_id) is not int or review_id <= 0:
             raise ReceiptDenied('invalid review ID')
@@ -138,7 +177,12 @@ def submit(loop, scope, ledger, verdict, body):
             readback['user']['id'] != principal_id or
             str(readback['user'].get('login', '')).casefold() != login.casefold()):
         raise ReceiptDenied('exact-ID readback mismatch')
-    if generation_for(gh.api(loop, path, login=reader), loop, scope.number, scope.head) != ledger.generation:
+    final = gh.api(loop, path, login=reader)
+    reason = ineligibility(final, loop, scope.number)
+    if reason:
+        ledger.mark_posted(review_id, expected[verdict], principal_id)
+        raise ReviewedPrIneligible(reason)
+    if generation_for(final, loop, scope.number, scope.head) != ledger.generation:
         raise ReceiptDenied('generation changed after POST')
     ledger.confirm(review_id, expected[verdict], principal_id)
     broker._audit(loop, scope.repo, scope.number, scope.head, scope.branch,

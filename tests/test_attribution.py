@@ -222,7 +222,8 @@ class ReceiptedReview(unittest.TestCase):
             if path.endswith("/reviews/77"):
                 return {"id": 77, "state": "APPROVED", "commit_id": HEAD,
                         "user": {"id": 5, "login": "rev"}}
-            return {"number": 7}
+            # The PR as GitHub reports it: open and not a draft (the post-write eligibility read).
+            return {"number": 7, "state": "open", "draft": False}
         for target, kwargs in ((gh, {"side_effect": api}),):
             p = mock.patch.object(target, "api", **kwargs)
             p.start()

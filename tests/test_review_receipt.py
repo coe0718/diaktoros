@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from review_loop import broker_ipc, gh, ledger, review_receipt
+from review_loop import broker, broker_ipc, gh, ledger, review_receipt
 from review_loop.run_supervisor import Supervisor
 
 HEAD = 'a' * 40
@@ -63,6 +63,14 @@ class ReceiptTests(unittest.TestCase):
             # way, but they are not the same event -- a draft can be marked
             # ready again and a close cannot.
             if self.mode == 'closed-after-post' and self.posts:
+                pr = copy.deepcopy(self.pr)
+                pr['state'] = 'closed'
+                return pr
+            if self.mode == 'retarget-after-post' and self.posts:
+                pr = copy.deepcopy(self.pr)
+                pr['base']['ref'] = 'develop'
+                return pr
+            if self.mode == 'closed-before-post' and not self.posts:
                 pr = copy.deepcopy(self.pr)
                 pr['state'] = 'closed'
                 return pr
@@ -148,11 +156,44 @@ class ReceiptTests(unittest.TestCase):
         self.assertTrue(reason.strip(), 'a refusal must name its own cause')
         return reason
 
-    def test_a_pr_that_closes_during_the_write_is_refused(self):
-        self.deny_during_the_write('closed-after-post')
+    def assert_ineligible(self, mode, reason):
+        got = self.deny_during_the_write(mode)
+        self.assertEqual(got, 'reviewed_pr_ineligible: ' + reason)
+        self.assertEqual(self.receipt(), ('posted', 19))
+        # Final: a replay is refused and nothing is posted again.
+        with mock.patch.object(gh, 'api', side_effect=self.api):
+            with self.assertRaises((sqlite3.IntegrityError, review_receipt.ReceiptDenied, broker.BrokerDenied)):
+                review_receipt.submit(self.loop, self.scope, self.ledger, 'APPROVE', 'again')
+        self.assertEqual(self.posts, 1)
+        # The supervisor records it and retry refuses the run.
+        self.sup.record_review_ineligible(self.run_id, reason)
+        with ledger.connect(self.sup.db) as con:
+            con.execute("UPDATE runs SET state='failed' WHERE id=?", (self.run_id,))
+        with self.assertRaisesRegex(ValueError, 'never replayed'):
+            self.sup.retry(self.run_id)
 
-    def test_a_pr_that_goes_draft_during_the_write_is_refused(self):
-        self.deny_during_the_write('draft-after-post')
+    def test_a_pr_that_closes_during_the_write_is_named(self):
+        self.assert_ineligible('closed-after-post', 'closed')
+
+    def test_a_pr_that_goes_draft_during_the_write_is_named(self):
+        self.assert_ineligible('draft-after-post', 'draft')
+
+    def test_a_pr_retargeted_during_the_write_is_named(self):
+        self.assert_ineligible('retarget-after-post', 'retargeted to develop')
+
+    def test_unknown_state_before_the_write_keeps_the_old_error(self):
+        self.mode = 'closed-before-post'
+        with mock.patch.object(gh, 'api', side_effect=self.api):
+            with self.assertRaisesRegex(broker.BrokerDenied,
+                                        'PR identity, state or draft status changed') as c:
+                review_receipt.submit(self.loop, self.scope, self.ledger, 'APPROVE', 'reviewed')
+        self.assertNotIsInstance(c.exception, review_receipt.ReviewedPrIneligible)
+        self.assertEqual(self.posts, 0)
+        self.assertIsNone(self.receipt())
+
+    def test_a_base_sha_move_after_the_write_is_not_ineligible(self):
+        self.deny_during_the_write('stale-after-post')
+        self.assertEqual(self.receipt(), ('claimed', None))
 
     def test_a_pr_retargeted_during_the_write_is_refused(self):
         self.deny_during_the_write('stale-after-post')
@@ -176,7 +217,7 @@ class ReceiptTests(unittest.TestCase):
         with mock.patch.object(gh, 'api', side_effect=self.api):
             with self.assertRaises((review_receipt.ReceiptDenied, TimeoutError)):
                 review_receipt.submit(self.loop, self.scope, self.ledger, 'APPROVE', 'reviewed')
-            with self.assertRaises((sqlite3.IntegrityError, review_receipt.ReceiptDenied)):
+            with self.assertRaises((sqlite3.IntegrityError, review_receipt.ReceiptDenied, broker.BrokerDenied)):
                 review_receipt.submit(self.loop, self.scope, self.ledger, 'APPROVE', 'again')
         self.assertEqual(self.posts, 1)
         self.assertEqual(self.receipt(), ('claimed', None))
