@@ -30,6 +30,9 @@ MAX_MESSAGE = 240
 # same path rules as a whole file, and only regular files may be added, changed or deleted.
 MAX_PATCH = 512 * 1024
 MAX_PATCH_PATHS = 64
+# GitHub moves a PR's head a few seconds after its branch (#351: 4 s), so the PR read right after
+# a confirmed push can still show the old head. Re-read on "stale PR head" only, after each delay.
+PR_HEAD_LAG_DELAYS = (1, 2, 4, 8, 8)
 _REGULAR = ("100644", "100755")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 SEGMENT = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
@@ -398,14 +401,10 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
             observed = None
         outcome = "published" if new_head is not None and observed == new_head else ("unchanged" if observed == head else "unknown")
         if outcome == "published" and new_head is not None:
-            try:
-                # Git's lease verifies only the ref. The PR may have closed during
-                # receive-pack without changing that ref; never acknowledge it as
-                # a successful authorized push in that case.
-                broker.authorize(loop, repo=repo, number=number, head=new_head,
-                                 role=role, branch=branch, operation="push",
-                                 require_verdict=False)
-            except Exception:
+            # Git's lease verifies only the ref. The PR may have closed during receive-pack
+            # without changing that ref; never acknowledge it as a successful authorized push in
+            # that case. A PR that still shows the old head is GitHub catching up: wait for it.
+            if not _pr_follows(loop, repo, number, new_head, role, branch):
                 outcome = "published_pr_unverified"
         _audit(loop, {**receipt, "new_head": new_head, "phase": "reconciled",
                       "outcome": outcome, "observed_head": observed})
@@ -418,6 +417,25 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
             f"Git ref update not confirmed ({outcome})")
         raise failure from error
     return {**receipt, "new_head": new_head, "outcome": outcome}
+
+
+def _pr_follows(loop: dict, repo: str, number: int, new_head: str, role: str, branch: str,
+                sleep=None) -> bool:
+    """Whether the PR, re-authorized live, is at ``new_head``. Only "stale PR head" is re-read
+    (the PR lagging its branch); any other refusal is final at once."""
+    for delay in (0, *PR_HEAD_LAG_DELAYS):
+        if delay:
+            (sleep or time.sleep)(delay)
+        try:
+            broker.authorize(loop, repo=repo, number=number, head=new_head, role=role,
+                             branch=branch, operation="push", require_verdict=False)
+            return True
+        except broker.BrokerDenied as exc:
+            if str(exc) != "stale PR head":
+                return False
+        except Exception:
+            return False
+    return False
 
 
 def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
