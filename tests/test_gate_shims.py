@@ -1026,7 +1026,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(rc, 1, out)
         self.assertIn("hook 41", out)
         self.assertIn("does not route", out)
-        self.assertIn("hermes review-loop apply --loop widgets", out)
+        self.assertIn("hermes review-loop apply --hooks --loop widgets", out)
         # Exact URLs are armed, and `arm` says so with rc 0.
         self.github_with_hook(self.REVIEW_URL, hook_id=41, events=("pull_request",),
                               more=[(42, self.FIX_URL, True, ("pull_request_review",))])
