@@ -816,6 +816,7 @@ def group_seat_identity() -> None:
     parser = parser_for(form)          # the credentials below are named by this form
     empty_pat = TMP / "empty.pat"
     empty_pat.write_text("")
+    empty_pat.chmod(0o600)             # private, so the refusal is about its emptiness
     for label, extra, expect in (
             ("no reader named", [], "--read-token LOGIN names the account"),
             ("no token mappings", ["--read-token", READ_LOGIN], "has no entry in 'tokens'"),
@@ -825,7 +826,7 @@ def group_seat_identity() -> None:
             ("a token file that is not there", [*READER_ARGS,
                                                 "--token", f"{REVIEWER}={SEAT_PATS[0]}",
                                                 "--token", f"{FIXER}={TMP / 'missing.pat'}"],
-             "token file for 'dev-fixer' is missing"),
+             f"--token {FIXER}: {TMP / 'missing.pat'} does not exist"),
             ("a token file that is empty", [*READER_ARGS,
                                             "--token", f"{REVIEWER}={SEAT_PATS[0]}",
                                             "--token", f"{FIXER}={empty_pat}"],

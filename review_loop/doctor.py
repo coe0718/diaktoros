@@ -129,11 +129,12 @@ def watchdog_job_name(loop: dict) -> str:
     return SHARED_JOB_NAME
 
 
-def cron_fix(loop: dict) -> str:
+def cron_fix(loop: dict, deliver: str = "local") -> str:
     """The scheduler's own command for the watchdog job. Never ``init``: it refuses a loop that
-    already exists, and the job is the scheduler's to create."""
+    already exists, and the job is the scheduler's to create. ``deliver`` keeps a known target."""
+    import shlex
     return (f"`hermes cron create 15m --name \"{watchdog_job_name(loop)}\" --no-agent "
-            f"--script {SHIM_NAME} --deliver local`")
+            f"--script {SHIM_NAME} --deliver {shlex.quote(deliver or 'local')}`")
 
 
 def _job_schedule(entry: dict) -> str:
@@ -181,13 +182,13 @@ def migration_fix(loop: dict, shim_jobs: list) -> str:
             f"\"{name}\" --no-agent --script {SHIM_NAME} --deliver <target>`")
 
 
-def cron_replace_fix(loop: dict, job_ids) -> str:
+def cron_replace_fix(loop: dict, job_ids, deliver: str = "local") -> str:
     """For a watchdog job that exists but cannot run as it should: remove it (every one, by its
     exact id), then create it. ``hermes cron create`` only appends — it never replaces a job of
     the same name — so printing a bare create here would leave the broken job answering beside
     a duplicate that fires the same shim."""
     removes = ", then ".join(f"`hermes cron remove {job_id}`" for job_id in job_ids)
-    return f"{removes}, then {cron_fix(loop)}"
+    return f"{removes}, then {cron_fix(loop, deliver)}"
 
 
 def shim_fix(loop: dict) -> str:
@@ -1313,7 +1314,7 @@ def check_cron_job(loop: dict) -> Check:
         return Check("cron:job", MISMATCH,
                      f"{len(named)} jobs are named {wanted!r} ({', '.join(named)}) — each one "
                      "fires the watchdog",
-                     cron_replace_fix(loop, named))
+                     cron_replace_fix(loop, named, _job_deliver(job)))
     # More than one shim job total (a leftover legacy job beside the shared one) is the same
     # N-sweeps-per-tick problem: name the extras so they can be removed.
     if len(shim_jobs) > 1:
@@ -1325,7 +1326,7 @@ def check_cron_job(loop: dict) -> Check:
                      f"({', '.join(str(e.get('id') or '?') for e in shim_jobs)}) "
                      "— each sweeps every loop (N² sweeps per tick); keep one",
                      removals)
-    replace = cron_replace_fix(loop, [job_id])
+    replace = cron_replace_fix(loop, [job_id], _job_deliver(job))
     # Match the scheduler's runnable predicate: a stored pause timestamp blocks firing even
     # when enabled=True and the display state has already been normalized to "scheduled".
     if (not job.get("enabled", True) or job.get("state") in ("paused", "completed")

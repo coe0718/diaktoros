@@ -341,6 +341,8 @@ def write_loop() -> dict:
     (TMP / "rev.pat").write_text("token-reviewer\n")
     (TMP / "fix.pat").write_text("token-fixer\n")
     READ_PAT.write_text("token-reader\n")
+    for pat in (TMP / "rev.pat", TMP / "fix.pat", READ_PAT):
+        pat.chmod(0o600)     # `init --token` refuses a group/other-readable file (#70)
     return cfg
 
 
