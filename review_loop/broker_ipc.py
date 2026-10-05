@@ -146,6 +146,32 @@ class ProtocolError(Exception):
     """Malformed or out-of-scope request, without leaking host details."""
 
 
+# Fixed, non-sensitive pre-write refusal reasons that are safe to show the agent so it can
+# fix and retry. Anything else (tokens, identities, GitHub results) stays "write denied".
+PUBLIC_DENIALS = frozenset({
+    "file too large", "manifest too large", "patch too large", "unsafe file path",
+    "repository control file", "invalid push manifest", "invalid push message or file count",
+    "invalid base64 content", "patch content mismatch", "file content mismatch",
+    "invalid file entry", "duplicate file path", "file and directory conflict",
+    "unexpected diff record", "patch changes a nonregular file", "patch changes a file mode",
+    "push has no changes", "patch changes too many files",
+    "manifest base differs from scoped PR head",
+    "manifest base differs from the scoped base commit",
+    "base commit is not on the base branch", "fetched PR branch moved", "PR branch moved",
+    "stale PR head", "unsafe branch ref", "manifest traverses tracked file or symlink",
+    "manifest replaces tracked directory", "manifest replaces nonregular file",
+    "patch does not apply to the scoped head", "invalid review verdict or empty body",
+})
+
+
+def _denial_message(exc: Exception) -> str:
+    if isinstance(exc, ProtocolError):
+        return str(exc)
+    if isinstance(exc, broker.BrokerDenied) and str(exc) in PUBLIC_DENIALS:
+        return "write denied: " + str(exc)
+    return "write denied"
+
+
 def _read_line(conn: socket.socket, limit: int) -> bytes:
     data = bytearray()
     while len(data) <= limit:
@@ -263,7 +289,7 @@ class RunBroker:
                     if self.answers_outcome:
                         response["result"]["answers"] = self.answers_outcome
                 except (ProtocolError, broker.BrokerDenied, ValueError, UnicodeError, TimeoutError) as exc:
-                    response = {"ok": False, "error": str(exc) if isinstance(exc, ProtocolError) else "write denied"}
+                    response = {"ok": False, "error": _denial_message(exc)}
                 except Exception:
                     # A GitHub, filesystem, or audit failure cannot expose paths or credentials.
                     response = {"ok": False, "error": "write failed"}
