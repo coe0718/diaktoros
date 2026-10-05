@@ -164,9 +164,26 @@ PUBLIC_DENIALS = frozenset({
 })
 
 
+# A push whose attempt began but did not finish confirmed (#351): never "write denied", which
+# reads as "nothing was published" — the branch may well hold the commit. Host-worded, by outcome.
+PUSH_UNCONFIRMED = {
+    "published_pr_unverified": (
+        "push outcome uncertain: the branch moved to your commit, but the host could not confirm "
+        "the PR at it, so no review request or answers will be sent from this turn. Do not retry. "
+        "In your summary, say the push may be published and its outcome is being checked by the "
+        "host; do not say it was not published."),
+}
+PUSH_UNKNOWN = ("push outcome unknown: the host could not confirm whether the branch moved, so "
+                "nothing more will be written from this turn. Do not retry. In your summary, say the "
+                "push's outcome is unknown and being checked by the host.")
+
+
 def _denial_message(exc: Exception) -> str:
     if isinstance(exc, ProtocolError):
         return str(exc)
+    from . import safe_push
+    if isinstance(exc, safe_push.PushFailure):
+        return PUSH_UNCONFIRMED.get(exc.outcome, PUSH_UNKNOWN)
     if isinstance(exc, broker.BrokerDenied) and str(exc) in PUBLIC_DENIALS:
         return "write denied: " + str(exc)
     return "write denied"

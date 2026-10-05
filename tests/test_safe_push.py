@@ -213,6 +213,52 @@ class SafePushTests(unittest.TestCase):
             self.assertEqual(self.push()["outcome"], "published")
         self.assertEqual(self.fake.branch_head, NEW_HEAD)
 
+    def test_a_pr_that_lags_its_branch_is_waited_for_not_quarantined(self):
+        """#351: GitHub moved the PR's head 4 s after the branch. The push was fine."""
+        slept = []
+
+        def lagging(*args, before_push):
+            before_push(NEW_HEAD)
+            self.fake.branch_head = NEW_HEAD      # the PR still shows HEAD
+            return NEW_HEAD
+
+        def sleep(seconds):
+            slept.append(seconds)
+            if len(slept) == 2:
+                self.fake.pr_head = NEW_HEAD      # GitHub catches up
+        with mock.patch.object(safe_push, "_git_cas", side_effect=lagging), \
+             mock.patch.object(safe_push.time, "sleep", side_effect=sleep):
+            self.assertEqual(self.push()["outcome"], "published")
+        self.assertEqual(slept, list(safe_push.PR_HEAD_LAG_DELAYS[:2]))
+        self.assertEqual(self.records()[-1]["outcome"], "published")
+
+    def test_a_pr_that_never_follows_is_quarantined_after_the_bounded_wait(self):
+        slept = []
+
+        def lagging(*args, before_push):
+            before_push(NEW_HEAD)
+            self.fake.branch_head = NEW_HEAD
+            return NEW_HEAD
+        with mock.patch.object(safe_push, "_git_cas", side_effect=lagging), \
+             mock.patch.object(safe_push.time, "sleep", side_effect=slept.append), \
+             self.assertRaises(broker.BrokerDenied):
+            self.push()
+        self.assertEqual(slept, list(safe_push.PR_HEAD_LAG_DELAYS))
+        self.assertLessEqual(sum(slept), 30)
+        self.assertEqual(self.records()[-1]["outcome"], "published_pr_unverified")
+
+    def test_a_closed_pr_is_not_waited_for(self):
+        def closed_after_push(*args, before_push):
+            before_push(NEW_HEAD)
+            self.fake.branch_head = NEW_HEAD
+            self.fake.pr_state = "closed"         # and its head never follows
+            return NEW_HEAD
+        with mock.patch.object(safe_push, "_git_cas", side_effect=closed_after_push), \
+             mock.patch.object(safe_push.time, "sleep", side_effect=self.fail), \
+             self.assertRaises(broker.BrokerDenied):
+            self.push()
+        self.assertEqual(self.records()[-1]["outcome"], "published_pr_unverified")
+
     def test_pr_closes_during_receive_pack_not_acknowledged(self):
         def closed_after_push(*args, before_push):
             before_push(NEW_HEAD)
