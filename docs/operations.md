@@ -144,7 +144,9 @@ commit status at the head has failed (a re-run that passed replaces its failure)
 or while CI cannot be read. A **cancelled** check (GitHub cancelled the run, for example when no
 hosted runner could be acquired) is not the change's fault: the reviewer is told not to list it
 as a finding, and the review itself waits for the re-run, whether or not `review_after_ci` is
-on, sending one notice that the checks need re-running. The loop cannot re-run CI itself. The refusal spends nothing, so the reviewer's REQUEST_CHANGES in the same turn
+on, sending one notice that the checks need re-running. The loop cannot re-run CI itself.
+With `required_checks` set, all of the above applies to those checks only: an optional check
+(a bot, a coverage upload) is shown to the reviewer but never blocks, holds or wakes anyone. The refusal spends nothing, so the reviewer's REQUEST_CHANGES in the same turn
 goes through. Checks still running don't block an approval. With `review_after_ci` on, a review
 doesn't start while the head's checks are running: it waits (up to an hour), so it sees them
 finish.

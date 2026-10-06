@@ -200,7 +200,8 @@ What to do:
    REQUEST_CHANGES, naming each failed check. The broker refuses an APPROVE while any check at
    the head has failed, was cancelled, or while CI cannot be read. A **cancelled** check needs a
    re-run, not a fix: never list it as a finding. A check still running is not a pass: say
-   which ones you did not see finish.
+   which ones you did not see finish. When the section names **required** checks, only those
+   gate the verdict; an optional check's failure is context, not a finding on its own.
 5. You get exactly one review write. The broker pins it to head {head}; if the head moved, the
    write is refused — say so rather than retrying. A verdict other than APPROVE or
    REQUEST_CHANGES is refused before anything is written: resubmit with a real verdict.

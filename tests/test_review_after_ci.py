@@ -72,7 +72,7 @@ class Hold(sm.Worker):
         before = time.time()
         seen, row, reads, notify = self.held()
         self.assertEqual(seen, {}, "no turn launched")
-        self.assertEqual(row, ("waiting", f"{CI_HOLD} on {sm.HEAD[:7]} — 1 check(s) still running"))
+        self.assertEqual(row, ("waiting", f"{CI_HOLD} on {sm.HEAD[:7]} — 1 check(s) still running or not reported"))
         self.assertEqual(reads, [sm.HEAD])
         notify.assert_not_called()                                  # no notice per poll
         with ledger.connect(self.root / "ledger.sqlite") as con:

@@ -1702,6 +1702,10 @@ def cmd_init(args) -> int:
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
                         else args.fixer_check),
+        # The checks that gate an approval (#368); none named = every check gates.
+        "required_checks": (config.split_check_names(d["required_checks"])
+                            if getattr(args, "required_check", None) is None
+                            else [name for name in args.required_check if name.strip()]),
     }
     # A seat-level capacity wins over the loop default, so only write it when it was asked for.
     for seat, value in _init_seat_concurrency(args, d).items():
@@ -2050,6 +2054,11 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     if observer:
         argv.append(f"--observer-profile={observer}")
     argv.append(f"--fixer-check={check}")
+    required = (args.required_check if args.required_check is not None else
+                config.split_check_names(_ask(
+                    "the CI checks that must pass before an approval, comma-separated, exactly as "
+                    "GitHub names them (blank: every check)", d["required_checks"], interactive)))
+    argv += [f"--required-check={name}" for name in required]
     if admin:
         argv += ["--hooks", f"--admin-token={admin}"]   # created paused; step 5 arms them
     return argv, admin
@@ -2195,6 +2204,16 @@ def cmd_set(args) -> int:
               "review_after_ci": _on_off(args, "review_after_ci", None)}
     changes = {k: v for k, v in wanted.items()
                if v is not None and v != "" and v != loop.get(k)}
+    if getattr(args, "required_check", None) is not None or getattr(args, "no_required_checks",
+                                                                     False):
+        try:
+            names = config.check_required_checks(
+                [] if args.no_required_checks else args.required_check, "--required-check")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if names != (loop.get("required_checks") or []):
+            changes["required_checks"] = names
     # '' is a real value here: it clears the check.
     if getattr(args, "fixer_check", None) is not None:
         try:
@@ -2586,7 +2605,8 @@ def _apply(args) -> int:
 
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
-                "turn_budget_s", "attribution", "fixer_check", "review_after_ci"):
+                "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
+                "required_checks"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -4251,6 +4271,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--attribution", choices=("on", "off"), default=None,
                           help="sign what the loop posts with 'Automated by hermes-review-loop' "
                                f"(default {'on' if d['attribution'] else 'off'})")
+        init.add_argument("--required-check", action="append", default=None,
+                          help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         init.add_argument("--fixer-check", default=None,
                           help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
         init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
@@ -4298,6 +4320,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="hook admin login: the hooks are created (paused) as it")
         first.add_argument("--observer-profile", default=None,
                            help="Hermes profile whose chat gets the loop's notices")
+        first.add_argument("--required-check", action="append", default=None,
+                           help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         first.add_argument("--fixer-check", default=None,
                            help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
         first.add_argument("--review-after-ci", choices=("on", "off"), default=None,
@@ -4421,6 +4445,11 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                             help="start each review after the head's checks finish (up to an hour), "
                                  "or start at once")
+        required = change.add_mutually_exclusive_group()
+        required.add_argument("--required-check", action="append", default=None,
+                              help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates); replaces the list")
+        required.add_argument("--no-required-checks", action="store_true",
+                              help="clear the list: every check gates again")
         change.add_argument("--fixer-check", default=None, help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none)")
         change.add_argument("--reviewer-turn-budget", type=int, default=None,
                             help="the reviewer seat's own turn budget in seconds")
