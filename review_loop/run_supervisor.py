@@ -2823,6 +2823,21 @@ class Supervisor:
                 # review_after_ci (#241), even beside a failed one. A failed check never holds
                 # by itself: the review says why.
                 from . import ci
+                # A PR that conflicts with its base gets no pull_request CI from GitHub, so the
+                # required checks could never report: hold, nothing spent. The merge push makes
+                # a new head that supersedes this row. unknown/null mergeability is no conflict.
+                queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
+                                login=loop["read_token"])
+                if (isinstance(queued, dict) and queued.get("mergeable_state") == "dirty"
+                        and isinstance(queued.get("head"), dict)
+                        and queued["head"].get("sha") == row["head"]):
+                    base = queued.get("base")
+                    base = str(base.get("ref") or "") if isinstance(base, dict) else ""
+                    paced_until = time.time() + CI_POLL_S
+                    error = (f"{CI_HOLD} on {row['head'][:7]} — conflicts with "
+                             f"{base or 'its base'} — GitHub runs no CI on it")[:600]
+                    self.held_for_ci = True
+                    return
                 after_ci = config.review_after_ci(loop)
                 # Only the required checks hold it, when the loop names them (#368).
                 checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
