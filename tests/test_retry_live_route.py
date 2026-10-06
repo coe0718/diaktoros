@@ -357,13 +357,13 @@ class LiveRouteRetry(unittest.TestCase):
         return result.stderr
 
     def cli(self, command, **args):
-        """``hermes review-loop COMMAND`` — the plugin's handler, without launching Hermes."""
+        """``hermes dk COMMAND`` — the plugin's handler, without launching Hermes."""
         code = ('import argparse, sys\nsys.path.insert(0, %r)\nfrom review_loop import cli\n'
                 'sys.exit(cli.cmd_%s(argparse.Namespace(**%r)))' % (str(self.plugin), command, args))
         result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
                                 env=self.env, cwd=str(self.plugin), timeout=60)
         flags = ' '.join(f'--{k} {v}' for k, v in args.items() if v is not None)
-        self.say(f'hermes review-loop {command} {flags}', result.stdout + result.stderr)
+        self.say(f'hermes dk {command} {flags}', result.stdout + result.stderr)
         return result
 
     def supervisor_status(self):
@@ -486,15 +486,15 @@ class LiveRouteRetry(unittest.TestCase):
         self.assertEqual(row['error'], f'retry limit ({run_supervisor.MAX_RETRIES} attempts): '
                                        'turn exited with status 1')
         notice = self.watchdog()
-        self.assertIn('Review-loop worker failed', notice)
+        self.assertIn('Diaktoros worker failed', notice)
         self.assertIn('retry limit (4 attempts): turn exited with status 1', notice)
         self.assertIn('Rate limit reached for fixture-model', notice)
         self.assertIn('No external write was made (4 failed attempts on record)', notice)
-        self.assertIn('hermes review-loop retry --loop widgets --pr 7 --seat reviewer', notice)
+        self.assertIn('hermes dk retry --loop widgets --pr 7 --seat reviewer', notice)
         explained = self.cli('explain', loop='widgets', pr=7)
         self.assertIn('blocked:    isolated reviewer turn failed at this head — retry limit',
                       explained.stdout)
-        self.assertIn('next:       no external write — re-arm: hermes review-loop retry '
+        self.assertIn('next:       no external write — re-arm: hermes dk retry '
                       '--loop widgets --pr 7 --seat reviewer', explained.stdout)
         self.assertNotIn('Review-loop worker', self.watchdog(), 'one notice per failure')
         self.assertEqual(len(self.launches()), 4)
@@ -556,7 +556,7 @@ class LiveRouteRetry(unittest.TestCase):
         self.assertIn('reconcile', refused.stdout)
         # The cron sweep neither relaunches it nor reports it as write-free.
         notice = self.watchdog()
-        self.assertIn('Review-loop worker failed', notice)
+        self.assertIn('Diaktoros worker failed', notice)
         self.assertIn('Possible external write', notice)
         self.assertNotIn('No external write was made', notice)
         # explain: the run is final and its review is on GitHub; it holds nothing.

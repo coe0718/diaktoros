@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import re
 
-REPO_URL = "https://github.com/coe0718/hermes-review-loop"
-TRAILER = f"Automated-By: hermes-review-loop ({REPO_URL})"
+NAME = "Diaktoros"
+REPO_URL = "https://github.com/coe0718/diaktoros"
+TRAILER = f"Automated-By: {NAME} ({REPO_URL})"
+# What the loop signed with before the rename (#425): still recognised, never written.
+OLD_NAME, OLD_REPO_URL = "hermes-review-loop", "https://github.com/coe0718/hermes-review-loop"
 # GitHub's limit on a review or comment body, in characters.
 GITHUB_BODY_MAX = 65536
 
@@ -53,7 +56,7 @@ def _who(loop: dict, seat: str) -> str:
 def footer(loop: dict, *, seat: str, head: str) -> str:
     short = head[:7] if isinstance(head, str) else ""
     at = f" · head `{short}`" if short else ""
-    return (f"<sub>🤖 Automated by [hermes-review-loop]({REPO_URL}) · "
+    return (f"<sub>🤖 Automated by [{NAME}]({REPO_URL}) · "
             f"{_who(loop, seat)}{at}</sub>")
 
 
@@ -73,8 +76,12 @@ def stamp(loop: dict, body: str, *, seat: str, head: str) -> str:
 
 
 # The footer ``stamp`` appends, exactly: ``unsign`` removes this and nothing else.
-_FOOTER_AT_END = re.compile(r"\n\n---\n<sub>🤖 Automated by \[hermes-review-loop\]\("
-                            + re.escape(REPO_URL) + r"\) · [^\n]*</sub>\s*\Z")
+# A footer posted before the rename is the same label: history read after an upgrade loses it too.
+_FOOTER_AT_END = re.compile(
+    r"\n\n---\n<sub>🤖 Automated by "
+    + "(?:" + "|".join(rf"\[{re.escape(name)}\]\({re.escape(url)}\)"
+                     for name, url in ((NAME, REPO_URL), (OLD_NAME, OLD_REPO_URL))) + ")"
+    + r" · [^\n]*</sub>\s*\Z")
 
 
 def unsign(body: object) -> object:

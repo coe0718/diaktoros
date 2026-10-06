@@ -147,7 +147,7 @@ class Base(unittest.TestCase):
     def run_cli(self, argv, settings=None):
         ctx = _Ctx()
         cli.register_cli(ctx, settings=settings or {})
-        parser = argparse.ArgumentParser(prog="hermes review-loop")
+        parser = argparse.ArgumentParser(prog="hermes dk")
         ctx.setup(parser)
         out = io.StringIO()
         with redirect_stdout(out), redirect_stderr(out):
@@ -248,7 +248,7 @@ class GatewayResolvesEveryRoute(Base):
         (scripts / "gate_reviewer.py").write_text("print('mine')\n")
         rc, out = self.run_cli(self.init_argv())
         self.assertEqual(rc, 2, out)
-        self.assertIn("not written by hermes-review-loop", out)
+        self.assertIn("not written by Diaktoros", out)
         self.assertEqual((scripts / "gate_reviewer.py").read_text(), "print('mine')\n")
         self.assertFalse((config.config_dir() / "widgets.json").exists())
         self.assertEqual(self.loop_routes(), {})
@@ -521,7 +521,7 @@ class DoctorApplyUninstall(Base):
         check = self.gateway_checks()["gateway-script:widgets-review"]
         self.assertEqual(check.status, doctor.ABSENT)
         self.assertIn(f"script not found: {shim}", check.detail)
-        self.assertIn("hermes review-loop apply --loop widgets", check.fix)
+        self.assertIn("hermes dk apply --loop widgets", check.fix)
 
         rc, out = self.run_cli(["apply", "--loop", "widgets", "--dry-run"])
         self.assertEqual(rc, 0, out)
@@ -572,7 +572,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(check.status, doctor.MISMATCH, check.detail)
         self.assertIn("registry runs arbiter/gate_reviewer.py", check.detail)
         self.assertIn("loop config says critic/gate_reviewer.py", check.detail)
-        self.assertIn("hermes review-loop doctor --loop widgets --repair", check.fix)
+        self.assertIn("hermes dk doctor --loop widgets --repair", check.fix)
         # Never silent: install writes the shim the gateway will run *and* says the two disagree.
         from review_loop import gate_shims
         lines = gate_shims.install(config.load_id("widgets"))
@@ -593,7 +593,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(check.status, doctor.MISMATCH, check.detail)
         self.assertIn("registry runs critic/gate_reviewer.py", check.detail)
         self.assertIn("loop config says arbiter/gate_reviewer.py", check.detail)
-        self.assertIn("hermes review-loop apply --loop widgets", check.fix)
+        self.assertIn("hermes dk apply --loop widgets", check.fix)
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(routes.route("widgets-review")["profile"], "arbiter")
@@ -621,7 +621,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(status, "mismatch", detail)
         self.assertIn("registry runs critic/gate_reviewer.py", detail)
         self.assertIn("under `seats.reviewer` in the loop config", fix)
-        self.assertIn("hermes review-loop apply --loop widgets", fix)
+        self.assertIn("hermes dk apply --loop widgets", fix)
         # On disk the loader refuses the blank profile by name; the named remedy clears it.
         self.edit_config(lambda d: d["seats"]["reviewer"].update(profile=""))
         with self.assertRaisesRegex(config.ConfigError, "seats.reviewer.profile is required"):
@@ -639,7 +639,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(check.status, doctor.ABSENT, check.detail)
         self.assertIn("loop config says coder/gate_fixer.py", check.detail)
         self.assertIn("registry holds no route", check.detail)
-        self.assertIn("hermes review-loop doctor --loop widgets --repair", check.fix)
+        self.assertIn("hermes dk doctor --loop widgets --repair", check.fix)
         self.run_cli(["doctor", "--loop", "widgets", "--repair", "--offline"])
         self.assertIsNotNone(routes.route("widgets-fix"))
         check = self.gateway_checks()["gateway-script:widgets-fix"]
@@ -684,7 +684,7 @@ class DoctorApplyUninstall(Base):
         self.edit_registry(lambda d: d["widgets-review"].update(profile="arbiter"))
         rc, out = self.run_cli(["apply", "--loop", "widgets"])
         self.assertEqual(rc, 2, out)
-        self.assertIn("not written by hermes-review-loop", out)
+        self.assertIn("not written by Diaktoros", out)
         self.assertEqual(mine.read_text(), "print('critic owns this')\n")
         self.assertEqual(routes.route("widgets-review")["profile"], "arbiter")
 
@@ -798,7 +798,7 @@ class DoctorApplyUninstall(Base):
         route_intent.path(config.load_id("widgets")).unlink()
         self.edit_registry(lambda d: d.pop("widgets-fix"))
         world = self.github_with_hook("https://gateway.example/p/coder/webhooks/widgets-fix")
-        remedy = "hermes review-loop apply --loop widgets --recreate-routes"
+        remedy = "hermes dk apply --loop widgets --recreate-routes"
         checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
         for name in ("route:widgets-fix", "gateway-script:widgets-fix"):
             self.assertEqual(checks[name].status, doctor.ABSENT, checks[name].detail)
@@ -860,7 +860,7 @@ class DoctorApplyUninstall(Base):
                                       events=("pull_request", "pull_request_review"))
         rc, out = self.run_cli(["set", "--loop", "widgets", "--host", "https://moved.example"])
         self.assertEqual(rc, 0, out)
-        self.assertIn("next: `hermes review-loop apply --loop widgets`", out)
+        self.assertIn("next: `hermes dk apply --loop widgets`", out)
         new_review = "https://moved.example/p/critic/webhooks/widgets-review"
         new_fix = "https://moved.example/p/coder/webhooks/widgets-fix"
 
@@ -1051,7 +1051,7 @@ class DoctorApplyUninstall(Base):
         check = self.hook_check()
         self.assertEqual(check.status, doctor.MISMATCH, check.detail)
         self.assertIn("trailing slash", check.detail)
-        self.assertIn("hermes review-loop apply --loop widgets", check.fix)
+        self.assertIn("hermes dk apply --loop widgets", check.fix)
 
     def test_plain_apply_repoints_a_trailing_slash_hook_and_doctor_then_verifies(self):
         self.install()
@@ -1099,7 +1099,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(rc, 1, out)
         self.assertIn("hook 41", out)
         self.assertIn("does not route", out)
-        self.assertIn("hermes review-loop apply --hooks --loop widgets", out)
+        self.assertIn("hermes dk apply --hooks --loop widgets", out)
         # Exact URLs are armed, and `arm` says so with rc 0.
         self.github_with_hook(self.REVIEW_URL, hook_id=41, events=("pull_request",),
                               more=[(42, self.FIX_URL, True, ("pull_request_review",))])
@@ -1158,7 +1158,7 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(rc, 2, out)
         self.assertIn("has no secret", out)
         self.assertNotIn("--admin-token", out)
-        self.assertIn("hermes review-loop doctor --loop widgets", out)
+        self.assertIn("hermes dk doctor --loop widgets", out)
         # A refused write is: that one does name the token scope.
         self.edit_registry(lambda d: d["widgets-review"].update(secret=REVIEW_KEY))
         self.github_with_hook(self.REVIEW_URL + "/", hook_id=41, events=("pull_request",),
@@ -1223,7 +1223,7 @@ class DoctorApplyUninstall(Base):
                                 "--observer-deliver", "telegram"])
         self.assertEqual(rc, 1, out)
         self.assertIn("gate shim install FAILED", out)
-        self.assertIn("hermes review-loop apply --loop widgets", out)
+        self.assertIn("hermes dk apply --loop widgets", out)
         self.assertEqual(foreign.read_text(), "print('arbiter owns this')\n")
 
     def test_heal_says_what_the_gateway_does_for_each_refusal(self):
@@ -1341,7 +1341,7 @@ class ObserverStatusDoctor(Base):
         self.drift(profile="coder")
         check = self.route_check()
         self.assertEqual(check.status, doctor.MISMATCH)
-        self.assertIn("hermes review-loop apply --loop widgets", check.fix)
+        self.assertIn("hermes dk apply --loop widgets", check.fix)
         self.drift(profile="arbiter", deliver_only=False)
         check = self.route_check()
         self.assertEqual(check.status, doctor.MISMATCH)
@@ -1353,7 +1353,7 @@ class ObserverStatusDoctor(Base):
         routes.remove_route("widgets-observe")
         check = self.route_check()
         self.assertEqual(check.status, doctor.ABSENT)
-        self.assertIn("hermes review-loop doctor --loop widgets --repair", check.fix)
+        self.assertIn("hermes dk doctor --loop widgets --repair", check.fix)
         rc, out = self.run_cli(["doctor", "--loop", "widgets", "--offline", "--repair"])
         self.assertIn("widgets-observe", out)
         self.assertEqual(self.route_check().status, doctor.VERIFIED)
@@ -1367,11 +1367,11 @@ class ObserverStatusDoctor(Base):
         self.assertIn("observer widgets-observe → arbiter (ok)", self.status())
         self.drift(profile="coder")
         self.assertIn("observer widgets-observe → coder, not arbiter: MISMATCH — "
-                      "hermes review-loop apply --loop widgets", self.status())
+                      "hermes dk apply --loop widgets", self.status())
         routes.remove_route("widgets-observe")
         line = self.status()
         self.assertIn("observer widgets-observe: not installed — "
-                      "hermes review-loop doctor --loop widgets --repair", line)
+                      "hermes dk doctor --loop widgets --repair", line)
 
     def test_status_says_when_the_observer_is_muted(self):
         self.observer_install()
@@ -1396,10 +1396,10 @@ class ObserverStatusDoctor(Base):
         return observer._target(config.load_id("widgets"))
 
     def follow(self, fix):
-        """Run the first `hermes review-loop …` command a fix line names, as printed."""
+        """Run the first `hermes dk …` command a fix line names, as printed."""
         import re
         import shlex
-        commands = re.findall(r"`hermes review-loop ([^`]+)`", fix)
+        commands = re.findall(r"`hermes dk ([^`]+)`", fix)
         self.assertTrue(commands, f"no runnable command in: {fix}")
         argv = shlex.split(commands[0])
         if argv[0] == "doctor":
@@ -1516,7 +1516,7 @@ class ObserverStatusDoctor(Base):
         self.assertIn("observer widgets-observe: not installed — ", line)
         self.assertNotIn("--repair", line)
         import re
-        command = re.search(r"not installed — (hermes review-loop [^·]+?)(?: ·|$)", line).group(1)
+        command = re.search(r"not installed — (hermes dk [^·]+?)(?: ·|$)", line).group(1)
         self.follow(f"`{command.strip()}`")
         self.assertEqual(self.observer_check().status, doctor.VERIFIED)
         self.assertIsNotNone(self.feed_target())
@@ -1530,7 +1530,7 @@ class ObserverStatusDoctor(Base):
         checks = {c.name: c for c in doctor.check_loop(config.load_id("widgets"), offline=True)}
         check = checks["gateway-script:widgets-review"]
         self.assertTrue(check.failed, check.detail)
-        self.assertIn("not a review-loop gate", check.detail)
+        self.assertIn("not a Diaktoros gate", check.detail)
         # Repair refuses a route something else holds: it may only come second, after the
         # operator moves that entry out of the way.
         self.assertTrue(check.fix.startswith("remove or rename that entry"), check.fix)
@@ -1610,7 +1610,7 @@ class ObserverStatusDoctor(Base):
                 self.assertEqual(status == doctor.VERIFIED, delivers,
                                  f"doctor {status}, feed {'delivers' if delivers else 'refuses'}")
                 if status != doctor.VERIFIED:
-                    self.assertIn("`hermes review-loop ", fix)
+                    self.assertIn("`hermes dk ", fix)
 
     def test_with_a_record_doctor_is_never_green_over_a_refusing_feed(self):
         # The intent record makes doctor stricter on purpose: any drift from what the plugin
@@ -1620,7 +1620,7 @@ class ObserverStatusDoctor(Base):
                 if status == doctor.VERIFIED:
                     self.assertTrue(delivers, "green over a feed that refuses")
                 else:
-                    self.assertIn("`hermes review-loop ", fix)
+                    self.assertIn("`hermes dk ", fix)
 
     def test_a_disabled_route_is_red_and_the_named_remedy_reenables_it(self):
         # The gateway answers 403 for an explicit `enabled: false` (webhook.py), so neither
@@ -1756,8 +1756,8 @@ class ObserverStatusDoctor(Base):
                 fix = re.search(rf"⚠️ route {name}:.*?fix: (.*)", out).group(1)
                 self.assertTrue(fix.startswith("remove that entry"), fix)
                 routes.remove_route(name)            # the fix line's first step
-                command = re.search(r"`hermes review-loop ([^`]+)`", fix).group(1)
-                self.follow(f"`hermes review-loop {command}`")
+                command = re.search(r"`hermes dk ([^`]+)`", fix).group(1)
+                self.follow(f"`hermes dk {command}`")
                 rc, out = self.run_cli(["apply", "--loop", "widgets"])
                 self.assertEqual((rc, "already matches" in out), (0, True), out)
 
@@ -1913,7 +1913,7 @@ class HookAndCronRemedies(Base):
     def run_printed(self, fix):
         self.assertNotIn("re-run init", fix, "init refuses an existing loop")
         self.assertNotIn("init --", fix)
-        command = re.search(r"`hermes review-loop ([^`]+)`", fix)
+        command = re.search(r"`hermes dk ([^`]+)`", fix)
         self.assertIsNotNone(command, f"no runnable command in: {fix}")
         argv = shlex.split(command.group(1).replace("<login>", "admin-acct"))
         rc, out = self.run_cli(argv)
@@ -1937,7 +1937,7 @@ class HookAndCronRemedies(Base):
                 world = self.world(hooks)
                 check = self.hook_checks()["hook:widgets-review"]
                 self.assertTrue(check.failed, check.detail)
-                command = re.search(r"`hermes review-loop ([^`]+)`", check.fix)
+                command = re.search(r"`hermes dk ([^`]+)`", check.fix)
                 self.assertIsNotNone(command, check.fix)
                 dry = shlex.split(command.group(1).replace("<login>", "admin-acct")) + ["--dry-run"]
                 rc, out = self.run_cli(dry)

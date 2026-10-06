@@ -35,20 +35,20 @@ class _Ctx:
 
 
 def readme_install_argv() -> list[str]:
-    """The argv of README's ``hermes review-loop init`` example, continuations joined."""
+    """The argv of README's ``hermes dk init`` example, continuations joined."""
     lines = (ROOT / "README.md").read_text().splitlines()
     in_fence = False
     for index, line in enumerate(lines):
         if line.strip().startswith("```"):
             in_fence = not in_fence
             continue
-        if in_fence and line.strip().startswith("hermes review-loop init"):
+        if in_fence and line.strip().startswith("hermes dk init"):
             command = line.strip()
             while command.endswith("\\"):
                 index += 1
                 command = command[:-1] + " " + lines[index].strip()
-            return shlex.split(re.sub(r"^hermes\s+review-loop\s+", "", command), comments=True)
-    raise AssertionError("README.md has no fenced `hermes review-loop init` example")
+            return shlex.split(re.sub(r"^hermes\s+(?:dk|diaktoros|review-loop)\s+", "", command), comments=True)
+    raise AssertionError("README.md has no fenced `hermes dk init` example")
 
 
 def resolve_readme_install_placeholders(argv: list[str]) -> list[str]:
@@ -107,7 +107,7 @@ class _Home(unittest.TestCase):
     def run_cli(self, argv, settings=None):
         ctx = _Ctx()
         cli.register_cli(ctx, settings=settings or {})
-        parser = argparse.ArgumentParser(prog="hermes review-loop")
+        parser = argparse.ArgumentParser(prog="hermes dk")
         ctx.setup(parser)
         out = io.StringIO()
         with redirect_stdout(out), redirect_stderr(out):
@@ -286,7 +286,7 @@ class ReaderIdentityTests(_Loop):
                 self.assertEqual(rc, 2, out)
                 self.assertIn(f"the reader {REV!r} is also the reviewer seat", out)
                 self.assertIn("four-identity rule", out)
-                self.assertIn("fix: hermes review-loop set --loop widgets --read-token", out)
+                self.assertIn("fix: hermes dk set --loop widgets --read-token", out)
                 self.assertNotIn("already matches", out)
                 self.assertEqual(self.loop_file().read_bytes(), before)
 
@@ -295,7 +295,7 @@ class ReaderIdentityTests(_Loop):
         rc, out = self.run_cli(["status", "--loop", "widgets"])
         self.assertIn(f"reader:  the reader {REV!r} is also the reviewer seat", out)
         self.assertIn("four-identity rule", out)
-        self.assertIn("fix:        hermes review-loop set --loop widgets --read-token", out)
+        self.assertIn("fix:        hermes dk set --loop widgets --read-token", out)
         rc, out = self.run_cli(self.init_argv("--id", "clean", "--repo", "acme/clean"))
         rc, out = self.run_cli(["status", "--loop", "clean"])
         self.assertNotIn("reader:", out)
@@ -315,7 +315,7 @@ class ReaderIdentityTests(_Loop):
         # come from the parser itself, so a verb added later cannot be forgotten here.
         ctx = _Ctx()
         cli.register_cli(ctx, settings={})
-        parser = argparse.ArgumentParser(prog="hermes review-loop")
+        parser = argparse.ArgumentParser(prog="hermes dk")
         ctx.setup(parser)
         verbs = next(a for a in parser._actions
                      if isinstance(a, argparse._SubParsersAction)).choices
@@ -362,7 +362,7 @@ class ReaderIdentityTests(_Loop):
         self.loop_file().write_text(json.dumps(data))
         # The refusal names the repair, and the repair works on exactly this defect.
         rc, out = self.run_cli(["status", "--loop", "widgets"])
-        self.assertIn("`hermes review-loop set --loop widgets --read-token LOGIN --token "
+        self.assertIn("`hermes dk set --loop widgets --read-token LOGIN --token "
                       "LOGIN=/abs/path/to/pat` writes both", out)
         new = self.pat("fresh-reader")
         rc, out = self.run_cli(["set", "--loop", "widgets", "--read-token", "fresh-reader",
@@ -430,7 +430,7 @@ class ReaderIdentityTests(_Loop):
         # adds its own exit-2 path here and the guard fails until the docs name it.
         ctx = _Ctx()
         cli.register_cli(ctx, settings={})
-        parser = argparse.ArgumentParser(prog="hermes review-loop")
+        parser = argparse.ArgumentParser(prog="hermes dk")
         ctx.setup(parser)
         sub = next(a for a in parser._actions
                    if isinstance(a, argparse._SubParsersAction)).choices["explain"]
@@ -480,7 +480,7 @@ class ReaderIdentityTests(_Loop):
         rc, out = self.run_cli(["apply", "--loop", "widgets"], settings)
         self.assertEqual(rc, 2, out)
         self.assertIn("read_token 'ghost-account' has no entry in 'tokens'", out)
-        self.assertIn("fix: hermes review-loop set --loop widgets --read-token ghost-account "
+        self.assertIn("fix: hermes dk set --loop widgets --read-token ghost-account "
                       "--token ghost-account=", out)
         self.assertEqual(self.loop_file().read_bytes(), before)
 
@@ -594,7 +594,7 @@ class HookWriteTests(_Loop):
         self.assertEqual(rc, 0, out)
         self.assertEqual(created, ["owner", "owner"])
         self.assertEqual(listed, ["owner"])  # the preflight reads as the hook admin too
-        self.assertIn("hermes review-loop arm --loop widgets --admin-token owner", out)
+        self.assertIn("hermes dk arm --loop widgets --admin-token owner", out)
 
     def test_a_refused_arm_as_the_reader_names_the_scope_and_the_owner_case(self):
         rc, out = self.run_cli(self.init_argv())

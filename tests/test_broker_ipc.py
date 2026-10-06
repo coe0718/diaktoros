@@ -83,8 +83,8 @@ class BrokerIPCTests(unittest.TestCase):
         self.assertEqual([c[1] for c in self.calls if c[0] != "/user"], ["GET", "POST"])
         self.assertEqual(self.calls[3][-1], "read")
         # The seat's body, signed by the host as the loop's own write (#197).
-        signed = ("verified\n\n---\n<sub>🤖 Automated by [hermes-review-loop]"
-                  "(https://github.com/coe0718/hermes-review-loop) · reviewer seat · head "
+        signed = ("verified\n\n---\n<sub>🤖 Automated by [Diaktoros]"
+                  "(https://github.com/coe0718/diaktoros) · reviewer seat · head "
                   f"`{HEAD[:7]}`</sub>")
         self.assertEqual(self.calls[4], (f"/repos/{REPO}/pulls/7/reviews", "POST",
                          {"commit_id": HEAD, "event": "APPROVE", "body": signed}, "review"))

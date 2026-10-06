@@ -599,7 +599,7 @@ def group_explain() -> None:
     rc, out = explain()
     check("pending request without run: retry gate", "the pending request for" in out, True)
     check("pending request without run: names who may ask (#375)",
-          "hermes review-loop review --loop" in out and "triage.maintainers" in out, True)
+          "hermes dk review --loop" in out and "triage.maintainers" in out, True)
     check("pending request without run: no imaginary verdict", "next:       the reviewer's verdict" in out, False)
     check("pending request without run: pure kind", gate.explain(config.load_id("widgets"),
           state_mod.state_for(config.load_id("widgets")), 7,
@@ -763,7 +763,7 @@ def group_explain() -> None:
     rc, out = explain()
     check("paused: both hooks reported off", "PAUSED — seat route(s) without an active repo hook: reviewer, fixer" in out, True)
     check("  blocked by the pause", "paused loop: seat route(s) without an active repo hook: reviewer, fixer" in out, True)
-    check("  next is re-arming", "hermes review-loop arm --loop widgets" in out, True)
+    check("  next is re-arming", "hermes dk arm --loop widgets" in out, True)
 
     reset(prs={"7": pr(7)})
     partial = world({"7": pr(7)})
@@ -771,7 +771,7 @@ def group_explain() -> None:
     WORLD_FILE.write_text(json.dumps(partial))
     rc, out = explain()
     check("one active hook diagnoses missing fixer only", "PAUSED — seat route(s) without an active repo hook: fixer" in out, True)
-    check("  next is re-arm", "hermes review-loop arm --loop widgets" in out, True)
+    check("  next is re-arm", "hermes dk arm --loop widgets" in out, True)
     check("  watchdog shares the both-hook predicate", gate.hooks_armed(config.load_id("widgets")), False)
     partial["hooks"] = world({"7": pr(7)})["hooks"]
     WORLD_FILE.write_text(json.dumps(partial))
@@ -913,7 +913,7 @@ def group_explain() -> None:
 
     fake = FakeCtx()
     cli.register_cli(fake)
-    parser = argparse.ArgumentParser(prog="hermes review-loop")
+    parser = argparse.ArgumentParser(prog="hermes dk")
     fake.setup(parser)
     parsed = parser.parse_args(["explain", "--loop", "widgets", "--pr", "7"])
     check("`explain --loop widgets --pr 7` parses", (parsed.command, parsed.pr), ("explain", 7))

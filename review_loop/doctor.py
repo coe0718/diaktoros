@@ -9,7 +9,7 @@ to the plugin directory a previous upgrade left behind. A loop that looks armed 
 a seat — or cannot post a verdict — is the failure this plugin exists to make loud, so the
 preflight answers it before anyone arms anything:
 
-    hermes review-loop doctor --loop name
+    hermes dk doctor --loop name
 
 One line per check, in one of these states:
 
@@ -196,7 +196,7 @@ def cron_replace_fix(loop: dict, job_ids, deliver: str = "local") -> str:
 
 
 def shim_fix(loop: dict) -> str:
-    return (f"`hermes review-loop apply --loop {loop['id']} --watchdog-shim` rewrites it from the "
+    return (f"`hermes dk apply --loop {loop['id']} --watchdog-shim` rewrites it from the "
             "plugin (the scheduled job runs it by name)")
 
 
@@ -204,7 +204,7 @@ def hooks_fix(loop: dict, what: str) -> str:
     """``apply --hooks`` reconciles this loop's two repo hooks with its routes; ``init --hooks``
     refuses an existing loop."""
     from . import cli       # the one wording of what a hook write needs (#106)
-    return (f"`hermes review-loop apply --loop {loop['id']} --hooks --admin-token <login>` {what} "
+    return (f"`hermes dk apply --loop {loop['id']} --hooks --admin-token <login>` {what} "
             f"({cli.hook_write_need(loop, '<login>')})")
 
 
@@ -240,13 +240,13 @@ def check_config(loop: dict) -> Check:
     path = config.config_dir() / f"{loop['id']}.json"
     if not path.exists():
         return Check("config", ABSENT, f"no loop config at {path}",
-                     "write one with `hermes review-loop init`: the gates select a loop by the "
+                     "write one with `hermes dk init`: the gates select a loop by the "
                      "payload's repository, so a loop nobody can load drives nothing")
     try:
         json.loads(path.read_text())
     except Exception as exc:
         return Check("config", MISMATCH, f"{path} is not readable JSON ({exc})",
-                     "edit the loop file to repair it, then run `hermes review-loop apply --loop <id>`: every gate reads it on every event")
+                     "edit the loop file to repair it, then run `hermes dk apply --loop <id>`: every gate reads it on every event")
     return Check("config", VERIFIED,
                  f"{path} (repo {loop['repo']}, cap {loop['cap']}, base {loop['base']})")
 
@@ -342,7 +342,7 @@ def check_watchdog_last_run(loop: dict) -> Check:
         return Check("watchdog:run", UNKNOWN,
                      "no last_run recorded in watchdog.json — the watchdog may not have "
                      "run yet (or its state is unreadable)",
-                     f"run `hermes review-loop watchdog --loop {loop['id']}` once, or wait "
+                     f"run `hermes dk watchdog --loop {loop['id']}` once, or wait "
                      "for the next scheduled run; if it never stamps last_run, the shim or "
                      "the scheduler is broken (see cron:shim / cron:job)")
     last = epoch(raw)
@@ -421,7 +421,7 @@ def check_runtime_paths(loop: dict) -> list[Check]:
     except (OSError, ValueError) as exc:
         return [Check("runtime:file", MISMATCH,
                       f"{path}: {exc}",
-                      f"repair {path}; `hermes review-loop selftest` shows each problem")]
+                      f"repair {path}; `hermes dk selftest` shows each problem")]
     checks: list[Check] = []
     for key in ("source", "venv", "runtime", "rust"):
         raw = settings.get(key)
@@ -456,13 +456,13 @@ def check_runtime_paths(loop: dict) -> list[Check]:
 def _check_profile(name: str, seat: str) -> Check:
     if not name:
         return Check(f"profile:{seat}", ABSENT, "no profile named for this seat",
-                     f"set {seat}_profile in the plugin settings to an existing profile, then run `hermes review-loop apply --loop <id>`")
+                     f"set {seat}_profile in the plugin settings to an existing profile, then run `hermes dk apply --loop <id>`")
     path = profile_dir(name)
     if path.is_dir():
         return Check(f"profile:{seat}", VERIFIED, f"{name} → {path}")
     return Check(f"profile:{seat}", ABSENT, f"no profile home at {path}",
                  f"`hermes profile create {name}`, or set {seat}_profile in the plugin settings to "
-                 f"a profile that exists and run `hermes review-loop apply --loop <id>`: the run "
+                 f"a profile that exists and run `hermes dk apply --loop <id>`: the run "
                  f"happens as this profile")
 
 def check_profile(loop: dict, seat: str) -> Check:
@@ -476,7 +476,7 @@ def check_triage(loop: dict) -> list[Check]:
     if path is None or not path.is_file() or path.stat().st_size == 0:
         checks.append(Check("credential:triage", ABSENT,
                             f"no nonempty token file mapped for the triage login {login or '?'}",
-                            f"map one: `hermes review-loop set --loop {loop['id']} --token "
+                            f"map one: `hermes dk set --loop {loop['id']} --token "
                             f"{login or '<login>'}=/path/to/pat` (it needs issues: write)"))
     elif config.token_file_problem(str(path)):
         checks.append(Check("credential:triage", MISMATCH,
@@ -508,7 +508,7 @@ def runtime_settings() -> tuple[dict | None, Check | None]:
         return seat_model.load_runtime(path), None
     except (OSError, ValueError) as exc:
         return None, Check("runtime", MISMATCH, f"{path}: {exc}",
-                           f"repair {path}; `hermes review-loop selftest` shows each problem")
+                           f"repair {path}; `hermes dk selftest` shows each problem")
 
 
 def check_seat_models(loop: dict) -> list[Check]:
@@ -534,7 +534,7 @@ def check_seat_models(loop: dict) -> list[Check]:
             status, detail, fix = seat_model.describe_seat(loop, seat, settings)
         except Exception as exc:        # e.g. a malformed base_url: undecided, never a crash
             status, detail, fix = ("warn", f"could not describe this seat ({type(exc).__name__}: "
-                                           f"{exc})", "run `hermes review-loop selftest`")
+                                           f"{exc})", "run `hermes dk selftest`")
         checks.append(Check(f"model:{seat}", status_of[status], detail, fix))
     return checks
 
@@ -696,7 +696,7 @@ def check_credential(loop: dict, seat: str) -> Check:
                      f"nonempty GH_TOKEN in {env}, but no mapped token file for "
                      f"{login or seat}; a profile environment alone does not provide the "
                      "gate's configured GitHub identity, and the sandboxed seat never sees it",
-                     f"map a token file for {login or '<login>'}: run `hermes review-loop set --loop <id> "
+                     f"map a token file for {login or '<login>'}: run `hermes dk set --loop <id> "
                      f"--token {login or '<login>'}=/path/to/pat`, or set {seat}_token_file in the "
                      "plugin settings and run apply; then remove GH_TOKEN from that .env")
     who = login or f"the {seat} seat"
@@ -709,7 +709,7 @@ def check_credential(loop: dict, seat: str) -> Check:
     # profile's .env is never used, so it is not offered as a fix.
     return Check(f"credential:{seat}", ABSENT,
                  f"no token file mapped for {who!r} (a GH_TOKEN in {env} would not be used)",
-                 f"run `hermes review-loop set --loop <id> --token {login or '<login>'}=/path/to/pat`, or set "
+                 f"run `hermes dk set --loop <id> --token {login or '<login>'}=/path/to/pat`, or set "
                  f"{seat}_token_file in the plugin settings and run apply — without one the seat "
                  "cannot push or post a verdict")
 
@@ -771,7 +771,7 @@ def check_token(login: str, raw: str) -> Check:
     if not path.exists():
         return Check(f"token:{login}", ABSENT, f"no file at {path}",
                      f"write the PAT for {login} to {path} (chmod 600), or run `hermes "
-                     f"review-loop set --loop <id> --token {login}=<a path that exists>`")
+                     f"dk set --loop <id> --token {login}=<a path that exists>`")
     if not path.is_file():
         return Check(f"token:{login}", MISMATCH, f"{path} is not a file",
                      f"point --token {login} at a regular file holding the PAT")
@@ -796,7 +796,7 @@ def check_tokens(loop: dict) -> list[Check]:
     tokens = loop.get("tokens") or {}
     if not tokens:
         return [Check("tokens", ABSENT, "no token file is named for any login",
-                      "run `hermes review-loop set --loop <id> --token <login>=/path/to/pat` (the gates read GitHub "
+                      "run `hermes dk set --loop <id> --token <login>=/path/to/pat` (the gates read GitHub "
                       "through it; without one they go silent)")]
     return [check_token(login, raw) for login, raw in sorted(tokens.items())]
 
@@ -805,10 +805,10 @@ def check_read_token(loop: dict) -> Check:
     name = str(loop.get("read_token") or "")
     if not name:
         return Check("read_token", ABSENT, "no login is named as the reader",
-                     "run `hermes review-loop set --loop <id> --read-token <login> --token <login>=/path/to/pat`")
+                     "run `hermes dk set --loop <id> --read-token <login> --token <login>=/path/to/pat`")
     if name not in (loop.get("tokens") or {}):
         return Check("read_token", MISMATCH, f"read_token names {name!r}, which has no token file",
-                     f"run `hermes review-loop set --loop <id> --token {name}=/path/to/pat`: the gates read every PR "
+                     f"run `hermes dk set --loop <id> --token {name}=/path/to/pat`: the gates read every PR "
                      f"state as this login")
     problem = config.reader_problem(loop)
     if problem:
@@ -848,7 +848,7 @@ def check_routes(loop: dict) -> list[Check]:
 
 
 REPAIR_FIX = ("the next armed watchdog sweep restores it from the plugin's intent record with the "
-              "same secret — or run `hermes review-loop doctor --repair` now (that one command "
+              "same secret — or run `hermes dk doctor --repair` now (that one command "
               "repairs it); if the change was intended, make it with the plugin's own commands "
               "(`set`, `apply`, `uninstall`), not by hand")
 
@@ -864,7 +864,7 @@ def _intent_overlay(loop: dict, data: dict, checks: list[Check]) -> list[Check]:
         intent = route_intent.load(loop)
     except route_intent.IntentError as exc:
         return checks + [Check("route-intent", MISMATCH, str(exc),
-                               "restore the file, or re-run `hermes review-loop apply` so the "
+                               "restore the file, or re-run `hermes dk apply` so the "
                                "plugin records its routes again")]
     if intent is None:
         return checks
@@ -894,8 +894,8 @@ def _intent_overlay(loop: dict, data: dict, checks: list[Check]) -> list[Check]:
             # Repair reports a route something else now runs as a conflict and never overwrites
             # it, so it can only be the second step.
             check.fix = (f"remove or rename that entry (it now runs {live.get('script')!r}, not a "
-                         "review-loop gate, so repair and apply leave it alone), then "
-                         f"`hermes review-loop doctor --loop {loop['id']} --repair`")
+                         "Diaktoros gate, so repair and apply leave it alone), then "
+                         f"`hermes dk doctor --loop {loop['id']} --repair`")
         # The observer check already chose between repair and a rebuild: repair only restores
         # the record, which is no fix when the record itself breaks the feed's contract.
         elif not (check.fix and name == (loop.get("observer") or {}).get("route")):
@@ -913,7 +913,7 @@ def _missing_route_fix(loop: dict) -> str:
 def _apply_fix(loop: dict, what: str) -> str:
     """``apply`` rewrites this loop's own routes from its config (secret kept): the remedy for
     every route field it reconciles. Never ``init``, which refuses an existing loop."""
-    return f"run `hermes review-loop apply --loop {loop['id']}` to {what} (its secret is kept)"
+    return f"run `hermes dk apply --loop {loop['id']}` to {what} (its secret is kept)"
 
 
 def _secret_fix(loop: dict) -> str:
@@ -926,8 +926,8 @@ def _secret_fix(loop: dict) -> str:
 def _host_fixes(loop: dict) -> tuple[str, str]:
     """(invalid origin, no origin): both name the loop's origin with ``set``, then ``apply``."""
     lid = loop["id"]
-    both = (f"`hermes review-loop set --loop {lid} --host https://your-gateway.example`, then "
-            f"`hermes review-loop apply --loop {lid}` so the routes carry it")
+    both = (f"`hermes dk set --loop {lid} --host https://your-gateway.example`, then "
+            f"`hermes dk apply --loop {lid}` so the routes carry it")
     return both, both
 
 
@@ -946,7 +946,7 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
     if not name:
         return Check(f"route:{seat}", ABSENT, "no route named for this seat",
                      f"name the route as seats.{seat}.route in the loop config, then "
-                     f"`hermes review-loop apply --loop {loop['id']} --recreate-routes`")
+                     f"`hermes dk apply --loop {loop['id']} --recreate-routes`")
     entry = _route_entry(data, name)
     if entry is None:
         return Check(f"route:{name}", ABSENT, f"not in {routes.subs_path().name}",
@@ -960,13 +960,13 @@ def check_route(loop: dict, data: dict, seat: str) -> Check:
         return Check(f"route:{name}", MISMATCH,
                      "deliver_only is set — the gateway delivers the rendered prompt and runs no "
                      "agent, so this seat is never woken",
-                     f"run `hermes review-loop apply --loop {loop['id']}` to rewrite it from the "
+                     f"run `hermes dk apply --loop {loop['id']}` to rewrite it from the "
                      "loop config (its secret is kept)")
     if entry.get("enabled", True) is False:
         return Check(f"route:{name}", MISMATCH,
                      "disabled in the registry (enabled: false) — the gateway answers 403 to "
                      "every event, so this seat is never woken",
-                     f"run `hermes review-loop apply --loop {loop['id']}` to re-enable it (its "
+                     f"run `hermes dk apply --loop {loop['id']}` to re-enable it (its "
                      "secret is kept)")
     if not str(entry.get("secret") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a secret",
@@ -1035,13 +1035,13 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
         return Check(f"route:{name}", MISMATCH,
                      "deliver_only is set — the gateway delivers the rendered prompt and runs no "
                      "agent, so no adjudicator is woken",
-                     f"run `hermes review-loop apply --loop {loop['id']}` to rewrite it from the "
+                     f"run `hermes dk apply --loop {loop['id']}` to rewrite it from the "
                      "loop config (its secret is kept)")
     if entry.get("enabled", True) is False:
         return Check(f"route:{name}", MISMATCH,
                      "disabled in the registry (enabled: false) — the gateway answers 403 to "
                      "every event, so no adjudicator is woken",
-                     f"run `hermes review-loop apply --loop {loop['id']}` to re-enable it (its "
+                     f"run `hermes dk apply --loop {loop['id']}` to re-enable it (its "
                      "secret is kept)")
     if not str(entry.get("secret") or ""):
         return Check(f"route:{name}", ABSENT, "registered without a secret",
@@ -1069,7 +1069,7 @@ def check_adjudicator_route(loop: dict, data: dict) -> Check | None:
         return Check(f"route:{name}", MISMATCH,
                      f"runs {script!r} (installed by an older release), expected "
                      "'gate_adjudicator.py'",
-                     f"run `hermes review-loop apply --loop {loop['id']}` to rebind it to "
+                     f"run `hermes dk apply --loop {loop['id']}` to rebind it to "
                      "gate_adjudicator.py (its secret is kept)")
     if script != "gate_adjudicator.py":
         return Check(f"route:{name}", MISMATCH,
@@ -1099,7 +1099,7 @@ def check_observer_route(loop: dict, data: dict) -> Check | None:
         return None
     if cfg.get("misconfigured"):
         return Check("route:observer", MISMATCH, str(cfg["misconfigured"]),
-                     f"`hermes review-loop set --loop {loop['id']} --observer-profile <name>` "
+                     f"`hermes dk set --loop {loop['id']} --observer-profile <name>` "
                      "(or --observer-disable): the feed delivers nothing as configured")
     name = str(cfg.get("route") or "")
     profile = config.seat_profile(loop, "observer")
@@ -1113,13 +1113,13 @@ def check_observer_route(loop: dict, data: dict) -> Check | None:
         return Check(f"route:{name}", MISMATCH,
                      f"profile {entry.get('profile')!r} is blank or not a name — the gateway "
                      f"refuses every request for it, and the feed refuses to deliver through it",
-                     f"run `hermes review-loop apply --loop {loop['id']}` to rebind it to "
+                     f"run `hermes dk apply --loop {loop['id']}` to rebind it to "
                      f"{profile} (its secret is kept)")
     if served != profile:
         return Check(f"route:{name}", MISMATCH,
                      f"wakes profile {served!r}, but observer.profile is {profile!r} — the "
                      "feed refuses to deliver through it",
-                     f"run `hermes review-loop apply --loop {loop['id']}` to rebind it to "
+                     f"run `hermes dk apply --loop {loop['id']}` to rebind it to "
                      f"{profile} (its secret is kept)")
     # The very comparison the feed makes before every notice (routes.target) — with the checks
     # above and below, this is exactly observer._target(): doctor verifies the route if and only
@@ -1139,7 +1139,7 @@ def check_observer_route(loop: dict, data: dict) -> Check | None:
     # one changes nothing about delivery.
     if not str(loop.get("host") or ""):
         return Check(f"route:{name}", ABSENT, "the loop names no gateway origin",
-                     f"`hermes review-loop set --loop {loop['id']} --host "
+                     f"`hermes dk set --loop {loop['id']} --host "
                      "https://your-gateway.example`: the feed never borrows the registry's host")
     muted = " · muted" if cfg.get("mute") else ""
     return Check(f"route:{name}", VERIFIED,
@@ -1404,11 +1404,11 @@ def check_clone(loop: dict) -> Check:
     path = pathlib.Path(raw).expanduser()
     if not path.exists():
         return Check("clone", ABSENT, f"no clone at {path}",
-                     f"clone it, or `hermes review-loop set --loop {loop['id']} --clone <path>`: "
+                     f"clone it, or `hermes dk set --loop {loop['id']} --clone <path>`: "
                      f"the cleanup prunes worktrees through this path")
     if not path.is_dir() or not (path / ".git").exists():
         return Check("clone", MISMATCH, f"{path} is not a git checkout",
-                     f"point `hermes review-loop set --loop {loop['id']} --clone` at the "
+                     f"point `hermes dk set --loop {loop['id']} --clone` at the "
                      f"repository's working clone: isolation clones from it and cleanup prunes "
                      f"worktrees in it")
     # The tree the cleanup deletes, derived from config rather than re-spelled here — a clone that
@@ -1505,11 +1505,11 @@ def check_attribution(loop: dict) -> Check:
     if attribution.enabled(loop):
         return Check("attribution", VERIFIED,
                      "on — reviews, comments and commits the loop posts are signed 'Automated by "
-                     f"hermes-review-loop' (`hermes review-loop set --loop {lid} --attribution off` "
+                     f"Diaktoros' (`hermes dk set --loop {lid} --attribution off` "
                      "to stop)")
     return Check("attribution", VERIFIED,
-                 "off — what the loop posts carries no 'Automated by hermes-review-loop' footer or "
-                 f"trailer (`hermes review-loop set --loop {lid} --attribution on` to sign it)")
+                 "off — what the loop posts carries no 'Automated by Diaktoros' footer or "
+                 f"trailer (`hermes dk set --loop {lid} --attribution on` to sign it)")
 
 
 def check_state_dir(loop: dict) -> Check:
@@ -1537,7 +1537,7 @@ def check_roots(loop: dict) -> Check:
              and not pathlib.Path(root).expanduser().is_dir()]
     if wrong:
         return Check("roots", MISMATCH, "not directories: " + ", ".join(wrong),
-                     "fix them (edit \"roots\" in the loop file, then run `hermes review-loop apply --loop <id>`): the cleanup only ever deletes "
+                     "fix them (edit \"roots\" in the loop file, then run `hermes dk apply --loop <id>`): the cleanup only ever deletes "
                      "inside a configured root")
     return Check("roots", VERIFIED, f"{len(roots)} configured: " + ", ".join(roots))
 
@@ -1817,7 +1817,7 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                      f"{', '.join(str(i) for i in ids)}; {active} active) — duplicates from a "
                      "previous install sign with a secret this route no longer holds, so their "
                      "deliveries are refused",
-                     f"`hermes review-loop uninstall --loop {shlex.quote(loop['id'])}` deletes "
+                     f"`hermes dk uninstall --loop {shlex.quote(loop['id'])}` deletes "
                      "them all, then re-run init --hooks; or keep only the newest (GitHub ids "
                      f"only grow, so {ids[-1]} is the latest init's) and delete the rest: {deletes}")
     match = next((hook for hook in candidates if hook.get("active") and
@@ -1837,7 +1837,7 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
                                      "URL, so the hook wakes nothing"))
     if not exact_hook_url(posted, url):
         return Check(f"hook:{name}", MISMATCH, f"hook {hook_id} {SLASH_404}",
-                     f"`hermes review-loop apply --loop {loop['id']}` repoints hook {hook_id} at "
+                     f"`hermes dk apply --loop {loop['id']}` repoints hook {hook_id} at "
                      "the exact URL (or edit its URL on GitHub to drop the trailing slash)")
     events = [str(item) for item in (match.get("events") or [])]
     if event not in events:
@@ -1857,7 +1857,7 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
     if not match.get("active"):
         return Check(f"hook:{name}", VERIFIED,
                      f"hook {hook_id} → [webhook URL redacted] ({event}, PAUSED — nothing fires "
-                     f"until `hermes review-loop arm --loop {loop['id']}`; {delivery})", paused=True)
+                     f"until `hermes dk arm --loop {loop['id']}`; {delivery})", paused=True)
     return Check(f"hook:{name}", VERIFIED,
                  f"hook {hook_id} → [webhook URL redacted] ({event}, active; {delivery})")
 
@@ -1901,7 +1901,7 @@ def check_deliveries(loop: dict, hook_id, name: str) -> "Check | str":
     latest = max(stamped, key=lambda d: d["delivered_at"])
     code = latest.get("status_code")
     deliveries = f"`gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`"
-    ping = f"`hermes review-loop selftest --loop {shlex.quote(loop['id'])} --no-model --ping`"
+    ping = f"`hermes dk selftest --loop {shlex.quote(loop['id'])} --no-model --ping`"
     if type(code) is not int or code <= 0:
         # GitHub recorded the delivery but no HTTP answer (a timeout, a refused connection): the
         # gateway never judged the signature, so nothing is proven — hook_ping refuses this too.
@@ -1916,9 +1916,9 @@ def check_deliveries(loop: dict, hook_id, name: str) -> "Check | str":
         return Check(f"hook:{name}", MISMATCH,
                      f"hook {hook_id}'s latest delivery ({latest['delivered_at']}) got HTTP {code}: "
                      f"{REJECTED[code]}, so the hook wakes nothing",
-                     f"`hermes review-loop uninstall --loop {shlex.quote(loop['id'])}` (deletes the "
+                     f"`hermes dk uninstall --loop {shlex.quote(loop['id'])}` (deletes the "
                      f"hook), then re-run init --hooks so the new hook and route share one fresh "
-                     f"secret; then `hermes review-loop arm --loop {shlex.quote(loop['id'])}`")
+                     f"secret; then `hermes dk arm --loop {shlex.quote(loop['id'])}`")
     if not 200 <= code < 300:
         # A 5xx is the gateway erroring on the delivery (and any other non-2xx is it refusing):
         # either way nothing woke, and the signature was never shown to verify.
@@ -2019,7 +2019,7 @@ def report(loop: dict, checks: list[Check], strict: bool = False) -> int:
         print("  every check passed.")
     if not failed and any(check.paused for check in checks):
         print("  the repo hooks are paused, so nothing fires yet: run selftest, then "
-              f"`hermes review-loop arm --loop {loop['id']}`.")
+              f"`hermes dk arm --loop {loop['id']}`.")
     if strict and unknown and not failed:
         print(f"  --strict: {len(unknown)} undecided check(s) count as a failure.")
     return 1 if failed or (strict and unknown) else 0

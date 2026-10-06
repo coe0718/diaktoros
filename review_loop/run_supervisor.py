@@ -1207,19 +1207,19 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
                 "(starts on the next event or armed watchdog sweep)")
     if (row['state'] == 'cancelled' and policy_cancelled(row['error'])) or policy_hold(row['error']):
         return (f"no external write — if unattended fixer pushes are off, turn them on "
-                f"(`hermes review-loop fixer-push --loop {loop_id} --enable "
-                f"--acknowledge-pr-race`), then re-admit it: `hermes review-loop retry --loop "
+                f"(`hermes dk fixer-push --loop {loop_id} --enable "
+                f"--acknowledge-pr-race`), then re-admit it: `hermes dk retry --loop "
                 f"{loop_id} --pr {row['pr']} --seat fixer` (an operator retry admits it under the "
                 f"policy then in force; a redelivered event never does)")
     if row['write'] is None:
-        rearm = (f"re-arm: hermes review-loop retry --loop {loop_id} "
+        rearm = (f"re-arm: hermes dk retry --loop {loop_id} "
                  f"--pr {row['pr']} --seat {row['seat']}")
         if row['state'] == 'failed' and BUDGET_KILL in (row['error'] or ''):
             # The same budget would run out again (#49): raise it first; the re-arm takes it.
             flag = {'reviewer': '--reviewer-turn-budget', 'fixer': '--fixer-turn-budget'}.get(
                 row['seat'], '--turn-budget')
             return (f"no external write — raise the turn budget (now "
-                    f"{int(row.get('budget') or 0) or '?'}s): hermes review-loop set --loop "
+                    f"{int(row.get('budget') or 0) or '?'}s): hermes dk set --loop "
                     f"{loop_id} {flag} N, then {rearm}")
         return f"no external write — {rearm}"
     if row['state'] == 'failed':
@@ -1384,7 +1384,7 @@ class Supervisor:
                         con.execute(statement)
             if vanished:
                 con.execute("INSERT INTO ledger_events(message,created) VALUES(?,?)",
-                            (f"⚠️ Review-loop run ledger {self.db} vanished and was recreated "
+                            (f"⚠️ Diaktoros run ledger {self.db} vanished and was recreated "
                              f"empty: earlier runs, holds and undelivered notices are lost. "
                              f"Check what removed it before trusting seat state.", time.time()))
             con.execute('COMMIT')
@@ -1842,7 +1842,7 @@ class Supervisor:
         status = {'posted': f"posted on the PR (comment {row['comment_id']})",
                   'denied': f"not posted ({row['comment_error'] or 'authorization denied'})",
                   }.get(comment, 'POST outcome unknown — inspect the PR before any repost')
-        return (f"🛑 Review-loop fixer disputed the review: "
+        return (f"🛑 Diaktoros fixer disputed the review: "
                 f"https://github.com/{row['repo']}/pull/{row['pr']} head={row['head']} "
                 f"run={row['run_id']}. Fixer's PR comment: {status}. The fixer found no defect "
                 "and pushed nothing; the reviewer "
@@ -1861,7 +1861,7 @@ class Supervisor:
                    'posted': f"posted on the PR (comment {row['comment_id']})",
                    'uncertain': 'POST outcome unknown — inspect the PR before any repost'
                    }.get(row['comment'], row['comment'])
-        return (f"⚖️ Review-loop adjudicator ruling {row['verdict']}: "
+        return (f"⚖️ Diaktoros adjudicator ruling {row['verdict']}: "
                 f"https://github.com/{row['repo']}/pull/{row['pr']} head={row['head']} "
                 f"run={row['run_id']} ({row['turn_key']}). PR comment: {comment}. "
                 "The adjudicator never merges, pushes or reviews; the decision is yours. "
@@ -1877,7 +1877,7 @@ class Supervisor:
         except Exception:
             pass                      # a notice must go out even if the config is unreadable
         kind = "issues" if row['seat'] in ('triage', 'issue_fixer') else "pull"
-        head = (f"⚠️ Review-loop worker {current['state']}: "
+        head = (f"⚠️ Diaktoros worker {current['state']}: "
                 f"https://github.com/{row['repo']}/{kind}/{row['pr']} "
                 f"seat={row['seat']} head={row['head']} run={row['id']}. "
                 f"Reason: {current['error'] or 'worker outcome unavailable'}.")
@@ -1891,7 +1891,7 @@ class Supervisor:
             # Nothing reached GitHub: the host's write-ahead records for this run are empty.
             return (head + f" No external write was made ({current['retries'] or 0} failed "
                     "attempts on record). Fix the cause if it is not transient, then re-arm it: "
-                    f"`hermes review-loop retry --loop {loop_id} --pr {row['pr']} --seat {row['seat']}` "
+                    f"`hermes dk retry --loop {loop_id} --pr {row['pr']} --seat {row['seat']}` "
                     f"(or `python -m review_loop.run_supervisor retry DB {row['id']}`); a "
                     "redelivered webhook for this head also re-arms it.")
         return (head + f" Possible external write ({wrote}). "
@@ -2117,11 +2117,11 @@ class Supervisor:
                 elif prior['error'] == FIXER_NOT_ADMITTED and prior['push_admitted'] != 1:
                     # Never upgraded by an event: re-arming would only be cancelled again.
                     outcome += (": fixer push not admitted — a redelivered event never upgrades "
-                                "admission; after opting in, `hermes review-loop retry` "
+                                "admission; after opting in, `hermes dk retry` "
                                 "re-admits it")
                 elif (prior['retries'] or 0) >= MAX_REARMS:
                     outcome += (f": {prior['retries']} failed attempts — only "
-                                "`hermes review-loop retry` re-arms it")
+                                "`hermes dk retry` re-arms it")
                 else:
                     self._rearm(con, prior['id'], reset=False, budget=requested)
                     outcome = 'rearmed'
@@ -2181,7 +2181,7 @@ class Supervisor:
                 if not policy_off and (loop is None
                                        or not config.unattended_fixer_push_enabled(loop)):
                     command = (config.fixer_push_enable_command(loop) if loop else
-                               'hermes review-loop fixer-push --loop LOOP --enable '
+                               'hermes dk fixer-push --loop LOOP --enable '
                                '--acknowledge-pr-race')
                     policy_off = (f"refused: unattended fixer pushes are off for "
                                   f"{first['repo']}, so a fixer turn could not publish; run "
@@ -3035,7 +3035,7 @@ class Supervisor:
             else:
                 flag = {'reviewer': '--reviewer-turn-budget',
                         'fixer': '--fixer-turn-budget'}.get(row['seat'], '--turn-budget')
-                error = (f"{killed} — raise turn_budget_s (hermes review-loop set --loop "
+                error = (f"{killed} — raise turn_budget_s (hermes dk set --loop "
                          f"{loop['id']} {flag} N), then `retry`")
             retry = False
         except Exception as exc:
@@ -3179,7 +3179,7 @@ def main():
             # This ledger-only process launches nothing: the next event for the PR, a
             # worker-enabled recovery or the next armed watchdog sweep starts it.
             print('rearmed: pending (starts on the next armed watchdog sweep or event; '
-                  '`hermes review-loop retry` also starts it now)')
+                  '`hermes dk retry` also starts it now)')
         else:
             if not a.command or not a.reason or not a.acknowledge_no_live_worker:
                 p.error('reconcile requires run ID, reason and explicit acknowledgement')

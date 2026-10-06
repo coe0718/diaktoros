@@ -175,7 +175,7 @@ SETTINGS_SCHEMA: dict = {
                                        "has finished so far."},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
-                                   "posts ends with 'Automated by hermes-review-loop' and "
+                                   "posts ends with 'Automated by Diaktoros' and "
                                    "a link (commits get an Automated-By trailer). Off: "
                                    "nothing is added. Never touches what people or "
                                    "agents post by hand."},
@@ -638,13 +638,13 @@ FIXER_PUSH_HOLD = "fixer held: unattended fixer pushes are off for this loop"
 
 
 def fixer_push_enable_command(loop: dict) -> str:
-    return f"hermes review-loop fixer-push --loop {loop['id']} --enable --acknowledge-pr-race"
+    return f"hermes dk fixer-push --loop {loop['id']} --enable --acknowledge-pr-race"
 
 
 def fixer_push_hold_reason(loop: dict) -> str:
     return (f"{FIXER_PUSH_HOLD} — the changes-requested verdict waits for you. To let the fixer "
             f"answer it, run `{fixer_push_enable_command(loop)}`; the next watchdog sweep (or "
-            f"`hermes review-loop drain --loop {loop['id']} --seat fixer`) then starts the fix "
+            f"`hermes dk drain --loop {loop['id']} --seat fixer`) then starts the fix "
             "run for this head. Or fix it by hand, push, and re-request review.")
 
 
@@ -849,6 +849,7 @@ def split_check_names(text) -> list[str]:
     return [name.strip() for name in names if name.strip()]
 
 
+SKILL_PREFIX, OLD_SKILL_PREFIX = "diaktoros:", "hermes-review-loop:"
 REVIEW_ONLY_MAX = 50
 _LOGIN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38})\Z")
 
@@ -1175,7 +1176,7 @@ def normalize_observer(raw) -> dict:
     Deliberately lenient where the seats are strict, and for one reason: an observer is
     read-only by construction, so a broken feed must never refuse a loop that can still turn.
     Anything unusable is dropped here and the *reason* is kept under ``misconfigured`` so
-    ``hermes review-loop status`` says it out loud — silence is the failure mode this whole
+    ``hermes dk status`` says it out loud — silence is the failure mode this whole
     plugin exists to kill, and a feed that quietly delivers nothing would be a new one.
 
     ``events`` narrows the feed; absent or empty means every transition (``observer.EVENTS``).
@@ -1270,7 +1271,7 @@ def reader_problem(loop: dict) -> str:
 
 def reader_fix(loop: dict) -> str:
     """The command that moves a loop's reader onto its own account."""
-    return (f"hermes review-loop set --loop {loop.get('id') or '<id>'} --read-token "
+    return (f"hermes dk set --loop {loop.get('id') or '<id>'} --read-token "
             "<its own login> --token <that login>=/path/to/pat")
 
 
@@ -1716,6 +1717,10 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if not loop["reviewers"]:
         raise ConfigError(f"{where}: 'reviewers' must list at least one GitHub login")
     loop["review_only"] = check_review_only(loop.get("review_only"), loop, where)
+    # A plugin skill is qualified by the plugin's name, and the plugin was renamed (#425): a loop
+    # written before still names the old one, which no longer exists. Read it as the new name.
+    if isinstance(loop.get("skill"), str) and loop["skill"].startswith(OLD_SKILL_PREFIX):
+        loop["skill"] = SKILL_PREFIX + loop["skill"][len(OLD_SKILL_PREFIX):]
 
     raw_seats = loop.get("seats") if isinstance(loop.get("seats"), dict) else {}
     seats = {}
@@ -1770,7 +1775,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if not loop["read_token"]:
         raise ConfigError(f"{where}: 'read_token' is not set, and the reader is never inferred "
                           "from 'tokens' — add \"read_token\": \"<login>\" naming the reader's "
-                          "own account, with its own entry in 'tokens': `hermes review-loop set "
+                          "own account, with its own entry in 'tokens': `hermes dk set "
                           f"--loop {loop.get('id') or '<id>'} --read-token LOGIN --token "
                           f"LOGIN=/abs/path/to/pat` writes both; {FOUR_IDENTITY_RULE}")
     adjudicator_seat = _adjudicator_seat(raw_seats.get("adjudicator"), loop, where)

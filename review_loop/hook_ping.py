@@ -46,7 +46,7 @@ def _deliveries(loop: dict, hook_id: int, login: str | None) -> tuple[list[dict]
 
 
 def fix_line(loop: dict) -> str:
-    return (f"`hermes review-loop uninstall --loop {loop['id']}` then re-run init --hooks, so the "
+    return (f"`hermes dk uninstall --loop {loop['id']}` then re-run init --hooks, so the "
             "hook and the route share one fresh secret")
 
 
@@ -83,6 +83,6 @@ def ping(loop: dict, hook_id: int, login: str | None, *, wait: float | None = No
                               f"  fix: {fix_line(loop)}")
         if clock() >= deadline:
             return SILENT, (f"⚠️ hook {hook_id}: no ping delivery seen within {wait:g}s — nothing "
-                            "proven yet; look again with `hermes review-loop doctor --loop "
+                            "proven yet; look again with `hermes dk doctor --loop "
                             f"{loop['id']}` or `gh api repos/{loop['repo']}/hooks/{hook_id}/deliveries`")
         sleep(POLL)

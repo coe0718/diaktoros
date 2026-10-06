@@ -926,7 +926,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                   f"gate_reviewer's closed path reclaiming the disk")
     elif armed is False:
         kind = "rearm"
-        action = (f"re-arm the loop — hermes review-loop arm --loop {loop['id']} — no event can "
+        action = (f"re-arm the loop — hermes dk arm --loop {loop['id']} — no event can "
                   f"reach both seats while a repo hook is missing or inactive")
     elif not head:
         kind = "retry"
@@ -999,7 +999,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         action = (f"operator decision: unattended fixer pushes are off for this loop, so the "
                   f"changes-requested verdict at head {short} starts no fixer turn. To let the "
                   f"fixer answer it, run `{config.fixer_push_enable_command(loop)}` — the next "
-                  f"watchdog sweep (or `hermes review-loop drain --loop {loop['id']} --seat fixer`) "
+                  f"watchdog sweep (or `hermes dk drain --loop {loop['id']} --seat fixer`) "
                   "then starts the fix run for this head; or fix it by hand, push, and re-request "
                   "review")
     elif stale_held == {"reviewer"} and at_head:
@@ -1051,7 +1051,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         action = (f"a review run for head {short}: the pending request for "
                   f"{loop['reviewer_seat']} started none. A request counts only from a fixer, the "
                   "reviewer or a maintainer (triage.maintainers); anyone else's is ignored. Run "
-                  f"`hermes review-loop review --loop {loop['id']} --pr {number}` (or ask again as "
+                  f"`hermes dk review --loop {loop['id']} --pr {number}` (or ask again as "
                   "one of them); if it came from one, "
                   f"`trace --loop {loop['id']}` its delivery to see why the gate declined")
     else:

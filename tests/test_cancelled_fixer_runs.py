@@ -7,7 +7,7 @@ admission rules, now explicit:
 * an automatic redelivery never upgrades a row's admission (a row admitted while pushes were off
   stays unadmitted, and is not pointlessly re-armed); a revoked row re-arms, and runs once the
   policy is back on;
-* an operator `hermes review-loop retry` re-admits under the policy in force *now*, taking a fresh
+* an operator `hermes dk retry` re-admits under the policy in force *now*, taking a fresh
   admission snapshot under the push-policy lock; while pushes are off it is refused with the
   command that turns them on.
 """
@@ -98,7 +98,7 @@ class CancelledFixer(unittest.TestCase):
         line = self.visible()                         # status/explain now show it
         self.assertIn("fixer #7 @ aaaaaaa cancelled — fixer push revoked", line)
         self.assertIn("fixer-push --loop widgets --enable --acknowledge-pr-race", line)
-        self.assertIn("hermes review-loop retry --loop widgets --pr 7 --seat fixer", line)
+        self.assertIn("hermes dk retry --loop widgets --pr 7 --seat fixer", line)
         # `retry` while pushes are still off: refused, naming the command that fixes it.
         code, out = self.cli(cli.cmd_retry, loop="widgets", pr=7, seat="fixer")
         self.assertEqual(code, 2)
@@ -128,7 +128,7 @@ class CancelledFixer(unittest.TestCase):
         # Pushes are on now; a redelivered event still does not upgrade it, and says so.
         outcome = self.sup.submit("fix-2", REPO, 7, HEAD, "fixer", require_push_admission=True)
         self.assertTrue(outcome.startswith("duplicate cancelled"), outcome)
-        self.assertIn("hermes review-loop retry", outcome)
+        self.assertIn("hermes dk retry", outcome)
         self.assertEqual((self.row()["state"], self.row()["push_admitted"]), ("cancelled", 0))
         # The operator's retry re-admits under the current policy, with a fresh snapshot.
         self.assertEqual(self.sup.retry(self.row()["id"]), "pending")

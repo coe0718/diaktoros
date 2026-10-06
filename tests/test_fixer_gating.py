@@ -30,7 +30,7 @@ from scripts import gate_fixer, watchdog  # noqa: E402
 
 HEAD = "a" * 40
 REPO = "owner/one"
-ENABLE = "hermes review-loop fixer-push --loop one --enable --acknowledge-pr-race"
+ENABLE = "hermes dk fixer-push --loop one --enable --acknowledge-pr-race"
 
 
 def raw_loop(push: bool) -> dict:

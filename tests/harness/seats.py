@@ -6,7 +6,7 @@ from .fixture import *  # noqa: F403 - the shared harness namespace
 
 
 def group_settings() -> None:
-    """`hermes review-loop set` — changing the knobs without hand-editing JSON."""
+    """`hermes dk set` — changing the knobs without hand-editing JSON."""
     import contextlib
     import io
     from types import SimpleNamespace
@@ -268,9 +268,10 @@ def group_plugin_settings() -> None:
 
     fake = FakeCtx()
     cli.register_cli(fake, settings=settings)
-    check("the CLI registers itself under one name", fake.registered, "review-loop")
+    check("the CLI registers its full name last (after `dk` and the old `review-loop`)",
+          fake.registered, "diaktoros")
 
-    parser = argparse.ArgumentParser(prog="hermes review-loop")
+    parser = argparse.ArgumentParser(prog="hermes dk")
     fake.setup(parser)          # the framework hands setup the COMMAND's parser, not a subparsers action
     args = parser.parse_args(["init", "--repo", "acme/solo", "--fixer", "f", "--reviewer", "r",
                               "--reviewer-profile", "p", "--fixer-profile", "q"])
@@ -878,7 +879,7 @@ def group_webhook_host() -> None:
         def parser_for(settings=None):
             fake = FakeCtx()
             cli.register_cli(fake, settings=settings)
-            parser = argparse.ArgumentParser(prog="hermes review-loop")
+            parser = argparse.ArgumentParser(prog="hermes dk")
             fake.setup(parser)
             return parser
 
@@ -964,7 +965,7 @@ def group_webhook_host() -> None:
                   [kw["body"]["active"] for _, kw in calls], [False, False])
             check(f"  {label}: says they are paused", "(paused)" in out.getvalue(), True)
             check(f"  {label}: next steps end with arm",
-                  "hermes review-loop arm --loop host-probe" in out.getvalue(), True)
+                  "hermes dk arm --loop host-probe" in out.getvalue(), True)
             check(f"  {label}: never tells a seat profile to hold a GitHub token",
                   "GH_TOKEN in the profile .env" in out.getvalue(), False)
             check(f"  {label}: saved host", config.load_id("host-probe")["host"], host)

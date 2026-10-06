@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Issue #213: ``hermes review-loop triage`` turns issue triage on and off for one loop.
+"""Issue #213: ``hermes dk triage`` turns issue triage on and off for one loop.
 
 In-process against the real parser on the harness fixture (stub GitHub, temp HOME): the route
 it writes subscribes to ``issues`` and runs the triage gate, the shim lands in the triage
@@ -152,7 +152,7 @@ class TriageVerb(unittest.TestCase):
             rc, out = self.enable(*admin)
         self.assertIn("hook 7 kept (active)", out)
         self.assertNotIn("created paused", out)
-        self.assertNotIn("next: hermes review-loop arm", out)
+        self.assertNotIn("next: hermes dk arm", out)
 
         def create(loop, login, dry_run, outcome=None):
             outcome.update(created=["triage"], kept={})
@@ -160,7 +160,7 @@ class TriageVerb(unittest.TestCase):
         with mock.patch.object(cli, "_ensure_hooks", side_effect=create):
             rc, out = self.enable(*admin)
         self.assertIn("hook created (paused)", out)
-        self.assertIn("next: hermes review-loop arm", out)
+        self.assertIn("next: hermes dk arm", out)
 
 
 if __name__ == "__main__":

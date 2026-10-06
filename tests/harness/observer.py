@@ -408,7 +408,7 @@ def group_observer_cli() -> None:
     def parser_for(settings=None):
         fake = FakeCtx()
         cli.register_cli(fake, settings=settings)
-        parser = argparse.ArgumentParser(prog="hermes review-loop")
+        parser = argparse.ArgumentParser(prog="hermes dk")
         fake.setup(parser)
         return parser
 

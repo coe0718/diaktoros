@@ -1190,7 +1190,7 @@ def redrive(ledger: Ledger, key: str, gate: str, scripts_dir: pathlib.Path) -> s
 
 
 def _corrupt_line(header: str, entry: dict) -> str:
-    return (f"⚠️ Review loop {header} — gate-failure ledger {entry.get('path')} was unreadable "
+    return (f"⚠️ Diaktoros {header} — gate-failure ledger {entry.get('path')} was unreadable "
             f"({entry.get('error')}); it was moved aside to {entry.get('corrupt_copy')}, not "
             f"overwritten. Gate failures recorded before then are only in that copy: salvage what "
             f"you need from it, then delete it (this clears itself).")
@@ -1253,7 +1253,7 @@ def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s:
                                      held if not may_redrive else "")
             pr = f"#{entry['pr']}" if entry.get("pr") else "no PR"
             head = str(entry.get("head") or "")[:7] or "?"
-            line = (f"⚠️ Review loop {header} — gate failure {key}: {entry.get('gate')} "
+            line = (f"⚠️ Diaktoros {header} — gate failure {key}: {entry.get('gate')} "
                     f"{entry.get('kind')} on {pr} @ {head} ({entry.get('action') or '?'}), "
                     f"{entry.get('attempts')} attempt(s): {entry.get('error_type')}: "
                     f"{_bounded(entry.get('error') or '', 160)} — {outcome}")

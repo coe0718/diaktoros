@@ -68,7 +68,7 @@ class TokenFileSettingsTests(unittest.TestCase):
     def run_cli(self, argv, settings=None):
         ctx = _Ctx()
         cli.register_cli(ctx, settings=settings or {})
-        parser = argparse.ArgumentParser(prog="hermes review-loop")
+        parser = argparse.ArgumentParser(prog="hermes dk")
         ctx.setup(parser)
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
