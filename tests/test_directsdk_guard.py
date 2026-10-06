@@ -16,6 +16,11 @@ class LaunchTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # install_guard patches os/subprocess process-wide; undo it so other tests are unaffected.
+        for n in guard.REFUSED_OS_LAUNCHERS:
+            if hasattr(os, n):
+                self.addCleanup(setattr, os, n, getattr(os, n))
+        self.addCleanup(setattr, subprocess, '_USE_POSIX_SPAWN', subprocess._USE_POSIX_SPAWN)
         self.root = Path(self.tmp.name)
         self.plugin = self.root / 'plugin'
         self.plugin.mkdir(mode=0o700)
