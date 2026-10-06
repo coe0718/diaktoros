@@ -119,6 +119,37 @@ class TriageVerb(unittest.TestCase):
         triage = {check.name: check for check in doctor.check_triage(loop)}
         self.assertEqual(triage["profile:triage"].status, doctor.VERIFIED)
 
+    def test_hook_wording_follows_what_happened(self):
+        admin = ("--admin-token", t.REVIEWER)
+        url = routes.url_for(ROUTE, t.HOST) if routes.route(ROUTE) else f"{t.HOST}/webhooks/{ROUTE}"
+        existing = {"id": 7, "active": True, "config": {"url": url}}
+        with mock.patch.object(cli, "_hook_listing", return_value=[existing]), \
+                mock.patch.object(routes, "route_name_of", return_value=ROUTE):
+            rc, out = self.enable("--dry-run", *admin)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("keep hook 7 (active)", out)
+        self.assertNotIn("(paused)", out)
+        with mock.patch.object(cli, "_hook_listing", return_value=[]):
+            rc, out = self.enable("--dry-run", *admin)
+        self.assertIn("create the repo hook (paused; next, arm)", out)
+
+        def reuse(loop, login, dry_run, outcome=None):
+            outcome.update(created=[], kept={"triage": existing})
+            return 0
+        with mock.patch.object(cli, "_ensure_hooks", side_effect=reuse):
+            rc, out = self.enable(*admin)
+        self.assertIn("hook 7 kept (active)", out)
+        self.assertNotIn("created paused", out)
+        self.assertNotIn("next: hermes review-loop arm", out)
+
+        def create(loop, login, dry_run, outcome=None):
+            outcome.update(created=["triage"], kept={})
+            return 0
+        with mock.patch.object(cli, "_ensure_hooks", side_effect=create):
+            rc, out = self.enable(*admin)
+        self.assertIn("hook created (paused)", out)
+        self.assertIn("next: hermes review-loop arm", out)
+
 
 if __name__ == "__main__":
     unittest.main()

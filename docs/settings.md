@@ -24,7 +24,7 @@ an explicit `apply --loop "<loop-id>"`.
 | Per-loop JSON | Repository, allowlists, routes, seats, consent policy, observer/triage and all effective loop settings | Use `set`, `triage`, `fixer-push`, or a carefully reviewed manual edit plus route reconciliation. See [Configuration](configuration.md). |
 | Private runtime JSON | Host Hermes/Python/Rust paths and optional model overrides | `setup` detects/writes it; workers resolve models through the runtime. See [Configuration](configuration.md). |
 
-The form and `SETTINGS_SCHEMA` in `review_loop/config.py` mirror the 20 keys declared in
+The form and `SETTINGS_SCHEMA` in `review_loop/config.py` mirror the 23 keys declared in
 `plugin.yaml:config_schema`. The schema supplies types, labels and defaults, not a complete
 validation contract. The CLI handlers validate the resulting loop before their own writes.
 
@@ -58,6 +58,9 @@ Defaults are for a fresh form; existing loops retain values when a field is abse
 | `review_only` | str / `""` | Comma-separated GitHub logins; at most 50 unique, none a fixer or a reviewer | `review_only`: their PRs are reviewed, never fixed; a verdict goes back to the author, with no cap or adjudication. |
 | `required_checks` | str / `""` | Comma-separated check names (a comma inside parentheses stays in the name); at most 50 unique names | `required_checks`: only these gate an approval and the CI hold; others are optional. A required check that never reports at the head is refused on approval and holds the review (up to an hour) whatever `review_after_ci` is. |
 | `fixer_check` | str / `""` | One printable line, at most 500 characters | `fixer_check`: one command the fixer and issue-fix turns run before publishing, besides the tests they touched. Blank keeps the loop's value; `set --fixer-check ''` clears it. |
+| `reviewer_max_steps` | str / `""` | Whole number 8-200, or blank | `seats.reviewer.max_steps`; agent steps one reviewer turn may take. Blank = not set here: the loop keeps its own value or the role default. |
+| `fixer_max_steps` | str / `""` | Whole number 8-200, or blank | `seats.fixer.max_steps`; agent steps one fixer turn (and an issue fix) may take. Blank = not set here. |
+| `fix_daily_turns` | str / `""` | Whole number 1-1000, or blank | `triage.fix_daily_turns`; issue-fix turns per local day. Needs the loop's `triage.fix_label`, else apply is refused. Blank = not set here. |
 | `attribution` | bool / `true` | Boolean; CLI reader also recognizes boolean words | `attribution`; signs plugin-mediated reviews/comments and commit trailers. See the attribution-only apply limitation below. |
 
 The form deliberately has **no reader login/token field**, no observer destination, no triage,

@@ -132,12 +132,16 @@ def group_observer() -> None:
     reset(prs={"7": {**pr(7, head=HEAD_A), "mergeable_state": "dirty"}})
     observer_route()
     state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
-    run("watchdog.py", None, "--loop", "widgets")
+    _, _, err = run("watchdog.py", None, "--loop", "widgets")
     conflict = [notice(p) for p in observer_posts() if notice(p)["event"] == "conflict"]
     check("conflict: one notice", len(conflict), 1)
     check("  it says what and what to do",
           ("conflicts with its base" in conflict[0]["message"]
-           and "merge main into the branch" in conflict[0]["message"]), True)
+           and "merges main into the branch" in conflict[0]["message"]), True)
+    # #303 stage 3: with unattended fixer pushes on, the sweep asks for a resolving fixer turn
+    # (held here: the harness has no worker runtime) and still finishes and notifies.
+    check("  the sweep asks for a resolving fixer turn",
+          "conflict with main: fixer" in err or "conflict turn not queued" in err, True)
     run("watchdog.py", None, "--loop", "widgets")
     check("  the next sweep at the same head says nothing new",
           len([p for p in observer_posts() if notice(p)["event"] == "conflict"]), 1)

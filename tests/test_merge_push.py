@@ -106,6 +106,12 @@ class Merge(unittest.TestCase):
         self.assertEqual((export / "c.py").read_text(), "print('main')\n")       # from main
         self.assertEqual((export / "new.py").read_text(), "print('pr')\n")       # from the PR
         self.assertTrue((export / ".github" / "workflows" / "ci.yml").exists())
+        sides = merged["sides"]
+        self.assertIn("What the PR changed", sides)
+        self.assertIn("+x = 2", sides)
+        self.assertIn("What the base changed", sides)
+        self.assertIn("+x = 3", sides)
+        self.assertNotIn("c.py", sides)                     # only the conflicted files
 
     def test_a_resolution_becomes_a_two_parent_merge_under_the_lease(self):
         merged = self.merged()
@@ -244,6 +250,27 @@ class WholeFile(unittest.TestCase):
         with self.assertRaisesRegex(safe_push.NeedsPerson, "whole-file"):
             safe_push.merged_tree(self.loop, branch="fix-7", head=head, base_ref="main",
                                   base_sha=self.base, login="read", remote=self.remote)
+
+    def test_a_binary_kept_whole_is_refused_even_with_a_marker_shaped_line(self):
+        """#409 (Tuck): both sides change a binary; the kept side's bytes contain a line that
+        looks like a marker, so a marker scan alone calls it a content conflict."""
+        src = self.root / "sneaky"
+        git("clone", "-q", "-b", "fix-7", self.remote, str(src))
+        (src / "gone.txt").write_text("base\n")                  # no modify/delete this time
+        (src / "img.bin").write_bytes(b"\x00\x02pr\n<<<<<<< sneaky\n")
+        git("-C", str(src), "commit", "-qam", "sneaky binary")
+        git("-C", str(src), "push", "-q", "origin", "fix-7")
+        head = git("-C", str(src), "rev-parse", "HEAD")
+        main = self.root / "main-gone"
+        git("clone", "-q", "-b", "main", self.remote, str(main))
+        (main / "gone.txt").write_text("base\n")                 # restore it on main as well
+        git("-C", str(main), "add", "gone.txt")
+        git("-C", str(main), "commit", "-qm", "keep gone.txt")
+        git("-C", str(main), "push", "-q", "origin", "main")
+        base = git("-C", str(main), "rev-parse", "HEAD")
+        with self.assertRaisesRegex(safe_push.NeedsPerson, "1 whole-file"):
+            safe_push.merged_tree(self.loop, branch="fix-7", head=head, base_ref="main",
+                                  base_sha=base, login="read", remote=self.remote)
 
     def test_a_bad_base_branch_name_is_refused(self):
         with self.assertRaisesRegex(broker.BrokerDenied, "invalid base branch name"):

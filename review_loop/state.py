@@ -662,6 +662,32 @@ class LoopState:
     def watch_save(self, data: dict) -> None:
         self._save(self.watch_file, data)
 
+    # -- held issue-fix hand-offs (#324): {issue number: origin PR} ----------
+
+    def fix_holds(self) -> dict:
+        with self.locked():
+            raw = self._load(self.dir / "held-fixes.json", {})
+        out = {}
+        for key, pr in (raw.items() if isinstance(raw, dict) else ()):
+            if str(key).isdigit() and type(pr) is int:
+                out[int(key)] = pr
+        return out
+
+    def fix_hold_get(self, number: int) -> int | None:
+        return self.fix_holds().get(number)
+
+    def fix_hold_set(self, number: int, pr: int) -> None:
+        with self.locked():
+            data = {str(k): v for k, v in self.fix_holds().items()}
+            data[str(number)] = pr
+            self._save(self.dir / "held-fixes.json", data)
+
+    def fix_hold_drop(self, number: int) -> None:
+        with self.locked():
+            data = {str(k): v for k, v in self.fix_holds().items()}
+            if data.pop(str(number), None) is not None:
+                self._save(self.dir / "held-fixes.json", data)
+
     def github_failure_record(self, entry: dict) -> None:
         """Keep the most recent failed GitHub call (see ``gh.record_failure``)."""
         self._save(self.github_reads, {"last_failure": entry})

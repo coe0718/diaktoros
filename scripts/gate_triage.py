@@ -87,13 +87,27 @@ def fix(loop: dict, payload: dict) -> None:
     if existing is not None:
         _skip_comment(loop, number, existing)
         silence(f"issue #{number}: open PR #{existing} already fixes it; not handed to the fixer")
-    ref = gh.api(loop, f"/repos/{loop['repo']}/git/ref/heads/{loop['base']}",
-                 login=loop["read_token"])
-    base = ((ref or {}).get("object") or {}).get("sha") if isinstance(ref, dict) else None
-    if not isinstance(base, str) or len(base) != 40:
-        silence(f"issue #{number}: base branch {loop['base']} unreadable (GitHub read failed)")
+    # #324: a finding a seat filed from a PR that is still open is about code only there.
+    from review_loop import fix_hold, state as state_mod
     try:
-        outcome = gate.enqueue_isolated(loop, "issue_fixer", number, base, turn_key="issue-fix")
+        origin = fix_hold.origin_pr(loop, number)
+    except Exception as exc:
+        silence(f"issue #{number} not handed to the fixer: lineage unreadable: {exc}")
+    if origin is not None:
+        origin_state = fix_hold.pr_state(loop, origin)
+        if origin_state is None:
+            silence(f"issue #{number} not handed to the fixer: PR #{origin} unreadable")
+        if origin_state == "open":
+            fix_hold.hold(loop, state_mod.state_for(loop), number, origin)
+            silence(f"issue #{number} held until PR #{origin} merges")
+        if origin_state == "closed":
+            fix_hold._drop_comment(loop, number, origin)
+            silence(f"issue #{number}: PR #{origin} closed unmerged; finding is moot")
+        state_mod.state_for(loop).fix_hold_drop(number)
+    try:
+        base, outcome = fix_hold.queue_fix(loop, number)
+    except RuntimeError as exc:
+        silence(f"issue #{number}: {exc}")
     except Exception as exc:
         reason = f"isolated worker unavailable: {type(exc).__name__}: {exc}"
         _fix_notice(loop, number, base, f"held — {reason}")

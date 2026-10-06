@@ -57,6 +57,9 @@ class RunScope:
     # (#93, #110). Host-built, like every field here: requests carry exactly operation/verdict/
     # body (or a manifest), so nothing inside the namespace can set, clear or observe it.
     partial_view: str = ""
+    # A conflict-resolution turn (#303): {base_ref, base_sha, tree}, the merge the host staged as
+    # the seat's /work. Host-built like every field here; the push becomes a merge commit of it.
+    merge: dict | None = None
 
 
 # What a reviewer that could not see the whole change reads when it tries to approve (#93, #110).
@@ -411,7 +414,9 @@ class RunBroker:
                         result = safe_push.push(current_loop, repo=self.scope.repo,
                                                 number=self.scope.number, head=self.scope.head,
                                                 role=self.scope.role, branch=self.scope.branch,
-                                                manifest=request["manifest"])
+                                                manifest=request["manifest"],
+                                                **({"merge": dict(self.scope.merge)}
+                                                   if self.scope.merge else {}))
                         # safe_push returns only after exact ref + PR readback and
                         # durable audit. Failure to commit completion leaves intent.
                         supervisor.confirm_push(self.scope.run_id, self.scope.repo,

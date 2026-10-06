@@ -261,6 +261,8 @@ CONFLICT_MARKER = re.compile(rb"^(?:<{7}|>{7})(?: |$)", re.M)
 MERGE_CONFLICTS_MAX = 64
 MERGE_ENTRIES_MAX = 20000
 MERGE_BYTES_MAX = 100 * 1024 * 1024          # trusted_fetch's export bound
+# What each side changed in the conflicted files, for the resolving turn's prompt: bounded.
+MERGE_SIDES_MAX = 48 * 1024
 
 
 class NeedsPerson(broker.BrokerDenied):
@@ -297,13 +299,16 @@ def _merge(git: "_Isolated", url: str, branch: str, head: str, base_ref: str,
         raise broker.BrokerDenied("merge of the base could not be computed")
     tree = _sha(fields[0].decode())
     stages: dict[str, set[str]] = {}
+    objects: dict[str, dict[str, str]] = {}
     for record in fields[1:]:
         # "<mode> <object> <stage>\t<path>" for each conflicted index entry.
         meta, _, path = record.partition(b"\t")
         parts = meta.decode("ascii", "replace").split()
         if len(parts) != 3 or not path:
             raise broker.BrokerDenied("merge of the base could not be computed")
-        stages.setdefault(path.decode("utf-8", "surrogateescape"), set()).add(parts[2])
+        name = path.decode("utf-8", "surrogateescape")
+        stages.setdefault(name, set()).add(parts[2])
+        objects.setdefault(name, {})[parts[2]] = parts[1]
     conflicted = sorted(stages)
     if code == 1 and not conflicted:
         raise broker.BrokerDenied("merge of the base could not be computed")
@@ -314,9 +319,16 @@ def _merge(git: "_Isolated", url: str, branch: str, head: str, base_ref: str,
         if not {"2", "3"} <= stages[path]:
             whole.append(path)                 # one side deleted or renamed it
             continue
+        code, merged_oid = git.run_rc("--git-dir", bare, "rev-parse", "--verify", "-q",
+                                      f"{tree}:{path}")
+        if code or merged_oid.strip().decode() in (objects[path].get("2"), objects[path].get("3")):
+            # #409: Git kept one side's file whole instead of writing a merged one — a binary
+            # conflict, whatever its bytes look like (a kept side may hold a marker-shaped line).
+            whole.append(path)
+            continue
         code, blob = git.run_rc("--git-dir", bare, "cat-file", "blob", f"{tree}:{path}")
         if code or not CONFLICT_MARKER.search(blob):
-            whole.append(path)                 # kept whole: a binary or otherwise unmerged file
+            whole.append(path)                 # no marker block written: not a content conflict
     if whole:
         raise NeedsPerson(f"merge conflicts a person must resolve: {len(whole)} whole-file "
                           "conflict(s) (a modify/delete, a rename or a binary file)")
@@ -362,7 +374,29 @@ def merged_tree(loop: dict, *, branch: str, head: str, base_ref: str, base_sha: 
         workflows = bool(git.run("--git-dir", bare, "diff-tree", "-r", "--name-only", head, tree,
                                  "--", ".github/workflows"))
         return {"tree": tree, "conflicted": conflicted, "entries": entries,
-                "skipped": skipped, "archive": archive[1], "workflows": workflows}
+                "skipped": skipped, "archive": archive[1], "workflows": workflows,
+                "sides": _sides(git, head, base_sha, conflicted)}
+
+
+def _sides(git: "_Isolated", head: str, base_sha: str, conflicted: list[str]) -> str:
+    """What each side changed in every conflicted file since they split: the PR's diff and the
+    base's, from their merge base, bounded at MERGE_SIDES_MAX (and said so when clipped)."""
+    if not conflicted:
+        return ""
+    bare = str(git.bare)
+    split = _sha(git.run("--git-dir", bare, "merge-base", head, base_sha).decode())
+    parts = []
+    for label, tip in (("the PR", head), ("the base", base_sha)):
+        code, diff = git.run_rc("--git-dir", bare, "diff", "--no-color", "--no-ext-diff",
+                                split, tip, "--", *conflicted)
+        parts.append(f"### What {label} changed in these files\n\n```diff\n"
+                     + (diff.decode("utf-8", "replace") if not code else "(unreadable)")
+                     + "\n```")
+    text = "\n\n".join(parts)
+    if len(text.encode()) > MERGE_SIDES_MAX:
+        text = (text.encode()[:MERGE_SIDES_MAX].decode("utf-8", "ignore")
+                + f"\n\n(clipped at {MERGE_SIDES_MAX // 1024} KiB: read the files in /work)")
+    return text
 
 
 def _git_cas(loop: dict, repo: str, branch: str, head: str,
@@ -506,8 +540,12 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
         raise broker.BrokerDenied("unattended fixer push disabled")
     if base != head:
         raise broker.BrokerDenied("manifest base differs from scoped PR head")
+    # A conflict turn (#303) runs on an approved or unreviewed PR, so it has no changes-requested
+    # verdict to answer. ``merge`` is host-built (RunScope), never the seat's: an ordinary push
+    # still needs the live verdict.
+    verdict = merge is None
     login = broker.authorize(loop, repo=repo, number=number, head=head,
-                             role=role, branch=branch, operation="push")
+                             role=role, branch=branch, operation="push", require_verdict=verdict)
     if not isinstance(branch, str) or len(branch) > 200 or not all(
             SEGMENT.fullmatch(part) and not part.startswith(".") and not part.endswith(".")
             and ".." not in part and not part.endswith(".lock")
@@ -533,7 +571,7 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
         raise broker.BrokerDenied("invalid fixer identity")
     # Refresh BOTH PR identity and branch immediately before ref mutation.
     broker.authorize(loop, repo=repo, number=number, head=head,
-                     role=role, branch=branch, operation="push")
+                     role=role, branch=branch, operation="push", require_verdict=verdict)
     check_ref()
     # The SHA is known after local construction, before the only remote mutation.
     receipt = {"repo": repo, "pr": number, "old_head": head,
@@ -552,7 +590,7 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
         # Object construction/fetch may take time; the initial PR check cannot
         # authorize a later write. Recheck as close to the Git push as possible.
         broker.authorize(loop, repo=repo, number=number, head=head,
-                         role=role, branch=branch, operation="push")
+                         role=role, branch=branch, operation="push", require_verdict=verdict)
         check_ref()
         attempt_started = True
         _audit(loop, {**receipt, "new_head": created, "phase": "attempt"})
