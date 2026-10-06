@@ -193,6 +193,7 @@ class WatchdogAndDoctorTest(Fixture):
         before = self.install()
         self.native(lambda d: d.pop("widgets-review"))
         st = mock.Mock()
+        st.dir = pathlib.Path(self.tmp.name) / "state"   # the sweep lock lives here
         st.watch.return_value = {}
         with mock.patch.object(watchdog.gate, "hooks_read", return_value=(True, "")), \
                 mock.patch.object(watchdog.gh, "auth_probe",
@@ -211,7 +212,9 @@ class WatchdogAndDoctorTest(Fixture):
         with mock.patch.object(watchdog.gate, "hooks_read", return_value=(False, "reviewer, fixer")), \
                 mock.patch.object(watchdog.gh, "auth_probe") as probe, \
                 mock.patch.object(watchdog, "TEST", False):
-            self.assertEqual(watchdog.sweep_loop(self.loop, mock.Mock()), [])
+            st = mock.Mock()
+            st.dir = pathlib.Path(self.tmp.name) / "state"
+            self.assertEqual(watchdog.sweep_loop(self.loop, st), [])
         probe.assert_not_called()               # a confirmed pause reads nothing more
         self.assertNotIn("widgets-review", self.live())
 
