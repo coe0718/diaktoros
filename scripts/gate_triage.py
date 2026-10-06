@@ -96,6 +96,7 @@ def fix(loop: dict, payload: dict) -> None:
     if origin is not None:
         origin_state = fix_hold.pr_state(loop, origin)
         if origin_state is None:
+            state_mod.state_for(loop).fix_hold_set(number, origin)   # the sweep retries
             silence(f"issue #{number} not handed to the fixer: PR #{origin} unreadable")
         if origin_state == "open":
             fix_hold.hold(loop, state_mod.state_for(loop), number, origin)
