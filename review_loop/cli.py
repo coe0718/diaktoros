@@ -1469,6 +1469,21 @@ def _write_config_locked(loop: dict, *, policy_change: bool = False) -> pathlib.
         pathlib.Path(temporary).unlink(missing_ok=True)
     return path
 
+def _write_moved_repo(loop: dict, new: str) -> pathlib.Path:
+    """Rename a loop's repository for ``migrate`` (#425), the one writer allowed to.
+
+    ``_write_config`` refuses any repository change so a set/apply snapshot can never carry a loop
+    (and its push policy) to another repository. ``migrate`` has verified that ``new`` is the
+    *same* repository by id, so here the loop is re-read under the policy lock, must still name
+    the repository it was read with, and only ``repo`` changes; the push policy is the current one.
+    """
+    with config.push_policy_lock():
+        current = config.load_id(loop["id"])
+        if current["repo"] != loop["repo"]:
+            raise config.ConfigError("repository changed during migrate")
+        return _write_config_locked({**current, "repo": new}, policy_change=True)
+
+
 def _restore_config(path: pathlib.Path, data: bytes) -> None:
     """Publish a previous snapshot without exposing partially restored JSON."""
     with config.push_policy_lock():
@@ -3596,6 +3611,35 @@ def cmd_explain(args) -> int:
     return 0
 
 
+def cmd_migrate(args) -> int:
+    """Move an install from the ``hermes-review-loop`` plugin to this one (#425); see ``migrate``.
+
+    Run between turns. Exit 1 when a step was refused (a run in flight, a shim this plugin did not
+    write); re-running finishes what an interrupted run began.
+    """
+    from . import migrate, run_supervisor
+    try:
+        loops = config.all_loops()
+    except config.ConfigError as exc:
+        print(f"cannot migrate: {exc}")
+        return 2
+    lines = migrate.settings_step(_CTX, dry_run=args.dry_run)
+    lines += migrate.repo_step(loops, _write_moved_repo, dry_run=args.dry_run,
+                               ledger=run_supervisor.production_ledger())
+    if not args.dry_run:
+        loops = config.all_loops()                 # a moved repository is the loop's name now
+    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    lines += migrate.shim_step(loops, _write_watchdog_shim, config.home() / "scripts" / SHIM_NAME,
+                               SHIM.format(watchdog=watchdog), dry_run=args.dry_run)
+    if not args.dry_run:
+        lines += migrate.doctor_step(loops)
+    lines += migrate.old_plugin_note(config.home() / "plugins")
+    print("\n".join(lines))
+    if args.dry_run:
+        print("dry run: nothing was written")
+    return 1 if any("REFUSED" in line or "NOT rewritten" in line for line in lines) else 0
+
+
 def cmd_doctor(args) -> int:
     """Read-only preflight: is this installation able to run the loop at all?
 
@@ -4418,6 +4462,8 @@ def cmd_uninstall(args) -> int:
 # a running loop would be a nasty thing to debug, so these are *defaults* and a push — never a
 # subscription.
 _SETTINGS: dict = {}
+# The Hermes plugin context register_cli was given: `migrate` writes settings through it (#425).
+_CTX = None
 
 
 def register_cli(ctx, settings: dict | None = None) -> None:
@@ -4427,8 +4473,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
     from, and what ``apply`` pushes onto an existing loop; it never rewrites a loop behind the
     operator's back.
     """
-    global _SETTINGS
+    global _SETTINGS, _CTX
     _SETTINGS = dict(settings or {})
+    _CTX = ctx
     d = config.settings_defaults(settings)
     # Both seats agreeing is the only case where a loop-level default says anything useful: when
     # they disagree the differing seat carries its value explicitly (see _init_seat_concurrency).
@@ -4650,6 +4697,12 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         tracer.add_argument("--admin-token", default="",
                             help="login whose token can read hook deliveries (admin:repo_hook or repo)")
         tracer.set_defaults(func=cmd_trace)
+
+        move = sub.add_parser("migrate", help="Move an install from the hermes-review-loop plugin to "
+                                              "this one: settings, a renamed repository, shims (#425)")
+        move.add_argument("--dry-run", action="store_true",
+                          help="report every step and write nothing")
+        move.set_defaults(func=cmd_migrate)
 
         preflight = sub.add_parser("doctor", help="Preflight a loop read-only: profiles, tokens, "
                                                   "routes, hooks, scripts, cron, clone")
