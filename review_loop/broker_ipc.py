@@ -543,16 +543,18 @@ class RunBroker:
             if answers_only:
                 # Nothing was pushed, so nothing new to review: the answers comment at the head
                 # the fixer was given is the whole write. It must actually land.
-                self.answers_outcome = self._publish_answers(head, body, dispute=dispute)
-                if self.answers_outcome not in ("posted", "uncertain"):
-                    raise ProtocolError(f"answers comment {self.answers_outcome}")
                 if dispute:
+                    # Durable intent first (#401): the operator notice exists before the public
+                    # comment POST, so a crash after the POST cannot lose the dispute.
                     from .run_supervisor import Supervisor
                     try:
                         Supervisor(self.scope.ledger_db, create=False).record_dispute(
                             self.scope.run_id, self.scope.repo, self.scope.number, head, body)
                     except Exception as persistence_error:
                         raise ProtocolError("dispute persistence failed") from persistence_error
+                self.answers_outcome = self._publish_answers(head, body, dispute=dispute)
+                if self.answers_outcome not in ("posted", "uncertain"):
+                    raise ProtocolError(f"answers comment {self.answers_outcome}")
                 self.completed = True
                 return {"answers": self.answers_outcome}
             if answers:

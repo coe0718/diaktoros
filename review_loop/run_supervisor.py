@@ -1594,7 +1594,7 @@ class Supervisor:
                     (repo, pr, head, 'fixer') or row['state'] not in ('launching', 'running')):
                 con.execute('ROLLBACK')
                 raise ValueError('dispute run identity unavailable')
-            con.execute('INSERT INTO disputes(run_id,repo,pr,head,body,created) '
+            con.execute('INSERT OR IGNORE INTO disputes(run_id,repo,pr,head,body,created) '
                         'VALUES(?,?,?,?,?,?)', (run_id, repo, pr, head, body, time.time()))
             con.execute('COMMIT')
 
