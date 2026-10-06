@@ -2656,7 +2656,7 @@ class Supervisor:
                 # Only the required checks hold it, when the loop names them (#368).
                 checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
                 if checks is not None and not checks.failed and (
-                        checks.cancelled or (after_ci and checks.pending)):
+                        checks.cancelled or checks.missing or (after_ci and checks.pending)):
                     # Nothing spent: no model call, no daily turn, no retry. This worker stays
                     # to re-queue it (linger_for_ci); the watchdog sweep is the backstop.
                     paced_until = time.time() + CI_POLL_S
@@ -2664,6 +2664,9 @@ class Supervisor:
                              + (f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
                                 f"GitHub ({ci._names(checks.cancelled[:5])})"
                                 if checks.cancelled else
+                                f"{len(checks.missing)} required check(s) never reported "
+                                f"({ci._names(checks.missing[:5])}); check the name"
+                                if checks.missing else
                                 f"{len(checks.pending)} check(s) still running or not reported"))[:600]
                     self.held_for_ci = True
                     return
