@@ -160,7 +160,7 @@ def start_fresh_review(loop, st, number, *, live=None):
     Always re-reads the live PR unless the caller just did: a webhook snapshot or an old
     listing never names the head that gets reviewed.
     """
-    from . import gate
+    from . import config, gate
     if live is None:
         live = gh.pr(loop, number)
     if not isinstance(live, dict) or live.get("number") != number or live.get("state") != "open":
@@ -173,7 +173,7 @@ def start_fresh_review(loop, st, number, *, live=None):
         return "skip", MISSING_BASELINE
     author = ((live.get("user") or {}).get("login") or "").lower()
     if (live.get("draft") is not False or (live.get("base") or {}).get("ref") != loop["base"]
-            or author not in set(loop["fixers"])):
+            or author not in config.reviewed_authors(loop)):
         return "skip", "not an eligible trunk PR right now (draft, base or author)"
     key = turn_key(entry)
     if key is None:

@@ -425,9 +425,11 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False) -
             log(f"drain: PR #{number} same-head retarget held — {transition.MISSING_BASELINE}")
             continue
         author = ((pr.get("user") or {}).get("login") or "").lower()
-        if pr.get("draft") or base != loop["base"] or author not in set(loop["fixers"]):
+        # The reviewer serves review-only authors too; the fixer seat only the loop's fixers (#191).
+        served = config.reviewed_authors(loop) if seat == "reviewer" else set(loop["fixers"])
+        if pr.get("draft") or base != loop["base"] or author not in served:
             st.queue_pop_if(seat, key, entry)
-            log(f"drain: PR #{number} is not a fixer PR on {loop['base']} — dropped")
+            log(f"drain: PR #{number} is not a {seat}'s PR on {loop['base']} — dropped")
             continue
 
         # A held head's queue entry is post-boundary (record() dropped the old ones); its
@@ -834,7 +836,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         if not isinstance(pr, dict):
             continue
         author = ((pr.get("user") or {}).get("login") or "").lower()
-        if author not in set(loop["fixers"]) or pr.get("draft"):
+        if author not in config.reviewed_authors(loop) or pr.get("draft"):
             continue
         number = pr.get("number")
         head = (pr.get("head") or {}).get("sha") or ""
@@ -902,7 +904,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         if not isinstance(pr, dict):
             continue
         author = ((pr.get("user") or {}).get("login") or "").lower()
-        if author not in set(loop["fixers"]) or pr.get("draft"):
+        if author not in config.reviewed_authors(loop) or pr.get("draft"):
             continue
         if (pr.get("base") or {}).get("ref") != loop["base"]:
             continue
@@ -949,9 +951,13 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         # A marker at this head is the escalation: whether it is a stall is its own question
         # (parked_kind), and it is never "no escalation marker" while it is young (#98).
         parked = parked_kind(loop, marker, number, head, marker_grace)
+        # A review-only PR has no fixer and no cap: changes requested is back with its author (#191).
+        review_only = author in config.review_only(loop)
         if parked is not None:
             kind = parked
-        elif len(changes) >= loop["cap"] and head_postdates_arming:
+        elif review_only and at_head:
+            pass                                  # the author's move, not a stall
+        elif len(changes) >= loop["cap"] and head_postdates_arming and not review_only:
             kind = (f"{len(changes)} verdicts, no approval and NO escalation marker — "
                     f"the cap may not have fired")
         elif at_head and not config.unattended_fixer_push_enabled(loop):

@@ -449,8 +449,8 @@ def hooks_armed(loop: dict) -> bool | None:
 
 # The vocabulary of ``next.kind``. The suite asserts every conclusion is one of these, so a new
 # branch cannot quietly invent a kind nobody is checking for.
-EXPLAIN_KINDS = ("review-verdict", "review-request", "fixer-retry", "fixer-push", "release", "adjudication",
-                 "rearm", "ready", "retry", "wait", "none")
+EXPLAIN_KINDS = ("review-verdict", "review-request", "fixer-retry", "fixer-push", "author-push", "release",
+                 "adjudication", "rearm", "ready", "retry", "wait", "none")
 
 
 def _mark_time(entry: dict | None, fallback: float) -> float:
@@ -810,14 +810,18 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     pending_delivery = (local["delivery_status"] == "delivery-pending"
                         and spent is not None and spent >= cap)
     stale_held = {seat for seat, entry in held.items() if entry.get("head") != head}
-    needed_seat = ("fixer" if at_head else "reviewer" if request_pending else "")
+    # A review-only author's PR (#191) never needs the fixer and has no cap: a verdict at the
+    # head is the author's to answer.
+    review_only = author in config.review_only(loop)
+    needed_seat = ("" if at_head and review_only else "fixer" if at_head
+                   else "reviewer" if request_pending else "")
     used, limit = local["capacity"].get(needed_seat, (0, 0))
     full_seat = bool(needed_seat and used >= limit and needed_seat not in held
                      and not (inflight_fix if needed_seat == "fixer" else inflight_review))
     hooks_line = _explain_hooks(armed, armed_error)
     # The fixer gate holds a changes-requested verdict while the loop has not opted in to
     # unattended pushes: no fixer turn can start, so the next event is the operator's.
-    push_off = bool(at_head) and not config.unattended_fixer_push_enabled(loop)
+    push_off = bool(at_head) and not review_only and not config.unattended_fixer_push_enabled(loop)
     push_off_held = push_off and "fixer" not in held and not inflight_fix
     fixer_queue_hold = queued_seat == "fixer" and queued_reason.startswith(config.FIXER_PUSH_HOLD)
 
@@ -859,9 +863,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                                 "quarantined — fresh review situation; only a host-receipted "
                                 "post-boundary review counts (fresh reviewer turn: "
                                 f"{fresh.get('state') or 'not queued yet'})")
-            if author and author not in set(loop["fixers"]):
+            if author and author not in config.reviewed_authors(loop):
                 blockers.append(f"the author {author} is not one of this loop's fixers "
-                                f"({', '.join(loop['fixers'])})")
+                                f"({', '.join(loop['fixers'])}) or review-only authors")
             if parked:
                 blockers.append(f"escalated: the PR is parked awaiting adjudication at head "
                                 f"{str(marker.get('head') or '?')[:7]} since "
@@ -869,7 +873,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             elif pending_delivery:
                 blockers.append(f"adjudicator delivery pending at head {short} — no ruling is "
                                 "promised until the route acknowledges delivery")
-            elif spent is not None and spent >= cap:
+            elif spent is not None and spent >= cap and not review_only:
                 blockers.append(f"{spent}/{cap} verdicts spent with no approval and no escalation "
                                 f"marker — the cap may not have fired (the watchdog reports this "
                                 f"shape too)")
@@ -893,7 +897,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                 blockers.append(f"non-verdict review at head {short} ({'/'.join(head_states)}) "
                                 "does not suppress a fresh reviewer request")
             if (at_head and "fixer" not in held and not inflight_fix and not queued_seat
-                    and not push_off):
+                    and not push_off and not review_only):
                 blockers.append(f"the changes-requested verdict at head {short} has no fix run out "
                                 f"— the fixer gate did not start one for that delivery")
             if request_pending and not held and not inflight_review and not at_head and not approved:
@@ -939,10 +943,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif boundary and transition.baseline_missing(boundary):
         kind = "wait"
         action = f"same-head retarget held permanently: {transition.MISSING_BASELINE}"
-    elif author and author not in set(loop["fixers"]):
+    elif author and author not in config.reviewed_authors(loop):
         kind = "none"
         action = (f"nothing — the reviewer gate only serves PRs opened by this loop's fixers "
-                  f"({', '.join(loop['fixers'])})")
+                  f"({', '.join(loop['fixers'])}) or review-only authors")
     elif reviews is None:
         kind = "retry"
         action = (f"retry the review list for {repo}#{number} "
@@ -967,6 +971,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif approved:
         kind = "none"
         action = f"nothing — head {short} is approved; a human merges it"
+    elif review_only and at_head:
+        kind = "author-push"
+        action = (f"the author {author} pushes a fix and re-requests review of the new head — a "
+                  f"review-only PR has no fixer and no verdict cap")
     elif pending_delivery and not (loop.get("adjudicator") or {}).get("route"):
         kind = "adjudication"
         action = _adjudication_next(loop, head)
@@ -977,7 +985,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif parked:
         kind = "adjudication"
         action = _adjudication_next(loop, head)
-    elif spent is not None and spent >= cap:
+    elif spent is not None and spent >= cap and not review_only:
         if not (loop.get("adjudicator") or {}).get("route"):
             kind = "adjudication"
             action = _adjudication_next(loop, head)

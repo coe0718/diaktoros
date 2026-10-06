@@ -25,7 +25,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from review_loop import gate, gh, observer, transition  # noqa: E402
+from review_loop import config, gate, gh, observer, transition  # noqa: E402
 from review_loop.util import log, silence  # noqa: E402
 
 
@@ -49,8 +49,9 @@ def main() -> None:
     user = pr.get("user")
     author = user.get("login") if isinstance(user, dict) else None
     author = author.lower() if isinstance(author, str) else ""
-    if author not in set(loop["fixers"]):
-        silence(f"PR author {author or 'unknown'} is not an authorized fixer")
+    if author not in config.reviewed_authors(loop):
+        silence(f"PR author {author or 'unknown'} is not an authorized fixer or review-only author")
+    review_only = author in config.review_only(loop)
 
     seat = "fixer"
     number = gate.number_of(payload, pr)
@@ -59,7 +60,6 @@ def main() -> None:
     # A ref may have advanced while PR metadata became unverifiable. Its
     # supervisor hold is authoritative even if a later webhook says approved:
     # neither a merge handoff nor another fixer turn may bypass inspection.
-    from review_loop import config
     from review_loop.run_supervisor import Supervisor
     ledger = config.home() / 'state' / 'review-loop-runs.sqlite'
     if ledger.exists() and Supervisor(ledger).post_write_hold(loop['repo'], number):
@@ -181,7 +181,8 @@ def main() -> None:
     if (not isinstance(current, dict) or current.get("number") != number
             or current.get("state") != "open" or current.get("draft")
             or (current.get("base") or {}).get("ref") != loop["base"]
-            or ((current.get("user") or {}).get("login") or "").lower() not in loop["fixers"]
+            or ((current.get("user") or {}).get("login") or "").lower()
+            not in config.reviewed_authors(loop)
             or (current.get("head") or {}).get("sha") != pr_head):
         silence("verdict PR is stale or current state is unverified")
     reviews = transition.effective_reviews(loop, st, number, pr_head,
@@ -203,6 +204,15 @@ def main() -> None:
     if st.release_if("reviewer", key):
         log(f"released reviewer seat for {key}")
     gate.drain_seat(loop, "reviewer")
+
+    if review_only:
+        # #191: the fixer never touches a review-only author's PR. The verdict goes back to the
+        # author (their push and request start the next review); no cap, no adjudication.
+        observer.notify(loop, st, "verdict", number, pr_head, identity=review.get("id"),
+                        outcome="changes requested", actor=gate.reviewer_login(review),
+                        next_turn=f"{author}: returned to the author (review-only — no fixer)",
+                        round_no=prior + 1)
+        silence(f"#{number} changes requested on a review-only author's PR — returned to {author}")
 
     if prior + 1 >= loop["cap"]:
         gate.breach(loop, st, number, pr_head, prior + 1,
