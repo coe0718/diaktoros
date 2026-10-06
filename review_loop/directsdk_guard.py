@@ -92,4 +92,19 @@ def install_guard(command, plugin):
         validate_launch(argv, kwargs, command, plugin)
         return original(argv, **kwargs)
     subprocess.Popen = guarded
+    for name in REFUSED_OS_LAUNCHERS:
+        if hasattr(os, name):
+            setattr(os, name, _refuse_launch)
     return original
+
+
+# Other ways to start or replace a process; the transport only needs the guarded Popen.
+REFUSED_OS_LAUNCHERS = (
+    'posix_spawn', 'posix_spawnp', 'fork', 'forkpty', 'system',
+    'execl', 'execle', 'execlp', 'execlpe', 'execv', 'execve', 'execvp', 'execvpe',
+    'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe',
+)
+
+
+def _refuse_launch(*args, **kwargs):
+    raise NativeLaunchRefused('native launch lockdown refused')

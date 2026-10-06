@@ -598,3 +598,16 @@ class ProbeAnswer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClaudeConfigDirProbe(unittest.TestCase):
+    def test_configured_claude_dirs_are_host_secret_paths(self):
+        env = {"CLAUDE_CONFIG_DIR": "/cfg/a", "CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR": "/cfg/b"}
+        with mock.patch.dict(os.environ, env):
+            paths = selftest.host_secret_paths({"id": "x"}, {}, pathlib.Path("/rt.json"))
+        self.assertIn("/cfg/a", paths)
+        self.assertIn("/cfg/b", paths)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            os.environ.pop("CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR", None)
+            self.assertNotIn("/cfg/a", selftest.host_secret_paths({"id": "x"}, {}, pathlib.Path("/rt.json")))

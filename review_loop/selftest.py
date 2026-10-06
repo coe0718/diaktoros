@@ -400,6 +400,9 @@ def _work_root(loop: dict) -> Path:
 def host_secret_paths(loop: dict, settings: dict, runtime_file: Path) -> list[str]:
     from . import seat_model
     paths = seat_model.secret_paths(loop, settings)
+    for var in ("CLAUDE_CONFIG_DIR", "CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR"):
+        if os.environ.get(var):
+            paths.append(str(Path(os.environ[var]).expanduser()))
     paths += [str(runtime_file), str(config.home() / ".env"),
               str(config.config_dir() / f"{loop['id']}.json")]
     paths += [str(Path(str(raw)).expanduser()) for raw in (loop.get("tokens") or {}).values()]
