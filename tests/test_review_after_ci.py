@@ -166,6 +166,14 @@ class ConflictHold(Hold):
         self.assertNotEqual(row[0], "succeeded")
         self.assertNotIn("conflicts with", str(row[1]))
 
+    def test_a_closed_or_draft_dirty_pr_is_not_held_for_conflicts(self):
+        for extra in ({"state": "closed"}, {"draft": True}):
+            with self.subTest(extra=extra):
+                # Eligibility (closed/draft) is the claim stage's job, not this hold's.
+                seen, row, _ = self.dirty(**extra)
+                self.assertNotIn("conflicts with", str(row[1]))
+                self.assertNotEqual(row[0], "waiting")
+
     def test_the_wait_cap_still_reviews(self):
         with mock.patch.object(run_supervisor, "CI_WAIT_MAX_S", 0):
             seen, row, _ = self.dirty(checks=ci.CIState(missing=["tests"]))
