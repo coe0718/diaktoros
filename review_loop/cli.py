@@ -852,7 +852,8 @@ def _hook_origin(loop: dict, drifted: dict) -> dict:
     return {**loop, "host": hosts.pop()}
 
 
-def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool) -> int:
+def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool,
+                  outcome: dict | None = None) -> int:
     """``apply --hooks``: make this loop's two repo hooks what its routes need, the way ``init
     --hooks`` would have for a new loop (``init`` refuses an existing one).
 
@@ -890,6 +891,9 @@ def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool) -> int:
         print(f"refused: repo hooks not reconciled: {exc}")
         print(f"  fix: re-run with --admin-token <login> ({hook_write_need(loop, token_login)})")
         return 2
+    if outcome is not None:
+        outcome["created"] = [seat for seat, _ in missing]
+        outcome["kept"] = {seat: keep for seat, _e, _u, keep, _r, _t in plans}
     verb = "would " if dry_run else ""
     for seat, url in missing:
         print(f"  hook for {names[seat]}: {verb}create → {url} (paused until `arm`)")
@@ -1706,6 +1710,10 @@ def cmd_init(args) -> int:
         "required_checks": (config.split_check_names(d["required_checks"])
                             if getattr(args, "required_check", None) is None
                             else [name for name in args.required_check if name.strip()]),
+        # Authors reviewed but never fixed (#191).
+        "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
+                        if getattr(args, "review_only", None) is None
+                        else [name for name in args.review_only if name.strip()]),
     }
     # A seat-level capacity wins over the loop default, so only write it when it was asked for.
     for seat, value in _init_seat_concurrency(args, d).items():
@@ -2064,6 +2072,11 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                     "the CI checks that must pass before an approval, comma-separated, exactly as "
                     "GitHub names them (blank: every check)", d["required_checks"], interactive)))
     argv += [f"--required-check={name}" for name in required]
+    reviewed = (args.review_only if getattr(args, "review_only", None) is not None else
+                [name for name in _ask("GitHub logins whose PRs the reviewer reviews but the fixer "
+                                       "never touches, comma-separated (blank: none)",
+                                       d["review_only"], interactive).split(",") if name.strip()])
+    argv += [f"--review-only={name.strip()}" for name in reviewed]
     if admin:
         argv += ["--hooks", f"--admin-token={admin}"]   # created paused; step 5 arms them
     return argv, admin
@@ -2329,6 +2342,15 @@ def cmd_set(args) -> int:
             return 2
         if names != (loop.get("required_checks") or []):
             changes["required_checks"] = names
+    if getattr(args, "review_only", None) is not None or getattr(args, "no_review_only", False):
+        try:
+            names = config.check_review_only([] if args.no_review_only else args.review_only,
+                                             loop, "--review-only")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if names != (loop.get("review_only") or []):
+            changes["review_only"] = names
     # '' is a real value here: it clears the check.
     if getattr(args, "fixer_check", None) is not None:
         try:
@@ -2720,7 +2742,7 @@ def _apply(args) -> int:
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
-                "required_checks"):
+                "required_checks", "review_only"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -3302,7 +3324,7 @@ def cmd_trace(args) -> int:
             if not isinstance(payload, dict):
                 print("cannot read the payload file: not a JSON object")
                 return 2
-            event, route = args.event or "pull_request", None
+            event, route = args.event or trace.infer_event(payload), None
         role = trace.role_for(loop, event, args.route or route)
     except trace.TraceError as exc:
         print(f"cannot trace: {exc}")
@@ -3393,6 +3415,71 @@ def _shim_refusal(exc: OSError) -> str:
             "re-run `apply --watchdog-shim`")
 
 
+def _reviewer_runs(repo: str, number: int, head: str) -> int:
+    """How many reviewer runs the ledger holds for this head (read-only; 0 without a ledger)."""
+    import sqlite3
+    from . import run_supervisor
+    db = run_supervisor.production_ledger()
+    if not db.exists():
+        return 0
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        return con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                           "seat='reviewer'", (repo, number, head)).fetchone()[0]
+    finally:
+        con.close()
+
+
+def cmd_review(args) -> int:
+    """Ask for a fresh review of a PR's current head (#375), as the operator.
+
+    The real reviewer gate decides, fed a ``ready_for_review`` event built from the live PR: the
+    same rules as a webhook (open, not a draft, a fixer's PR on the loop's base, no verdict or
+    run already at this head, the verdict cap), so this command cannot start a review the gate
+    would not. No GitHub write: the review itself is the only one, as usual. Exit 1 when the
+    gate declines, with its own reason; 2 when the question cannot be asked.
+    """
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"no such loop: {exc}")
+        return 2
+    pr = gh.pr(loop, args.pr)
+    if not isinstance(pr, dict) or pr.get("number") != args.pr:
+        print(f"#{args.pr}: the PR could not be read from GitHub — nothing started")
+        return 2
+    head = (pr.get("head") or {}).get("sha") or ""
+    from . import state as state_mod
+    st = state_mod.state_for(loop)
+    key = gate.seat_key(loop, args.pr)
+
+    def queued():
+        entry = (st.queue_all().get("reviewer") or {}).get(key) or {}
+        return entry if entry.get("head") == head else None
+    before = (_reviewer_runs(loop["repo"], args.pr, head), queued())
+    payload = {"action": "ready_for_review", "number": args.pr, "pull_request": pr,
+               "repository": {"full_name": loop["repo"]},
+               "sender": {"login": loop.get("read_token") or "operator"}}
+    script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "gate_reviewer.py"
+    done = subprocess.run([sys.executable, str(script)], input=json.dumps(payload), text=True,
+                          capture_output=True, timeout=120)
+    if _reviewer_runs(loop["repo"], args.pr, head) > before[0]:
+        print(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker "
+              f"(`hermes review-loop explain --loop {loop['id']} --pr {args.pr}` follows it)")
+        return 0
+    waiting = queued()
+    if waiting and waiting != before[1]:
+        reason = waiting.get("reason") or "the reviewer seat is busy"
+        print(f"#{args.pr} @ {head[:7]}: review queued, waiting — {reason}")
+        return 0
+    reasons = [line.split("] ", 1)[1] for line in done.stderr.splitlines()
+               if line.startswith("[review-loop] ") and "] " in line]
+    print(f"#{args.pr} @ {head[:7]}: no review started — "
+          + (reasons[-1] if reasons else "the reviewer gate declined without a reason"
+             + (f" (exit {done.returncode})" if done.returncode else "")))
+    return 1
+
+
 def cmd_explain(args) -> int:
     """Why one PR is not moving, and the one event that would move it.
 
@@ -3464,6 +3551,11 @@ def cmd_explain(args) -> int:
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")
         print(f"  {'github:':<12}{report['github']}")
+        decisions = report.get("gate_decisions") or []
+        for text in decisions:
+            print(f"  {'decided:':<12}{text}")
+        if not decisions:
+            print(f"  {'decided:':<12}no gate decision recorded for this PR")
         if not report.get("gate_failures"):
             print(f"  {'gates:':<12}no unresolved gate failure recorded for this PR")
         runs = _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
@@ -3786,8 +3878,23 @@ def cmd_triage(args) -> int:
     for line in _triage_lines(updated):
         print(line)
     if args.dry_run:
+        hook_note = ""
+        if admin:
+            try:
+                existing = [h for h in _hook_listing(updated, admin, require_active=False)
+                            if routes.route_name_of(h["config"]["url"]) == updated["triage"]["route"]]
+            except config.ConfigError:
+                existing = None
+            if existing is None:
+                hook_note = ", and reconcile the repo hook"
+            elif existing:
+                kept = next((h for h in existing if h.get("active")), existing[0])
+                state = "active" if kept.get("active") else "paused"
+                hook_note = f", and keep hook {kept['id']} ({state}), repointing it if needed"
+            else:
+                hook_note = ", and create the repo hook (paused; next, arm)"
         print(f"  dry run — would write route {updated['triage']['route']} (issues) and its gate "
-              "shim" + (", and the repo hook (paused)" if admin else "") + "; nothing written")
+              "shim" + hook_note + "; nothing written")
         return 0
     name = updated["triage"]["route"]
     previous_route = routes.route(name)
@@ -3807,11 +3914,21 @@ def cmd_triage(args) -> int:
     print(f"  route written: {name}")
     shims_ok = _install_shims(updated)
     if admin:
-        rc = _ensure_hooks(updated, admin, dry_run=False)
+        outcome: dict = {}
+        rc = _ensure_hooks(updated, admin, dry_run=False, outcome=outcome)
         if rc:
             return rc
-        print(f"  next: hermes review-loop arm --loop {loop['id']} --admin-token {admin} "
-              "(the triage hook is created paused; arm turns every loop hook on)")
+        kept = (outcome.get("kept") or {}).get("triage")
+        if kept is not None:
+            state = "active" if kept.get("active") else "paused"
+            print(f"  hook {kept['id']} kept ({state})")
+            if not kept.get("active"):
+                print(f"  next: hermes review-loop arm --loop {loop['id']} --admin-token {admin} "
+                      "(the hook is paused; arm turns every loop hook on)")
+        else:
+            print("  hook created (paused)")
+            print(f"  next: hermes review-loop arm --loop {loop['id']} --admin-token {admin} "
+                  "(arm turns every loop hook on)")
     else:
         print(f"  next: hermes review-loop apply --loop {loop['id']} --hooks --admin-token LOGIN "
               "creates the issues hook (paused), then `arm`")
@@ -4380,7 +4497,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--observer-events", default="",
                           help="comma-separated transitions to send, from "
                                "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                               "triaged,fixing,fixed,failed,held (default: all)")
+                               "triaged,fixing,fixed,failed,held,conflict (default: all)")
         init.add_argument("--observer-digest-min", type=int, default=0,
                           help="batch the feed into one message per this many minutes "
                                "(0 = one notice per transition)")
@@ -4398,6 +4515,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--attribution", choices=("on", "off"), default=None,
                           help="sign what the loop posts with 'Automated by hermes-review-loop' "
                                f"(default {'on' if d['attribution'] else 'off'})")
+        init.add_argument("--review-only", action="append", default=None,
+                          help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting)")
         init.add_argument("--required-check", action="append", default=None,
                           help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         init.add_argument("--fixer-check", default=None,
@@ -4450,6 +4569,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         first.add_argument("--adjudicator-profile", default=None,
                            help="Hermes profile that rules when a PR's verdict cap is spent; "
                                 "turns adjudication on (blank: off) (default: the plugin setting)")
+        first.add_argument("--review-only", action="append", default=None,
+                           help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting)")
         first.add_argument("--required-check", action="append", default=None,
                            help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         first.add_argument("--fixer-check", default=None,
@@ -4482,6 +4603,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                help="also write one self-contained HTML page to FILE")
         stats_cmd.set_defaults(func=cmd_stats)
 
+        review = sub.add_parser("review", help="Ask for a fresh review of a PR's current head "
+                                               "(the reviewer gate decides, as for a webhook)")
+        review.add_argument("--loop", required=True,
+                            help="loop id (its config file name; `list` shows them)")
+        review.add_argument("--pr", type=int, required=True, help="the pull request to review")
+        review.set_defaults(func=cmd_review)
+
         explain = sub.add_parser("explain",
                                  help="Why one PR is not moving, and what has to happen next")
         explain.add_argument("--loop", help="loop id (default: the only configured loop)")
@@ -4496,8 +4624,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         source.add_argument("--delivery", help="a recorded delivery to this loop's hooks: GitHub's "
                                                "numeric id or the X-GitHub-Delivery GUID")
         source.add_argument("--payload", help="a webhook payload JSON file instead")
-        tracer.add_argument("--event", choices=("pull_request", "pull_request_review"),
-                            help="with --payload: the event it was (default pull_request)")
+        tracer.add_argument("--event", choices=("pull_request", "pull_request_review", "issues"),
+                            help="with --payload: the event it was (default: read from the payload)")
         tracer.add_argument("--route", help="the route it was sent to (default: from the delivery's "
                                             "hook, or the event)")
         tracer.add_argument("--admin-token", default="",
@@ -4575,6 +4703,11 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                             help="start each review after the head's checks finish (up to an hour), "
                                  "or start at once")
+        reviewed = change.add_mutually_exclusive_group()
+        reviewed.add_argument("--review-only", action="append", default=None,
+                              help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it); replaces the list")
+        reviewed.add_argument("--no-review-only", action="store_true",
+                              help="clear the review-only list")
         required = change.add_mutually_exclusive_group()
         required.add_argument("--required-check", action="append", default=None,
                               help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates); replaces the list")
@@ -4621,7 +4754,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--observer-events", default=None,
                             help="comma-separated transitions to send, from "
                                  "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                                 "triaged,fixing,fixed,failed,held (blank = all)")
+                                 "triaged,fixing,fixed,failed,held,conflict (blank = all)")
         change.add_argument("--observer-digest-min", type=int, default=None,
                             help="batch the feed into one message per N minutes (0 = per "
                                  "transition)")

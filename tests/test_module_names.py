@@ -4,6 +4,10 @@ A second top-level ``_PROBE = ...`` in ``review_loop/selftest.py`` (the model pr
 silently replaced the sandbox probe program defined earlier in the same module, so the live
 sandbox step ran an English sentence as Python. Python never warns about a rebinding, so this
 test does.
+
+Limitation: plain (``=``) and annotated assignments only. It does not see the same shadowing
+via ``def``/``class``/``import`` followed by an assignment, names bound in module-level
+``for``/``with``/``if``/``try``, or ``+=``. A green run does not rule those out.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import ast
@@ -28,7 +32,11 @@ def _bound_names(target: ast.expr):
 
 
 def duplicate_assignments(source: str) -> dict[str, list[int]]:
-    """Module-level names bound by more than one plain (or annotated) assignment."""
+    """Module-level names bound by more than one plain (or annotated) assignment.
+
+    Only ``Assign``/``AnnAssign`` statements are recorded; def/class/import/loop/aug-assign
+    bindings are not.
+    """
     seen: dict[str, list[int]] = {}
     for node in ast.parse(source).body:
         if isinstance(node, ast.Assign):

@@ -132,7 +132,6 @@ def watchdog_job_name(loop: dict) -> str:
 def cron_fix(loop: dict, deliver: str = "local") -> str:
     """The scheduler's own command for the watchdog job. Never ``init``: it refuses a loop that
     already exists, and the job is the scheduler's to create. ``deliver`` keeps a known target."""
-    import shlex
     return (f"`hermes cron create 15m --name \"{watchdog_job_name(loop)}\" --no-agent "
             f"--script {SHIM_NAME} --deliver {shlex.quote(deliver or 'local')}`")
 
@@ -166,7 +165,6 @@ def _job_deliver(entry: dict) -> str:
 def migration_fix(loop: dict, shim_jobs: list) -> str:
     """Remove the per-loop jobs, then create the shared one with the schedule and deliver target
     the existing job(s) had. Jobs that disagree are named, not guessed between."""
-    import shlex
     removals = "; ".join(f"`hermes cron remove {e.get('id')}`" for e in shim_jobs)
     values = {(_job_schedule(e), _job_deliver(e)) for e in shim_jobs}
     name = watchdog_job_name(loop)
@@ -1854,12 +1852,23 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
     delivery = check_deliveries(loop, hook_id, name)
     if isinstance(delivery, Check):
         return delivery
+    delivery = f"{delivery}{latest_decision(loop, seat)}"
     if not match.get("active"):
         return Check(f"hook:{name}", VERIFIED,
                      f"hook {hook_id} → [webhook URL redacted] ({event}, PAUSED — nothing fires "
                      f"until `hermes review-loop arm --loop {loop['id']}`; {delivery})", paused=True)
     return Check(f"hook:{name}", VERIFIED,
                  f"hook {hook_id} → [webhook URL redacted] ({event}, active; {delivery})")
+
+
+def latest_decision(loop: dict, seat: str) -> str:
+    """The route's gate's latest recorded decision (#209), as a suffix for the hook line."""
+    from . import gate_decisions
+    try:
+        entry = gate_decisions.latest_per_gate(loop).get(f"gate_{seat}")
+    except Exception:  # noqa: BLE001 - a diagnostic line never fails the check
+        entry = None
+    return f"; latest gate decision: {gate_decisions.line(entry)}" if entry else ""
 
 
 # The gateway's answers to a delivery whose signature it would not accept: 401 is "Invalid

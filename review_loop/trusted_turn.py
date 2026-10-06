@@ -528,7 +528,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
              no_write: bool = False, observed: dict | None = None,
              api_mode: str = 'chat_completions', credential=None, proxy_model: str = '',
              client_identity: str = '', review_diff: str | None = None,
-             prefetch_timeout: int = deps.FETCH_TIMEOUT, progress=None) -> int:
+             prefetch_timeout: int = deps.FETCH_TIMEOUT, progress=None,
+             merged: dict | None = None) -> int:
     """Stage a live PR head, start host capabilities, execute Hermes within bwrap.
 
     ``api_mode`` picks the proxy contract and the sandbox's provider config; ``credential`` (a
@@ -610,9 +611,23 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             not_exported = []
         else:
             not_exported = []
-            checkout = trusted_fetch.stage(loop, repo=scope.repo, number=scope.number,
-                                           head=scope.head, ref=scope.branch, role=scope.role,
-                                           sandbox_root=root / 'export', not_exported=not_exported)
+            if merged is not None:
+                # A conflict-resolution turn (#303): the host's merge of the base into the head,
+                # written and verified entry by entry exactly like a PR export.
+                if scope.merge is None or scope.merge.get("tree") != merged.get("tree"):
+                    raise TurnDenied('merge export does not match the turn scope')
+                export = root / 'export'
+                export.mkdir(mode=0o700)
+                checkout = export / 'repo'
+                checkout.mkdir(mode=0o700)
+                trusted_fetch._extract(merged["archive"], checkout, merged["entries"],
+                                       frozenset(merged["skipped"]))
+                not_exported.extend(merged["skipped"])
+            else:
+                checkout = trusted_fetch.stage(loop, repo=scope.repo, number=scope.number,
+                                               head=scope.head, ref=scope.branch,
+                                               role=scope.role, sandbox_root=root / 'export',
+                                               not_exported=not_exported)
             cache = dependency_cache(loop)
             _report(progress, time.strftime('fetching — started %H:%M:%SZ', time.gmtime())
                     + f', bounded at {int(prefetch_timeout)}s, before the turn budget starts')

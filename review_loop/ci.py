@@ -29,10 +29,11 @@ class CIState:
     pending: list[str] = field(default_factory=list)
     passed: list[str] = field(default_factory=list)
     cancelled: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)   # required, never reported at this head
 
     @property
     def green(self) -> bool:
-        return not self.failed and not self.pending and not self.cancelled
+        return not (self.failed or self.pending or self.cancelled or self.missing)
 
 
 def _name(raw) -> str:
@@ -87,7 +88,8 @@ def read(loop: dict, head: str) -> CIState | None:
 
 def gating(state: CIState | None, required) -> CIState | None:
     """The checks that gate (#368): all of them when the loop names none; otherwise only the
-    required ones, a required check that has not reported at this head counted as running."""
+    required ones. A required check that never reported at this head is `missing`, not running:
+    it refuses an approval and holds a review whatever review_after_ci says."""
     if state is None or not required:
         return state
     wanted = list(dict.fromkeys(required))
@@ -95,7 +97,7 @@ def gating(state: CIState | None, required) -> CIState | None:
     view = CIState(failed=keep(state.failed), pending=keep(state.pending),
                    passed=keep(state.passed), cancelled=keep(state.cancelled))
     reported = set(state.failed) | set(state.pending) | set(state.passed) | set(state.cancelled)
-    view.pending += [name for name in wanted if name not in reported]
+    view.missing = [name for name in wanted if name not in reported]
     return view
 
 
@@ -130,6 +132,12 @@ def approval_refusal(state: CIState | None) -> str:
                 "needs a re-run; nothing was written. That is not a defect of the change: do not "
                 "list it as a finding. Submit REQUEST_CHANGES only for real findings; otherwise "
                 "say in your summary that you would approve once CI is re-run and passes.")
+    if state.missing:
+        return (f"APPROVE refused: required check(s) never reported at this head "
+                f"({_names(state.missing)}); nothing was written. A required check that does not "
+                "appear would gate nothing, so it may be misnamed or dropped from the workflow. "
+                "That is for the operator to fix, not a finding on the change: say so in your "
+                "summary and do not approve.")
     return ""
 
 
@@ -139,9 +147,7 @@ def section(state: CIState | None, required=()) -> str:
     head = "\n\n## CI at this head (read by the host from GitHub just before this turn; data)\n\n"
     if state is not None and required:
         extra = optional(state, required)
-        lines = _lines(gating(state, required), missing=[
-            name for name in required if name not in
-            set(state.failed) | set(state.pending) | set(state.passed) | set(state.cancelled)])
+        lines = _lines(gating(state, required))
         text = head + "Required checks (these gate the approval):\n" + ("\n".join(lines) or "- none")
         rest = [f"- {label}: {_names(names)}" for label, names in
                 (("failed", extra.failed), ("cancelled", extra.cancelled),
@@ -159,15 +165,14 @@ def section(state: CIState | None, required=()) -> str:
     return head + "\n".join(_lines(state))
 
 
-def _lines(state: CIState, missing=()) -> list[str]:
+def _lines(state: CIState) -> list[str]:
     lines = []
     if state.failed:
         lines.append(f"- **failed:** {_names(state.failed)}")
-    running = [name for name in state.pending if name not in missing]
-    if running:
-        lines.append(f"- **still running:** {_names(running)}")
-    if missing:
-        lines.append(f"- **not reported at this head yet:** {_names(list(missing))}")
+    if state.pending:
+        lines.append(f"- **still running:** {_names(state.pending)}")
+    if state.missing:
+        lines.append(f"- **not reported at this head yet:** {_names(state.missing)}")
     if state.cancelled:
         lines.append(f"- **cancelled** (needs a re-run; not a defect of the change): "
                      f"{_names(state.cancelled)}")

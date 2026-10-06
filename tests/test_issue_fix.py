@@ -25,7 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from review_loop import ledger  # noqa: E402
-from review_loop import (broker, broker_ipc, config, gate, gh, run_supervisor, seat_model,  # noqa: E402
+from review_loop import state as state_mod  # noqa: E402
+from review_loop import (broker, broker_ipc, config, fix_hold, gate, gh, run_supervisor, seat_model,  # noqa: E402
                          safe_push, trusted_turn)
 from review_loop.run_supervisor import Supervisor  # noqa: E402
 
@@ -107,8 +108,12 @@ class Gate(Base):
         self.enqueued = []
         self.open_prs = []
         self.posted = []
+        self.origin = None          # the PR a seat filed the issue from (#324)
+        self.origin_pr = {"number": 7, "state": "open", "merged": False}
 
         def api(loop, path, method="GET", body=None, login=None):
+            if "/pulls/" in path:
+                return self.origin_pr
             if path.endswith(f"/git/ref/heads/{self.loop['base']}"):
                 return {"ref": "refs/heads/main", "object": {"sha": BASE}}
             if method == "POST":
@@ -116,6 +121,7 @@ class Gate(Base):
                 return {"id": 1}
             return self.live
         for target, name, value in (
+                (fix_hold, "origin_pr", lambda loop, number: self.origin),
                 (gh, "open_prs_read", lambda loop: (self.open_prs, "")),
                 (gate, "context", lambda payload: (self.loop, None)),
                 (gh, "api", api),
@@ -174,6 +180,44 @@ class Gate(Base):
             log = self.run_gate(self.labeled())
         self.assertIn("unreadable", log)
         self.assertEqual(self.enqueued, [])
+
+    def test_a_finding_from_an_open_pr_is_held_until_it_merges(self):
+        self.origin = 7
+        self.run_gate(self.labeled())
+        self.assertEqual(self.enqueued, [])
+        st = state_mod.state_for(self.loop)
+        self.assertEqual(st.fix_holds(), {12: 7})
+        # the PR merges: the watchdog sweep queues the fix from the base and clears the hold
+        self.origin_pr = {"number": 7, "state": "closed", "merged": True}
+        self.assertEqual(fix_hold.sweep(self.loop, st), [])
+        self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
+        self.assertEqual(st.fix_holds(), {})
+
+    def test_a_still_open_origin_stays_held_in_the_sweep(self):
+        self.origin = 7
+        self.run_gate(self.labeled())
+        st = state_mod.state_for(self.loop)
+        fix_hold.sweep(self.loop, st)
+        self.assertEqual((self.enqueued, st.fix_holds()), ([], {12: 7}))
+
+    def test_an_origin_closed_unmerged_drops_the_hand_off_with_a_comment(self):
+        self.origin = 7
+        self.run_gate(self.labeled())
+        st = state_mod.state_for(self.loop)
+        self.origin_pr = {"number": 7, "state": "closed", "merged": False}
+        fix_hold.sweep(self.loop, st)
+        self.assertEqual((self.enqueued, st.fix_holds()), ([], {}))
+        self.assertEqual(len(self.posted), 1)
+        self.assertIn("closed without merging", self.posted[0][1]["body"])
+        # labelled again with the origin already closed: comment, no turn
+        self.run_gate(self.labeled())
+        self.assertEqual((self.enqueued, len(self.posted)), ([], 2))
+
+    def test_an_origin_already_merged_queues_at_once(self):
+        self.origin = 7
+        self.origin_pr = {"number": 7, "state": "closed", "merged": True}
+        self.run_gate(self.labeled())
+        self.assertEqual(len(self.enqueued), 1)
 
     def test_without_unattended_pushes_the_label_is_named_not_acted_on(self):
         self.loop = {**self.loop, "unattended_fixer_push": False}

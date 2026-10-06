@@ -84,6 +84,15 @@ def at_or_under(path: str, root: str) -> bool:
     return path == root or root in path.parents
 
 
+def allowed(source: str, roots: list[str], system: set[str]) -> bool:
+    """The read-only-bind allowlist, shared by the launch test and the broad-ancestor test.
+
+    The source must be a system path, a root itself, or beneath a root — never a broad ancestor
+    of a root. The symmetric `at_or_under(root, source)` accepted `/` (#178 review).
+    """
+    return source in system or any(at_or_under(source, root) for root in roots)
+
+
 # Captured before any test patches it: the one test of the check itself runs the real one.
 REAL_UNAVAILABLE = contained.unavailable
 
@@ -317,18 +326,11 @@ class ProductionLaunch(Base):
                     value = kw.get(key)
                     if value:
                         roots.append(str(Path(str(value)).parent))
-                def allowed(source: str) -> bool:
-                    # The source must be the root itself or beneath it — never a broad ancestor of
-                    # it. The symmetric `at_or_under(root, source)` accepted `/` (every root is
-                    # beneath `/`), exposing the whole host filesystem behind a green safety check
-                    # (#178 review).
-                    return source in system or any(at_or_under(source, root) for root in roots)
-
                 rogue = []
                 for option in options:
                     if option[0] not in READ_ONLY_BINDS:
                         continue
-                    if allowed(option[1]):
+                    if allowed(option[1], roots, system):
                         continue
                     rogue.append(option)
                 self.assertEqual(rogue, [],
@@ -338,16 +340,12 @@ class ProductionLaunch(Base):
         # The allowlist must reject the roots' own ancestors — `/`, `/tmp`, `/tmp/xyz`, and `/home`
         # all expose far more than the turn's staged directories. The predicate is directional:
         # source beneath root. It must call the same `allowed()` logic the validator uses.
-        from test_contained_launch import at_or_under
         roots = ["/tmp/xyz/work/turn-abc", "/tmp/xyz/venv"]
         system = {"/usr", "/bin", "/lib", "/lib64", "/etc/alternatives"}
 
-        def allowed(source: str) -> bool:
-            return source in system or any(at_or_under(source, root) for root in roots)
-
         for source in ("/", "/tmp", "/tmp/xyz", "/home"):
             self.assertFalse(
-                allowed(source),
+                allowed(source, roots, system),
                 f"the allowlist accepted the broad ancestor {source!r}")
 
     def test_network_cannot_be_requested(self):

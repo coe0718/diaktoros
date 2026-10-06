@@ -675,18 +675,19 @@ class Lifecycle(unittest.TestCase):
         sup.enqueue("heartbeat", "o/r", 9, "head", "reviewer")
         launched = self.wait(sup, "heartbeat", "running")
         # State-based wait, not a wall-clock window: only a heartbeat can move the lease past
-        # the one granted at launch, so a larger lease in the ledger proves a beat renewed
-        # it. The deadline is only a backstop against a hung worker. The renewed lease still
+        # the one granted at launch. Wait until it is more than one full lease_seconds (3)
+        # past that grant: the run then provably outlived its launch grant and renewal kept
+        # going (a single beat only adds ~1s). The deadline is only a backstop against a hung worker. The renewed lease still
         # has at least a second left to cover the recover() below.
         until = time.monotonic() + 60
         while True:
             row, now = sup.get("heartbeat"), time.time()
             self.assertEqual(row["state"], "running")
-            if row["lease"] > launched["lease"] and row["lease"] - now >= 1:
+            if row["lease"] > launched["lease"] + 3 and row["lease"] - now >= 1:
                 break
             if time.monotonic() > until:
                 log = self.root / "ledger.sqlite.workers.log"
-                self.fail(f"no heartbeat renewed the lease past its launch grant: {row}; "
+                self.fail(f"no sustained heartbeat renewal past the launch grant: {row}; "
                           f"worker log: {log.read_text() if log.exists() else '(none)'}")
             time.sleep(0.05)
         sup.recover()

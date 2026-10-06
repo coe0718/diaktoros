@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import fcntl
 import json
 import math
 import os
@@ -43,7 +44,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from review_loop import config, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
+from review_loop import config, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
 from review_loop.util import age_min, epoch, log, now_iso  # noqa: E402
 
 TEST = bool(os.environ.get("REVIEW_LOOP_TEST"))
@@ -424,9 +425,11 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False) -
             log(f"drain: PR #{number} same-head retarget held — {transition.MISSING_BASELINE}")
             continue
         author = ((pr.get("user") or {}).get("login") or "").lower()
-        if pr.get("draft") or base != loop["base"] or author not in set(loop["fixers"]):
+        # The reviewer serves review-only authors too; the fixer seat only the loop's fixers (#191).
+        served = config.reviewed_authors(loop) if seat == "reviewer" else set(loop["fixers"])
+        if pr.get("draft") or base != loop["base"] or author not in served:
             st.queue_pop_if(seat, key, entry)
-            log(f"drain: PR #{number} is not a fixer PR on {loop['base']} — dropped")
+            log(f"drain: PR #{number} is not a {seat}'s PR on {loop['base']} — dropped")
             continue
 
         # A held head's queue entry is post-boundary (record() dropped the old ones); its
@@ -700,6 +703,26 @@ def finish_reads(loop: dict, watch: dict, now: float, health: Health | None,
 
 
 def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = None) -> list[str]:
+    """One sweep per loop at a time: a non-blocking flock held from before the first read of
+    ``st.watch()`` until the last save. A sweep that finds it held skips the loop (no retry)."""
+    lines = [] if lines is None else lines
+    hostdirs.ensure(st.dir)
+    fd = os.open(st.dir / "sweep.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log(f"sweep already running for {loop.get('id', '?')}")
+            return lines
+        try:
+            return _sweep_loop_locked(loop, st, lines)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) -> list[str]:
     # Filled in place, so the lines a failing sweep already produced (a gate-failure alert
     # among them) still reach the operator next to the error.
     lines = [] if lines is None else lines
@@ -775,6 +798,11 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         st.watch_save(watch)
         return lines
 
+    try:
+        lines.extend(fix_hold.sweep(loop, st))
+    except Exception as exc:
+        lines.append(f"⚠️ Review loop [{loop['id']}] held issue fixes: "
+                     f"{type(exc).__name__}: {exc}")
     reconcile_stacked(loop, st, watch, prs, lines)
     retry_fresh_reviews(loop, st, prs, lines, since=now)
 
@@ -813,7 +841,7 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         if not isinstance(pr, dict):
             continue
         author = ((pr.get("user") or {}).get("login") or "").lower()
-        if author not in set(loop["fixers"]) or pr.get("draft"):
+        if author not in config.reviewed_authors(loop) or pr.get("draft"):
             continue
         number = pr.get("number")
         head = (pr.get("head") or {}).get("sha") or ""
@@ -876,11 +904,12 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         raised[key] = now
         return True
 
+    conflicts: list[tuple[int, str, str, str]] = []
     for pr in prs:
         if not isinstance(pr, dict):
             continue
         author = ((pr.get("user") or {}).get("login") or "").lower()
-        if author not in set(loop["fixers"]) or pr.get("draft"):
+        if author not in config.reviewed_authors(loop) or pr.get("draft"):
             continue
         if (pr.get("base") or {}).get("ref") != loop["base"]:
             continue
@@ -888,6 +917,13 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         head = (pr.get("head") or {}).get("sha") or ""
         if not number or not head:
             continue
+        # #303 stage 1: a loop PR that no longer merges into its base is said once per head.
+        # The listing carries no mergeability, so this is one read of the PR; GitHub computes it
+        # lazily, and an unknown answer (null) is simply not a conflict yet.
+        live = gh.pr(loop, number)
+        if (isinstance(live, dict) and live.get("mergeable_state") == "dirty"
+                and (live.get("head") or {}).get("sha") == head):
+            conflicts.append((number, head, str((live.get("base") or {}).get("sha") or ""), author))
 
         # A held head is judged only by host-receipted post-boundary reviews: an old verdict
         # is not a current stall, and a missing fresh verdict is the reviewer's to post.
@@ -920,9 +956,13 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
         # A marker at this head is the escalation: whether it is a stall is its own question
         # (parked_kind), and it is never "no escalation marker" while it is young (#98).
         parked = parked_kind(loop, marker, number, head, marker_grace)
+        # A review-only PR has no fixer and no cap: changes requested is back with its author (#191).
+        review_only = author in config.review_only(loop)
         if parked is not None:
             kind = parked
-        elif len(changes) >= loop["cap"] and head_postdates_arming:
+        elif review_only and at_head:
+            pass                                  # the author's move, not a stall
+        elif len(changes) >= loop["cap"] and head_postdates_arming and not review_only:
             kind = (f"{len(changes)} verdicts, no approval and NO escalation marker — "
                     f"the cap may not have fired")
         elif at_head and not config.unattended_fixer_push_enabled(loop):
@@ -941,7 +981,8 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
             mins = (now - observed_at) / 60 if observed_at is not None else 0.0
             if (TEST or mins > grace["reviewer"]) and head_postdates_arming:
                 kind = (f"reviewer never posted a verdict — head {head[:7]} observed "
-                        f"{mins / 60:.1f}h ago, 0 verdicts at this head")
+                        f"{mins / 60:.1f}h ago, 0 verdicts at this head (`hermes review-loop "
+                        f"review --loop {loop['id']} --pr {number}` asks for one)")
 
         if kind and due(stall_key(number, head, kind)):
             alerts.append((number, kind, (pr.get("title") or "")[:60]))
@@ -1005,6 +1046,33 @@ def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = No
                     else f"{kind[:40]}#{int(now)}")
         observer.notify(loop, st, "stall", number, head, identity=identity,
                         outcome=kind, next_turn="you")
+    resolving = config.unattended_fixer_push_enabled(loop)
+    for number, head, base_sha, author in conflicts:
+        # A review-only author's PR (#191) is never the fixer's, a conflict included.
+        review_only = author in config.review_only(loop)
+        if resolving and not review_only and re.fullmatch(r"[0-9a-f]{40}", base_sha):
+            # #303 stage 3: one resolving fixer turn per (head, base); the ledger's turn key
+            # dedups every later sweep. The worker merges and may still hand it to a person
+            # (a whole-file conflict, or workflow changes the fixer's token cannot push).
+            # enqueue_isolated, not block_pr_agent: that one is a gate's and ends the process.
+            from review_loop.run_supervisor import CONFLICT_KEY
+            try:
+                outcome = gate.enqueue_isolated(loop, "fixer", number, head,
+                                                turn_key=f"{CONFLICT_KEY}{base_sha}")
+                log(f"#{number} @ {head[:7]} conflict with {loop['base']}: fixer {outcome}")
+            except Exception as exc:
+                log(f"#{number} @ {head[:7]} conflict turn not queued: "
+                    f"{type(exc).__name__}: {exc}")
+        # Keyed by head (the observer dedups on it): a new push that still conflicts is a new
+        # notice, a sweep that sees the same conflicted head again is not.
+        observer.notify(loop, st, "conflict", number, head, identity="conflict",
+                        outcome=f"conflicts with {loop['base']} — GitHub cannot merge it as it is",
+                        next_turn=(f"{author}: merge {loop['base']} into the branch (review-only "
+                                   "— no fixer)" if review_only else
+                                   f"the fixer merges {loop['base']} into the branch and resolves "
+                                   "it (a whole-file conflict comes back to you)" if resolving else
+                                   f"you: merge {loop['base']} into the branch (unattended fixer "
+                                   "pushes are off, so the loop does not resolve it)"))
     if observer.retry(loop, st):
         log("observer: retried an undelivered notice")
     observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))

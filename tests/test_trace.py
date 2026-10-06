@@ -252,6 +252,53 @@ class Delivery(unittest.TestCase):
         self.assertEqual(trace.facts("issues", body),
                          ["issues/labeled · issue #12 · sender maint · author owner · label fix"])
 
+    def test_an_issues_summary_lists_the_issues_labels(self):
+        body = {"action": "opened", "issue": {"number": 5, "user": {"login": "owner"},
+                                              "labels": [{"name": "bug"}, {"name": "fix"}]},
+                "sender": {"login": "owner"}}
+        self.assertEqual(trace.facts("issues", body),
+                         ["issues/opened · issue #5 · sender owner · author owner · labels bug, fix"])
+
+
+class TracePayloadEvent(unittest.TestCase):
+    """#287: ``--payload`` takes ``--event issues``, and without it the payload's own shape decides."""
+    loop = {"id": "widgets", "repo": "acme/widgets", "triage": {"route": "widgets-triage"},
+            "seats": {"reviewer": {"route": "widgets-review"}}, "adjudicator": {}}
+    issue = {"action": "opened", "issue": {"number": 9, "user": {"login": "owner"}},
+             "sender": {"login": "owner"}}
+
+    def _trace(self, *extra):
+        from review_loop import cli
+        path = pathlib.Path(os.environ["HERMES_HOME"]) / "issues-payload.json"
+        path.write_text(json.dumps(self.issue))
+        import argparse
+        from harness.fixture import FakeCtx
+        ctx = FakeCtx()
+        cli.register_cli(ctx, settings={})
+        root = argparse.ArgumentParser()
+        ctx.setup(root)
+        args = root.parse_args(["trace", "--loop", "widgets", "--payload", str(path), *extra])
+        seen = {}
+
+        def fake_run(loop, payload, event, role, out=print):
+            seen.update(event=event, role=role, facts=trace.facts(event, payload))
+            return 0
+        with mock.patch.object(config, "load_id", return_value=self.loop), \
+                mock.patch.object(trace, "run", fake_run):
+            self.assertEqual(args.func(args), 0)
+        return seen
+
+    def test_event_issues_reaches_the_triage_gate_with_an_issues_summary(self):
+        seen = self._trace("--event", "issues")
+        self.assertEqual(seen["role"], "triage")
+        self.assertIn("issue #9", seen["facts"][0])
+        self.assertNotIn("PR #", seen["facts"][0])
+
+    def test_without_event_an_issues_payload_is_not_summarised_pr_shaped(self):
+        seen = self._trace()
+        self.assertEqual((seen["event"], seen["role"]), ("issues", "triage"))
+        self.assertTrue(seen["facts"][0].startswith("issues/opened · issue #9"))
+
 
 if __name__ == "__main__":
     unittest.main()

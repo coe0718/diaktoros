@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 
-from . import config, gate_failures, gh, isolation, observer, situation, transition, state as state_mod
+from . import config, gate_decisions, gate_failures, gh, isolation, observer, situation, transition, state as state_mod
 from .util import iso_at, log, now_iso, silence
 
 
@@ -55,7 +55,17 @@ def context(payload: dict):
     loop = payload_loop(payload)
     # A gate's failed GitHub read ends in [SILENT]; keep it on disk for the watchdog and explain.
     gh.record_failures()
+    _record_decisions(loop, payload)
     return loop, state_mod.state_for(loop)
+
+
+def _record_decisions(loop: dict, payload: dict) -> None:
+    """From here on, every ``silence(reason)`` in this process is appended to the loop's
+    gate-decisions.jsonl (#209)."""
+    from . import gate_decisions, util
+    name = pathlib.Path(sys.argv[0] or "gate").stem or "gate"
+    util._DECISION_RECORDER = lambda reason, decision: gate_decisions.record(
+        loop, name, payload, decision, reason)
 
 
 def pr_of(payload: dict) -> dict:
@@ -224,10 +234,13 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
     key = seat_key(loop, number)
     queued = st.queue_items(seat).get(key)
     push_off = seat == "fixer" and not config.unattended_fixer_push_enabled(loop)
+    final = (f"{seat} turn: nothing scheduled", "queued")   # what silence() records below
     if not push_off:
         try:
             outcome = enqueue_isolated(loop, seat, number, head, turn_key=turn_key)
             st.queue_pop_if(seat, key, queued)
+            final = (f"{seat} turn {outcome}",
+                     "accepted" if outcome in ("enqueued", "rearmed", "pending") else "queued")
             if outcome == "enqueued":
                 log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")
             elif outcome in ("rearmed", "pending"):
@@ -241,6 +254,7 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
             reason = f"isolated worker unavailable: {type(exc).__name__}: {exc}"
             st.queue_replace_if(seat, key, queued, head, pr_url(loop, number), reason)
             log(f"#{number} @ {head[:7]} {seat} held: {reason}")
+            final = (f"{seat} turn held: {reason}", "held")
     if push_off:
         # Checked before the runtime: a turn that could never publish is not worth a worker.
         # The hold reason keeps the exact enable command at its front (#81) — every surface
@@ -251,6 +265,7 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
         if denial:
             reason = f"{reason} {denial}"
         hold_fixer_push_off(loop, st, number, head, reason)
+        final = (f"{seat} turn held: {reason}", "held")
         log(f"#{number} @ {head[:7]} fixer held: {reason}")
     notice = on_push_off if push_off and on_push_off is not None else on_queued
     if notice is not None:
@@ -258,7 +273,7 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
             notice()
         except Exception as exc:
             log(f"#{number} @ {head[:7]} observer notice failed: {type(exc).__name__}: {exc}")
-    silence()
+    silence(*final)
 
 
 def isolation_block(loop: dict, number: int, workspace: dict | None, seat: str) -> dict:
@@ -434,8 +449,8 @@ def hooks_armed(loop: dict) -> bool | None:
 
 # The vocabulary of ``next.kind``. The suite asserts every conclusion is one of these, so a new
 # branch cannot quietly invent a kind nobody is checking for.
-EXPLAIN_KINDS = ("review-verdict", "review-request", "fixer-retry", "fixer-push", "release", "adjudication",
-                 "rearm", "ready", "retry", "wait", "none")
+EXPLAIN_KINDS = ("review-verdict", "review-request", "fixer-retry", "fixer-push", "author-push", "release",
+                 "adjudication", "rearm", "ready", "retry", "wait", "none")
 
 
 def _mark_time(entry: dict | None, fallback: float) -> float:
@@ -795,14 +810,18 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     pending_delivery = (local["delivery_status"] == "delivery-pending"
                         and spent is not None and spent >= cap)
     stale_held = {seat for seat, entry in held.items() if entry.get("head") != head}
-    needed_seat = ("fixer" if at_head else "reviewer" if request_pending else "")
+    # A review-only author's PR (#191) never needs the fixer and has no cap: a verdict at the
+    # head is the author's to answer.
+    review_only = author in config.review_only(loop)
+    needed_seat = ("" if at_head and review_only else "fixer" if at_head
+                   else "reviewer" if request_pending else "")
     used, limit = local["capacity"].get(needed_seat, (0, 0))
     full_seat = bool(needed_seat and used >= limit and needed_seat not in held
                      and not (inflight_fix if needed_seat == "fixer" else inflight_review))
     hooks_line = _explain_hooks(armed, armed_error)
     # The fixer gate holds a changes-requested verdict while the loop has not opted in to
     # unattended pushes: no fixer turn can start, so the next event is the operator's.
-    push_off = bool(at_head) and not config.unattended_fixer_push_enabled(loop)
+    push_off = bool(at_head) and not review_only and not config.unattended_fixer_push_enabled(loop)
     push_off_held = push_off and "fixer" not in held and not inflight_fix
     fixer_queue_hold = queued_seat == "fixer" and queued_reason.startswith(config.FIXER_PUSH_HOLD)
 
@@ -844,9 +863,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                                 "quarantined — fresh review situation; only a host-receipted "
                                 "post-boundary review counts (fresh reviewer turn: "
                                 f"{fresh.get('state') or 'not queued yet'})")
-            if author and author not in set(loop["fixers"]):
+            if author and author not in config.reviewed_authors(loop):
                 blockers.append(f"the author {author} is not one of this loop's fixers "
-                                f"({', '.join(loop['fixers'])})")
+                                f"({', '.join(loop['fixers'])}) or review-only authors")
             if parked:
                 blockers.append(f"escalated: the PR is parked awaiting adjudication at head "
                                 f"{str(marker.get('head') or '?')[:7]} since "
@@ -854,7 +873,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             elif pending_delivery:
                 blockers.append(f"adjudicator delivery pending at head {short} — no ruling is "
                                 "promised until the route acknowledges delivery")
-            elif spent is not None and spent >= cap:
+            elif spent is not None and spent >= cap and not review_only:
                 blockers.append(f"{spent}/{cap} verdicts spent with no approval and no escalation "
                                 f"marker — the cap may not have fired (the watchdog reports this "
                                 f"shape too)")
@@ -878,7 +897,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                 blockers.append(f"non-verdict review at head {short} ({'/'.join(head_states)}) "
                                 "does not suppress a fresh reviewer request")
             if (at_head and "fixer" not in held and not inflight_fix and not queued_seat
-                    and not push_off):
+                    and not push_off and not review_only):
                 blockers.append(f"the changes-requested verdict at head {short} has no fix run out "
                                 f"— the fixer gate did not start one for that delivery")
             if request_pending and not held and not inflight_review and not at_head and not approved:
@@ -924,10 +943,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif boundary and transition.baseline_missing(boundary):
         kind = "wait"
         action = f"same-head retarget held permanently: {transition.MISSING_BASELINE}"
-    elif author and author not in set(loop["fixers"]):
+    elif author and author not in config.reviewed_authors(loop):
         kind = "none"
         action = (f"nothing — the reviewer gate only serves PRs opened by this loop's fixers "
-                  f"({', '.join(loop['fixers'])})")
+                  f"({', '.join(loop['fixers'])}) or review-only authors")
     elif reviews is None:
         kind = "retry"
         action = (f"retry the review list for {repo}#{number} "
@@ -952,6 +971,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif approved:
         kind = "none"
         action = f"nothing — head {short} is approved; a human merges it"
+    elif review_only and at_head:
+        kind = "author-push"
+        action = (f"the author {author} pushes a fix and re-requests review of the new head — a "
+                  f"review-only PR has no fixer and no verdict cap")
     elif pending_delivery and not (loop.get("adjudicator") or {}).get("route"):
         kind = "adjudication"
         action = _adjudication_next(loop, head)
@@ -962,7 +985,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif parked:
         kind = "adjudication"
         action = _adjudication_next(loop, head)
-    elif spent is not None and spent >= cap:
+    elif spent is not None and spent >= cap and not review_only:
         if not (loop.get("adjudicator") or {}).get("route"):
             kind = "adjudication"
             action = _adjudication_next(loop, head)
@@ -1027,10 +1050,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         kind = "retry"
         action = (f"a review run for head {short}: the pending request for "
                   f"{loop['reviewer_seat']} started none. A request counts only from a fixer, the "
-                  "reviewer or a maintainer (triage.maintainers); anyone else's is ignored. Ask "
-                  "again as one of them, or toggle the PR to draft and back (ready_for_review "
-                  f"starts a review); if it came from one, `trace --loop {loop['id']}` its "
-                  "delivery to see why the gate declined")
+                  "reviewer or a maintainer (triage.maintainers); anyone else's is ignored. Run "
+                  f"`hermes review-loop review --loop {loop['id']} --pr {number}` (or ask again as "
+                  "one of them); if it came from one, "
+                  f"`trace --loop {loop['id']}` its delivery to see why the gate declined")
     else:
         kind = "review-request"
         detail = ("a fresh PR also wakes the reviewer on opened / ready_for_review, so re-driving "
@@ -1048,6 +1071,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             bits.append("draft")
         if request_pending:
             bits.append(f"review requested from {loop['reviewer_seat']}")
+        if pr.get("mergeable_state") == "dirty":
+            # #303 stage 1: GitHub cannot merge it as it is; nothing in the loop resolves that yet.
+            bits.append(f"CONFLICTS with {base or 'its base'} — merge {base or 'the base'} into "
+                        "the branch")
         state_line = " · ".join(bits)
 
     return {
@@ -1063,6 +1090,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         "inflight": local["inflight"], "escalation": local["escalation"], "hooks": hooks_line,
         "sweep": local["sweep"],
         "github": local.get("github", "no failed GitHub call recorded"),
+        "gate_decisions": [gate_decisions.line(e) for e in gate_decisions.for_pr(loop, number)],
         "gate_failures": gate_failed, "blockers": blockers, "next": {"kind": kind, "action": action},
     }
 
@@ -1195,7 +1223,7 @@ def take_seat(loop: dict, st: state_mod.LoopState, seat: str, number: int, head:
     with st.locked():
         if st.is_active(seat, key):
             log(f"{seat} is already running {key} — refusing a second run at the same PR")
-            silence()
+            silence(f"{seat} is already running {key}", "held")
 
         other = st.held_by_other(seat, key)
         if other:
@@ -1212,7 +1240,7 @@ def take_seat(loop: dict, st: state_mod.LoopState, seat: str, number: int, head:
             st.queue_add(seat, key, head, pr_url(loop, number),
                          f"{seat} at capacity {len(live)}/{capacity}: {held}")
             log(f"{seat} at capacity {len(live)}/{capacity} ({held}) — queued #{number} @ {head[:7]}")
-            silence()
+            silence(f"{seat} at capacity {len(live)}/{capacity} — queued", "queued")
 
         st.acquire(seat, key, head, why)
         st.queue_pop(seat, key)        # a direct event can outrun the drain: the entry is stale now
@@ -1223,7 +1251,7 @@ def take_seat(loop: dict, st: state_mod.LoopState, seat: str, number: int, head:
         st.queue_add(seat, key, head, pr_url(loop, number),
                      "no isolated workspace — a parallel run would share a checkout")
         log(f"no isolated workspace for #{number} and concurrency={capacity} — queued")
-        silence()
+        silence("no isolated workspace — queued", "queued")
     if workspace is None:
         log(f"running #{number} without isolation (concurrency=1) under {artifacts_for(loop, number)}")
     return workspace

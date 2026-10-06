@@ -298,6 +298,7 @@ class ShimRunsUnderTheLoopsHome(Base):
             from review_loop import config
             print(json.dumps({{"hermes_home": os.environ.get("HERMES_HOME"),
                               "home": os.environ.get("HOME"),
+                              "tmp": [os.environ.get(v) for v in ("TMPDIR", "TMP", "TEMP")],
                               "config_dir": str(config.config_dir())}}))
         """))
         return probe
@@ -324,6 +325,8 @@ class ShimRunsUnderTheLoopsHome(Base):
         self.assertEqual(seen["hermes_home"], str(self.hermes))
         self.assertEqual(seen["config_dir"], str(self.hermes / "review-loops.d"))
         self.assertEqual(seen["home"], str(self.home))
+        scratch = str(self.hermes / "cache" / "scratch")
+        self.assertEqual(seen["tmp"], [scratch] * 3)
 
     def test_with_hermes_own_gateway_env(self):
         """The same, with the env Hermes itself builds for a critic-scoped route script."""

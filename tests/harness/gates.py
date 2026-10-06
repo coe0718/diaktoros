@@ -417,7 +417,61 @@ def group_fixer_gate() -> None:
     check("  and the stale queue entry is dropped", load_state("pending.json"), {})
 
 
+def group_decisions() -> None:
+    section("gate decisions (#209) — a declining gate says why, on disk")
+    from review_loop import config, gate, gate_decisions
+
+    def lines():
+        path = state_file("gate-decisions.jsonl")
+        return [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
+
+    reset(prs={"7": pr(7)})
+    kind, out, _ = run("gate_reviewer.py", pr_payload(sender="passer-by"))
+    check("a declining gate still answers [SILENT]", (kind, out), ("SILENT", "[SILENT]"))
+    got = lines()
+    check("  and writes exactly one line", len(got), 1)
+    entry = got[0] if got else {}
+    check("  with the reason", "is not a fixer, the reviewer or a maintainer" in entry.get("reason", ""), True)
+    check("  the decision, sender, PR and action",
+          (entry.get("decision"), entry.get("sender"), entry.get("number"), entry.get("action"),
+           entry.get("gate")), ("declined", "passer-by", 7, "review_requested", "gate_reviewer"))
+    check("  and no payload body", sorted(entry), ["action", "decision", "event", "gate", "head",
+                                                   "number", "reason", "sender", "time"])
+
+    loop = config.load_id("widgets")
+    report = gate.explain(loop, gate.state_mod.state_for(loop), 7,
+                          {"pr": pr(7), "reviews": [], "armed": True})
+    check("explain lists the PR's decision",
+          any("declined" in t and "passer-by" in t for t in report["gate_decisions"]), True)
+    other = gate.explain(loop, gate.state_mod.state_for(loop), 8,
+                         {"pr": pr(8), "reviews": [], "armed": True})
+    check("  and only that PR's", other["gate_decisions"], [])
+
+    reset(prs={"7": pr(7)})
+    kind, _, _ = run("gate_reviewer.py", pr_payload())
+    check("an accepted event is recorded as held/queued/accepted, not declined",
+          [e["decision"] for e in lines()][-1] in ("held", "queued", "accepted"), True)
+
+    # Bounded: 250 decisions leave the last 200.
+    reset(prs={"7": pr(7)})
+    for i in range(250):
+        gate_decisions.record(loop, "gate_reviewer", {"number": 7, "action": "x"}, "declined", f"r{i}")
+    got = lines()
+    check("the file is pruned to 200", len(got), 200)
+    check("  keeping the newest", (got[0]["reason"], got[-1]["reason"]), ("r50", "r249"))
+    long = "y" * 1000
+    gate_decisions.record(loop, "gate_reviewer", {"number": 7}, "declined", long)
+    check("a reason is bounded to 300 characters", len(lines()[-1]["reason"]), 300)
+
+    # A write failure never changes the answer.
+    reset(prs={"7": pr(7)})
+    state_file("gate-decisions.jsonl").mkdir()
+    kind, out, _ = run("gate_reviewer.py", pr_payload(sender="passer-by"))
+    check("an unwritable record still answers [SILENT]", (kind, out), ("SILENT", "[SILENT]"))
+
+
 GROUPS = {
+    "decisions": group_decisions,
     "config": group_config,
     "reviewer": group_reviewer_gate,
     "budget": group_budget,

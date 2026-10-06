@@ -8,7 +8,7 @@ incident recovery, and the decision to merge.
 
 - [Install](#first-install-setup) and [generated files](#what-init-writes)
 - [First run and push policy](#first-run)
-- [Everyday commands](#everyday-commands)
+- [Everyday commands](#everyday-commands) and [reviewing your own PRs](#reviewing-your-own-prs)
 - [Signing](#what-the-loop-signs) and [review findings](#how-the-reviewer-grades-findings)
 - [Token files](#token-files-one-pat-per-account) and [permissions](#token-scopes-by-role)
 - [Doctor](#preflight-doctor) and [selftest](#verifying-the-isolated-setup-selftest)
@@ -19,6 +19,7 @@ incident recovery, and the decision to merge.
 - [Gate failures](#when-a-gate-crashes-or-runs-out-of-time)
 - [Run recovery](#when-an-isolated-run-fails)
 - [Bursts and watchdog](#how-it-handles-a-burst)
+- [Conflicts with the base](#conflicts-with-the-base)
 - [Publishing stats](#publishing-stats)
 
 Replace quoted angle-bracket placeholders, including brackets, with your values.
@@ -109,6 +110,22 @@ For drain, `--seat reviewer` is the default; `--seat fixer` chooses the fixer qu
 still respects push policy. `--admin-token` names a mapped login with hook-management
 permission, never a token value. For a deliberate hook pause use the workflow in
 [commands](commands.md), confirm GitHub hook state, and inspect existing runs separately.
+
+## Reviewing your own PRs
+
+List your login (or any account whose PRs you fix yourself) as review-only:
+
+```bash
+hermes review-loop set --loop "<loop-id>" --review-only "<your-login>"
+```
+
+The reviewer then reviews those PRs like a fixer's. A changes-requested verdict comes back
+to you, and the observer notice says so ("returned to the author"); the fixer never gets a
+turn on them. There is no verdict cap and no adjudication on a review-only PR. Push your
+fix and re-request the reviewer on the PR to get the next review: the reviewer gate
+accepts that request from the PR's own review-only author. `explain` shows `next: author-push`
+while a verdict waits for you, and the watchdog never reports a fixer stall on these PRs.
+`set --no-review-only` clears the list. A login can't be both review-only and a fixer.
 
 ## What the loop signs
 
@@ -391,6 +408,29 @@ The default sweep budget is 600 seconds, per-read cap 20 seconds. Slow reads can
 remaining work; the next scheduled sweep starts fresh. The cron script may report
 failure while exiting zero: monitor output and state, not exit code alone. Never set
 `REVIEW_LOOP_TEST` in production: it bypasses pause checks and grace periods.
+
+## Conflicts with the base
+
+When a loop PR stops merging into its base (`main` moved and both changed the same lines), the
+watchdog sends one `conflict` notice per head (#303). With unattended fixer pushes on, it also
+queues one **resolving fixer turn** per head and base:
+
+1. The host merges the base (pinned at the commit it saw) into the PR head itself, with no
+   worktree, and stages the result, conflict markers and all, as the fixer's `/work`. The prompt
+   names the conflicted files and shows what each side changed in them.
+2. The fixer resolves them, runs the tests, and pushes. The host refuses the push if a marker is
+   left or a conflicted file is untouched, and commits it as a merge (both parents) under the
+   exact-head lease.
+3. The fixer asks for the review, and the merged head is reviewed fresh.
+
+The loop does not resolve, and hands to you instead (the run ends `failed` with
+`conflict needs a person: …`):
+- a **whole-file** conflict: a modify/delete, a rename, a binary file. Git keeps one side whole,
+  so there is nothing to merge line by line;
+- a base that **changed workflow files** since the PR branched: GitHub refuses that push from a
+  token without the `workflow` scope, which the loop never asks for.
+
+Merge the base into the branch yourself, then `hermes review-loop review --pr N`.
 
 ## Publishing stats
 

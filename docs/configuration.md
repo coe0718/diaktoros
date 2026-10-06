@@ -79,7 +79,8 @@ Replace every quoted angle-bracket placeholder before use. These placeholders il
   "attribution": true,
   "fixer_check": "",
   "review_after_ci": false,
-  "required_checks": []
+  "required_checks": [],
+  "review_only": []
 }
 ```
 
@@ -208,7 +209,8 @@ Cleanup considers configured roots and the per-loop artifacts tree, rejects syml
 | `unattended_fixer_push` | `false` | Strict JSON boolean. Only literal `true` in trusted host configuration opts into unattended fixer writes. Not inherited from plugin defaults. |
 | `review_after_ci` | `false` | Strict JSON boolean. `true`: a reviewer turn whose head still has checks running waits instead of starting, with no model call, daily turn or retry spent, re-reading CI about every 90 seconds. It starts once nothing is running, or an hour after it was queued, and its prompt says what never finished. `status` and `explain` show the wait (`held: waiting for CI …`); no notice is sent for it. A *cancelled* check holds every review the same way, with this setting on or off, and sends one notice, since it needs a re-run by a person. Set with `init`/`setup`/`set --review-after-ci on\|off` or the settings form. |
 | `required_checks` | `[]` | The check runs or status contexts that gate an approval, named exactly as GitHub shows them (at most 50, unique, one printable line of up to 100 characters each). Empty: every check gates. Set: only these gate the broker's APPROVE (a failed one is refused, a cancelled one is refused as needing a re-run), the review-after-CI hold (a required check that has not reported yet counts as running) and, later, #306. Others are shown to the reviewer as *optional* and never block. Host-owned: never read from a PR. Set with `init`/`setup`/`set --required-check NAME` (repeat; `set --no-required-checks` clears) or the settings form (comma-separated; a comma inside parentheses, as in a matrix name, stays part of the name). |
-| `fixer_check` | `""` | One command, one printable line of at most 500 characters (chain several with `&&`). Fixer and issue-fix turns are told to run it from `/work` and make it pass before they publish, besides the tests they touched: name the checks CI always runs (a lint, a suite-wide guard test) so a fix doesn't go red on them. `""` names none. Set with `init`/`setup --fixer-check`, `set --fixer-check` (`''` clears it) or the settings form. |
+| `review_only` | `[]` | GitHub logins (at most 50, unique, lowercased) whose PRs the reviewer reviews but the fixer never touches, for example your own account. A review-only author's PR gets reviewer turns like a fixer's; a changes-requested verdict goes back to the author (the notice says "returned to the author") and starts no fixer turn. There is no verdict cap and no adjudication on these PRs, and the watchdog never reports a fixer stall for them (a missing review is still reported). The author may re-request the reviewer on their own PR. A login can't be both review-only and a fixer or a reviewer. Set with `init`/`setup`/`set --review-only LOGIN` (repeat; `set --no-review-only` clears) or the settings form (comma-separated). |
+| `fixer_check` | `""` | One command, one printable line of at most 500 characters (chain several with `&&`). Fixer and issue-fix turns are told to run it from `/work` with `CHANGED` set to the paths they changed (space-separated), and make it pass before they publish, besides the tests they touched: name the checks CI always runs (a lint, a suite-wide guard test) so a fix doesn't go red on them. `""` names none. A check can use `$CHANGED` to pick the tests that depend on the change; this repository's own is `python3 tests/affected.py --run $CHANGED` (#362), which runs the dependent test modules and the harness within a time budget. Set with `init`/`setup --fixer-check`, `set --fixer-check` (`''` clears it) or the settings form. |
 | `attribution` | `true` | Strict JSON boolean. Adds footers to the loop's own reviews/comments/PR descriptions where applicable and an `Automated-By:` commit trailer. `false` adds neither. It does not rewrite manual posts. |
 
 While unattended fixer pushes are off, a changes-requested verdict is held for the operator: no fixer ledger row, worker, or model turn starts. The command below is the supported policy-change path; `set` and `apply` do not change this switch.
@@ -390,6 +392,7 @@ The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plu
 | `adjudicator_login`, `adjudicator_token_file` | Blank | Optional adjudicator comment identity/path, only when an adjudicator route exists. |
 | `review_after_ci` | `false` | Overlay targets `review_after_ci` when explicitly named. |
 | `required_checks` | Blank | `required_checks`, split on commas outside parentheses; blank keeps the loop's own list. |
+| `review_only` | Blank | `review_only`, split on commas; blank keeps the loop's own list. |
 | `fixer_check` | Blank | `fixer_check`; blank keeps the loop's own check. |
 | `attribution` | `true` | Overlay targets `attribution` when explicitly named. For an explicit signing change, use `set --attribution on` or `off` for the named loop. |
 
