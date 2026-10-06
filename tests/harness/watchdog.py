@@ -590,7 +590,7 @@ def group_explain() -> None:
     rc, out = explain()
     check("pending request without run: retry gate", "the pending request for" in out, True)
     check("pending request without run: names who may ask (#375)",
-          "toggle the PR to draft and back" in out and "triage.maintainers" in out, True)
+          "hermes review-loop review --loop" in out and "triage.maintainers" in out, True)
     check("pending request without run: no imaginary verdict", "next:       the reviewer's verdict" in out, False)
     check("pending request without run: pure kind", gate.explain(config.load_id("widgets"),
           state_mod.state_for(config.load_id("widgets")), 7,
