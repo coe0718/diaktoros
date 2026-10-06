@@ -92,6 +92,8 @@ def install_guard(command, plugin):
         validate_launch(argv, kwargs, command, plugin)
         return original(argv, **kwargs)
     subprocess.Popen = guarded
+    # The validated Popen must not route through os.posix_spawn (refused below); use fork_exec.
+    subprocess._USE_POSIX_SPAWN = False
     for name in REFUSED_OS_LAUNCHERS:
         if hasattr(os, name):
             setattr(os, name, _refuse_launch)
