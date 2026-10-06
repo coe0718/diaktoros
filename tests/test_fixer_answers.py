@@ -190,6 +190,50 @@ class Publish(Base):
             self.assertTrue(self.send(server, {"operation": "request_review", "body": ANSWERS})["ok"])
         self.assertEqual(len(self.fake.posts()), 2)
 
+    def test_dispute_without_push_posts_answers_records_once_and_requests_no_review(self):
+        with self.serving() as server:
+            result = self.send(server, {"operation": "request_review", "body": ANSWERS,
+                                        "verdict": "DISPUTE"})
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["result"]["answers"], "posted")
+            self.assertTrue(server.completed)
+            again = self.send(server, {"operation": "request_review", "body": ANSWERS,
+                                       "verdict": "DISPUTE"})
+            self.assertFalse(again["ok"])
+        self.assertEqual([p.rsplit("/", 1)[1] for p, _, _ in self.fake.posts()], ["comments"])
+        with ledger.connect(self.db) as con:
+            self.assertEqual(len(con.execute("SELECT * FROM disputes").fetchall()), 1)
+        with Supervisor(self.db)._connect() as con:
+            self.assertEqual(run_supervisor.write_records(con, self.run_id), "dispute recorded")
+        sent = []
+        sup = Supervisor(self.db)
+        sup.notify(sent.append)
+        sup.notify(sent.append)
+        disputes = [m for m in sent if "disputed the review" in m]
+        self.assertEqual(len(disputes), 1)
+        self.assertIn("Not a defect", disputes[0])
+
+    def test_dispute_needs_answers_and_plain_request_without_push_still_refused(self):
+        with self.serving() as server:
+            self.assertFalse(self.send(server, {"operation": "request_review",
+                                                "verdict": "DISPUTE"})["ok"])
+            self.assertFalse(self.send(server, {"operation": "request_review",
+                                                "body": ANSWERS})["ok"])
+        self.assertEqual(self.fake.posts(), [])
+        with ledger.connect(self.db) as con:
+            self.assertEqual(con.execute("SELECT * FROM disputes").fetchall(), [])
+
+    def test_client_sends_dispute_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a"
+            path.write_text(ANSWERS)
+            with mock.patch.object(broker_client, "call", return_value={"ok": True}) as call, \
+                    mock.patch.object(sys, "argv", ["broker_client", "request_review",
+                                                    "--answers-file", str(path), "--dispute"]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                broker_client.main()
+            call.assert_called_once_with("request_review", body=ANSWERS, verdict="DISPUTE")
+
     def test_uncertain_comment_is_recorded_never_retried_and_the_request_still_goes(self):
         self.fake.comment_post = "lost"
         with self.serving() as server:
