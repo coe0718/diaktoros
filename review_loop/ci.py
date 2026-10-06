@@ -30,6 +30,8 @@ class CIState:
     passed: list[str] = field(default_factory=list)
     cancelled: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)   # required, never reported at this head
+    ids: dict = field(default_factory=dict)    # check run id by name (an Actions job id) (#306)
+    urls: dict = field(default_factory=dict)   # where GitHub shows each run (#306)
 
     @property
     def green(self) -> bool:
@@ -68,6 +70,10 @@ def read(loop: dict, head: str) -> CIState | None:
         return None
     state = CIState()
     for name, run in sorted(latest.items()):
+        if type(run.get("id")) is int:
+            state.ids[name] = run["id"]
+        if isinstance(run.get("html_url"), str):
+            state.urls[name] = run["html_url"][:300]
         if run.get("status") != "completed":
             state.pending.append(name)
         elif run.get("conclusion") in FAILED_CONCLUSIONS:
@@ -95,7 +101,8 @@ def gating(state: CIState | None, required) -> CIState | None:
     wanted = list(dict.fromkeys(required))
     keep = lambda names: [name for name in names if name in wanted]  # noqa: E731
     view = CIState(failed=keep(state.failed), pending=keep(state.pending),
-                   passed=keep(state.passed), cancelled=keep(state.cancelled))
+                   passed=keep(state.passed), cancelled=keep(state.cancelled),
+                   ids=state.ids, urls=state.urls)
     reported = set(state.failed) | set(state.pending) | set(state.passed) | set(state.cancelled)
     view.missing = [name for name in wanted if name not in reported]
     return view

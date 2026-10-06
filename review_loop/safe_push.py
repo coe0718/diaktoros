@@ -525,7 +525,8 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
         return new_head
 
 def push(loop: dict, *, repo: str, number: int, head: str, role: str,
-         branch: str, manifest: object, merge: dict | None = None) -> dict:
+         branch: str, manifest: object, merge: dict | None = None,
+         ci_fix: bool = False) -> dict:
     """Create Git objects and lease-advance only the gate-scoped PR branch.
 
     The trusted caller supplies scope from the gate, never from the manifest. All
@@ -543,7 +544,7 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     # A conflict turn (#303) runs on an approved or unreviewed PR, so it has no changes-requested
     # verdict to answer. ``merge`` is host-built (RunScope), never the seat's: an ordinary push
     # still needs the live verdict.
-    verdict = merge is None
+    verdict = merge is None and not ci_fix   # a CI-fix turn (#306) answers no verdict either
     login = broker.authorize(loop, repo=repo, number=number, head=head,
                              role=role, branch=branch, operation="push", require_verdict=verdict)
     if not isinstance(branch, str) or len(branch) > 200 or not all(
