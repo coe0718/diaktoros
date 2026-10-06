@@ -301,7 +301,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `escalation` | Durable cap-breach marker written; next is adjudication or the operator. |
 | `ruling` | Isolated adjudicator recorded a ruling; the reason also reaches the operator outbox. |
 | `stall` | Watchdog reports a quiet/stuck head. |
-| `closed` | PR merged or abandoned and cleanup attempted; can be emitted for repository PRs outside ordinary author admission. |
+| `closed` | PR merged or abandoned and cleanup attempted; sent only for PRs this loop worked on (reviewed author, or breach, transition, queue or observer-ledger state). |
 | `triaged` | Issue triage ended (labels, none fit, skipped, denied, uncertain). Links the issue. |
 | `fixing` | Fix label handed an issue to the fixer, or the handoff was held. Links the issue. |
 | `fixed` | Issue-fix write ended: PR opened/review requested, could-not-fix comment, or uncertain. Links the issue. |

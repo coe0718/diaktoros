@@ -63,7 +63,7 @@ and a PR link. It does not contain the diff, review body, GitHub credentials or 
 | `escalation` | Durable cap marker | Adjudicator received/finished its turn |
 | `ruling` | Host recorded ACCEPT/REJECT/RESPEC | Code merged or the cap was reset |
 | `stall` | Watchdog decided a stall warrants reporting | The watchdog repaired the underlying defect |
-| `closed` | PR merged/closed and cleanup attempted | Cleanup reclaimed disk, or this was a loop-owned PR |
+| `closed` | PR merged/closed and cleanup attempted | Cleanup reclaimed disk (cleanup runs for every closed PR, but the notice is sent only for PRs this loop worked on) |
 | `triaged` | Issue triage ended: labels applied, none fit, skipped, denied or uncertain (links the issue) | A person agrees with the labels |
 | `fixing` | A maintainer's fix label handed the issue to the fixer, or the handoff was held and why | The fix turn has started |
 | `fixed` | The issue-fix write ended: PR opened (and review requested), a could-not-fix comment, or an uncertain write | The PR passes review |
@@ -87,7 +87,7 @@ Approval's `next: you merge` hint is revalidated immediately before sending agai
 current review identity, head/base and post-write holds. If verification fails, the
 hint is omitted. A later state change remains possible: inspect GitHub before merging.
 Retries and digests omit next-turn hints because the recorded transition may be stale.
-Closed notices apply to repository PR closures, not exclusively PRs this loop worked on.
+Closed notices fire only for PRs this loop worked on (the author is a reviewed author, or the loop holds breach, transition, queue or observer-ledger state for the PR). Other repository PR closures are cleaned up silently.
 
 Issue triage and issue-fix runs produce **no observer transition notices**. The PR opened
 by a successful issue fix becomes a normal review-loop PR and can produce later notices.
