@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -212,6 +213,41 @@ class Publish(Base):
         disputes = [m for m in sent if "disputed the review" in m]
         self.assertEqual(len(disputes), 1)
         self.assertIn("Not a defect", disputes[0])
+
+    def disputes(self) -> list:
+        with ledger.connect(self.db) as con:
+            return con.execute("SELECT run_id FROM disputes").fetchall()
+
+    def test_a_dispute_is_recorded_before_its_comment_so_a_failed_post_keeps_the_notice(self):
+        # #427: the dispute row is the operator's notice. It is written before the public
+        # comment, so a POST that is refused, or a crash during it, cannot lose the notice.
+        for outcome in ("denied", RuntimeError("crash mid-POST")):
+            with self.subTest(outcome=outcome):
+                with ledger.connect(self.db) as con:
+                    con.execute("DELETE FROM disputes")
+                publish = (mock.patch.object(broker_ipc.RunBroker, "_publish_answers",
+                                             side_effect=outcome)
+                           if isinstance(outcome, Exception) else
+                           mock.patch.object(broker_ipc.RunBroker, "_publish_answers",
+                                             return_value=outcome))
+                with publish, self.serving() as server:
+                    result = self.send(server, {"operation": "request_review", "body": ANSWERS,
+                                                "verdict": "DISPUTE"})
+                self.assertFalse(result["ok"])
+                self.assertEqual(len(self.disputes()), 1)
+        sent = []
+        Supervisor(self.db).notify(sent.append)
+        self.assertEqual(len([m for m in sent if "disputed the review" in m]), 1)
+
+    def test_a_dispute_that_cannot_be_recorded_posts_nothing(self):
+        with mock.patch.object(Supervisor, "record_dispute",
+                               side_effect=sqlite3.OperationalError("database is locked")), \
+                self.serving() as server:
+            result = self.send(server, {"operation": "request_review", "body": ANSWERS,
+                                        "verdict": "DISPUTE"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.fake.posts(), [])          # no public comment without its notice
+        self.assertEqual(self.disputes(), [])
 
     def test_dispute_needs_answers_and_plain_request_without_push_still_refused(self):
         with self.serving() as server:
