@@ -69,6 +69,8 @@ class Prompts(unittest.TestCase):
             self.assertIn(f"```sh\n{CHECK}\n```", text)
             self.assertIn("If an **always-run check**", text)
             self.assertIn("Set `CHANGED` to every path you changed", text)          # #362
+            self.assertIn("name those modules in the PR description and note that CI will "
+                          "catch them", text)                                       # #390
         # Instruction from the operator, before the data sections.
         self.assertLess(fixer.index("Always-run check"), fixer.index("RECORD"))
         self.assertLess(issue.index("Always-run check"), issue.index("## Issue"))

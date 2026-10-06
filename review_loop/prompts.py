@@ -467,5 +467,8 @@ def fixer_check_section(loop: dict) -> str:
             "added or deleted, space-separated and relative to `/work` (the same list you will "
             "publish), so the check can pick the tests that depend on them (#362):\n\n"
             "```sh\nCHANGED=\"path/one.py path/two.py\" sh -c '<the check below>'\n```\n\n"
-            "If it cannot run in this sandbox, say so in your answers or PR description.\n\n"
+            "If it cannot run in this sandbox, say so in your answers or PR description. If it "
+            "passes but its output reports modules it did not run (for example `not run (past "
+            "the ... budget; CI runs them): ...`), the zero exit code does not mean those tests "
+            "ran: name those modules in the PR description and note that CI will catch them.\n\n"
             "```sh\n" + command + "\n```")
