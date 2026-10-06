@@ -904,7 +904,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         raised[key] = now
         return True
 
-    conflicts: list[tuple[int, str, str]] = []
+    conflicts: list[tuple[int, str, str, str]] = []
     for pr in prs:
         if not isinstance(pr, dict):
             continue
@@ -923,7 +923,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         live = gh.pr(loop, number)
         if (isinstance(live, dict) and live.get("mergeable_state") == "dirty"
                 and (live.get("head") or {}).get("sha") == head):
-            conflicts.append((number, head, str((live.get("base") or {}).get("sha") or "")))
+            conflicts.append((number, head, str((live.get("base") or {}).get("sha") or ""), author))
 
         # A held head is judged only by host-receipted post-boundary reviews: an old verdict
         # is not a current stall, and a missing fresh verdict is the reviewer's to post.
@@ -1047,8 +1047,10 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         observer.notify(loop, st, "stall", number, head, identity=identity,
                         outcome=kind, next_turn="you")
     resolving = config.unattended_fixer_push_enabled(loop)
-    for number, head, base_sha in conflicts:
-        if resolving and re.fullmatch(r"[0-9a-f]{40}", base_sha):
+    for number, head, base_sha, author in conflicts:
+        # A review-only author's PR (#191) is never the fixer's, a conflict included.
+        review_only = author in config.review_only(loop)
+        if resolving and not review_only and re.fullmatch(r"[0-9a-f]{40}", base_sha):
             # #303 stage 3: one resolving fixer turn per (head, base); the ledger's turn key
             # dedups every later sweep. The worker merges and may still hand it to a person
             # (a whole-file conflict, or workflow changes the fixer's token cannot push).
@@ -1065,7 +1067,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         # notice, a sweep that sees the same conflicted head again is not.
         observer.notify(loop, st, "conflict", number, head, identity="conflict",
                         outcome=f"conflicts with {loop['base']} — GitHub cannot merge it as it is",
-                        next_turn=(f"the fixer merges {loop['base']} into the branch and resolves "
+                        next_turn=(f"{author}: merge {loop['base']} into the branch (review-only "
+                                   "— no fixer)" if review_only else
+                                   f"the fixer merges {loop['base']} into the branch and resolves "
                                    "it (a whole-file conflict comes back to you)" if resolving else
                                    f"you: merge {loop['base']} into the branch (unattended fixer "
                                    "pushes are off, so the loop does not resolve it)"))

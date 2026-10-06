@@ -220,6 +220,27 @@ class Gates(fg.Base):
         self.assertNotIn("cap may not have fired", text)
         self.assertIn("reviewer never posted a verdict", text)
 
+    def test_a_conflict_goes_to_the_author_and_queues_no_fixer_turn(self):
+        self.live = {**self.live, "mergeable_state": "dirty", "base": {"ref": "main", "sha": "b" * 40}}
+        with mock.patch.object(gate, "enqueue_isolated") as enqueue, \
+             mock.patch.object(watchdog.observer, "notify") as notify, \
+             mock.patch.object(watchdog, "TEST", True), \
+             mock.patch.object(gate, "hooks_armed", return_value=True), \
+             mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
+             mock.patch.object(gh, "open_prs", return_value=[self.live]), \
+             mock.patch.object(gh, "pr", return_value=self.live), \
+             mock.patch.object(gh, "reviews", return_value=[]), \
+             mock.patch.object(watchdog, "retry_pending_breaches"), \
+             mock.patch.object(watchdog.routes, "fire"), \
+             mock.patch.object(watchdog.observer, "retry", return_value=0), \
+             mock.patch.object(watchdog.observer, "flush"):
+            watchdog.sweep_loop(self.loop, self.st)          # first sweep: arms, baselines
+            watchdog.sweep_loop(self.loop, self.st)
+        enqueue.assert_not_called()
+        conflict = [c for c in notify.call_args_list if c.args[2] == "conflict"]
+        self.assertEqual(len(conflict), 1)
+        self.assertIn(f"{OWNER}: merge main", conflict[0].kwargs["next_turn"])
+
     def test_drain_serves_the_reviewer_seat_only(self):
         for seat in ("reviewer", "fixer"):
             self.st.queue_add(seat, f"{fg.REPO}#7", HEAD, "url", "queued")
