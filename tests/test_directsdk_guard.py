@@ -16,6 +16,11 @@ class LaunchTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # install_guard patches os/subprocess process-wide; undo it so other tests are unaffected.
+        for n in guard.REFUSED_OS_LAUNCHERS:
+            if hasattr(os, n):
+                self.addCleanup(setattr, os, n, getattr(os, n))
+        self.addCleanup(setattr, subprocess, '_USE_POSIX_SPAWN', subprocess._USE_POSIX_SPAWN)
         self.root = Path(self.tmp.name)
         self.plugin = self.root / 'plugin'
         self.plugin.mkdir(mode=0o700)
@@ -33,6 +38,26 @@ class LaunchTests(unittest.TestCase):
             guard.install_guard(str(self.command), str(self.plugin))
             with subprocess.Popen(argv, cwd=str(self.root)) as child:
                 self.assertEqual(child.wait(), 0)
+
+    def test_other_launch_routes_refused(self):
+        saved = {n: getattr(os, n) for n in guard.REFUSED_OS_LAUNCHERS if hasattr(os, n)}
+        for n, f in saved.items():
+            self.addCleanup(setattr, os, n, f)
+        with mock.patch.object(subprocess, 'Popen', subprocess.Popen):
+            guard.install_guard(str(self.command), str(self.plugin))
+        cmd = str(self.command)
+        calls = {
+            'posix_spawn': (cmd, [cmd], {}), 'fork': (), 'execv': (cmd, [cmd]),
+            'execl': (cmd, cmd), 'execvp': (cmd, [cmd]), 'execve': (cmd, [cmd], {}),
+            'spawnv': (os.P_WAIT, cmd, [cmd]), 'spawnl': (os.P_WAIT, cmd, cmd),
+            'spawnvp': (os.P_WAIT, cmd, [cmd]),
+        }
+        for name, args in calls.items():
+            with self.subTest(name=name):
+                self.assertIn(name, saved)
+                with self.assertRaises(guard.NativeLaunchRefused):
+                    getattr(os, name)(*args)
+        self.assertFalse(self.marker.exists())
 
     def test_recorded_pinned_provider_launch_passes(self):
         self.launch(self.argv)
