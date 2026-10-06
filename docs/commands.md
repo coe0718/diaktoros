@@ -350,9 +350,9 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--observer-deliver` | `OBSERVER_DELIVER` | `telegram` | where the gateway delivers the feed (telegram, discord, ...); the feed never wakes an agent |
 | `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict (default: all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per this many minutes (0 = one notice per transition) |
-| `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | route for urgent notices only (failed, held, escalation, ruling, stall, conflict, uncertain) |
-| `--observer-urgent-profile` | `OBSERVER_URGENT_PROFILE` |  | profile owning the urgent route (default: the feed's) |
-| `--observer-urgent-deliver` | `OBSERVER_URGENT_DELIVER` |  | platform for urgent notices (default: the feed's) |
+| `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | second route for urgent notices (failed, held, escalation, ruling, stall, conflict, uncertain); routine ones keep the main feed |
+| `--observer-urgent-profile` | `OBSERVER_URGENT_PROFILE` |  | profile for the urgent route (default: the observer profile) |
+| `--observer-urgent-deliver` | `OBSERVER_URGENT_DELIVER` |  | where the gateway delivers urgent notices (default: the feed's) |
 | `--host` | `HOST` |  | your gateway webhook origin (required unless set in plugin settings) |
 | `--grace-min` | `GRACE_MIN` | `35` | minutes a PR may sit quiet before the watchdog reports a stall |
 | `--ttl-min` | `TTL_MIN` | `45` | how long a run may hold its seat slot |
@@ -456,9 +456,9 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--observer-deliver` | `OBSERVER_DELIVER` |  | where the gateway delivers the feed (telegram, discord, ...) |
 | `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict (blank = all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per N minutes (0 = per transition) |
-| `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | route for urgent notices only (failed, held, escalation, ruling, stall, conflict, uncertain) |
-| `--observer-urgent-profile` | `OBSERVER_URGENT_PROFILE` |  | profile owning the urgent route (default: the feed's) |
-| `--observer-urgent-deliver` | `OBSERVER_URGENT_DELIVER` |  | platform for urgent notices (default: the feed's) |
+| `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | route for urgent notices only (blank = one feed for everything) |
+| `--observer-urgent-profile` | `OBSERVER_URGENT_PROFILE` |  | profile that owns the urgent destination (blank = the feed's) |
+| `--observer-urgent-deliver` | `OBSERVER_URGENT_DELIVER` |  | where the gateway delivers urgent notices (blank = the feed's) |
 | `--observer-mute` |  |  | stop the feed without forgetting it |
 | `--observer-unmute` |  |  | resume a muted feed |
 | `--observer-disable` |  |  | drop this loop's observer config entirely |
