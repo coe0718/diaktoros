@@ -143,6 +143,46 @@ class SetConcurrencyTest(Base):
         self.assertIn("parallel now: reviewer 3 · fixer 3", out)
 
 
+class ApplyConcurrencyTest(Base):
+    """``apply`` is the third writer of concurrency; pin it here, not only in the harness."""
+
+    def apply(self, **form):
+        settings = dict(form)
+        settings.setdefault("clone", str(t.CLONE))
+        return self.cli("apply", "--loop", LOOP_ID, settings=settings)
+
+    def test_apply_agreeing_seats_become_the_loop_default(self):
+        rc, out = self.init("--clone", str(t.CLONE))
+        self.assertEqual(rc, 0, out)
+        rc, out = self.apply(reviewer_concurrency=3, fixer_concurrency=3)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.capacity(), (3, 3))
+        raw = self.written()
+        self.assertEqual(raw["concurrency"], 3)
+        for seat in ("reviewer", "fixer"):
+            self.assertNotIn("concurrency", raw["seats"][seat])
+
+    def test_apply_differing_seats_pin_only_the_one_that_differs(self):
+        rc, out = self.init("--clone", str(t.CLONE))
+        self.assertEqual(rc, 0, out)
+        rc, out = self.apply(reviewer_concurrency=2, fixer_concurrency=1)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.capacity(), (2, 1))
+        raw = self.written()
+        self.assertEqual(raw["concurrency"], 1)
+        self.assertEqual(raw["seats"]["reviewer"].get("concurrency"), 2)
+        self.assertNotIn("concurrency", raw["seats"]["fixer"])
+
+    def test_apply_twice_is_stable(self):
+        rc, out = self.init("--clone", str(t.CLONE))
+        self.assertEqual(rc, 0, out)
+        for _ in range(2):
+            rc, out = self.apply(reviewer_concurrency=3, fixer_concurrency=3)
+            self.assertEqual(rc, 0, out)
+        self.assertEqual(self.capacity(), (3, 3))
+        self.assertEqual(self.written()["concurrency"], 3)
+
+
 class ExistingPinnedConfigTest(Base):
     """A config written before the fix carries ``seats.<seat>.concurrency: 1``. It keeps it."""
 
