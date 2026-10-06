@@ -347,7 +347,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--observer-route` | `OBSERVER_ROUTE` |  | route name for the read-only observer feed (default: <id>-observe) |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile the observer feed belongs to (its chat) — naming one switches the feed on |
 | `--observer-deliver` | `OBSERVER_DELIVER` | `telegram` | where the gateway delivers the feed (telegram, discord, ...); the feed never wakes an agent |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held (default: all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict (default: all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per this many minutes (0 = one notice per transition) |
 | `--host` | `HOST` |  | your gateway webhook origin (required unless set in plugin settings) |
 | `--grace-min` | `GRACE_MIN` | `35` | minutes a PR may sit quiet before the watchdog reports a stall |
@@ -447,7 +447,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--observer-route` | `OBSERVER_ROUTE` |  | route the observer feed delivers through |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | profile that owns the observer destination |
 | `--observer-deliver` | `OBSERVER_DELIVER` |  | where the gateway delivers the feed (telegram, discord, ...) |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held (blank = all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict (blank = all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per N minutes (0 = per transition) |
 | `--observer-mute` |  |  | stop the feed without forgetting it |
 | `--observer-unmute` |  |  | resume a muted feed |
