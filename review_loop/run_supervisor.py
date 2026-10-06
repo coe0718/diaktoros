@@ -2820,7 +2820,8 @@ class Supervisor:
             if row['seat'] == 'reviewer' and time.time() - row['created'] < CI_WAIT_MAX_S:
                 # A cancelled check (#363) holds every review: the broker would refuse its
                 # APPROVE, so the turn could only spend tokens. Running checks hold it only with
-                # review_after_ci (#241). A failed check never holds: the review says why.
+                # review_after_ci (#241), even beside a failed one. A failed check never holds
+                # by itself: the review says why.
                 from . import ci
                 after_ci = config.review_after_ci(loop)
                 # Only the required checks hold it, when the loop names them (#368).
@@ -2830,8 +2831,13 @@ class Supervisor:
                 fixing = bool(checks is not None and checks.failed and after_ci
                               and config.fix_ci(loop)
                               and ci_fix.pending_at(row['repo'], row['pr'], row['head'], self.db))
-                if checks is not None and (fixing or (not checks.failed and (
-                        checks.cancelled or checks.missing or (after_ci and checks.pending)))):
+                # #374: a failure releases the cancelled/missing holds only (the review would
+                # otherwise go unreported); the pending wait survives it, so one review names
+                # every failure once CI finishes.
+                if checks is not None and (
+                        fixing
+                        or (not checks.failed and (checks.cancelled or checks.missing))
+                        or (after_ci and checks.pending)):
                     # Nothing spent: no model call, no daily turn, no retry. This worker stays
                     # to re-queue it (linger_for_ci); the watchdog sweep is the backstop.
                     paced_until = time.time() + CI_POLL_S
