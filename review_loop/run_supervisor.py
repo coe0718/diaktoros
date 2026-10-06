@@ -555,6 +555,7 @@ class PRChange(NamedTuple):
     record: str
     diff: str
     partial: str = ''
+    author: str = ''        # the PR author's login, lowercased (#191)
 
 
 def _line(text: object, limit: int) -> str:
@@ -786,12 +787,14 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
         header += f"# {diff_cut} file(s) omitted: the diff is bounded to {DIFF_BYTES} bytes.\n"
     if files_error:
         header += f"# The file list could not be read ({files_error}): no files, no patches.\n"
-    return PRChange(record, header + ''.join(diff_parts), partial)
+    author = (pr.get('user') or {}).get('login') if isinstance(pr.get('user'), dict) else ''
+    return PRChange(record, header + ''.join(diff_parts), partial,
+                    author.lower() if isinstance(author, str) else '')
 
 
 def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
     """Render the role's isolated prompt from host facts plus the bounded PR record."""
-    from . import gate, gh, prompts
+    from . import config, gate, gh, prompts
     seat = row['seat']
     seats = loop.get('seats') or {}
     counted = gate.verdicts(reviews, loop) if isinstance(reviews, list) else None
@@ -801,6 +804,10 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
              'fixer_agent': (seats.get('fixer') or {}).get('agent') or 'the fixer'}
     comments, note = None, ''
     if seat == 'reviewer':
+        # A review-only PR has no fixer: its author answers the verdict (#191). Only a login on
+        # the validated review-only list is named, never free GitHub text.
+        if change is not None and change.author in config.review_only(loop):
+            facts['fixer_agent'] = f"the PR's author ({change.author})"
         facts['round'] = len(counted) + 1 if counted is not None else 'unknown (reviews unreadable)'
         # The labels a filed issue may carry (#247): the loop's triage list, the same allowlist
         # the broker enforces.

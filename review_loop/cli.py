@@ -1710,6 +1710,10 @@ def cmd_init(args) -> int:
         "required_checks": (config.split_check_names(d["required_checks"])
                             if getattr(args, "required_check", None) is None
                             else [name for name in args.required_check if name.strip()]),
+        # Authors reviewed but never fixed (#191).
+        "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
+                        if getattr(args, "review_only", None) is None
+                        else [name for name in args.review_only if name.strip()]),
     }
     # A seat-level capacity wins over the loop default, so only write it when it was asked for.
     for seat, value in _init_seat_concurrency(args, d).items():
@@ -2068,6 +2072,11 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                     "the CI checks that must pass before an approval, comma-separated, exactly as "
                     "GitHub names them (blank: every check)", d["required_checks"], interactive)))
     argv += [f"--required-check={name}" for name in required]
+    reviewed = (args.review_only if getattr(args, "review_only", None) is not None else
+                [name for name in _ask("GitHub logins whose PRs the reviewer reviews but the fixer "
+                                       "never touches, comma-separated (blank: none)",
+                                       d["review_only"], interactive).split(",") if name.strip()])
+    argv += [f"--review-only={name.strip()}" for name in reviewed]
     if admin:
         argv += ["--hooks", f"--admin-token={admin}"]   # created paused; step 5 arms them
     return argv, admin
@@ -2333,6 +2342,15 @@ def cmd_set(args) -> int:
             return 2
         if names != (loop.get("required_checks") or []):
             changes["required_checks"] = names
+    if getattr(args, "review_only", None) is not None or getattr(args, "no_review_only", False):
+        try:
+            names = config.check_review_only([] if args.no_review_only else args.review_only,
+                                             loop, "--review-only")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if names != (loop.get("review_only") or []):
+            changes["review_only"] = names
     # '' is a real value here: it clears the check.
     if getattr(args, "fixer_check", None) is not None:
         try:
@@ -2728,7 +2746,7 @@ def _apply(args) -> int:
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
-                "required_checks"):
+                "required_checks", "review_only"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -4488,6 +4506,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--attribution", choices=("on", "off"), default=None,
                           help="sign what the loop posts with 'Automated by hermes-review-loop' "
                                f"(default {'on' if d['attribution'] else 'off'})")
+        init.add_argument("--review-only", action="append", default=None,
+                          help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting)")
         init.add_argument("--required-check", action="append", default=None,
                           help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         init.add_argument("--fixer-check", default=None,
@@ -4540,6 +4560,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         first.add_argument("--adjudicator-profile", default=None,
                            help="Hermes profile that rules when a PR's verdict cap is spent; "
                                 "turns adjudication on (blank: off) (default: the plugin setting)")
+        first.add_argument("--review-only", action="append", default=None,
+                           help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting)")
         first.add_argument("--required-check", action="append", default=None,
                            help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         first.add_argument("--fixer-check", default=None,
@@ -4672,6 +4694,11 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                             help="start each review after the head's checks finish (up to an hour), "
                                  "or start at once")
+        reviewed = change.add_mutually_exclusive_group()
+        reviewed.add_argument("--review-only", action="append", default=None,
+                              help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it); replaces the list")
+        reviewed.add_argument("--no-review-only", action="store_true",
+                              help="clear the review-only list")
         required = change.add_mutually_exclusive_group()
         required.add_argument("--required-check", action="append", default=None,
                               help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates); replaces the list")

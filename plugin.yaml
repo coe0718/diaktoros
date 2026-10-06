@@ -131,6 +131,11 @@ config_schema:
     type: str
     default: ""
     description: "Issue-fix turns per local day, 1-1000. Needs the loop's triage.fix_label. Blank = not set here: the loop keeps its own value or the default"
+  review_only:
+    label: "Review-only authors (comma-separated)"
+    type: str
+    default: ""
+    description: "GitHub logins whose PRs the reviewer reviews but the fixer never touches: a changes-requested verdict goes back to the author. Not a fixer or a reviewer. Blank = not set here"
   required_checks:
     label: "Required CI checks (comma-separated)"
     type: str

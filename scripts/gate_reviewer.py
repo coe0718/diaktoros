@@ -34,7 +34,7 @@ ACTIONS = {"opened", "ready_for_review", "reopened", "review_requested"}
 def loop_worked_on(loop: dict, st, number: int, pr: dict) -> bool:
     """Whether the loop has any stake in this PR: a fixer's, or one its state has an entry for."""
     author = ((pr or {}).get("user") or {}).get("login") or ""
-    if author.lower() in {str(f).lower() for f in loop.get("fixers") or []}:
+    if author.lower() in config.reviewed_authors(loop):
         return True
     try:
         if st.breach_get(number) or st.transition_get(number):
@@ -99,8 +99,11 @@ def main() -> None:
         requested = ((payload.get("requested_reviewer") or {}).get("login") or "").lower()
         if requested != loop["reviewer_seat"]:
             silence(f"review requested from {requested or 'nobody'} — not this seat")
+        # A review-only author (#191) may ask again for a review of their own PR.
+        own = sender in config.review_only(loop) and sender == (
+            ((pr.get("user") or {}).get("login") or "").lower())
         if (sender not in set(loop["fixers"]) and sender not in loop["reviewers"]
-                and sender not in config.maintainers(loop)):
+                and sender not in config.maintainers(loop) and not own):
             silence(f"sender {sender or 'unknown'} is not a fixer, the reviewer or a maintainer "
                     "(triage.maintainers)")
 
@@ -109,8 +112,9 @@ def main() -> None:
     if (pr.get("base") or {}).get("ref") != loop["base"]:
         silence(f"base is not {loop['base']}")
     author = ((pr.get("user") or {}).get("login") or "").lower()
-    if author not in set(loop["fixers"]):
-        silence(f"author {author or 'unknown'} is not a fixer for this loop")
+    if author not in config.reviewed_authors(loop):
+        silence(f"author {author or 'unknown'} is not a fixer or a review-only author for "
+                "this loop")
 
     seat = "reviewer"
     number = gate.number_of(payload, pr)
@@ -124,7 +128,8 @@ def main() -> None:
         silence("review trigger is stale or current PR is unavailable")
     # Eligibility must be judged against current facts, not only the old snapshot.
     if (current.get("draft") or (current.get("base") or {}).get("ref") != loop["base"]
-            or ((current.get("user") or {}).get("login") or "").lower() not in loop["fixers"]):
+            or ((current.get("user") or {}).get("login") or "").lower()
+            not in config.reviewed_authors(loop)):
         silence("current PR is no longer eligible for this review")
     snapshot_base_sha = (pr.get("base") or {}).get("sha")
     # Only a stacked base's generation decides which diff is under review; trunk moving on
@@ -154,7 +159,9 @@ def main() -> None:
         silence(f"a review for head {head[:7]} is already out")
 
     rounds = len(gate.verdicts(reviews, loop))
-    if rounds >= loop["cap"]:
+    # A review-only author's PR (#191) has no verdict cap: no fixer rounds are spent, the author
+    # answers each verdict by pushing and asking again, so there is nothing to adjudicate.
+    if rounds >= loop["cap"] and author not in config.review_only(loop):
         gate.breach(loop, st, number, head, rounds,
                     f"review cap reached — {loop['cap']} verdicts, no approval; another review "
                     f"would loop forever")

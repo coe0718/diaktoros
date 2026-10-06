@@ -8,7 +8,7 @@ incident recovery, and the decision to merge.
 
 - [Install](#first-install-setup) and [generated files](#what-init-writes)
 - [First run and push policy](#first-run)
-- [Everyday commands](#everyday-commands)
+- [Everyday commands](#everyday-commands) and [reviewing your own PRs](#reviewing-your-own-prs)
 - [Signing](#what-the-loop-signs) and [review findings](#how-the-reviewer-grades-findings)
 - [Token files](#token-files-one-pat-per-account) and [permissions](#token-scopes-by-role)
 - [Doctor](#preflight-doctor) and [selftest](#verifying-the-isolated-setup-selftest)
@@ -110,6 +110,22 @@ For drain, `--seat reviewer` is the default; `--seat fixer` chooses the fixer qu
 still respects push policy. `--admin-token` names a mapped login with hook-management
 permission, never a token value. For a deliberate hook pause use the workflow in
 [commands](commands.md), confirm GitHub hook state, and inspect existing runs separately.
+
+## Reviewing your own PRs
+
+List your login (or any account whose PRs you fix yourself) as review-only:
+
+```bash
+hermes review-loop set --loop "<loop-id>" --review-only "<your-login>"
+```
+
+The reviewer then reviews those PRs like a fixer's. A changes-requested verdict comes back
+to you, and the observer notice says so ("returned to the author"); the fixer never gets a
+turn on them. There is no verdict cap and no adjudication on a review-only PR. Push your
+fix and re-request the reviewer on the PR to get the next review: the reviewer gate
+accepts that request from the PR's own review-only author. `explain` shows `next: author-push`
+while a verdict waits for you, and the watchdog never reports a fixer stall on these PRs.
+`set --no-review-only` clears the list. A login can't be both review-only and a fixer.
 
 ## What the loop signs
 

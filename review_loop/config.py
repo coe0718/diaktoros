@@ -151,6 +151,11 @@ SETTINGS_SCHEMA: dict = {
                         "description": "Issue-fix turns per local day, 1-1000. Needs the loop's "
                                        "triage.fix_label. Blank = not set here: the loop keeps "
                                        "its own value or the default"},
+    "review_only": {"label": "Review-only authors (comma-separated)", "type": "str",
+                    "default": "",
+                    "description": "GitHub logins whose PRs the reviewer reviews but the fixer "
+                                   "never touches: a changes-requested verdict goes back to the "
+                                   "author. Not a fixer or a reviewer. Blank = not set here"},
     "required_checks": {"label": "Required CI checks (comma-separated)", "type": "str",
                         "default": "",
                         "description": "The check runs or status contexts that gate an approval, "
@@ -326,6 +331,9 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         overlaid["attribution"] = d["attribution"]
     if _form_value(settings, "review_after_ci") is not None:
         overlaid["review_after_ci"] = d["review_after_ci"]
+    if _form_value(settings, "review_only") is not None:
+        overlaid["review_only"] = [name.strip() for name in str(d["review_only"]).split(",")
+                                   if name.strip()]
     if _form_value(settings, "required_checks") is not None:
         overlaid["required_checks"] = check_required_checks(
             split_check_names(d["required_checks"]), "settings")
@@ -602,6 +610,7 @@ DEFAULTS: dict = {
     "review_after_ci": False,  # hold a review while the head's checks are still running (#241)
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
+    "review_only": [],        # authors reviewed but never fixed (#191); [] = fixers only
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
@@ -831,6 +840,40 @@ def split_check_names(text) -> list[str]:
         current.append(ch)
     names.append("".join(current))
     return [name.strip() for name in names if name.strip()]
+
+
+REVIEW_ONLY_MAX = 50
+_LOGIN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38})\Z")
+
+
+def check_review_only(value, loop: dict, where: str) -> list[str]:
+    """Review-only authors (#191): GitHub logins, lowercased, unique, and neither a fixer nor a
+    reviewer — a fixer's PR is fixed, and a reviewer never reviews its own."""
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
+        raise ConfigError(f"{where}: 'review_only' must be a list of GitHub logins")
+    names = [name.strip().lower() for name in value]
+    if (len(names) > REVIEW_ONLY_MAX or len(set(names)) != len(names)
+            or not all(_LOGIN.match(name) for name in names)):
+        raise ConfigError(f"{where}: 'review_only' must be at most {REVIEW_ONLY_MAX} unique "
+                          "GitHub logins")
+    clash = sorted(set(names) & (set(loop.get("fixers") or []) | set(loop.get("reviewers") or [])))
+    if clash:
+        raise ConfigError(f"{where}: {', '.join(clash)} cannot be review-only and also a fixer "
+                          "or a reviewer")
+    return names
+
+
+def review_only(loop: dict) -> set[str]:
+    """Authors whose PRs are reviewed but never handed to the fixer (#191)."""
+    names = loop.get("review_only")
+    return {str(name).lower() for name in names} if isinstance(names, list) else set()
+
+
+def reviewed_authors(loop: dict) -> set[str]:
+    """Every author whose PRs the reviewer serves: the fixers and the review-only authors."""
+    return set(loop.get("fixers") or []) | review_only(loop)
 
 
 def required_checks(loop: dict) -> list[str]:
@@ -1651,6 +1694,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         raise ConfigError(f"{where}: 'fixers' must list at least one GitHub login")
     if not loop["reviewers"]:
         raise ConfigError(f"{where}: 'reviewers' must list at least one GitHub login")
+    loop["review_only"] = check_review_only(loop.get("review_only"), loop, where)
 
     raw_seats = loop.get("seats") if isinstance(loop.get("seats"), dict) else {}
     seats = {}
