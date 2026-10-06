@@ -3306,7 +3306,7 @@ def cmd_trace(args) -> int:
             if not isinstance(payload, dict):
                 print("cannot read the payload file: not a JSON object")
                 return 2
-            event, route = args.event or "pull_request", None
+            event, route = args.event or trace.infer_event(payload), None
         role = trace.role_for(loop, event, args.route or route)
     except trace.TraceError as exc:
         print(f"cannot trace: {exc}")
@@ -4487,8 +4487,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         source.add_argument("--delivery", help="a recorded delivery to this loop's hooks: GitHub's "
                                                "numeric id or the X-GitHub-Delivery GUID")
         source.add_argument("--payload", help="a webhook payload JSON file instead")
-        tracer.add_argument("--event", choices=("pull_request", "pull_request_review"),
-                            help="with --payload: the event it was (default pull_request)")
+        tracer.add_argument("--event", choices=("pull_request", "pull_request_review", "issues"),
+                            help="with --payload: the event it was (default: read from the payload)")
         tracer.add_argument("--route", help="the route it was sent to (default: from the delivery's "
                                             "hook, or the event)")
         tracer.add_argument("--admin-token", default="",
