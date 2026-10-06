@@ -213,6 +213,54 @@ class Publish(Base):
         self.assertEqual(len(disputes), 1)
         self.assertIn("Not a defect", disputes[0])
 
+    def _notices(self):
+        sent = []
+        Supervisor(self.db).notify(sent.append)
+        return [m for m in sent if "disputed the review" in m]
+
+    def _record(self):
+        Supervisor(self.db).record_dispute(self.run_id, REPO, 7, HEAD, ANSWERS)
+
+    def test_no_dispute_notice_while_comment_posting_and_run_active(self):
+        self._record()
+        self.assertEqual(self._notices(), [])
+        self.assertEqual(self._notices(), [])
+        Supervisor(self.db).dispute_comment(self.run_id, "posted", comment_id=900)
+        self.assertEqual(len(self._notices()), 1)
+
+    def test_dispute_notice_after_posted_names_the_comment(self):
+        with self.serving() as server:
+            self.assertTrue(self.send(server, {"operation": "request_review", "body": ANSWERS,
+                                               "verdict": "DISPUTE"})["ok"])
+        with ledger.connect(self.db) as con:
+            row = con.execute("SELECT comment,comment_id FROM disputes").fetchone()
+        self.assertEqual(tuple(row), ("posted", 900))
+        [message] = self._notices()
+        self.assertIn("posted on the PR (comment 900)", message)
+
+    def test_dispute_notice_for_denied_claims_no_comment(self):
+        self._record()
+        Supervisor(self.db).dispute_comment(self.run_id, "denied", error="not the fixer")
+        [message] = self._notices()
+        self.assertIn("not posted (not the fixer)", message)
+        self.assertNotIn("posted on the PR", message)
+
+    def test_dispute_notice_for_run_ended_while_posting_is_uncertain(self):
+        self._record()
+        self.assertEqual(self._notices(), [])
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='failed' WHERE id=?", (self.run_id,))
+        [message] = self._notices()
+        self.assertIn("POST outcome unknown", message)
+        self.assertNotIn("posted on the PR", message)
+
+    def test_dispute_comment_outcome_is_final(self):
+        self._record()
+        sup = Supervisor(self.db)
+        sup.dispute_comment(self.run_id, "uncertain")
+        with self.assertRaises(ValueError):
+            sup.dispute_comment(self.run_id, "posted")
+
     def test_dispute_needs_answers_and_plain_request_without_push_still_refused(self):
         with self.serving() as server:
             self.assertFalse(self.send(server, {"operation": "request_review",

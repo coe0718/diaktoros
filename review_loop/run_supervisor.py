@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS fixer_answers (
 CREATE TABLE IF NOT EXISTS disputes (
  run_id TEXT PRIMARY KEY REFERENCES runs(id), repo TEXT NOT NULL, pr INTEGER NOT NULL,
  head TEXT NOT NULL, body TEXT NOT NULL, created REAL NOT NULL,
- notice TEXT NOT NULL DEFAULT 'pending', notice_delivered REAL
+ notice TEXT NOT NULL DEFAULT 'pending', notice_delivered REAL,
+ comment TEXT NOT NULL DEFAULT 'posting', comment_id INTEGER, comment_error TEXT
 );
 -- One issue triage per run (#213), recorded BEFORE the labels or comment are written. state:
 -- recorded → posting → posted | uncertain (sent, outcome unknown: never replayed), or skipped
@@ -1370,6 +1371,12 @@ class Supervisor:
         with self._connect() as con:
             con.executescript(SCHEMA)
             con.execute('BEGIN IMMEDIATE')
+            if 'comment' not in {r[1] for r in con.execute('PRAGMA table_info(disputes)')}:
+                # A dispute from before this column has no recorded outcome: unknown.
+                con.execute("ALTER TABLE disputes ADD COLUMN comment TEXT NOT NULL "
+                            "DEFAULT 'uncertain'")
+                con.execute('ALTER TABLE disputes ADD COLUMN comment_id INTEGER')
+                con.execute('ALTER TABLE disputes ADD COLUMN comment_error TEXT')
             for column, alter, follow in _MIGRATIONS:
                 if column not in {r[1] for r in con.execute('PRAGMA table_info(runs)')}:
                     con.execute(alter)
@@ -1598,6 +1605,22 @@ class Supervisor:
                         'VALUES(?,?,?,?,?,?)', (run_id, repo, pr, head, body, time.time()))
             con.execute('COMMIT')
 
+    def dispute_comment(self, run_id: str, comment: str, *, comment_id: int | None = None,
+                        error: str | None = None) -> None:
+        """'posting' may only become 'posted', 'uncertain' or 'denied'."""
+        if comment not in ('posted', 'uncertain', 'denied'):
+            raise ValueError('invalid dispute comment state')
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            row = con.execute('SELECT comment FROM disputes WHERE run_id=?',
+                              (run_id,)).fetchone()
+            if row is None or row['comment'] != 'posting':
+                con.execute('ROLLBACK')
+                raise ValueError('dispute comment transition refused')
+            con.execute('UPDATE disputes SET comment=?,comment_id=?,comment_error=? '
+                        'WHERE run_id=?', (comment, comment_id, error, run_id))
+            con.execute('COMMIT')
+
     def answers_status(self, run_id: str, state: str, *, comment_id: int | None = None,
                        error: str | None = None) -> None:
         """'posting' may only become 'posted' or 'uncertain' — never pending or posting again."""
@@ -1808,12 +1831,21 @@ class Supervisor:
                 (max(1, min(int(limit), 200)),))]
 
     def _dispute_message(self, row) -> str:
+        comment = row['comment']
+        # Still 'posting' when the notice goes out (its run ended): the outcome is unknown.
+        if comment == 'posting':
+            comment = 'uncertain'
         body = row['body'].strip()
         if len(body) > 1500:
-            body = body[:1500] + " […truncated; the full answers are the fixer's PR comment]"
+            body = body[:1500] + (" […truncated; the full answers are the fixer's PR comment]"
+                                  if comment == 'posted' else " […truncated]")
+        status = {'posted': f"posted on the PR (comment {row['comment_id']})",
+                  'denied': f"not posted ({row['comment_error'] or 'authorization denied'})",
+                  }.get(comment, 'POST outcome unknown — inspect the PR before any repost')
         return (f"🛑 Review-loop fixer disputed the review: "
                 f"https://github.com/{row['repo']}/pull/{row['pr']} head={row['head']} "
-                f"run={row['run_id']}. The fixer found no defect and pushed nothing; the reviewer "
+                f"run={row['run_id']}. Fixer's PR comment: {status}. The fixer found no defect "
+                "and pushed nothing; the reviewer "
                 "was not re-requested. Decide: dismiss the review and `review --pr N`, or fix by "
                 "hand. Fixer's evidence (model output, not verified by the loop):\n" + body)
 
@@ -1978,8 +2010,13 @@ class Supervisor:
             count += 1
         # A fixer's dispute reaches the operator exactly once (#401): claim, send, never replay.
         with self._connect() as con:
-            disputes = con.execute("SELECT run_id FROM disputes WHERE notice='pending' "
-                                   "ORDER BY created,run_id LIMIT 20").fetchall()
+            # Not while the comment POST is unanswered and its run is still live: the notice
+            # must not lead the comment. A run that ended 'posting' is sent, as uncertain.
+            disputes = con.execute(
+                "SELECT d.run_id FROM disputes d LEFT JOIN runs r ON r.id=d.run_id "
+                "WHERE d.notice='pending' AND NOT (d.comment='posting' AND r.state IN "
+                f"({','.join('?' * len(ACTIVE))})) ORDER BY d.created,d.run_id LIMIT 20",
+                ACTIVE).fetchall()
         for dispute in disputes:
             with self._connect() as con:
                 con.execute('BEGIN IMMEDIATE')
