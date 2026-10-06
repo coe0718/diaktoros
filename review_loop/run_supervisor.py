@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS fixer_answers (
  base TEXT NOT NULL, head TEXT NOT NULL, body TEXT NOT NULL, state TEXT NOT NULL,
  comment_id INTEGER, error TEXT, created REAL NOT NULL, updated REAL NOT NULL
 );
+-- A fixer's dispute (#401): every finding answered as not a defect, nothing pushed. One per
+-- run; notice is the operator outbox state (pending -> sending -> delivered), claim-before-send.
+CREATE TABLE IF NOT EXISTS disputes (
+ run_id TEXT PRIMARY KEY REFERENCES runs(id), repo TEXT NOT NULL, pr INTEGER NOT NULL,
+ head TEXT NOT NULL, body TEXT NOT NULL, created REAL NOT NULL,
+ notice TEXT NOT NULL DEFAULT 'pending', notice_delivered REAL
+);
 -- One issue triage per run (#213), recorded BEFORE the labels or comment are written. state:
 -- recorded → posting → posted | uncertain (sent, outcome unknown: never replayed), or skipped
 -- (a person labelled it first) / denied (authorization failed) / nothing (no label applied).
@@ -969,6 +976,8 @@ def write_records(con, run_id: str) -> str | None:
         return f"review receipt {receipt['state']}"
     if con.execute('SELECT 1 FROM rulings WHERE run_id=?', (run_id,)).fetchone():
         return 'ruling recorded'
+    if con.execute('SELECT 1 FROM disputes WHERE run_id=?', (run_id,)).fetchone():
+        return 'dispute recorded'
     if con.execute('SELECT 1 FROM triage_results WHERE run_id=?', (run_id,)).fetchone():
         return 'triage recorded'
     if con.execute('SELECT 1 FROM issue_fixes WHERE run_id=?', (run_id,)).fetchone():
@@ -1544,7 +1553,8 @@ class Supervisor:
                 row['launch_intent'] is not None and row['push_admitted'] == 1)
 
     def begin_answers(self, run_id: str, repo: str, pr: int, base: str, head: str,
-                      body: str, state: str = 'posting', error: str | None = None) -> None:
+                      body: str, state: str = 'posting', error: str | None = None,
+                      dispute: bool = False) -> None:
         """Durably record the fixer's one answers comment before (or instead of) its POST.
 
         Only a running fixer run whose push was confirmed may record one, once: the run ID is the
@@ -1558,7 +1568,9 @@ class Supervisor:
                               'partial_view FROM runs WHERE id=?', (run_id,)).fetchone()
             # Answers follow a confirmed push — or, when the host recorded that this fixer could
             # not see the whole change (#93, #110), replace it, at the head it was given.
-            answers_only = bool(row is not None and row['partial_view'] and head == base)
+            # A dispute (#401) likewise answers at the head it was given, with nothing pushed.
+            answers_only = bool(row is not None and (row['partial_view'] or dispute)
+                                and head == base)
             if (row is None or (row['repo'], row['pr'], row['head'], row['seat']) !=
                     (repo, pr, base, 'fixer') or row['launch_intent'] is None
                     or row['state'] not in ('launching', 'running')
@@ -1570,6 +1582,20 @@ class Supervisor:
             con.execute('INSERT INTO fixer_answers(run_id,repo,pr,base,head,body,state,error,'
                         'created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)',
                         (run_id, repo, pr, base, head, body, state, error, now, now))
+            con.execute('COMMIT')
+
+    def record_dispute(self, run_id: str, repo: str, pr: int, head: str, body: str) -> None:
+        """Record the fixer's dispute at the head it was given: once per run, never a review request."""
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            row = con.execute('SELECT repo,pr,head,seat,state FROM runs WHERE id=?',
+                              (run_id,)).fetchone()
+            if (row is None or (row['repo'], row['pr'], row['head'], row['seat']) !=
+                    (repo, pr, head, 'fixer') or row['state'] not in ('launching', 'running')):
+                con.execute('ROLLBACK')
+                raise ValueError('dispute run identity unavailable')
+            con.execute('INSERT OR IGNORE INTO disputes(run_id,repo,pr,head,body,created) '
+                        'VALUES(?,?,?,?,?,?)', (run_id, repo, pr, head, body, time.time()))
             con.execute('COMMIT')
 
     def answers_status(self, run_id: str, state: str, *, comment_id: int | None = None,
@@ -1781,6 +1807,16 @@ class Supervisor:
                 'SELECT * FROM rulings ORDER BY created DESC, run_id LIMIT ?',
                 (max(1, min(int(limit), 200)),))]
 
+    def _dispute_message(self, row) -> str:
+        body = row['body'].strip()
+        if len(body) > 1500:
+            body = body[:1500] + " […truncated; the full answers are the fixer's PR comment]"
+        return (f"🛑 Review-loop fixer disputed the review: "
+                f"https://github.com/{row['repo']}/pull/{row['pr']} head={row['head']} "
+                f"run={row['run_id']}. The fixer found no defect and pushed nothing; the reviewer "
+                "was not re-requested. Decide: dismiss the review and `review --pr N`, or fix by "
+                "hand. Fixer's evidence (model output, not verified by the loop):\n" + body)
+
     def _ruling_message(self, row) -> str:
         body = row['body'].strip()
         if len(body) > 1500:
@@ -1939,6 +1975,32 @@ class Supervisor:
                 con.execute("UPDATE rulings SET notice='delivered',notice_delivered=?,updated=? "
                             "WHERE run_id=? AND notice='sending'",
                             (time.time(), time.time(), row['run_id']))
+            count += 1
+        # A fixer's dispute reaches the operator exactly once (#401): claim, send, never replay.
+        with self._connect() as con:
+            disputes = con.execute("SELECT run_id FROM disputes WHERE notice='pending' "
+                                   "ORDER BY created,run_id LIMIT 20").fetchall()
+        for dispute in disputes:
+            with self._connect() as con:
+                con.execute('BEGIN IMMEDIATE')
+                row = con.execute("SELECT * FROM disputes WHERE run_id=? AND notice='pending'",
+                                  (dispute['run_id'],)).fetchone()
+                if row is not None:
+                    con.execute("UPDATE disputes SET notice='sending' WHERE run_id=?",
+                                (row['run_id'],))
+                con.execute('COMMIT')
+            if row is None:
+                continue
+            try:
+                deliver(self._dispute_message(row))
+            except Exception:
+                with self._connect() as con:
+                    con.execute("UPDATE disputes SET notice='pending' WHERE run_id=? "
+                                "AND notice='sending'", (row['run_id'],))
+                raise
+            with self._connect() as con:
+                con.execute("UPDATE disputes SET notice='delivered',notice_delivered=? "
+                            "WHERE run_id=? AND notice='sending'", (time.time(), row['run_id']))
             count += 1
         return count
 
@@ -2287,7 +2349,7 @@ class Supervisor:
                     read_error = f'{type(exc).__name__}: {exc}'[:200]
             refused = ''
             if self.production_config and row['seat'] == 'fixer':
-                from . import config, gh, gate
+                from . import ci_fix, config, gh, gate
                 try:
                     loop = config.by_repo(row['repo'])
                     if loop is None:
@@ -2305,9 +2367,11 @@ class Supervisor:
                             superseded = 'fixer verdict superseded'
                         elif pr.get('state') != 'open' or pr.get('draft') is not False:
                             retry_read = True
-                        elif str(row['turn_key'] or '').startswith(CONFLICT_KEY):
+                        elif (str(row['turn_key'] or '').startswith(CONFLICT_KEY)
+                              or ci_fix.is_ci_fix(row['turn_key'])):
                             # #303: a conflict turn answers no verdict (the PR may be approved, or
                             # unreviewed); the worker checks the merge itself before launch.
+                            # #306: nor does a CI-fix turn; the worker re-reads CI before launch.
                             pass
                         else:
                             reviews = effective_reviews(loop, row, gh.reviews(loop, row['pr']),
@@ -2648,7 +2712,7 @@ class Supervisor:
 
     def _run_production(self, run_id: str, owner: str) -> None:
         """Worker-only host control plane; never pass credentials to bwrap."""
-        from . import broker_ipc, config, gh, seat_model, trusted_turn
+        from . import broker_ipc, ci, ci_fix, config, gh, prompts, seat_model, trusted_turn
         rc, error = None, None
         budget = int(self.budget_of(run_id))
         retry, stopped, observed, breach, claim = False, True, {}, None, None
@@ -2725,11 +2789,17 @@ class Supervisor:
                 after_ci = config.review_after_ci(loop)
                 # Only the required checks hold it, when the loop names them (#368).
                 checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
-                # A failure releases the cancelled/missing holds only (the review would
+                # #306: with review-after-CI, a red head whose CI-fix turn is still to run goes
+                # to the fixer first: no review is spent on code that does not build.
+                fixing = bool(checks is not None and checks.failed and after_ci
+                              and config.fix_ci(loop)
+                              and ci_fix.pending_at(row['repo'], row['pr'], row['head'], self.db))
+                # #374: a failure releases the cancelled/missing holds only (the review would
                 # otherwise go unreported); the pending wait survives it, so one review names
                 # every failure once CI finishes.
                 if checks is not None and (
-                        (not checks.failed and (checks.cancelled or checks.missing))
+                        fixing
+                        or (not checks.failed and (checks.cancelled or checks.missing))
                         or (after_ci and checks.pending)):
                     # Nothing spent: no model call, no daily turn, no retry. This worker stays
                     # to re-queue it (linger_for_ci); the watchdog sweep is the backstop.
@@ -2738,6 +2808,8 @@ class Supervisor:
                              + (f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
                                 f"GitHub ({ci._names(checks.cancelled[:5])})"
                                 if checks.cancelled else
+                                f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
+                                if fixing else
                                 f"{len(checks.missing)} required check(s) never reported "
                                 f"({ci._names(checks.missing[:5])}); check the name"
                                 if checks.missing else
@@ -2788,6 +2860,33 @@ class Supervisor:
                         merge={"base_ref": loop["base"],
                                "base_sha": row['turn_key'][len(CONFLICT_KEY):],
                                "tree": merged["tree"]})
+                elif row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
+                    # #306: a failed required check at this head, handed to the fixer. No verdict
+                    # is answered; CI is re-read now, and a green or moved head ends the run.
+                    from . import broker_ipc
+                    hold = broker_ipc.policy_hold_reason(
+                        loop, run_id=run_id, repo=row['repo'], number=row['pr'], head=row['head'],
+                        ledger_db=str(self.db))
+                    if hold:
+                        error = hold
+                        return
+                    if not config.fix_ci(loop):
+                        raise ValueError('CI fixes are off for this loop')
+                    state = ci.read(loop, row['head'])
+                    if state is None:
+                        raise RetryableError('CI unreadable before launch (GitHub read failed)')
+                    names = ci_fix.failing(state, config.required_checks(loop))
+                    if not names:
+                        raise ValueError('CI no longer failing at this head')
+                    prompt = (prompts.render_isolated('ci_fix', repo=row['repo'], pr=row['pr'],
+                                                      url=gh.pr_url(loop, row['pr']),
+                                                      head=row['head'])
+                              + prompts.fixer_check_section(loop)
+                              + ci_fix.section(loop, state, names))
+                    change = None
+                    scope = broker_ipc.RunScope(
+                        row["repo"], row["pr"], row["head"], row["seat"], head["ref"], row['id'],
+                        str(self.db), row['generation'], ci_fix=True)
                 else:
                     reviews, marker = None, None
                     if row['seat'] == 'fixer':

@@ -429,6 +429,12 @@ def seat_profile(loop: dict, role: str) -> str:
         return str((loop.get("triage") or {}).get("profile") or "")
     if role == "issue_fixer":
         role = "fixer"           # an issue fix runs as the fixer seat (#214)
+    if role == "observer_urgent":
+        observer = loop.get("observer") or {}
+        if not str(observer.get("urgent_route") or "").strip():
+            return ""
+        return (str(observer.get("urgent_profile") or observer.get("profile") or "default").strip()
+                or "default")
     if role == "observer":
         observer = loop.get("observer") or {}
         if not str(observer.get("route") or "").strip():
@@ -608,6 +614,7 @@ DEFAULTS: dict = {
     "unattended_fixer_push": False,  # per-repository; never inherited from plugin settings
     "attribution": True,      # sign what the loop posts (#197); false turns footer and trailer off
     "review_after_ci": False,  # hold a review while the head's checks are still running (#241)
+    "fix_ci": False,          # hand a red required check on a fixer's PR to the fixer (#306)
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
     "review_only": [],        # authors reviewed but never fixed (#191); [] = fixers only
@@ -1199,6 +1206,17 @@ def normalize_observer(raw) -> dict:
         digest = 0
     if digest > 0:
         observer["digest_min"] = digest
+    # A second destination for urgent notices (observer.URGENT_EVENTS): its own delivery-only
+    # route, optionally its own profile and platform. Unset: one feed gets everything.
+    urgent = str(raw.get("urgent_route") or "").strip()
+    if urgent:
+        if urgent == route:
+            return {**observer, "misconfigured": "observer.urgent_route must differ from observer.route"}
+        observer["urgent_route"] = urgent
+        for key in ("urgent_profile", "urgent_deliver"):
+            value = str(raw.get(key) or "").strip()
+            if value:
+                observer[key] = value
     return observer
 
 
@@ -1678,6 +1696,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if type(loop["review_after_ci"]) is not bool:
         raise ConfigError(f"{where}: 'review_after_ci' must be a JSON boolean (true holds a "
                           "review until the head's checks finish)")
+    if type(loop["fix_ci"]) is not bool:
+        raise ConfigError(f"{where}: 'fix_ci' must be a JSON boolean (true hands a failed "
+                          "required check on a fixer's PR to the fixer)")
     if type(loop["attribution"]) is not bool:
         raise ConfigError(f"{where}: 'attribution' must be a JSON boolean (true signs what the "
                           "loop posts; false turns it off)")
@@ -1985,6 +2006,12 @@ def artifacts_dir(loop: dict, number: int) -> pathlib.Path:
 
 def clone_path(loop: dict) -> pathlib.Path | None:
     return _path(loop["clone"]) if loop.get("clone") else None
+
+
+def fix_ci(loop: dict) -> bool:
+    """Whether a failed required check on a fixer's PR becomes a fixer turn (#306). Off unless
+    set, and it needs unattended fixer pushes too, which it never turns on."""
+    return loop.get("fix_ci") is True and unattended_fixer_push_enabled(loop)
 
 
 def review_after_ci(loop: dict) -> bool:

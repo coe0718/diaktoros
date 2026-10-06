@@ -227,6 +227,39 @@ def fetch(loop: dict, path: str, method: str = "GET", body=None,
     return response.data, response.error
 
 
+def read_text(loop: dict, path: str, login: str | None = None, limit: int = 262144) -> str | None:
+    """A plain-text body (an Actions job log), at most its last ``limit`` bytes, or None.
+
+    GitHub answers a log request with a redirect to the file; urllib follows it. The read is
+    bounded, so a huge log never lands in memory whole. Under the test stub, a stub that prints
+    a JSON string (or ``{"text": ...}``) stands in for the log.
+    """
+    if os.environ.get("REVIEW_LOOP_GH_STUB"):
+        data = _stub(path, "GET", None, login or loop.get("read_token") or "").data
+        data = data.get("text") if isinstance(data, dict) else data
+        return data[-limit:] if isinstance(data, str) else None
+    try:
+        tok = token(loop, login or loop.get("read_token"))
+        req = urllib.request.Request(
+            f"{API}{path}", method="GET",
+            headers={"Accept": "application/vnd.github+json", "Authorization": f"token {tok}",
+                     "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "hermes-review-loop"})
+        from .config import guard_network
+        guard_network(req.full_url)
+        with urllib.request.urlopen(req, timeout=_budgeted("GET", path)) as resp:
+            # Only the tail matters: keep reading, keep the last ``limit`` bytes.
+            kept = b""
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                kept = (kept + chunk)[-limit:]
+            return kept.decode(errors="replace")
+    except Exception as exc:
+        log(f"gh GET {path} (text) failed: {type(exc).__name__}: {one_line(exc, 120)}")
+        return None
+
+
 def one_line(text, limit: int = 200) -> str:
     """``text`` as one bounded line: GitHub's error bodies are pretty-printed JSON, and an
     operator alert (or an ``explain`` line) promised as one line must stay one."""

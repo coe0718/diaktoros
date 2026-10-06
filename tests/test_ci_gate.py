@@ -27,12 +27,15 @@ def run(name, status="completed", conclusion="success", id=1):
 class Fake:
     """Check runs and statuses for HEAD; ``None`` makes that read fail."""
 
-    def __init__(self, runs=(), statuses=(), total=None):
+    def __init__(self, runs=(), statuses=(), total=None, notes=None):
         self.runs, self.statuses, self.total = runs, statuses, total
+        self.notes = notes or {}   # annotations by run id; a missing id is unreadable
         self.paths = []
 
     def __call__(self, loop, path, method="GET", body=None, login=None):
         self.paths.append((path, login))
+        if "/annotations" in path:
+            return self.notes.get(int(path.split("/check-runs/")[1].split("/")[0]))
         if "/check-runs" in path:
             if self.runs is None:
                 return None
@@ -77,6 +80,22 @@ class Read(unittest.TestCase):
         self.assertEqual((state.cancelled, state.failed, state.passed), (["a", "b"], ["c"], ["d"]))
         self.assertFalse(state.green)
         self.assertFalse(ci.CIState(cancelled=["a"]).green)
+
+    def test_a_runner_shutdown_failure_is_cancelled(self):
+        """#399: GitHub reports a runner shutdown as `failure`; the annotations tell."""
+        shut = [{"message": "The operation was canceled."},
+                {"message": "Process completed with exit code 143."}]
+        state, fake = read(runs=[run("a", conclusion="failure", id=1),
+                                 run("b", conclusion="failure", id=2),
+                                 run("c", conclusion="failure", id=3), run("d")],
+                           notes={1: shut, 2: [{"message": "AssertionError: 1 != 2"}]})
+        self.assertEqual((state.cancelled, state.failed, state.passed),
+                         (["a"], ["b", "c"], ["d"]))   # real failure and unreadable stay failed
+        self.assertTrue(any("/check-runs/1/annotations" in p for p, _ in fake.paths))
+        self.assertFalse(state.green)
+        state, _ = read(runs=[run("a", conclusion="failure", id=1)],
+                        notes={1: [{"message": "The runner has received a shutdown signal"}]})
+        self.assertEqual((state.cancelled, state.failed), (["a"], []))
 
     def test_unreadable_or_malformed_or_too_many_is_none(self):
         self.assertIsNone(read(runs=None)[0])

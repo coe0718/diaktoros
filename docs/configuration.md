@@ -79,6 +79,7 @@ Replace every quoted angle-bracket placeholder before use. These placeholders il
   "attribution": true,
   "fixer_check": "",
   "review_after_ci": false,
+  "fix_ci": false,
   "required_checks": [],
   "review_only": []
 }
@@ -207,6 +208,7 @@ Cleanup considers configured roots and the per-loop artifacts tree, rejects syml
 | Key | Default | Accepted value and behavior |
 |---|---|---|
 | `unattended_fixer_push` | `false` | Strict JSON boolean. Only literal `true` in trusted host configuration opts into unattended fixer writes. Not inherited from plugin defaults. |
+| `fix_ci` | `false` | Strict JSON boolean, set in the loop file (#306). `true`, with `unattended_fixer_push` on: a failed *required* check (every check when `required_checks` is empty) on a fixer's PR becomes one fixer turn per head. The host gives the fixer the failing jobs' name, failing step and last 60 log lines as data; it fixes and pushes, and CI's next result answers it (no answers comment). Bounds: CI-fix turns count toward `cap`; the same job failing after a fix, or a spent cap, holds the PR for you (the `ci_failed` notice says so); the fixer's daily cap and pacing apply. With `review_after_ci` on, a review waits while the head's CI-fix turn is still to run. It never re-runs jobs, edits workflows or merges. |
 | `review_after_ci` | `false` | Strict JSON boolean. `true`: a reviewer turn whose head still has checks running waits instead of starting, with no model call, daily turn or retry spent, re-reading CI about every 90 seconds. It starts once nothing is running, or an hour after it was queued, and its prompt says what never finished. `status` and `explain` show the wait (`held: waiting for CI …`); no notice is sent for it. A *cancelled* check holds every review the same way, with this setting on or off, and sends one notice, since it needs a re-run by a person. Set with `init`/`setup`/`set --review-after-ci on\|off` or the settings form. |
 | `required_checks` | `[]` | The check runs or status contexts that gate an approval, named exactly as GitHub shows them (at most 50, unique, one printable line of up to 100 characters each). Empty: every check gates. Set: only these gate the broker's APPROVE (a failed one is refused, a cancelled one is refused as needing a re-run), the review-after-CI hold (a required check that has not reported yet counts as running) and, later, #306. Others are shown to the reviewer as *optional* and never block. Host-owned: never read from a PR. Set with `init`/`setup`/`set --required-check NAME` (repeat; `set --no-required-checks` clears) or the settings form (comma-separated; a comma inside parentheses, as in a matrix name, stays part of the name). |
 | `review_only` | `[]` | GitHub logins (at most 50, unique, lowercased) whose PRs the reviewer reviews but the fixer never touches, for example your own account. A review-only author's PR gets reviewer turns like a fixer's; a changes-requested verdict goes back to the author (the notice says "returned to the author") and starts no fixer turn. There is no verdict cap and no adjudication on these PRs, and the watchdog never reports a fixer stall for them (a missing review is still reported). The author may re-request the reviewer on their own PR. A login can't be both review-only and a fixer or a reviewer. Set with `init`/`setup`/`set --review-only LOGIN` (repeat; `set --no-review-only` clears) or the settings form (comma-separated). |
@@ -287,7 +289,8 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `observer.profile` | `default` | Hermes profile supplying the delivery destination. |
 | `observer.deliver` | `telegram` | Gateway-supported real delivery target, such as `telegram` or `discord`. `init`/`set` refuse `log`: a delivery-only file/log destination cannot provide the feed. |
 | `observer.events` | All thirteen events | List or comma/whitespace-separated string. Missing or empty means **all**, not none. Normalization lowercases, deduplicates, and sorts strings. Unknown names remain stored without a misconfiguration warning; unknown-only input silently matches no transitions. Use the event names below. |
-| `observer.digest_min` | `0` | Positive integer minutes batch notices for a watchdog flush. Unparseable/non-positive values silently normalize to immediate mode, not a misconfigured feed. CLI flags require integers. No explicit upper bound. |
+| `observer.urgent_route` | unset | Second delivery-only route for urgent notices (`failed`, `held`, `escalation`, `ruling`, `stall`, `conflict`, uncertain); must differ from `observer.route`. Unset: one feed. `urgent_profile` and `urgent_deliver` default to the feed's. |
+| `observer.digest_min` | `0` | Positive integer minutes batch routine notices (urgent ones are never batched) for a watchdog flush. Unparseable/non-positive values silently normalize to immediate mode, not a misconfigured feed. CLI flags require integers. No explicit upper bound. |
 | `observer.mute` | `false` | Stop delivery while retaining configuration. Use a JSON boolean: this lenient loader uses truthiness, so the string `"false"` is truthy and would mute it. |
 
 | Event | Transition |
@@ -299,7 +302,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `escalation` | Durable cap-breach marker written; next is adjudication or the operator. |
 | `ruling` | Isolated adjudicator recorded a ruling; the reason also reaches the operator outbox. |
 | `stall` | Watchdog reports a quiet/stuck head. |
-| `closed` | PR merged or abandoned and cleanup attempted; can be emitted for repository PRs outside ordinary author admission. |
+| `closed` | PR merged or abandoned and cleanup attempted; sent only for PRs this loop worked on (reviewed author, or breach, transition, queue or observer-ledger state). |
 | `triaged` | Issue triage ended (labels, none fit, skipped, denied, uncertain). Links the issue. |
 | `fixing` | Fix label handed an issue to the fixer, or the handoff was held. Links the issue. |
 | `fixed` | Issue-fix write ended: PR opened/review requested, could-not-fix comment, or uncertain. Links the issue. |

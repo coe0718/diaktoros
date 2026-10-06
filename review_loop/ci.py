@@ -17,6 +17,11 @@ FAILED_CONCLUSIONS = {"failure", "timed_out", "action_required", "startup_failur
 # Not green, but not the change's fault either (#363): GitHub cancelled the run (a superseded run,
 # or no hosted runner acquired) or marked it stale. It needs a re-run, not a fix.
 CANCELLED_CONCLUSIONS = {"cancelled", "stale"}
+# A runner shutdown is reported by GitHub as `failure`, not `cancelled` (#399); only the check
+# run's annotations show it. Matched case-insensitively against each annotation's message.
+SHUTDOWN_MARKERS = ("the operation was canceled", "the runner has received a shutdown signal",
+                    "exit code 143")
+MAX_ANNOTATION_READS = 4   # failures per head whose annotations are read; more stay failed
 FAILED_STATUSES = {"failure", "error"}
 MAX_PAGES = 3
 NAME_MAX = 100
@@ -30,6 +35,8 @@ class CIState:
     passed: list[str] = field(default_factory=list)
     cancelled: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)   # required, never reported at this head
+    ids: dict = field(default_factory=dict)    # check run id by name (an Actions job id) (#306)
+    urls: dict = field(default_factory=dict)   # where GitHub shows each run (#306)
 
     @property
     def green(self) -> bool:
@@ -38,6 +45,22 @@ class CIState:
 
 def _name(raw) -> str:
     return str(raw or "(unnamed)")[:NAME_MAX]
+
+
+def _runner_shutdown(loop: dict, run_id) -> bool:
+    """True only when the run's annotations were read and show a runner shutdown (fails closed)."""
+    if type(run_id) is not int:
+        return False
+    notes = gh.api(loop, f"/repos/{loop['repo']}/check-runs/{run_id}/annotations?per_page=100",
+                   login=loop.get("read_token"))
+    if not isinstance(notes, list):
+        return False
+    for note in notes:
+        if isinstance(note, dict) and isinstance(note.get("message"), str):
+            text = note["message"].lower()
+            if any(marker in text for marker in SHUTDOWN_MARKERS):
+                return True
+    return False
 
 
 def read(loop: dict, head: str) -> CIState | None:
@@ -67,9 +90,17 @@ def read(loop: dict, head: str) -> CIState | None:
     if not isinstance(status, dict) or not isinstance(status.get("statuses", []), list):
         return None
     state = CIState()
+    reads = 0
     for name, run in sorted(latest.items()):
+        if type(run.get("id")) is int:
+            state.ids[name] = run["id"]
+        if isinstance(run.get("html_url"), str):
+            state.urls[name] = run["html_url"][:300]
         if run.get("status") != "completed":
             state.pending.append(name)
+        elif run.get("conclusion") == "failure" and reads < MAX_ANNOTATION_READS \
+                and (reads := reads + 1) and _runner_shutdown(loop, run.get("id")):
+            state.cancelled.append(name)
         elif run.get("conclusion") in FAILED_CONCLUSIONS:
             state.failed.append(name)
         elif run.get("conclusion") in CANCELLED_CONCLUSIONS:
@@ -95,7 +126,8 @@ def gating(state: CIState | None, required) -> CIState | None:
     wanted = list(dict.fromkeys(required))
     keep = lambda names: [name for name in names if name in wanted]  # noqa: E731
     view = CIState(failed=keep(state.failed), pending=keep(state.pending),
-                   passed=keep(state.passed), cancelled=keep(state.cancelled))
+                   passed=keep(state.passed), cancelled=keep(state.cancelled),
+                   ids=state.ids, urls=state.urls)
     reported = set(state.failed) | set(state.pending) | set(state.passed) | set(state.cancelled)
     view.missing = [name for name in wanted if name not in reported]
     return view
