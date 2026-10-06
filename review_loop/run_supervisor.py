@@ -2287,7 +2287,7 @@ class Supervisor:
                     read_error = f'{type(exc).__name__}: {exc}'[:200]
             refused = ''
             if self.production_config and row['seat'] == 'fixer':
-                from . import config, gh, gate
+                from . import ci_fix, config, gh, gate
                 try:
                     loop = config.by_repo(row['repo'])
                     if loop is None:
@@ -2305,9 +2305,11 @@ class Supervisor:
                             superseded = 'fixer verdict superseded'
                         elif pr.get('state') != 'open' or pr.get('draft') is not False:
                             retry_read = True
-                        elif str(row['turn_key'] or '').startswith(CONFLICT_KEY):
+                        elif (str(row['turn_key'] or '').startswith(CONFLICT_KEY)
+                              or ci_fix.is_ci_fix(row['turn_key'])):
                             # #303: a conflict turn answers no verdict (the PR may be approved, or
                             # unreviewed); the worker checks the merge itself before launch.
+                            # #306: nor does a CI-fix turn; the worker re-reads CI before launch.
                             pass
                         else:
                             reviews = effective_reviews(loop, row, gh.reviews(loop, row['pr']),
@@ -2648,7 +2650,7 @@ class Supervisor:
 
     def _run_production(self, run_id: str, owner: str) -> None:
         """Worker-only host control plane; never pass credentials to bwrap."""
-        from . import broker_ipc, config, gh, seat_model, trusted_turn
+        from . import broker_ipc, ci, ci_fix, config, gh, prompts, seat_model, trusted_turn
         rc, error = None, None
         budget = int(self.budget_of(run_id))
         retry, stopped, observed, breach, claim = False, True, {}, None, None
@@ -2724,8 +2726,13 @@ class Supervisor:
                 after_ci = config.review_after_ci(loop)
                 # Only the required checks hold it, when the loop names them (#368).
                 checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
-                if checks is not None and not checks.failed and (
-                        checks.cancelled or checks.missing or (after_ci and checks.pending)):
+                # #306: with review-after-CI, a red head whose CI-fix turn is still to run goes
+                # to the fixer first: no review is spent on code that does not build.
+                fixing = bool(checks is not None and checks.failed and after_ci
+                              and config.fix_ci(loop)
+                              and ci_fix.pending_at(row['repo'], row['pr'], row['head'], self.db))
+                if checks is not None and (fixing or (not checks.failed and (
+                        checks.cancelled or checks.missing or (after_ci and checks.pending)))):
                     # Nothing spent: no model call, no daily turn, no retry. This worker stays
                     # to re-queue it (linger_for_ci); the watchdog sweep is the backstop.
                     paced_until = time.time() + CI_POLL_S
@@ -2733,6 +2740,8 @@ class Supervisor:
                              + (f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
                                 f"GitHub ({ci._names(checks.cancelled[:5])})"
                                 if checks.cancelled else
+                                f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
+                                if fixing else
                                 f"{len(checks.missing)} required check(s) never reported "
                                 f"({ci._names(checks.missing[:5])}); check the name"
                                 if checks.missing else
@@ -2783,6 +2792,33 @@ class Supervisor:
                         merge={"base_ref": loop["base"],
                                "base_sha": row['turn_key'][len(CONFLICT_KEY):],
                                "tree": merged["tree"]})
+                elif row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
+                    # #306: a failed required check at this head, handed to the fixer. No verdict
+                    # is answered; CI is re-read now, and a green or moved head ends the run.
+                    from . import broker_ipc
+                    hold = broker_ipc.policy_hold_reason(
+                        loop, run_id=run_id, repo=row['repo'], number=row['pr'], head=row['head'],
+                        ledger_db=str(self.db))
+                    if hold:
+                        error = hold
+                        return
+                    if not config.fix_ci(loop):
+                        raise ValueError('CI fixes are off for this loop')
+                    state = ci.read(loop, row['head'])
+                    if state is None:
+                        raise RetryableError('CI unreadable before launch (GitHub read failed)')
+                    names = ci_fix.failing(state, config.required_checks(loop))
+                    if not names:
+                        raise ValueError('CI no longer failing at this head')
+                    prompt = (prompts.render_isolated('ci_fix', repo=row['repo'], pr=row['pr'],
+                                                      url=gh.pr_url(loop, row['pr']),
+                                                      head=row['head'])
+                              + prompts.fixer_check_section(loop)
+                              + ci_fix.section(loop, state, names))
+                    change = None
+                    scope = broker_ipc.RunScope(
+                        row["repo"], row["pr"], row["head"], row["seat"], head["ref"], row['id'],
+                        str(self.db), row['generation'], ci_fix=True)
                 else:
                     reviews, marker = None, None
                     if row['seat'] == 'fixer':

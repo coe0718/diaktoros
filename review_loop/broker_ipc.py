@@ -60,6 +60,9 @@ class RunScope:
     # A conflict-resolution turn (#303): {base_ref, base_sha, tree}, the merge the host staged as
     # the seat's /work. Host-built like every field here; the push becomes a merge commit of it.
     merge: dict | None = None
+    # A CI-fix turn (#306): the host handed the fixer a failed check, not a verdict. Its push needs
+    # no changes-requested review at the head, and its review request none either. Host-built.
+    ci_fix: bool = False
 
 
 # What a reviewer that could not see the whole change reads when it tries to approve (#93, #110).
@@ -416,7 +419,8 @@ class RunBroker:
                                                 role=self.scope.role, branch=self.scope.branch,
                                                 manifest=request["manifest"],
                                                 **({"merge": dict(self.scope.merge)}
-                                                   if self.scope.merge else {}))
+                                                   if self.scope.merge else {}),
+                                                ci_fix=self.scope.ci_fix)
                         # safe_push returns only after exact ref + PR readback and
                         # durable audit. Failure to commit completion leaves intent.
                         supervisor.confirm_push(self.scope.run_id, self.scope.repo,
