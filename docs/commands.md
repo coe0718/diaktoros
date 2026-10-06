@@ -676,13 +676,22 @@ hermes review-loop migrate --dry-run
 hermes review-loop migrate
 ```
 
-Exit `1` means a step was refused, and the line says why. Running it again finishes what an
-interrupted run began.
+`--rename-loop OLD=NEW` also renames a loop: its file, its default state directory, its routes
+and the URLs its repo hooks post to. Each hook is pinged on its new route before the old route
+is removed. See [renaming a loop](operations.md#renaming-a-loop).
+
+The install is paused while it runs: gates defer their deliveries for a later re-drive, and the
+worker and the watchdog wait.
+
+Exit `1` means a step was refused or isn't finished, and the line says why. Running it again
+finishes what an interrupted run began.
 
 <!-- flags:migrate -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--dry-run` |  |  | report every step and write nothing |
+| `--rename-loop` | `OLD=NEW` |  | also give a loop a new id: its file, default state directory, routes and the URLs its repo hooks post to (each hook is pinged before the old route goes) |
+| `--admin-token` | `LOGIN` |  | mapped login whose token may edit the repo hooks (--rename-loop) |
 <!-- /flags -->
 
 ### selftest

@@ -215,6 +215,26 @@ def count_turn(loop_id: str, seat: str, now: float | None = None) -> int:
         return day[key]
 
 
+def rename_loop(old_id: str, new_id: str) -> int:
+    """Carry a renamed loop's turn counts to its new id (#425); returns the counts moved."""
+    moved = 0
+    with _locked() as file:
+        data = _load(file)
+        turns = data.get("turns") if isinstance(data.get("turns"), dict) else {}
+        for day in turns.values():
+            if not isinstance(day, dict):
+                continue
+            for key in [k for k in day if k.startswith(f"{old_id}|")]:
+                count = day.pop(key)
+                new_key = f"{new_id}|{key[len(old_id) + 1:]}"
+                day[new_key] = ((day.get(new_key) if isinstance(day.get(new_key), int) else 0)
+                                + (count if isinstance(count, int) else 0))
+                moved += 1
+        if moved:
+            _save(file, data)
+    return moved
+
+
 def when(until: float) -> str:
     """A reset time an operator can read: local clock time, with the date when it is not today."""
     local = time.localtime(until)
