@@ -2140,5 +2140,21 @@ class CronJobRemedies(Base):
                 self.assertEqual(self.check().status, doctor.VERIFIED, self.check().detail)
 
 
+
+class ShimRefusal(unittest.TestCase):
+    def test_chmod_names_a_path_that_exists(self):
+        """#354: a shim not created yet cannot be chmodded; its directory refused the write."""
+        from review_loop import cli
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as tmp:
+            scripts = pathlib.Path(tmp) / "scripts"
+            scripts.mkdir()
+            missing = scripts / "review-loop-watchdog.sh"
+            line = cli._shim_refusal(PermissionError(13, "Permission denied", str(missing)))
+            self.assertIn(f"cannot write the watchdog shim at {missing}", line)
+            self.assertIn(f"chmod u+w -- {scripts}`", line)
+            missing.write_text("x")
+            line = cli._shim_refusal(PermissionError(13, "Permission denied", str(missing)))
+            self.assertIn(f"chmod u+w -- {missing}`", line)
+
 if __name__ == "__main__":
     unittest.main()

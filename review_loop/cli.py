@@ -2648,11 +2648,7 @@ def cmd_apply(args) -> int:
             try:
                 print(f"  watchdog shim written: {_write_watchdog_shim()}")
             except OSError as exc:
-                target = exc.filename or doctor.shim_path()
-                print(f"  refused: cannot write the watchdog shim at {target} "
-                      f"({exc.strerror or exc}); make it and its directory writable "
-                      f"(e.g. `chmod u+w -- {shlex.quote(str(target))}`) and re-run "
-                      "`apply --watchdog-shim`")
+                print(_shim_refusal(exc))
                 return 1
     if getattr(args, "hooks", False):
         rc = max(rc, _ensure_hooks(loop, getattr(args, "admin_token", "") or None, args.dry_run))
@@ -3404,6 +3400,19 @@ def cmd_stats(args) -> int:
         if not args.json:
             print(f"\nwrote {target}")
     return 0
+
+
+def _shim_refusal(exc: OSError) -> str:
+    """Why the watchdog shim could not be written, and a chmod that can repair it: on a path that
+    exists — a shim not created yet means its directory (or the nearest existing ancestor)
+    refused the write (#354)."""
+    failed = pathlib.Path(exc.filename or doctor.shim_path())
+    target = failed
+    while not target.exists() and target.parent != target:
+        target = target.parent
+    return (f"  refused: cannot write the watchdog shim at {failed} ({exc.strerror or exc}); "
+            f"make {target} writable (e.g. `chmod u+w -- {shlex.quote(str(target))}`) and "
+            "re-run `apply --watchdog-shim`")
 
 
 def _reviewer_runs(repo: str, number: int, head: str) -> int:

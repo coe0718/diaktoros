@@ -606,6 +606,55 @@ class TurnPrefetchTests(unittest.TestCase):
         self.assertIn(f"bounded at {deps.FETCH_TIMEOUT}s", progress[0])
         self.assertEqual(progress[1], "rust: ready — 1 crates.io crates from Cargo.lock (0.4s)")
 
+    def test_a_repo_with_nothing_to_prefetch_records_that_not_fetching_forever(self):
+        """#361: with no manifest, the ledger kept "fetching — started …" after the turn ended."""
+        from review_loop import broker_ipc, trusted_turn
+
+        def stage(_loop, **kw):
+            kw["sandbox_root"].mkdir()
+            return kw["sandbox_root"]
+
+        class Inference:
+            def __init__(self, directory, *a, **k):
+                self.directory = directory
+
+            def __enter__(self):
+                self.directory.mkdir()
+                return self
+
+            def __exit__(self, *a):
+                return False
+        for name in ("venv", "runtime", "rust"):
+            (self.root / name).mkdir(exist_ok=True)
+        progress = []
+        scope = broker_ipc.RunScope(REPO, 7, HEAD, "adjudicator", "fix-7", "rid",
+                                    str(self.root / "runs.sqlite"))
+        with mock.patch.object(trusted_turn, "_safe_code_snapshot",
+                               side_effect=lambda src, dst: dst.mkdir()), \
+             mock.patch.object(trusted_turn.trusted_fetch, "stage", side_effect=stage), \
+             mock.patch.object(trusted_turn.inference_proxy, "InferenceCapability", Inference), \
+             mock.patch.object(deps, "prepare", return_value=[]), \
+             mock.patch.object(contained, "run",
+                               return_value=subprocess.CompletedProcess([], 0, "", "")), \
+             self.assertRaises(trusted_turn.TurnDenied):
+            trusted_turn.run_turn(self.loop, scope, source=self.root, venv=self.root / "venv",
+                                  runtime=self.root / "runtime", rust=self.root / "rust",
+                                  upstream="https://model.invalid", key="k", model="m",
+                                  prompt="RULE", timeout=5, work_root=self.root / "work",
+                                  progress=progress.append)
+        self.assertEqual(len(progress), 2, progress)
+        self.assertTrue(progress[0].startswith("fetching"))
+        self.assertTrue(progress[1].startswith("nothing to prefetch"))
+
+    def test_a_finished_run_is_never_shown_as_still_fetching(self):
+        from review_loop.run_supervisor import describe_dependencies
+        row = {"seat": "reviewer", "pr": 351, "head": "b" * 40, "state": "succeeded",
+               "deps": "fetching — started 16:09:23Z, bounded at 300s, before the turn budget starts"}
+        self.assertEqual(describe_dependencies(row),
+                         "reviewer #351 @ bbbbbbb succeeded — prefetch outcome not recorded "
+                         "(fetching — started 16:09:23Z)")
+        self.assertIn("— fetching — started", describe_dependencies({**row, "state": "running"}))
+
     def test_a_failing_progress_sink_never_fails_the_turn(self):
         from review_loop import trusted_turn
         calls = []
