@@ -23,9 +23,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
+import test_safe_push as tsp  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from review_loop import (broker_ipc, config, contained, gh, ledger, run_supervisor,  # noqa: E402
-                         safe_push, trusted_turn)
+from review_loop import (broker, broker_ipc, config, contained, gh, ledger,  # noqa: E402
+                         run_supervisor, safe_push, trusted_turn)
 from review_loop.run_supervisor import CONFLICT_KEY, Supervisor  # noqa: E402
 
 BASE_SHA = "b" * 40
@@ -179,6 +180,47 @@ class Broker(unittest.TestCase):
 
     def test_an_ordinary_push_is_unchanged(self):
         self.assertNotIn("merge", self.push(None))
+
+
+class MergeAuthorization(unittest.TestCase):
+    """The real ``safe_push.push`` and ``broker.authorize``, GitHub reads and Git faked: a merge
+    push needs no changes-requested verdict (an approved or unreviewed PR is its main case); an
+    ordinary push still does."""
+
+    MERGE = {"base_ref": "main", "base_sha": BASE_SHA, "tree": TREE}
+
+    setUp = tsp.SafePushTests.setUp
+
+    def cas(self, loop, repo, branch, head, files, message, login, identity, *, before_push,
+            merge=None, **extra):
+        self.merged = merge
+        before_push(tsp.NEW_HEAD)
+        self.fake.branch_head = self.fake.pr_head = tsp.NEW_HEAD
+        return tsp.NEW_HEAD
+
+    def push(self, reviews, merge):
+        with mock.patch.object(gh, "reviews", return_value=reviews):
+            return safe_push.push(self.loop, repo=tsp.REPO, number=7, head=tsp.HEAD,
+                                  role="fixer", branch="fix-7", manifest=tsp.manifest(),
+                                  merge=merge)
+
+    def review(self, state):
+        return [{"id": 41, "state": state, "commit_id": tsp.HEAD,
+                 "submitted_at": "2026-01-01T00:00:00Z", "user": {"login": "review"}}]
+
+    def test_a_merge_push_on_an_approved_or_unreviewed_pr_publishes(self):
+        for reviews in (self.review("APPROVED"), []):
+            with self.subTest(reviews=reviews):
+                self.fake.branch_head = self.fake.pr_head = tsp.HEAD
+                receipt = self.push(reviews, self.MERGE)
+                self.assertEqual(receipt["outcome"], "published")
+                self.assertEqual(self.merged, self.MERGE)
+
+    def test_an_ordinary_push_without_a_change_request_is_still_refused(self):
+        for reviews in (self.review("APPROVED"), []):
+            with self.subTest(reviews=reviews), \
+                    self.assertRaisesRegex(broker.BrokerDenied, "fixer verdict no longer current"):
+                self.push(reviews, None)
 
 
 class Staging(unittest.TestCase):

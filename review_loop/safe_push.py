@@ -540,8 +540,12 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
         raise broker.BrokerDenied("unattended fixer push disabled")
     if base != head:
         raise broker.BrokerDenied("manifest base differs from scoped PR head")
+    # A conflict turn (#303) runs on an approved or unreviewed PR, so it has no changes-requested
+    # verdict to answer. ``merge`` is host-built (RunScope), never the seat's: an ordinary push
+    # still needs the live verdict.
+    verdict = merge is None
     login = broker.authorize(loop, repo=repo, number=number, head=head,
-                             role=role, branch=branch, operation="push")
+                             role=role, branch=branch, operation="push", require_verdict=verdict)
     if not isinstance(branch, str) or len(branch) > 200 or not all(
             SEGMENT.fullmatch(part) and not part.startswith(".") and not part.endswith(".")
             and ".." not in part and not part.endswith(".lock")
@@ -567,7 +571,7 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
         raise broker.BrokerDenied("invalid fixer identity")
     # Refresh BOTH PR identity and branch immediately before ref mutation.
     broker.authorize(loop, repo=repo, number=number, head=head,
-                     role=role, branch=branch, operation="push")
+                     role=role, branch=branch, operation="push", require_verdict=verdict)
     check_ref()
     # The SHA is known after local construction, before the only remote mutation.
     receipt = {"repo": repo, "pr": number, "old_head": head,
@@ -586,7 +590,7 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
         # Object construction/fetch may take time; the initial PR check cannot
         # authorize a later write. Recheck as close to the Git push as possible.
         broker.authorize(loop, repo=repo, number=number, head=head,
-                         role=role, branch=branch, operation="push")
+                         role=role, branch=branch, operation="push", require_verdict=verdict)
         check_ref()
         attempt_started = True
         _audit(loop, {**receipt, "new_head": created, "phase": "attempt"})
