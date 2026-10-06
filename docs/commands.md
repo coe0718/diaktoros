@@ -802,12 +802,13 @@ The real reviewer gate decides, fed a `ready_for_review` event built from the li
 rules are the webhook's: open, not a draft, a fixer's PR on the loop's base, no verdict or run
 already at this head, and the verdict cap. It makes no GitHub write; the review itself is the only
 write, as usual. It prints `review queued` (exit 0), or `no review started —` and the gate's own
-reason (exit 1). Exit 2 when the loop or the PR cannot be read.
+reason (exit 1). Exit 2 when the loop or the PR cannot be read, several loops are configured and
+no `--loop` names one, or the gate did not finish within 120 seconds.
 
 <!-- flags:review -->
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
-| `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
+| `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
 | `--pr` | `PR` | **required** | the pull request to review |
 <!-- /flags -->
 
