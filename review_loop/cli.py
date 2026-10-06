@@ -3384,6 +3384,71 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def _reviewer_runs(repo: str, number: int, head: str) -> int:
+    """How many reviewer runs the ledger holds for this head (read-only; 0 without a ledger)."""
+    import sqlite3
+    from . import run_supervisor
+    db = run_supervisor.production_ledger()
+    if not db.exists():
+        return 0
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        return con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                           "seat='reviewer'", (repo, number, head)).fetchone()[0]
+    finally:
+        con.close()
+
+
+def cmd_review(args) -> int:
+    """Ask for a fresh review of a PR's current head (#375), as the operator.
+
+    The real reviewer gate decides, fed a ``ready_for_review`` event built from the live PR: the
+    same rules as a webhook (open, not a draft, a fixer's PR on the loop's base, no verdict or
+    run already at this head, the verdict cap), so this command cannot start a review the gate
+    would not. No GitHub write: the review itself is the only one, as usual. Exit 1 when the
+    gate declines, with its own reason; 2 when the question cannot be asked.
+    """
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"no such loop: {exc}")
+        return 2
+    pr = gh.pr(loop, args.pr)
+    if not isinstance(pr, dict) or pr.get("number") != args.pr:
+        print(f"#{args.pr}: the PR could not be read from GitHub — nothing started")
+        return 2
+    head = (pr.get("head") or {}).get("sha") or ""
+    from . import state as state_mod
+    st = state_mod.state_for(loop)
+    key = gate.seat_key(loop, args.pr)
+
+    def queued():
+        entry = (st.queue_all().get("reviewer") or {}).get(key) or {}
+        return entry if entry.get("head") == head else None
+    before = (_reviewer_runs(loop["repo"], args.pr, head), queued())
+    payload = {"action": "ready_for_review", "number": args.pr, "pull_request": pr,
+               "repository": {"full_name": loop["repo"]},
+               "sender": {"login": loop.get("read_token") or "operator"}}
+    script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "gate_reviewer.py"
+    done = subprocess.run([sys.executable, str(script)], input=json.dumps(payload), text=True,
+                          capture_output=True, timeout=120)
+    if _reviewer_runs(loop["repo"], args.pr, head) > before[0]:
+        print(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker "
+              f"(`hermes review-loop explain --loop {loop['id']} --pr {args.pr}` follows it)")
+        return 0
+    waiting = queued()
+    if waiting and waiting != before[1]:
+        reason = waiting.get("reason") or "the reviewer seat is busy"
+        print(f"#{args.pr} @ {head[:7]}: review queued, waiting — {reason}")
+        return 0
+    reasons = [line.split("] ", 1)[1] for line in done.stderr.splitlines()
+               if line.startswith("[review-loop] ") and "] " in line]
+    print(f"#{args.pr} @ {head[:7]}: no review started — "
+          + (reasons[-1] if reasons else "the reviewer gate declined without a reason"
+             + (f" (exit {done.returncode})" if done.returncode else "")))
+    return 1
+
+
 def cmd_explain(args) -> int:
     """Why one PR is not moving, and the one event that would move it.
 
@@ -4472,6 +4537,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         stats_cmd.add_argument("--html", metavar="FILE",
                                help="also write one self-contained HTML page to FILE")
         stats_cmd.set_defaults(func=cmd_stats)
+
+        review = sub.add_parser("review", help="Ask for a fresh review of a PR's current head "
+                                               "(the reviewer gate decides, as for a webhook)")
+        review.add_argument("--loop", required=True,
+                            help="loop id (its config file name; `list` shows them)")
+        review.add_argument("--pr", type=int, required=True, help="the pull request to review")
+        review.set_defaults(func=cmd_review)
 
         explain = sub.add_parser("explain",
                                  help="Why one PR is not moving, and what has to happen next")

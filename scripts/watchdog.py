@@ -962,7 +962,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             mins = (now - observed_at) / 60 if observed_at is not None else 0.0
             if (TEST or mins > grace["reviewer"]) and head_postdates_arming:
                 kind = (f"reviewer never posted a verdict — head {head[:7]} observed "
-                        f"{mins / 60:.1f}h ago, 0 verdicts at this head")
+                        f"{mins / 60:.1f}h ago, 0 verdicts at this head (`hermes review-loop "
+                        f"review --loop {loop['id']} --pr {number}` asks for one)")
 
         if kind and due(stall_key(number, head, kind)):
             alerts.append((number, kind, (pr.get("title") or "")[:60]))
