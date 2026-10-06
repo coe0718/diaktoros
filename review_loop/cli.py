@@ -852,7 +852,8 @@ def _hook_origin(loop: dict, drifted: dict) -> dict:
     return {**loop, "host": hosts.pop()}
 
 
-def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool) -> int:
+def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool,
+                  outcome: dict | None = None) -> int:
     """``apply --hooks``: make this loop's two repo hooks what its routes need, the way ``init
     --hooks`` would have for a new loop (``init`` refuses an existing one).
 
@@ -890,6 +891,9 @@ def _ensure_hooks(loop: dict, token_login: str | None, dry_run: bool) -> int:
         print(f"refused: repo hooks not reconciled: {exc}")
         print(f"  fix: re-run with --admin-token <login> ({hook_write_need(loop, token_login)})")
         return 2
+    if outcome is not None:
+        outcome["created"] = [seat for seat, _ in missing]
+        outcome["kept"] = {seat: keep for seat, _e, _u, keep, _r, _t in plans}
     verb = "would " if dry_run else ""
     for seat, url in missing:
         print(f"  hook for {names[seat]}: {verb}create → {url} (paused until `arm`)")
@@ -3777,8 +3781,23 @@ def cmd_triage(args) -> int:
     for line in _triage_lines(updated):
         print(line)
     if args.dry_run:
+        hook_note = ""
+        if admin:
+            try:
+                existing = [h for h in _hook_listing(updated, admin, require_active=False)
+                            if routes.route_name_of(h["config"]["url"]) == updated["triage"]["route"]]
+            except config.ConfigError:
+                existing = None
+            if existing is None:
+                hook_note = ", and reconcile the repo hook"
+            elif existing:
+                kept = next((h for h in existing if h.get("active")), existing[0])
+                state = "active" if kept.get("active") else "paused"
+                hook_note = f", and keep hook {kept['id']} ({state}), repointing it if needed"
+            else:
+                hook_note = ", and create the repo hook (paused; next, arm)"
         print(f"  dry run — would write route {updated['triage']['route']} (issues) and its gate "
-              "shim" + (", and the repo hook (paused)" if admin else "") + "; nothing written")
+              "shim" + hook_note + "; nothing written")
         return 0
     name = updated["triage"]["route"]
     previous_route = routes.route(name)
@@ -3798,11 +3817,21 @@ def cmd_triage(args) -> int:
     print(f"  route written: {name}")
     shims_ok = _install_shims(updated)
     if admin:
-        rc = _ensure_hooks(updated, admin, dry_run=False)
+        outcome: dict = {}
+        rc = _ensure_hooks(updated, admin, dry_run=False, outcome=outcome)
         if rc:
             return rc
-        print(f"  next: hermes review-loop arm --loop {loop['id']} --admin-token {admin} "
-              "(the triage hook is created paused; arm turns every loop hook on)")
+        kept = (outcome.get("kept") or {}).get("triage")
+        if kept is not None:
+            state = "active" if kept.get("active") else "paused"
+            print(f"  hook {kept['id']} kept ({state})")
+            if not kept.get("active"):
+                print(f"  next: hermes review-loop arm --loop {loop['id']} --admin-token {admin} "
+                      "(the hook is paused; arm turns every loop hook on)")
+        else:
+            print("  hook created (paused)")
+            print(f"  next: hermes review-loop arm --loop {loop['id']} --admin-token {admin} "
+                  "(arm turns every loop hook on)")
     else:
         print(f"  next: hermes review-loop apply --loop {loop['id']} --hooks --admin-token LOGIN "
               "creates the issues hook (paused), then `arm`")
