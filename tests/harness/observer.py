@@ -270,9 +270,9 @@ def group_observer() -> None:
     check("the sweep flushes one digest", len(posts), 1)
     digest = notice(posts[0])
     check("  carrying both transitions", digest["count"], 2)
-    check("  with a direct link", digest["message"].count(f"https://github.com/{REPO}/pull/7"), 2)
-    check("  and each transition on its own line",
-          [line.split()[1] for line in digest["message"].splitlines()[1:]], ["#7", "#7"])
+    check("  with a direct link", digest["message"].count(f"https://github.com/{REPO}/pull/7"), 1)
+    check("  and the PR is one grouped line",
+          [line.split()[0] for line in digest["message"].splitlines()[1:]], ["#7"])
     ledger = list(load_state("observations.json")["entries"].values())
     check("  the two transitions are settled by it",
           sorted(len(e.get("batch") or []) for e in ledger), [0, 0, 2])

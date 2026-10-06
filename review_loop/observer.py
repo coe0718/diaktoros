@@ -51,11 +51,25 @@ from .util import log, now_iso
 # The transitions an observer may subscribe to. These names are the loop's vocabulary for what
 # happened; the same strings are what `--observer-events` accepts and what the ledger stores.
 EVENTS = ("opened", "handoff", "verdict", "approved", "escalation", "ruling", "stall", "closed",
-          "triaged", "fixing", "fixed", "failed", "held", "conflict")
+          "triaged", "fixing", "fixed", "failed", "held", "conflict", "ci_failed")
 # The issue-side events (#231) name an issue, not a PR: their link is /issues/N and they carry no
 # head. ``failed`` (any isolated run's first failed attempt, and its final state) names whichever
 # the run was about.
 ISSUE_EVENTS = frozenset({"triaged", "fixing", "fixed"})
+
+# Two tiers. Urgent notices are the ones an operator acts on: they always go out at once, even
+# with a digest set, and to ``urgent_route`` when one is configured. Everything else is
+# progress and is batched when ``digest_min`` is set. The tier is fixed per event, here; an
+# ``uncertain`` outcome is urgent whatever its event. ``stall`` and ``conflict`` ask the
+# operator to act ("next: you"), so they are urgent too.
+URGENT_EVENTS = frozenset({"failed", "held", "escalation", "ruling", "stall", "conflict"})
+ROUTINE_EVENTS = frozenset(EVENTS) - URGENT_EVENTS
+
+
+def is_urgent(event: str, outcome: str = "") -> bool:
+    """Is this notice one the operator acts on (sent at once, to the urgent route if any)?"""
+    return event in URGENT_EVENTS or "uncertain" in str(outcome or "").lower()
+
 
 # The batched form: one message for many transitions (see ``observer.digest_min``).
 DIGEST_EVENT = "digest"
@@ -65,7 +79,7 @@ DIGEST_EVENT = "digest"
 EMOJI = {"opened": "📬", "handoff": "🔧", "verdict": "🔍", "approved": "✅",
          "escalation": "⚠️", "ruling": "⚖️", "stall": "⏳", "closed": "🧹", "digest": "🗂",
          "triaged": "🏷", "fixing": "🛠", "fixed": "📦", "failed": "❌", "held": "⏸",
-         "conflict": "🔀"}
+         "conflict": "🔀", "ci_failed": "🔴"}
 LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review requested",
          "verdict": "review posted", "approved": "approved",
          "escalation": "loop stopped — cap spent", "ruling": "adjudicator ruled",
@@ -73,7 +87,7 @@ LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review req
          "closed": "PR closed",
          "triaged": "issue triaged", "fixing": "issue handed to the fixer",
          "fixed": "issue fix", "failed": "run failed", "held": "run held",
-         "conflict": "conflicts with its base"}
+         "conflict": "conflicts with its base", "ci_failed": "CI failed"}
 
 # A stale claim may have reached the gateway before its sender died. Never replay it:
 # without a receiver-side idempotency guarantee, a replay can ping twice.
@@ -161,13 +175,21 @@ def describe(observer: dict) -> str:
         line += " · " + ",".join(observer["events"])
     if observer.get("digest_min"):
         line += f" · digest every {observer['digest_min']}m"
+    if observer.get("urgent_route"):
+        line += (f" · urgent → {observer['urgent_route']} "
+                 f"({observer.get('urgent_deliver') or observer.get('deliver')})")
     return line
 
-def route_contract(loop: dict) -> dict:
-    """Exact destination and no-model adapter the observer has authorized."""
+def route_contract(loop: dict, urgent: bool = False) -> dict:
+    """Exact destination and no-model adapter the observer has authorized.
+
+    ``urgent`` is the second destination for urgent notices (``observer.urgent_route``).
+    """
     cfg = loop.get("observer") or {}
-    return {"profile": config.seat_profile(loop, "observer"),
-            "deliver": cfg.get("deliver", "telegram"),
+    deliver = ((cfg.get("urgent_deliver") or cfg.get("deliver") or "telegram") if urgent
+               else cfg.get("deliver", "telegram"))
+    return {"profile": config.seat_profile(loop, "observer_urgent" if urgent else "observer"),
+            "deliver": deliver,
             "deliver_only": True, "prompt": prompts.OBSERVER, "script": "observe.py",
             "events": ["pull_request"], "deliver_extra": cfg.get("deliver_extra") or {},
             "enabled": True}
@@ -196,10 +218,10 @@ def route_remedy(loop: dict) -> str:
     return f"`hermes review-loop set --loop {loop['id']} --observer-route {name}-{n}`"
 
 
-def _target(loop: dict):
+def _target(loop: dict, urgent: bool = False):
     """Refuse gateway-side destination overrides not authorized by this loop."""
     cfg = loop.get("observer") or {}
-    name = cfg.get("route") or ""
+    name = (cfg.get("urgent_route") if urgent else cfg.get("route")) or ""
     # The registry is mutable gateway state, not authority for where a private PR
     # link may go. A hostless loop must not inherit its host from that registry.
     if not loop.get("host"):
@@ -209,7 +231,7 @@ def _target(loop: dict):
     if not isinstance(entry, dict) or (entry.get("deliver_extra") or {}) != (cfg.get("deliver_extra") or {}):
         log(f"observer route {name!r} has an unauthorized deliver_extra destination")
         return None
-    return routes.target(name, loop.get("host"), expected=route_contract(loop))
+    return routes.target(name, loop.get("host"), expected=route_contract(loop, urgent))
 
 
 # -- the ledger ----------------------------------------------------------------
@@ -400,14 +422,53 @@ def render(loop: dict, event: str, number, head: str, **fields) -> str:
     return f"{summarize(loop, event, number, head, **fields)}\n{gh.pr_url(loop, number)}"
 
 
+# How a transition reads inside a digest line: short, in order, outcome only where it matters.
+_DIGEST_WORD = {"opened": "opened", "handoff": "fixed", "verdict": "reviewed",
+                "approved": "approved", "closed": "closed", "triaged": "triaged",
+                "fixing": "handed to fixer", "fixed": "fix posted"}
+
+
+def _digest_word(entry: dict) -> str:
+    event = str(entry.get("event") or "")
+    word = _DIGEST_WORD.get(event, event)
+    if event == "verdict":
+        outcome = str(entry.get("outcome") or "").lower()
+        if "change" in outcome:
+            word += " (changes)"
+        elif "approv" in outcome:
+            word += " (approve)"
+    return word
+
+
 def render_digest(loop: dict, entries: list) -> str:
-    """One compact message for historical transitions, without stale next-turn advice."""
-    lines = [f"🗂 [{loop.get('id')}] review-loop digest — {len(entries)} transition(s)"]
-    for entry in entries[:DIGEST_LIMIT]:
-        lines.append(f"• #{entry.get('number')} `{(entry.get('head') or '')[:7]}` "
-                     f"{_without_next_turn(entry.get('summary') or entry.get('event'))} · {entry.get('url')}")
-    if len(entries) > DIGEST_LIMIT:
-        lines.append(f"…and {len(entries) - DIGEST_LIMIT} more in this window")
+    """One compact message for historical transitions, grouped by PR or issue, in order.
+
+    No next-turn advice is carried: a batched transition is history, not live state.
+    """
+    groups: dict = {}
+    for entry in entries:
+        event = str(entry.get("event") or "")
+        issue = bool(entry.get("issue", event in ISSUE_EVENTS))
+        group = groups.setdefault((issue, entry.get("number")),
+                                  {"words": [], "url": entry.get("url") or ""})
+        word = _digest_word(entry)
+        if not group["words"] or group["words"][-1] != word:
+            group["words"].append(word)
+    prs = sum(1 for issue, _ in groups if not issue)
+    issues = len(groups) - prs
+    counts = []
+    if prs:
+        counts.append(f"{prs} PR{'s' if prs != 1 else ''}")
+    if issues:
+        counts.append(f"{issues} issue{'s' if issues != 1 else ''}")
+    window = int((loop.get("observer") or {}).get("digest_min") or 0)
+    span = f"last {window}m" if window else "review-loop digest"
+    lines = [f"🗂 [{loop.get('id')}] {span} — {', '.join(counts)}"]
+    for (issue, number), group in list(groups.items())[:DIGEST_LIMIT]:
+        label = f"#{number} (issue)" if issue else f"#{number}"
+        lines.append(f"{label} {' → '.join(group['words'])} · {group['url']}")
+    if len(groups) > DIGEST_LIMIT:
+        lines.append(f"…and {len(groups) - DIGEST_LIMIT} more")
     return "\n".join(lines)
 
 
@@ -465,7 +526,7 @@ def block_for(loop: dict, event: str, number, head: str, text: str, url: str = "
 # -- delivery ------------------------------------------------------------------
 
 
-def _post(loop: dict, block: dict, tag: str, delivery: str = "") -> tuple:
+def _post(loop: dict, block: dict, tag: str, delivery: str = "", urgent: bool = False) -> tuple:
     """Return (delivered, error, uncertain); a POST without a 2xx may have landed.
 
     ``delivery`` is the id this notice was issued with. A caller sending a notice for the first
@@ -473,9 +534,11 @@ def _post(loop: dict, block: dict, tag: str, delivery: str = "") -> tuple:
     logical delivery passes the id it used before, so the gateway's idempotency window can
     recognise it.
     """
-    route = (loop.get("observer") or {}).get("route") or ""
-    contract = route_contract(loop)
-    if _target(loop) is None:
+    cfg = loop.get("observer") or {}
+    urgent = bool(urgent and cfg.get("urgent_route"))
+    route = (cfg.get("urgent_route") if urgent else cfg.get("route")) or ""
+    contract = route_contract(loop, urgent)
+    if _target(loop, urgent) is None:
         return False, (f"route {route!r} is missing from the gateway's subscriptions, or has no "
                        f"secret/url, or violates the observer delivery-only contract"), False
     payload = {"repository": {"full_name": loop["repo"]}, "_observer": block}
@@ -544,7 +607,8 @@ def notify(loop: dict, st, event: str, number, head: str = "", *, identity: obje
         url = link(loop, number, issue)
         text = f"{summary}\n{url}"
         key = key_for(loop, number, head, event, identity)
-        queued = bool((loop.get("observer") or {}).get("digest_min"))
+        urgent = is_urgent(event, outcome)
+        queued = bool((loop.get("observer") or {}).get("digest_min")) and not urgent
         tag = f"{event}-{number}"
         # Minted here rather than at POST time so the ledger can hold it: this notice's retries are
         # the same logical delivery and must present the same id (see routes.fire). A digest member
@@ -564,7 +628,8 @@ def notify(loop: dict, st, event: str, number, head: str = "", *, identity: obje
             data["entries"][key] = {"status": "queued" if queued else "pending",
                                     "event": event, "number": number, "head": head,
                                     "identity": str(identity or ""), "summary": summary,
-                                    "base_sha": base_sha,
+                                    "base_sha": base_sha, "issue": bool(issue),
+                                    "outcome": str(outcome or "")[:200], "urgent": urgent,
                                     "message": text, "url": url,
                                     "attempts": 0, "error": "", "at": now}
             if queued:
@@ -576,14 +641,14 @@ def notify(loop: dict, st, event: str, number, head: str = "", *, identity: obje
         if queued:
             log(f"observer: queued {event} #{number} for the next digest")
             return False
-        return _deliver(loop, st, key, text, tag, event, number, head, delivery, url)
+        return _deliver(loop, st, key, text, tag, event, number, head, delivery, url, urgent)
     except Exception as exc:
         log(f"observer: {event} notice for #{number} failed: {type(exc).__name__}: {exc}")
         return False
 
 
 def _deliver(loop: dict, st, key: str, text: str, tag: str, event: str, number, head: str,
-             delivery: str = "", url: str = "") -> bool:
+             delivery: str = "", url: str = "", urgent: bool = False) -> bool:
     """POST one rendered notice and record the receipt. The claim already exists in the ledger."""
     if event == "approved" and " · next: you merge" in text:
         # An approval can be dismissed between the gate's check and this POST. A merge
@@ -615,7 +680,7 @@ def _deliver(loop: dict, st, key: str, text: str, tag: str, event: str, number, 
                 and str(latest.get("id")) == entry.get("identity")):
             text = _without_next_turn(text)
     delivered, error, uncertain = _post(loop, block_for(loop, event, number, head, text, url),
-                                        tag, delivery)
+                                        tag, delivery, urgent)
     _receipt(st, key, delivered, error, uncertain)
     if delivered:
         log(f"observer: notified {event} #{number} at {(head or '')[:7]}")
@@ -684,7 +749,8 @@ def retry(loop: dict, st) -> int:
                  "url": entry.get("url") or "", "at": now_iso(), "message": text}
         if entry.get("batch"):
             block["count"] = len(entry["batch"])
-        delivered, error, uncertain = _post(loop, block, tag, delivery)
+        delivered, error, uncertain = _post(loop, block, tag, delivery,
+                                            bool(entry.get("urgent")))
         _receipt(st, key, delivered, error, uncertain)
         if delivered:
             sent += 1

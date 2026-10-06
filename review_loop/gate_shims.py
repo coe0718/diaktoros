@@ -192,9 +192,10 @@ def contract_drift(loop: dict, role: str, entry: dict) -> list[str]:
     stored = str(entry.get("host") or "").removesuffix("/")
     if host and stored and stored != host:
         wrong.append("host")
-    if role == "observer":
+    if role in ("observer", "observer_urgent"):
         from . import observer
-        return [key for key in routes.contract_mismatch(entry, observer.route_contract(loop))
+        return [key for key in routes.contract_mismatch(
+                    entry, observer.route_contract(loop, role == "observer_urgent"))
                 if key not in ("profile", "script")] + wrong
     if entry.get("prompt") != route_intent.ROUTE_PROMPT[role]:
         wrong.append("prompt")

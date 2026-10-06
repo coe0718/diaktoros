@@ -50,14 +50,14 @@ OBSERVER_WATCHED = WATCHED + ("deliver", "deliver_extra")
 
 
 def watched(role: str) -> tuple[str, ...]:
-    return OBSERVER_WATCHED if role == "observer" else WATCHED
+    return OBSERVER_WATCHED if role in ("observer", "observer_urgent") else WATCHED
 
 GATE_SCRIPT = {"reviewer": "gate_reviewer.py", "fixer": "gate_fixer.py",
                "adjudicator": "gate_adjudicator.py", "triage": "gate_triage.py",
-               "observer": "observe.py"}
+               "observer": "observe.py", "observer_urgent": "observe.py"}
 ROUTE_PROMPT = {"reviewer": prompts.REVIEWER, "fixer": prompts.FIXER,
                 "adjudicator": prompts.ADJUDICATOR, "triage": prompts.TRIAGE,
-                "observer": prompts.OBSERVER}
+                "observer": prompts.OBSERVER, "observer_urgent": prompts.OBSERVER}
 PLUGIN_SCRIPTS = frozenset(GATE_SCRIPT.values()).union(*config.LEGACY_GATE_SCRIPTS.values())
 
 
@@ -81,6 +81,9 @@ def routes_of(loop: dict) -> dict:
     observer_route = str((loop.get("observer") or {}).get("route") or "")
     if observer_route:
         names["observer"] = observer_route
+    urgent_route = str((loop.get("observer") or {}).get("urgent_route") or "")
+    if observer_route and urgent_route:
+        names["observer_urgent"] = urgent_route
     return names
 
 

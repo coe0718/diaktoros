@@ -60,6 +60,9 @@ class RunScope:
     # A conflict-resolution turn (#303): {base_ref, base_sha, tree}, the merge the host staged as
     # the seat's /work. Host-built like every field here; the push becomes a merge commit of it.
     merge: dict | None = None
+    # A CI-fix turn (#306): the host handed the fixer a failed check, not a verdict. Its push needs
+    # no changes-requested review at the head, and its review request none either. Host-built.
+    ci_fix: bool = False
 
 
 # What a reviewer that could not see the whole change reads when it tries to approve (#93, #110).
@@ -248,6 +251,8 @@ class RunBroker:
         # How the fixer's answers comment ended ('posted', 'uncertain', 'denied', 'unrecorded'),
         # a host-chosen word the sandbox may see; None when no answers were sent.
         self.answers_outcome: str | None = None
+        self._answers_comment_id: int | None = None
+        self._answers_error: str | None = None
         self._stop = threading.Event()
 
     def __enter__(self) -> "RunBroker":
@@ -416,7 +421,8 @@ class RunBroker:
                                                 role=self.scope.role, branch=self.scope.branch,
                                                 manifest=request["manifest"],
                                                 **({"merge": dict(self.scope.merge)}
-                                                   if self.scope.merge else {}))
+                                                   if self.scope.merge else {}),
+                                                ci_fix=self.scope.ci_fix)
                         # safe_push returns only after exact ref + PR readback and
                         # durable audit. Failure to commit completion leaves intent.
                         supervisor.confirm_push(self.scope.run_id, self.scope.repo,
@@ -460,8 +466,14 @@ class RunBroker:
         if hold:
             raise ProtocolError(FIXER_WRITE_DENIED.format(reason=hold))
         # A partial-view fixer (#93, #110) may not push; its answers, alone, are its one write.
+        # A dispute (#401): every finding answered as not a defect, nothing pushed. The answers
+        # are published and the dispute recorded; no review is requested.
+        dispute = (operation == "request_review" and verdict == "DISPUTE"
+                   and not self._pushed_head)
+        if dispute:
+            verdict = ""
         answers_only = (operation == "request_review" and not self._pushed_head
-                        and bool(self._partial_view()))
+                        and (bool(self._partial_view()) or dispute))
         if (operation == "request_review" and self.require_push and not self._pushed_head
                 and not answers_only):
             raise ProtocolError("fixer must publish a confirmed push first")
@@ -533,7 +545,23 @@ class RunBroker:
             if answers_only:
                 # Nothing was pushed, so nothing new to review: the answers comment at the head
                 # the fixer was given is the whole write. It must actually land.
-                self.answers_outcome = self._publish_answers(head, body)
+                if dispute:
+                    # Durable intent first (#401): the operator notice exists before the public
+                    # comment POST, so a crash after the POST cannot lose the dispute.
+                    from .run_supervisor import Supervisor
+                    try:
+                        Supervisor(self.scope.ledger_db, create=False).record_dispute(
+                            self.scope.run_id, self.scope.repo, self.scope.number, head, body)
+                    except Exception as persistence_error:
+                        raise ProtocolError("dispute persistence failed") from persistence_error
+                self.answers_outcome = self._publish_answers(head, body, dispute=dispute)
+                if dispute and self.answers_outcome in ("posted", "uncertain", "denied"):
+                    try:
+                        Supervisor(self.scope.ledger_db, create=False).dispute_comment(
+                            self.scope.run_id, self.answers_outcome,
+                            comment_id=self._answers_comment_id, error=self._answers_error)
+                    except Exception:
+                        pass  # stays 'posting'; a finished run's notice then says uncertain
                 if self.answers_outcome not in ("posted", "uncertain"):
                     raise ProtocolError(f"answers comment {self.answers_outcome}")
                 self.completed = True
@@ -585,7 +613,7 @@ class RunBroker:
                                   repo=self.scope.repo, number=self.scope.number,
                                   head=self.scope.head, ledger_db=self.scope.ledger_db)
 
-    def _publish_answers(self, head: str, text: str) -> str:
+    def _publish_answers(self, head: str, text: str, dispute: bool = False) -> str:
         """Post the fixer's answers as ONE PR comment by the fixer identity; return the outcome.
 
         Authorized like the fixer's other writes (live open PR at the exact pushed head, fixer
@@ -602,13 +630,14 @@ class RunBroker:
                                      operation="answers", require_verdict=False)
         except Exception as exc:
             reason = str(exc)[:200] if isinstance(exc, broker.BrokerDenied) else type(exc).__name__
+            self._answers_error = reason
             try:
-                supervisor.begin_answers(**record, state="denied", error=reason)
+                supervisor.begin_answers(**record, state="denied", error=reason, dispute=dispute)
             except Exception:
                 pass
             return "denied"
         try:
-            supervisor.begin_answers(**record)
+            supervisor.begin_answers(**record, dispute=dispute)
         except Exception:
             return "unrecorded"  # no durable intent, so no POST
         try:
@@ -624,6 +653,7 @@ class RunBroker:
             except Exception:
                 pass
             return "uncertain"
+        self._answers_comment_id = comment_id
         try:
             supervisor.answers_status(self.scope.run_id, "posted", comment_id=comment_id)
         except Exception:

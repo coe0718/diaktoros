@@ -103,7 +103,7 @@ def _verify_routes(loop: dict, roles) -> None:
     artifact here that another plugin could own.
     """
     mine = _routes_of(loop)
-    route_roles = (*config.ROUTED_ROLES, "observer")
+    route_roles = (*config.ROUTED_ROLES, "observer", "observer_urgent")
     wanted = [role for role in route_roles if role in set(roles) and role in mine]
     names = [mine[role] for role in route_roles if role in mine]
     shared = sorted({name for name in names if names.count(name) > 1})
@@ -156,7 +156,8 @@ def _install_routes(loop: dict, roles=None) -> dict:
     names = _routes_of(loop)
     host = config.webhook_host(loop.get("host"), required=True)
     skill = loop.get("skill") or ""
-    wanted = (*config.ROUTED_ROLES, "observer") if roles is None else tuple(roles)
+    wanted = ((*config.ROUTED_ROLES, "observer", "observer_urgent") if roles is None
+              else tuple(roles))
     written: dict = {}
     for role in config.ROUTED_ROLES:
         if role not in wanted or role not in names:
@@ -199,6 +200,18 @@ def _install_routes(loop: dict, roles=None) -> dict:
                          description=f"{loop['repo']} — read-only observer feed: one short "
                                      "notice per loop transition")
         written["observer"] = name
+    if "observer_urgent" in wanted and "observer_urgent" in names:
+        observer_cfg = loop["observer"]
+        name = names["observer_urgent"]
+        routes.new_route(name, profile=config.seat_profile(loop, "observer_urgent"),
+                         prompt=prompts.OBSERVER, events=["pull_request"],
+                         script="observe.py",
+                         deliver=observer_cfg.get("urgent_deliver") or observer_cfg.get(
+                             "deliver", "telegram"),
+                         deliver_only=True, host=host,
+                         description=f"{loop['repo']} — read-only observer feed: urgent "
+                                     "notices only")
+        written["observer_urgent"] = name
     return written
 
 
@@ -292,7 +305,7 @@ def _route_state(loop: dict, role: str) -> str:
     want = config.seat_profile(loop, role)
     entry = routes.route(name)
     if not entry:
-        if role == "observer":
+        if role in ("observer", "observer_urgent"):
             # init refuses an existing loop, so "run init" would be a dead end for the feed.
             return f"{role} {name}: not installed — {observer.route_remedy(loop).strip('`')}"
         return f"{role} {name}: not installed — run init"
@@ -301,7 +314,7 @@ def _route_state(loop: dict, role: str) -> str:
         return (f"{role} {name} → {entry.get('profile')!r} (blank — the gateway refuses it), "
                 f"not {want}: MISMATCH — hermes review-loop apply --loop {loop['id']}")
     if got == want:
-        muted = role == "observer" and (loop.get("observer") or {}).get("mute")
+        muted = role in ("observer", "observer_urgent") and (loop.get("observer") or {}).get("mute")
         return f"{role} {name} → {got} (ok{', muted' if muted else ''})"
     return (f"{role} {name} → {got}, not {want}: MISMATCH — "
             f"hermes review-loop apply --loop {loop['id']}")
@@ -468,6 +481,9 @@ def _observer_args(args, loop_id: str) -> dict:
         observer_cfg["events"] = args.observer_events
     if args.observer_digest_min:
         observer_cfg["digest_min"] = args.observer_digest_min
+    for key in ("urgent_route", "urgent_profile", "urgent_deliver"):
+        if getattr(args, f"observer_{key}", ""):
+            observer_cfg[key] = getattr(args, f"observer_{key}")
     return observer_cfg
 
 
@@ -1737,12 +1753,33 @@ def cmd_init(args) -> int:
                          ("fixer", getattr(args, "fixer_turn_budget", None))):
         if value is not None:
             raw["seats"][seat]["turn_budget_s"] = value
+    # Turn knobs (#323): a flag wins over the form; 0 or blank is the role default (nothing written).
+    try:
+        for seat in ("reviewer", "fixer"):
+            flag = getattr(args, f"{seat}_max_steps", None)
+            steps = flag if flag is not None else config._form_int(d[f"{seat}_max_steps"].strip())
+            if steps not in (0, ""):
+                raw["seats"][seat]["max_steps"] = config._check_max_steps(
+                    steps, f"seats.{seat}.max_steps", "init")
+        flag = getattr(args, "fix_daily_turns", None)
+        cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
+        if cap not in (0, ""):
+            config._check_daily_turns(cap, "triage.fix_daily_turns", "init")
+            # A new loop has no triage block (so no fix_label) for the cap to live in.
+            print(f"note: issue-fix daily cap {cap} is not written: a new loop has no "
+                  "triage.fix_label yet — set it with `hermes review-loop triage "
+                  "--fix-daily-turns N` once issue fixes are on")
+    except config.ConfigError as exc:
+        print(f"refused: {exc}")
+        return 2
     names = routes_for(raw)
     raw["seats"]["reviewer"]["route"] = names["reviewer"]
     raw["seats"]["fixer"]["route"] = names["fixer"]
     roles = {"reviewer", "fixer"} | ({"adjudicator"} if raw["adjudicator"] else set())
     if raw["observer"].get("route"):
         roles.add("observer")
+        if raw["observer"].get("urgent_route"):
+            roles.add("observer_urgent")
     try:
         # The reader is named, never inferred: a default seat login (or the first token) is the
         # one-account-two-hats shape the broker refuses at the first write.
@@ -2092,6 +2129,9 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                                        "never touches, comma-separated (blank: none)",
                                        d["review_only"], interactive).split(",") if name.strip()])
     argv += [f"--review-only={name.strip()}" for name in reviewed]
+    for flag in ("reviewer_max_steps", "fixer_max_steps", "fix_daily_turns"):
+        if getattr(args, flag, None) is not None:
+            argv.append(f"--{flag.replace('_', '-')}={getattr(args, flag)}")
     if admin:
         argv += ["--hooks", f"--admin-token={admin}"]   # created paused; step 5 arms them
     return argv, admin
@@ -2488,6 +2528,13 @@ def cmd_set(args) -> int:
         observer_cfg["events"] = args.observer_events
     if args.observer_digest_min is not None:
         observer_cfg["digest_min"] = args.observer_digest_min
+    for key in ("urgent_route", "urgent_profile", "urgent_deliver"):
+        value = getattr(args, f"observer_{key}", None)
+        if value is not None:
+            if value:
+                observer_cfg[key] = value
+            else:
+                observer_cfg.pop(key, None)        # blank = back to one feed
     if args.observer_mute or args.observer_unmute:
         if not observer_cfg.get("route"):
             # Muting something that does not exist would write a feed with nowhere to go — a
@@ -2541,13 +2588,18 @@ def cmd_set(args) -> int:
     # destination (or host) could forward a queued private PR link there.
     previous = loop.get("observer_disabled") or {}
     bound = before or previous
-    old_target = {k: bound.get(k) for k in ("route", "profile", "deliver")}
+    keys = ("route", "profile", "deliver")
+    old_target = {k: bound.get(k) for k in keys}
     old_target["host"] = previous.get("host") if previous else loop.get("host")
-    new_target = {k: after.get(k) for k in ("route", "profile", "deliver")}
+    new_target = {k: after.get(k) for k in keys}
     new_target["host"] = updated.get("host")
     destination_changed = any(before.get(k) != after.get(k)
                               for k in ("route", "profile", "deliver"))
-    if bound and after and old_target != new_target:
+    urgent_keys = ("urgent_route", "urgent_profile", "urgent_deliver")
+    urgent_changed = any(before.get(k) != after.get(k) for k in urgent_keys) or (
+        bool(after.get("urgent_route")) and
+        any(before.get(k) != after.get(k) for k in ("profile", "deliver")))
+    if bound and after and (old_target != new_target or (urgent_changed and before)):
         try:
             outstanding = observer.unsettled(state_mod.state_for(loop))
         except (OSError, ValueError) as exc:
@@ -2593,7 +2645,36 @@ def cmd_set(args) -> int:
             print(f"observer route intent could not be recorded; loop config unchanged: {exc}")
             return 2
         shims_ok = _install_shims(updated)
+    if urgent_changed and after.get("urgent_route"):
+        urgent = after["urgent_route"]
+        reserved = {cfg.get("route") for cfg in loop["seats"].values()}
+        reserved |= {(loop.get("adjudicator") or {}).get("route"), after.get("route")}
+        existing = routes.route(urgent)
+        if urgent in reserved or (existing and urgent != before.get("urgent_route")):
+            print(f"refused: route {urgent!r} is already in use and is not this observer's "
+                  "urgent route")
+            return 2
+        try:
+            host = config.webhook_host(updated.get("host"), required=True)
+            written = routes.new_route(
+                urgent, profile=config.seat_profile(updated, "observer_urgent"),
+                prompt=prompts.OBSERVER, events=["pull_request"], script="observe.py",
+                deliver=after.get("urgent_deliver") or after["deliver"], deliver_only=True,
+                host=host, description=f"{updated['repo']} — read-only observer feed: urgent "
+                                       "notices only")
+            route_intent.record(updated, {urgent: written})
+        except (OSError, ValueError, config.ConfigError) as exc:
+            print(f"observer urgent route could not be reconciled; loop config unchanged: {exc}")
+            return 2
+        shims_ok = _install_shims(updated) and shims_ok
     path = _write_config(updated)
+    if before.get("urgent_route") and before["urgent_route"] != after.get("urgent_route"):
+        try:
+            route_intent.forget(updated, [before["urgent_route"]])
+            routes.remove_route(before["urgent_route"])
+        except (OSError, ValueError) as exc:
+            print(f"warning: old urgent route {before['urgent_route']!r} remains; "
+                  f"remove it manually: {exc}")
     if destination_changed and before.get("route") and before["route"] != after.get("route"):
         try:
             route_intent.forget(updated, [before["route"]])
@@ -3125,7 +3206,8 @@ def cmd_status(args) -> int:
         # What the registry actually serves, next to what the config claims: those two facts can
         # disagree after a profile change, and this is the one place the operator would see it.
         print("  routes:     " + " · ".join(_route_state(loop, role)
-                                            for role in (*config.ROUTED_ROLES, "observer")
+                                            for role in (*config.ROUTED_ROLES, "observer",
+                                                         "observer_urgent")
                                             if role in _routes_of(loop)))
         refs = _credential_lines(loop)
         if refs:
@@ -3147,6 +3229,8 @@ def cmd_status(args) -> int:
                 print(f"  running:    {seat} on {key} for {held:.0f}m")
         for line in _dependency_lines(loop):
             print(f"  deps:       {line}")
+        for issue_no, origin in sorted(st.fix_holds().items()):
+            print(f"  held:       issue #{issue_no} fix waits for PR #{origin} to merge")
         for seat in ("reviewer", "fixer"):
             queued = len(st.queue_items(seat))
             if queued:
@@ -3569,6 +3653,9 @@ def cmd_explain(args) -> int:
         print(f"  {'read:':<12}{report['read_at']} (GitHub pulls/reviews/hooks + local state; "
               f"read once, nothing written)")
         print(f"  {'state:':<12}{report['state_line']}")
+        for issue_no, origin in sorted(st.fix_holds().items()):
+            if origin == args.pr:
+                print(f"  {'held:':<12}issue #{issue_no} fix waits for this PR to merge")
         if report['chain']['status'] != 'direct':
             print(f"  {'chain:':<12}{report['chain']['status']} · "
                   f"parents {report['chain']['parents']} · {report['chain']['reason']}")
@@ -3952,7 +4039,9 @@ def cmd_triage(args) -> int:
             if existing is None:
                 hook_note = ", and reconcile the repo hook"
             elif existing:
-                kept = next((h for h in existing if h.get("active")), existing[0])
+                dest = routes.url_for(updated["triage"]["route"],
+                                      config.webhook_host(updated.get("host"), required=True))
+                kept, _rest = _keep_one(existing, dest)   # the same choice reconciliation makes
                 state = "active" if kept.get("active") else "paused"
                 hook_note = f", and keep hook {kept['id']} ({state}), repointing it if needed"
             else:
@@ -4564,10 +4653,17 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--observer-events", default="",
                           help="comma-separated transitions to send, from "
                                "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                               "triaged,fixing,fixed,failed,held,conflict (default: all)")
+                               "triaged,fixing,fixed,failed,held,conflict,ci_failed (default: all)")
         init.add_argument("--observer-digest-min", type=int, default=0,
                           help="batch the feed into one message per this many minutes "
                                "(0 = one notice per transition)")
+        init.add_argument("--observer-urgent-route", default="",
+                          help="second route for urgent notices (failed, held, escalation, ruling, "
+                               "stall, conflict, uncertain); routine ones keep the main feed")
+        init.add_argument("--observer-urgent-profile", default="",
+                          help="profile for the urgent route (default: the observer profile)")
+        init.add_argument("--observer-urgent-deliver", default="",
+                          help="where the gateway delivers urgent notices (default: the feed's)")
         init.add_argument("--host", default=d["host"],
                           help="your gateway webhook origin (required unless set in plugin settings)")
         init.add_argument("--grace-min", type=int, default=d["grace_min"],
@@ -4595,6 +4691,15 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="the reviewer seat's own turn budget in seconds (overrides --turn-budget)")
         init.add_argument("--fixer-turn-budget", type=int, default=None,
                           help="the fixer seat's own turn budget in seconds (overrides --turn-budget)")
+        init.add_argument("--reviewer-max-steps", type=int, default=None,
+                          help="agent steps one reviewer turn may take, 8-200 (0 = default 60) "
+                               "(default: the plugin setting)")
+        init.add_argument("--fixer-max-steps", type=int, default=None,
+                          help="agent steps one fixer or issue-fix turn may take, 8-200 "
+                               "(0 = default 80) (default: the plugin setting)")
+        init.add_argument("--fix-daily-turns", type=int, default=None,
+                          help="issue-fix turns per day, 1-1000 (0 = default); only lands once "
+                               "triage has a fix label (default: the plugin setting)")
         init.add_argument("--hooks", action="store_true",
                           help="create the GitHub hooks too, paused until `arm`")
         init.add_argument("--arm", action="store_true",
@@ -4647,6 +4752,15 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         first.add_argument("--attribution", choices=("on", "off"), default=None,
                            help="sign what the loop posts with 'Automated by hermes-review-loop' "
                                 "(default: the plugin setting, on)")
+        first.add_argument("--reviewer-max-steps", type=int, default=None,
+                           help="agent steps one reviewer turn may take, 8-200 (0 = default 60) "
+                                "(default: the plugin setting)")
+        first.add_argument("--fixer-max-steps", type=int, default=None,
+                           help="agent steps one fixer or issue-fix turn may take, 8-200 "
+                                "(0 = default 80) (default: the plugin setting)")
+        first.add_argument("--fix-daily-turns", type=int, default=None,
+                           help="issue-fix turns per day, 1-1000 (0 = default); only lands once "
+                                "triage has a fix label (default: the plugin setting)")
         for key in ("source", "venv", "runtime", "rust"):
             first.add_argument(f"--{key}", default="",
                                help=f"runtime file's {key} path (default: detected)")
@@ -4826,10 +4940,16 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--observer-events", default=None,
                             help="comma-separated transitions to send, from "
                                  "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                                 "triaged,fixing,fixed,failed,held,conflict (blank = all)")
+                                 "triaged,fixing,fixed,failed,held,conflict,ci_failed (blank = all)")
         change.add_argument("--observer-digest-min", type=int, default=None,
                             help="batch the feed into one message per N minutes (0 = per "
                                  "transition)")
+        change.add_argument("--observer-urgent-route", default=None,
+                            help="route for urgent notices only (blank = one feed for everything)")
+        change.add_argument("--observer-urgent-profile", default=None,
+                            help="profile that owns the urgent destination (blank = the feed's)")
+        change.add_argument("--observer-urgent-deliver", default=None,
+                            help="where the gateway delivers urgent notices (blank = the feed's)")
         change.add_argument("--observer-mute", action="store_true",
                             help="stop the feed without forgetting it")
         change.add_argument("--observer-unmute", action="store_true", help="resume a muted feed")

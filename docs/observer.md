@@ -37,7 +37,10 @@ hermes review-loop doctor --loop "<loop-id>"
 | `--observer-profile` | Profile that owns the authorized destination; enables the feed |
 | `--observer-deliver telegram` | Gateway delivery platform; default Telegram, another configured adapter such as Discord can be selected |
 | `--observer-events` | Comma-separated event filter; blank means all events |
-| `--observer-digest-min 30` | Batch window in minutes; 0 means per-transition notices |
+| `--observer-digest-min 30` | Batch window in minutes for **routine** events (see [tiers](#urgent-and-routine-tiers)); 0 means per-transition notices |
+| `--observer-urgent-route` | A second delivery-only route that receives urgent notices only; blank returns to one feed |
+| `--observer-urgent-profile` | Profile that owns the urgent destination (default: the feed's profile) |
+| `--observer-urgent-deliver` | Gateway platform for urgent notices (default: the feed's `--observer-deliver`) |
 
 The default route is `<loop-id>-observe`. Use `--observer-route "<observer-route>"` if
 you need a distinct route name. Installing this route uses the gateway's signed POST
@@ -63,12 +66,13 @@ and a PR link. It does not contain the diff, review body, GitHub credentials or 
 | `escalation` | Durable cap marker | Adjudicator received/finished its turn |
 | `ruling` | Host recorded ACCEPT/REJECT/RESPEC | Code merged or the cap was reset |
 | `stall` | Watchdog decided a stall warrants reporting | The watchdog repaired the underlying defect |
-| `closed` | PR merged/closed and cleanup attempted | Cleanup reclaimed disk, or this was a loop-owned PR |
+| `closed` | PR merged/closed and cleanup attempted | Cleanup reclaimed disk (cleanup runs for every closed PR, but the notice is sent only for PRs this loop worked on) |
 | `triaged` | Issue triage ended: labels applied, none fit, skipped, denied or uncertain (links the issue) | A person agrees with the labels |
 | `fixing` | A maintainer's fix label handed the issue to the fixer, or the handoff was held and why | The fix turn has started |
 | `fixed` | The issue-fix write ended: PR opened (and review requested), a could-not-fix comment, or an uncertain write | The PR passes review |
 | `failed` | An isolated run's first failed attempt (with the retry time) and its terminal `failed`/`uncertain` state | The cause is transient, or a retry will work |
 | `held` | A run is waiting without spending a retry: its seat's daily cap is reached, or its provider's usage window is closed. Says when it resumes and, for a cap, the flag that raises it and the `retry` that runs it sooner | It will run the moment the hold lifts (capacity and pacing still apply) |
+| `ci_failed` | A required check is red at a loop PR's current head, once per head, naming the failed check(s) and linking the run (#306). Found by the watchdog sweep, with no model | With `fix_ci` and unattended fixer pushes on, on a fixer's PR: one fixer turn for that head, which gets the failing jobs' log tails as data. The notice says so, or says the PR is held for you: the verdict cap is spent (CI-fix turns count toward it), or the same job failed again after a fix. Otherwise you fix it |
 | `conflict` | A loop PR no longer merges into its base (GitHub reports a merge conflict), once per head (#303) | With unattended fixer pushes on, a resolving fixer turn: the host merges the base into the head and the fixer resolves the conflicted files (a whole-file conflict, or a base that changed workflow files, ends that run as "needs a person"). With them off, you merge the base by hand. A new head that still conflicts is reported again |
 
 The later events (the last rows of the table) were added after the first eight. A feed with an explicit `events` list
@@ -86,7 +90,7 @@ Approval's `next: you merge` hint is revalidated immediately before sending agai
 current review identity, head/base and post-write holds. If verification fails, the
 hint is omitted. A later state change remains possible: inspect GitHub before merging.
 Retries and digests omit next-turn hints because the recorded transition may be stale.
-Closed notices apply to repository PR closures, not exclusively PRs this loop worked on.
+Closed notices fire only for PRs this loop worked on (the author is a reviewed author, or the loop holds breach, transition, queue or observer-ledger state for the PR). Other repository PR closures are cleaned up silently.
 
 Issue triage and issue-fix runs produce **no observer transition notices**. The PR opened
 by a successful issue fix becomes a normal review-loop PR and can produce later notices.
@@ -134,14 +138,39 @@ There is no general observer replay/reconcile CLI: reconcile chat history and ga
 records manually, preserve evidence, and do not delete receipt files to manufacture a
 new notice. Supervisor reconciliation does not reconcile observer receipts.
 
+## Urgent and routine tiers
+
+The tier is fixed per event in `review_loop/observer.py` (`URGENT_EVENTS`):
+
+| Tier | Events | With a digest set |
+| --- | --- | --- |
+| Urgent | `failed` (first attempt and final), `held`, `escalation`, `ruling`, `stall`, `conflict`, and any notice whose outcome is `uncertain` | Sent immediately, never batched |
+| Routine | `opened`, `handoff`, `verdict`, `approved`, `triaged`, `fixing`, `fixed`, `closed` | Queued for the digest |
+
+With no `digest_min`, nothing changes: every event is sent at once. With
+`observer.urgent_route` set, urgent notices go to that route (own profile and platform via
+`urgent_profile`/`urgent_deliver`) and everything else, including digests, stays on the main
+route. The urgent route is a second delivery-only route held to the same contract as the main
+one. Unset means one feed gets everything.
+
 ## Digests
 
-A positive `digest_min` queues transitions until the oldest entry has aged past the
+A positive `digest_min` queues routine transitions until the oldest entry has aged past the
 window. The watchdog flushes them on a sweep; it is **not an independent timer** and
 30 minutes does not guarantee delivery at minute 30. No scheduled/working watchdog,
 no regular digest flush. Known-paused loop hooks skip the loop sweep, so queued batches
 can remain owed until normal sweeps resume. That pause also skips route/shim self-heal,
 observer retries and pre-write worker retries, not just digest flush/PR scanning.
+The digest groups by PR or issue, in event order, one line each, keeping outcomes only where
+they matter (changes vs approve), at most 25 lines and then "…and N more":
+
+```
+🗂 [hermes-review-loop] last 30m — 2 PRs, 1 issue
+#312 opened → reviewed (changes) → fixed → approved · https://github.com/…/pull/312
+#316 opened → approved · …/pull/316
+#318 (issue) handed to fixer · …/issues/318
+```
+
 Batch claims precede POST; uncertain batches
 keep members attached rather than emitting duplicates separately.
 

@@ -330,6 +330,9 @@ def main() -> None:
     parser.add_argument('--answers-file',
                         help=f'request_review: your answers to the findings (at most {MAX_ANSWERS} '
                              'bytes), posted once on the PR by the host as the fixer')
+    parser.add_argument('--dispute', action='store_true',
+                        help='request_review, with --answers-file and no push: every finding is '
+                             'not a defect (cite commands run and output); no re-review is asked')
     parser.add_argument('--title', help='open_pr: the PR title; file_issue: the issue title '
                                         '(one line)')
     parser.add_argument('--label', action='append', default=[],
@@ -341,6 +344,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.answers_file and args.operation != 'request_review':
         parser.error('--answers-file is a request_review option')
+    if args.dispute and (args.operation != 'request_review' or not args.answers_file):
+        parser.error('--dispute is a request_review option and needs --answers-file')
     if args.comment_file and args.operation != 'triage':
         parser.error('--comment-file is a triage option')
     if args.label and args.operation not in ('triage', 'file_issue'):
@@ -415,7 +420,8 @@ def main() -> None:
                 body = read_answers(args.answers_file)
             except (ManifestError, OSError, UnicodeError) as exc:
                 parser.error(f'request_review refused before sending (your request is unspent): {exc}')
-        operation = lambda: call('request_review', body=body)
+        extra = {'verdict': 'DISPUTE'} if args.dispute else {}
+        operation = lambda: call('request_review', body=body, **extra)
     else:
         if args.files or args.message is not None or args.message_file or args.dry_run:
             parser.error('--files, --message, --message-file and --dry-run are push options')

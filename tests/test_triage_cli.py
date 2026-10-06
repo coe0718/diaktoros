@@ -119,6 +119,18 @@ class TriageVerb(unittest.TestCase):
         triage = {check.name: check for check in doctor.check_triage(loop)}
         self.assertEqual(triage["profile:triage"].status, doctor.VERIFIED)
 
+    def test_dry_run_names_the_hook_reconciliation_keeps(self):
+        admin = ("--admin-token", t.REVIEWER)
+        url = routes.url_for(ROUTE, t.HOST) if routes.route(ROUTE) else f"{t.HOST}/webhooks/{ROUTE}"
+        old = {"id": 9, "active": True, "config": {"url": f"https://old.example/webhooks/{ROUTE}"}}
+        current = {"id": 3, "active": True, "config": {"url": url}}
+        with mock.patch.object(cli, "_hook_listing", return_value=[old, current]), \
+                mock.patch.object(routes, "route_name_of", return_value=ROUTE):
+            rc, out = self.enable("--dry-run", *admin)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("keep hook 3 (active)", out)
+        self.assertNotIn("keep hook 9", out)
+
     def test_hook_wording_follows_what_happened(self):
         admin = ("--admin-token", t.REVIEWER)
         url = routes.url_for(ROUTE, t.HOST) if routes.route(ROUTE) else f"{t.HOST}/webhooks/{ROUTE}"

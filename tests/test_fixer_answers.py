@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -189,6 +190,137 @@ class Publish(Base):
             self.assertEqual(self.fake.posts(), [])
             self.assertTrue(self.send(server, {"operation": "request_review", "body": ANSWERS})["ok"])
         self.assertEqual(len(self.fake.posts()), 2)
+
+    def test_dispute_without_push_posts_answers_records_once_and_requests_no_review(self):
+        with self.serving() as server:
+            result = self.send(server, {"operation": "request_review", "body": ANSWERS,
+                                        "verdict": "DISPUTE"})
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["result"]["answers"], "posted")
+            self.assertTrue(server.completed)
+            again = self.send(server, {"operation": "request_review", "body": ANSWERS,
+                                       "verdict": "DISPUTE"})
+            self.assertFalse(again["ok"])
+        self.assertEqual([p.rsplit("/", 1)[1] for p, _, _ in self.fake.posts()], ["comments"])
+        with ledger.connect(self.db) as con:
+            self.assertEqual(len(con.execute("SELECT * FROM disputes").fetchall()), 1)
+        with Supervisor(self.db)._connect() as con:
+            self.assertEqual(run_supervisor.write_records(con, self.run_id), "dispute recorded")
+        sent = []
+        sup = Supervisor(self.db)
+        sup.notify(sent.append)
+        sup.notify(sent.append)
+        disputes = [m for m in sent if "disputed the review" in m]
+        self.assertEqual(len(disputes), 1)
+        self.assertIn("Not a defect", disputes[0])
+
+    def _notices(self):
+        sent = []
+        Supervisor(self.db).notify(sent.append)
+        return [m for m in sent if "disputed the review" in m]
+
+    def _record(self):
+        Supervisor(self.db).record_dispute(self.run_id, REPO, 7, HEAD, ANSWERS)
+
+    def test_no_dispute_notice_while_comment_posting_and_run_active(self):
+        self._record()
+        self.assertEqual(self._notices(), [])
+        self.assertEqual(self._notices(), [])
+        Supervisor(self.db).dispute_comment(self.run_id, "posted", comment_id=900)
+        self.assertEqual(len(self._notices()), 1)
+
+    def test_dispute_notice_after_posted_names_the_comment(self):
+        with self.serving() as server:
+            self.assertTrue(self.send(server, {"operation": "request_review", "body": ANSWERS,
+                                               "verdict": "DISPUTE"})["ok"])
+        with ledger.connect(self.db) as con:
+            row = con.execute("SELECT comment,comment_id FROM disputes").fetchone()
+        self.assertEqual(tuple(row), ("posted", 900))
+        [message] = self._notices()
+        self.assertIn("posted on the PR (comment 900)", message)
+
+    def test_dispute_notice_for_denied_claims_no_comment(self):
+        self._record()
+        Supervisor(self.db).dispute_comment(self.run_id, "denied", error="not the fixer")
+        [message] = self._notices()
+        self.assertIn("not posted (not the fixer)", message)
+        self.assertNotIn("posted on the PR", message)
+
+    def test_dispute_notice_for_run_ended_while_posting_is_uncertain(self):
+        self._record()
+        self.assertEqual(self._notices(), [])
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='failed' WHERE id=?", (self.run_id,))
+        [message] = self._notices()
+        self.assertIn("POST outcome unknown", message)
+        self.assertNotIn("posted on the PR", message)
+
+    def test_dispute_comment_outcome_is_final(self):
+        self._record()
+        sup = Supervisor(self.db)
+        sup.dispute_comment(self.run_id, "uncertain")
+        with self.assertRaises(ValueError):
+            sup.dispute_comment(self.run_id, "posted")
+
+    def disputes(self) -> list:
+        with ledger.connect(self.db) as con:
+            return con.execute("SELECT run_id FROM disputes").fetchall()
+
+    def test_a_dispute_is_recorded_before_its_comment_so_a_failed_post_keeps_the_notice(self):
+        # #427: the dispute row is the operator's notice. It is written before the public
+        # comment, so a POST that is refused, or a crash during it, cannot lose the notice.
+        for outcome in ("denied", RuntimeError("crash mid-POST")):
+            with self.subTest(outcome=outcome):
+                with ledger.connect(self.db) as con:
+                    con.execute("DELETE FROM disputes")
+                publish = (mock.patch.object(broker_ipc.RunBroker, "_publish_answers",
+                                             side_effect=outcome)
+                           if isinstance(outcome, Exception) else
+                           mock.patch.object(broker_ipc.RunBroker, "_publish_answers",
+                                             return_value=outcome))
+                with publish, self.serving() as server:
+                    result = self.send(server, {"operation": "request_review", "body": ANSWERS,
+                                                "verdict": "DISPUTE"})
+                self.assertFalse(result["ok"])
+                self.assertEqual(len(self.disputes()), 1)
+        # The crash left the comment's outcome unknown: the notice waits for the run (#430),
+        # then goes out once, as uncertain — it is never lost.
+        self.assertEqual(self._notices(), [])
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='failed' WHERE id=?", (self.run_id,))
+        [message] = self._notices()
+        self.assertIn("POST outcome unknown", message)
+
+    def test_a_dispute_that_cannot_be_recorded_posts_nothing(self):
+        with mock.patch.object(Supervisor, "record_dispute",
+                               side_effect=sqlite3.OperationalError("database is locked")), \
+                self.serving() as server:
+            result = self.send(server, {"operation": "request_review", "body": ANSWERS,
+                                        "verdict": "DISPUTE"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.fake.posts(), [])          # no public comment without its notice
+        self.assertEqual(self.disputes(), [])
+
+    def test_dispute_needs_answers_and_plain_request_without_push_still_refused(self):
+        with self.serving() as server:
+            self.assertFalse(self.send(server, {"operation": "request_review",
+                                                "verdict": "DISPUTE"})["ok"])
+            self.assertFalse(self.send(server, {"operation": "request_review",
+                                                "body": ANSWERS})["ok"])
+        self.assertEqual(self.fake.posts(), [])
+        with ledger.connect(self.db) as con:
+            self.assertEqual(con.execute("SELECT * FROM disputes").fetchall(), [])
+
+    def test_client_sends_dispute_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a"
+            path.write_text(ANSWERS)
+            with mock.patch.object(broker_client, "call", return_value={"ok": True}) as call, \
+                    mock.patch.object(sys, "argv", ["broker_client", "request_review",
+                                                    "--answers-file", str(path), "--dispute"]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                broker_client.main()
+            call.assert_called_once_with("request_review", body=ANSWERS, verdict="DISPUTE")
 
     def test_uncertain_comment_is_recorded_never_retried_and_the_request_still_goes(self):
         self.fake.comment_post = "lost"
