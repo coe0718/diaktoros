@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import fcntl
 import json
 import math
 import os
@@ -43,7 +44,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from review_loop import config, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
+from review_loop import config, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
 from review_loop.util import age_min, epoch, log, now_iso  # noqa: E402
 
 TEST = bool(os.environ.get("REVIEW_LOOP_TEST"))
@@ -700,6 +701,26 @@ def finish_reads(loop: dict, watch: dict, now: float, health: Health | None,
 
 
 def sweep_loop(loop: dict, st: state_mod.LoopState, lines: list[str] | None = None) -> list[str]:
+    """One sweep per loop at a time: a non-blocking flock held from before the first read of
+    ``st.watch()`` until the last save. A sweep that finds it held skips the loop (no retry)."""
+    lines = [] if lines is None else lines
+    hostdirs.ensure(st.dir)
+    fd = os.open(st.dir / "sweep.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log(f"sweep already running for {loop.get('id', '?')}")
+            return lines
+        try:
+            return _sweep_loop_locked(loop, st, lines)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) -> list[str]:
     # Filled in place, so the lines a failing sweep already produced (a gate-failure alert
     # among them) still reach the operator next to the error.
     lines = [] if lines is None else lines
