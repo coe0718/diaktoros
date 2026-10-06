@@ -132,7 +132,6 @@ def watchdog_job_name(loop: dict) -> str:
 def cron_fix(loop: dict, deliver: str = "local") -> str:
     """The scheduler's own command for the watchdog job. Never ``init``: it refuses a loop that
     already exists, and the job is the scheduler's to create. ``deliver`` keeps a known target."""
-    import shlex
     return (f"`hermes cron create 15m --name \"{watchdog_job_name(loop)}\" --no-agent "
             f"--script {SHIM_NAME} --deliver {shlex.quote(deliver or 'local')}`")
 
@@ -166,7 +165,6 @@ def _job_deliver(entry: dict) -> str:
 def migration_fix(loop: dict, shim_jobs: list) -> str:
     """Remove the per-loop jobs, then create the shared one with the schedule and deliver target
     the existing job(s) had. Jobs that disagree are named, not guessed between."""
-    import shlex
     removals = "; ".join(f"`hermes cron remove {e.get('id')}`" for e in shim_jobs)
     values = {(_job_schedule(e), _job_deliver(e)) for e in shim_jobs}
     name = watchdog_job_name(loop)
