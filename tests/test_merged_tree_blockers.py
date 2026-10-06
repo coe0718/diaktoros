@@ -6,6 +6,7 @@ import contextlib
 import io
 import pathlib
 import sys
+import tempfile
 import time
 import unittest
 from types import SimpleNamespace
@@ -77,6 +78,11 @@ class ObserverInitCollisionTest(unittest.TestCase):
 
 
 class EffectiveVerdictTest(unittest.TestCase):
+    def state_dir(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return pathlib.Path(tmp.name) / "state"   # the sweep lock lives here
+
     def test_explain_reads_all_pages_and_fails_closed_on_later_page_error(self):
         with (mock.patch.object(gh, "fetch", side_effect=[(PR, ""), ([APPROVED] * 100, ""),
                                                       (None, "HTTP 503")]) as fetch,
@@ -113,6 +119,7 @@ class EffectiveVerdictTest(unittest.TestCase):
 
     def test_watchdog_newer_rejection_is_not_hidden_by_prior_approval(self):
         st = mock.Mock()
+        st.dir = self.state_dir()
         st.watch.return_value = {"armed_since": time.time() - 3600,
                                  "heads": {"7": {"sha": HEAD, "observed_at": time.time() - 3600}},
                                  "alerts": {}}
@@ -133,6 +140,7 @@ class EffectiveVerdictTest(unittest.TestCase):
 
     def test_queued_fixer_replays_only_live_latest_rejection(self):
         st = mock.Mock()
+        st.dir = self.state_dir()
         st.queue_items.return_value = {"acme/widgets#7": {"head": HEAD, "at": 1}}
         st.active.return_value = {}
         st.held_by_other.return_value = None
@@ -172,6 +180,7 @@ class EffectiveVerdictTest(unittest.TestCase):
 
     def test_first_armed_sweep_retries_and_flushes_without_stall(self):
         st = mock.Mock()
+        st.dir = self.state_dir()
         st.watch.return_value = {}
         st.breach_all.return_value = {}
         with (mock.patch.object(watchdog, "TEST", True),
