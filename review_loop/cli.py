@@ -3908,7 +3908,9 @@ def cmd_triage(args) -> int:
             if existing is None:
                 hook_note = ", and reconcile the repo hook"
             elif existing:
-                kept = next((h for h in existing if h.get("active")), existing[0])
+                dest = routes.url_for(updated["triage"]["route"],
+                                      config.webhook_host(updated.get("host"), required=True))
+                kept, _rest = _keep_one(existing, dest)   # the same choice reconciliation makes
                 state = "active" if kept.get("active") else "paused"
                 hook_note = f", and keep hook {kept['id']} ({state}), repointing it if needed"
             else:
