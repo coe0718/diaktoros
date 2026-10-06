@@ -665,8 +665,9 @@ class LoopState:
     # -- held issue-fix hand-offs (#324): {issue number: origin PR} ----------
 
     def fix_holds(self) -> dict:
-        with self.locked():
-            raw = self._load(self.dir / "held-fixes.json", {})
+        # No lock: writes are atomic replaces, and `explain` must stay read-only (it may not
+        # even create state.lock).
+        raw = self._load(self.dir / "held-fixes.json", {})
         out = {}
         for key, pr in (raw.items() if isinstance(raw, dict) else ()):
             if str(key).isdigit() and type(pr) is int:
