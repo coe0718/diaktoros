@@ -1203,8 +1203,12 @@ def describe_view(row: dict) -> str:
 
 
 def describe_dependencies(row: dict) -> str:
-    return (f"{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']} — "
-            f"{row['deps']}")
+    deps = str(row['deps'] or '')
+    if deps.startswith('fetching —') and row['state'] not in ('launching', 'running'):
+        # A row from before the outcome was always recorded (#361): the prefetch ended with the
+        # turn, so never show a finished run as still fetching.
+        deps = 'prefetch outcome not recorded (' + deps.split(',', 1)[0] + ')'
+    return f"{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} {row['state']} — {deps}"
 
 
 def _pid_reused(pid: int, launched: float | None) -> bool:

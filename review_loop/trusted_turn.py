@@ -620,6 +620,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
         try:
             if prefetched:
                 _report(progress, deps.ledger_text(prefetched))
+            else:
+                # Without this the ledger keeps "fetching — started …" for good, and explain
+                # shows a finished turn as still fetching (#361).
+                _report(progress, "nothing to prefetch (no supported dependency manifest)")
             if observed is not None:
                 observed['dependencies'] = [(r.ecosystem, r.status, r.reason) for r in prefetched]
             note = deps.seat_note(prefetched, scope.role)
