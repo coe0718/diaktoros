@@ -713,7 +713,7 @@ def group_explain() -> None:
     rc, out = explain()
     check("pending marker below cap: no watchdog retry promised",
           "retry adjudicator delivery" in out, False)
-    check("pending marker below cap: review request can be replayed",
+    check("pending marker below cap: explain names who may ask",
           "the pending request for" in out, True)
     check("pending marker below cap: stale delivery not blocking",
           "adjudicator delivery pending" in out, False)
@@ -738,7 +738,7 @@ def group_explain() -> None:
         check(f"dismissed third verdict / {status}: live count", report["spent"], 2)
         check(f"dismissed third verdict / {status}: no parked blocker",
               any("parked awaiting adjudication" in b for b in report["blockers"]), False)
-        check(f"dismissed third verdict / {status}: explain asks for gate replay",
+        check(f"dismissed third verdict / {status}: explain names who may ask, not a replay",
               (report["next"]["kind"],
                "the pending request for" in report["next"]["action"]),
               ("retry", True))
