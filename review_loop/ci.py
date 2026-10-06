@@ -13,8 +13,10 @@ from . import gh
 
 # A check run's conclusions that mean "not green". `neutral` and `skipped` pass, as GitHub's own
 # merge box treats them.
-FAILED_CONCLUSIONS = {"failure", "timed_out", "action_required", "startup_failure", "cancelled",
-                      "stale"}
+FAILED_CONCLUSIONS = {"failure", "timed_out", "action_required", "startup_failure"}
+# Not green, but not the change's fault either (#363): GitHub cancelled the run (a superseded run,
+# or no hosted runner acquired) or marked it stale. It needs a re-run, not a fix.
+CANCELLED_CONCLUSIONS = {"cancelled", "stale"}
 FAILED_STATUSES = {"failure", "error"}
 MAX_PAGES = 3
 NAME_MAX = 100
@@ -26,10 +28,11 @@ class CIState:
     failed: list[str] = field(default_factory=list)
     pending: list[str] = field(default_factory=list)
     passed: list[str] = field(default_factory=list)
+    cancelled: list[str] = field(default_factory=list)
 
     @property
     def green(self) -> bool:
-        return not self.failed and not self.pending
+        return not self.failed and not self.pending and not self.cancelled
 
 
 def _name(raw) -> str:
@@ -68,6 +71,8 @@ def read(loop: dict, head: str) -> CIState | None:
             state.pending.append(name)
         elif run.get("conclusion") in FAILED_CONCLUSIONS:
             state.failed.append(name)
+        elif run.get("conclusion") in CANCELLED_CONCLUSIONS:
+            state.cancelled.append(name)
         else:
             state.passed.append(name)
     for entry in status.get("statuses") or []:
@@ -97,6 +102,11 @@ def approval_refusal(state: CIState | None) -> str:
     if state.failed:
         return (f"APPROVE refused: CI has failed at this head ({_names(state.failed)}); nothing "
                 "was written. Submit REQUEST_CHANGES naming the failed checks.")
+    if state.cancelled:
+        return (f"APPROVE refused: CI at this head was cancelled ({_names(state.cancelled)}) and "
+                "needs a re-run; nothing was written. That is not a defect of the change: do not "
+                "list it as a finding. Submit REQUEST_CHANGES only for real findings; otherwise "
+                "say in your summary that you would approve once CI is re-run and passes.")
     return ""
 
 
@@ -105,13 +115,16 @@ def section(state: CIState | None) -> str:
     head = "\n\n## CI at this head (read by the host from GitHub just before this turn; data)\n\n"
     if state is None:
         return head + f"Unknown: {UNREADABLE}. An APPROVE will be refused until it can be read."
-    if not (state.failed or state.pending or state.passed):
+    if not (state.failed or state.pending or state.passed or state.cancelled):
         return head + "No checks or statuses are reported for this commit."
     lines = []
     if state.failed:
         lines.append(f"- **failed:** {_names(state.failed)}")
     if state.pending:
         lines.append(f"- **still running:** {_names(state.pending)}")
+    if state.cancelled:
+        lines.append(f"- **cancelled** (needs a re-run; not a defect of the change): "
+                     f"{_names(state.cancelled)}")
     if state.passed:
         lines.append(f"- passed: {len(state.passed)}")
     return head + "\n".join(lines)
