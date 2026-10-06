@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 
-from . import config, gate_failures, gh, isolation, observer, situation, transition, state as state_mod
+from . import config, gate_decisions, gate_failures, gh, isolation, observer, situation, transition, state as state_mod
 from .util import iso_at, log, now_iso, silence
 
 
@@ -55,7 +55,17 @@ def context(payload: dict):
     loop = payload_loop(payload)
     # A gate's failed GitHub read ends in [SILENT]; keep it on disk for the watchdog and explain.
     gh.record_failures()
+    _record_decisions(loop, payload)
     return loop, state_mod.state_for(loop)
+
+
+def _record_decisions(loop: dict, payload: dict) -> None:
+    """From here on, every ``silence(reason)`` in this process is appended to the loop's
+    gate-decisions.jsonl (#209)."""
+    from . import gate_decisions, util
+    name = pathlib.Path(sys.argv[0] or "gate").stem or "gate"
+    util._DECISION_RECORDER = lambda reason, decision: gate_decisions.record(
+        loop, name, payload, decision, reason)
 
 
 def pr_of(payload: dict) -> dict:
@@ -224,10 +234,13 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
     key = seat_key(loop, number)
     queued = st.queue_items(seat).get(key)
     push_off = seat == "fixer" and not config.unattended_fixer_push_enabled(loop)
+    final = (f"{seat} turn: nothing scheduled", "queued")   # what silence() records below
     if not push_off:
         try:
             outcome = enqueue_isolated(loop, seat, number, head, turn_key=turn_key)
             st.queue_pop_if(seat, key, queued)
+            final = (f"{seat} turn {outcome}",
+                     "accepted" if outcome in ("enqueued", "rearmed", "pending") else "queued")
             if outcome == "enqueued":
                 log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")
             elif outcome in ("rearmed", "pending"):
@@ -241,6 +254,7 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
             reason = f"isolated worker unavailable: {type(exc).__name__}: {exc}"
             st.queue_replace_if(seat, key, queued, head, pr_url(loop, number), reason)
             log(f"#{number} @ {head[:7]} {seat} held: {reason}")
+            final = (f"{seat} turn held: {reason}", "held")
     if push_off:
         # Checked before the runtime: a turn that could never publish is not worth a worker.
         # The hold reason keeps the exact enable command at its front (#81) — every surface
@@ -251,6 +265,7 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
         if denial:
             reason = f"{reason} {denial}"
         hold_fixer_push_off(loop, st, number, head, reason)
+        final = (f"{seat} turn held: {reason}", "held")
         log(f"#{number} @ {head[:7]} fixer held: {reason}")
     notice = on_push_off if push_off and on_push_off is not None else on_queued
     if notice is not None:
@@ -258,7 +273,7 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
             notice()
         except Exception as exc:
             log(f"#{number} @ {head[:7]} observer notice failed: {type(exc).__name__}: {exc}")
-    silence()
+    silence(*final)
 
 
 def isolation_block(loop: dict, number: int, workspace: dict | None, seat: str) -> dict:
@@ -1063,6 +1078,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         "inflight": local["inflight"], "escalation": local["escalation"], "hooks": hooks_line,
         "sweep": local["sweep"],
         "github": local.get("github", "no failed GitHub call recorded"),
+        "gate_decisions": [gate_decisions.line(e) for e in gate_decisions.for_pr(loop, number)],
         "gate_failures": gate_failed, "blockers": blockers, "next": {"kind": kind, "action": action},
     }
 
@@ -1195,7 +1211,7 @@ def take_seat(loop: dict, st: state_mod.LoopState, seat: str, number: int, head:
     with st.locked():
         if st.is_active(seat, key):
             log(f"{seat} is already running {key} — refusing a second run at the same PR")
-            silence()
+            silence(f"{seat} is already running {key}", "held")
 
         other = st.held_by_other(seat, key)
         if other:
@@ -1212,7 +1228,7 @@ def take_seat(loop: dict, st: state_mod.LoopState, seat: str, number: int, head:
             st.queue_add(seat, key, head, pr_url(loop, number),
                          f"{seat} at capacity {len(live)}/{capacity}: {held}")
             log(f"{seat} at capacity {len(live)}/{capacity} ({held}) — queued #{number} @ {head[:7]}")
-            silence()
+            silence(f"{seat} at capacity {len(live)}/{capacity} — queued", "queued")
 
         st.acquire(seat, key, head, why)
         st.queue_pop(seat, key)        # a direct event can outrun the drain: the entry is stale now
@@ -1223,7 +1239,7 @@ def take_seat(loop: dict, st: state_mod.LoopState, seat: str, number: int, head:
         st.queue_add(seat, key, head, pr_url(loop, number),
                      "no isolated workspace — a parallel run would share a checkout")
         log(f"no isolated workspace for #{number} and concurrency={capacity} — queued")
-        silence()
+        silence("no isolated workspace — queued", "queued")
     if workspace is None:
         log(f"running #{number} without isolation (concurrency=1) under {artifacts_for(loop, number)}")
     return workspace

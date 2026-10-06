@@ -1854,12 +1854,23 @@ def check_hook(loop: dict, hooks: list, seat: str, name: str, url: str) -> Check
     delivery = check_deliveries(loop, hook_id, name)
     if isinstance(delivery, Check):
         return delivery
+    delivery = f"{delivery}{latest_decision(loop, seat)}"
     if not match.get("active"):
         return Check(f"hook:{name}", VERIFIED,
                      f"hook {hook_id} → [webhook URL redacted] ({event}, PAUSED — nothing fires "
                      f"until `hermes review-loop arm --loop {loop['id']}`; {delivery})", paused=True)
     return Check(f"hook:{name}", VERIFIED,
                  f"hook {hook_id} → [webhook URL redacted] ({event}, active; {delivery})")
+
+
+def latest_decision(loop: dict, seat: str) -> str:
+    """The route's gate's latest recorded decision (#209), as a suffix for the hook line."""
+    from . import gate_decisions
+    try:
+        entry = gate_decisions.latest_per_gate(loop).get(f"gate_{seat}")
+    except Exception:  # noqa: BLE001 - a diagnostic line never fails the check
+        entry = None
+    return f"; latest gate decision: {gate_decisions.line(entry)}" if entry else ""
 
 
 # The gateway's answers to a delivery whose signature it would not accept: 401 is "Invalid

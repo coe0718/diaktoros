@@ -55,7 +55,12 @@ def leak_guard_code(code: str) -> str:
             "del _lg, _lg_s, _lg_m\n" + code)
 
 
-def silence(reason: str = "") -> NoReturn:
+# Set by ``gate.context``: called with (reason, decision) so a declining gate leaves a record
+# (#209). Best effort: whatever it does, the answer below is unchanged.
+_DECISION_RECORDER = None
+
+
+def silence(reason: str = "", decision: str = "declined") -> NoReturn:
     """The gate's "nothing to do" answer. The route adapter renders nothing for this.
 
     Typed ``NoReturn`` on purpose: every guard reads as "silence, *then* we know the event
@@ -64,6 +69,11 @@ def silence(reason: str = "") -> NoReturn:
     """
     if reason:
         log(reason)
+        if _DECISION_RECORDER is not None:
+            try:
+                _DECISION_RECORDER(reason, decision)
+            except BaseException:  # noqa: BLE001 - never change the gate's answer
+                pass
     print("[SILENT]")
     raise SystemExit(0)
 
