@@ -66,9 +66,13 @@ class Gating(unittest.TestCase):
 
     def test_only_required_checks_gate_and_a_missing_one_is_running(self):
         view = ci.gating(STATE, REQUIRED)
-        self.assertEqual((view.failed, view.cancelled, view.passed, view.pending),
-                         ([], [], ["tests (3.11)"], ["test (ubuntu-24.04, 3.11)"]))
-        self.assertEqual(ci.approval_refusal(view), "")             # optional red never blocks
+        self.assertEqual((view.failed, view.cancelled, view.passed, view.pending, view.missing),
+                         ([], [], ["tests (3.11)"], [], ["test (ubuntu-24.04, 3.11)"]))
+        self.assertFalse(view.green)
+        # a required check that never reported refuses an approval
+        self.assertIn("never reported", ci.approval_refusal(view))
+        only = ci.gating(STATE, ["tests (3.11)"])
+        self.assertEqual(ci.approval_refusal(only), "")             # optional red never blocks
         rest = ci.optional(STATE, REQUIRED)
         self.assertEqual((rest.failed, rest.cancelled, rest.pending),
                          (["flaky-bot"], ["coverage"], ["nightly"]))
@@ -130,8 +134,14 @@ class Hold(sm.Worker):
         self.assertEqual(row[0], "waiting")
         seen, row = self.held(checks, ["tests (3.11)", "tests (3.14)"])   # one never reported
         self.assertEqual(seen, {})
-        self.assertEqual(row, ("waiting", f"{CI_HOLD} on {sm.HEAD[:7]} — 1 check(s) still running "
-                                          "or not reported"))
+        self.assertEqual(row[0], "waiting")
+        self.assertIn("1 required check(s) never reported", row[1])
+        # a missing required check holds even without review_after_ci
+        loop = {**self.loop, "review_after_ci": False, "required_checks": ["tests (3.11)", "x"]}
+        with mock.patch.object(ci, "read", return_value=checks), \
+             mock.patch.object(observer, "notify"):
+            seen, row, _ = self.run_seat("reviewer", loop=loop)
+        self.assertEqual((seen, row[0]), ({}, "waiting"))
 
 
 for _name in [n for n in dir(sm.Worker) if n.startswith("test_")]:

@@ -1027,10 +1027,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         kind = "retry"
         action = (f"a review run for head {short}: the pending request for "
                   f"{loop['reviewer_seat']} started none. A request counts only from a fixer, the "
-                  "reviewer or a maintainer (triage.maintainers); anyone else's is ignored. Ask "
-                  "again as one of them, or toggle the PR to draft and back (ready_for_review "
-                  f"starts a review); if it came from one, `trace --loop {loop['id']}` its "
-                  "delivery to see why the gate declined")
+                  "reviewer or a maintainer (triage.maintainers); anyone else's is ignored. Run "
+                  f"`hermes review-loop review --loop {loop['id']} --pr {number}` (or ask again as "
+                  "one of them); if it came from one, "
+                  f"`trace --loop {loop['id']}` its delivery to see why the gate declined")
     else:
         kind = "review-request"
         detail = ("a fresh PR also wakes the reviewer on opened / ready_for_review, so re-driving "

@@ -91,6 +91,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | let the fixer push on its own | [`fixer-push`](#fixer-push) |
 | label new issues automatically | [`triage`](#triage) |
 | find out why a PR is not moving | [`explain`](#explain) |
+| ask for a fresh review of a PR | [`review`](#review) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
 | start a queued turn now | [`drain`](#drain) |
@@ -781,6 +782,31 @@ exits `2` only when it cannot ask: an unknown loop, a refused loop file, or seve
 | `--pr` | `PR` | **required** | pull request number to explain |
 <!-- /flags -->
 
+### review
+
+Asks for a fresh review of a PR's current head, as the operator. Use it after you push to a loop
+PR yourself, after reconciling a quarantined run, or whenever `explain` or the watchdog says the
+reviewer never posted a verdict. A review request on GitHub only counts from a fixer, the
+reviewer or a maintainer (`triage.maintainers`), so this is the path for everyone else, and for
+loops without triage.
+
+```bash
+hermes review-loop review --loop "<loop-id>" --pr 12
+```
+
+The real reviewer gate decides, fed a `ready_for_review` event built from the live PR, so the
+rules are the webhook's: open, not a draft, a fixer's PR on the loop's base, no verdict or run
+already at this head, and the verdict cap. It makes no GitHub write; the review itself is the only
+write, as usual. It prints `review queued` (exit 0), or `no review started —` and the gate's own
+reason (exit 1). Exit 2 when the loop or the PR cannot be read.
+
+<!-- flags:review -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
+| `--pr` | `PR` | **required** | the pull request to review |
+<!-- /flags -->
+
 ### trace
 
 Answers "why did this webhook start nothing?" A gate that declines an event exits quietly, and
@@ -811,7 +837,7 @@ starting, a notice) is listed as `would …` and never done. Your real state is 
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--delivery` | `DELIVERY` |  | a recorded delivery to this loop's hooks: GitHub's numeric id or the X-GitHub-Delivery GUID (one of `--delivery`, `--payload`) |
 | `--payload` | `PAYLOAD` |  | a webhook payload JSON file instead (one of `--delivery`, `--payload`) |
-| `--event` | `pull_request` \| `pull_request_review` |  | with --payload: the event it was (default pull_request) |
+| `--event` | `pull_request` \| `pull_request_review` \| `issues` |  | with --payload: the event it was (default: read from the payload) |
 | `--route` | `ROUTE` |  | the route it was sent to (default: from the delivery's hook, or the event) |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can read hook deliveries (admin:repo_hook or repo) |
 <!-- /flags -->
