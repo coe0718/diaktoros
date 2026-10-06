@@ -251,6 +251,8 @@ class RunBroker:
         # How the fixer's answers comment ended ('posted', 'uncertain', 'denied', 'unrecorded'),
         # a host-chosen word the sandbox may see; None when no answers were sent.
         self.answers_outcome: str | None = None
+        self._answers_comment_id: int | None = None
+        self._answers_error: str | None = None
         self._stop = threading.Event()
 
     def __enter__(self) -> "RunBroker":
@@ -553,6 +555,13 @@ class RunBroker:
                     except Exception as persistence_error:
                         raise ProtocolError("dispute persistence failed") from persistence_error
                 self.answers_outcome = self._publish_answers(head, body, dispute=dispute)
+                if dispute and self.answers_outcome in ("posted", "uncertain", "denied"):
+                    try:
+                        Supervisor(self.scope.ledger_db, create=False).dispute_comment(
+                            self.scope.run_id, self.answers_outcome,
+                            comment_id=self._answers_comment_id, error=self._answers_error)
+                    except Exception:
+                        pass  # stays 'posting'; a finished run's notice then says uncertain
                 if self.answers_outcome not in ("posted", "uncertain"):
                     raise ProtocolError(f"answers comment {self.answers_outcome}")
                 self.completed = True
@@ -621,6 +630,7 @@ class RunBroker:
                                      operation="answers", require_verdict=False)
         except Exception as exc:
             reason = str(exc)[:200] if isinstance(exc, broker.BrokerDenied) else type(exc).__name__
+            self._answers_error = reason
             try:
                 supervisor.begin_answers(**record, state="denied", error=reason, dispute=dispute)
             except Exception:
@@ -643,6 +653,7 @@ class RunBroker:
             except Exception:
                 pass
             return "uncertain"
+        self._answers_comment_id = comment_id
         try:
             supervisor.answers_status(self.scope.run_id, "posted", comment_id=comment_id)
         except Exception:

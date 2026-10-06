@@ -110,7 +110,9 @@ def fix(loop: dict, payload: dict) -> None:
         silence(f"issue #{number}: {exc}")
     except Exception as exc:
         reason = f"isolated worker unavailable: {type(exc).__name__}: {exc}"
-        _fix_notice(loop, number, base, f"held — {reason}")
+        failed_base = getattr(exc, "fix_base", None)
+        if failed_base:
+            _fix_notice(loop, number, failed_base, f"held — {reason}")
         silence(f"issue #{number} fix held: {reason}")
     log(f"issue #{number} handed to the fixer at {base[:7]}: {outcome}")
     if outcome in ("enqueued", "rearmed", "pending"):

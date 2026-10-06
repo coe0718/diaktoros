@@ -115,6 +115,20 @@ class Hold(sm.Worker):
         seen, row, _, _ = self.held(checks=ci.CIState(failed=["t"], cancelled=["c"]))
         self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
 
+    def test_pending_wait_survives_a_failure_only_with_review_after_ci(self):
+        """Pinned choice: with review_after_ci, a failed check beside a running one still
+        holds (one review names every failure); a failure releases cancelled/missing holds."""
+        mixed = ci.CIState(failed=["lint"], pending=["tests (3.11)"])
+        seen, row, _, _ = self.held(checks=mixed)
+        self.assertEqual(seen, {})
+        self.assertEqual(row[0], "waiting")
+        self.assertTrue(row[1].startswith(CI_HOLD))
+        seen, row, _, _ = self.held(checks=mixed, loop=self.loop)   # setting off: reviews now
+        self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
+        both = ci.CIState(failed=["lint"], cancelled=["c"], pending=["p"])
+        seen, row, _, _ = self.held(checks=both, loop=self.loop)
+        self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
+
 
 class Linger(unittest.TestCase):
     def setUp(self):
