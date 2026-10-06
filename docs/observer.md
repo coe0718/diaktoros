@@ -37,7 +37,10 @@ hermes review-loop doctor --loop "<loop-id>"
 | `--observer-profile` | Profile that owns the authorized destination; enables the feed |
 | `--observer-deliver telegram` | Gateway delivery platform; default Telegram, another configured adapter such as Discord can be selected |
 | `--observer-events` | Comma-separated event filter; blank means all events |
-| `--observer-digest-min 30` | Batch window in minutes; 0 means per-transition notices |
+| `--observer-digest-min 30` | Batch window in minutes for **routine** events (see [tiers](#urgent-and-routine-tiers)); 0 means per-transition notices |
+| `--observer-urgent-route` | A second delivery-only route that receives urgent notices only; blank returns to one feed |
+| `--observer-urgent-profile` | Profile that owns the urgent destination (default: the feed's profile) |
+| `--observer-urgent-deliver` | Gateway platform for urgent notices (default: the feed's `--observer-deliver`) |
 
 The default route is `<loop-id>-observe`. Use `--observer-route "<observer-route>"` if
 you need a distinct route name. Installing this route uses the gateway's signed POST
@@ -135,14 +138,39 @@ There is no general observer replay/reconcile CLI: reconcile chat history and ga
 records manually, preserve evidence, and do not delete receipt files to manufacture a
 new notice. Supervisor reconciliation does not reconcile observer receipts.
 
+## Urgent and routine tiers
+
+The tier is fixed per event in `review_loop/observer.py` (`URGENT_EVENTS`):
+
+| Tier | Events | With a digest set |
+| --- | --- | --- |
+| Urgent | `failed` (first attempt and final), `held`, `escalation`, `ruling`, `stall`, `conflict`, and any notice whose outcome is `uncertain` | Sent immediately, never batched |
+| Routine | `opened`, `handoff`, `verdict`, `approved`, `triaged`, `fixing`, `fixed`, `closed` | Queued for the digest |
+
+With no `digest_min`, nothing changes: every event is sent at once. With
+`observer.urgent_route` set, urgent notices go to that route (own profile and platform via
+`urgent_profile`/`urgent_deliver`) and everything else, including digests, stays on the main
+route. The urgent route is a second delivery-only route held to the same contract as the main
+one. Unset means one feed gets everything.
+
 ## Digests
 
-A positive `digest_min` queues transitions until the oldest entry has aged past the
+A positive `digest_min` queues routine transitions until the oldest entry has aged past the
 window. The watchdog flushes them on a sweep; it is **not an independent timer** and
 30 minutes does not guarantee delivery at minute 30. No scheduled/working watchdog,
 no regular digest flush. Known-paused loop hooks skip the loop sweep, so queued batches
 can remain owed until normal sweeps resume. That pause also skips route/shim self-heal,
 observer retries and pre-write worker retries, not just digest flush/PR scanning.
+The digest groups by PR or issue, in event order, one line each, keeping outcomes only where
+they matter (changes vs approve), at most 25 lines and then "…and N more":
+
+```
+🗂 [hermes-review-loop] last 30m — 2 PRs, 1 issue
+#312 opened → reviewed (changes) → fixed → approved · https://github.com/…/pull/312
+#316 opened → approved · …/pull/316
+#318 (issue) handed to fixer · …/issues/318
+```
+
 Batch claims precede POST; uncertain batches
 keep members attached rather than emitting duplicates separately.
 
