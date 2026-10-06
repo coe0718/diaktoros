@@ -72,6 +72,15 @@ def _test_mentions(path: Path) -> set[str]:
     return found
 
 
+def _loads_script(text: str, script: str) -> bool:
+    """Whether a test runs or imports a gate script: by file name (``"watchdog.py"``) or as a
+    module (``from scripts import watchdog``, ``scripts.watchdog``) — #378's lock broke tests that
+    import it the second way."""
+    stem = re.escape(script[:-3] if script.endswith(".py") else script)
+    return bool(re.search(rf"\b{stem}\.py\b|\bscripts\.{stem}\b"
+                          rf"|^\s*from scripts import [^\n]*\b{stem}\b", text, re.M))
+
+
 def dependents(changed_modules: set[str]) -> list[set[str]]:
     """Layers of ``review_loop`` modules: the changed ones, then each wave that imports them."""
     graph = {path.stem: _module_imports(path) for path in PACKAGE.glob("*.py")}
@@ -121,7 +130,7 @@ def select(changed: list[str]) -> list[str]:
     layers = dependents(modules) if modules else []
     if layers:
         add(name for name in tests if mentions[name] & layers[0])
-    add(name for name in tests if any(script in texts[name] for script in scripts))
+    add(name for name in tests if any(_loads_script(texts[name], script) for script in scripts))
     add(name for name in tests if any(re.search(rf"^\s*import {re.escape(helper)}\b", texts[name],
                                                 re.M) for helper in helpers))
     if docs:

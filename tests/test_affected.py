@@ -22,7 +22,9 @@ class Select(unittest.TestCase):
         for change, broken in (("review_loop/review_receipt.py", "test_attribution"),   # #358
                                ("review_loop/config.py", "test_setup"),                # #335
                                ("review_loop/config.py", "test_triage_cli"),           # #335
-                               ("scripts/gate_reviewer.py", "test_gate_shims")):       # #356
+                               ("scripts/gate_reviewer.py", "test_gate_shims"),        # #356
+                               ("scripts/watchdog.py", "test_merged_tree_blockers"),   # #378
+                               ("scripts/watchdog.py", "test_route_self_heal")):       # #378
             with self.subTest(change=change):
                 order = affected.select([change])
                 self.assertIn(broken, order)
