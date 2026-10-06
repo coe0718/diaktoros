@@ -148,6 +148,15 @@ def _script_for(loop: dict, role: str) -> pathlib.Path:
     return PLUGIN / "scripts" / name
 
 
+def infer_event(payload: dict) -> str:
+    """The event a bare payload file was, from its own shape (``--payload`` without ``--event``)."""
+    if isinstance(payload.get("issue"), dict) and not isinstance(payload.get("pull_request"), dict):
+        return "issues"
+    if isinstance(payload.get("review"), dict):
+        return "pull_request_review"
+    return "pull_request"
+
+
 def role_for(loop: dict, event: str, route: str | None = None) -> str:
     """Which seat's gate a delivery reaches: the route it was sent to, else its event."""
     if route:
@@ -217,6 +226,10 @@ def facts(event: str, payload: dict) -> list[str]:
                  f"sender {who(payload.get('sender'))}", f"author {who(issue.get('user'))}"]
         if isinstance(payload.get("label"), dict):
             parts.append(f"label {payload['label'].get('name') or '?'}")
+        names = [str(lb.get("name")) for lb in issue.get("labels") or []
+                 if isinstance(lb, dict) and lb.get("name")]
+        if names:
+            parts.append(f"labels {', '.join(names)}")
         return [" · ".join(parts)]
     number = pr.get("number") or payload.get("number") or "?"
     parts = [f"{event}/{payload.get('action') or '?'}", f"PR #{number}",

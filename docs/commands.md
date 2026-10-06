@@ -805,7 +805,7 @@ starting, a notice) is listed as `would …` and never done. Your real state is 
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--delivery` | `DELIVERY` |  | a recorded delivery to this loop's hooks: GitHub's numeric id or the X-GitHub-Delivery GUID (one of `--delivery`, `--payload`) |
 | `--payload` | `PAYLOAD` |  | a webhook payload JSON file instead (one of `--delivery`, `--payload`) |
-| `--event` | `pull_request` \| `pull_request_review` |  | with --payload: the event it was (default pull_request) |
+| `--event` | `pull_request` \| `pull_request_review` \| `issues` |  | with --payload: the event it was (default: read from the payload) |
 | `--route` | `ROUTE` |  | the route it was sent to (default: from the delivery's hook, or the event) |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can read hook deliveries (admin:repo_hook or repo) |
 <!-- /flags -->
