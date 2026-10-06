@@ -271,6 +271,13 @@ What to do:
    account first; that is how the next reviewer and, if the budget runs out, the adjudicator hear
    your side. Your final summary is not published anywhere.
 
+**No defect?** If, after checking, every finding is not a defect (for example a check that failed
+only because the runner was shut down) and you changed nothing, do not push a token change. Cite
+your evidence in the answers (commands run, their output) and end with
+`request_review --answers-file <file> --dispute`. The answers are posted, the operator is told
+of the dispute, and the reviewer is not asked to re-review the unchanged head. Use it only when
+no finding is a defect.
+
 Your turn ends with those broker writes. Nobody can see `/work` or this sandbox, and it is
 discarded when you exit: there is no person to hand files to, so a fix you did not push is lost.
 

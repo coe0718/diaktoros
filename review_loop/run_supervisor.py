@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS fixer_answers (
  base TEXT NOT NULL, head TEXT NOT NULL, body TEXT NOT NULL, state TEXT NOT NULL,
  comment_id INTEGER, error TEXT, created REAL NOT NULL, updated REAL NOT NULL
 );
+-- A fixer's dispute (#401): every finding answered as not a defect, nothing pushed. One per
+-- run; notice is the operator outbox state (pending -> sending -> delivered), claim-before-send.
+CREATE TABLE IF NOT EXISTS disputes (
+ run_id TEXT PRIMARY KEY REFERENCES runs(id), repo TEXT NOT NULL, pr INTEGER NOT NULL,
+ head TEXT NOT NULL, body TEXT NOT NULL, created REAL NOT NULL,
+ notice TEXT NOT NULL DEFAULT 'pending', notice_delivered REAL
+);
 -- One issue triage per run (#213), recorded BEFORE the labels or comment are written. state:
 -- recorded → posting → posted | uncertain (sent, outcome unknown: never replayed), or skipped
 -- (a person labelled it first) / denied (authorization failed) / nothing (no label applied).
@@ -969,6 +976,8 @@ def write_records(con, run_id: str) -> str | None:
         return f"review receipt {receipt['state']}"
     if con.execute('SELECT 1 FROM rulings WHERE run_id=?', (run_id,)).fetchone():
         return 'ruling recorded'
+    if con.execute('SELECT 1 FROM disputes WHERE run_id=?', (run_id,)).fetchone():
+        return 'dispute recorded'
     if con.execute('SELECT 1 FROM triage_results WHERE run_id=?', (run_id,)).fetchone():
         return 'triage recorded'
     if con.execute('SELECT 1 FROM issue_fixes WHERE run_id=?', (run_id,)).fetchone():
@@ -1544,7 +1553,8 @@ class Supervisor:
                 row['launch_intent'] is not None and row['push_admitted'] == 1)
 
     def begin_answers(self, run_id: str, repo: str, pr: int, base: str, head: str,
-                      body: str, state: str = 'posting', error: str | None = None) -> None:
+                      body: str, state: str = 'posting', error: str | None = None,
+                      dispute: bool = False) -> None:
         """Durably record the fixer's one answers comment before (or instead of) its POST.
 
         Only a running fixer run whose push was confirmed may record one, once: the run ID is the
@@ -1558,7 +1568,9 @@ class Supervisor:
                               'partial_view FROM runs WHERE id=?', (run_id,)).fetchone()
             # Answers follow a confirmed push — or, when the host recorded that this fixer could
             # not see the whole change (#93, #110), replace it, at the head it was given.
-            answers_only = bool(row is not None and row['partial_view'] and head == base)
+            # A dispute (#401) likewise answers at the head it was given, with nothing pushed.
+            answers_only = bool(row is not None and (row['partial_view'] or dispute)
+                                and head == base)
             if (row is None or (row['repo'], row['pr'], row['head'], row['seat']) !=
                     (repo, pr, base, 'fixer') or row['launch_intent'] is None
                     or row['state'] not in ('launching', 'running')
@@ -1570,6 +1582,20 @@ class Supervisor:
             con.execute('INSERT INTO fixer_answers(run_id,repo,pr,base,head,body,state,error,'
                         'created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)',
                         (run_id, repo, pr, base, head, body, state, error, now, now))
+            con.execute('COMMIT')
+
+    def record_dispute(self, run_id: str, repo: str, pr: int, head: str, body: str) -> None:
+        """Record the fixer's dispute at the head it was given: once per run, never a review request."""
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            row = con.execute('SELECT repo,pr,head,seat,state FROM runs WHERE id=?',
+                              (run_id,)).fetchone()
+            if (row is None or (row['repo'], row['pr'], row['head'], row['seat']) !=
+                    (repo, pr, head, 'fixer') or row['state'] not in ('launching', 'running')):
+                con.execute('ROLLBACK')
+                raise ValueError('dispute run identity unavailable')
+            con.execute('INSERT INTO disputes(run_id,repo,pr,head,body,created) '
+                        'VALUES(?,?,?,?,?,?)', (run_id, repo, pr, head, body, time.time()))
             con.execute('COMMIT')
 
     def answers_status(self, run_id: str, state: str, *, comment_id: int | None = None,
@@ -1781,6 +1807,16 @@ class Supervisor:
                 'SELECT * FROM rulings ORDER BY created DESC, run_id LIMIT ?',
                 (max(1, min(int(limit), 200)),))]
 
+    def _dispute_message(self, row) -> str:
+        body = row['body'].strip()
+        if len(body) > 1500:
+            body = body[:1500] + " […truncated; the full answers are the fixer's PR comment]"
+        return (f"🛑 Review-loop fixer disputed the review: "
+                f"https://github.com/{row['repo']}/pull/{row['pr']} head={row['head']} "
+                f"run={row['run_id']}. The fixer found no defect and pushed nothing; the reviewer "
+                "was not re-requested. Decide: dismiss the review and `review --pr N`, or fix by "
+                "hand. Fixer's evidence (model output, not verified by the loop):\n" + body)
+
     def _ruling_message(self, row) -> str:
         body = row['body'].strip()
         if len(body) > 1500:
@@ -1939,6 +1975,32 @@ class Supervisor:
                 con.execute("UPDATE rulings SET notice='delivered',notice_delivered=?,updated=? "
                             "WHERE run_id=? AND notice='sending'",
                             (time.time(), time.time(), row['run_id']))
+            count += 1
+        # A fixer's dispute reaches the operator exactly once (#401): claim, send, never replay.
+        with self._connect() as con:
+            disputes = con.execute("SELECT run_id FROM disputes WHERE notice='pending' "
+                                   "ORDER BY created,run_id LIMIT 20").fetchall()
+        for dispute in disputes:
+            with self._connect() as con:
+                con.execute('BEGIN IMMEDIATE')
+                row = con.execute("SELECT * FROM disputes WHERE run_id=? AND notice='pending'",
+                                  (dispute['run_id'],)).fetchone()
+                if row is not None:
+                    con.execute("UPDATE disputes SET notice='sending' WHERE run_id=?",
+                                (row['run_id'],))
+                con.execute('COMMIT')
+            if row is None:
+                continue
+            try:
+                deliver(self._dispute_message(row))
+            except Exception:
+                with self._connect() as con:
+                    con.execute("UPDATE disputes SET notice='pending' WHERE run_id=? "
+                                "AND notice='sending'", (row['run_id'],))
+                raise
+            with self._connect() as con:
+                con.execute("UPDATE disputes SET notice='delivered',notice_delivered=? "
+                            "WHERE run_id=? AND notice='sending'", (time.time(), row['run_id']))
             count += 1
         return count
 
