@@ -3520,6 +3520,11 @@ def cmd_explain(args) -> int:
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")
         print(f"  {'github:':<12}{report['github']}")
+        decisions = report.get("gate_decisions") or []
+        for text in decisions:
+            print(f"  {'decided:':<12}{text}")
+        if not decisions:
+            print(f"  {'decided:':<12}no gate decision recorded for this PR")
         if not report.get("gate_failures"):
             print(f"  {'gates:':<12}no unresolved gate failure recorded for this PR")
         runs = _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
