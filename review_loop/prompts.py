@@ -398,5 +398,9 @@ def fixer_check_section(loop: dict) -> str:
         return ""
     return ("\n\n## Always-run check (set by the loop's operator)\n\n"
             "CI runs this on every change. Before you publish, run it from `/work` and make it "
-            "pass, along with the tests you touched. If it cannot run in this sandbox, say so in "
-            "your answers or PR description.\n\n```sh\n" + command + "\n```")
+            "pass, along with the tests you touched. Set `CHANGED` to every path you changed, "
+            "added or deleted, space-separated and relative to `/work` (the same list you will "
+            "publish), so the check can pick the tests that depend on them (#362):\n\n"
+            "```sh\nCHANGED=\"path/one.py path/two.py\" sh -c '<the check below>'\n```\n\n"
+            "If it cannot run in this sandbox, say so in your answers or PR description.\n\n"
+            "```sh\n" + command + "\n```")
