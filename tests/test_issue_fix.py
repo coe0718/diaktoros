@@ -148,6 +148,18 @@ class Gate(Base):
         self.run_gate(self.labeled(label="Agent-Fix"))
         self.assertEqual(self.enqueued, [("issue_fixer", 12, BASE, "issue-fix")])
 
+    def test_an_enqueue_failure_is_held_with_the_base_it_failed_at(self):
+        def boom(*a, **k):
+            raise OSError("boom")
+        notices = []
+        with mock.patch.object(gate, "enqueue_isolated", boom), \
+                mock.patch.object(self.module, "_fix_notice",
+                                  lambda loop, n, base, outcome: notices.append((n, base, outcome))):
+            log = self.run_gate(self.labeled(label="Agent-Fix"))
+        self.assertIn("fix held: isolated worker unavailable: OSError: boom", log)
+        self.assertNotIn("UnboundLocalError", log)
+        self.assertEqual(notices, [(12, BASE, "held — isolated worker unavailable: OSError: boom")])
+
     def test_nobody_else_and_nothing_else_starts_a_fix(self):
         log = self.run_gate(self.labeled(sender="owner"))       # the author is not a maintainer
         self.assertIn("not in triage.maintainers", log)

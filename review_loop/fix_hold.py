@@ -45,7 +45,11 @@ def queue_fix(loop: dict, number: int) -> tuple[str, str]:
     base = ((ref or {}).get("object") or {}).get("sha") if isinstance(ref, dict) else None
     if not isinstance(base, str) or len(base) != 40:
         raise RuntimeError(f"base branch {loop['base']} unreadable (GitHub read failed)")
-    return base, gate.enqueue_isolated(loop, "issue_fixer", number, base, turn_key="issue-fix")
+    try:
+        return base, gate.enqueue_isolated(loop, "issue_fixer", number, base, turn_key="issue-fix")
+    except Exception as exc:
+        exc.fix_base = base  # the caller's notice needs the base the enqueue failed at
+        raise
 
 
 def hold(loop: dict, st, number: int, pr: int) -> None:
