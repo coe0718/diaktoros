@@ -82,7 +82,11 @@ def settings_step(ctx, *, dry_run: bool, read=_hermes_config) -> list[str]:
 
 def renamed_to(loop: dict) -> tuple[str | None, str]:
     """``(new name, "")`` when GitHub reports the loop's repository under another name,
-    ``(None, "")`` when it has not moved, ``(None, why)`` when that cannot be told."""
+    ``(None, "")`` when it has not moved, ``(None, why)`` when that cannot be told.
+
+    The new name is lowercased, as ``config.normalize`` does to every loop's ``repo``: GitHub's
+    ``full_name`` keeps the owner's casing, and the ledger compares names case-sensitively, so a
+    mixed-case name written there would never be read back by the loop."""
     old = loop["repo"]
     first = gh.api(loop, f"/repos/{old}", login=loop.get("read_token"))
     if not isinstance(first, dict) or not isinstance(first.get("full_name"), str) \
@@ -96,7 +100,7 @@ def renamed_to(loop: dict) -> tuple[str | None, str]:
     if not isinstance(second, dict) or second.get("id") != first["id"] \
             or second.get("full_name") != new:
         return None, f"GitHub answered {old} with {new}, but {new} is not the same repository"
-    return new, ""
+    return new.lower(), ""
 
 
 def _swap(value, old: str, new: str):

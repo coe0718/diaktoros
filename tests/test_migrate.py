@@ -144,6 +144,24 @@ class Repo(fg.Base):
                                       ledger=self.db())
         self.assertIn("has not been renamed", again[0])
 
+    def test_a_mixed_case_name_is_stored_as_the_loop_reads_it(self):
+        # GitHub's full_name keeps the owner's casing; the loop lowercases every repo it reads,
+        # and the ledger compares case-sensitively, so the moved records must be lowercase.
+        self.supervisor()
+        self.st.queue_add("reviewer", f"{OLD}#7", fg.HEAD, "u", "q")
+        mixed = "Owner/Renamed"
+        with github({f"/repos/{OLD}": {"id": 9, "full_name": mixed},
+                     f"/repos/{mixed}": {"id": 9, "full_name": mixed}}):
+            self.assertEqual(migrate.renamed_to(self.loop), (NEW, ""))
+            migrate.repo_step([config.load_id("one")], cli._write_moved_repo, dry_run=False,
+                              ledger=self.db())
+        loop = config.load_id("one")
+        self.assertEqual(loop["repo"], NEW)
+        with ledger.connect(self.db()) as con:
+            rows = con.execute("SELECT COUNT(*) FROM runs WHERE repo=?", (loop["repo"],)).fetchone()
+        self.assertEqual(rows[0], 1)
+        self.assertEqual(list(self.st.queue_items("reviewer")), [f"{loop['repo']}#7"])
+
     def test_a_run_in_flight_refuses_and_moves_nothing(self):
         self.supervisor()
         with ledger.connect(self.db()) as con:
