@@ -3430,11 +3430,26 @@ def cmd_review(args) -> int:
     would not. No GitHub write: the review itself is the only one, as usual. Exit 1 when the
     gate declines, with its own reason; 2 when the question cannot be asked.
     """
-    try:
-        loop = config.load_id(args.loop)
-    except config.ConfigError as exc:
-        print(f"no such loop: {exc}")
-        return 2
+    if args.loop:
+        try:
+            loop = config.load_id(args.loop)
+        except config.ConfigError as exc:
+            print(f"no such loop: {exc}")
+            return 2
+    else:
+        loops, refused = config.readable_loops()
+        for loop_id, reason in refused:
+            print(f"skipping {loop_id}.json: {reason}")
+        names = [lp["id"] for lp in loops] + [loop_id for loop_id, _ in refused]
+        if len(names) > 1:
+            print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
+            return 2
+        if refused:
+            return 2
+        if not loops:
+            print(f"no loops configured in {config.config_dir()}")
+            return 2
+        loop = loops[0]
     pr = gh.pr(loop, args.pr)
     if not isinstance(pr, dict) or pr.get("number") != args.pr:
         print(f"#{args.pr}: the PR could not be read from GitHub — nothing started")
@@ -3452,8 +3467,13 @@ def cmd_review(args) -> int:
                "repository": {"full_name": loop["repo"]},
                "sender": {"login": loop.get("read_token") or "operator"}}
     script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "gate_reviewer.py"
-    done = subprocess.run([sys.executable, str(script)], input=json.dumps(payload), text=True,
-                          capture_output=True, timeout=120)
+    try:
+        done = subprocess.run([sys.executable, str(script)], input=json.dumps(payload),
+                              text=True, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        print(f"#{args.pr} @ {head[:7]}: the gate did not finish within 120s — "
+              "no answer; check `explain` before asking again")
+        return 2
     if _reviewer_runs(loop["repo"], args.pr, head) > before[0]:
         print(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker "
               f"(`hermes review-loop explain --loop {loop['id']} --pr {args.pr}` follows it)")
@@ -4596,8 +4616,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
 
         review = sub.add_parser("review", help="Ask for a fresh review of a PR's current head "
                                                "(the reviewer gate decides, as for a webhook)")
-        review.add_argument("--loop", required=True,
-                            help="loop id (its config file name; `list` shows them)")
+        review.add_argument("--loop", help="loop id (default: the only configured loop)")
         review.add_argument("--pr", type=int, required=True, help="the pull request to review")
         review.set_defaults(func=cmd_review)
 
