@@ -1722,6 +1722,25 @@ def cmd_init(args) -> int:
                          ("fixer", getattr(args, "fixer_turn_budget", None))):
         if value is not None:
             raw["seats"][seat]["turn_budget_s"] = value
+    # Turn knobs (#323): a flag wins over the form; 0 or blank is the role default (nothing written).
+    try:
+        for seat in ("reviewer", "fixer"):
+            flag = getattr(args, f"{seat}_max_steps", None)
+            steps = flag if flag is not None else config._form_int(d[f"{seat}_max_steps"].strip())
+            if steps not in (0, ""):
+                raw["seats"][seat]["max_steps"] = config._check_max_steps(
+                    steps, f"seats.{seat}.max_steps", "init")
+        flag = getattr(args, "fix_daily_turns", None)
+        cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
+        if cap not in (0, ""):
+            config._check_daily_turns(cap, "triage.fix_daily_turns", "init")
+            # A new loop has no triage block (so no fix_label) for the cap to live in.
+            print(f"note: issue-fix daily cap {cap} is not written: a new loop has no "
+                  "triage.fix_label yet — set it with `hermes review-loop triage "
+                  "--fix-daily-turns N` once issue fixes are on")
+    except config.ConfigError as exc:
+        print(f"refused: {exc}")
+        return 2
     names = routes_for(raw)
     raw["seats"]["reviewer"]["route"] = names["reviewer"]
     raw["seats"]["fixer"]["route"] = names["fixer"]
@@ -2077,6 +2096,9 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                                        "never touches, comma-separated (blank: none)",
                                        d["review_only"], interactive).split(",") if name.strip()])
     argv += [f"--review-only={name.strip()}" for name in reviewed]
+    for flag in ("reviewer_max_steps", "fixer_max_steps", "fix_daily_turns"):
+        if getattr(args, flag, None) is not None:
+            argv.append(f"--{flag.replace('_', '-')}={getattr(args, flag)}")
     if admin:
         argv += ["--hooks", f"--admin-token={admin}"]   # created paused; step 5 arms them
     return argv, admin
@@ -4548,6 +4570,15 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="the reviewer seat's own turn budget in seconds (overrides --turn-budget)")
         init.add_argument("--fixer-turn-budget", type=int, default=None,
                           help="the fixer seat's own turn budget in seconds (overrides --turn-budget)")
+        init.add_argument("--reviewer-max-steps", type=int, default=None,
+                          help="agent steps one reviewer turn may take, 8-200 (0 = default 60) "
+                               "(default: the plugin setting)")
+        init.add_argument("--fixer-max-steps", type=int, default=None,
+                          help="agent steps one fixer or issue-fix turn may take, 8-200 "
+                               "(0 = default 80) (default: the plugin setting)")
+        init.add_argument("--fix-daily-turns", type=int, default=None,
+                          help="issue-fix turns per day, 1-1000 (0 = default); only lands once "
+                               "triage has a fix label (default: the plugin setting)")
         init.add_argument("--hooks", action="store_true",
                           help="create the GitHub hooks too, paused until `arm`")
         init.add_argument("--arm", action="store_true",
@@ -4600,6 +4631,15 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         first.add_argument("--attribution", choices=("on", "off"), default=None,
                            help="sign what the loop posts with 'Automated by hermes-review-loop' "
                                 "(default: the plugin setting, on)")
+        first.add_argument("--reviewer-max-steps", type=int, default=None,
+                           help="agent steps one reviewer turn may take, 8-200 (0 = default 60) "
+                                "(default: the plugin setting)")
+        first.add_argument("--fixer-max-steps", type=int, default=None,
+                           help="agent steps one fixer or issue-fix turn may take, 8-200 "
+                                "(0 = default 80) (default: the plugin setting)")
+        first.add_argument("--fix-daily-turns", type=int, default=None,
+                           help="issue-fix turns per day, 1-1000 (0 = default); only lands once "
+                                "triage has a fix label (default: the plugin setting)")
         for key in ("source", "venv", "runtime", "rust"):
             first.add_argument(f"--{key}", default="",
                                help=f"runtime file's {key} path (default: detected)")

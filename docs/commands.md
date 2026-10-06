@@ -263,6 +263,9 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default: the plugin setting, off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by hermes-review-loop' (default: the plugin setting, on) |
+| `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
+| `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
+| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day, 1-1000 (0 = default); only lands once triage has a fix label (default: the plugin setting) |
 | `--source` | `SOURCE` |  | runtime file's source path (default: detected) |
 | `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
 | `--runtime` | `RUNTIME` |  | runtime file's runtime path (default: detected) |
@@ -362,6 +365,9 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--turn-budget` | `TURN_BUDGET` | `900` | seconds one isolated seat turn may run, build and tests included (default 900; the sandbox is killed past it) |
 | `--reviewer-turn-budget` | `REVIEWER_TURN_BUDGET` |  | the reviewer seat's own turn budget in seconds (overrides --turn-budget) |
 | `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds (overrides --turn-budget) |
+| `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
+| `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
+| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day, 1-1000 (0 = default); only lands once triage has a fix label (default: the plugin setting) |
 | `--hooks` |  |  | create the GitHub hooks too, paused until `arm` |
 | `--arm` |  |  | with --hooks: create them armed (live at once) instead of paused |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can create hooks |
