@@ -419,6 +419,76 @@ class ShimRunsThePluginScript(Base):
         self.assertIn("gate script missing", proc.stderr)
 
 
+class SetAdjudication(Base):
+    """``set --adjudicator-profile`` / ``--adjudicator off`` (issue #255)."""
+
+    def checks(self):
+        loop = config.load_id("widgets")
+        return {c.name: c for c in doctor.check_loop(loop, offline=True)
+                if c.name.startswith("gateway-script:")}
+
+    def test_on_creates_route_block_and_shim_and_off_removes_them(self):
+        self.install("acme/widgets")
+        self.assertNotIn("widgets-breach", self.loop_routes())
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-profile", "arbiter"])
+        self.assertEqual(rc, 0, out)
+        loop = config.load_id("widgets")
+        self.assertEqual(loop["adjudicator"], {"route": "widgets-breach", "profile": "arbiter"})
+        entry = self.loop_routes()["widgets-breach"]
+        self.assertEqual(entry["script"], "gate_adjudicator.py")
+        shim = self.hermes / "profiles/arbiter/scripts/gate_adjudicator.py"
+        self.assertTrue(shim.is_file())
+        checks = self.checks()
+        self.assertIn("gateway-script:widgets-breach", checks)
+        self.assertTrue(all(c.status == doctor.VERIFIED for c in checks.values()), checks)
+        # Again: nothing to do.
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-profile", "arbiter"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("already on", out)
+
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator", "off"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(config.load_id("widgets")["adjudicator"], {})
+        self.assertNotIn("widgets-breach", self.loop_routes())
+        self.assertFalse(shim.exists())
+        self.assertTrue(all(c.status == doctor.VERIFIED for c in self.checks().values()))
+
+    def test_route_override_and_refusals(self):
+        self.install("acme/widgets")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-profile", "arbiter",
+                                "--adjudicator-route", "widgets-ruling"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(config.load_id("widgets")["adjudicator"]["route"], "widgets-ruling")
+        self.assertIn("widgets-ruling", self.loop_routes())
+        # A seat's profile cannot rule on itself.
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-profile", "critic"])
+        self.assertEqual(rc, 2, out)
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-profile", "nosuch"])
+        self.assertEqual(rc, 2, out)
+
+    def test_login_refusal_names_the_new_command(self):
+        self.install("acme/widgets")
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--adjudicator-login", "bot",
+                                "--token", f"bot={self.pats['read']}"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("--adjudicator-profile", out)
+
+    def test_setup_answer_flows_to_init(self):
+        argv = []
+        args = argparse.Namespace(
+            reviewer="rev", fixer="fix", reviewer_profile="critic", fixer_profile="coder",
+            reviewer_token="", fixer_token="", read_token="reader", read_token_file="",
+            host="https://gateway.example", admin_token="", admin_token_file="",
+            observer_profile="", review_after_ci="off", attribution="on", fixer_check="",
+            required_check=[], adjudicator_profile="arbiter")
+        argv, _admin = cli._setup_init_argv(args, "acme/widgets", "widgets", False)
+        self.assertIn("--adjudicator-route=widgets-breach", argv)
+        self.assertIn("--adjudicator-profile=arbiter", argv)
+        args.adjudicator_profile = ""
+        argv, _admin = cli._setup_init_argv(args, "acme/widgets", "widgets", False)
+        self.assertFalse([a for a in argv if "adjudicator" in a])
+
+
 class DoctorApplyUninstall(Base):
     def gateway_checks(self, loop_id="widgets"):
         loop = config.load_id(loop_id)

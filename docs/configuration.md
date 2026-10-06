@@ -254,10 +254,16 @@ Enabling is **host-operator consent**, not proof that a PR owner or repository m
 
 This is a fragment: merge it into the existing loop without replacing the working seats, and add the adjudicator's token path. Omit `login` and its token entirely for operator-only rulings.
 
-`init --adjudicator-route` can create the route. `setup` does not add it, and `set` has no flag for adding the enabling route to an existing loop. Add the `adjudicator` block deliberately, then install it:
+`init --adjudicator-route` and `setup` (which asks "Adjudicate a PR whose rounds are spent? Profile") create the route at install. On an existing loop, turn adjudication on or off with `set`:
 
 ```bash
-hermes review-loop apply --loop "<loop-id>" --recreate-routes
+hermes review-loop set --loop "<loop-id>" --adjudicator-profile "<profile>"   # route <id>-breach; --adjudicator-route NAME overrides
+hermes review-loop set --loop "<loop-id>" --adjudicator off                   # removes the route and block; markers and rulings stay
+```
+
+It writes the route through the same path `init` uses (ownership check, intent record, gate shim) and the `adjudicator` block. Then add the optional comment identity:
+
+```bash
 hermes review-loop set --loop "<loop-id>" \
   --adjudicator-login "<adjudicator-login>" \
   --token "<adjudicator-login>=<absolute-adjudicator-token-file>"
@@ -267,7 +273,7 @@ hermes review-loop set --loop "<loop-id>" \
 
 The gate writes a durable breach marker, then enqueues a ruling keyed by `breach:<rounds>` at the head. The worker rechecks PR state, draft/base/head/author, spent cap, approval, and marker before exporting the head read-only. The adjudicator may record one `ACCEPT`, `REJECT`, or `RESPEC` ruling through the broker; it never merges, pushes, or submits a review. The host records the ruling, issues the observer notice, and optionally posts the PR comment. The watchdog's operator outbox carries every ruling's reason even with no feed, a muted feed, or event filtering.
 
-Without a route, only the marker is written and the operator decides what to do; use [the existing-loop instructions above](#adjudication) to add adjudication later. Failed enqueue leaves `delivery-pending` for watchdog retry; ledger uniqueness deduplicates re-delivery. An ambiguous ruling-comment POST is `uncertain` and is not automatically retried.
+Without a route, only the marker is written and the operator decides what to do; run `set --loop ID --adjudicator-profile PROFILE` (above) to add adjudication later. Failed enqueue leaves `delivery-pending` for watchdog retry; ledger uniqueness deduplicates re-delivery. An ambiguous ruling-comment POST is `uncertain` and is not automatically retried.
 
 ## Observer configuration
 
