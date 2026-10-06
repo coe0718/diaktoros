@@ -1354,13 +1354,15 @@ class Supervisor:
         except sqlite3.DatabaseError as exc:
             raise LedgerMissing(f"run ledger {self.db} cannot be opened: {exc}") from exc
         try:
-            problem = _ledger_problem(con)  # before any pragma: nothing is written yet
-        except sqlite3.DatabaseError as exc:
-            con.close()
-            raise LedgerMissing(f"run ledger {self.db} is unreadable: {exc}") from exc
-        if problem:
-            con.close()
-            raise LedgerMissing(f"run ledger {self.db} is not a review-loop ledger ({problem})")
+            try:
+                problem = _ledger_problem(con)  # before any pragma: nothing is written yet
+            except sqlite3.DatabaseError as exc:
+                raise LedgerMissing(f"run ledger {self.db} is unreadable: {exc}") from exc
+            if problem:
+                raise LedgerMissing(f"run ledger {self.db} is not a review-loop ledger ({problem})")
+        except BaseException:
+            con.close()  # any failure after a successful connect must not leak the fd
+            raise
         return con
 
     def get(self, delivery: str) -> dict | None:

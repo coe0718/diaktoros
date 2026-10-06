@@ -204,6 +204,22 @@ class ConnectHelper(unittest.TestCase):
         self.assertRaises(sqlite3.ProgrammingError, opened[0].execute, 'SELECT 1')
         self.assertEqual(self.rows(), [])
 
+    def test_worker_connect_closes_on_a_non_database_error(self):
+        sup = Supervisor(self.db)
+        opened = []
+        real = sqlite3.connect
+
+        def tracking(*args, **kwargs):
+            opened.append(real(*args, **kwargs))
+            return opened[-1]
+
+        with mock.patch('sqlite3.connect', tracking), \
+                mock.patch('review_loop.run_supervisor._ledger_problem', side_effect=RuntimeError('boom')):
+            with self.assertRaises(RuntimeError):
+                sup._worker_connect()
+        self.assertEqual(len(opened), 1)
+        self.assertRaises(sqlite3.ProgrammingError, opened[0].execute, 'SELECT 1')
+
     def test_an_opener_that_refuses_closes_what_it_opened(self):
         # The contract: until it returns, the connection is the opener's. #113's worker opener
         # (Supervisor._worker_connect) closes a ledger it refuses before raising.
