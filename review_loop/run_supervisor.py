@@ -2828,7 +2828,9 @@ class Supervisor:
                 # a new head that supersedes this row. unknown/null mergeability is no conflict.
                 queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
                                 login=loop["read_token"])
+                # A closed or draft PR is left to the eligibility checks below, which supersede it.
                 if (isinstance(queued, dict) and queued.get("mergeable_state") == "dirty"
+                        and queued.get("state") == "open" and queued.get("draft") is False
                         and isinstance(queued.get("head"), dict)
                         and queued["head"].get("sha") == row["head"]):
                     base = queued.get("base")
