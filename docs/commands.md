@@ -220,9 +220,11 @@ is missing or broken. `--dry-run` shows every step and writes nothing. `--yes` a
 your flags and the settings form are the answers and every confirmation is yes, except arming,
 which still needs `--arm`. Without a terminal (in a script), it refuses unless you pass `--yes`.
 
-`setup` never turns on adjudication (it passes no `--adjudicator-route` to `init`) or issue
-triage. To add an adjudicator afterwards, follow [the existing-loop instructions](configuration.md#adjudication).
-For triage, see [`triage`](#triage).
+`setup` asks "Adjudicate a PR whose rounds are spent? Profile [blank = no]" (or takes
+`--adjudicator-profile`; the plugin setting is the default) and, on a profile, passes
+`--adjudicator-route <id>-breach` to `init`. It never turns on issue triage. Turn adjudication on or off
+later with `set --adjudicator-profile P` / `set --adjudicator off`
+([configuration](configuration.md#adjudication)). For triage, see [`triage`](#triage).
 
 **Defaults and limits.** Seat/login/host defaults come from the form; missing answers are
 prompted interactively. Token paths default to the form or a suggested key-file path. Runtime
@@ -254,6 +256,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--watchdog-deliver` | `WATCHDOG_DELIVER` |  | where watchdog alerts go (default local) |
 | `--admin-token` | `ADMIN_TOKEN` |  | hook admin login: the hooks are created (paused) as it |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile whose chat gets the loop's notices |
+| `--adjudicator-profile` | `ADJUDICATOR_PROFILE` |  | Hermes profile that rules when a PR's verdict cap is spent; turns adjudication on (blank: off) (default: the plugin setting) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default: the plugin setting, off) |
@@ -435,6 +438,9 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) |
 | `--host` | `HOST` |  | gateway webhook host |
 | `--adjudicator-login` | `ADJUDICATOR_LOGIN` |  | optional fourth GitHub account the ruling is also posted as; "" clears it (rulings go to the operator only) |
+| `--adjudicator-profile` | `ADJUDICATOR_PROFILE` |  | turn adjudication on: the Hermes profile that rules when the verdict cap is spent; creates the <id>-breach route and its shim |
+| `--adjudicator-route` | `ADJUDICATOR_ROUTE` |  | with --adjudicator-profile: the route's name (default: <id>-breach) |
+| `--adjudicator` | `off` |  | turn adjudication off: removes the route and the block (breach markers and rulings stay in the ledger) |
 | `--read-token` | `READ_TOKEN` |  | the login the gates read GitHub as — its own account, never a seat or the adjudicator login (the four-identity rule); map a new login with --token LOGIN=/path |
 | `--token` | `TOKEN` (repeatable) |  | LOGIN=/path/to/pat for the --read-token or --adjudicator-login login only (a path, never the token) |
 | `--observer-route` | `OBSERVER_ROUTE` |  | route the observer feed delivers through |

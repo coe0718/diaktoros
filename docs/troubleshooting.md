@@ -131,8 +131,8 @@ permission. Do not treat a failed broker push as a harmless retryable model fail
 **Cause/action:**
 
 - No adjudicator route: the marker intentionally leaves the decision to you. To add one
-  later, follow the loop-file block and `apply --recreate-routes` instructions in
-  [setup](commands.md#setup); do not reset the cap marker.
+  later, run `hermes review-loop set --loop ID --adjudicator-profile PROFILE`
+  (see [configuration](configuration.md#adjudication)); do not reset the cap marker.
 - Delivery pending: watchdog retries eligible adjudicator enqueue; a marker is not
   confirmation that the model started.
 - Adjudicator running: allow its own turn budget, not the reviewer's shorter budget.

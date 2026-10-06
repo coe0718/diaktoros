@@ -2034,6 +2034,9 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     attribution = args.attribution or (
         "on" if _agree("Sign what the loop posts ('Automated by hermes-review-loop')?",
                        d["attribution"], interactive, d["attribution"]) else "off")
+    adjudicator = (args.adjudicator_profile if args.adjudicator_profile is not None else
+                   _ask("Adjudicate a PR whose rounds are spent? Profile [blank = no]",
+                        d["adjudicator_profile"], interactive)).strip()
     check = (args.fixer_check if args.fixer_check is not None else
              _ask("a command the fixer always runs before publishing, the checks CI always runs "
                   "(blank: none)", d["fixer_check"], interactive))
@@ -2053,6 +2056,8 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
             argv.append(f"--token={login}={pathlib.Path(file).expanduser()}")
     if observer:
         argv.append(f"--observer-profile={observer}")
+    if adjudicator:
+        argv += [f"--adjudicator-route={loop_id}-breach", f"--adjudicator-profile={adjudicator}"]
     argv.append(f"--fixer-check={check}")
     required = (args.required_check if args.required_check is not None else
                 config.split_check_names(_ask(
@@ -2157,6 +2162,107 @@ def cmd_setup(args) -> int:
     return rc
 
 
+def _set_adjudication(args, loop: dict) -> int:
+    """``set --adjudicator-profile P`` / ``--adjudicator-route NAME`` / ``--adjudicator off``.
+
+    On: the route is written the way ``init --adjudicator-route`` writes it (ownership check,
+    intent record, shim) and the ``adjudicator`` block with it. Off: the route, its intent record
+    and its shim go, and so does the block; the ledger's breach markers and rulings stay.
+    A failed route write puts the config and the registry back.
+    """
+    path = config.config_dir() / f"{loop['id']}.json"
+    current = dict(loop.get("adjudicator") or {})
+    old_route = str(current.get("route") or "")
+    if getattr(args, "adjudicator", None) == "off":
+        if getattr(args, "adjudicator_profile", None) or getattr(args, "adjudicator_route", None):
+            print("refused: --adjudicator off cannot be combined with --adjudicator-profile "
+                  "or --adjudicator-route")
+            return 2
+        if not old_route:
+            print(f"[{loop['id']}] adjudication already off")
+            return 0
+        seats = {seat: dict(cfg) for seat, cfg in loop["seats"].items()}
+        adj_seat = seats.pop("adjudicator", None) or {}
+        adj_seat.pop("login", None)
+        if adj_seat:
+            seats["adjudicator"] = adj_seat
+        try:
+            updated = config.normalize({**loop, "adjudicator": {}, "seats": seats})
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        previous_config = path.read_bytes()
+        previous_route = routes.route(old_route)
+        try:
+            _write_config(updated)
+            routes.remove_route(old_route)
+            route_intent.forget(loop, [old_route])
+        except Exception as exc:
+            try:
+                routes.restore_entries({old_route: previous_route})
+                _restore_config(path, previous_config)
+            except Exception as rollback_exc:
+                print(f"ROLLBACK FAILED: {rollback_exc} — inspect {path} and route {old_route}")
+                return 2
+            print(f"adjudication off FAILED: {exc}; config and route restored")
+            return 2
+        shims = gate_shims.remove({**loop, "seats": {}, "triage": {}, "observer": {}},
+                                  [updated, *[other for other in config.all_loops()
+                                              if other["id"] != loop["id"]]])
+        print(f"[{loop['id']}] adjudication off: route {old_route} removed — a spent cap now "
+              "writes only the breach marker (existing markers and rulings stay in the ledger)")
+        for line in shims:
+            print(f"  {line}")
+        return 0
+
+    d = config.settings_defaults(_SETTINGS)
+    profile = (str(getattr(args, "adjudicator_profile", None) or "").strip()
+               or str(current.get("profile") or "") or d["adjudicator_profile"] or "default")
+    route = (str(getattr(args, "adjudicator_route", None) or "").strip() or old_route
+             or routes_for(loop)["adjudicator"])
+    try:
+        updated = config.normalize({**loop, "adjudicator": {**current, "route": route,
+                                                            "profile": profile}})
+        config.webhook_host(updated.get("host"), required=True)
+        config.verify_seats(updated, {"adjudicator"})
+        _verify_routes(updated, {"adjudicator"})
+        gate_shims.install(updated, dry_run=True, report=False)
+    except config.ConfigError as exc:
+        print(f"refused: {exc}")
+        return 2
+    if (updated.get("adjudicator") or {}) == current and routes.route(route):
+        print(f"[{loop['id']}] adjudication already on (route {route}, profile {profile})")
+        return 0
+    previous_config = path.read_bytes()
+    names = {route, *([old_route] if old_route else [])}
+    previous_routes = {name: routes.route(name) for name in names}
+    try:
+        _write_config(updated)
+        _install_routes(updated, roles=("adjudicator",))
+        route_intent.record_live(updated, [route])
+    except Exception as exc:
+        try:
+            routes.restore_entries(previous_routes)
+            _restore_config(path, previous_config)
+        except Exception as rollback_exc:
+            print(f"ROLLBACK FAILED: {rollback_exc} — inspect {path} and route {route}")
+            return 2
+        print(f"adjudication install FAILED: {exc}; config and route restored")
+        return 2
+    print(f"[{loop['id']}] adjudication on: profile {profile}, route {route} written")
+    if old_route and old_route != route:
+        try:
+            route_intent.forget(updated, [old_route])
+            routes.remove_route(old_route)
+            print(f"  old route {old_route} removed")
+        except (OSError, ValueError) as exc:
+            print(f"warning: old adjudicator route {old_route!r} remains; remove it manually: {exc}")
+    shims_ok = _install_shims(updated)
+    print("  no repo hook is needed: the loop wakes the adjudicator itself when the cap is spent")
+    print(f"  next: hermes review-loop doctor --loop {loop['id']}")
+    return 0 if shims_ok else 1
+
+
 def cmd_set(args) -> int:
     """Change a loop's settings in place, through the same validation ``init`` uses.
 
@@ -2180,6 +2286,15 @@ def cmd_set(args) -> int:
             print(f"no such loop: {exc}")
             return 2
         print(f"repairing {args.loop}: it has no read_token; setting the reader named by --read-token")
+
+    adj_done = False
+    if (getattr(args, "adjudicator_profile", None) or getattr(args, "adjudicator_route", None)
+            or getattr(args, "adjudicator", None)):
+        rc = _set_adjudication(args, loop)
+        if rc:
+            return rc
+        adj_done = True
+        loop = config.load_id(args.loop)
 
     host = args.host
     if host is not None:
@@ -2275,7 +2390,8 @@ def cmd_set(args) -> int:
         if adj_after:
             if not (loop.get("adjudicator") or {}).get("route"):
                 print("refused: this loop has no adjudicator route, so nothing rules — an "
-                      "adjudicator login would never post")
+                      "adjudicator login would never post; turn adjudication on first with "
+                      f"`hermes review-loop set --loop {loop['id']} --adjudicator-profile PROFILE`")
                 return 2
             adj_seat["login"] = adj_after
         else:
@@ -2350,6 +2466,8 @@ def cmd_set(args) -> int:
     if (not changes and not seat_changes and not budget_changes and not adj_changed
             and not read_changed
             and observer_cfg == (loop.get("observer") or {})):
+        if adj_done:
+            return 0
         print("nothing to change — pass at least one setting "
               "(--concurrency, --reviewer-concurrency, --fixer-concurrency, --cap, --clone, "
               "--turn-budget, "
@@ -4320,6 +4438,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="hook admin login: the hooks are created (paused) as it")
         first.add_argument("--observer-profile", default=None,
                            help="Hermes profile whose chat gets the loop's notices")
+        first.add_argument("--adjudicator-profile", default=None,
+                           help="Hermes profile that rules when a PR's verdict cap is spent; "
+                                "turns adjudication on (blank: off) (default: the plugin setting)")
         first.add_argument("--required-check", action="append", default=None,
                            help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         first.add_argument("--fixer-check", default=None,
@@ -4469,6 +4590,14 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--adjudicator-login", default=None,
                             help="optional fourth GitHub account the ruling is also posted as; "
                                  "\"\" clears it (rulings go to the operator only)")
+        change.add_argument("--adjudicator-profile", default=None,
+                            help="turn adjudication on: the Hermes profile that rules when the "
+                                 "verdict cap is spent; creates the <id>-breach route and its shim")
+        change.add_argument("--adjudicator-route", default=None,
+                            help="with --adjudicator-profile: the route's name (default: <id>-breach)")
+        change.add_argument("--adjudicator", choices=("off",), default=None,
+                            help="turn adjudication off: removes the route and the block (breach "
+                                 "markers and rulings stay in the ledger)")
         change.add_argument("--read-token", default=None,
                             help="the login the gates read GitHub as — its own account, never a "
                                  "seat or the adjudicator login (the four-identity rule); map a "
