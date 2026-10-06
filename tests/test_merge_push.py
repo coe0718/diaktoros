@@ -167,5 +167,88 @@ class Merge(unittest.TestCase):
         self.assertEqual(self.merged(base=clean_base)["conflicted"], [])
 
 
+    def test_a_7_equals_underline_in_a_resolution_is_not_a_marker(self):
+        """Tuck's P3: a Markdown/RST underline of 7 '=' was refused as a marker."""
+        merged = self.merged()
+        new = self.resolve(merged, {"a.py": "x = 3\n# Title\n# =======\n=======\n"})
+        self.assertEqual(git("--git-dir", self.remote, "rev-parse", "refs/heads/fix-7"), new)
+
+    def test_the_workflow_flag_says_when_the_base_brings_ci_changes(self):
+        self.assertTrue(self.merged()["workflows"])     # main added .github/workflows/ci.yml
+
+
+class WholeFile(unittest.TestCase):
+    """Tuck's blocker on #408: modify/delete and binary conflicts leave no markers, so a turn that
+    never touched them would silently drop main's side. They are refused: a person resolves them."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        src = self.root / "src"
+        src.mkdir()
+        git("init", "-q", "-b", "main", str(src))
+        (src / "a.py").write_text("x = 1\n")
+        (src / "gone.txt").write_text("base\n")
+        (src / "img.bin").write_bytes(b"\x00\x01base")
+        git("-C", str(src), "add", "-A")
+        git("-C", str(src), "commit", "-qm", "base")
+        git("-C", str(src), "checkout", "-qb", "fix-7")
+        (src / "a.py").write_text("x = 2\n")
+        (src / "gone.txt").write_text("pr edit\n")
+        (src / "img.bin").write_bytes(b"\x00\x02pr")
+        git("-C", str(src), "add", "-A")
+        git("-C", str(src), "commit", "-qm", "pr")
+        self.head = git("-C", str(src), "rev-parse", "HEAD")
+        git("-C", str(src), "checkout", "-q", "main")
+        (src / "a.py").write_text("x = 3\n")
+        git("-C", str(src), "rm", "-q", "gone.txt")
+        (src / "img.bin").write_bytes(b"\x00\x03main")
+        git("-C", str(src), "add", "-A")
+        git("-C", str(src), "commit", "-qm", "main")
+        self.base = git("-C", str(src), "rev-parse", "HEAD")
+        self.remote = str(self.root / "remote.git")
+        git("init", "-q", "--bare", self.remote)
+        git("-C", str(src), "push", "-q", self.remote, "main", "fix-7")
+        token = self.root / "token"
+        token.write_text("not-a-real-token")
+        self.loop = {"repo": REPO, "tokens": {"fix": str(token), "read": str(token)}}
+        env = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": "/does/not/exist"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_staging_refuses_and_names_it_a_persons_job(self):
+        with self.assertRaisesRegex(safe_push.NeedsPerson, "2 whole-file conflict"):
+            safe_push.merged_tree(self.loop, branch="fix-7", head=self.head, base_ref="main",
+                                  base_sha=self.base, login="read", remote=self.remote)
+
+    def test_a_push_resolving_only_the_text_file_is_refused_and_the_branch_unmoved(self):
+        files = [("a.py", b"x = 3\n")]
+        with self.assertRaises(safe_push.NeedsPerson):
+            safe_push._git_cas(self.loop, REPO, "fix-7", self.head, files, "m", "fix",
+                               {"name": "fix", "email": "3+fix@users.noreply.github.com"},
+                               remote=self.remote,
+                               merge={"base_ref": "main", "base_sha": self.base, "tree": "a" * 40})
+        self.assertEqual(git("--git-dir", self.remote, "rev-parse", "refs/heads/fix-7"), self.head)
+
+    def test_a_marker_lookalike_does_not_disguise_a_modify_delete(self):
+        """The PR's surviving file happens to hold a line that looks like a marker: the marker
+        scan alone would take it for a content conflict. The missing stage still refuses it."""
+        src = self.root / "look"
+        git("clone", "-q", "-b", "fix-7", self.remote, str(src))
+        (src / "gone.txt").write_text("<<<<<<< this is just text\n")
+        (src / "img.bin").write_bytes(b"\x00\x03main")     # the same as main: no binary conflict
+        git("-C", str(src), "commit", "-qam", "lookalike")
+        git("-C", str(src), "push", "-q", "origin", "fix-7")
+        head = git("-C", str(src), "rev-parse", "HEAD")
+        with self.assertRaisesRegex(safe_push.NeedsPerson, "whole-file"):
+            safe_push.merged_tree(self.loop, branch="fix-7", head=head, base_ref="main",
+                                  base_sha=self.base, login="read", remote=self.remote)
+
+    def test_a_bad_base_branch_name_is_refused(self):
+        with self.assertRaisesRegex(broker.BrokerDenied, "invalid base branch name"):
+            safe_push.merged_tree(self.loop, branch="fix-7", head=self.head, base_ref="main..x",
+                                  base_sha=self.base, login="read", remote=self.remote)
+
 if __name__ == "__main__":
     unittest.main()

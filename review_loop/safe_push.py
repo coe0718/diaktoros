@@ -253,19 +253,33 @@ def _isolated(loop: dict, login: str, identity: dict, remote: str | None):
         yield git, url
 
 
-# A conflict marker line, as Git writes them: 7 of '<' or '>' then a space or the line's end, or
-# exactly 7 '='. A merge push that leaves one in a conflicted file is refused (#303).
-CONFLICT_MARKER = re.compile(rb"^(?:<{7}|>{7})(?: |$)|^={7}$", re.M)
+# A conflict block's opening or closing line, as Git writes them: 7 of '<' or '>' then a space
+# or the line's end. (A lone line of 7 '=' is also a Markdown/RST underline: never a marker on its
+# own.) A merge push that leaves one in a conflicted file is refused (#303).
+CONFLICT_MARKER = re.compile(rb"^(?:<{7}|>{7})(?: |$)", re.M)
 # The bounds of a merge export: conflicted paths reported back, and the tree's size in entries.
 MERGE_CONFLICTS_MAX = 64
 MERGE_ENTRIES_MAX = 20000
+MERGE_BYTES_MAX = 100 * 1024 * 1024          # trusted_fetch's export bound
+
+
+class NeedsPerson(broker.BrokerDenied):
+    """A conflict the loop does not resolve unattended: a whole-file one (#303)."""
 
 
 def _merge(git: "_Isolated", url: str, branch: str, head: str, base_ref: str,
            base_sha: str) -> tuple[str, list[str]]:
     """Fetch the PR branch (it must be at ``head``) and the base branch (``base_sha`` must be on
     it), then merge ``base_sha`` into ``head`` without a worktree: the merged tree, with conflict
-    markers in the conflicted files, and those files' paths."""
+    markers in the conflicted files, and those files' paths.
+
+    Only *content* conflicts are left to a resolving turn: both sides changed the file and Git
+    wrote marker blocks into it. A whole-file conflict — modify/delete, add/delete, a rename, a
+    binary file — leaves no markers (``merge-tree`` keeps one side's file whole), so a turn that
+    never touched it would silently drop the other side. Those raise ``NeedsPerson``."""
+    code, _ = git.run_rc("check-ref-format", "--branch", base_ref)
+    if code:
+        raise broker.BrokerDenied("invalid base branch name")
     bare = str(git.bare)
     git.run("--git-dir", bare, "fetch", "--no-tags", "--no-recurse-submodules", url,
             f"refs/heads/{branch}:refs/heads/snapshot", f"refs/heads/{base_ref}:refs/heads/base")
@@ -274,18 +288,38 @@ def _merge(git: "_Isolated", url: str, branch: str, head: str, base_ref: str,
     code, _ = git.run_rc("--git-dir", bare, "merge-base", "--is-ancestor", base_sha, "refs/heads/base")
     if code:
         raise broker.BrokerDenied("base commit is not on the base branch")
-    code, out = git.run_rc("--git-dir", bare, "merge-tree", "--write-tree", "--name-only",
-                           "--no-messages", "-z", head, base_sha)
+    code, out = git.run_rc("--git-dir", bare, "merge-tree", "--write-tree", "--no-messages",
+                           "-z", head, base_sha)
     if code not in (0, 1):
         raise broker.BrokerDenied("merge of the base could not be computed")
-    fields = [field.decode("utf-8", "surrogateescape") for field in out.split(b"\0") if field]
+    fields = [field for field in out.split(b"\0") if field]
     if not fields:
         raise broker.BrokerDenied("merge of the base could not be computed")
-    tree, conflicted = _sha(fields[0]), sorted(set(fields[1:]))
+    tree = _sha(fields[0].decode())
+    stages: dict[str, set[str]] = {}
+    for record in fields[1:]:
+        # "<mode> <object> <stage>\t<path>" for each conflicted index entry.
+        meta, _, path = record.partition(b"\t")
+        parts = meta.decode("ascii", "replace").split()
+        if len(parts) != 3 or not path:
+            raise broker.BrokerDenied("merge of the base could not be computed")
+        stages.setdefault(path.decode("utf-8", "surrogateescape"), set()).add(parts[2])
+    conflicted = sorted(stages)
     if code == 1 and not conflicted:
         raise broker.BrokerDenied("merge of the base could not be computed")
     if len(conflicted) > MERGE_CONFLICTS_MAX:
         raise broker.BrokerDenied("merge conflicts in too many files")
+    whole = []
+    for path in conflicted:
+        if not {"2", "3"} <= stages[path]:
+            whole.append(path)                 # one side deleted or renamed it
+            continue
+        code, blob = git.run_rc("--git-dir", bare, "cat-file", "blob", f"{tree}:{path}")
+        if code or not CONFLICT_MARKER.search(blob):
+            whole.append(path)                 # kept whole: a binary or otherwise unmerged file
+    if whole:
+        raise NeedsPerson(f"merge conflicts a person must resolve: {len(whole)} whole-file "
+                          "conflict(s) (a modify/delete, a rename or a binary file)")
     return tree, conflicted
 
 
@@ -303,7 +337,7 @@ def merged_tree(loop: dict, *, branch: str, head: str, base_ref: str, base_sha: 
     with _isolated(loop, login, identity, remote) as (git, url):
         tree, conflicted = _merge(git, url, branch, head, base_ref, base_sha)
         bare = str(git.bare)
-        entries, skipped = [], []
+        entries, skipped, total = [], [], 0
         for record in git.run("--git-dir", bare, "ls-tree", "-r", "-l", "-z", tree).split(b"\0"):
             if not record:
                 continue
@@ -312,16 +346,23 @@ def merged_tree(loop: dict, *, branch: str, head: str, base_ref: str, base_sha: 
             name = path.decode("utf-8", "surrogateescape")
             if kind == "blob" and mode in _REGULAR:
                 entries.append((name, _sha(oid), int(size), mode == "100755"))
+                total += int(size)
             else:
                 skipped.append(name)
-        if len(entries) > MERGE_ENTRIES_MAX:
-            raise broker.BrokerDenied("merged tree too large")
+            # Bounded before anything is archived: entries and bytes alike.
+            if len(entries) > MERGE_ENTRIES_MAX or total > MERGE_BYTES_MAX:
+                raise broker.BrokerDenied("merged tree too large")
         archive = git.run_rc("--git-dir", bare, "archive", "--format=tar", "--prefix=merge/",
                              tree)
         if archive[0]:
             raise broker.BrokerDenied("merged tree could not be archived")
+        # The base brings workflow changes into the branch: GitHub refuses that push from a token
+        # without the `workflow` scope, which the loop never asks for. Part B reads this flag and
+        # leaves such a PR to a person instead of spending a turn on a push that cannot land.
+        workflows = bool(git.run("--git-dir", bare, "diff-tree", "-r", "--name-only", head, tree,
+                                 "--", ".github/workflows"))
         return {"tree": tree, "conflicted": conflicted, "entries": entries,
-                "skipped": skipped, "archive": archive[1]}
+                "skipped": skipped, "archive": archive[1], "workflows": workflows}
 
 
 def _git_cas(loop: dict, repo: str, branch: str, head: str,
@@ -425,6 +466,13 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
                 run("--git-dir", str(bare), "cat-file", "blob", staged[path]))]
             if left:
                 raise broker.BrokerDenied(f"conflict markers left in {len(left)} file(s)")
+            # Belt and braces: every conflicted file is one the seat explicitly resolved.
+            touched = set(run("--git-dir", str(bare), "diff-index", "--cached", "--name-only",
+                              "-z", "--no-renames", start).decode("utf-8", "surrogateescape")
+                          .split("\0"))
+            if not set(conflicted) <= touched:
+                raise broker.BrokerDenied(
+                    f"{len(set(conflicted) - touched)} conflicted file(s) left unresolved")
         tree = _sha(run("--git-dir", str(bare), "write-tree").decode())
         base_tree = _sha(run("--git-dir", str(bare), "rev-parse", f"{head}^{{tree}}").decode())
         if tree == base_tree:
