@@ -1276,7 +1276,9 @@ def describe_seat_wire(loop: dict, seat: str,
                 return ("warn", f"{detail} by doctor's own table, NOT by Hermes: {not_asked}",
                         "point source/venv in the runtime file at the Hermes install the turn runs "
                         "(then re-run doctor)", wire)
-            return ("ok", detail + " (credential checked by selftest)", "", wire)
+            return ("ok", detail + " (the configured model, not necessarily the one a turn "
+                                   "resolves; credential and resolved model checked by selftest)",
+                    "", wire)
     fix = (f"set a supported provider in profile {profile or '<name>'} (see `docs/configuration.md`), "
            f"or add seats.{seat} to the runtime file")
     if legacy is not None:
