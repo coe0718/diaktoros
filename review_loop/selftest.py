@@ -745,7 +745,7 @@ def check_identities(report: Report, loop: dict) -> bool:
         if not raw:
             ok = False
             report.add(step, name, FAIL, f"{login}: no token file mapped",
-                       f"re-run init with --token {login}=/path/to/pat (chmod 600)")
+                       f"run `hermes review-loop set --loop <id> --token {login}=/path/to/pat` (chmod 600)")
             continue
         check = doctor.check_token(login, raw)
         if check.status != doctor.VERIFIED:
@@ -1037,7 +1037,7 @@ def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict 
         report.add(step, "observer", SKIP, "no observer configured (alerts go to the cron outbox only)")
     elif reason:
         report.add(step, "observer", FAIL, reason,
-                   "re-run `hermes review-loop init` with the --observer-* flags, then "
+                   "run `hermes review-loop set --loop <id> --observer-route <route>` (and --observer-profile), then "
                    "`hermes review-loop doctor`")
     else:
         report.add(step, "observer", PASS, "observer route registered with a secret and URL")

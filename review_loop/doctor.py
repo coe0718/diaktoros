@@ -246,7 +246,7 @@ def check_config(loop: dict) -> Check:
         json.loads(path.read_text())
     except Exception as exc:
         return Check("config", MISMATCH, f"{path} is not readable JSON ({exc})",
-                     "repair the file (or re-run init): every gate reads it on every event")
+                     "edit the loop file to repair it, then run `hermes review-loop apply --loop <id>`: every gate reads it on every event")
     return Check("config", VERIFIED,
                  f"{path} (repo {loop['repo']}, cap {loop['cap']}, base {loop['base']})")
 
@@ -456,13 +456,14 @@ def check_runtime_paths(loop: dict) -> list[Check]:
 def _check_profile(name: str, seat: str) -> Check:
     if not name:
         return Check(f"profile:{seat}", ABSENT, "no profile named for this seat",
-                     f"re-run init with --{seat}-profile <an existing profile>")
+                     f"set {seat}_profile in the plugin settings to an existing profile, then run `hermes review-loop apply --loop <id>`")
     path = profile_dir(name)
     if path.is_dir():
         return Check(f"profile:{seat}", VERIFIED, f"{name} → {path}")
     return Check(f"profile:{seat}", ABSENT, f"no profile home at {path}",
-                 f"`hermes profile create {name}`, or re-run init with --{seat}-profile pointing "
-                 f"at a profile that exists: the run happens as this profile")
+                 f"`hermes profile create {name}`, or set {seat}_profile in the plugin settings to "
+                 f"a profile that exists and run `hermes review-loop apply --loop <id>`: the run "
+                 f"happens as this profile")
 
 def check_profile(loop: dict, seat: str) -> Check:
     return _check_profile(str(loop["seats"][seat].get("profile") or ""), seat)
@@ -695,8 +696,8 @@ def check_credential(loop: dict, seat: str) -> Check:
                      f"nonempty GH_TOKEN in {env}, but no mapped token file for "
                      f"{login or seat}; a profile environment alone does not provide the "
                      "gate's configured GitHub identity, and the sandboxed seat never sees it",
-                     f"map a token file for {login or '<login>'}: re-run init with "
-                     f"--token {login or '<login>'}=/path/to/pat, or set {seat}_token_file in the "
+                     f"map a token file for {login or '<login>'}: run `hermes review-loop set --loop <id> "
+                     f"--token {login or '<login>'}=/path/to/pat`, or set {seat}_token_file in the "
                      "plugin settings and run apply; then remove GH_TOKEN from that .env")
     who = login or f"the {seat} seat"
     mapped = gh.token_path(loop, login) if login else None
@@ -708,7 +709,7 @@ def check_credential(loop: dict, seat: str) -> Check:
     # profile's .env is never used, so it is not offered as a fix.
     return Check(f"credential:{seat}", ABSENT,
                  f"no token file mapped for {who!r} (a GH_TOKEN in {env} would not be used)",
-                 f"re-run init with --token {login or '<login>'}=/path/to/pat, or set "
+                 f"run `hermes review-loop set --loop <id> --token {login or '<login>'}=/path/to/pat`, or set "
                  f"{seat}_token_file in the plugin settings and run apply — without one the seat "
                  "cannot push or post a verdict")
 
@@ -769,8 +770,8 @@ def check_token(login: str, raw: str) -> Check:
     path = pathlib.Path(str(raw)).expanduser()
     if not path.exists():
         return Check(f"token:{login}", ABSENT, f"no file at {path}",
-                     f"write the PAT for {login} to {path} (chmod 600), or re-run init with "
-                     f"--token {login}=<a path that exists>")
+                     f"write the PAT for {login} to {path} (chmod 600), or run `hermes "
+                     f"review-loop set --loop <id> --token {login}=<a path that exists>`")
     if not path.is_file():
         return Check(f"token:{login}", MISMATCH, f"{path} is not a file",
                      f"point --token {login} at a regular file holding the PAT")
@@ -795,7 +796,7 @@ def check_tokens(loop: dict) -> list[Check]:
     tokens = loop.get("tokens") or {}
     if not tokens:
         return [Check("tokens", ABSENT, "no token file is named for any login",
-                      "re-run init with --token <login>=/path/to/pat (the gates read GitHub "
+                      "run `hermes review-loop set --loop <id> --token <login>=/path/to/pat` (the gates read GitHub "
                       "through it; without one they go silent)")]
     return [check_token(login, raw) for login, raw in sorted(tokens.items())]
 
@@ -804,10 +805,10 @@ def check_read_token(loop: dict) -> Check:
     name = str(loop.get("read_token") or "")
     if not name:
         return Check("read_token", ABSENT, "no login is named as the reader",
-                     "re-run init with --read-token <login> and --token <login>=/path/to/pat")
+                     "run `hermes review-loop set --loop <id> --read-token <login> --token <login>=/path/to/pat`")
     if name not in (loop.get("tokens") or {}):
         return Check("read_token", MISMATCH, f"read_token names {name!r}, which has no token file",
-                     f"re-run init with --token {name}=/path/to/pat: the gates read every PR "
+                     f"run `hermes review-loop set --loop <id> --token {name}=/path/to/pat`: the gates read every PR "
                      f"state as this login")
     problem = config.reader_problem(loop)
     if problem:
@@ -1536,7 +1537,7 @@ def check_roots(loop: dict) -> Check:
              and not pathlib.Path(root).expanduser().is_dir()]
     if wrong:
         return Check("roots", MISMATCH, "not directories: " + ", ".join(wrong),
-                     "fix them (re-run init with --root <dir>): the cleanup only ever deletes "
+                     "fix them (edit \"roots\" in the loop file, then run `hermes review-loop apply --loop <id>`): the cleanup only ever deletes "
                      "inside a configured root")
     return Check("roots", VERIFIED, f"{len(roots)} configured: " + ", ".join(roots))
 
