@@ -85,6 +85,16 @@ class Run(unittest.TestCase):
         self.assertIn("FAILED test_a", out)
         self.assertIn("outerr", out)
 
+    def test_runs_like_ci_from_the_root_and_an_empty_module_is_no_failure(self):
+        """Live (#400 merge): run from tests/, a subprocess `python -m review_loop…` failed; and
+        unittest's exit 5 (no tests in the module) was counted as a failure."""
+        rc, out, run = self.run_with(["test_a", "test_b"], [0, 5], 100, [0, 0, 1, 2])
+        self.assertEqual(rc, 0, out)
+        command, kwargs = run.call_args_list[0].args[0], run.call_args_list[0].kwargs
+        self.assertEqual(kwargs["cwd"], affected.ROOT)
+        self.assertEqual(command[1:5], ["-m", "unittest", "discover", "-q"])
+        self.assertEqual(command[-2:], ["-p", "test_a.py"])
+
     def test_changed_arrives_as_one_space_separated_argument(self):
         with mock.patch.object(affected, "run", return_value=0) as run:
             affected.main(["--run", "review_loop/ci.py tests/test_ci_gate.py"])

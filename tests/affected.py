@@ -150,13 +150,17 @@ def run(order: list[str], budget: float, clock=time.monotonic) -> int:
         if clock() - start > budget:
             skipped.append(name)
             continue
+        # Run as CI does: from the repository root, by discovery. Some tests start
+        # `python -m review_loop...` in a subprocess, which only resolves from the root.
         if name == HARNESS:
             command = [sys.executable, str(TESTS / "run_tests.py")]
         else:
-            command = [sys.executable, "-m", "unittest", "-q", name]
+            command = [sys.executable, "-m", "unittest", "discover", "-q", "-s", "tests",
+                       "-p", f"{name}.py"]
         print(f"== {name}", flush=True)
-        done = subprocess.run(command, cwd=TESTS, capture_output=True, text=True)
-        if done.returncode:
+        done = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+        # unittest exits 5 when a module holds no tests (a helper named test_*): not a failure.
+        if done.returncode and done.returncode != 5:
             failed.append(name)
             print((done.stdout + done.stderr)[-3000:], flush=True)
     print(f"\nran {len(order) - len(skipped)} of {len(order)}: "

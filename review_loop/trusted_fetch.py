@@ -398,6 +398,11 @@ def _stage(loop: dict, *, repo: str, number: int, head: str, ref: str,
     with tempfile.TemporaryDirectory(prefix=".review-trusted-", dir=root.parent) as temp:
         private = pathlib.Path(temp)
         private.chmod(0o700)
+        # NOTE: this bounds the *compressed* download by the same _MAX_BYTES that the tree check applies to
+        # *uncompressed* content. That is deliberate: the cap is the security bound on what we will pull, and
+        # it errs toward refusing (a repo just under the cap with poorly-compressing files, plus tar's ~1 KiB
+        # per-entry headers/padding, may be refused here although its tree fits). Do not "fix" this into an
+        # uncompressed-only check: that would let an unbounded download through.
         archive = _fetch_tarball(loop, repo, reader, head, _MAX_BYTES)
         directory = private / "repo"
         directory.mkdir(mode=0o700)

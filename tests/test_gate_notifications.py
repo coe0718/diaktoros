@@ -210,5 +210,55 @@ class NotificationFreshnessTest(unittest.TestCase):
         take.assert_not_called()
 
 
+class LoopWorkedOnTest(unittest.TestCase):
+    """Each state branch of loop_worked_on, positive and negative (#290)."""
+
+    def setUp(self):
+        import tempfile
+        self.loop = {"repo": "acme/widgets", "id": "widgets", "fixers": ["fixer"]}
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.obs = pathlib.Path(self.dir.name) / "observations.json"
+        self.obs.write_text(json.dumps({"entries": {}}))
+        self.state = mock.Mock()
+        self.state.breach_get.return_value = {}
+        self.state.transition_get.return_value = {}
+        self.state.queue_all.return_value = {}
+        self.state.observations = self.obs
+        self.stranger = pr() | {"user": {"login": "someone"}}
+
+    def worked_on(self, number=7):
+        return gate_reviewer.loop_worked_on(self.loop, self.state, number, self.stranger)
+
+    def test_nothing_recorded_is_false(self):
+        self.assertFalse(self.worked_on())
+
+    def test_breach_record(self):
+        self.state.breach_get.side_effect = lambda n: {"at": 1} if n == 7 else {}
+        self.assertTrue(self.worked_on(7))
+        self.assertFalse(self.worked_on(8))
+
+    def test_transition_record(self):
+        self.state.transition_get.side_effect = lambda n: {"to": "x"} if n == 7 else {}
+        self.assertTrue(self.worked_on(7))
+        self.assertFalse(self.worked_on(8))
+
+    def test_queue_entry_uses_seat_key(self):
+        self.state.queue_all.return_value = {"reviewer": {"acme/widgets#7": {}}}
+        self.assertTrue(self.worked_on(7))
+        self.assertFalse(self.worked_on(8))
+        # A different repo's entry for the same number is not this loop's.
+        self.state.queue_all.return_value = {"reviewer": {"other/repo#7": {}}}
+        self.assertFalse(self.worked_on(7))
+
+    def test_observer_ledger_entry_uses_loop_id_prefix(self):
+        self.obs.write_text(json.dumps({"entries": {"widgets:7:abc:closed": {}}}))
+        self.assertTrue(self.worked_on(7))
+        self.assertFalse(self.worked_on(8))
+        # 70 must not match PR 7, and another loop's entry is not ours.
+        self.obs.write_text(json.dumps({"entries": {"widgets:70:abc": {}, "other:7:abc": {}}}))
+        self.assertFalse(self.worked_on(7))
+
+
 if __name__ == "__main__":
     unittest.main()
