@@ -69,7 +69,7 @@ and a PR link. It does not contain the diff, review body, GitHub credentials or 
 | `fixed` | The issue-fix write ended: PR opened (and review requested), a could-not-fix comment, or an uncertain write | The PR passes review |
 | `failed` | An isolated run's first failed attempt (with the retry time) and its terminal `failed`/`uncertain` state | The cause is transient, or a retry will work |
 | `held` | A run is waiting without spending a retry: its seat's daily cap is reached, or its provider's usage window is closed. Says when it resumes and, for a cap, the flag that raises it and the `retry` that runs it sooner | It will run the moment the hold lifts (capacity and pacing still apply) |
-| `conflict` | A loop PR no longer merges into its base (GitHub reports a merge conflict), once per head (#303) | Nothing in the loop: merge the base into the branch (by hand, or ask the fixer); a new head that still conflicts is reported again |
+| `conflict` | A loop PR no longer merges into its base (GitHub reports a merge conflict), once per head (#303) | With unattended fixer pushes on, a resolving fixer turn: the host merges the base into the head and the fixer resolves the conflicted files (a whole-file conflict, or a base that changed workflow files, ends that run as "needs a person"). With them off, you merge the base by hand. A new head that still conflicts is reported again |
 
 The five last events were added after the first eight. A feed with an explicit `events` list
 does not get them until they are added to it (`set --observer-events …`); a feed with no list
