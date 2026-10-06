@@ -604,6 +604,16 @@ def probe_body(api_mode: str, client_identity: str = "") -> bytes:
     return json.dumps(body).encode()
 
 
+def empty_reply_reason(api_mode: str) -> str:
+    """Why an empty probe reply may be, naming only the output cap the probe really sent."""
+    if api_mode == "codex_responses":
+        # probe_body names no cap here: the proxy supplies its own default (or none at all).
+        return ("the model may have spent its output budget on reasoning before any visible text "
+                "(the probe sets no small output limit in this mode)")
+    return ("the probe's 16-token limit was probably used up by the model's reasoning "
+            "before any visible text")
+
+
 def probe_answer(api_mode: str, content_type: str, data: bytes) -> str | None:
     """The reply text of a probe answer in ``api_mode``'s shape, or ``None`` if it is not one."""
     try:
@@ -694,8 +704,7 @@ def _one_completion(report: Report, seats: str, inference) -> None:
         return
     if not answer.strip():
         report.add(step, name, WARN,
-                   f"{what}: HTTP 200 but the reply is empty — the probe's 16-token limit was "
-                   "probably used up by the model's reasoning before any visible text",
+                   f"{what}: HTTP 200 but the reply is empty — {empty_reply_reason(mode)}",
                    "the endpoint answers, but this probe cannot show the model produces text; "
                    "try a non-reasoning model or check the provider's reasoning settings")
         return

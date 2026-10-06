@@ -284,6 +284,15 @@ class ChecklistTests(SelftestBase):
         self.assertIn("16-token limit", text)
         self.assertNotRegex(text, r"✅ model:completion")
 
+    def test_empty_reply_reason_names_the_cap_actually_sent(self):
+        for mode in ("chat_completions", "anthropic_messages"):
+            body = json.loads(selftest.probe_body(mode))
+            self.assertEqual(body["max_tokens"], 16)
+            self.assertIn("16-token limit", selftest.empty_reply_reason(mode))
+        body = json.loads(selftest.probe_body("codex_responses"))
+        self.assertNotIn("max_output_tokens", body)
+        self.assertNotIn("16", selftest.empty_reply_reason("codex_responses"))
+
     def test_shared_principal_and_wrong_login_fail(self):
         self.fx.ids["fixer"] = 2
         rc, text = self.run_selftest(model=False)
