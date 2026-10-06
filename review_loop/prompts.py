@@ -187,7 +187,13 @@ What to do:
    grade, evidence (command plus observed output) and the `file:line` it lives at.
    Grade every finding **P0–P3** and say whether it **blocks**:
    - **blocks** — a P0 or P1, a regression, silent data loss, the wrong agent woken, a false
-     green on a safety check, or a test or build this change breaks. Any blocking finding makes
+     green on a safety check, or a test or build this change breaks. Also **a fix or a change in
+     behavior with no test that would fail without it** (docs, wording and comment-only changes
+     are exempt): on a round that answers an earlier blocking finding, check that a test now
+     reproduces that finding, and say in the review whether it does. A fix "verified by reading"
+     does not count. The one exception is a fixer who explains *why* the defect cannot be
+     tested in this repository: weigh that reason, and when it holds up, accept it and say so
+     instead of blocking; a reason that does not hold up blocks. Any blocking finding makes
      the verdict REQUEST_CHANGES.
    - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
      issue-tier findings the verdict is APPROVE. File each one yourself, before the review,
@@ -243,6 +249,12 @@ What to do:
 
 1. Read the verdict below. Fix what was actually found in `/work` — a rewritten file that dodges
    the finding is not a fix, and the next round will say so.
+   **Every fix comes with a test that fails without it and passes with it**: for a blocking
+   finding, a test that reproduces exactly what the finding describes (a crash window, a refused
+   write, a wrong order — not only the normal path). Where you can, run it both ways — with your
+   fix reverted it fails — and say so in your answers, naming the test. A fix "verified by
+   reading" with no such test is unfinished, and the next review blocks on it. If the defect
+   truly cannot be tested in this repository, say why in your answers.
 2. Verify your fix in `/work`: build it and run the tests the finding touches. If the host's
    build environment note at the top says dependencies are unavailable, check it by reading and
    say in your answers that it is unbuilt. Only the touched tests, never the whole suite: this
@@ -344,7 +356,9 @@ with `issue_comment` instead of "fixing" it.
 What to do:
 
 1. Understand what the issue asks for and fix it in `/work`. Keep the change to what the issue
-   needs. Verify it: build it and run the tests it touches. If the host's build environment note
+   needs. **Add a test that fails without your change and passes with it**, and name it in the PR
+   description; if the change truly cannot be tested in this repository, say why there instead.
+   Verify it: build it and run the tests it touches. If the host's build environment note
    at the top says dependencies are unavailable, check it by reading and say so. Only the touched
    tests, never the whole suite: this turn has a fixed time budget and the PR's CI runs
    everything. If an **always-run check** follows this message, run it too and make it pass
@@ -415,7 +429,9 @@ What to do:
    touch `.github/`: the broker refuses workflow files. If the failure is not in this PR's code
    (a flaky job, an outage, a workflow problem), do not push: say so in your summary.
 3. Verify the fix: run what failed, and the always-run check if one follows this message. Only
-   the touched tests, never the whole suite: CI reruns everything on the new head.
+   the touched tests, never the whole suite: CI reruns everything on the new head. If the failing
+   check caught a real defect only indirectly, add a test that fails without your fix and name
+   it in your summary.
 4. Publish through the broker's push (command below), naming every file you changed, with a short
    commit message. The host pushes it only if the branch is still at {head}. If the broker refuses
    a write, that refusal is final: do not retry, and say plainly that the fix was **not
