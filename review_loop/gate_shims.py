@@ -59,6 +59,16 @@ TARGET = {target!r}
 # runtime file, ledger and state live under the Hermes home this shim was written for, so the gate
 # runs there; HERMES_REAL_HOME, which Hermes sets alongside, is the user's real HOME.
 os.environ["HERMES_HOME"] = {home!r}
+# Hermes also re-points TMPDIR/TMP/TEMP at the serving profile's scratch dir; follow HERMES_HOME so
+# the temp root matches the home the gate reports (what Hermes sets for this home: cache/scratch).
+_scratch = os.path.join({home!r}, "cache", "scratch")
+try:
+    os.makedirs(_scratch, exist_ok=True)
+except OSError:
+    pass
+else:
+    for _var in ("TMPDIR", "TMP", "TEMP"):
+        os.environ[_var] = _scratch
 if os.environ.get("HERMES_REAL_HOME"):
     os.environ["HOME"] = os.environ["HERMES_REAL_HOME"]
 if not os.path.isfile(TARGET):
