@@ -339,7 +339,7 @@ Delivery is durably keyed by transition. Only definite **pre-POST** failures wit
 | `triage.comment` | `false` | Strict JSON boolean; enables one optional comment of at most 1000 characters. |
 | `triage.login` | Reviewer seat login | Identity performing labels/comments; requires its own mapped token with `issues: write`, never the reader. It need not be a separate fourth adjudicator account. |
 | `triage.fix_label` | Unset | Maintainer-applied label that hands an issue to issue-fixing. Same label syntax; must **not** be among `triage.labels`, so triage cannot authorize its own fixes. |
-| `triage.maintainers` | Required with `fix_label` | Non-empty list of authorized label-applier logins. Refused when supplied without `fix_label`. |
+| `triage.maintainers` | Required with `fix_label` | Non-empty list of authorized label-applier logins. Refused when supplied without `fix_label`. The same logins may also request the reviewer seat on a fixer's PR to start a fresh review at its head (#375); that request never frees a fixer still holding the PR. |
 | `triage.fix_daily_turns` | 10 | Issue-fix turns per local day, JSON integer 1–1000 (`triage --fix-daily-turns N`; 0 there restores the default). Issue fixes are **always** capped: each opens a new PR, so the per-PR verdict cap never bounds how many happen (#247). |
 | `seats.triage.concurrency` | `1` | Whole number at least `1`. |
 | `seats.triage.turn_budget_s` | Loop budget | 60–14400 seconds. |

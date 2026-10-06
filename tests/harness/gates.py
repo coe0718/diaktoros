@@ -62,6 +62,36 @@ def group_reviewer_gate() -> None:
     check_rejected("request from a stranger is silent", "gate_reviewer.py",
                    pr_payload(sender="passer-by"))
 
+    # #375: a loop maintainer (triage.maintainers) may ask for a fresh review. It is not the
+    # fixer's handoff, so it never frees a fixer still holding the PR: the review queues.
+    from review_loop import config as loop_config
+
+    def with_maintainer():
+        cfg = json.loads((LOOPS_DIR / "widgets.json").read_text())
+        cfg["triage"] = {"route": "widgets-triage", "profile": "arbiter-profile",
+                         "authors": ["owner"], "labels": ["bug"], "fix_label": "agent-fix",
+                         "maintainers": ["Maint-Er"], "login": REVIEWER}
+        (LOOPS_DIR / "widgets.json").write_text(json.dumps(cfg))
+    reset(prs={"7": pr(7)})
+    with_maintainer()
+    check("a loop with maintainers loads", loop_config.load_id("widgets").get("triage", {}).get(
+        "maintainers"), ["maint-er"])
+    check_eligible("a maintainer's request", "gate_reviewer.py", pr_payload(sender="maint-er"),
+                   "reviewer")
+    reset(prs={"7": pr(7)})
+    with_maintainer()
+    check_rejected("a stranger's request is still silent with maintainers set", "gate_reviewer.py",
+                   pr_payload(sender="passer-by"))
+    reset(prs={"7": pr(7)})
+    with_maintainer()
+    state_file("locks.json").write_text(json.dumps({"fixer": {
+        f"{REPO}#7": {"at": time.time(), "head": HEAD_A}}}))
+    run("gate_reviewer.py", pr_payload(sender="maint-er"))
+    check("  a maintainer's request leaves the fixer's slot held",
+          f"{REPO}#7" in load_state("locks.json").get("fixer", {}), True)
+    check("  and claims no reviewer seat on top of the fixer (the review queues)",
+          load_state("locks.json").get("reviewer", {}), {})
+
     reset(prs={"7": pr(7)})
     # No hardcoded account outside the loop's own config may hand a PR to review.
     check_rejected("request from an unconfigured org account is silent", "gate_reviewer.py",
