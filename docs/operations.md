@@ -19,6 +19,7 @@ incident recovery, and the decision to merge.
 - [Gate failures](#when-a-gate-crashes-or-runs-out-of-time)
 - [Run recovery](#when-an-isolated-run-fails)
 - [Bursts and watchdog](#how-it-handles-a-burst)
+- [Conflicts with the base](#conflicts-with-the-base)
 - [Publishing stats](#publishing-stats)
 
 Replace quoted angle-bracket placeholders, including brackets, with your values.
@@ -391,6 +392,29 @@ The default sweep budget is 600 seconds, per-read cap 20 seconds. Slow reads can
 remaining work; the next scheduled sweep starts fresh. The cron script may report
 failure while exiting zero: monitor output and state, not exit code alone. Never set
 `REVIEW_LOOP_TEST` in production: it bypasses pause checks and grace periods.
+
+## Conflicts with the base
+
+When a loop PR stops merging into its base (`main` moved and both changed the same lines), the
+watchdog sends one `conflict` notice per head (#303). With unattended fixer pushes on, it also
+queues one **resolving fixer turn** per head and base:
+
+1. The host merges the base (pinned at the commit it saw) into the PR head itself, with no
+   worktree, and stages the result, conflict markers and all, as the fixer's `/work`. The prompt
+   names the conflicted files and shows what each side changed in them.
+2. The fixer resolves them, runs the tests, and pushes. The host refuses the push if a marker is
+   left or a conflicted file is untouched, and commits it as a merge (both parents) under the
+   exact-head lease.
+3. The fixer asks for the review, and the merged head is reviewed fresh.
+
+The loop does not resolve, and hands to you instead (the run ends `failed` with
+`conflict needs a person: …`):
+- a **whole-file** conflict: a modify/delete, a rename, a binary file. Git keeps one side whole,
+  so there is nothing to merge line by line;
+- a base that **changed workflow files** since the PR branched: GitHub refuses that push from a
+  token without the `workflow` scope, which the loop never asks for.
+
+Merge the base into the branch yourself, then `hermes review-loop review --pr N`.
 
 ## Publishing stats
 
