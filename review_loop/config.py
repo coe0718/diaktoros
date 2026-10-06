@@ -429,6 +429,12 @@ def seat_profile(loop: dict, role: str) -> str:
         return str((loop.get("triage") or {}).get("profile") or "")
     if role == "issue_fixer":
         role = "fixer"           # an issue fix runs as the fixer seat (#214)
+    if role == "observer_urgent":
+        observer = loop.get("observer") or {}
+        if not str(observer.get("urgent_route") or "").strip():
+            return ""
+        return (str(observer.get("urgent_profile") or observer.get("profile") or "default").strip()
+                or "default")
     if role == "observer":
         observer = loop.get("observer") or {}
         if not str(observer.get("route") or "").strip():
@@ -1199,6 +1205,17 @@ def normalize_observer(raw) -> dict:
         digest = 0
     if digest > 0:
         observer["digest_min"] = digest
+    # A second destination for urgent notices (observer.URGENT_EVENTS): its own delivery-only
+    # route, optionally its own profile and platform. Unset: one feed gets everything.
+    urgent = str(raw.get("urgent_route") or "").strip()
+    if urgent:
+        if urgent == route:
+            return {**observer, "misconfigured": "observer.urgent_route must differ from observer.route"}
+        observer["urgent_route"] = urgent
+        for key in ("urgent_profile", "urgent_deliver"):
+            value = str(raw.get(key) or "").strip()
+            if value:
+                observer[key] = value
     return observer
 
 

@@ -287,7 +287,8 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `observer.profile` | `default` | Hermes profile supplying the delivery destination. |
 | `observer.deliver` | `telegram` | Gateway-supported real delivery target, such as `telegram` or `discord`. `init`/`set` refuse `log`: a delivery-only file/log destination cannot provide the feed. |
 | `observer.events` | All thirteen events | List or comma/whitespace-separated string. Missing or empty means **all**, not none. Normalization lowercases, deduplicates, and sorts strings. Unknown names remain stored without a misconfiguration warning; unknown-only input silently matches no transitions. Use the event names below. |
-| `observer.digest_min` | `0` | Positive integer minutes batch notices for a watchdog flush. Unparseable/non-positive values silently normalize to immediate mode, not a misconfigured feed. CLI flags require integers. No explicit upper bound. |
+| `observer.urgent_route` | unset | Second delivery-only route for urgent notices (`failed`, `held`, `escalation`, `ruling`, `stall`, `conflict`, uncertain); must differ from `observer.route`. Unset: one feed. `urgent_profile` and `urgent_deliver` default to the feed's. |
+| `observer.digest_min` | `0` | Positive integer minutes batch routine notices (urgent ones are never batched) for a watchdog flush. Unparseable/non-positive values silently normalize to immediate mode, not a misconfigured feed. CLI flags require integers. No explicit upper bound. |
 | `observer.mute` | `false` | Stop delivery while retaining configuration. Use a JSON boolean: this lenient loader uses truthiness, so the string `"false"` is truthy and would mute it. |
 
 | Event | Transition |

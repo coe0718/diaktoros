@@ -104,7 +104,7 @@ class ObserverSafetyTests(unittest.TestCase):
             self.assertTrue(observer.flush(self.loop, self.state))
         message = fire.call_args.args[2]["_observer"]["message"]
         self.assertIn("approved", message)
-        self.assertIn("fix pushed", message)
+        self.assertIn("approved → fixed", message)
         self.assertNotIn("next:", message)
 
     def test_approval_dismissed_before_immediate_post_loses_merge_instruction(self):
