@@ -585,6 +585,15 @@ def group_explain() -> None:
     check("  the missing request is called out", "no review request exists for head bbbbbbb" in out, True)
     check("  the spent verdict still counts", "1/3 verdicts spent" in out, True)
 
+    # #303 stage 1: a conflicted PR says so on its state line.
+    reset(prs={"7": {**pr(7), "mergeable_state": "dirty"}})
+    rc, out = explain()
+    check("conflicted PR: explain says so", "CONFLICTS with main — merge main into the branch" in out,
+          True)
+    reset(prs={"7": pr(7)})
+    rc, out = explain()
+    check("clean PR: no conflict claimed", "CONFLICTS" in out, False)
+
     # A pending request is not a running reviewer. The same request event must be replayed.
     reset(prs={"7": pr(7, requested=SEAT)})
     rc, out = explain()

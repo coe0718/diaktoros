@@ -1048,6 +1048,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             bits.append("draft")
         if request_pending:
             bits.append(f"review requested from {loop['reviewer_seat']}")
+        if pr.get("mergeable_state") == "dirty":
+            # #303 stage 1: GitHub cannot merge it as it is; nothing in the loop resolves that yet.
+            bits.append(f"CONFLICTS with {base or 'its base'} — merge {base or 'the base'} into "
+                        "the branch")
         state_line = " · ".join(bits)
 
     return {

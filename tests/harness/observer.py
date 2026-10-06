@@ -128,6 +128,26 @@ def group_observer() -> None:
           ("reviewer never posted a verdict" in block["message"]
            and block["url"].endswith("/pull/7")), True)
 
+    # -- a loop PR that no longer merges into its base is said once per head (#303) ------
+    reset(prs={"7": {**pr(7, head=HEAD_A), "mergeable_state": "dirty"}})
+    observer_route()
+    state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
+    run("watchdog.py", None, "--loop", "widgets")
+    conflict = [notice(p) for p in observer_posts() if notice(p)["event"] == "conflict"]
+    check("conflict: one notice", len(conflict), 1)
+    check("  it says what and what to do",
+          ("conflicts with its base" in conflict[0]["message"]
+           and "merge main into the branch" in conflict[0]["message"]), True)
+    run("watchdog.py", None, "--loop", "widgets")
+    check("  the next sweep at the same head says nothing new",
+          len([p for p in observer_posts() if notice(p)["event"] == "conflict"]), 1)
+    reset(prs={"7": {**pr(7, head=HEAD_A), "mergeable_state": "clean"}})
+    observer_route()
+    state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
+    run("watchdog.py", None, "--loop", "widgets")
+    check("  a clean PR is no conflict",
+          [p for p in observer_posts() if notice(p)["event"] == "conflict"], [])
+
     # -- terminal close / merge ----------------------------------------------------
     reset(prs={"7": pr(7, state="closed", merged="2026-02-02T00:00:00Z")})
     observer_route()

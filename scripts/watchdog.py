@@ -897,6 +897,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         raised[key] = now
         return True
 
+    conflicts: list[tuple[int, str]] = []
     for pr in prs:
         if not isinstance(pr, dict):
             continue
@@ -909,6 +910,13 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         head = (pr.get("head") or {}).get("sha") or ""
         if not number or not head:
             continue
+        # #303 stage 1: a loop PR that no longer merges into its base is said once per head.
+        # The listing carries no mergeability, so this is one read of the PR; GitHub computes it
+        # lazily, and an unknown answer (null) is simply not a conflict yet.
+        live = gh.pr(loop, number)
+        if (isinstance(live, dict) and live.get("mergeable_state") == "dirty"
+                and (live.get("head") or {}).get("sha") == head):
+            conflicts.append((number, head))
 
         # A held head is judged only by host-receipted post-boundary reviews: an old verdict
         # is not a current stall, and a missing fresh verdict is the reviewer's to post.
@@ -1026,6 +1034,13 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                     else f"{kind[:40]}#{int(now)}")
         observer.notify(loop, st, "stall", number, head, identity=identity,
                         outcome=kind, next_turn="you")
+    for number, head in conflicts:
+        # Keyed by head (the observer dedups on it): a new push that still conflicts is a new
+        # notice, a sweep that sees the same conflicted head again is not.
+        observer.notify(loop, st, "conflict", number, head, identity="conflict",
+                        outcome=f"conflicts with {loop['base']} — GitHub cannot merge it as it is",
+                        next_turn=f"you: merge {loop['base']} into the branch (the loop does not "
+                                  "resolve conflicts yet, #303)")
     if observer.retry(loop, st):
         log("observer: retried an undelivered notice")
     observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
