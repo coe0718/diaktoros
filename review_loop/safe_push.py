@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -200,31 +201,42 @@ _ASKPASS = ("import os,sys\nfrom pathlib import Path\n"
             "else Path(os.environ['REVIEW_LOOP_TOKEN_FILE']).read_text().strip())\n")
 
 
-def _git_cas(loop: dict, repo: str, branch: str, head: str,
-             files: list[tuple[str, bytes]], message: str, login: str,
-             identity: dict, *, before_push=None, remote: str | None = None,
-             from_branch: str | None = None, patch: bytes | None = None,
-             changed: list | None = None) -> str:
-    """Fetch the advertised branch, construct local objects, and exact-lease push.
+class _Isolated:
+    """A private bare repository and the only way to run Git against it: isolated config, no
+    hooks, no credential helper, one allowed transport, and stderr never surfaced (it can carry
+    URLs and server-controlled text). ``run`` raises on a non-zero exit; ``run_rc`` returns it."""
 
-    With ``from_branch`` (an issue fix, #214) the commit is built on ``head`` as found in that
-    advertised branch (``head`` must be one of its commits) and pushed to ``branch``, which must
-    not exist yet: the lease is "absent", so an existing branch is never overwritten.
+    def __init__(self, root: Path, env: dict, protocol: str):
+        self.root, self.env, self.protocol = root, env, protocol
+        self.bare = root / "objects.git"
 
-    With ``patch`` (#64) the commit is the base tree with that unified diff applied by Git
-    (``apply --cached``: index only, no worktree, no hooks, nothing outside the tree), and every
-    path it changed is then checked like a whole file's (``_changed_paths``); ``changed``, when
-    given, receives those paths for the audit record before ``before_push`` runs.
+    def _cmd(self, args):
+        return ["/usr/bin/git", "-c", "credential.helper=", "-c", "core.hooksPath=/dev/null",
+                "-c", "commit.gpgsign=false", "-c", "protocol.allow=never",
+                "-c", f"protocol.{self.protocol}.allow=always", *args]
 
-    `remote` is a private local-fixture seam, never sourced from IPC or config.
-    Only validated manifest paths/bytes reach Git's temporary private bare repo.
-    """
-    url = config.guard_network(remote if remote is not None else f"https://github.com/{repo}.git")
-    protocol = "file" if remote is not None else "https"
+    def run_rc(self, *args: str, input: bytes | None = None) -> tuple[int, bytes]:
+        try:
+            result = subprocess.run(self._cmd(args), cwd=self.root, env=self.env, input=input,
+                                    capture_output=True, timeout=90, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise broker.BrokerDenied("isolated Git transport failed") from exc
+        return result.returncode, result.stdout
+
+    def run(self, *args: str, input: bytes | None = None) -> bytes:
+        code, out = self.run_rc(*args, input=input)
+        if code:
+            raise broker.BrokerDenied("isolated Git transport rejected operation")
+        return out.strip()
+
+
+@contextlib.contextmanager
+def _isolated(loop: dict, login: str, identity: dict, remote: str | None):
+    url = config.guard_network(remote if remote is not None else
+                               f"https://github.com/{loop['repo']}.git")
     with tempfile.TemporaryDirectory(prefix="review-loop-git-") as temp:
         root = Path(temp)
         os.chmod(root, 0o700)
-        bare = root / "objects.git"
         askpass = root / "askpass.py"
         askpass.write_text("#!/usr/bin/python3\n" + util.leak_guard_code(_ASKPASS))
         askpass.chmod(0o700)
@@ -236,40 +248,137 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
                "GIT_AUTHOR_NAME": identity["name"], "GIT_AUTHOR_EMAIL": identity["email"],
                "GIT_COMMITTER_NAME": identity["name"], "GIT_COMMITTER_EMAIL": identity["email"]}
         util.leak_guard_env(env, pythonpath=False)   # the askpass loads it by path
+        git = _Isolated(root, env, "file" if remote is not None else "https")
+        git.run("init", "--bare", "--template", str(root / "empty-template"), str(git.bare))
+        yield git, url
 
-        def run(*args: str, input: bytes | None = None) -> bytes:
-            cmd = ["/usr/bin/git", "-c", "credential.helper=", "-c", "core.hooksPath=/dev/null",
-                   "-c", "commit.gpgsign=false", "-c", "protocol.allow=never",
-                   "-c", f"protocol.{protocol}.allow=always", *args]
-            try:
-                result = subprocess.run(cmd, cwd=temp, env=env, input=input,
-                                        capture_output=True, timeout=90, check=False)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise broker.BrokerDenied("isolated Git transport failed") from exc
-            if result.returncode:
-                # Git stderr can contain URLs and server-controlled text; never expose it.
-                raise broker.BrokerDenied("isolated Git transport rejected operation")
-            return result.stdout.strip()
 
-        run("init", "--bare", "--template", str(root / "empty-template"), str(bare))
-        # Fetch an ADVERTISED ref, never a dangling object ID. Verify the exact
-        # snapshot before constructing anything or attempting a ref mutation.
+# A conflict marker line, as Git writes them: 7 of '<' or '>' then a space or the line's end, or
+# exactly 7 '='. A merge push that leaves one in a conflicted file is refused (#303).
+CONFLICT_MARKER = re.compile(rb"^(?:<{7}|>{7})(?: |$)|^={7}$", re.M)
+# The bounds of a merge export: conflicted paths reported back, and the tree's size in entries.
+MERGE_CONFLICTS_MAX = 64
+MERGE_ENTRIES_MAX = 20000
+
+
+def _merge(git: "_Isolated", url: str, branch: str, head: str, base_ref: str,
+           base_sha: str) -> tuple[str, list[str]]:
+    """Fetch the PR branch (it must be at ``head``) and the base branch (``base_sha`` must be on
+    it), then merge ``base_sha`` into ``head`` without a worktree: the merged tree, with conflict
+    markers in the conflicted files, and those files' paths."""
+    bare = str(git.bare)
+    git.run("--git-dir", bare, "fetch", "--no-tags", "--no-recurse-submodules", url,
+            f"refs/heads/{branch}:refs/heads/snapshot", f"refs/heads/{base_ref}:refs/heads/base")
+    if _sha(git.run("--git-dir", bare, "rev-parse", "refs/heads/snapshot").decode()) != head:
+        raise broker.BrokerDenied("fetched PR branch moved")
+    code, _ = git.run_rc("--git-dir", bare, "merge-base", "--is-ancestor", base_sha, "refs/heads/base")
+    if code:
+        raise broker.BrokerDenied("base commit is not on the base branch")
+    code, out = git.run_rc("--git-dir", bare, "merge-tree", "--write-tree", "--name-only",
+                           "--no-messages", "-z", head, base_sha)
+    if code not in (0, 1):
+        raise broker.BrokerDenied("merge of the base could not be computed")
+    fields = [field.decode("utf-8", "surrogateescape") for field in out.split(b"\0") if field]
+    if not fields:
+        raise broker.BrokerDenied("merge of the base could not be computed")
+    tree, conflicted = _sha(fields[0]), sorted(set(fields[1:]))
+    if code == 1 and not conflicted:
+        raise broker.BrokerDenied("merge of the base could not be computed")
+    if len(conflicted) > MERGE_CONFLICTS_MAX:
+        raise broker.BrokerDenied("merge conflicts in too many files")
+    return tree, conflicted
+
+
+def merged_tree(loop: dict, *, branch: str, head: str, base_ref: str, base_sha: str,
+                login: str, remote: str | None = None) -> dict:
+    """The PR head with ``base_sha`` merged in, for a conflict-resolution turn (#303): read-only.
+
+    Returns the merged tree's id, its conflicted paths, and the tree as a verified archive:
+    ``entries`` (path, blob id, size, executable) for every regular file, ``skipped`` for the
+    paths an export never carries (symlinks, submodules), and ``archive`` (a tar whose members
+    sit under one top-level directory), so ``trusted_fetch._extract`` writes and verifies it
+    exactly like a PR export."""
+    _sha(head), _sha(base_sha)
+    identity = {"name": "review-loop", "email": "review-loop@localhost"}
+    with _isolated(loop, login, identity, remote) as (git, url):
+        tree, conflicted = _merge(git, url, branch, head, base_ref, base_sha)
+        bare = str(git.bare)
+        entries, skipped = [], []
+        for record in git.run("--git-dir", bare, "ls-tree", "-r", "-l", "-z", tree).split(b"\0"):
+            if not record:
+                continue
+            meta, path = record.split(b"\t", 1)
+            mode, kind, oid, size = meta.decode().split()
+            name = path.decode("utf-8", "surrogateescape")
+            if kind == "blob" and mode in _REGULAR:
+                entries.append((name, _sha(oid), int(size), mode == "100755"))
+            else:
+                skipped.append(name)
+        if len(entries) > MERGE_ENTRIES_MAX:
+            raise broker.BrokerDenied("merged tree too large")
+        archive = git.run_rc("--git-dir", bare, "archive", "--format=tar", "--prefix=merge/",
+                             tree)
+        if archive[0]:
+            raise broker.BrokerDenied("merged tree could not be archived")
+        return {"tree": tree, "conflicted": conflicted, "entries": entries,
+                "skipped": skipped, "archive": archive[1]}
+
+
+def _git_cas(loop: dict, repo: str, branch: str, head: str,
+             files: list[tuple[str, bytes]], message: str, login: str,
+             identity: dict, *, before_push=None, remote: str | None = None,
+             from_branch: str | None = None, patch: bytes | None = None,
+             changed: list | None = None, merge: dict | None = None) -> str:
+    """Fetch the advertised branch, construct local objects, and exact-lease push.
+
+    With ``from_branch`` (an issue fix, #214) the commit is built on ``head`` as found in that
+    advertised branch (``head`` must be one of its commits) and pushed to ``branch``, which must
+    not exist yet: the lease is "absent", so an existing branch is never overwritten.
+
+    With ``patch`` (#64) the commit is the base tree with that unified diff applied by Git
+    (``apply --cached``: index only, no worktree, no hooks, nothing outside the tree), and every
+    path it changed is then checked like a whole file's (``_changed_paths``); ``changed``, when
+    given, receives those paths for the audit record before ``before_push`` runs.
+
+    With ``merge`` (#303: ``{base_ref, base_sha, tree}``, host-owned, never from the sandbox)
+    the commit is a merge: it starts from ``base_sha`` merged into ``head`` — which must still be
+    exactly ``tree``, the tree the resolving turn was given — applies the seat's resolution to
+    that, refuses any conflict marker left in a conflicted file, and has the parents
+    ``(head, base_sha)``. The lease is still the exact head.
+
+    `remote` is a private local-fixture seam, never sourced from IPC or config.
+    Only validated manifest paths/bytes reach Git's temporary private bare repo.
+    """
+    if merge is not None and (from_branch or set(merge) != {"base_ref", "base_sha", "tree"}):
+        raise broker.BrokerDenied("invalid merge scope")
+    with _isolated({**loop, "repo": repo}, login, identity, remote) as (git, url):
+        run, bare = git.run, git.bare
         ref = f"refs/heads/{branch}"
-        source = f"refs/heads/{from_branch}" if from_branch else ref
-        run("--git-dir", str(bare), "fetch", "--no-tags", "--no-recurse-submodules",
-            url, f"{source}:refs/heads/snapshot")
-        snapshot = _sha(run("--git-dir", str(bare), "rev-parse", "refs/heads/snapshot").decode())
-        if from_branch:
-            try:
-                run("--git-dir", str(bare), "merge-base", "--is-ancestor", head, snapshot)
-            except broker.BrokerDenied:
-                raise broker.BrokerDenied("base commit is not on the base branch") from None
-        elif snapshot != head:
-            raise broker.BrokerDenied("fetched PR branch moved")
+        conflicted: list[str] = []
+        if merge is not None:
+            start, conflicted = _merge(git, url, branch, head, merge["base_ref"],
+                                       _sha(merge["base_sha"]))
+            if start != _sha(merge["tree"]):
+                raise broker.BrokerDenied("the base merge changed since the turn was staged")
+        else:
+            # Fetch an ADVERTISED ref, never a dangling object ID. Verify the exact
+            # snapshot before constructing anything or attempting a ref mutation.
+            source = f"refs/heads/{from_branch}" if from_branch else ref
+            run("--git-dir", str(bare), "fetch", "--no-tags", "--no-recurse-submodules",
+                url, f"{source}:refs/heads/snapshot")
+            snapshot = _sha(run("--git-dir", str(bare), "rev-parse", "refs/heads/snapshot").decode())
+            if from_branch:
+                try:
+                    run("--git-dir", str(bare), "merge-base", "--is-ancestor", head, snapshot)
+                except broker.BrokerDenied:
+                    raise broker.BrokerDenied("base commit is not on the base branch") from None
+            elif snapshot != head:
+                raise broker.BrokerDenied("fetched PR branch moved")
+            start = head
         parents = run("--git-dir", str(bare), "rev-list", "--parents", "-n", "1", head).decode().split()
         if not parents or parents[0] != head:
             raise broker.BrokerDenied("invalid fetched head")
-        run("--git-dir", str(bare), "read-tree", head)
+        run("--git-dir", str(bare), "read-tree", start)
         existing = {}
         for entry in run("--git-dir", str(bare), "ls-files", "--stage", "-z").split(b"\0"):
             if entry:
@@ -302,17 +411,29 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
             except broker.BrokerDenied:
                 raise broker.BrokerDenied("patch does not apply to the scoped head") from None
             paths = _changed_paths(run("--git-dir", str(bare), "diff-index", "--cached", "--raw",
-                                       "-z", "--no-renames", head))
+                                       "-z", "--no-renames", start))
             if changed is not None:
                 changed.extend(paths)
+        if conflicted:
+            # A resolution must leave no conflict marker in any file Git could not merge.
+            staged = {}
+            for entry in run("--git-dir", str(bare), "ls-files", "--stage", "-z").split(b"\0"):
+                if entry:
+                    metadata, name = entry.split(b"\t", 1)
+                    staged[name.decode("utf-8", "surrogateescape")] = metadata.decode().split()[1]
+            left = [path for path in conflicted if path in staged and CONFLICT_MARKER.search(
+                run("--git-dir", str(bare), "cat-file", "blob", staged[path]))]
+            if left:
+                raise broker.BrokerDenied(f"conflict markers left in {len(left)} file(s)")
         tree = _sha(run("--git-dir", str(bare), "write-tree").decode())
         base_tree = _sha(run("--git-dir", str(bare), "rev-parse", f"{head}^{{tree}}").decode())
         if tree == base_tree:
             raise broker.BrokerDenied("push has no changes")
+        extra_parents = ["-p", merge["base_sha"]] if merge is not None else []
         new_head = _sha(run("--git-dir", str(bare), "commit-tree", tree, "-p", head,
-                            input=message.encode("utf-8") + b"\n").decode())
+                            *extra_parents, input=message.encode("utf-8") + b"\n").decode())
         created = run("--git-dir", str(bare), "rev-list", "--parents", "-n", "1", new_head).decode().split()
-        if created != [new_head, head]:
+        if created != [new_head, head] + ([merge["base_sha"]] if merge is not None else []):
             raise broker.BrokerDenied("local commit does not have exact expected parent")
         if before_push is not None:
             before_push(new_head)
@@ -322,7 +443,7 @@ def _git_cas(loop: dict, repo: str, branch: str, head: str,
         return new_head
 
 def push(loop: dict, *, repo: str, number: int, head: str, role: str,
-         branch: str, manifest: object) -> dict:
+         branch: str, manifest: object, merge: dict | None = None) -> dict:
     """Create Git objects and lease-advance only the gate-scoped PR branch.
 
     The trusted caller supplies scope from the gate, never from the manifest. All
@@ -370,6 +491,9 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     receipt = {"repo": repo, "pr": number, "old_head": head,
                "branch": branch, "role": role, "login": login,
                "paths": [path for path, _ in files], "operation": "push"}
+    if merge is not None:
+        # #303: a conflict resolution — a merge commit of this base into the head.
+        receipt["merge_base"] = merge.get("base_sha")
     # A diff's paths are known once Git has applied it; they reach the receipt before the push.
     extra = {"patch": patch, "changed": receipt["paths"]} if patch is not None else {}
     error = None
@@ -388,7 +512,8 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     try:
         # The trailer (#197) is added here, on the host, after the seat's message was validated.
         _git_cas(loop, repo, branch, head, files, attribution.sign_commit(loop, manifest["message"]),
-                 login, identity, before_push=before_push, **extra)
+                 login, identity, before_push=before_push,
+                 **({"merge": merge} if merge is not None else {}), **extra)
     except Exception as exc:
         error = exc
     outcome = "unknown"
