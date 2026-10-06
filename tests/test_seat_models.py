@@ -597,6 +597,8 @@ class DoctorAndModels(Base):
                           "model:adjudicator": doctor.VERIFIED})
         self.assertIn("rev: openrouter / vendor/rev-model", checks["model:reviewer"].detail)
         self.assertIn("custom:acme / fix-model via acme.test", checks["model:fixer"].detail)
+        self.assertIn("the configured model", checks["model:fixer"].detail)
+        self.assertIn("selftest", checks["model:fixer"].detail)
         for name in ("rev", "fix", "adj"):
             self.assertFalse((self.home / "profiles" / name / "resolved.marker").exists())
         text = json.dumps([vars(c) for c in checks.values()])
