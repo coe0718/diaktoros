@@ -38,6 +38,15 @@ class FixNeedsATest(unittest.TestCase):
         self.assertIn("docs, wording and comment-only changes are exempt", blocks)
         self.assertIn("check that a test now reproduces that finding", blocks)
 
+    def test_a_justified_untestable_fix_is_weighed_not_blocked(self):
+        # #435: the fixer may explain why a defect cannot be tested; the reviewer must weigh
+        # that reason rather than block on the missing test regardless.
+        text = flat(prompts.ISOLATED_REVIEWER)
+        blocks = text[text.index("**blocks** —"):text.index("**issue** —")]
+        self.assertIn("a fixer who explains *why* the defect cannot be tested", blocks)
+        self.assertIn("when it holds up, accept it and say so instead of blocking", blocks)
+        self.assertIn("a reason that does not hold up blocks", blocks)
+
     def test_route_prompts_are_untouched(self):
         for template in (prompts.REVIEWER, prompts.FIXER):
             self.assertNotIn("fails without", template)

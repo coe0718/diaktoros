@@ -191,7 +191,9 @@ What to do:
      behavior with no test that would fail without it** (docs, wording and comment-only changes
      are exempt): on a round that answers an earlier blocking finding, check that a test now
      reproduces that finding, and say in the review whether it does. A fix "verified by reading"
-     does not count. Any blocking finding makes
+     does not count. The one exception is a fixer who explains *why* the defect cannot be
+     tested in this repository: weigh that reason, and when it holds up, accept it and say so
+     instead of blocking; a reason that does not hold up blocks. Any blocking finding makes
      the verdict REQUEST_CHANGES.
    - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
      issue-tier findings the verdict is APPROVE. File each one yourself, before the review,
