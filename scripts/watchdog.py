@@ -1069,8 +1069,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                         outcome=f"conflicts with {loop['base']} — GitHub cannot merge it as it is",
                         next_turn=(f"{author}: merge {loop['base']} into the branch (review-only "
                                    "— no fixer)" if review_only else
-                                   f"the fixer merges {loop['base']} into the branch and resolves "
-                                   "it (a whole-file conflict comes back to you)" if resolving else
+                                   f"the fixer will try to merge {loop['base']} into the branch "
+                                   "and resolve it (a whole-file conflict or workflow changes "
+                                   "come back to you)" if resolving else
                                    f"you: merge {loop['base']} into the branch (unattended fixer "
                                    "pushes are off, so the loop does not resolve it)"))
     if observer.retry(loop, st):

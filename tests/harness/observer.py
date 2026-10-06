@@ -137,7 +137,14 @@ def group_observer() -> None:
     check("conflict: one notice", len(conflict), 1)
     check("  it says what and what to do",
           ("conflicts with its base" in conflict[0]["message"]
-           and "merges main into the branch" in conflict[0]["message"]), True)
+           and "will try to merge main into the branch" in conflict[0]["message"]), True)
+    # The sweep cannot know the worker's decision, so it never promises one: the cases the
+    # worker hands to a person are named in the notice itself.
+    check("  it never promises a resolution the worker may hand back",
+          ("whole-file conflict" in conflict[0]["message"]
+           and "workflow changes" in conflict[0]["message"]
+           and "come back to you" in conflict[0]["message"]
+           and "resolves it" not in conflict[0]["message"]), True)
     # #303 stage 3: with unattended fixer pushes on, the sweep asks for a resolving fixer turn
     # (held here: the harness has no worker runtime) and still finishes and notifies.
     check("  the sweep asks for a resolving fixer turn",
