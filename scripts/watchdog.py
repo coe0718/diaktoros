@@ -44,7 +44,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from review_loop import config, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
+from review_loop import config, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
 from review_loop.util import age_min, epoch, log, now_iso  # noqa: E402
 
 TEST = bool(os.environ.get("REVIEW_LOOP_TEST"))
@@ -796,6 +796,11 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         st.watch_save(watch)
         return lines
 
+    try:
+        lines.extend(fix_hold.sweep(loop, st))
+    except Exception as exc:
+        lines.append(f"⚠️ Review loop [{loop['id']}] held issue fixes: "
+                     f"{type(exc).__name__}: {exc}")
     reconcile_stacked(loop, st, watch, prs, lines)
     retry_fresh_reviews(loop, st, prs, lines, since=now)
 

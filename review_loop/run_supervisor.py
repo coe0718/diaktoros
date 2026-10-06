@@ -1671,6 +1671,13 @@ class Supervisor:
                               (repo, issue_number)).fetchone()
         return row['depth'] if row is not None else None
 
+    def filed_origin_pr(self, repo: str, issue_number: int) -> int | None:
+        """The PR a seat filed this issue from (#324), or None for one a person opened."""
+        with self._connect() as con:
+            row = con.execute('SELECT pr FROM filed_issues WHERE repo=? AND issue_number=?',
+                              (repo, issue_number)).fetchone()
+        return row['pr'] if row is not None else None
+
     def record_issue_fix(self, run_id: str, repo: str, number: int, base: str, kind: str,
                          branch: str) -> None:
         """Durably record the one write a live issue-fix run may make (#214), before it."""
