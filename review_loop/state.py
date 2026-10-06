@@ -688,6 +688,19 @@ class LoopState:
             if data.pop(str(number), None) is not None:
                 self._save(self.dir / "held-fixes.json", data)
 
+    def fix_hold_said(self, number: int) -> bool:
+        """Whether the one "waiting for PR" comment was already posted for this issue."""
+        with self.locked():
+            raw = self._load(self.dir / "held-fixes-said.json", [])
+        return number in (raw if isinstance(raw, list) else ())
+
+    def fix_hold_say(self, number: int) -> None:
+        with self.locked():
+            raw = self._load(self.dir / "held-fixes-said.json", [])
+            raw = [n for n in raw if type(n) is int] if isinstance(raw, list) else []
+            if number not in raw:
+                self._save(self.dir / "held-fixes-said.json", sorted(raw + [number]))
+
     def github_failure_record(self, entry: dict) -> None:
         """Keep the most recent failed GitHub call (see ``gh.record_failure``)."""
         self._save(self.github_reads, {"last_failure": entry})

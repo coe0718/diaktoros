@@ -54,11 +54,20 @@ def queue_fix(loop: dict, number: int) -> tuple[str, str]:
 
 def hold(loop: dict, st, number: int, pr: int) -> None:
     """Record the held hand-off and say so once."""
-    fresh = not st.fix_hold_get(number)
     st.fix_hold_set(number, pr)
-    if fresh:
+    if not st.fix_hold_said(number):
+        _wait_comment(loop, number, pr)
+        st.fix_hold_say(number)
         _notice(loop, number, "held", pr,
                 f"#{number} waits for PR #{pr} to merge: its finding is about code only there")
+
+
+def _wait_comment(loop: dict, number: int, pr: int) -> None:
+    login = config.triage_login(loop)
+    if login:
+        gh.api(loop, f"/repos/{loop['repo']}/issues/{number}/comments", method="POST",
+               body={"body": f"waiting for #{pr} to merge — this finding is about code only on "
+                             "that branch"}, login=login)
 
 
 def _drop_comment(loop: dict, number: int, pr: int) -> None:
@@ -79,7 +88,10 @@ def sweep(loop: dict, st) -> list[str]:
     from . import run_supervisor
     for number, pr in sorted(st.fix_holds().items()):
         state = pr_state(loop, pr)
-        if state is None or state == "open":
+        if state is None:
+            continue                              # unreadable: retry on the next sweep
+        if state == "open":
+            hold(loop, st, number, pr)            # says so once, if the gate could not
             continue
         if state == "closed":
             _drop_comment(loop, number, pr)

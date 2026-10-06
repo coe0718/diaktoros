@@ -3214,6 +3214,8 @@ def cmd_status(args) -> int:
                 print(f"  running:    {seat} on {key} for {held:.0f}m")
         for line in _dependency_lines(loop):
             print(f"  deps:       {line}")
+        for issue_no, origin in sorted(st.fix_holds().items()):
+            print(f"  held:       issue #{issue_no} fix waits for PR #{origin} to merge")
         for seat in ("reviewer", "fixer"):
             queued = len(st.queue_items(seat))
             if queued:
@@ -3636,6 +3638,9 @@ def cmd_explain(args) -> int:
         print(f"  {'read:':<12}{report['read_at']} (GitHub pulls/reviews/hooks + local state; "
               f"read once, nothing written)")
         print(f"  {'state:':<12}{report['state_line']}")
+        for issue_no, origin in sorted(st.fix_holds().items()):
+            if origin == args.pr:
+                print(f"  {'held:':<12}issue #{issue_no} fix waits for this PR to merge")
         if report['chain']['status'] != 'direct':
             print(f"  {'chain:':<12}{report['chain']['status']} · "
                   f"parents {report['chain']['parents']} · {report['chain']['reason']}")
