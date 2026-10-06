@@ -7,7 +7,8 @@ the old folder's scripts. A renamed GitHub repository is the same story for the 
 file, the run ledger and the loop's state all name the repository, and a webhook from the
 renamed repository matches no loop at all.
 
-``migrate`` closes those gaps, in an order that a crash or a re-run cannot hurt:
+``migrate`` closes those gaps, in an order that a crash or a re-run cannot hurt, while the
+install is paused (below):
 
 1. **settings** — every setting the old plugin's form holds and this plugin's form does not is
    copied, through Hermes's own settings writer (``ctx.set_config``). A value already set here is
@@ -23,13 +24,98 @@ renamed repository matches no loop at all.
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import pathlib
 import sqlite3
+import time
 
 from . import config, gh, gate_shims, state as state_mod
 
 OLD_PLUGIN = "hermes-review-loop"
+
+
+# -- the pause (#431) ------------------------------------------------------------------------
+# While a migration moves records from one name to another, nothing may write under either: a
+# gate that wrote between the ledger move and the loop file would leave rows a re-run never
+# finds. So ``migrate`` holds a host-wide marker for its whole run, and while it exists every
+# gate records its delivery for a later re-drive instead of acting (``gate_failures.run``), the
+# worker claims no run, and the watchdog sweeps nothing. A marker left by a migrate that died
+# keeps the loop paused — its records may be half moved — until ``migrate`` runs again.
+
+MARKER_FILE = "migrating.json"
+
+
+class MigrationBusy(RuntimeError):
+    """Another migrate is running now."""
+
+
+def marker_path() -> pathlib.Path:
+    return config.home() / "state" / MARKER_FILE
+
+
+def migrating() -> dict | None:
+    """The marker's facts while a migration holds (or held) the install; ``None`` otherwise.
+
+    An unreadable marker still pauses: it says a migration started, and not who or when."""
+    path = marker_path()
+    try:
+        raw = path.read_text()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {"unreadable": True}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {"unreadable": True}
+    return data if isinstance(data, dict) else {"unreadable": True}
+
+
+def _alive(pid) -> bool:
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def describe(info: dict | None) -> str:
+    """One line for the watchdog, explain and the worker about a held marker."""
+    if info is None:
+        return ""
+    if info.get("unreadable"):
+        return f"a migration marker {marker_path()} exists but cannot be read"
+    since = info.get("started")
+    when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(since)) if isinstance(
+        since, (int, float)) else "an unknown time"
+    if _alive(info.get("pid")):
+        return f"`migrate` is running (pid {info.get('pid')}, since {when})"
+    return (f"a `migrate` started {when} did not finish (pid {info.get('pid')} is gone): its "
+            "records may be half moved — run `migrate` again to finish it")
+
+
+@contextlib.contextmanager
+def hold():
+    """Hold the marker for one migration; yields what an interrupted one left, if anything."""
+    path = marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    left = migrating()
+    if left is not None and not left.get("unreadable") and _alive(left.get("pid")) \
+            and left.get("pid") != os.getpid():
+        raise MigrationBusy(describe(left))
+    state_mod._atomic_write(path, {"pid": os.getpid(), "started": time.time()})
+    try:
+        yield left
+    finally:
+        current = migrating()
+        if current is not None and current.get("pid") == os.getpid():
+            path.unlink(missing_ok=True)
 
 
 def _hermes_config() -> dict:

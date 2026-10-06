@@ -1194,6 +1194,15 @@ def main() -> None:
 
 
 def run(args: argparse.Namespace, budget: float) -> None:
+    # A migration holds the install (#431): sweeping, draining or healing now would act under
+    # names being moved. Say so once per run and do nothing else; the next run after it ends
+    # re-drives what the gates deferred meanwhile.
+    from review_loop import migrate
+    held = migrate.migrating()
+    if held is not None:
+        if not args.drain:
+            print(f"⏸️ Review loop: paused — {migrate.describe(held)}", flush=True)
+        return
     # The cron job runs this with no --loop: one loop file the loader refuses (for any repo)
     # is reported by name, like any other per-loop failure, and every other loop still sweeps.
     refused: list[tuple[str, str]] = []

@@ -2215,6 +2215,11 @@ class Supervisor:
         return SILENT
 
     def _claim(self):
+        # A migration holds the install (#431): no run starts under names being moved. The
+        # pending rows wait where they are; the worker that finds nothing here exits as usual.
+        from . import migrate
+        if migrate.migrating() is not None:
+            return None
         # Snapshot candidates without taking a writer lock. A slow GitHub read
         # must not block unrelated enqueues, heartbeats, or receipt commits.
         with self._connect() as con:
