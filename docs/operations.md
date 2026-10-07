@@ -193,9 +193,9 @@ on, sending one notice that the checks need re-running. The loop cannot re-run C
 With `required_checks` set, the gating rules apply to those checks only. Optional checks
 (a bot, a coverage upload) are shown to the reviewer but never block, hold or wake anyone.
 A required check that has not reported at this head is **missing**, not passing: it blocks
-approval. With `review_after_ci` enabled, it also holds the review as outstanding; with that
-off, the reviewer can run but still cannot approve. Verify the configured check name and
-workflow: a missing check is not itself a defect in the PR. The refusal spends nothing, so a
+approval and holds the review (up to an hour) whatever `review_after_ci` is, unless another
+required check has already failed, in which case the review runs and names the failure.
+Verify the configured check name and workflow: a missing check is not itself a defect in the PR. The refusal spends nothing, so a
 REQUEST_CHANGES verdict in the same turn can still be submitted. Checks still running do
 not block an approval. With `review_after_ci` on, a review waits up to an hour for checks to
 finish before starting.
