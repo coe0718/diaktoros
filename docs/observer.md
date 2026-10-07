@@ -140,7 +140,7 @@ new notice. Supervisor reconciliation does not reconcile observer receipts.
 
 ## Urgent and routine tiers
 
-The tier is fixed per event in `review_loop/observer.py` (`URGENT_EVENTS`):
+The tier is fixed per event in `diaktoros/observer.py` (`URGENT_EVENTS`):
 
 | Tier | Events | With a digest set |
 | --- | --- | --- |
@@ -207,7 +207,7 @@ or an observer message as evidence of a completed write, a successful build, or 
 
 ## Source evidence
 
-Implementation boundaries: `review_loop/observer.py` (`route_contract`, `_target`,
+Implementation boundaries: `diaktoros/observer.py` (`route_contract`, `_target`,
 `notify`, `_deliver`, `retry`, `flush`), `scripts/observe.py`, CLI observer setters,
-`review_loop/state.py` receipt paths, and `scripts/watchdog.py` sweep callers.
+`diaktoros/state.py` receipt paths, and `scripts/watchdog.py` sweep callers.
 For run recovery rather than feed recovery, see [operations](operations.md#when-an-isolated-run-fails).

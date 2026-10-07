@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 import urllib.error
 
-from review_loop import config, gh, routes, trusted_fetch
+from diaktoros import config, gh, routes, trusted_fetch
 
 
 def http_error(code: int = 500) -> urllib.error.HTTPError:

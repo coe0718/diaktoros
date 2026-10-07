@@ -24,7 +24,7 @@ def group_delivery_ids() -> None:
     """
     from unittest.mock import patch as mock_patch
 
-    from review_loop import routes
+    from diaktoros import routes
 
     section("routes — one notice, one delivery id")
 

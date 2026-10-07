@@ -16,7 +16,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from review_loop import contained  # noqa: E402
+from diaktoros import contained  # noqa: E402
 
 PROBE = ("import getpass, grp, os, pwd; user = pwd.getpwuid(os.getuid()); "
          "print(user.pw_name, user.pw_dir, getpass.getuser(), grp.getgrgid(os.getgid()).gr_name, "

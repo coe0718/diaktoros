@@ -30,7 +30,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import broker_ipc, contained, run_supervisor
+from diaktoros import broker_ipc, contained, run_supervisor
 
 MiB = 1024 * 1024
 # Small enough to prove enforcement inside a test, larger than anything the probe stages.
@@ -102,7 +102,7 @@ print(json.dumps({
 # capability socket by enumeration, exactly as the audit did.
 SEAT_CLIENT = r'''
 import glob, json, sys
-from review_loop import broker_ipc
+from diaktoros import broker_ipc
 
 found = sorted(glob.glob(sys.argv[1] + "/**/broker.sock", recursive=True))
 assert found, "no broker socket reachable by enumeration"
@@ -186,7 +186,7 @@ class LauncherLimitTests(unittest.TestCase):
 
     def test_an_accumulated_target_warns_where_a_small_cap_fails(self):
         """A FAIL must mean a seat's real build will not fit — never the clone's own history."""
-        from review_loop import selftest
+        from diaktoros import selftest
 
         class Recorder(selftest.Report):
             def __init__(self):
@@ -302,7 +302,7 @@ class SandboxLimitTests(unittest.TestCase):
         A malformed override provoked by one test used to leave every later selftest in the same
         process refusing to call itself green, and the record grew one entry per resolution.
         """
-        from review_loop import contained
+        from diaktoros import contained
         with mock.patch.dict("os.environ", {"DIAKTOROS_CHECKOUT_SIZE_GIB": "0"}):
             contained._size_from_env("CHECKOUT_SIZE", 8)
             self.assertEqual(len(contained.live_ignored_overrides()), 1,
@@ -401,7 +401,7 @@ class BrokerClaimTests(unittest.TestCase):
 
     def test_doctor_reports_the_caps_and_the_worst_case(self):
         """The caps are tmpfs, so they are a memory budget, not a disk one."""
-        from review_loop import doctor
+        from diaktoros import doctor
         # This loop names no seats: one turn each, plus the adjudicator.
         # A refused override is its own check, so it must not colour the ordinary lines here:
         # the list is filled once at import, from this process's environment.

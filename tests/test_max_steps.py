@@ -18,7 +18,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from review_loop import config, inference_proxy  # noqa: E402
+from diaktoros import config, inference_proxy  # noqa: E402
 
 LOOP_ID = "steps"
 

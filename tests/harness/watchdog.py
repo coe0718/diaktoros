@@ -497,7 +497,7 @@ def group_explain() -> None:
 
     import argparse
 
-    from review_loop import cli, config, gate, gh, state as state_mod
+    from diaktoros import cli, config, gate, gh, state as state_mod
 
     def explain(loop: str | None = "widgets", pr_number: int = 7,
                 extra_env: dict | None = None) -> tuple[int, str]:
@@ -873,7 +873,7 @@ def group_explain() -> None:
     check("paused → re-arm", decide(armed=False)["next"]["kind"], "rearm")
     check("a draft → ready_for_review", decide(pr=pr(7, draft=True))["next"]["kind"], "ready")
     check("unverified stacked base → retry, not a run", decide(pr=pr(7, base="release"))["next"]["kind"], "retry")
-    from review_loop import situation
+    from diaktoros import situation
     verified_stack = situation.Resolution("waiting", "waiting on #6",
         situation.Identity(HEAD_A, "release", HEAD_B, ((6, "release", HEAD_B, HEAD_A),)), (6,))
     stacked_kind = decide(pr=pr(7, base="release"), chain=verified_stack,

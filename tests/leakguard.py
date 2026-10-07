@@ -16,7 +16,7 @@ the guard charges them to the running test, naming the child's argv:
 
 Each leak names the statement that released it; to also see where it was allocated, run with
 ``PYTHONTRACEMALLOC=10`` (children inherit it). A child whose environment is scrubbed gets the
-recorder from ``review_loop.util.leak_guard_env``/``leak_guard_code``, which change nothing
+recorder from ``diaktoros.util.leak_guard_env``/``leak_guard_code``, which change nothing
 unless this guard is running: supervisor fixture workers and fixture commands (via
 ``PYTHONPATH``), the seat-model resolver (``python -E -s -c``) and Git's askpass (loaded by
 absolute path). A process inside the bubblewrap sandbox is not covered: the log is outside the

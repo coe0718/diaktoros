@@ -61,7 +61,7 @@ class Review(unittest.TestCase):
         from unittest import mock
         t.reset(prs={"7": t.pr(7)})
         counts = iter([0, 1])      # the ledger count before the gate, and after it
-        with mock.patch("review_loop.cli._reviewer_runs", side_effect=lambda *a: next(counts)), \
+        with mock.patch("diaktoros.cli._reviewer_runs", side_effect=lambda *a: next(counts)), \
              mock.patch("subprocess.run", side_effect=gate_only(subprocess.CompletedProcess([], 0, "", ""))):
             rc, out = self.cli("review", "--loop", "widgets", "--pr", "7")
         self.assertEqual(rc, 0, out)

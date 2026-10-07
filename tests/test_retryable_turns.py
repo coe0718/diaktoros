@@ -14,8 +14,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from review_loop import ledger, run_supervisor
-from review_loop.run_supervisor import MAX_REARMS, MAX_RETRIES, Supervisor
+from diaktoros import ledger, run_supervisor
+from diaktoros.run_supervisor import MAX_REARMS, MAX_RETRIES, Supervisor
 
 HEAD = 'a' * 40
 CHILD = r'''
@@ -245,9 +245,9 @@ class ClaimTimeReads(Base):
         self.s.submit('review', 'o/r', 1, HEAD, 'reviewer')
 
     def claim(self, pr):
-        with patch('review_loop.config.by_repo', return_value=self.LOOP), \
-             patch('review_loop.gh.api', return_value=pr), \
-             patch('review_loop.gh.reviews', return_value=[]):
+        with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
+             patch('diaktoros.gh.api', return_value=pr), \
+             patch('diaktoros.gh.reviews', return_value=[]):
             return self.s._claim()
 
     def test_502_at_claim_is_a_read_retry_then_the_run_succeeds(self):
@@ -258,9 +258,9 @@ class ClaimTimeReads(Base):
         self.assertIn('claim-time read failed', row['error'])
         self.elapse()
         self.s.recover()
-        with patch('review_loop.config.by_repo', return_value=self.LOOP), \
-             patch('review_loop.gh.api', return_value=self.pull()), \
-             patch('review_loop.gh.reviews', return_value=[]):
+        with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
+             patch('diaktoros.gh.api', return_value=self.pull()), \
+             patch('diaktoros.gh.reviews', return_value=[]):
             self.s._run_one()
         self.assertEqual(self.s.get('review')['state'], 'succeeded')
 
@@ -292,8 +292,8 @@ class ClaimTimeReads(Base):
         self.assertEqual(self.s.retry(row['id']), 'pending')          # the operator re-arms it
 
     def test_a_raising_claim_read_names_the_exception(self):
-        with patch('review_loop.config.by_repo', return_value=self.LOOP), \
-             patch('review_loop.gh.api', side_effect=OSError('connection reset')):
+        with patch('diaktoros.config.by_repo', return_value=self.LOOP), \
+             patch('diaktoros.gh.api', side_effect=OSError('connection reset')):
             self.assertIsNone(self.s._claim())
         self.assertIn('OSError: connection reset', self.s.get('review')['error'])
 
@@ -321,7 +321,7 @@ class ClaimTimeReads(Base):
 
 class ProductionClassification(unittest.TestCase):
     def test_transient_versus_terminal(self):
-        from review_loop import seat_model, trusted_fetch
+        from diaktoros import seat_model, trusted_fetch
         yes = [run_supervisor.RetryableError('x'), TimeoutError(), ConnectionResetError(),
                trusted_fetch.FetchDenied('GitHub response unavailable'),
                seat_model.SeatModelError('profile p: Hermes did not resolve within 30s')]
@@ -383,7 +383,7 @@ class OperatorCommands(unittest.TestCase):
         return code, out.getvalue()
 
     def test_retry_rearms_prewrite_and_refuses_uncertain(self):
-        from review_loop import cli
+        from diaktoros import cli
         code, out = self.run_cli(cli.cmd_retry, loop='widgets', pr=7, seat=None)
         self.assertEqual(code, 2, out)            # one refusal makes the command exit 2
         self.assertIn('reviewer #7 @ aaaaaaa re-armed (was failed: retry limit', out)
@@ -407,7 +407,7 @@ class OperatorCommands(unittest.TestCase):
         import argparse
         import contextlib
         import io
-        from review_loop import cli, gh
+        from diaktoros import cli, gh
         # Three rows: a recoverable failed run at the PR's real head (created first, so its
         # `updated` is older), and a superseded cancellation at an abandoned head (created last
         # and bumped newest by the claim path's supersession write).
@@ -440,7 +440,7 @@ class OperatorCommands(unittest.TestCase):
         import argparse
         import contextlib
         import io
-        from review_loop import cli, gh
+        from diaktoros import cli, gh
         self.sup.submit('r', 'acme/widgets', 7, HEAD, 'reviewer')          # real head, recoverable
         self.sup.submit('s', 'acme/widgets', 7, 'b' * 40, 'fixer')         # abandoned head
         with ledger.connect(self.db) as con:
@@ -459,7 +459,7 @@ class OperatorCommands(unittest.TestCase):
         self.assertIn(f'reviewer #7 @ {HEAD[:7]}', text)
 
     def test_ledger_lines_show_reason_tail_and_next_step(self):
-        from review_loop import cli, config
+        from diaktoros import cli, config
         loop = config.load_id('widgets')
         import contextlib
         import io
@@ -487,7 +487,7 @@ class OperatorCommands(unittest.TestCase):
                          'reading the ledger for explain/status writes nothing')
 
     def test_armed_sweep_schedules_due_retries_only_with_a_runtime(self):
-        from review_loop import config, gate
+        from diaktoros import config, gate
         loop = config.load_id('widgets')
         with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='waiting', retry_at=0 WHERE delivery='r'")
@@ -502,7 +502,7 @@ class OperatorCommands(unittest.TestCase):
         self.assertEqual(self.sup.get('r')['state'], 'pending')
 
     def test_breach_resume_hands_back_only_this_heads_adjudicating_marker(self):
-        from review_loop import config, state
+        from diaktoros import config, state
         st = state.LoopState(config.load_id('widgets'))
         st.breach_set(7, {'pr': 7, 'head': HEAD, 'rounds': 3, 'status': 'awaiting-adjudication'})
         self.assertIsNone(st.breach_resume(7, HEAD, 3), 'not adjudicating: left alone')

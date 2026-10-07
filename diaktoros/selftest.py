@@ -1022,7 +1022,7 @@ def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict 
     report.add(step, "ledger", PASS, f"{db} (schema migrated, status readable)")
     if rows:
         report.add(step, "ledger:attention", WARN, f"{len(rows)} failed/uncertain run(s) in the ledger",
-                   f"inspect `python -m review_loop.run_supervisor status {db}`; an uncertain seat "
+                   f"inspect `python -m diaktoros.run_supervisor status {db}`; an uncertain seat "
                    "blocks new turns until reconciled")
     if settings is not None:
         try:

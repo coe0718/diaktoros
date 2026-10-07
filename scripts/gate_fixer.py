@@ -25,8 +25,8 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from review_loop import config, gate, gh, observer, transition  # noqa: E402
-from review_loop.util import log, silence  # noqa: E402
+from diaktoros import config, gate, gh, observer, transition  # noqa: E402
+from diaktoros.util import log, silence  # noqa: E402
 
 
 def main() -> None:
@@ -60,7 +60,7 @@ def main() -> None:
     # A ref may have advanced while PR metadata became unverifiable. Its
     # supervisor hold is authoritative even if a later webhook says approved:
     # neither a merge handoff nor another fixer turn may bypass inspection.
-    from review_loop.run_supervisor import Supervisor
+    from diaktoros.run_supervisor import Supervisor
     ledger = config.host_path("ledger")
     if ledger.exists() and Supervisor(ledger).post_write_hold(loop['repo'], number):
         silence('post-write push quarantined — operator inspection required; no merge handoff')
@@ -238,5 +238,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     # Crash, overrun or a silence after a failed read is recorded for the watchdog (#75).
-    from review_loop import gate_failures  # noqa: E402
+    from diaktoros import gate_failures  # noqa: E402
     gate_failures.run("gate_fixer", main)

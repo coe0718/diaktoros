@@ -24,7 +24,7 @@ an explicit `apply --loop "<loop-id>"`.
 | Per-loop JSON | Repository, allowlists, routes, seats, consent policy, observer/triage and all effective loop settings | Use `set`, `triage`, `fixer-push`, or a carefully reviewed manual edit plus route reconciliation. See [Configuration](configuration.md). |
 | Private runtime JSON | Host Hermes/Python/Rust paths and optional model overrides | `setup` detects/writes it; workers resolve models through the runtime. See [Configuration](configuration.md). |
 
-The form and `SETTINGS_SCHEMA` in `review_loop/config.py` mirror the 23 keys declared in
+The form and `SETTINGS_SCHEMA` in `diaktoros/config.py` mirror the 23 keys declared in
 `plugin.yaml:config_schema`. The schema supplies types, labels and defaults, not a complete
 validation contract. The CLI handlers validate the resulting loop before their own writes.
 

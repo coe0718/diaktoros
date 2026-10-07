@@ -76,7 +76,7 @@ PARTIAL_VIEW_REFUSAL = (
 # Its one write is its answers comment instead, stating what it could not see.
 PARTIAL_VIEW_PUSH_REFUSAL = (
     "the host could not show you the whole change ({reason}); a push is refused — publish your "
-    "answers instead with `python -m review_loop.broker_client request_review --answers-file "
+    "answers instead with `python -m diaktoros.broker_client request_review --answers-file "
     "<file>` (no push), saying what was unavailable and what you could check in /work; nothing "
     "was written, the request is unspent")
 

@@ -17,7 +17,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from review_loop import broker, broker_client, safe_push, trusted_fetch  # noqa: E402
+from diaktoros import broker, broker_client, safe_push, trusted_fetch  # noqa: E402
 
 REPO = "acme/widgets"
 ENV = {**os.environ, "GIT_AUTHOR_NAME": "F", "GIT_AUTHOR_EMAIL": "f@example.org",

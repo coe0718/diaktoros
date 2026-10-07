@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from review_loop import broker, safe_push, seat_model
+from diaktoros import broker, safe_push, seat_model
 
 LEAK = 'import os\nf = open(os.devnull)\ndel f\n'
 RESOLVER_ENV = {'PATH', 'HOME', 'HERMES_HOME', 'LANG', 'PYTHONDONTWRITEBYTECODE',

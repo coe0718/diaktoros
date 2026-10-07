@@ -45,7 +45,7 @@ WORK = '/work'
 EXPORT = '/opt/export'
 TURN_FILE = '/opt/client/review-loop-turn.json'
 
-# The broker's own limits (review_loop.safe_push), repeated here only so an agent learns about a
+# The broker's own limits (diaktoros.safe_push), repeated here only so an agent learns about a
 # refusal before spending its write. The broker re-checks every one of them.
 MAX_FILES = 24
 MAX_FILE = 64 * 1024
@@ -54,12 +54,12 @@ MAX_MESSAGE = 240
 MAX_PATCH = 512 * 1024             # safe_push.MAX_PATCH
 MAX_PATCH_PATHS = 64               # safe_push.MAX_PATCH_PATHS
 MAX_DIFF_SOURCE = 16 * 1024 * 1024  # the largest file the client will read to diff
-# review_loop.broker.ANSWERS_MAX, and the broker's request line limit the answers travel in.
+# diaktoros.broker.ANSWERS_MAX, and the broker's request line limit the answers travel in.
 MAX_ANSWERS = 8 * 1024
 FILED_ISSUE_BODY_MAX = 6 * 1024    # broker.FILED_ISSUE_BODY_MAX
 ISSUE_TITLE_MAX = 120              # broker.ISSUE_PR_TITLE_MAX
 MAX_REQUEST = 16 * 1024
-from review_loop.wire import ANSWERS_MARKER, ANSWERS_MARKERS  # noqa: F401 - copied into the sandbox with this client
+from diaktoros.wire import ANSWERS_MARKER, ANSWERS_MARKERS  # noqa: F401 - copied into the sandbox with this client
 _SHA = re.compile(r'[0-9a-f]{40}\Z')
 _SEGMENT = re.compile(r'[A-Za-z0-9_.-]{1,128}\Z')
 _CONTROL_FILES = {'.gitmodules', '.gitattributes'}

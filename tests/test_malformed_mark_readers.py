@@ -134,7 +134,7 @@ class MalformedMarkReaders(unittest.TestCase):
                 self.assertNotIn(f"on {JUNK}", out)
                 self.assertNotIn(JUNK, t.load_state("locks.json").get("reviewer", {}))
 
-    # 4. review_loop/cli.py status: the "running:" line (and the queued lines under it).
+    # 4. diaktoros/cli.py status: the "running:" line (and the queued lines under it).
     def test_status_marks_a_junk_lock_unreadable_and_still_shows_the_good_one(self):
         for shape, junk in junk_shapes({"at": time.time() - 600, "head": t.HEAD_A,
                                         "why": "working"}).items():

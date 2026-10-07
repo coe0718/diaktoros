@@ -18,11 +18,11 @@ import unittest
 import unittest.mock
 from unittest.mock import patch
 
-from review_loop import (broker, broker_ipc, config, gate, ledger, run_supervisor, seat_model,
+from diaktoros import (broker, broker_ipc, config, gate, ledger, run_supervisor, seat_model,
                          trusted_turn)
-from review_loop.hostdirs import HostStateGone
+from diaktoros.hostdirs import HostStateGone
 import _ledger_guard  # noqa: E402  refuses the operator's real ledger (#108)
-from review_loop.run_supervisor import (_WORKERS, MAX_ATTEMPTS, SILENT, LedgerMissing,
+from diaktoros.run_supervisor import (_WORKERS, MAX_ATTEMPTS, SILENT, LedgerMissing,
                                         Supervisor)
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for tests/worker_wait.py
@@ -335,7 +335,7 @@ class Lifecycle(unittest.TestCase):
             # The inode the worker's stderr descriptor points at.
             seen.append(stderr if stderr == subprocess.DEVNULL else os.fstat(stderr.fileno()).st_ino)
             return unittest.mock.MagicMock()
-        with patch("review_loop.run_supervisor.subprocess.Popen", side_effect=popen):
+        with patch("diaktoros.run_supervisor.subprocess.Popen", side_effect=popen):
             sup._spawn()
         self.assertEqual(seen, [log.stat().st_ino])
         self.assertEqual(log.stat().st_size, 0)  # rotated, not grown without bound
@@ -419,7 +419,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_uninstalling_the_last_loop_forgets_the_ledger(self):
         from argparse import Namespace
-        from review_loop import cli
+        from diaktoros import cli
         cfg = self.root / "review-loops.d"
         cfg.mkdir()
         for name in ("a", "b"):
@@ -604,7 +604,7 @@ class Lifecycle(unittest.TestCase):
     def test_spawned_worker_is_marked_as_a_worker(self):
         # hostdirs.ensure refuses to create host state only in a process marked this way.
         sup = self.supervisor()
-        with patch("review_loop.run_supervisor.subprocess.Popen") as popen:
+        with patch("diaktoros.run_supervisor.subprocess.Popen") as popen:
             sup._spawn()
         self.assertEqual(popen.call_args.kwargs["env"].get("DIAKTOROS_WORKER"), "1")
 
@@ -805,9 +805,9 @@ class ReviewerClaimConcurrency(unittest.TestCase):
             except Exception as exc:
                 errors.append(exc)
                 return None
-        with patch('review_loop.config.by_repo', return_value=self.loop), \
-             patch('review_loop.gh.reviews', return_value=[]), \
-             patch('review_loop.gh.api', side_effect=slow_api):
+        with patch('diaktoros.config.by_repo', return_value=self.loop), \
+             patch('diaktoros.gh.reviews', return_value=[]), \
+             patch('diaktoros.gh.api', side_effect=slow_api):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                 first = pool.submit(claim)
                 try:
@@ -835,9 +835,9 @@ class ReviewerClaimConcurrency(unittest.TestCase):
             if not release.wait(5):
                 raise TimeoutError('test timed out waiting for release')
             return self.pull()
-        with patch('review_loop.config.by_repo', return_value=self.loop), \
-             patch('review_loop.gh.reviews', return_value=[]), \
-             patch('review_loop.gh.api', side_effect=slow_api):
+        with patch('diaktoros.config.by_repo', return_value=self.loop), \
+             patch('diaktoros.gh.reviews', return_value=[]), \
+             patch('diaktoros.gh.api', side_effect=slow_api):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(self.sup._claim)
                 try:
@@ -851,16 +851,16 @@ class ReviewerClaimConcurrency(unittest.TestCase):
         self.assertEqual(self.sup.get('review')['generation'], 'changed')
 
     def test_unavailable_generation_fails_without_claim(self):
-        with patch('review_loop.config.by_repo', return_value=self.loop), \
-             patch('review_loop.gh.api', return_value=self.pull(base_sha='invalid')):
+        with patch('diaktoros.config.by_repo', return_value=self.loop), \
+             patch('diaktoros.gh.api', return_value=self.pull(base_sha='invalid')):
             self.assertIsNone(self.sup._claim())
         self.assertEqual(self.sup.get('review')['state'], 'failed')
         self.assertEqual(self.sup.get('review')['generation'], None)
 
     def test_transient_generation_read_remains_pending_then_claims(self):
-        with patch('review_loop.config.by_repo', return_value=self.loop), \
-             patch('review_loop.gh.reviews', return_value=[]), \
-             patch('review_loop.gh.api', side_effect=[TimeoutError('temporary'), self.pull()]):
+        with patch('diaktoros.config.by_repo', return_value=self.loop), \
+             patch('diaktoros.gh.reviews', return_value=[]), \
+             patch('diaktoros.gh.api', side_effect=[TimeoutError('temporary'), self.pull()]):
             self.assertIsNone(self.sup._claim())
             # Counted and backed off with its reason (#53): visible, bounded, not claimed.
             row = self.sup.get('review')
@@ -874,8 +874,8 @@ class ReviewerClaimConcurrency(unittest.TestCase):
         self.assertEqual(self.sup.get('review')['state'], 'claimed')
 
     def test_same_delivery_rearms_pending_after_transient_read(self):
-        with patch('review_loop.config.by_repo', return_value=self.loop), \
-             patch('review_loop.gh.api', side_effect=TimeoutError('temporary')):
+        with patch('diaktoros.config.by_repo', return_value=self.loop), \
+             patch('diaktoros.gh.api', side_effect=TimeoutError('temporary')):
             self.assertIsNone(self.sup._claim())
         # The failed read waits out its backoff (#53); a redelivery does not skip it, and the
         # sweep that finds the backoff spent re-arms the worker.
@@ -930,9 +930,9 @@ class ReviewerClaimConcurrency(unittest.TestCase):
                    {'id': 42, 'state': 'APPROVED', 'commit_id': 'a' * 40,
                     'submitted_at': '2026-01-01T00:01:00Z', 'user': {'login': 'review'}}]
         loop = {**self.loop, 'reviewers': ['review'], 'unattended_fixer_push': True}
-        with patch('review_loop.config.by_repo', return_value=loop), \
-             patch('review_loop.gh.api', return_value=self.pull()), \
-             patch('review_loop.gh.reviews', return_value=reviews):
+        with patch('diaktoros.config.by_repo', return_value=loop), \
+             patch('diaktoros.gh.api', return_value=self.pull()), \
+             patch('diaktoros.gh.reviews', return_value=reviews):
             self.assertIsNone(self.sup._claim())
         self.assertEqual(self.sup.get('fix')['state'], 'cancelled')
         self.assertEqual(self.sup.get('fix')['error'], 'fixer verdict superseded')

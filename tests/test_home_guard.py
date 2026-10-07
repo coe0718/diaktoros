@@ -20,9 +20,9 @@ from unittest import mock
 
 TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent))
-from review_loop import (broker, cli, config, deps, doctor, gh, isolation, route_intent,  # noqa: E402
+from diaktoros import (broker, cli, config, deps, doctor, gh, isolation, route_intent,  # noqa: E402
                          routes, safe_push, selftest, state, trusted_fetch)
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 LEAKING = "test_boundary.BoundaryTests.test_gate_blocks_before_workspace_or_gateway_payload"
 # A test that trusts the default home: it writes the run ledger wherever config.home() says. The
@@ -31,8 +31,8 @@ LEAKING = "test_boundary.BoundaryTests.test_gate_blocks_before_workspace_or_gate
 DEFAULT_HOME_WRITER = """
 import _home_guard, sys
 sys.path.insert(0, sys.argv[1])
-from review_loop import config
-from review_loop.run_supervisor import Supervisor
+from diaktoros import config
+from diaktoros.run_supervisor import Supervisor
 Supervisor(config.home() / "state" / "diaktoros-runs.sqlite")
 """
 
@@ -141,7 +141,7 @@ class HomeGuard(unittest.TestCase):
 _SPAWN_A_WORKER = """
 import _home_guard, os, pathlib, sys, time
 sys.path.insert(0, sys.argv[1])
-from review_loop.run_supervisor import SILENT, Supervisor
+from diaktoros.run_supervisor import SILENT, Supervisor
 root = pathlib.Path(sys.argv[2])
 child = root / "child.py"
 child.write_text("import sys\\nwith open(sys.argv[1], 'a') as f: f.write('launched')\\n")
@@ -371,7 +371,7 @@ class TripwireOutsideTheHarness(unittest.TestCase):
     tripwire arms only with the guard's own sentinel, which only tests/_home_guard.py creates."""
 
     PROBE = ("import sys; sys.path.insert(0, sys.argv[1])\n"
-             "from review_loop import config\n"
+             "from diaktoros import config\n"
              "print(config.test_guard_active())\n"
              "print(config.home())\n"
              "print(config.guard_network('https://api.github.com/user'))\n")

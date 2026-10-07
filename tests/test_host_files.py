@@ -22,8 +22,8 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from review_loop import cli, config, migrate, pacing, run_supervisor  # noqa: E402
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros import cli, config, migrate, pacing, run_supervisor  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 LOOP = {"id": "one", "repo": "owner/one", "base": "main", "cap": 3, "fixers": ["fixer"],
         "reviewers": ["reviewer"], "reviewer_seat": "reviewer", "read_token": "reviewer",
@@ -95,7 +95,7 @@ class Paths(Home):
 
 class Doctor(Home):
     def test_doctor_names_the_old_files_and_the_command_that_moves_them(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         self.assertEqual(doctor.check_host_names().status, doctor.VERIFIED)
         self.old_install()
         check = doctor.check_host_names()

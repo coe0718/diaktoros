@@ -22,7 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from review_loop import config, gh, trace  # noqa: E402
+from diaktoros import config, gh, trace  # noqa: E402
 
 
 def payload(action: str, sender: str, *, requested: str | None = None, number: int = 7) -> dict:
@@ -138,7 +138,7 @@ class HarnessSeams(unittest.TestCase):
         import subprocess
         import tempfile
         import threading
-        from review_loop import util
+        from diaktoros import util
         arrived = []
 
         class Server(http.server.BaseHTTPRequestHandler):
@@ -169,7 +169,7 @@ class HarnessSeams(unittest.TestCase):
             probe = pathlib.Path(tmp) / "probe_gate.py"
             probe.write_text(f"""
 import urllib.request
-from review_loop import gh
+from diaktoros import gh
 try:
     urllib.request.urlopen(urllib.request.Request({url!r}, data=b"{{}}", method="POST"), timeout=5)
     print("post: sent")
@@ -268,7 +268,7 @@ class TracePayloadEvent(unittest.TestCase):
              "sender": {"login": "owner"}}
 
     def _trace(self, *extra):
-        from review_loop import cli
+        from diaktoros import cli
         path = pathlib.Path(os.environ["HERMES_HOME"]) / "issues-payload.json"
         path.write_text(json.dumps(self.issue))
         import argparse

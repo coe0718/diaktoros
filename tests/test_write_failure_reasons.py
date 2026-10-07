@@ -3,7 +3,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import unittest
 from unittest import mock
 
-from review_loop import broker, broker_ipc, config
+from diaktoros import broker, broker_ipc, config
 
 LOOP = {"repo": "o/r", "base": "main"}
 ERRORS = {

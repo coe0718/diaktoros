@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
-from review_loop import directsdk_guard as guard
+from diaktoros import directsdk_guard as guard
 
 
 class LaunchTests(unittest.TestCase):

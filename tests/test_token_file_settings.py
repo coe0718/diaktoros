@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from review_loop import cli, config, doctor
+from diaktoros import cli, config, doctor
 
 ROOT = Path(__file__).resolve().parent.parent
 READER, REV, FIX, ADJ = "reader-acct", "rev-acct", "fix-acct", "adj-acct"

@@ -9,7 +9,7 @@ Hermes hands the plugin's ``register_cli`` a ``setup(parser)`` closure for its s
 recorder object can capture that closure and this group can build the real parser itself, with no
 gateway and no network. Every ``hermes dk …`` line inside a fenced code block in
 ``README.md``, ``docs/*.md``, ``skill/SKILL.md`` and ``plugin.yaml`` is then tokenised
-(placeholders normalised, ``#`` comments dropped) and parsed. ``python -m review_loop.<module>``
+(placeholders normalised, ``#`` comments dropped) and parsed. ``python -m diaktoros.<module>``
 and ``scripts/<name>.py`` references must exist, with the generated watchdog shim as the one
 exception — and it is named by the CLI rather than hard-coded here.
 
@@ -34,7 +34,7 @@ DOCS = ("README.md", "skill/SKILL.md", "plugin.yaml")
 
 def _real_parser() -> argparse.ArgumentParser:
     """The parser ``hermes dk`` actually builds, captured from the CLI itself."""
-    from review_loop import cli
+    from diaktoros import cli
 
     captured: dict = {}
 
@@ -63,7 +63,7 @@ def _doc_files() -> list[pathlib.Path]:
 
 
 # Where a reader is sent to the docs from outside them: error messages, help, the skill.
-LINK_SOURCES = ("review_loop/*.py", "scripts/*.py", "__init__.py", "skill/SKILL.md", "plugin.yaml")
+LINK_SOURCES = ("diaktoros/*.py", "scripts/*.py", "__init__.py", "skill/SKILL.md", "plugin.yaml")
 _DOC_LINK = re.compile(r"\bdocs/([\w-]+\.md)(?:#([\w-]+))?")
 
 
@@ -198,13 +198,13 @@ def group_docs() -> None:
     for rel, line, tokens in found:
         check(f"{rel}:{line} parses — {' '.join(tokens)[:52]}", _rejects(parser, tokens), None)
 
-    from review_loop import cli as cli_module
+    from diaktoros import cli as cli_module
 
     for path in _doc_files():
         text = path.read_text()
-        for module in sorted(set(re.findall(r"python\s+-m\s+review_loop\.(\w+)", text))):
-            check(f"{path.relative_to(ROOT)}: review_loop/{module}.py exists",
-                  (ROOT / "review_loop" / f"{module}.py").is_file(), True)
+        for module in sorted(set(re.findall(r"python\s+-m\s+diaktoros\.(\w+)", text))):
+            check(f"{path.relative_to(ROOT)}: diaktoros/{module}.py exists",
+                  (ROOT / "diaktoros" / f"{module}.py").is_file(), True)
         for script in sorted(set(re.findall(r"(?:scripts/|\$HERMES_HOME/scripts/)([\w-]+\.py)",
                                            text))):
             check(f"{path.relative_to(ROOT)}: scripts/{script} exists",

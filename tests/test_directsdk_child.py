@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest import mock
 
-from review_loop import config, directsdk_backend as backend, inference_proxy, seat_model, trusted_turn
+from diaktoros import config, directsdk_backend as backend, inference_proxy, seat_model, trusted_turn
 
 FAKE_CLIENT = '''
 import json, os, time
@@ -109,7 +109,7 @@ class NativeHostTests(unittest.TestCase):
         self.assertEqual(self.endpoint.active, set())
 
     def test_real_socket_capability_does_not_treat_idle_client_as_disconnect(self):
-        from review_loop.inference_proxy import InferenceCapability, _UnixHTTP
+        from diaktoros.inference_proxy import InferenceCapability, _UnixHTTP
         credential = backend.ProcessCredential('rev', {})
         with InferenceCapability(self.root / 'cap', backend.UPSTREAM, model='m', quota=1,
                                  credential=credential) as cap:

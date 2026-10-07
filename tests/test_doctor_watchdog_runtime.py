@@ -18,7 +18,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 import sys
 sys.path.insert(0, str(ROOT))
-from review_loop import config, doctor  # noqa: E402
+from diaktoros import config, doctor  # noqa: E402
 
 
 def _loop(**extra) -> dict:

@@ -25,8 +25,8 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from review_loop import cli, config, gate, gh, ledger, run_supervisor  # noqa: E402
-from review_loop.run_supervisor import (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED,  # noqa: E402
+from diaktoros import cli, config, gate, gh, ledger, run_supervisor  # noqa: E402
+from diaktoros.run_supervisor import (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED,  # noqa: E402
                                         Supervisor, describe_run, read_only_view)
 
 REPO, HEAD = "acme/widgets", "a" * 40
@@ -195,7 +195,7 @@ class CancelledFixer(unittest.TestCase):
         # Arbiter on #97: runs_view kept its own SQL copy (LIKE, case-insensitive) of the Python
         # prefix test, so a "Fixer push revoked: …" row was listed with a retry remedy that
         # retry then refused. One definition, keyed off the constants, decides all three.
-        from review_loop.run_supervisor import (POLICY_CANCELLATIONS, next_step,
+        from diaktoros.run_supervisor import (POLICY_CANCELLATIONS, next_step,
                                                 policy_cancelled)
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
         with ledger.connect(self.db) as con:

@@ -18,8 +18,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 import test_ci_gate as cg  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from review_loop import ci, cli, config, observer  # noqa: E402
-from review_loop.run_supervisor import CI_HOLD  # noqa: E402
+from diaktoros import ci, cli, config, observer  # noqa: E402
+from diaktoros.run_supervisor import CI_HOLD  # noqa: E402
 
 REQUIRED = ["tests (3.11)", "test (ubuntu-24.04, 3.11)"]
 

@@ -16,7 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from review_loop import cli, config, prompts, run_supervisor  # noqa: E402
+from diaktoros import cli, config, prompts, run_supervisor  # noqa: E402
 
 CHECK = 'python3 -m unittest discover -s tests -p "test_home_guard.py" && echo "${HOME}"'
 
@@ -56,10 +56,10 @@ class Prompts(unittest.TestCase):
                 "fixer_check": CHECK, "seats": {}}
         row = {"seat": "fixer", "repo": "acme/widgets", "pr": 7, "head": "a" * 40}
         change = run_supervisor.PRChange("RECORD", "DIFF")
-        with mock.patch("review_loop.gate.verdicts", return_value=[{}]), \
-             mock.patch("review_loop.gate.latest_effective_review_at_head", return_value=None), \
-             mock.patch("review_loop.gh.pr_url", return_value="https://github.com/acme/widgets/pull/7"), \
-             mock.patch("review_loop.gh.issue_comments_read", return_value=([], None)):
+        with mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
+             mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None), \
+             mock.patch("diaktoros.gh.pr_url", return_value="https://github.com/acme/widgets/pull/7"), \
+             mock.patch("diaktoros.gh.issue_comments_read", return_value=([], None)):
             fixer = run_supervisor.isolated_prompt(loop, row, [], change=change)
         with mock.patch.object(run_supervisor, "issue_fix_issue",
                                return_value={"title": "T", "body": "B"}):

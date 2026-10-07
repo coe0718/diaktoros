@@ -14,9 +14,9 @@ import time
 import unittest
 from unittest import mock
 
-from review_loop import contained
-from review_loop import inference_proxy
-from review_loop.inference_proxy import InferenceCapability, _UnixHTTP, PATH, MAX_OUTPUT_TOKENS
+from diaktoros import contained
+from diaktoros import inference_proxy
+from diaktoros.inference_proxy import InferenceCapability, _UnixHTTP, PATH, MAX_OUTPUT_TOKENS
 from tests.hermes_prereqs import needs, skip_or_fail
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
@@ -443,9 +443,9 @@ class TransportTests(unittest.TestCase):
                 target = code / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(SOURCE / name, target, follow_symlinks=False)
-            module = code / 'review_loop/inference_proxy.py'
+            module = code / 'diaktoros/inference_proxy.py'
             module.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(Path(__file__).parents[1] / 'review_loop/inference_proxy.py', module)
+            shutil.copyfile(Path(__file__).parents[1] / 'diaktoros/inference_proxy.py', module)
             home = root / 'home'
             home.mkdir()
             (home / 'config.yaml').write_text('''model:
@@ -519,7 +519,7 @@ memory:
                     result = contained.run(code=code, venv=venv, runtime=runtime,
                                            home=home, checkout=checkout, rust=rust,
                                            query=home / 'query.txt', inference_socket_dir=cap.directory,
-                                           entry=['/opt/venv/bin/python', '-m', 'review_loop.inference_proxy', 'bridge', '--',
+                                           entry=['/opt/venv/bin/python', '-m', 'diaktoros.inference_proxy', 'bridge', '--',
                                                   '/opt/venv/bin/python', '/opt/venv/bin/hermes', 'chat', '--query-file', '/home/agent/query.txt',
                                                   '--oneshot', '-Q', '--provider', 'custom', '-m', 'fixture-model',
                                                   '-t', 'terminal,file', '--ignore-rules', '--max-turns', '3',

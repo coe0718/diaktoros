@@ -18,7 +18,7 @@ python_dependencies: []
 # Settings the operator can edit in the desktop (Capabilities → Plugins → review loop). They are
 # the defaults a NEW loop starts from, and what `hermes dk apply --loop <id>` pushes onto
 # an existing one — a form that silently renumbered a running loop would be a nasty thing to debug.
-# Mirrored by review_loop/config.py SETTINGS_SCHEMA; the test suite asserts the two agree, because a
+# Mirrored by diaktoros/config.py SETTINGS_SCHEMA; the test suite asserts the two agree, because a
 # form that writes keys nothing reads is worse than no form at all.
 config_schema:
   cap:

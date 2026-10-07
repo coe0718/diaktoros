@@ -19,7 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from review_loop import attribution, broker, config, gh, review_receipt, routes  # noqa: E402
+from diaktoros import attribution, broker, config, gh, review_receipt, routes  # noqa: E402
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -89,7 +89,7 @@ class Unsign(unittest.TestCase):
             self.assertEqual(attribution.unsign(body), body)
 
     def test_the_review_record_shows_the_words_not_the_label(self):
-        from review_loop import run_supervisor
+        from diaktoros import run_supervisor
         lp = {"reviewers": ["rev"], "fixers": ["fix"], "seats": {"fixer": {"login": "fix"}}}
         review = {"user": {"login": "rev"}, "state": "CHANGES_REQUESTED", "commit_id": BASE,
                   "submitted_at": "2026-10-01T00:00:00Z",
@@ -98,7 +98,7 @@ class Unsign(unittest.TestCase):
         answers = broker.answers_comment_body("Fixed it.", head=HEAD, base=BASE, run_id="r1")
         comment = {"user": {"login": "fix"}, "created_at": "2026-10-01T01:00:00Z",
                    "body": attribution.stamp(loop(), answers, seat="fixer", head=HEAD)}
-        with mock.patch("review_loop.gate.is_reviewer", return_value=True):
+        with mock.patch("diaktoros.gate.is_reviewer", return_value=True):
             record = run_supervisor.pr_record(lp, None, [review], [comment])
         self.assertIn("Fix the parser.", record)
         self.assertIn("Fixed it.", record)

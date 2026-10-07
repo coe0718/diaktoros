@@ -24,9 +24,9 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
-from review_loop import (broker_ipc, cli, config, doctor, gate, gh,  # noqa: E402
+from diaktoros import (broker_ipc, cli, config, doctor, gate, gh,  # noqa: E402
                          run_supervisor, seat_model, selftest, trusted_turn)
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 import test_selftest  # noqa: E402
 
 HEAD = "a" * 40
@@ -133,7 +133,7 @@ class CliSurfaces(unittest.TestCase):
         rc, out = self.run_cli(cli.cmd_list)
         self.assertEqual(rc, 0, out)
         self.assertIn("widgets", out)
-        with mock.patch("review_loop.state.state_for") as state_for:
+        with mock.patch("diaktoros.state.state_for") as state_for:
             state_for.return_value.dir = self.root / "state"
             state_for.return_value._load.return_value = {}
             state_for.return_value.queue_items.return_value = {}
@@ -174,7 +174,7 @@ class CliSurfaces(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("60-14400", out)
 
-        with mock.patch("review_loop.state.state_for") as state_for:
+        with mock.patch("diaktoros.state.state_for") as state_for:
             state_for.return_value.dir = self.root / "state"
             state_for.return_value._load.return_value = {}
             state_for.return_value.queue_items.return_value = {}
@@ -215,11 +215,11 @@ class DoctorWallClock(unittest.TestCase):
 
     @staticmethod
     def extra():
-        from review_loop import deps
+        from diaktoros import deps
         return trusted_turn.KILL_GRACE_S + deps.FETCH_TIMEOUT + trusted_turn.BROKER_DRAIN_S
 
     def test_the_worst_case_counts_the_broker_drain(self):
-        from review_loop import deps
+        from diaktoros import deps
         self.assertEqual(config.worst_turn_s(self.loop(900)), 900 + self.extra())
         self.assertEqual(900 + self.extra(), 1830)            # 300 + 900 + 30 + 600
         check = doctor.check_turn_budget(self.loop(900, 31))
@@ -278,7 +278,7 @@ class DoctorWallClock(unittest.TestCase):
         self.assertIn(f"{-(-(4000 + self.extra()) // 60)}m (raised to fit its turn)", short.detail)
 
     def test_a_healthy_long_turn_keeps_its_seat_claim(self):
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         with tempfile.TemporaryDirectory() as tmp:
             loop = self.loop(14400, 300, 45)
             loop["state_dir"] = tmp
@@ -331,7 +331,7 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
     """
 
     def setUp(self):
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.home = pathlib.Path(temp.name)
@@ -402,7 +402,7 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
                 self.assertEqual(self.sweep(budget, "adjudicating", 61 * 60, "running"), [])
 
     def test_a_ruling_with_no_live_run_waits_for_the_whole_adjudicator_turn(self):
-        from review_loop import deps
+        from diaktoros import deps
         extra = trusted_turn.KILL_GRACE_S + deps.FETCH_TIMEOUT + trusted_turn.BROKER_DRAIN_S
         # 900 s: the whole turn (1830 s) is under marker_grace_min (60 m), which then decides.
         self.assertEqual(len(self.sweep(900, "adjudicating", 61 * 60)), 1)
@@ -427,7 +427,7 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
                       "with no live ruling run, after 136m", check.detail)
 
     def test_breach_start_stamps_when_the_ruling_started(self):
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         loop = config.normalize(_loop(state_dir=str(self.home / "s")))
         st = state_mod.state_for(loop)
         st.breach_set(7, {"pr": 7, "head": HEAD, "rounds": 3, "status": "awaiting-adjudication",
@@ -455,7 +455,7 @@ class PerSeatClocks(unittest.TestCase):
         self.assertEqual(config.seat_ttl_s(loop, seat="adjudicator"), 15330)
 
     def test_live_locks_and_died_locks_use_the_claiming_seat(self):
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         with tempfile.TemporaryDirectory() as tmp:
             loop = self.loop(state_dir=tmp)
             st = state_mod.state_for(loop)
@@ -486,7 +486,7 @@ class PerSeatClocks(unittest.TestCase):
     def sweep(self, loop, age_s, changes_requested):
         """The real sweep (TEST off) on one PR: either a changes-requested verdict ``age_s``
         old (the fixer's stall) or a head first observed ``age_s`` ago (the reviewer's)."""
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         wd, now = _watchdog(), time.time()
         wd.TEST = False
         with tempfile.TemporaryDirectory() as tmp, \
@@ -546,7 +546,7 @@ class ClockSignatures(unittest.TestCase):
     def test_a_non_finite_stored_budget_never_breaks_a_reader(self):
         # #98 review 5, item 1: NaN/inf pass isinstance(float) and then died in int() out of
         # live_locks, active, died_locks and explain — and the watchdog lost the whole loop.
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         for bad in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(bad=bad):
                 self.assertIsNone(config.claim_budget({"budget": bad}))
@@ -582,7 +582,7 @@ class SeatClockFollowsTheRecordedBudget(unittest.TestCase):
     """#98 review 2, item 2: lowering turn_budget_s mid-turn must not free a live seat early."""
 
     def test_a_claim_keeps_the_budget_it_was_taken_with(self):
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         with tempfile.TemporaryDirectory() as tmp:
             loop = config.normalize(_loop(state_dir=tmp, turn_budget_s=14400, ttl_min=45))
             st = state_mod.state_for(loop)
@@ -741,7 +741,7 @@ class GateToProductionWorker(unittest.TestCase):
              mock.patch.object(gh, "api", return_value=pr), \
              mock.patch.object(gh, "reviews", return_value=[]), \
              mock.patch.object(gh, "review_state", return_value="CHANGES_REQUESTED"), \
-             mock.patch("review_loop.gate.latest_effective_review_at_head", return_value={}), \
+             mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value={}), \
              mock.patch.object(run_supervisor, "isolated_prompt", return_value="PROMPT"), \
              mock.patch.object(run_supervisor, "pr_change", return_value=None), \
              mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
@@ -754,7 +754,7 @@ class GateToProductionWorker(unittest.TestCase):
         # clock and explain line reading them described a mechanism that never ran. The
         # isolated worker — the only thing that knows a turn is running — now claims its seat
         # and marks the head in flight at launch, and releases both when the run ends.
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         st = state_mod.state_for(self.loop)
         key = gate.seat_key(self.loop, 8)
         during = {}
@@ -773,7 +773,7 @@ class GateToProductionWorker(unittest.TestCase):
         self.assertFalse(st.inflight(f"fix:8:{HEAD}"))
 
     def test_a_failed_run_frees_its_claim_and_an_uncertain_one_keeps_it(self):
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         st = state_mod.state_for(self.loop)
         key = gate.seat_key(self.loop, 8)
 
@@ -785,7 +785,7 @@ class GateToProductionWorker(unittest.TestCase):
     def test_reconciling_an_uncertain_run_frees_its_claim(self):
         # #98 review 5, item 2: the docs say the claim is kept "until an operator reconciles
         # it" — so reconciliation is what frees it (and the head's in-flight mark).
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         st = state_mod.state_for(self.loop)
         key = gate.seat_key(self.loop, 8)
 
@@ -810,7 +810,7 @@ class GateToProductionWorker(unittest.TestCase):
         # #98 review 6 (F1, blocking): reconcile commits the ledger, then releases. A newer run
         # that claims the same seat/PR/head in that gap must keep its claim and its in-flight
         # mark — a release frees only the claim its own run wrote.
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         st = state_mod.state_for(self.loop)
         key, mark = gate.seat_key(self.loop, 8), f"fix:8:{HEAD}"
 
@@ -841,7 +841,7 @@ class GateToProductionWorker(unittest.TestCase):
     def test_a_finishing_run_never_frees_a_newer_runs_claim(self):
         # The same race from the worker's side: an older run's release_seat after a newer run
         # (a retry of the same head) has already claimed the seat.
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         st = state_mod.state_for(self.loop)
         key, mark = gate.seat_key(self.loop, 8), f"fix:8:{HEAD}"
         row = {"id": "older", "seat": "fixer", "pr": 8, "head": HEAD}
@@ -860,7 +860,7 @@ class GateToProductionWorker(unittest.TestCase):
     def test_a_failed_in_flight_mark_does_not_orphan_the_claim(self):
         # #98 review 5, item 3: the claim was written, the mark write failed, and the whole
         # claim was dropped from release's view — so nothing could ever clear it.
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         st = state_mod.state_for(self.loop)
         seen = {}
 
@@ -880,7 +880,7 @@ class GateToProductionWorker(unittest.TestCase):
         self.assertEqual(st.live_locks("fixer"), {})                  # and released after all
 
     def test_an_uncertain_run_keeps_its_claim(self):
-        from review_loop import state as state_mod
+        from diaktoros import state as state_mod
         st = state_mod.state_for(self.loop)
         key = gate.seat_key(self.loop, 8)
 
@@ -1022,7 +1022,7 @@ class RealTurnArgv(test_selftest.SelftestBase):
             seen["dispatched"] = True
             return original(broker, raw)
         stage = lambda loop, **kw: (kw["sandbox_root"].mkdir() or kw["sandbox_root"])  # noqa: E731
-        from review_loop import broker, contained, review_receipt, trusted_fetch
+        from diaktoros import broker, contained, review_receipt, trusted_fetch
         original_turn = trusted_turn.run_turn
 
         def recording_turn(*args, **kwargs):
@@ -1064,7 +1064,7 @@ class RealTurnArgv(test_selftest.SelftestBase):
     def test_a_drain_failure_keeps_any_in_flight_exception(self):
         # #98 review 3, item 4: not only a budget kill — whatever the sandbox raised while the
         # broker was still busy stays the cause, and its name reaches the operator.
-        from review_loop import contained
+        from diaktoros import contained
         with mock.patch.object(trusted_turn, "BROKER_DRAIN_S", 1):
             seen, rc, text = self.capture(delay_dispatch=4, time_out=True,
                                           raise_exc=contained.OutputLimitExceeded("stdout flood"))

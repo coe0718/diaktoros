@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from review_loop import config, run_supervisor  # noqa: E402
+from diaktoros import config, run_supervisor  # noqa: E402
 
 REAL_HERMES = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".hermes"
 # With #101's tripwire in the tree, a refusal here is also a ``config.RealHomeError``, so either

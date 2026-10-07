@@ -48,7 +48,7 @@ MAX_CAPTURE = 256 * 1024
 # The only PATH the launch sees: the parent environment is discarded, so bwrap must be here.
 LAUNCH_PATH = "/usr/sbin:/usr/bin:/bin"
 
-# Where each ecosystem's host-prefetched dependency cache (``review_loop.deps``) is mounted, always
+# Where each ecosystem's host-prefetched dependency cache (``diaktoros.deps``) is mounted, always
 # read-only, and the environment that keeps its tool offline. Fixed here, not by the caller: a
 # prefetched cache is the only extra host directory a turn may bind. Cargo's own home stays the
 # writable scratch ``/tmp/cargo`` (locks, the last-use tracker); only its ``registry`` (index,
@@ -224,7 +224,7 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             raise ValueError("the sandbox /etc must hold only the staged user and group entries "
                              "and an empty alternatives mount point")
         etc_binds = ["--ro-bind", str(etc), "/etc"]
-    if client_code is not None and not (Path(client_code) / 'review_loop/broker_client.py').is_file():
+    if client_code is not None and not (Path(client_code) / 'diaktoros/broker_client.py').is_file():
         raise FileNotFoundError('staged broker client required')
     dependency_binds = []
     for ecosystem, cache in sorted((dependency_caches or {}).items()):

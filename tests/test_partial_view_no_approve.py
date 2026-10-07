@@ -22,10 +22,10 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from review_loop import ledger  # noqa: E402
-from review_loop import (broker_client, broker_ipc, config, gh, review_receipt,  # noqa: E402
+from diaktoros import ledger  # noqa: E402
+from diaktoros import (broker_client, broker_ipc, config, gh, review_receipt,  # noqa: E402
                          run_supervisor, trusted_turn)
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 import test_pr_change as pc  # noqa: E402  (its World fakes gh.fetch for pr_change)
 
 HEAD = "a" * 40
@@ -251,7 +251,7 @@ class FixerBroker(Broker):
         sup, scope = self.fixer_run(REASON)
         server = self.start(scope, require_push=True)
         with mock.patch.object(config, "by_repo", return_value=self.loop), \
-             mock.patch("review_loop.safe_push.push", side_effect=AssertionError("git push")):
+             mock.patch("diaktoros.safe_push.push", side_effect=AssertionError("git push")):
             refused = self.push(server)
         self.assertFalse(refused["ok"])
         self.assertIn(REFUSED, refused["error"])
@@ -396,8 +396,8 @@ class HostRecordsTheView(pc.Base):
                     seen["ledger"] = con.execute("SELECT partial_view FROM runs").fetchone()[0]
                 seen["scope"] = scope
                 return 0
-            with mock.patch("review_loop.seat_model.load_runtime", return_value=settings), \
-                 mock.patch("review_loop.seat_model.resolve_seat"), \
+            with mock.patch("diaktoros.seat_model.load_runtime", return_value=settings), \
+                 mock.patch("diaktoros.seat_model.resolve_seat"), \
                  mock.patch.object(config, "by_repo",
                                    return_value={**self.loop, "state_dir": str(root / "state")}), \
                  mock.patch.object(gh, "fetch", side_effect=world.fetch), \
@@ -432,7 +432,7 @@ class LaunchPathRefuses(pc.Base):
 
     def test_a_404_file_list_launches_a_turn_whose_approval_the_broker_refuses(self):
         from types import SimpleNamespace
-        from review_loop import contained, inference_proxy, trusted_fetch
+        from diaktoros import contained, inference_proxy, trusted_fetch
         world = pc.World([pc.changed(1)])
         world.gone[pc.FILES] = "HTTP 404 {}"
         world.pr.update({"user": {"login": "fix"}, "state": "open", "draft": False})
@@ -508,8 +508,8 @@ class LaunchPathRefuses(pc.Base):
             def stage(_loop, **kw):
                 kw["sandbox_root"].mkdir()
                 return kw["sandbox_root"]
-            with mock.patch("review_loop.seat_model.load_runtime", return_value=settings), \
-                 mock.patch("review_loop.seat_model.resolve_seat", return_value=inference), \
+            with mock.patch("diaktoros.seat_model.load_runtime", return_value=settings), \
+                 mock.patch("diaktoros.seat_model.resolve_seat", return_value=inference), \
                  mock.patch.object(config, "by_repo", return_value=loop), \
                  mock.patch.object(gh, "fetch", side_effect=fetch), \
                  mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
@@ -570,7 +570,7 @@ class ExplainShowsIt(unittest.TestCase):
         import argparse
         import contextlib
         import io
-        from review_loop import cli, gate
+        from diaktoros import cli, gate
         report = {"url": "u", "read_at": "t", "state_line": "s", "chain": {"status": "direct"},
                   "budget": "b", "seat": "x", "queue": "q", "inflight": "i", "escalation": "e",
                   "hooks": "h", "sweep": "w", "github": "g", "blockers": [], "next": {"action": "n"},

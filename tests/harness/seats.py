@@ -11,7 +11,7 @@ def group_settings() -> None:
     import io
     from types import SimpleNamespace
 
-    from review_loop import cli, config
+    from diaktoros import cli, config
 
     section("settings — how many PRs a seat may work at once")
 
@@ -120,7 +120,7 @@ def group_seats() -> None:
 
 def group_parallel() -> None:
     section("parallel — durable supervisor capacity and deduplication")
-    from review_loop.run_supervisor import Supervisor
+    from diaktoros.run_supervisor import Supervisor
 
     reset(prs={"7": pr(7), "9": pr(9), "11": pr(11)})
     set_concurrency(2)
@@ -171,7 +171,7 @@ def group_parallel() -> None:
     cfg = json.loads((LOOPS_DIR / "widgets.json").read_text())
     cfg["seats"]["reviewer"]["concurrency"] = 2
     (LOOPS_DIR / "widgets.json").write_text(json.dumps(cfg))
-    from review_loop import config
+    from diaktoros import config
     loop = config.load_id("widgets")
     check("reviewer capacity configured separately", config.seat_concurrency(loop, "reviewer"), 2)
     check("fixer capacity remains one", config.seat_concurrency(loop, "fixer"), 1)
@@ -229,7 +229,7 @@ def manifest_schema() -> dict:
 
 def group_plugin_settings() -> None:
     section("plugin settings — the desktop form and the loop must agree")
-    from review_loop import cli, config
+    from diaktoros import cli, config
 
     reset(prs={"7": pr(7)})      # a known starting loop, whatever the earlier groups left behind
     manifest = manifest_schema()
@@ -355,7 +355,7 @@ def make_loop(loop_id: str, repo: str, reviewer_profile: str, fixer_profile: str
     The seat-identity tests need several loops side by side (that is the whole point: one form,
     many repositories), and driving each one through ``init`` would only test ``init`` again.
     """
-    from review_loop import cli as cli_mod, config
+    from diaktoros import cli as cli_mod, config
 
     raw = {
         "id": loop_id, "repo": repo, "base": "main", "cap": 3,
@@ -380,7 +380,7 @@ def make_loop(loop_id: str, repo: str, reviewer_profile: str, fixer_profile: str
 def group_seat_identity() -> None:
     """Who serves each seat: the form names a profile and a login per role, and the loop, its
     routes and the guard rails all have to agree — per loop, never globally."""
-    from review_loop import cli, config, gh
+    from diaktoros import cli, config, gh
 
     section("seat identity — the settings form says who serves each seat")
 
@@ -850,7 +850,7 @@ def group_seat_identity() -> None:
 
 def group_webhook_host() -> None:
     section("webhook host — never borrow another operator's gateway")
-    from review_loop import cli, config, gh
+    from diaktoros import cli, config, gh
 
     reset(prs={})
     init_args = ["init", "--repo", "acme/host-probe", "--fixer", FIXER,
@@ -1004,7 +1004,7 @@ def group_webhook_host() -> None:
               config.load_id("widgets")["host"], "https://existing.example")
         # A legacy route without a host must not produce a relative URL, even when
         # the gateway subscription still carries a valid secret.
-        from review_loop import routes
+        from diaktoros import routes
         import urllib.request
         subs = json.loads(SUBS.read_text())
         subs["widgets-review"].pop("host", None)

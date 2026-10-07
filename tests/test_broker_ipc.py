@@ -14,7 +14,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import broker_ipc, gh
+from diaktoros import broker_ipc, gh
 from scripts import broker_client
 
 HEAD = "a" * 40
@@ -119,7 +119,7 @@ class BrokerIPCTests(unittest.TestCase):
                                           {"reviewers": ["review"]}, "fix"))
 
     def push_then_request(self, live_head_after_push):
-        from review_loop import config, run_supervisor, safe_push
+        from diaktoros import config, run_supervisor, safe_push
         pushed = "c" * 40
         server = self.start(role="fixer")
         # A real (empty) ledger: the broker reads the run's view record from it before a push,
@@ -158,7 +158,7 @@ class BrokerIPCTests(unittest.TestCase):
         self.assertFalse(any(call[0].endswith("/requested_reviewers") for call in self.calls))
 
     def test_client_waits_for_slow_writes_and_reports_unknown_outcome(self):
-        from review_loop import broker_client as sandbox_client, safe_push
+        from diaktoros import broker_client as sandbox_client, safe_push
         import contextlib, io
         # A real push spends up to 90s in each of fetch and push before GitHub calls.
         for timeout in (broker_client.WRITE_TIMEOUT, sandbox_client.WRITE_TIMEOUT,

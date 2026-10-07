@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from review_loop import ci, gh  # noqa: E402
+from diaktoros import ci, gh  # noqa: E402
 import test_partial_view_no_approve as pv  # noqa: E402
 
 HEAD = pv.HEAD

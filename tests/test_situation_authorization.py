@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from review_loop import gate, situation, state
+from diaktoros import gate, situation, state
 
 A, B, C, D = (letter * 40 for letter in "abcd")
 REPO = "acme/widgets"

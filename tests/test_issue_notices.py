@@ -25,8 +25,8 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_issue_fix as fixture  # noqa: E402
-from review_loop import broker_ipc, config, ledger, observer, run_supervisor  # noqa: E402
-from review_loop.state import LoopState  # noqa: E402
+from diaktoros import broker_ipc, config, ledger, observer, run_supervisor  # noqa: E402
+from diaktoros.state import LoopState  # noqa: E402
 
 REPO, BASE = fixture.REPO, fixture.BASE
 

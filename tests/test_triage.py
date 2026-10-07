@@ -22,10 +22,10 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from review_loop import ledger  # noqa: E402
-from review_loop import (broker, broker_ipc, config, contained, gate, gh, prompts,  # noqa: E402
+from diaktoros import ledger  # noqa: E402
+from diaktoros import (broker, broker_ipc, config, contained, gate, gh, prompts,  # noqa: E402
                          run_supervisor, trusted_turn)
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO = "acme/widgets"
 LABELS = ["bug", "feature", "docs", "P1", "P2"]

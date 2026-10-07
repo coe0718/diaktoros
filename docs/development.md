@@ -17,7 +17,7 @@
 
 The plugin and its standalone tests use Python's standard library. There is no plugin `pip install`, pytest dependency or fabricated build system required for the basic suite. Run commands below from the plugin checkout root with a Python interpreter available as `python`; Git is required for fixture repositories. CI tests Python 3.11 and 3.14, rather than claiming every Python/platform combination is covered.
 
-The code under `review_loop/` implements the host control plane; `scripts/` supplies route/gate/watchdog entry points; root `__init__.py` integrates with Hermes. The reviewed repository is not the plugin checkout. Production contained turns export **committed Hermes source**, so editing that source worktree without committing does not change the source snapshot a turn runs. Do not modify real accounts/tokens or armed routes merely to run unit tests.
+The code under `diaktoros/` implements the host control plane; `scripts/` supplies route/gate/watchdog entry points; root `__init__.py` integrates with Hermes. The reviewed repository is not the plugin checkout. Production contained turns export **committed Hermes source**, so editing that source worktree without committing does not change the source snapshot a turn runs. Do not modify real accounts/tokens or armed routes merely to run unit tests.
 
 Before editing a boundary, read its implementation and the targeted tests in the [source map](#change-specific-source-and-test-map). For an integration change, inspect the pinned Hermes checkout too: the plugin's parser, provider or gateway assumptions depend on that version. Consult [Hermes documentation](https://hermes-agent.nousresearch.com/docs) for Hermes setup; use this repository's CI as the reference for its tested integration recipe.
 
@@ -28,7 +28,7 @@ Before editing a boundary, read its implementation and the targeted tests in the
 ### Compile and behavioral harness
 
 ```sh
-python -m compileall -q review_loop scripts __init__.py tests
+python -m compileall -q diaktoros scripts __init__.py tests
 python tests/run_tests.py
 python tests/run_tests.py --list
 python tests/run_tests.py watchdog
@@ -168,13 +168,13 @@ A scanner result is version- and input-dependent. Do not document an invented fi
 
 | Change | Read first | Targeted tests |
 |---|---|---|
-| Mounts, environment, resource bounds | [`contained.py`](../review_loop/contained.py), [`trusted_turn.py`](../review_loop/trusted_turn.py) | `test_boundary.py`, `test_contained_launch.py`, `test_sandbox_identity.py`, `test_sandbox_limits.py`, `test_turn_budget_sandbox.py` |
-| Committed source/PR exports | [`trusted_turn.py`](../review_loop/trusted_turn.py), [`trusted_fetch.py`](../review_loop/trusted_fetch.py) | `test_snapshot_secrets.py`, `test_trusted_fetch.py`, `test_reader_identity.py` |
-| Credentialed publication | [`broker.py`](../review_loop/broker.py), [`broker_ipc.py`](../review_loop/broker_ipc.py), [`safe_push.py`](../review_loop/safe_push.py), [`review_receipt.py`](../review_loop/review_receipt.py) | `test_broker_ipc.py`, `test_safe_push.py`, `test_push_policy_boundaries.py`, `test_post_write_quarantine.py`, `test_review_receipt.py`, `test_partial_view_no_approve.py` |
-| HTTP inference/native adapter | [`inference_proxy.py`](../review_loop/inference_proxy.py), [`directsdk_backend.py`](../review_loop/directsdk_backend.py), [`directsdk_child.py`](../review_loop/directsdk_child.py), [`directsdk_guard.py`](../review_loop/directsdk_guard.py) | `test_inference_proxy.py`, `test_oauth_seats.py`, `test_directsdk_backend.py`, `test_directsdk_child.py`, `test_directsdk_guard.py` |
-| Claims/recovery/state handles | [`run_supervisor.py`](../review_loop/run_supervisor.py), [`ledger.py`](../review_loop/ledger.py) | `test_run_supervisor.py`, `test_retryable_turns.py`, `test_retry_live_route.py`, `test_ledger_close.py`, `test_home_guard.py` |
-| Routes/gates/integration | [`routes.py`](../review_loop/routes.py), [`route_intent.py`](../review_loop/route_intent.py), [`gate.py`](../review_loop/gate.py), [`gate_shims.py`](../review_loop/gate_shims.py) | `test_routes_atomic.py`, `test_route_self_heal.py`, `test_gate_shims.py`, `test_route_vertical.py`, `test_route_worker_vertical.py` |
-| Dependency fetch policy | [`deps.py`](../review_loop/deps.py) | `test_deps.py` |
+| Mounts, environment, resource bounds | [`contained.py`](../diaktoros/contained.py), [`trusted_turn.py`](../diaktoros/trusted_turn.py) | `test_boundary.py`, `test_contained_launch.py`, `test_sandbox_identity.py`, `test_sandbox_limits.py`, `test_turn_budget_sandbox.py` |
+| Committed source/PR exports | [`trusted_turn.py`](../diaktoros/trusted_turn.py), [`trusted_fetch.py`](../diaktoros/trusted_fetch.py) | `test_snapshot_secrets.py`, `test_trusted_fetch.py`, `test_reader_identity.py` |
+| Credentialed publication | [`broker.py`](../diaktoros/broker.py), [`broker_ipc.py`](../diaktoros/broker_ipc.py), [`safe_push.py`](../diaktoros/safe_push.py), [`review_receipt.py`](../diaktoros/review_receipt.py) | `test_broker_ipc.py`, `test_safe_push.py`, `test_push_policy_boundaries.py`, `test_post_write_quarantine.py`, `test_review_receipt.py`, `test_partial_view_no_approve.py` |
+| HTTP inference/native adapter | [`inference_proxy.py`](../diaktoros/inference_proxy.py), [`directsdk_backend.py`](../diaktoros/directsdk_backend.py), [`directsdk_child.py`](../diaktoros/directsdk_child.py), [`directsdk_guard.py`](../diaktoros/directsdk_guard.py) | `test_inference_proxy.py`, `test_oauth_seats.py`, `test_directsdk_backend.py`, `test_directsdk_child.py`, `test_directsdk_guard.py` |
+| Claims/recovery/state handles | [`run_supervisor.py`](../diaktoros/run_supervisor.py), [`ledger.py`](../diaktoros/ledger.py) | `test_run_supervisor.py`, `test_retryable_turns.py`, `test_retry_live_route.py`, `test_ledger_close.py`, `test_home_guard.py` |
+| Routes/gates/integration | [`routes.py`](../diaktoros/routes.py), [`route_intent.py`](../diaktoros/route_intent.py), [`gate.py`](../diaktoros/gate.py), [`gate_shims.py`](../diaktoros/gate_shims.py) | `test_routes_atomic.py`, `test_route_self_heal.py`, `test_gate_shims.py`, `test_route_vertical.py`, `test_route_worker_vertical.py` |
+| Dependency fetch policy | [`deps.py`](../diaktoros/deps.py) | `test_deps.py` |
 | Documentation/CLI examples | [`tests/commands_doc.py`](../tests/commands_doc.py), [`tests/harness/docs.py`](../tests/harness/docs.py) | `test_commands_doc.py`, behavioral harness `docs` area |
 
 Test names in this table refer to files beneath [`tests/`](../tests/). Use discovery's `-p` pattern for a targeted file, then rerun the full relevant lane. A targeted regression alone does not prove unrelated admission, recovery and integration paths stayed intact.

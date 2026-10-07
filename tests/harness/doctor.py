@@ -9,7 +9,7 @@ def doctor_parser():
     """The real CLI tree, so `doctor` is exercised through the argparse wiring users get."""
     import argparse
 
-    from review_loop import cli
+    from diaktoros import cli
 
     fake = FakeCtx()
     cli.register_cli(fake)
@@ -38,7 +38,7 @@ def pinned_host_memory():
     return 256 * 1024 ** 3, 256 * 1024 ** 3
 
 
-from review_loop import doctor as _doctor_module  # the same object the harness namespace re-exports
+from diaktoros import doctor as _doctor_module  # the same object the harness namespace re-exports
 
 _doctor_module._host_memory = pinned_host_memory
 
@@ -85,8 +85,8 @@ def install_watchdog_state(loop: dict) -> None:
     sweep stamps. Every other scenario calls ``install_doctor_fixture`` without it and sees the
     never-swept state, so ``check_watchdog_last_run``'s unknown path stays covered end to end.
     """
-    from review_loop import state as state_mod, config as config_mod
-    from review_loop.util import now_iso
+    from diaktoros import state as state_mod, config as config_mod
+    from diaktoros.util import now_iso
     st = state_mod.state_for(loop)
     watch = st.watch()
     watch["last_run"] = now_iso()
@@ -105,7 +105,7 @@ def install_doctor_fixture() -> dict:
     shim pinned to *this* plugin install, the scheduler's job store, two repo hooks pointing
     at this loop's own gateway, and the gate shims in each serving profile's scripts/.
     """
-    from review_loop import cli, config
+    from diaktoros import cli, config
 
     reset(prs={})
     cfg = load_loop()
@@ -140,7 +140,7 @@ def install_doctor_fixture() -> dict:
     ]
     save_world()
     # The gate shims the gateway runs from each serving profile's scripts/ (issue #105).
-    from review_loop import gate_shims
+    from diaktoros import gate_shims
     gate_shims.install(config.load_id("widgets"))
     loop = config.load_id("widgets")
     # #67's two checks belong to "a complete, correct installation": a healthy host has a watchdog
@@ -397,7 +397,7 @@ def doctor_checks(out: str, loop_id: str) -> list[tuple[str, str]] | None:
     this cannot read is not a green one, and a skipped line would be a check nobody counted.
     """
     import re
-    from review_loop import doctor
+    from diaktoros import doctor
     lines = out.splitlines()
     headers = [i for i, line in enumerate(lines) if line.startswith(f"[{loop_id}] ")]
     if len(headers) != 1:
@@ -435,7 +435,7 @@ def doctor_checks(out: str, loop_id: str) -> list[tuple[str, str]] | None:
 
 def group_doctor() -> None:
     """`hermes dk doctor` — the read-only preflight of an installation."""
-    from review_loop import cli, config, doctor
+    from diaktoros import cli, config, doctor
 
     section("doctor — a correct installation passes, and says nothing it cannot prove")
     check("doctor and init agree on the shim name", doctor.SHIM_NAME, cli.SHIM_NAME)
@@ -1072,7 +1072,7 @@ def group_doctor() -> None:
     # must actually rebind the route it names.
     check("  and names the command that repairs it",
           "hermes dk apply --loop widgets" in out and "re-run init" not in out, True)
-    from review_loop import prompts as prompts_mod
+    from diaktoros import prompts as prompts_mod
     edit_subs(lambda subs: subs["widgets-breach"].update(prompt=prompts_mod.ADJUDICATOR))
     secret = json.loads(SUBS.read_text())["widgets-breach"]["secret"]
     rc, out = run_cli(parser_for({}).parse_args(["apply", "--loop", "widgets", "--dry-run"]))
@@ -1174,7 +1174,7 @@ def group_doctor() -> None:
         "config": {"url": f"https://other.example/hooks/{n}"}} for n in range(100)]
         + DATA["world"]["hooks"])
     save_world()
-    from review_loop import gh
+    from diaktoros import gh
     original_api = gh.api
     gh.api = lambda loop, path, **kw: None if "page=2" in path else original_api(loop, path, **kw)
     try:

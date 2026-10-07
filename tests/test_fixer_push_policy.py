@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from review_loop import cli, config
+from diaktoros import cli, config
 
 
 def raw_loop(loop_id):

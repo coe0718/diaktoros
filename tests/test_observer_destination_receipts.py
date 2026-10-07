@@ -7,8 +7,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from review_loop import observer, routes
-from review_loop.state import LoopState
+from diaktoros import observer, routes
+from diaktoros.state import LoopState
 
 
 # These tests reach code that reads config.home(): never the operator's (#108).

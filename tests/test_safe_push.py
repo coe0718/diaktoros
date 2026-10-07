@@ -15,8 +15,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import broker, broker_ipc, config, gh, ledger, safe_push
-from review_loop.run_supervisor import Supervisor
+from diaktoros import broker, broker_ipc, config, gh, ledger, safe_push
+from diaktoros.run_supervisor import Supervisor
 
 HEAD = "a" * 40
 REPO = "acme/widgets"

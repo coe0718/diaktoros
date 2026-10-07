@@ -26,7 +26,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import broker, broker_client, safe_push  # noqa: E402
+from diaktoros import broker, broker_client, safe_push  # noqa: E402
 
 REPO = "acme/widgets"
 BIG = "".join(f"line {n}\n" for n in range(20000))           # ~200 KB of text

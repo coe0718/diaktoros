@@ -227,8 +227,8 @@ its response/receipt was lost. Known accepted pushes can still require post-writ
 then reconcile. Never retry, redeliver repeatedly, delete locks or reset the ledger.
 
 ```bash
-python -m review_loop.run_supervisor status "<ledger-path>"
-python -m review_loop.run_supervisor reconcile "<ledger-path>" "<run-id>" --reason "<inspection-summary>" --acknowledge-no-live-worker
+python -m diaktoros.run_supervisor status "<ledger-path>"
+python -m diaktoros.run_supervisor reconcile "<ledger-path>" "<run-id>" --reason "<inspection-summary>" --acknowledge-no-live-worker
 ```
 
 Run in the installed module environment or plugin checkout. `<ledger-path>` is the SQLite

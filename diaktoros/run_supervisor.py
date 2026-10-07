@@ -1227,7 +1227,7 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
     if row['state'] == 'failed':
         return f"may have written ({row['write']}) — never replayed; a new head gets a fresh turn"
     return (f"may have written ({row['write']}) — inspect the PR, then "
-            f"python -m review_loop.run_supervisor reconcile DB {row['id']} --reason "
+            f"python -m diaktoros.run_supervisor reconcile DB {row['id']} --reason "
             "REASON --acknowledge-no-live-worker")
 
 
@@ -1855,7 +1855,7 @@ class Supervisor:
         body = row['body'].strip()
         if len(body) > 1500:
             body = body[:1500] + ' […truncated; read the full ruling with `python -m ' \
-                'review_loop.run_supervisor rulings DB`]'
+                'diaktoros.run_supervisor rulings DB`]'
         comment = {'pending': 'not attempted (delivery interrupted)',
                    'none': 'not posted (no adjudicator GitHub identity configured)',
                    'denied': f"not posted ({row['comment_error'] or 'authorization denied'})",
@@ -1894,13 +1894,13 @@ class Supervisor:
             return (head + f" No external write was made ({current['retries'] or 0} failed "
                     "attempts on record). Fix the cause if it is not transient, then re-arm it: "
                     f"`hermes dk retry --loop {loop_id} --pr {row['pr']} --seat {row['seat']}` "
-                    f"(or `python -m review_loop.run_supervisor retry DB {row['id']}`); a "
+                    f"(or `python -m diaktoros.run_supervisor retry DB {row['id']}`); a "
                     "redelivered webhook for this head also re-arms it.")
         return (head + f" Possible external write ({wrote}). "
                 "Do not replay this turn or release its seat based on a lease alone. "
                 "Inspect the worker PID and external GitHub writes; use "
-                "`python -m review_loop.run_supervisor status DB` and "
-                "`python -m review_loop.run_supervisor reconcile DB RUN_ID "
+                "`python -m diaktoros.run_supervisor status DB` and "
+                "`python -m diaktoros.run_supervisor reconcile DB RUN_ID "
                 "--reason REASON --acknowledge-no-live-worker` only after "
                 "establishing no worker remains. Failed writes require "
                 "manual inspection before any new turn.")
@@ -2200,7 +2200,7 @@ class Supervisor:
                 raise ValueError(
                     f'refused: {wrote}. A run that may have written is never replayed. Inspect '
                     'the PR for its external writes, establish no worker remains, then '
-                    f'`python -m review_loop.run_supervisor reconcile DB {run_id} --reason '
+                    f'`python -m diaktoros.run_supervisor reconcile DB {run_id} --reason '
                     "'external writes inspected' --acknowledge-no-live-worker`; a new head "
                     'gets a fresh turn.')
             if row['state'] not in REARMABLE + ('waiting',):
@@ -2232,7 +2232,7 @@ class Supervisor:
             return
         operation = "_fixture-worker" if self.fixture_mode else "_production-worker"
         command = json.dumps(self.fixture_command) if self.fixture_mode else str(self.production_config)
-        args = [sys.executable, "-m", "review_loop.run_supervisor", operation,
+        args = [sys.executable, "-m", "diaktoros.run_supervisor", operation,
                 str(self.db), command, json.dumps(self.capacity),
                 str(self.lease_seconds), str(self.child_timeout)]
         from .config import (TEST_GUARD_SENTINEL_ENV, TEST_HOME_GUARD_ENV, TEST_REAL_HOME_ENV,

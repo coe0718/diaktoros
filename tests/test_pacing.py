@@ -21,10 +21,10 @@ from contextlib import closing
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from review_loop import (config, gate, gh, inference_proxy, pacing, run_supervisor,  # noqa: E402
+from diaktoros import (config, gate, gh, inference_proxy, pacing, run_supervisor,  # noqa: E402
                          seat_model, trusted_turn)
-from review_loop.inference_proxy import PATH, InferenceCapability, _UnixHTTP  # noqa: E402
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros.inference_proxy import PATH, InferenceCapability, _UnixHTTP  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 HEAD = "a" * 40
 NOW = 1_000_000.0
@@ -205,7 +205,7 @@ class ProductionWorker(unittest.TestCase):
                 mock.patch.object(gh, "api", return_value=pr), \
                 mock.patch.object(gh, "reviews", return_value=[]), \
                 mock.patch.object(gh, "review_state", return_value="CHANGES_REQUESTED"), \
-                mock.patch("review_loop.gate.latest_effective_review_at_head", return_value={}), \
+                mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value={}), \
                 mock.patch.object(run_supervisor, "isolated_prompt", return_value="PROMPT"), \
                 mock.patch.object(run_supervisor, "pr_change", return_value=None), \
                 mock.patch.object(trusted_turn, "run_turn", side_effect=counted), \

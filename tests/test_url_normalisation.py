@@ -7,7 +7,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from review_loop import routes  # noqa: E402
+from diaktoros import routes  # noqa: E402
 
 ROUTE = "https://gw.example/webhooks/widgets-review"
 

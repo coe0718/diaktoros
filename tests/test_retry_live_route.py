@@ -35,8 +35,8 @@ import time
 import unittest
 from urllib.parse import parse_qs, urlsplit
 
-from review_loop import ledger, run_supervisor
-from review_loop.inference_proxy import PATH
+from diaktoros import ledger, run_supervisor
+from diaktoros.inference_proxy import PATH
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -67,7 +67,7 @@ SITECUSTOMIZE = r'''
 import errno, http.client, json, os, subprocess, sys
 _home = os.environ.get('HOME') or ''
 if _home and os.path.exists(os.path.join(_home, 'offline-port')):
-    from review_loop import contained, gh
+    from diaktoros import contained, gh
     gh.API = 'http://127.0.0.1:' + open(os.path.join(_home, 'offline-port')).read().strip()
     http.client.HTTPSConnection = http.client.HTTPConnection
 
@@ -94,8 +94,8 @@ if _home and os.path.exists(os.path.join(_home, 'offline-port')):
 # The "agent": talks only to the two capabilities a sandboxed turn is given.
 FAKE_AGENT = r'''
 import json, sys
-from review_loop import broker_ipc
-from review_loop.inference_proxy import PATH, _UnixHTTP
+from diaktoros import broker_ipc
+from diaktoros.inference_proxy import PATH, _UnixHTTP
 mode, model_sock, broker_sock = sys.argv[1:4]
 print('hermes: review turn started', flush=True)
 conn = _UnixHTTP(model_sock, timeout=30)
@@ -242,7 +242,7 @@ class LiveRouteRetry(unittest.TestCase):
         # The plugin as installed: a copy of the package, with the seam only in this copy.
         self.plugin = home / 'plugins' / 'hermes-review-loop'
         self.plugin.mkdir(parents=True)
-        for name in ('review_loop', 'scripts'):
+        for name in ('diaktoros', 'scripts'):
             shutil.copytree(ROOT / name, self.plugin / name,
                             ignore=shutil.ignore_patterns('__pycache__'))
         (self.plugin / 'sitecustomize.py').write_text(SITECUSTOMIZE)
@@ -358,7 +358,7 @@ class LiveRouteRetry(unittest.TestCase):
 
     def cli(self, command, **args):
         """``hermes dk COMMAND`` — the plugin's handler, without launching Hermes."""
-        code = ('import argparse, sys\nsys.path.insert(0, %r)\nfrom review_loop import cli\n'
+        code = ('import argparse, sys\nsys.path.insert(0, %r)\nfrom diaktoros import cli\n'
                 'sys.exit(cli.cmd_%s(argparse.Namespace(**%r)))' % (str(self.plugin), command, args))
         result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
                                 env=self.env, cwd=str(self.plugin), timeout=60)
@@ -367,14 +367,14 @@ class LiveRouteRetry(unittest.TestCase):
         return result
 
     def supervisor_status(self):
-        result = subprocess.run([sys.executable, '-m', 'review_loop.run_supervisor', 'status',
+        result = subprocess.run([sys.executable, '-m', 'diaktoros.run_supervisor', 'status',
                                  str(self.db)], capture_output=True, text=True, env=self.env,
                                 cwd=str(self.plugin), timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         rows = json.loads(result.stdout)   # failed, waiting and uncertain runs only
         shown = [{k: row.get(k) for k in ('state', 'retries', 'outcome', 'error', 'write',
                                           'detail')} for row in rows]
-        self.say('python -m review_loop.run_supervisor status DB', json.dumps(shown, indent=1))
+        self.say('python -m diaktoros.run_supervisor status DB', json.dumps(shown, indent=1))
         return rows[0] if rows else None
 
     def watchdog(self):

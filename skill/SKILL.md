@@ -36,7 +36,7 @@ Your turn runs in a sandbox, not on the operator's machine:
   prompt says whether that worked. Only crates.io packages are fetched: a git dependency or
   another registry is never fetched, by design (the host fetches nothing it cannot name), so a
   lockfile with one is always "unavailable" — a host boundary, not a defect of the PR.
-* **One scoped write, through the broker.** `python -m review_loop.broker_client` is the only way
+* **One scoped write, through the broker.** `python -m diaktoros.broker_client` is the only way
   anything leaves the sandbox. The host re-checks the live PR before it acts on it, so a write
   against a head that moved is refused rather than applied to the wrong code.
 * A write can take minutes. Never claim it succeeded without an `ok` response; if it times out its
@@ -69,7 +69,7 @@ Your turn runs in a sandbox, not on the operator's machine:
 
 
    ```
-   python -m review_loop.broker_client review --verdict REQUEST_CHANGES --body-file /work/review.txt
+   python -m diaktoros.broker_client review --verdict REQUEST_CHANGES --body-file /work/review.txt
    ```
 
    A `COMMENT` is refused (without spending your write): it would neither wake the fixer nor cue a
@@ -97,9 +97,9 @@ operator and no fixer turn starts. Your one publish is a push followed by the re
    host, and enforces every limit before your one push is spent:
 
    ```
-   python -m review_loop.broker_client push --files src/a.rs src/b.rs --message-file /tmp/msg.txt --dry-run
-   python -m review_loop.broker_client push --files src/a.rs src/b.rs --message-file /tmp/msg.txt
-   python -m review_loop.broker_client request_review --answers-file /tmp/answers.md
+   python -m diaktoros.broker_client push --files src/a.rs src/b.rs --message-file /tmp/msg.txt --dry-run
+   python -m diaktoros.broker_client push --files src/a.rs src/b.rs --message-file /tmp/msg.txt
+   python -m diaktoros.broker_client request_review --answers-file /tmp/answers.md
    ```
 
    Limits: at most 24 files, 64 KiB each and 128 KiB in total, a commit message of at most
@@ -132,7 +132,7 @@ reviewer's findings and the fixer's published answers (both are in your prompt's
 give one ruling with a reason:
 
 ```
-python -m review_loop.broker_client ruling --verdict ACCEPT --body-file /tmp/ruling.txt
+python -m diaktoros.broker_client ruling --verdict ACCEPT --body-file /tmp/ruling.txt
 ```
 
 `ACCEPT` (the remaining findings do not block), `REJECT` (the work should not land as it stands) or
@@ -149,8 +149,8 @@ that apply, only from the list in your prompt, spelled exactly, and at most the 
 (none at all when none fits). Then make your one write:
 
 ```
-python -m review_loop.broker_client triage --label bug --label P2
-python -m review_loop.broker_client triage --label bug --comment-file /tmp/comment.txt
+python -m diaktoros.broker_client triage --label bug --label P2
+python -m diaktoros.broker_client triage --label bug --comment-file /tmp/comment.txt
 ```
 
 Add `--comment-file` only if your prompt says this loop allows a comment. The host only ever adds
@@ -164,9 +164,9 @@ A maintainer applied the fix label to an issue, and you are the fixer seat worki
 issue asks, keep the change to that, and verify it. Then make **one** of two writes:
 
 ```
-python -m review_loop.broker_client open_pr --files src/a.rs src/b.rs --message "Fix the parser" --title "Fix the parser on empty input" --body-file /tmp/pr.md --dry-run
-python -m review_loop.broker_client open_pr --files src/a.rs src/b.rs --message "Fix the parser" --title "Fix the parser on empty input" --body-file /tmp/pr.md
-python -m review_loop.broker_client issue_comment --body-file /tmp/why.md
+python -m diaktoros.broker_client open_pr --files src/a.rs src/b.rs --message "Fix the parser" --title "Fix the parser on empty input" --body-file /tmp/pr.md --dry-run
+python -m diaktoros.broker_client open_pr --files src/a.rs src/b.rs --message "Fix the parser" --title "Fix the parser on empty input" --body-file /tmp/pr.md
+python -m diaktoros.broker_client issue_comment --body-file /tmp/why.md
 ```
 
 `open_pr` pushes your commit to a new branch `diaktoros/issue-N`, opens the PR against the base

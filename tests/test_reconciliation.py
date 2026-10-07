@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t
-from review_loop import cli, config, gh, routes
+from diaktoros import cli, config, gh, routes
 
 
 def main():

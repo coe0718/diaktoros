@@ -9,7 +9,7 @@ from .fixture import *  # noqa: F403 - the shared harness namespace
 
 def group_config() -> None:
     section("config")
-    from review_loop import config
+    from diaktoros import config
 
     loop = config.load_id("widgets")
     check("loop resolves by repo", config.by_repo(REPO)["id"], "widgets")
@@ -64,7 +64,7 @@ def group_reviewer_gate() -> None:
 
     # #375: a loop maintainer (triage.maintainers) may ask for a fresh review. It is not the
     # fixer's handoff, so it never frees a fixer still holding the PR: the review queues.
-    from review_loop import config as loop_config
+    from diaktoros import config as loop_config
 
     def with_maintainer():
         cfg = json.loads((LOOPS_DIR / "widgets.json").read_text())
@@ -237,8 +237,8 @@ def group_budget() -> None:
 
 def group_adjudicator() -> None:
     """Keep #21 breach guards; wake only an isolated turn, never the gateway route."""
-    from review_loop import cli, config, gate, prompts, state as state_mod
-    from review_loop.run_supervisor import Supervisor
+    from diaktoros import cli, config, gate, prompts, state as state_mod
+    from diaktoros.run_supervisor import Supervisor
 
     section("adjudicator — guarded marker, isolated turn, no legacy gateway dispatch")
     reviews = [review(REVIEWER, head=ch * 40, rid=i) for i, ch in enumerate("cde", 1)]
@@ -419,7 +419,7 @@ def group_fixer_gate() -> None:
 
 def group_decisions() -> None:
     section("gate decisions (#209) — a declining gate says why, on disk")
-    from review_loop import config, gate, gate_decisions
+    from diaktoros import config, gate, gate_decisions
 
     def lines():
         path = state_file("gate-decisions.jsonl")

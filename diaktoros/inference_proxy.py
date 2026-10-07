@@ -855,5 +855,5 @@ def bridge(entry: list[str], socket_path: str = '/opt/inference/model.sock') -> 
 
 if __name__ == '__main__':
     if len(sys.argv) < 3 or sys.argv[1] != 'bridge' or sys.argv[2] != '--':
-        raise SystemExit('usage: python -m review_loop.inference_proxy bridge -- COMMAND...')
+        raise SystemExit('usage: python -m diaktoros.inference_proxy bridge -- COMMAND...')
     raise SystemExit(bridge(sys.argv[3:]))

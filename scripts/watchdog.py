@@ -44,8 +44,8 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from review_loop import ci_fix, config, envnames, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
-from review_loop.util import age_min, epoch, log, now_iso  # noqa: E402
+from diaktoros import ci_fix, config, envnames, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
+from diaktoros.util import age_min, epoch, log, now_iso  # noqa: E402
 
 TEST = bool(envnames.get("TEST"))
 PUSH_OFF_KIND = "fixer held — unattended fixer pushes are off"
@@ -1059,7 +1059,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             # dedups every later sweep. The worker merges and may still hand it to a person
             # (a whole-file conflict, or workflow changes the fixer's token cannot push).
             # enqueue_isolated, not block_pr_agent: that one is a gate's and ends the process.
-            from review_loop.run_supervisor import CONFLICT_KEY
+            from diaktoros.run_supervisor import CONFLICT_KEY
             try:
                 outcome = gate.enqueue_isolated(loop, "fixer", number, head,
                                                 turn_key=f"{CONFLICT_KEY}{base_sha}")
@@ -1119,7 +1119,7 @@ def parked_kind(loop: dict, marker: dict, number: int, head: str,
             return (f"parked awaiting adjudication for {mins / 60:.1f}h "
                     f"(marker {marker.get('at') or 'unknown'})")
         return ""
-    from review_loop.run_supervisor import turn_state
+    from diaktoros.run_supervisor import turn_state
     run = turn_state(config.host_path("ledger"), loop["repo"],
                      number, head, "adjudicator")
     if run in LIVE_TURN:
@@ -1167,7 +1167,7 @@ def sweep_ledger(ledger: pathlib.Path, presence: pathlib.Path | None = None) -> 
     recreated here, which records a one-time notice that this sweep then delivers. Where no
     ledger ever existed nothing is created.
     """
-    from review_loop.run_supervisor import Supervisor, _names, ledger_marker
+    from diaktoros.run_supervisor import Supervisor, _names, ledger_marker
     if not ledger.exists() and not ledger_marker(ledger).exists() and not _names(presence, ledger):
         return []
     try:
@@ -1201,7 +1201,7 @@ def run(args: argparse.Namespace, budget: float) -> None:
     # A migration holds the install (#431): sweeping, draining or healing now would act under
     # names being moved. Say so once per run and do nothing else; the next run after it ends
     # re-drives what the gates deferred meanwhile.
-    from review_loop import migrate
+    from diaktoros import migrate
     held = migrate.migrating()
     if held is not None:
         if not args.drain:
@@ -1242,7 +1242,7 @@ def run(args: argparse.Namespace, budget: float) -> None:
     out: list[str] = []
     # The supervisor outbox is independent of GitHub listing availability or
     # paused hooks. It uses the existing cron stdout delivery path.
-    from review_loop.run_supervisor import presence_marker
+    from diaktoros.run_supervisor import presence_marker
     out.extend(sweep_ledger(config.host_path("ledger"),
                             presence=presence_marker()))
     # Failures no loop could be named for (a malformed payload, a broken config) — swept by

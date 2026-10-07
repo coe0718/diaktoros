@@ -21,8 +21,8 @@ import unittest
 
 from tests.test_turn_vertical import SOURCE, RUST
 from tests.hermes_prereqs import needs
-from review_loop import ledger
-from review_loop.inference_proxy import PATH
+from diaktoros import ledger
+from diaktoros.inference_proxy import PATH
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -116,7 +116,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                 cmd = world.get('model_command') or (
                     'cat ' + str(_home_guard.USER_HOME / '.hermes/.env') + '; cat ' + str(world['key_path']) +
                     ' ' + str(world['pat_path']) +
-                    '; cargo test --offline; python -m review_loop.broker_client review '
+                    '; cargo test --offline; python -m diaktoros.broker_client review '
                     '--verdict APPROVE --body-file /work/review.txt')
                 delta, finish = {'role': 'assistant', 'content': None, 'tool_calls': [{
                     'id': 'probe', 'type': 'function', 'function': {
@@ -155,14 +155,14 @@ class RouteWorkerVertical(unittest.TestCase):
         (self.home / 'review-loops.d').mkdir()
         package = self.root / 'fixture-source'
         package.mkdir()
-        shutil.copytree(ROOT / 'review_loop', package / 'review_loop',
+        shutil.copytree(ROOT / 'diaktoros', package / 'diaktoros',
                         ignore=shutil.ignore_patterns('__pycache__'))
         shutil.copytree(ROOT / 'scripts', package / 'scripts')
         # This file exists ONLY inside this disposable test package; production has no
         # environment-controlled fake API, no test transport, and no worker GH stub.
         (package / 'sitecustomize.py').write_text(
             'import http.client, os\n'
-            'from review_loop import gh\n'
+            'from diaktoros import gh\n'
             "gh.API = 'http://127.0.0.1:' + open(os.path.join(os.environ['HOME'], 'offline-port')).read()\n"
             'http.client.HTTPSConnection = http.client.HTTPConnection\n')
         self.package = package
@@ -283,7 +283,7 @@ class RouteWorkerVertical(unittest.TestCase):
         # seat is told it cannot see the whole change and must not approve it — and the broker
         # enforces that: the seat's APPROVE is refused unspent, its REQUEST_CHANGES is the write.
         self.world['files_status'] = 404
-        client = 'python -m review_loop.broker_client review --body-file /work/review.txt '
+        client = 'python -m diaktoros.broker_client review --body-file /work/review.txt '
         self.world['model_command'] = (client + '--verdict APPROVE; '
                                        + client + '--verdict REQUEST_CHANGES')
         route = self.route()
@@ -333,7 +333,7 @@ class RouteWorkerVertical(unittest.TestCase):
         self.assertEqual(self.world['writes'], [])
 
     def test_out_of_scope_agent_write_fails_and_is_never_written(self):
-        self.world['model_command'] = 'python -m review_loop.broker_client request_review'
+        self.world['model_command'] = 'python -m diaktoros.broker_client request_review'
         route = self.route()
         self.assertEqual((route.returncode, route.stdout.strip()), (0, '[SILENT]'), route.stderr)
         row = self.result('failed')

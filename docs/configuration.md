@@ -383,7 +383,7 @@ Do not add `seats.issue_fixer` and expect it to tune this behavior: normalizatio
 
 ## Plugin settings and safe application
 
-The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plugins → diaktoros**. `review_loop/config.py::SETTINGS_SCHEMA` mirrors the manifest; tests check agreement. Settings are per Hermes profile and written through Hermes's configuration writer. See [Operations](operations.md) for the settings workflow.
+The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plugins → diaktoros**. `diaktoros/config.py::SETTINGS_SCHEMA` mirrors the manifest; tests check agreement. Settings are per Hermes profile and written through Hermes's configuration writer. See [Operations](operations.md) for the settings workflow.
 
 | Setting | New-loop default | Loop destination |
 |---|---|---|
@@ -602,7 +602,7 @@ State is operational data, not additional user configuration. Do not hand-edit l
 
 ## Validation and coverage limits
 
-The authoritative implementation is `review_loop/config.py`, with host-path detection in `runtime_detect.py`, model resolution in `seat_model.py`, containment in `contained.py`, and wake/admission behavior in `gate.py`. CLI installation, broker checks, the run supervisor, observer, watchdog, dependency prefetch, and cleanup add validations that cannot be inferred from a successfully parsed JSON file.
+The authoritative implementation is `diaktoros/config.py`, with host-path detection in `runtime_detect.py`, model resolution in `seat_model.py`, containment in `contained.py`, and wake/admission behavior in `gate.py`. CLI installation, broker checks, the run supervisor, observer, watchdog, dependency prefetch, and cleanup add validations that cannot be inferred from a successfully parsed JSON file.
 
 Important boundaries:
 

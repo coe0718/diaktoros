@@ -59,7 +59,7 @@ _HARNESS = textwrap.dedent('''
         return _urlopen(req, *args, **kwargs)
     urllib.request.urlopen = urlopen
 
-    from review_loop import gh
+    from diaktoros import gh
     _request = gh._request
     def request(loop, path, method, body, login, timeout):
         if str(method).upper() != "GET":

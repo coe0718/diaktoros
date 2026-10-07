@@ -4,7 +4,7 @@ Every `hermes dk` command, what it is for, what it changes, and every flag it ta
 New to the loop? Read [How it works](concepts.md) first; the words used here (seat, route, hook,
 reader, arm) are defined there.
 
-The flag tables are generated from `review_loop/cli.py:register_cli` with an empty
+The flag tables are generated from `diaktoros/cli.py:register_cli` with an empty
 settings form; tests check them against that parser. They describe this checkout, not every
 installed release. `hermes dk "<command>" --help` shows your installed parser.
 The prose also follows the handlers, configuration validation and delegated scripts.

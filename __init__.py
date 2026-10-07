@@ -21,7 +21,7 @@ _HERE = pathlib.Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:          # the gates import this package from scripts/
     sys.path.insert(0, str(_HERE))
 
-from review_loop import cli, config  # noqa: E402
+from diaktoros import cli, config  # noqa: E402
 
 
 def _settings(ctx) -> dict:

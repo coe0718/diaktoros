@@ -17,7 +17,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from review_loop import config  # noqa: E402
+from diaktoros import config  # noqa: E402
 
 LOOP_ID = "conc"
 LOOP_FILE = t.LOOPS_DIR / f"{LOOP_ID}.json"
@@ -216,7 +216,7 @@ class DuplicateRepoTest(Base):
     OTHER = t.LOOPS_DIR / "conc-twin.json"
 
     def test_init_refuses_repo_already_configured_and_doctor_flags_it(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         rc, out = self.init("--concurrency", "1")
         self.assertEqual(rc, 0, out)
         self.addCleanup(self.OTHER.unlink, missing_ok=True)

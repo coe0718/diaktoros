@@ -6,8 +6,8 @@ tests it touched, and CI went red on tests elsewhere that depended on what it ch
 #337, #343, #356, #358). Given the changed paths, this picks:
 
 * the changed test files themselves;
-* every ``tests/test_*.py`` that imports a changed ``review_loop`` module, directly or through
-  another ``review_loop`` module that imports it (direct importers first);
+* every ``tests/test_*.py`` that imports a changed ``diaktoros`` module, directly or through
+  another ``diaktoros`` module that imports it (direct importers first);
 * the tests that load a changed gate script, or a changed test helper;
 * always ``test_home_guard``, and the harness (``run_tests.py``) for any code, script or docs
   change: both are suite-wide. The harness runs right after the direct dependents.
@@ -29,14 +29,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = ROOT / "tests"
-PACKAGE = ROOT / "review_loop"
+PACKAGE = ROOT / "diaktoros"
 ALWAYS = ("test_home_guard",)
 HARNESS = "run_tests"
 DOC_TESTS = ("test_commands_doc",)
 
 
 def _module_imports(path: Path) -> set[str]:
-    """The ``review_loop`` modules a ``review_loop`` module imports (``from . import x`` too)."""
+    """The ``diaktoros`` modules a ``diaktoros`` module imports (``from . import x`` too)."""
     found: set[str] = set()
     try:
         tree = ast.parse(path.read_text())
@@ -49,23 +49,23 @@ def _module_imports(path: Path) -> set[str]:
                 found.update(alias.name for alias in node.names)
             elif node.level == 1:
                 found.add(base.split(".")[0])
-            elif base == "review_loop":
+            elif base == "diaktoros":
                 found.update(alias.name for alias in node.names)
-            elif base.startswith("review_loop."):
+            elif base.startswith("diaktoros."):
                 found.add(base.split(".")[1])
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith("review_loop."):
+                if alias.name.startswith("diaktoros."):
                     found.add(alias.name.split(".")[1])
     return found
 
 
 def _test_mentions(path: Path) -> set[str]:
-    """The ``review_loop`` modules a test file uses: imports and ``"review_loop.x…"`` patch
+    """The ``diaktoros`` modules a test file uses: imports and ``"diaktoros.x…"`` patch
     targets alike."""
     text = path.read_text(errors="replace")
     found = set(re.findall(r"\breview_loop\.(\w+)", text))
-    for match in re.finditer(r"^\s*from review_loop import \(?([^)\n]*(?:\n[^)\n]*)*?)\)?\s*(?:#|$)",
+    for match in re.finditer(r"^\s*from diaktoros import \(?([^)\n]*(?:\n[^)\n]*)*?)\)?\s*(?:#|$)",
                              text, re.M):
         found.update(name.strip().split(" as ")[0] for name in match.group(1).split(",")
                      if name.strip())
@@ -82,7 +82,7 @@ def _loads_script(text: str, script: str) -> bool:
 
 
 def dependents(changed_modules: set[str]) -> list[set[str]]:
-    """Layers of ``review_loop`` modules: the changed ones, then each wave that imports them."""
+    """Layers of ``diaktoros`` modules: the changed ones, then each wave that imports them."""
     graph = {path.stem: _module_imports(path) for path in PACKAGE.glob("*.py")}
     seen = set(changed_modules)
     layers = [set(changed_modules)]
@@ -112,7 +112,7 @@ def select(changed: list[str]) -> list[str]:
         if not raw.strip():
             continue
         parts = path.parts
-        if parts[:1] == ("review_loop",) and path.suffix == ".py":
+        if parts[:1] == ("diaktoros",) and path.suffix == ".py":
             modules.add(path.stem)
         elif parts[:1] == ("scripts",) and path.suffix == ".py":
             scripts.add(path.name)
@@ -151,7 +151,7 @@ def run(order: list[str], budget: float, clock=time.monotonic) -> int:
             skipped.append(name)
             continue
         # Run as CI does: from the repository root, by discovery. Some tests start
-        # `python -m review_loop...` in a subprocess, which only resolves from the root.
+        # `python -m diaktoros...` in a subprocess, which only resolves from the root.
         if name == HARNESS:
             command = [sys.executable, str(TESTS / "run_tests.py")]
         else:

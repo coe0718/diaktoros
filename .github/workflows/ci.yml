@@ -38,7 +38,7 @@ jobs:
           python-version: ${{ matrix.python }}
       # No dependencies to install: the plugin is stdlib-only on purpose, and so are its tests.
       - name: Compile every file
-        run: python -m compileall -q review_loop scripts __init__.py tests
+        run: python -m compileall -q diaktoros scripts __init__.py tests
       - name: Loop tests (gates, budget, seats, watchdog, cleanup)
         run: python tests/run_tests.py
       # The sandbox tests skip without bubblewrap; a green run must mean they ran. Ubuntu

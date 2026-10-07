@@ -17,7 +17,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import (broker, broker_ipc, cli, contained, doctor, gh,  # noqa: E402
+from diaktoros import (broker, broker_ipc, cli, contained, doctor, gh,  # noqa: E402
                          inference_proxy, review_receipt, selftest, trusted_fetch, trusted_turn)
 
 HEAD = "c" * 40
@@ -166,7 +166,7 @@ class SelftestBase(unittest.TestCase):
 
 class DoctorStateBridge(unittest.TestCase):
     def test_every_doctor_state_maps_to_a_selftest_state(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         states = {value for name, value in vars(doctor).items()
                   if name.isupper() and isinstance(value, str) and value in doctor.MARKS}
         self.assertEqual(states, set(doctor.MARKS))
@@ -583,7 +583,7 @@ class RegistrationTests(unittest.TestCase):
 
 class ProbeAnswer(unittest.TestCase):
     def test_a_codex_stream_labelled_json_is_still_an_answer(self):
-        from review_loop import selftest as st
+        from diaktoros import selftest as st
         events = [{'type': 'response.output_text.delta', 'delta': 'OK'},
                   {'type': 'response.completed', 'response': {'status': 'completed'}}]
         stream = ''.join('event: ' + e['type'] + '\ndata: ' + json.dumps(e) + '\n\n'

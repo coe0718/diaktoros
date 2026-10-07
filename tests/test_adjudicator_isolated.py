@@ -20,11 +20,11 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from review_loop import ledger  # noqa: E402
-from review_loop import (broker, broker_ipc, config, contained, gate, gh, observer,  # noqa: E402
+from diaktoros import ledger  # noqa: E402
+from diaktoros import (broker, broker_ipc, config, contained, gate, gh, observer,  # noqa: E402
                          prompts, state as state_mod, trusted_turn)
-from review_loop import run_supervisor  # noqa: E402
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros import run_supervisor  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO = "acme/widgets"
 HEAD = "a" * 40
@@ -650,7 +650,7 @@ class Config(unittest.TestCase):
             self.load({"login": "adj"})
 
     def test_doctor_reports_only_a_configured_identity(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         self.assertIsNone(doctor.check_adjudicator_identity(config.normalize(json.loads(json.dumps(self.raw)))))
         check = doctor.check_adjudicator_identity(self.load({"login": "adj"}))
         self.assertEqual((check.name, check.status), ("credential:adjudicator", doctor.VERIFIED))

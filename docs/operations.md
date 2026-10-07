@@ -274,7 +274,7 @@ permission; verify a fresh turn and the actual filesystem failure before increas
 These are **test-harness tripwires**, not production sandbox breach reports.
 They arm only when `DIAKTOROS_TEST_HOME_GUARD=1` **and**
 `DIAKTOROS_TEST_GUARD_SENTINEL` names an existing harness sentinel file
-(`review_loop/config.py:test_guard_active`). The variable alone does not arm them.
+(`diaktoros/config.py:test_guard_active`). The variable alone does not arm them.
 
 In a real gateway, inspect its launch environment/service configuration for leaked test
 settings, unset `DIAKTOROS_TEST_HOME_GUARD` there, and restart the gateway through your
@@ -392,8 +392,8 @@ Even a broker record marked denied or nothing is a record, not permission to re-
 4. Record your external-state findings and release the hold using the module command.
 
 ```bash
-python -m review_loop.run_supervisor status "<ledger-path>"
-python -m review_loop.run_supervisor reconcile "<ledger-path>" "<run-id>" --reason "<inspection-summary>" --acknowledge-no-live-worker
+python -m diaktoros.run_supervisor status "<ledger-path>"
+python -m diaktoros.run_supervisor reconcile "<ledger-path>" "<run-id>" --reason "<inspection-summary>" --acknowledge-no-live-worker
 ```
 
 Use an environment where the module is installed, or run from the plugin checkout.

@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import state
+from diaktoros import state
 
 HEAD = "a" * 40
 OLD_HEAD = "b" * 40
