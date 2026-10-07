@@ -8,6 +8,7 @@ incident recovery, and the decision to merge.
 
 - [Install](#first-install-setup) and [generated files](#what-init-writes)
 - [First run and push policy](#first-run)
+- [Upgrading from hermes-review-loop](#upgrading-from-hermes-review-loop)
 - [Everyday commands](#everyday-commands) and [reviewing your own PRs](#reviewing-your-own-prs)
 - [Signing](#what-the-loop-signs) and [review findings](#how-the-reviewer-grades-findings)
 - [Token files](#token-files-one-pat-per-account) and [permissions](#token-scopes-by-role)
@@ -126,6 +127,28 @@ fix and re-request the reviewer on the PR to get the next review: the reviewer g
 accepts that request from the PR's own review-only author. `explain` shows `next: author-push`
 while a verdict waits for you, and the watchdog never reports a fixer stall on these PRs.
 `set --no-review-only` clears the list. A login can't be both review-only and a fixer.
+
+## Upgrading from hermes-review-loop
+
+Diaktoros was called hermes-review-loop before v0.2.0. Hermes keys a plugin by its manifest name: the
+`plugins.enabled` entry, the settings form (`plugins.entries.<name>.settings`) and the skill's
+namespace all follow it. An updated plugin whose manifest now says `diaktoros` is therefore **not
+enabled**, even in the old folder. It doesn't load, so `hermes dk`, the kept `hermes review-loop`
+alias and the `diaktoros:review-loop` skill are all missing until you enable it. The gates and the
+watchdog run by path through their shims, so the loops keep turning; nothing tells you it's missing.
+
+Between turns:
+
+1. Update in place, `hermes plugins update hermes-review-loop`, or install `diaktoros` alongside it.
+   If you install alongside, disable `hermes-review-loop` first, so the two don't both claim
+   `hermes review-loop`.
+2. `hermes plugins enable diaktoros`. The plugin loads again.
+3. `hermes dk migrate --dry-run`, then `hermes dk migrate`. This copies your settings form from
+   `hermes-review-loop`, gives the host files and the watchdog job their new names, and points the
+   shims at the plugin's scripts. See [moving to a renamed plugin or repository](#moving-to-a-renamed-plugin-or-repository).
+4. `hermes dk doctor`. If you installed alongside, `hermes plugins remove hermes-review-loop`.
+
+After step 2, `hermes review-loop` works as an alias for one release. Each use says it was renamed.
 
 ## What the loop signs
 
