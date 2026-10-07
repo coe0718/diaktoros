@@ -410,6 +410,39 @@ def _quiet_ledger(path: pathlib.Path) -> None:
         con.close()
 
 
+def ledger_sides(old: pathlib.Path) -> list[pathlib.Path]:
+    """The files that belong to the ledger at ``old``: every ``<old>…`` beside it but itself."""
+    try:
+        return sorted(path for path in old.parent.iterdir()
+                      if path.name.startswith(old.name) and path.name != old.name)
+    except OSError:
+        return []
+
+
+def _move_ledger_file(old: pathlib.Path, new: pathlib.Path, *, dry_run: bool) -> list[str]:
+    """The ledger, then everything that belongs to it, in that order: its WAL is folded into the
+    file before anything moves, so no write is left behind in a side file. The side files move
+    even when the ledger itself already did (an earlier run that missed them)."""
+    lines = []
+    if os.path.lexists(old):
+        if os.path.lexists(new):
+            return [f"files: REFUSED — both {old} and {new} exist; move one aside by hand"]
+        if not dry_run:
+            _quiet_ledger(old)
+            new.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(old, new)
+        lines.append(f"files: {'would move' if dry_run else 'moved'} {old} → {new}")
+    for side in ledger_sides(old):
+        target = new.with_name(new.name + side.name[len(old.name):])
+        if os.path.lexists(target):
+            lines.append(f"files: REFUSED — both {side} and {target} exist; move one aside by hand")
+            continue
+        if not dry_run:
+            os.rename(side, target)
+        lines.append(f"files: {'would move' if dry_run else 'moved'} {side} → {target}")
+    return lines
+
+
 def files_step(write_loop, *, dry_run: bool) -> list[str]:
     """Move each host file from its old name to its new one; rewrite the loops' state paths."""
     lines: list[str] = []
@@ -434,21 +467,17 @@ def files_step(write_loop, *, dry_run: bool) -> list[str]:
             lines.append("files: the loop files' directory is set by DIAKTOROS_CONFIG_DIR — kept")
             continue
         old, new = _old_new(key)
+        if key == "ledger":
+            lines += _move_ledger_file(old, new, dry_run=dry_run)
+            continue
         if not os.path.lexists(old):
             continue
         if os.path.lexists(new):
             lines.append(f"files: REFUSED — both {old} and {new} exist; move one aside by hand")
             continue
         if not dry_run:
-            if key == "ledger":
-                _quiet_ledger(old)
             new.parent.mkdir(parents=True, exist_ok=True)
             os.rename(old, new)
-            if key == "ledger":
-                for suffix in ("-wal", "-shm"):
-                    side = old.with_name(old.name + suffix)
-                    if side.exists():
-                        os.rename(side, new.with_name(new.name + suffix))
         lines.append(f"files: {'would move' if dry_run else 'moved'} {old} → {new}")
     if dry_run:
         return lines or ["files: every host file already has its new name"]

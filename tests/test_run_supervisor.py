@@ -34,9 +34,9 @@ WORKER_EXIT_TIMEOUT = worker_wait.WORKER_EXIT_TIMEOUT
 
 
 def own_lines(stream: io.StringIO) -> list[str]:
-    """The review-loop's own stderr lines. Python 3.13 also reports, whenever the collector
+    """The plugin's own stderr lines. Python 3.13 also reports, whenever the collector
     happens to run, ResourceWarnings for sqlite connections other tests left open."""
-    return [line for line in stream.getvalue().splitlines() if line.startswith("review-loop")]
+    return [line for line in stream.getvalue().splitlines() if line.startswith("diaktoros")]
 
 class Lifecycle(unittest.TestCase):
     def setUp(self):

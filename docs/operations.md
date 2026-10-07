@@ -131,25 +131,38 @@ while a verdict waits for you, and the watchdog never reports a fixer stall on t
 
 ## Upgrading from hermes-review-loop
 
-Diaktoros was called hermes-review-loop before v0.2.0. Hermes keys a plugin by its manifest name: the
-`plugins.enabled` entry, the settings form (`plugins.entries.<name>.settings`) and the skill's
-namespace all follow it. An updated plugin whose manifest now says `diaktoros` is therefore **not
-enabled**, even in the old folder. It doesn't load, so `hermes dk`, the kept `hermes review-loop`
-alias and the `diaktoros:review-loop` skill are all missing until you enable it. The gates and the
-watchdog run by path through their shims, so the loops keep turning; nothing tells you it's missing.
+Diaktoros was called hermes-review-loop before v0.2.0. Hermes keys a plugin by its manifest name:
+- the install folder;
+- the `plugins.enabled` entry;
+- the settings form (`plugins.entries.<name>.settings`);
+- the skill's namespace.
+
+Installing Diaktoros therefore creates a **new** plugin folder, `~/.hermes/plugins/diaktoros`, beside
+`hermes-review-loop`, and that plugin isn't enabled yet. `hermes plugins update hermes-review-loop`
+isn't the way: it refuses a pinned install (catalog installs are pinned), and it would keep the old
+name.
 
 Between turns:
 
-1. Update in place, `hermes plugins update hermes-review-loop`, or install `diaktoros` alongside it.
-   If you install alongside, disable `hermes-review-loop` first, so the two don't both claim
-   `hermes review-loop`.
-2. `hermes plugins enable diaktoros`. The plugin loads again.
-3. `hermes dk migrate --dry-run`, then `hermes dk migrate`. This copies your settings form from
-   `hermes-review-loop`, gives the host files and the watchdog job their new names, and points the
-   shims at the plugin's scripts. See [moving to a renamed plugin or repository](#moving-to-a-renamed-plugin-or-repository).
-4. `hermes dk doctor`. If you installed alongside, `hermes plugins remove hermes-review-loop`.
+1. `hermes plugins disable hermes-review-loop`, so the two plugins don't both claim
+   `hermes review-loop`. Its gates keep running by path until step 4 repoints them.
+2. Install Diaktoros: `hermes plugins install diaktoros` from the catalog, or a pinned commit with
+   `hermes plugins install coe0718/diaktoros --force --ref <full sha>`.
+3. `hermes plugins enable diaktoros`.
+4. `hermes dk migrate --dry-run`, then `hermes dk migrate`. Before anything moves, it points every
+   route's gate shim and the watchdog at the new plugin, so nothing runs the old code mid-move. It
+   then:
+   - copies your settings form;
+   - gives the host files and the ledger's side files their new names;
+   - moves the watchdog job;
+   - follows a renamed repository.
 
-After step 2, `hermes review-loop` works as an alias for one release. Each use says it was renamed.
+   Add `--rename-loop OLD=NEW --admin-token LOGIN` to give a loop the new name too (see
+   [renaming a loop](#renaming-a-loop)). See also
+   [moving to a renamed plugin or repository](#moving-to-a-renamed-plugin-or-repository).
+5. `hermes dk doctor`. When it's green, `hermes plugins remove hermes-review-loop`.
+
+From step 3, `hermes review-loop` works as an alias for one release. Each use says it was renamed.
 
 ## What the loop signs
 
@@ -504,26 +517,30 @@ It runs these steps:
 
 1. It copies each settings-form value the old plugin holds and the new one does not. A value
    already set on the new plugin is kept.
-2. It gives the host files under `$HERMES_HOME` their new names. It's refused while any run is in
-   flight or uncertain. The files:
-   - `review-loops.d/` → `diaktoros.d/`, and `review-loop-runtime.json` →
-     `diaktoros-runtime.json`;
-   - under `state/`: the run ledger (`review-loop-runs.sqlite` → `diaktoros-runs.sqlite`), the
-     loops' default state directories (`review-loops/` → `diaktoros/`), the gate-failure log,
-     the pacing file and the seat locks.
-
-   A loop whose state directory moved has its loop file updated. Until a file is moved, it keeps
-   working where it is; `doctor` names any that still have their old names. If both names exist,
-   the step leaves that file for you to sort out.
+2. **Before anything moves,** it points every gate shim and the watchdog shim at this plugin's
+   scripts. From here on, a delivery runs code that honours the pause; the old plugin's code
+   doesn't, and would write under the old file names.
 3. It moves the shared watchdog job to the new name. A `diaktoros watchdog` job running
    `diaktoros-watchdog.py` is created with the old job's schedule and delivery target, and read
    back. Only then is `review loop watchdog` removed, along with its shim.
-4. For each loop whose repository GitHub now reports under another name, it moves the loop's
+4. It gives the host files under `$HERMES_HOME` their new names. It's refused while any run is in
+   flight or uncertain. The files:
+   - `review-loops.d/` → `diaktoros.d/`, and `review-loop-runtime.json` →
+     `diaktoros-runtime.json`;
+   - under `state/`: the run ledger (`review-loop-runs.sqlite` → `diaktoros-runs.sqlite`), then
+     the ledger's own side files (its `.present` marker, `.workers.log` and any rotation of it,
+     with the WAL folded in first), the loops' default state directories (`review-loops/` →
+     `diaktoros/`), the gate-failure log, the pacing file and the seat locks.
+
+   A loop whose state directory moved has its loop file updated. Until a file is moved, it keeps
+   working where it is; `doctor` names any that still have their old names, side files included.
+   If both names exist, the step leaves that file for you to sort out.
+5. For each loop whose repository GitHub now reports under another name, it moves the loop's
    records to the new name: the run ledger, the loop's state files and the loop file.
    - It first checks that both names are the same repository.
    - It refuses while a run for that repository is in flight or uncertain.
-5. It points the gate and watchdog shims at the new plugin's scripts.
-6. It lists every `doctor` check that isn't verified.
+6. With `--rename-loop`, it renames the loop (see below).
+7. It checks the shims once more, then lists every `doctor` check that isn't verified.
 
 Exit 1 means a step was refused or isn't finished; the line says why. Running it again finishes
 whatever an interrupted run began. When everything checks out, remove the old plugin with

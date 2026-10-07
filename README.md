@@ -24,7 +24,7 @@ hermes plugins install diaktoros
 hermes dk setup --repo "<owner>/<repository>"
 ```
 
-`hermes dk` is short for `hermes diaktoros`; either works. Diaktoros was called hermes-review-loop before v0.2.0. An existing install needs one extra step when it upgrades; see [Upgrading from hermes-review-loop](#upgrading-from-hermes-review-loop).
+`hermes dk` is short for `hermes diaktoros`; either works. Diaktoros was called hermes-review-loop before v0.2.0. An existing install upgrades in a few steps; see [Upgrading from hermes-review-loop](#upgrading-from-hermes-review-loop).
 
 The plugin is in the [Hermes plugin catalog](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog), so `hermes plugins install diaktoros` installs the reviewed release at its pinned commit. Desktop can install it from the catalog too. Catalog updates arrive only through a reviewed pin bump.
 
@@ -75,16 +75,19 @@ hermes dk arm --loop ID
 
 ## Upgrading from hermes-review-loop
 
-**Hermes knows a plugin by its name, and the name changed.** After the update, your Hermes config still enables `hermes-review-loop`, so the plugin **does not load** until you enable it as `diaktoros`. Until then there's no `hermes dk`, the old `hermes review-loop` command is gone too, and so is the review skill the seats load. The loops keep running meanwhile, because their gates run by path. Between turns:
+**Hermes knows a plugin by its name, and the name changed.** Installing Diaktoros puts it in a new folder, `diaktoros`, beside your `hermes-review-loop`. It isn't enabled until you enable it under its new name. Your loops keep running through the old plugin until `migrate` points them at the new one. Between turns:
 
 ```bash
-hermes plugins update hermes-review-loop     # in place; the folder keeps its old name
-hermes plugins enable diaktoros              # required: the plugin loads again
-hermes dk migrate --dry-run                  # what moves: settings, file names, the watchdog job
-hermes dk migrate
+hermes plugins disable hermes-review-loop        # so the two don't both claim `hermes review-loop`
+hermes plugins install diaktoros                 # from the catalog; or: coe0718/diaktoros --force --ref <sha>
+hermes plugins enable diaktoros
+hermes dk migrate --dry-run                      # what moves: settings, file names, the watchdog job
+hermes dk migrate                                # add --rename-loop OLD=NEW --admin-token LOGIN to rename a loop
+hermes dk doctor                                 # green? then:
+hermes plugins remove hermes-review-loop
 ```
 
-Then `hermes dk doctor` should be green, and `hermes review-loop` works again as an alias that says it was renamed, for one release. If you installed `diaktoros` alongside instead of updating in place, disable `hermes-review-loop` before enabling `diaktoros`, and remove it once `migrate` is done. [Operations](docs/operations.md#upgrading-from-hermes-review-loop) has the details.
+`hermes review-loop` keeps working as an alias that says it was renamed, for one release. [Operations](docs/operations.md#upgrading-from-hermes-review-loop) has the details.
 
 ## Safety model
 

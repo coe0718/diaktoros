@@ -152,6 +152,87 @@ class Move(Home):
         self.assertTrue((self.home / "diaktoros.d" / "one.json").exists())   # the rest moved
 
 
+class LedgerSides(Home):
+    """The ledger's side files go with it (first live upgrade: `.present` and `.workers.log` were
+    left under the old name), and only after it — its WAL folded in before anything moves."""
+
+    def sides(self, root: str) -> list[str]:
+        return sorted(p.name for p in (self.home / "state").iterdir() if p.name.startswith(root))
+
+    def write_sides(self):
+        state = self.home / "state"
+        for suffix in (".present", ".workers.log", ".workers.log.1"):
+            (state / f"review-loop-runs.sqlite{suffix}").write_text("x")
+
+    def test_the_side_files_move_with_the_ledger(self):
+        self.old_install()
+        self.write_sides()
+        migrate.files_step(cli._write_config, dry_run=False)
+        self.assertEqual(self.sides("review-loop-runs"), [])
+        self.assertEqual(self.sides("diaktoros-runs"),
+                         ["diaktoros-runs.sqlite", "diaktoros-runs.sqlite.present",
+                          "diaktoros-runs.sqlite.workers.log", "diaktoros-runs.sqlite.workers.log.1"])
+
+    def test_a_rerun_moves_side_files_an_earlier_run_left_behind(self):
+        self.old_install()
+        migrate.files_step(cli._write_config, dry_run=False)        # the ledger moved before
+        (self.home / "state" / "review-loop-runs.sqlite.workers.log").write_text("x")
+        lines = migrate.files_step(cli._write_config, dry_run=False)
+        self.assertIn("diaktoros-runs.sqlite.workers.log", " ".join(lines))
+        self.assertEqual(self.sides("review-loop-runs"), [])
+
+    def test_a_side_file_under_both_names_is_left_for_a_person(self):
+        self.old_install()
+        self.write_sides()
+        (self.home / "state" / "diaktoros-runs.sqlite.present").write_text("new")
+        lines = migrate.files_step(cli._write_config, dry_run=False)
+        self.assertTrue(any("REFUSED — both" in line and ".present" in line for line in lines))
+        self.assertEqual((self.home / "state" / "diaktoros-runs.sqlite.present").read_text(), "new")
+
+    def test_the_wal_is_folded_in_before_any_side_file_moves(self):
+        self.old_install()
+        self.write_sides()
+        seen = {}
+        real = migrate._quiet_ledger
+
+        def quiet(path):
+            seen["sides"] = self.sides("review-loop-runs.sqlite.")
+            real(path)
+        with mock.patch.object(migrate, "_quiet_ledger", side_effect=quiet):
+            migrate.files_step(cli._write_config, dry_run=False)
+        self.assertEqual(seen["sides"], ["review-loop-runs.sqlite.present",
+                                         "review-loop-runs.sqlite.workers.log",
+                                         "review-loop-runs.sqlite.workers.log.1"])
+
+    def test_doctor_names_a_side_file_left_behind(self):
+        from diaktoros import doctor
+        (self.home / "state").mkdir()
+        (self.home / "state" / "review-loop-runs.sqlite.workers.log").write_text("x")
+        check = doctor.check_host_names()
+        self.assertEqual(check.status, doctor.UNKNOWN)
+        self.assertIn("state/review-loop-runs.sqlite.workers.log", check.detail)
+
+
+class Order(Home):
+    def test_shims_and_the_watchdog_move_before_any_file(self):
+        # First live upgrade: deliveries mid-migrate ran the old plugin's gates, which wrote
+        # under the old file names. The shims are repointed before the first file moves.
+        self.old_install()
+        order: list[str] = []
+        with mock.patch.object(migrate, "shim_step",
+                               side_effect=lambda *a, **k: order.append("shims") or []), \
+                mock.patch.object(cli, "_move_watchdog_job",
+                                  side_effect=lambda **k: order.append("watchdog") or []), \
+                mock.patch.object(migrate, "files_step",
+                                  side_effect=lambda *a, **k: order.append("files") or []), \
+                mock.patch.object(migrate, "repo_step", return_value=[]), \
+                mock.patch.object(migrate, "doctor_step", return_value=[]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_migrate(argparse.Namespace(dry_run=False, rename_loop=None, admin_token=None))
+        self.assertLess(order.index("shims"), order.index("files"), order)
+        self.assertLess(order.index("watchdog"), order.index("files"), order)
+
+
 class Watchdog(Home):
     def setUp(self):
         super().setUp()

@@ -1332,12 +1332,12 @@ class Supervisor:
             vanished = (not db.is_file() or empty) and (ledger_marker(db).is_file()
                                                         or _names(presence, db))
             if vanished:
-                print(f"review-loop: run ledger {db} vanished since it was last opened; creating "
+                print(f"diaktoros: run ledger {db} vanished since it was last opened; creating "
                       f"a fresh, empty ledger. Earlier runs, holds and notices are not in it.",
                       file=sys.stderr)
             elif empty:
                 # SQLite treats an empty file as a new database; say so, never adopt it silently.
-                print(f"review-loop: run ledger {db} was an empty file; initializing it as a "
+                print(f"diaktoros: run ledger {db} was an empty file; initializing it as a "
                       f"new, empty ledger", file=sys.stderr)
         if fixture_mode and production_config is not None:
             raise ValueError("fixture and production modes are exclusive")
@@ -2514,7 +2514,7 @@ class Supervisor:
                 reason = f"{type(exc).__name__}: {exc}"
                 if reason not in reported:
                     reported.add(reason)
-                    print(f"review-loop worker {os.getpid()}: heartbeat for run {run_id} "
+                    print(f"diaktoros worker {os.getpid()}: heartbeat for run {run_id} "
                           f"failed: {reason}", file=sys.stderr, flush=True)
 
     def complete_uncertain(self, run_id: str, owner: str, rc: int | None,
@@ -3236,7 +3236,7 @@ def main():
     except (HostStateGone, sqlite3.DatabaseError) as exc:
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         reason = exc if isinstance(exc, HostStateGone) else f"run ledger {a.db} unusable: {exc}"
-        print(f"review-loop worker {os.getpid()} {stamp}: {reason}; nothing to run",
+        print(f"diaktoros worker {os.getpid()} {stamp}: {reason}; nothing to run",
               file=sys.stderr, flush=True)
         return
 
