@@ -457,7 +457,7 @@ class LiveRouteRetry(unittest.TestCase):
         self.assertIn('next:       attempt 2 of 4 due in', explained.stdout)
         self.assertNotIn('no guard is holding this PR back', explained.stdout)
         # Waiting is not an alarm: the cron sweep says nothing and launches nothing early.
-        self.assertNotIn('Review-loop worker', self.watchdog())
+        self.assertNotIn('Diaktoros worker', self.watchdog())
         self.assertEqual(len(self.launches()), 1)
 
         # 2. A redelivery while it waits schedules nothing, and the gate says so (#73).
@@ -496,7 +496,7 @@ class LiveRouteRetry(unittest.TestCase):
                       explained.stdout)
         self.assertIn('next:       no external write — re-arm: hermes dk retry '
                       '--loop widgets --pr 7 --seat reviewer', explained.stdout)
-        self.assertNotIn('Review-loop worker', self.watchdog(), 'one notice per failure')
+        self.assertNotIn('Diaktoros worker', self.watchdog(), 'one notice per failure')
         self.assertEqual(len(self.launches()), 4)
 
         # 4. The PR goes back to draft before the operator retries: the worker's claim reads
