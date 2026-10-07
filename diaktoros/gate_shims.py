@@ -412,6 +412,49 @@ def heal(loop: dict) -> list[str]:
     return alerts
 
 
+def heal_watchdog_shim() -> list[str]:
+    """The sweep's heal for the watchdog's own cron shim (``cli.SHIM``): alert lines only.
+
+    Rewritten atomically (0755) only when the file is a regular file that opens like ``cli.SHIM``
+    and differs from it rendered for this plugin's watchdog. A foreign file or a symlink is never
+    written or followed, only reported; a missing shim is not the sweep's to create.
+    """
+    from . import cli, doctor
+    path = config.watchdog_shim()
+    if not os.path.lexists(path):
+        return []
+    fix = "`hermes dk apply --loop <id> --watchdog-shim`"
+    if path.is_symlink() or not path.is_file():
+        return [f"⚠️ Diaktoros: watchdog shim NOT restored: {path} is a symlink or not a regular "
+                f"file (never followed or written); move it aside, then {fix}"]
+    text = _read(path)
+    opening = cli.SHIM.split("import pathlib")[0]
+    if text is None or not text.startswith(opening):
+        return [f"⚠️ Diaktoros: watchdog shim NOT restored: {path} was not written by Diaktoros; "
+                f"move it aside, then {fix}"]
+    wanted = cli.SHIM.format(watchdog=doctor.scripts_dir() / "watchdog.py")
+    if text == wanted:
+        return []
+    try:
+        fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                stream.write(wanted)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temp, MODE)
+            now = None if path.is_symlink() else _read(path)
+            if now is None or not now.startswith(opening):
+                raise OSError(f"{path} changed meanwhile; left alone")
+            os.replace(temp, path)
+        finally:
+            if os.path.exists(temp):
+                os.unlink(temp)
+    except OSError as exc:
+        return [f"⚠️ Diaktoros: watchdog shim NOT restored ({exc}); {fix}"]
+    return [f"🔧 Diaktoros: restored the watchdog shim {path} (it differed from this plugin's template)"]
+
+
 def remove(loop: dict, keep_loops: list[dict]) -> list[str]:
     """Remove this loop's shims that no loop in ``keep_loops`` still needs. Ours only."""
     keep = {(home_for(p) / "scripts" / s) for other in keep_loops for p, s in wanted(other)}

@@ -762,7 +762,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     # Self-heal first, and independent of GitHub listing: a route another registry writer erased
     # or rewrote (issue #1) is a loop that cannot wake a seat, whatever the PRs look like.
     try:
-        healed = route_intent.heal(loop) + gate_shims.heal(loop)
+        healed = route_intent.heal(loop) + gate_shims.heal(loop) + gate_shims.heal_watchdog_shim()
     except Exception as exc:                      # never let the heal hide the stall scan
         healed = [f"⚠️ Diaktoros [{loop['id']}] route self-heal failed: "
                   f"{type(exc).__name__}: {exc}"]

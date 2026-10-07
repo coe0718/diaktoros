@@ -1214,6 +1214,64 @@ class DoctorApplyUninstall(Base):
         self.assertEqual(gate_shims.heal(config.load_id("widgets")), [])
         self.assertFalse(shim.exists())
 
+    def test_watchdog_sweep_heals_its_own_shim(self):
+        from diaktoros import gate_shims
+        self.install()
+        loop = config.load_id("widgets")
+        shim = doctor.shim_path()
+        cli._write_watchdog_shim()
+        good = shim.read_text()
+        self.assertEqual(gate_shims.heal_watchdog_shim(), [])      # up to date: no line, no write
+        # Old template: healed, and doctor then verifies it.
+        shim.write_text(good.replace("diaktoros watchdog failed", "old text"))
+        lines = gate_shims.heal_watchdog_shim()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("restored the watchdog shim", lines[0])
+        self.assertEqual(shim.read_text(), good)
+        self.assertEqual(shim.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(doctor.check_shim(loop).status, doctor.VERIFIED)
+        # Pinned to another plugin path.
+        shim.write_text(good.replace(str(doctor.scripts_dir()), "/gone/plugin/scripts"))
+        self.assertEqual(len(gate_shims.heal_watchdog_shim()), 1)
+        self.assertEqual(shim.read_text(), good)
+        # Foreign file: untouched, reported.
+        shim.write_text("print('mine')\n")
+        self.assertIn("NOT restored", "\n".join(gate_shims.heal_watchdog_shim()))
+        self.assertEqual(shim.read_text(), "print('mine')\n")
+        # Symlink: not followed or written, reported.
+        target = shim.parent / "elsewhere.py"
+        target.write_text(good.replace("diaktoros watchdog failed", "old text"))
+        before = target.read_text()
+        shim.unlink()
+        shim.symlink_to(target)
+        self.assertIn("NOT restored", "\n".join(gate_shims.heal_watchdog_shim()))
+        self.assertTrue(shim.is_symlink())
+        self.assertEqual(target.read_text(), before)
+        # Missing: not the sweep's to create.
+        shim.unlink()
+        self.assertEqual(gate_shims.heal_watchdog_shim(), [])
+        self.assertFalse(os.path.lexists(shim))
+
+    def test_the_watchdog_sweep_itself_restores_a_stale_watchdog_shim(self):
+        """End to end through ``sweep_loop``: fails if the sweep stops calling the heal."""
+        from unittest import mock
+        from diaktoros import state as state_mod
+        from scripts import watchdog
+        self.install()
+        loop = config.load_id("widgets")
+        shim = doctor.shim_path()
+        cli._write_watchdog_shim()
+        good = shim.read_text()
+        shim.write_text(good.replace("diaktoros watchdog failed", "old text"))
+        st = state_mod.state_for(loop)
+        with mock.patch.object(watchdog.gh, "open_prs", return_value=None), \
+             mock.patch.object(watchdog.gate, "resume_isolated", return_value=None), \
+             mock.patch.object(watchdog.gate, "hooks_read", return_value=(True, "")):
+            lines = watchdog.sweep_loop(loop, st)
+        self.assertTrue(any("restored the watchdog shim" in line for line in lines), lines)
+        self.assertEqual(shim.read_text(), good)
+        self.assertEqual(shim.stat().st_mode & 0o777, 0o755)
+
     def test_set_fails_loudly_when_the_observer_shim_cannot_be_written(self):
         self.install()
         foreign = self.hermes / "profiles/arbiter/scripts/observe.py"
