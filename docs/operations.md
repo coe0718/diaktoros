@@ -496,8 +496,8 @@ Run it between turns, once the new plugin is installed and enabled. The old plug
 disabled but still installed, so its settings and scripts stay readable:
 
 ```bash
-hermes review-loop migrate --dry-run   # every step, nothing written
-hermes review-loop migrate
+hermes dk migrate --dry-run   # every step, nothing written
+hermes dk migrate
 ```
 
 It runs four steps:
@@ -534,8 +534,8 @@ state directory, and its routes (`<id>-review`, `<id>-fix` and so on), and throu
 URLs its GitHub hooks post to:
 
 ```bash
-hermes review-loop migrate --rename-loop "<old-id>=<new-id>" --admin-token "<hook-admin-login>" --dry-run
-hermes review-loop migrate --rename-loop "<old-id>=<new-id>" --admin-token "<hook-admin-login>"
+hermes dk migrate --rename-loop "<old-id>=<new-id>" --admin-token "<hook-admin-login>" --dry-run
+hermes dk migrate --rename-loop "<old-id>=<new-id>" --admin-token "<hook-admin-login>"
 ```
 
 It's refused while one of the loop's runs is in flight or uncertain. Then, in this order:

@@ -672,8 +672,8 @@ runs is in flight. It points the gate and watchdog shims at this plugin's script
 [moving to a renamed plugin or repository](operations.md#moving-to-a-renamed-plugin-or-repository).
 
 ```bash
-hermes review-loop migrate --dry-run
-hermes review-loop migrate
+hermes dk migrate --dry-run
+hermes dk migrate
 ```
 
 `--rename-loop OLD=NEW` also renames a loop: its file, its default state directory, its routes
