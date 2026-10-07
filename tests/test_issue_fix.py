@@ -288,7 +288,7 @@ class Worker(Base):
 
     def test_the_prompt_names_the_base_branch_and_carries_the_issue_as_data(self):
         text = run_supervisor.issue_fix_prompt(self.loop, {"repo": REPO, "pr": 12, "head": BASE})
-        self.assertIn("review-loop/issue-12", text)
+        self.assertIn("diaktoros/issue-12", text)
         self.assertIn(BASE, text)
         self.assertIn("issue_comment", text)
         self.assertLess(text.index("What to do"), text.index("Typo in README."))
@@ -299,11 +299,11 @@ class Worker(Base):
 
     def test_a_recorded_fix_is_write_evidence(self):
         sup, run_id = self.fix_row()
-        sup.record_issue_fix(run_id, REPO, 12, BASE, "pr", "review-loop/issue-12")
+        sup.record_issue_fix(run_id, REPO, 12, BASE, "pr", "diaktoros/issue-12")
         with sup._connect() as con:
             self.assertEqual(run_supervisor.write_records(con, run_id), "issue fix recorded")
         with self.assertRaisesRegex(ValueError, "already recorded"):
-            sup.record_issue_fix(run_id, REPO, 12, BASE, "pr", "review-loop/issue-12")
+            sup.record_issue_fix(run_id, REPO, 12, BASE, "pr", "diaktoros/issue-12")
 
     def test_tools_advertise_only_the_issue_fixers_two_writes(self):
         tools = trusted_turn.tool_instructions("issue_fixer")
@@ -340,7 +340,7 @@ class BrokerWrite(Base):
             patch = mock.patch.object(target, name, value)
             patch.start()
             self.addCleanup(patch.stop)
-        scope = broker_ipc.RunScope(REPO, 12, BASE, "issue_fixer", "review-loop/issue-12",
+        scope = broker_ipc.RunScope(REPO, 12, BASE, "issue_fixer", "diaktoros/issue-12",
                                     self.run_id, str(self.db))
         self.server = broker_ipc.RunBroker(self.loop, scope, self.root)
 
@@ -362,11 +362,11 @@ class BrokerWrite(Base):
 
     def test_open_pr_pushes_a_fresh_branch_opens_the_pr_and_requests_the_reviewer(self):
         self.server._dispatch(self.open_pr())
-        self.assertEqual(self.pushed[0]["branch"], "review-loop/issue-12")
+        self.assertEqual(self.pushed[0]["branch"], "diaktoros/issue-12")
         self.assertEqual(self.pushed[0]["base"], BASE)
         pr, request = self.posts()
         self.assertEqual(pr[0], f"/repos/{REPO}/pulls")
-        self.assertEqual((pr[1]["head"], pr[1]["base"]), ("review-loop/issue-12", "main"))
+        self.assertEqual((pr[1]["head"], pr[1]["base"]), ("diaktoros/issue-12", "main"))
         self.assertIn("Fixes #12", pr[1]["body"])
         self.assertEqual(request, (f"/repos/{REPO}/pulls/40/requested_reviewers",
                                    {"reviewers": ["review"]}))
@@ -459,7 +459,7 @@ class WorkerLaunch(Base):
             row = con.execute("SELECT state,error FROM runs WHERE id=?", (run_id,)).fetchone()
         self.assertNotIn("seat model unresolved", row["error"] or "", dict(row))
         self.assertEqual(resolved, [("coder", "fixer")])       # the fixer seat's own profile
-        self.assertEqual(launched, [("issue_fixer", "review-loop/issue-12", BASE)])
+        self.assertEqual(launched, [("issue_fixer", "diaktoros/issue-12", BASE)])
 
 
 class OpenBranchGuards(Base):
@@ -483,12 +483,12 @@ class OpenBranchGuards(Base):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def open(self, branch="review-loop/issue-12"):
+    def open(self, branch="diaktoros/issue-12"):
         return safe_push.open_branch(self.loop, repo=REPO, number=12, base=BASE, branch=branch,
                                      manifest=self.manifest)
 
     def test_only_the_issues_own_branch_may_be_pushed(self):
-        for branch in ("main", "review-loop/issue-13", "review-loop/issue-12/x", "fix-7"):
+        for branch in ("main", "diaktoros/issue-13", "diaktoros/issue-12/x", "fix-7"):
             with self.subTest(branch=branch), self.assertRaisesRegex(broker.BrokerDenied,
                                                                      "unsafe branch ref"):
                 self.open(branch)
@@ -506,7 +506,7 @@ class OpenBranchGuards(Base):
 
 
 class OpenBranchExisting(OpenBranchGuards):
-    """An existing review-loop/issue-N branch is a pre-write denial, not an uncertain push."""
+    """An existing diaktoros/issue-N branch is a pre-write denial, not an uncertain push."""
 
     def read(self, result):
         patch = mock.patch.object(safe_push.gh, "fetch", mock.Mock(return_value=result))
@@ -514,9 +514,9 @@ class OpenBranchExisting(OpenBranchGuards):
         self.addCleanup(patch.stop)
 
     def test_an_existing_branch_is_denied_before_any_write(self):
-        self.read(({"ref": "refs/heads/review-loop/issue-12", "object": {"sha": "a" * 40}}, ""))
+        self.read(({"ref": "refs/heads/diaktoros/issue-12", "object": {"sha": "a" * 40}}, ""))
         with self.assertRaisesRegex(broker.BrokerDenied,
-                                    "review-loop/issue-12 already exists — inspect it, and see docs/issues.md"):
+                                    "diaktoros/issue-12 already exists — inspect it, and see docs/issues.md"):
             self.open()
         safe_push._git_cas.assert_not_called()
 
@@ -562,7 +562,7 @@ class RealBareBranch(unittest.TestCase):
             Path(loop["tokens"]["fix"]).write_text("not-a-real-token")
             identity = {"name": "fix", "email": "3+fix@users.noreply.github.com"}
 
-            def cas(head, branch="review-loop/issue-12", content=b"fixed"):
+            def cas(head, branch="diaktoros/issue-12", content=b"fixed"):
                 return safe_push._git_cas(loop, REPO, branch, head, [("README.md", content)],
                                           "Fix the typo", "fix", identity, remote=remote,
                                           from_branch="main")
@@ -572,16 +572,16 @@ class RealBareBranch(unittest.TestCase):
                                               "GIT_CONFIG_GLOBAL": "/does/not/exist"}):
                 new = cas(pinned)              # main moved on since: the pinned commit still counts
                 self.assertEqual(git("--git-dir", remote, "rev-parse",
-                                     "refs/heads/review-loop/issue-12"), new)
+                                     "refs/heads/diaktoros/issue-12"), new)
                 self.assertEqual(git("--git-dir", remote, "rev-list", "--parents", "-n", "1", new),
                                  f"{new} {pinned}")
                 self.assertEqual(git("--git-dir", remote, "rev-parse", "refs/heads/main"), later)
                 with self.assertRaises(broker.BrokerDenied):
                     cas(pinned, content=b"another fix")   # the branch exists: never overwritten
                 self.assertEqual(git("--git-dir", remote, "rev-parse",
-                                     "refs/heads/review-loop/issue-12"), new)
+                                     "refs/heads/diaktoros/issue-12"), new)
                 with self.assertRaisesRegex(broker.BrokerDenied, "not on the base branch"):
-                    cas(stray, branch="review-loop/issue-13")
+                    cas(stray, branch="diaktoros/issue-13")
 
 
 if __name__ == "__main__":

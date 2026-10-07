@@ -9,7 +9,7 @@ Two deliberate choices:
   in the loop config, so the credential that pushes, the credential that reviews and the
   credential that reads are separate and revocable one at a time.
 
-Test hook: set ``REVIEW_LOOP_GH_STUB`` to an executable that takes the API path as argv[1]
+Test hook: set ``DIAKTOROS_GH_STUB`` to an executable that takes the API path as argv[1]
 and prints a JSON response. That is how the test suite exercises the gates without a
 network or a real repository. To answer with an HTTP status or response headers, the stub
 prints ``{"__gh_stub_response__": {"status": 401, "headers": {...}, "body": ...}}``.
@@ -31,6 +31,7 @@ import urllib.request
 from typing import NamedTuple
 
 from .util import log
+from . import envnames
 
 API = "https://api.github.com"
 REVIEW_PAGE_SIZE = 100
@@ -133,7 +134,7 @@ def _stub(path: str, method: str, body, login: str = "", timeout: float = 30.0) 
     real 404. An empty error and a non-empty one are therefore different facts, which is the
     whole reason this returns the error apart from the payload instead of ``None`` for both.
     """
-    stub = os.environ.get("REVIEW_LOOP_GH_STUB")
+    stub = envnames.get("GH_STUB")
     if not stub:
         return Response(None, "")
     argv = [stub, path] if not body else [stub, path, json.dumps(body)]
@@ -182,7 +183,7 @@ def request(loop: dict, path: str, method: str = "GET", body=None,
 
 def _request(loop: dict, path: str, method: str, body, login: str | None,
              timeout: float) -> Response:
-    if os.environ.get("REVIEW_LOOP_GH_STUB"):
+    if envnames.get("GH_STUB"):
         # The login travels to the stub (as GH_LOGIN, never a token) so a test can play a read
         # token GitHub refuses a hook write.
         return _stub(path, method, body, login or loop.get("read_token") or "", timeout)
@@ -234,7 +235,7 @@ def read_text(loop: dict, path: str, login: str | None = None, limit: int = 2621
     bounded, so a huge log never lands in memory whole. Under the test stub, a stub that prints
     a JSON string (or ``{"text": ...}``) stands in for the log.
     """
-    if os.environ.get("REVIEW_LOOP_GH_STUB"):
+    if envnames.get("GH_STUB"):
         data = _stub(path, "GET", None, login or loop.get("read_token") or "").data
         data = data.get("text") if isinstance(data, dict) else data
         return data[-limit:] if isinstance(data, str) else None

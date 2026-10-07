@@ -35,9 +35,9 @@ class Seams(unittest.TestCase):
     def guard(self, on: bool):
         """A private log, so these probes' deliberate leaks never reach the suite's own guard."""
         if on:
-            os.environ['REVIEW_LOOP_LEAK_LOG'] = str(self.log)
+            os.environ['DIAKTOROS_LEAK_LOG'] = str(self.log)
         else:
-            os.environ.pop('REVIEW_LOOP_LEAK_LOG', None)
+            os.environ.pop('DIAKTOROS_LEAK_LOG', None)
 
     def recorded(self) -> list[str]:
         if not self.log.exists():
@@ -73,7 +73,7 @@ class Seams(unittest.TestCase):
         self.guard(True)
         argv, env = self.resolver_call()
         self.assertTrue(argv[5].endswith(seat_model._RESOLVER))
-        self.assertEqual(set(env), RESOLVER_ENV | {'REVIEW_LOOP_LEAK_LOG'})
+        self.assertEqual(set(env), RESOLVER_ENV | {'DIAKTOROS_LEAK_LOG'})
         # The same flags and environment, with a leaking program after the recorder.
         loader = argv[5][:-len(seat_model._RESOLVER)]
         subprocess.run([sys.executable, '-E', '-s', '-B', '-c', loader + LEAK], env=env, check=True,
@@ -102,14 +102,14 @@ class Seams(unittest.TestCase):
         script, env = self.askpass_call()
         self.assertEqual(script, "#!/usr/bin/python3\nimport os,sys\nfrom pathlib import Path\n"
                          "print('x-access-token' if 'Username' in sys.argv[1] "
-                         "else Path(os.environ['REVIEW_LOOP_TOKEN_FILE']).read_text().strip())\n")
-        self.assertNotIn('REVIEW_LOOP_LEAK_LOG', env)
+                         "else Path(os.environ['DIAKTOROS_TOKEN_FILE']).read_text().strip())\n")
+        self.assertNotIn('DIAKTOROS_LEAK_LOG', env)
         self.assertNotIn('PYTHONPATH', env)
 
     def test_askpass_leak_is_recorded_under_the_guard(self):
         self.guard(True)
         script, env = self.askpass_call()
-        self.assertEqual(env['REVIEW_LOOP_LEAK_LOG'], str(self.log))
+        self.assertEqual(env['DIAKTOROS_LEAK_LOG'], str(self.log))
         self.assertNotIn('PYTHONPATH', env)
         probe = self.tmp / 'askpass.py'
         probe.write_text(script + LEAK)

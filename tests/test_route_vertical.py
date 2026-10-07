@@ -35,8 +35,8 @@ class RouteSubprocess(unittest.TestCase):
         loops = home / "review-loops.d"
         loops.mkdir()
         self.env = {"PATH": "/usr/bin:/bin", "HOME": str(home),
-                    "HERMES_HOME": str(home), "REVIEW_LOOP_CONFIG_DIR": str(loops),
-                    "REVIEW_LOOP_GH_STUB": str(self.root / "gh-stub.py"),
+                    "HERMES_HOME": str(home), "DIAKTOROS_CONFIG_DIR": str(loops),
+                    "DIAKTOROS_GH_STUB": str(self.root / "gh-stub.py"),
                     "GH_WORLD": str(self.root / "world.json"),
                     "PYTHONDONTWRITEBYTECODE": "1", "GIT_TERMINAL_PROMPT": "0"}
         self.loop = {"id": "widgets", "repo": "acme/widgets", "base": "main", "cap": 3,

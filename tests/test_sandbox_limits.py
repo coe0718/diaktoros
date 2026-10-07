@@ -289,11 +289,11 @@ class SandboxLimitTests(unittest.TestCase):
 
     def test_a_cap_can_be_overridden_and_a_bad_one_is_ignored(self):
         """Sizes are a host property, so the operator sets them without editing code."""
-        with mock.patch.dict("os.environ", {"REVIEW_LOOP_CHECKOUT_SIZE_GIB": "3"}):
+        with mock.patch.dict("os.environ", {"DIAKTOROS_CHECKOUT_SIZE_GIB": "3"}):
             self.assertEqual(contained._size_from_env("CHECKOUT_SIZE", 8), 3 * 1024 ** 3)
-        with mock.patch.dict("os.environ", {"REVIEW_LOOP_CHECKOUT_SIZE_GIB": "lots of them"}):
+        with mock.patch.dict("os.environ", {"DIAKTOROS_CHECKOUT_SIZE_GIB": "lots of them"}):
             self.assertEqual(contained._size_from_env("CHECKOUT_SIZE", 8), 8 * 1024 ** 3)
-        with mock.patch.dict("os.environ", {"REVIEW_LOOP_CHECKOUT_SIZE_GIB": "0"}):
+        with mock.patch.dict("os.environ", {"DIAKTOROS_CHECKOUT_SIZE_GIB": "0"}):
             self.assertEqual(contained._size_from_env("CHECKOUT_SIZE", 8), 8 * 1024 ** 3)
 
     def test_a_refusal_stops_being_reported_once_the_value_is_gone(self):
@@ -303,7 +303,7 @@ class SandboxLimitTests(unittest.TestCase):
         process refusing to call itself green, and the record grew one entry per resolution.
         """
         from review_loop import contained
-        with mock.patch.dict("os.environ", {"REVIEW_LOOP_CHECKOUT_SIZE_GIB": "0"}):
+        with mock.patch.dict("os.environ", {"DIAKTOROS_CHECKOUT_SIZE_GIB": "0"}):
             contained._size_from_env("CHECKOUT_SIZE", 8)
             self.assertEqual(len(contained.live_ignored_overrides()), 1,
                              "a bad value is reported while it is set")
@@ -394,7 +394,7 @@ class BrokerClaimTests(unittest.TestCase):
     def test_a_refused_override_is_recorded_for_doctor(self):
         """A bound nobody can parse must not vanish into an unattended turn's stderr."""
         self.addCleanup(contained.IGNORED_SIZE_OVERRIDES.clear)
-        with mock.patch.dict("os.environ", {"REVIEW_LOOP_CHECKOUT_SIZE_GIB": "sixteen"}):
+        with mock.patch.dict("os.environ", {"DIAKTOROS_CHECKOUT_SIZE_GIB": "sixteen"}):
             self.assertEqual(contained._size_from_env("CHECKOUT_SIZE", 8), 8 * 1024 ** 3)
         self.assertTrue(any(name == "CHECKOUT_SIZE" and raw == "sixteen" and why
                             for name, raw, why in contained.IGNORED_SIZE_OVERRIDES))
@@ -422,10 +422,10 @@ class BrokerClaimTests(unittest.TestCase):
         self.assertIn("one at a time", small.fix)
         with mock.patch.object(contained, "IGNORED_SIZE_OVERRIDES",
                                [("CHECKOUT_SIZE", "sixteen", "not an integer")]), \
-                mock.patch.dict("os.environ", {"REVIEW_LOOP_CHECKOUT_SIZE_GIB": "sixteen"}):
+                mock.patch.dict("os.environ", {"DIAKTOROS_CHECKOUT_SIZE_GIB": "sixteen"}):
             refused = doctor.check_sandbox_caps({"id": "t"})
         self.assertEqual(refused.status, "mismatch")
-        self.assertIn("REVIEW_LOOP_CHECKOUT_SIZE_GIB", refused.detail)
+        self.assertIn("DIAKTOROS_CHECKOUT_SIZE_GIB", refused.detail)
         self.assertIn("fix the value", refused.fix)
         # The record is process-wide and the resolution is read once per process, so a refusal
         # must stop being reported once the value is gone — otherwise one bad value seen once
@@ -448,24 +448,24 @@ class BrokerClaimTests(unittest.TestCase):
             fixture_mode=False, production_config="/tmp/widgets.json", fixture_command=None,
             db="/tmp/none.sqlite", capacity=3, lease_seconds=60.0, child_timeout=120.0,
             hermes_home=pathlib.Path("/tmp/fake-home"), _worker_log=lambda: None)
-        with mock.patch.dict(os.environ, {"REVIEW_LOOP_CHECKOUT_SIZE_GIB": "64",
-                                          "REVIEW_LOOP_SCRATCH_SIZE_GIB": "4"}), \
+        with mock.patch.dict(os.environ, {"DIAKTOROS_CHECKOUT_SIZE_GIB": "64",
+                                          "DIAKTOROS_SCRATCH_SIZE_GIB": "4"}), \
                 mock.patch.object(subprocess, "Popen") as popen:
             # A duck-typed stand-in for a Supervisor: _spawn only reads these attributes (and
             # its worker log, None here: stderr discarded),
             # and building a real one needs a database this test has no use for.
             run_supervisor.Supervisor._spawn(fake)  # type: ignore[arg-type]
         env = popen.call_args.kwargs["env"]
-        self.assertEqual(env.get("REVIEW_LOOP_CHECKOUT_SIZE_GIB"), "64",
+        self.assertEqual(env.get("DIAKTOROS_CHECKOUT_SIZE_GIB"), "64",
                          "an override set for the gateway must be what sizes the seat's sandbox")
-        self.assertEqual(env.get("REVIEW_LOOP_SCRATCH_SIZE_GIB"), "4")
+        self.assertEqual(env.get("DIAKTOROS_SCRATCH_SIZE_GIB"), "4")
         self.assertNotIn("GH_TOKEN", env, "the allowlist stays a host-limit allowlist")
 
     def test_every_mount_override_contained_reads_is_forwarded(self):
         """A new size setting that is not added to HOST_LIMIT_ENV silently does nothing."""
         for stem in ("CHECKOUT_SIZE", "SCRATCH_SIZE"):
-            self.assertIn(f"REVIEW_LOOP_{stem}_GIB", run_supervisor.HOST_LIMIT_ENV,
-                          f"REVIEW_LOOP_{stem}_GIB is read by contained but never reaches the worker")
+            self.assertIn(f"DIAKTOROS_{stem}_GIB", run_supervisor.HOST_LIMIT_ENV,
+                          f"DIAKTOROS_{stem}_GIB is read by contained but never reaches the worker")
 
 
 if __name__ == "__main__":

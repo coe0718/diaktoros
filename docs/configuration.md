@@ -26,12 +26,19 @@ Diaktoros has three configuration layers: a repository's loop JSON, per-profile 
 
 | Layer | Location | What it controls |
 |---|---|---|
-| Loop | `$HERMES_HOME/diaktoros.d/<id>.json` | Repository, branches, identities, routes, budgets, policy, and per-loop state paths. `REVIEW_LOOP_CONFIG_DIR` overrides the directory. |
+| Loop | `$HERMES_HOME/diaktoros.d/<id>.json` | Repository, branches, identities, routes, budgets, policy, and per-loop state paths. `DIAKTOROS_CONFIG_DIR` overrides the directory. |
 | Plugin settings | `plugins.entries.diaktoros.settings` in the active Hermes profile's configuration | Defaults for `init`; explicitly named values pushed to one existing loop by `apply`. |
 | Host runtime | `$HERMES_HOME/diaktoros-runtime.json` | Four host installation paths and optional model overrides. |
 | Seat profile | The selected Hermes profile's configuration and authentication sources | Provider, model, endpoint, and credentials resolved on the host for that seat. |
 
 `HERMES_HOME` defaults to `~/.hermes`. In this document it means the home used by the Diaktoros host process; do not assume a command launched under another profile sees the same loops or runtime file.
+
+**Names from before the rename.** Diaktoros was called hermes-review-loop before v0.2.0, and what was set or written under the old names keeps working:
+- **Host files and the watchdog job:** an install's `review-loops.d`, `review-loop-runtime.json`, `review-loop-runs.sqlite` and the rest are used where they are until `hermes dk migrate` moves them (see [moving to a renamed plugin](operations.md#moving-to-a-renamed-plugin-or-repository)). `doctor` names any that are left. The same goes for the `review loop watchdog` cron job.
+- **Environment variables:** every `DIAKTOROS_*` setting is also read as `REVIEW_LOOP_*` when the new name isn't set.
+- **Records already written:** fixer-answers comments that carry the old `<!-- review-loop:fixer-answers` marker are still records. Open issue-fix PRs on `review-loop/issue-N` branches still count as issue fixes. Log lines that start with `[review-loop]` are still read by `trace` and `review`.
+
+The plugin itself only writes the new names.
 
 `init` writes a loop file. `set` changes a named loop; `apply` explicitly overlays plugin settings and coordinates identity changes with installed routes/hooks. `fixer-push` separately controls unattended writes. Changing the settings form alone does not update existing loops. See [Operations](operations.md) for lifecycle commands and [Concepts](concepts.md) for roles and review rounds.
 
@@ -369,7 +376,7 @@ An authorized handoff uses the runtime seat `issue_fixer`, but that seat has no 
 - Budget comes from loop `turn_budget_s`, **not** `seats.fixer.turn_budget_s`.
 - No daily cap is inherited from `seats.fixer.daily_turns`.
 - Agent steps **are** the fixer's: `seats.fixer.max_steps` (default 80) applies to issue fixes too.
-- It creates only a fresh branch `review-loop/issue-N`, not an existing branch.
+- It creates only a fresh branch `diaktoros/issue-N`, not an existing branch.
 - It requires enabled triage, a configured `fix_label`, and `unattended_fixer_push: true`.
 
 Do not add `seats.issue_fixer` and expect it to tune this behavior: normalization does not retain it as a configurable seat. Its inference resolution uses the fixer seat; the runtime override seat names likewise do not include `issue_fixer`.
@@ -540,16 +547,16 @@ Set production limits in the environment of the process launching the supervisor
 | Variable | Default / accepted value | Effect |
 |---|---|---|
 | `HERMES_HOME` | `~/.hermes` | Host loop/runtime/state home; `~` expands. |
-| `REVIEW_LOOP_CONFIG_DIR` | `$HERMES_HOME/diaktoros.d` | Alternative loop-file directory; `~` expands. |
-| `REVIEW_LOOP_SUBS` | Default gateway subscriptions location | Alternative subscription/route registry path; useful only when the serving gateway reads the same registry. |
-| `REVIEW_LOOP_HERMES` | `hermes` found on `PATH` | Hermes executable used when composing scheduler commands. |
+| `DIAKTOROS_CONFIG_DIR` | `$HERMES_HOME/diaktoros.d` | Alternative loop-file directory; `~` expands. |
+| `DIAKTOROS_SUBS` | Default gateway subscriptions location | Alternative subscription/route registry path; useful only when the serving gateway reads the same registry. |
+| `DIAKTOROS_HERMES` | `hermes` found on `PATH` | Hermes executable used when composing scheduler commands. |
 | `HERMES_REAL_HOME` | Current home | Operator-home hint used by runtime detection when a gateway profile has redirected `HOME`. |
 | `RUSTUP_HOME` | Operator home's `.rustup` | Toolchain discovery input to runtime detection. |
-| `REVIEW_LOOP_CHECKOUT_SIZE_GIB` | `8`; integer 1–1024 | Writable `/work` tmpfs cap for working seats; also `/target` build tmpfs cap when checkout is read-only. |
-| `REVIEW_LOOP_SCRATCH_SIZE_GIB` | `2`; integer 1–1024 | `/tmp` tmpfs for scratch, `TMPDIR`, `CARGO_HOME`, and `RUSTUP_HOME`. |
-| `REVIEW_LOOP_CRATE_CACHE_GIB` | `2`; integer 1–1024 | Per-repository host dependency-cache byte cap. Prefetch exceeding it is killed and its additions removed. |
-| `REVIEW_LOOP_GATE_BUDGET_S` | `20`; numeric seconds, `0 < value < 600` | Requested webhook gate clock; effective clock also fits the serving gateway script timeout. |
-| `REVIEW_LOOP_WATCHDOG_BUDGET_S` | `600`; numeric seconds, `0 < value <= 86400` | Watchdog sweep clock. A gate-initiated drain supplies a shorter budget from its remaining time. |
+| `DIAKTOROS_CHECKOUT_SIZE_GIB` | `8`; integer 1–1024 | Writable `/work` tmpfs cap for working seats; also `/target` build tmpfs cap when checkout is read-only. |
+| `DIAKTOROS_SCRATCH_SIZE_GIB` | `2`; integer 1–1024 | `/tmp` tmpfs for scratch, `TMPDIR`, `CARGO_HOME`, and `RUSTUP_HOME`. |
+| `DIAKTOROS_CRATE_CACHE_GIB` | `2`; integer 1–1024 | Per-repository host dependency-cache byte cap. Prefetch exceeding it is killed and its additions removed. |
+| `DIAKTOROS_GATE_BUDGET_S` | `20`; numeric seconds, `0 < value < 600` | Requested webhook gate clock; effective clock also fits the serving gateway script timeout. |
+| `DIAKTOROS_WATCHDOG_BUDGET_S` | `600`; numeric seconds, `0 < value <= 86400` | Watchdog sweep clock. A gate-initiated drain supplies a shorter budget from its remaining time. |
 
 Unparseable/out-of-range size limits fall back to defaults and are reported by `selftest`; mount-size refusals are also reported by `doctor`. They do not remove containment. Invalid gate/watchdog budgets fall back to defaults. The gate reads possible gateway timeout configurations and fits the smaller applicable limit when topology is ambiguous; increasing the requested budget alone cannot override the gateway's script timeout. See [Operations](operations.md).
 
@@ -561,9 +568,9 @@ Tmpfs sizes bound data, not all inode metadata or process memory. `/home/agent` 
 
 ### Test-only and internal variables
 
-`REVIEW_LOOP_GH_STUB` substitutes a test executable for GitHub responses; live selftest refuses it. `REVIEW_LOOP_TEST` makes watchdog probes bypass pause/grace checks and can operate on real data: it is **not** a dry run and should not be inherited by production services.
+`DIAKTOROS_GH_STUB` substitutes a test executable for GitHub responses; live selftest refuses it. `DIAKTOROS_TEST` makes watchdog probes bypass pause/grace checks and can operate on real data: it is **not** a dry run and should not be inherited by production services.
 
-`REVIEW_LOOP_TEST_HOME_GUARD` plus `REVIEW_LOOP_TEST_GUARD_SENTINEL` arm the test harness's real-home/network tripwires; the guard variable alone does not. Related `REVIEW_LOOP_TEST_*`, `REVIEW_LOOP_GATE_REDRIVE`, `REVIEW_LOOP_WORKER`, sandbox workspace markers, `REVIEW_LOOP_TURN_BUDGET`, token-file handoff variables, and `REVIEW_LOOP_LEAK_LOG` are internal/test plumbing, not supported operator configuration. Follow [Development](development.md) rather than exporting them into a gateway.
+`DIAKTOROS_TEST_HOME_GUARD` plus `DIAKTOROS_TEST_GUARD_SENTINEL` arm the test harness's real-home/network tripwires; the guard variable alone does not. Related `DIAKTOROS_TEST_*`, `DIAKTOROS_GATE_REDRIVE`, `DIAKTOROS_WORKER`, sandbox workspace markers, `DIAKTOROS_TURN_BUDGET`, token-file handoff variables, and `DIAKTOROS_LEAK_LOG` are internal/test plumbing, not supported operator configuration. Follow [Development](development.md) rather than exporting them into a gateway.
 
 ## State files
 

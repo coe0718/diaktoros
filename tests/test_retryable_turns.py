@@ -358,7 +358,7 @@ class OperatorCommands(unittest.TestCase):
                 "state_dir": str(home / "state"), "tokens": {}, "read_token": "reader",
                 "host": "http://127.0.0.1:9"}
         (loops / 'widgets.json').write_text(json.dumps(loop))
-        env = patch.dict(os.environ, {'HERMES_HOME': str(home), 'REVIEW_LOOP_CONFIG_DIR': str(loops)})
+        env = patch.dict(os.environ, {'HERMES_HOME': str(home), 'DIAKTOROS_CONFIG_DIR': str(loops)})
         env.start()
         self.addCleanup(env.stop)
         self.db = home / 'state' / 'diaktoros-runs.sqlite'

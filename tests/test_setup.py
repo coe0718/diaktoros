@@ -144,7 +144,7 @@ class Setup(unittest.TestCase):
         for stale in (self.hermes.log, config.home() / "cron" / "jobs.json"):
             stale.unlink(missing_ok=True)
             self.addCleanup(stale.unlink, missing_ok=True)
-        env = patch.dict(os.environ, {"REVIEW_LOOP_HERMES": str(self.hermes.bin)})
+        env = patch.dict(os.environ, {"DIAKTOROS_HERMES": str(self.hermes.bin)})
         env.start()
         self.addCleanup(env.stop)
         # Nothing on this machine is detected: every host path comes from the flags.

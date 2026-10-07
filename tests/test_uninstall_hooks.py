@@ -43,7 +43,7 @@ class Base(unittest.TestCase):
         self.hermes_log = t.TMP / "hermes-calls.jsonl"
         self.hermes_log.unlink(missing_ok=True)
         os.environ["FAKE_HERMES_LOG"] = str(self.hermes_log)
-        os.environ["REVIEW_LOOP_HERMES"] = str(t.FAKE_HERMES)
+        os.environ["DIAKTOROS_HERMES"] = str(t.FAKE_HERMES)
         self.addCleanup(os.environ.pop, "FAKE_HERMES_LOG", None)
 
     # -- helpers -------------------------------------------------------------------
@@ -362,7 +362,7 @@ class CronTest(Base):
 
     def test_a_job_that_will_not_go_refuses_before_routes_and_config(self):
         self.cron_store([self.job("widgets", "job1")])
-        os.environ["REVIEW_LOOP_HERMES"] = "/bin/false"
+        os.environ["DIAKTOROS_HERMES"] = "/bin/false"
         rc, out = self.cli("uninstall", "--loop", "widgets")
         self.assertEqual(rc, 2, out)
         self.assertIn("hermes cron remove job1", out)

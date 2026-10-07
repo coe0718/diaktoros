@@ -108,7 +108,7 @@ class SelftestBase(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(temp.cleanup)
         self.fx = Fixture(pathlib.Path(temp.name))
-        env = {k: v for k, v in os.environ.items() if k != "REVIEW_LOOP_GH_STUB"}
+        env = {k: v for k, v in os.environ.items() if k != "DIAKTOROS_GH_STUB"}
         env["HERMES_HOME"] = str(self.fx.home)
         patches = [
             mock.patch.dict(os.environ, env, clear=True),
@@ -334,7 +334,7 @@ class ChecklistTests(SelftestBase):
         self.assertIs(gh.fetch.side_effect.__self__, self.fx)  # original restored
 
     def test_stub_environment_is_a_failure(self):
-        with mock.patch.dict(os.environ, {"REVIEW_LOOP_GH_STUB": "/bin/true"}):
+        with mock.patch.dict(os.environ, {"DIAKTOROS_GH_STUB": "/bin/true"}):
             rc, text = self.run_selftest(model=False)
         self.assertEqual(rc, 1)
         self.assertIn("❌ github:stub", text)

@@ -48,7 +48,7 @@ CLONE = TMP / "clone"
 SUBS = TMP / "webhook_subscriptions.json"
 WORLD_FILE = TMP / "world.json"
 STUB = TMP / "gh_stub.py"
-# A fake `hermes` first on every child's PATH (and named by REVIEW_LOOP_HERMES): `uninstall` and
+# A fake `hermes` first on every child's PATH (and named by DIAKTOROS_HERMES): `uninstall` and
 # `init --schedule` drive the scheduler through it, and a test must never reach the real install.
 FAKE_BIN = TMP / "bin"
 FAKE_HERMES = FAKE_BIN / "hermes"
@@ -456,10 +456,10 @@ DATA: dict = {}
 def env() -> dict:
     # Isolate every child, even when the CI runner has no HERMES_HOME.
     return {**os.environ, "HERMES_HOME": str(TMP / "hermes-home"),
-            "REVIEW_LOOP_CONFIG_DIR": str(LOOPS_DIR),
-            "REVIEW_LOOP_SUBS": str(SUBS), "REVIEW_LOOP_GH_STUB": str(STUB),
-            "GH_WORLD": str(WORLD_FILE), "REVIEW_LOOP_TEST": "1",
-            "REVIEW_LOOP_HERMES": str(FAKE_HERMES),
+            "DIAKTOROS_CONFIG_DIR": str(LOOPS_DIR),
+            "DIAKTOROS_SUBS": str(SUBS), "DIAKTOROS_GH_STUB": str(STUB),
+            "GH_WORLD": str(WORLD_FILE), "DIAKTOROS_TEST": "1",
+            "DIAKTOROS_HERMES": str(FAKE_HERMES),
             "PATH": f"{FAKE_BIN}{os.pathsep}{os.environ.get('PATH', '')}".rstrip(os.pathsep)}
 
 

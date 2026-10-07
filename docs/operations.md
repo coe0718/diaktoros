@@ -262,8 +262,8 @@ when doctor and selftest disagree.
 
 Checkout and scratch are independently bounded; Rust dependency prefetch also has a
 host crate-cache limit. Relevant gateway-environment overrides are
-`REVIEW_LOOP_CHECKOUT_SIZE_GIB`, `REVIEW_LOOP_SCRATCH_SIZE_GIB` and
-`REVIEW_LOOP_CRATE_CACHE_GIB`. Consult [configuration](configuration.md) for defaults,
+`DIAKTOROS_CHECKOUT_SIZE_GIB`, `DIAKTOROS_SCRATCH_SIZE_GIB` and
+`DIAKTOROS_CRATE_CACHE_GIB`. Consult [configuration](configuration.md) for defaults,
 units and accepted bounds. Set them in the **gateway launch environment**, not only
 the shell running selftest, and restart/reload through your normal service procedure.
 Production workers inherit them. Raising a cap increases disk exposure, not network
@@ -272,12 +272,12 @@ permission; verify a fresh turn and the actual filesystem failure before increas
 ## The loop stops with RealHomeError or RealNetworkError
 
 These are **test-harness tripwires**, not production sandbox breach reports.
-They arm only when `REVIEW_LOOP_TEST_HOME_GUARD=1` **and**
-`REVIEW_LOOP_TEST_GUARD_SENTINEL` names an existing harness sentinel file
+They arm only when `DIAKTOROS_TEST_HOME_GUARD=1` **and**
+`DIAKTOROS_TEST_GUARD_SENTINEL` names an existing harness sentinel file
 (`review_loop/config.py:test_guard_active`). The variable alone does not arm them.
 
 In a real gateway, inspect its launch environment/service configuration for leaked test
-settings, unset `REVIEW_LOOP_TEST_HOME_GUARD` there, and restart the gateway through your
+settings, unset `DIAKTOROS_TEST_HOME_GUARD` there, and restart the gateway through your
 normal service procedure. Clearing only the CLI shell does not fix the gateway's environment.
 In a real test run, keep the guards enabled and fix the escaped fixture/home/network access;
 never disable test guards to obtain a passing test or permit publication.
@@ -431,7 +431,7 @@ drive reviewer stall clocks; an effective current-head approval ends that check.
 The default sweep budget is 600 seconds, per-read cap 20 seconds. Slow reads can stop
 remaining work; the next scheduled sweep starts fresh. The cron script may report
 failure while exiting zero: monitor output and state, not exit code alone. Never set
-`REVIEW_LOOP_TEST` in production: it bypasses pause checks and grace periods.
+`DIAKTOROS_TEST` in production: it bypasses pause checks and grace periods.
 
 ## Conflicts with the base
 

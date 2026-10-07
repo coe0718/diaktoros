@@ -389,7 +389,7 @@ results and uncertain outcomes cannot be re-armed. With the observer's `triaged`
 | Issue author/state/label no longer qualifies | Live issue | Correct intended eligibility; don't widen boundary just to run |
 | Base unreadable/no runtime | Gate error and ledger | Fix read/runtime; check whether any work committed |
 | Same issue/base already admitted | Run key `issue-fix` | Label toggling cannot create duplicate work |
-| Existing `review-loop/issue-N` branch | Remote ref | No overwrite allowed; inspect ownership/prior outcome, not automatic deletion |
+| Existing `diaktoros/issue-N` branch | Remote ref | No overwrite allowed; inspect ownership/prior outcome, not automatic deletion |
 | Fix not possible | Issue comment / `issue_fixes` | A cannot-fix comment is supported instead of PR |
 | Push/open/request partially completed | Result stage and remote branch/PR/request | Preserve evidence and reconcile; never repeat sequence blindly |
 
@@ -399,7 +399,7 @@ the same meaning as the triage retry above. An uncertain branch push is not fixe
 deleting the branch and reapplying the label. If the event was rejected before enqueue,
 only after fixing the prerequisite and confirming no durable/possible write should
 an authorized maintainer reapply the label or redeliver the event. For an intentional
-new attempt blocked by an existing `review-loop/issue-N` branch, first inspect the
+new attempt blocked by an existing `diaktoros/issue-N` branch, first inspect the
 prior run, branch, PR, comments and review request. Only when that inspection establishes
 a safe new attempt (not an ambiguous or already published result), deliberately remove
 the inspected remote branch so the required absent-ref lease can pass, then reapply the

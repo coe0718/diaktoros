@@ -576,7 +576,7 @@ hermes dk triage --loop "<loop-id>" --disable --admin-token "<hook-admin-login>"
 
 **Issue fixes.** With `--fix-label LABEL --maintainer LOGIN`, a maintainer applying that label
 to an allowlisted author's open issue hands it to the fixer seat. It opens a PR from a new branch
-`review-loop/issue-N` that the loop then reviews, or comments on the issue when it cannot fix it.
+`diaktoros/issue-N` that the loop then reviews, or comments on the issue when it cannot fix it.
 This needs unattended fixer pushes on ([`fixer-push`](#fixer-push)), and the label can't be one of
 the triage labels, so only a person can trigger it.
 

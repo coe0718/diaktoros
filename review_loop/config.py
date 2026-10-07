@@ -61,6 +61,8 @@ import stat
 from urllib.parse import urlsplit
 from urllib.request import Request
 
+from . import envnames
+
 # Plugin-level settings. The desktop's Capabilities → Plugins form renders `config_schema` from
 # plugin.yaml; this table mirrors it so the CLI can use the same defaults without a YAML parser
 # (the package is stdlib-only on purpose). `tests/run_tests.py` asserts the two agree, because a
@@ -1031,7 +1033,9 @@ TRIAGE_KEYS = {"route", "profile", "authors", "labels", "max_labels", "comment",
 DEFAULT_FIX_DAILY_TURNS = 10
 # An issue-fix run (#214) is keyed by the issue and the base commit it starts from (``head``);
 # it pushes only to this branch, created fresh for the issue.
-ISSUE_FIX_BRANCH = "review-loop/issue-{number}"
+ISSUE_FIX_BRANCH = "diaktoros/issue-{number}"
+# The branch an issue fix opened before the rename (#425): its PR is still an issue fix's PR.
+ISSUE_FIX_BRANCH_RE = r"(?:diaktoros|review-loop)/issue-(\d+)"
 TRIAGE_LABEL = re.compile(r"[^\x00-\x1f,{}`]{1,50}\Z")
 TRIAGE_MAX_LABELS = 10
 TRIAGE_LABELS_MAX = 100
@@ -1493,20 +1497,20 @@ def webhook_host(value: str | None, *, required: bool = False) -> str:
 # Set by the test suites' home guard (tests/_home_guard.py). While it is set, the roots the loop
 # writes state under are checked against the operator's real Hermes home — ``home()`` (and so
 # everything derived from it), ``state_dir(loop)`` (every write rooted in a loop's state_dir goes
-# through it), the ``REVIEW_LOOP_CONFIG_DIR``/``REVIEW_LOOP_SUBS`` overrides, the run ledger and
+# through it), the ``DIAKTOROS_CONFIG_DIR``/``DIAKTOROS_SUBS`` overrides, the run ledger and
 # the supervisor's host home — so a test that escapes the guard fails loudly instead of writing
 # to a real ledger or runtime file.
-TEST_HOME_GUARD_ENV = "REVIEW_LOOP_TEST_HOME_GUARD"
+TEST_HOME_GUARD_ENV = envnames.name("TEST_HOME_GUARD")
 # ...and the path of a sentinel file the guard creates in its own temp home. The tripwires arm only
 # with both: the variable alone — say inherited by a real loop's gateway — arms nothing. Only
 # tests/_home_guard.py creates the sentinel (an empty file, no secret in it).
-TEST_GUARD_SENTINEL_ENV = "REVIEW_LOOP_TEST_GUARD_SENTINEL"
+TEST_GUARD_SENTINEL_ENV = envnames.name("TEST_GUARD_SENTINEL")
 # Every tripwire message starts with this, so an operator who meets one knows what to clear.
 _ARMED = (f"test guard active ({TEST_HOME_GUARD_ENV}=1): unset {TEST_HOME_GUARD_ENV} if this is a "
           "real loop (docs/operations.md#the-loop-stops-with-realhomeerror-or-realnetworkerror)")
 # Test-only: one more directory to treat as "the real home" while the guard is on, so the
 # tripwire itself can be proven against a fake home. It adds protection, never removes it.
-TEST_REAL_HOME_ENV = "REVIEW_LOOP_TEST_REAL_HOME"
+TEST_REAL_HOME_ENV = envnames.name("TEST_REAL_HOME")
 
 
 class RealHomeError(BaseException):
@@ -1518,13 +1522,16 @@ class RealHomeError(BaseException):
 
 
 def test_guard_active() -> bool:
-    """Are the test tripwires armed? Only under the test harness: ``REVIEW_LOOP_TEST_HOME_GUARD=1``
-    *and* ``REVIEW_LOOP_TEST_GUARD_SENTINEL`` naming the sentinel file tests/_home_guard.py made."""
-    if os.environ.get(TEST_HOME_GUARD_ENV) != "1":
+    """Are the test tripwires armed? Only under the test harness: ``DIAKTOROS_TEST_HOME_GUARD=1``
+    *and* ``DIAKTOROS_TEST_GUARD_SENTINEL`` naming the sentinel file tests/_home_guard.py made.
+
+    Either spelling of each arms it (the ``REVIEW_LOOP_`` names from before the rename): a guard
+    that stopped hearing an old name would quietly let a test reach the real home."""
+    if "1" not in (os.environ.get(n) for n in envnames.both("TEST_HOME_GUARD")):
         return False
-    sentinel = os.environ.get(TEST_GUARD_SENTINEL_ENV)
+    sentinels = [os.environ.get(n) for n in envnames.both("TEST_GUARD_SENTINEL")]
     try:
-        return bool(sentinel) and pathlib.Path(sentinel).is_file()
+        return any(sentinel and pathlib.Path(sentinel).is_file() for sentinel in sentinels)
     except OSError:
         return False
 
@@ -1536,8 +1543,9 @@ def _real_homes() -> list[pathlib.Path]:
         homes.append(pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir))
     except (ImportError, KeyError):
         pass
-    if os.environ.get(TEST_REAL_HOME_ENV):
-        homes.append(pathlib.Path(os.environ[TEST_REAL_HOME_ENV]))
+    for extra in envnames.both("TEST_REAL_HOME"):
+        if os.environ.get(extra):
+            homes.append(pathlib.Path(os.environ[extra]))
     return [pathlib.Path(os.path.normpath(h.absolute())) for h in homes] + [h.resolve() for h in homes]
 
 
@@ -1610,7 +1618,7 @@ def guard_network(url: str) -> str:
     except ValueError:
         pass
     raise RealNetworkError(f"{_ARMED}. Otherwise: real network call to {url} refused; mock the request "
-                           "underneath (gh.fetch, not only gh.api), set REVIEW_LOOP_GH_STUB, or "
+                           "underneath (gh.fetch, not only gh.api), set DIAKTOROS_GH_STUB, or "
                            "point it at a 127.0.0.1 fake")
 
 
@@ -1691,7 +1699,7 @@ def is_default_state_dir(path, loop_id: str) -> bool:
 
 
 def config_dir() -> pathlib.Path:
-    override = os.environ.get("REVIEW_LOOP_CONFIG_DIR")
+    override = envnames.get("CONFIG_DIR")
     return guard_real_home(pathlib.Path(override).expanduser()) if override else host_path("config_dir")
 
 

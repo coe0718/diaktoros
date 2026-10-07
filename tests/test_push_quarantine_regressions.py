@@ -21,7 +21,7 @@ class PostWriteRegressions(unittest.TestCase):
         # A fixer push takes the host policy lock under $HERMES_HOME/review-loops.d: keep it in
         # this fixture, never the operator's home (#109).
         env = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.root),
-                                           "REVIEW_LOOP_CONFIG_DIR": str(self.root / "review-loops.d")})
+                                           "DIAKTOROS_CONFIG_DIR": str(self.root / "review-loops.d")})
         env.start()
         self.addCleanup(env.stop)
         self.db = self.root / "state" / "diaktoros-runs.sqlite"

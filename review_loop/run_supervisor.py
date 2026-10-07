@@ -27,6 +27,7 @@ from .hostdirs import WORKER_ENV, HostStateGone, in_worker
 
 from . import ledger, util
 from .config import DEFAULT_TURN_BUDGET_S
+from . import envnames
 
 SILENT = "[SILENT]"
 SCHEMA = """
@@ -175,8 +176,8 @@ RULINGS = ("ACCEPT", "REJECT", "RESPEC")
 # documented answer to "my build outgrew the cap" would do nothing in production.
 # Anything added here must be a name a worker reads directly (``contained._size_from_env``, ``deps``);
 # tests/test_sandbox_limits.py asserts they stay in step.
-HOST_LIMIT_ENV = ("REVIEW_LOOP_CRATE_CACHE_GIB", "REVIEW_LOOP_CHECKOUT_SIZE_GIB",
-                  "REVIEW_LOOP_SCRATCH_SIZE_GIB")
+HOST_LIMIT_ENV = (*envnames.both("CRATE_CACHE_GIB"), *envnames.both("CHECKOUT_SIZE_GIB"),
+                  *envnames.both("SCRATCH_SIZE_GIB"))
 # Terminal states of the optional PR comment. 'posting' is a durable pre-POST intent: a
 # worker that dies after it can never tell whether GitHub accepted the comment, so it is
 # reported as uncertain and never replayed.
@@ -2239,13 +2240,13 @@ class Supervisor:
         host_home = guard_real_home(self.hermes_home or Path(os.environ.get("HERMES_HOME", os.environ["HOME"])).resolve(strict=True))
         env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
                "HOME": str(host_home), "HERMES_HOME": str(host_home),
-               "REVIEW_LOOP_TEST_FIXTURE": "1" if self.fixture_mode else "0"}
+               envnames.name("TEST_FIXTURE"): "1" if self.fixture_mode else "0"}
         # The worker's environment is built from scratch; keep the test tripwire armed in it.
         for name in (TEST_HOME_GUARD_ENV, TEST_GUARD_SENTINEL_ENV, TEST_REAL_HOME_ENV):
             if os.environ.get(name):
                 env[name] = os.environ[name]
-        if os.environ.get("REVIEW_LOOP_GH_STUB") and self.fixture_mode:
-            env["REVIEW_LOOP_GH_STUB"] = os.environ["REVIEW_LOOP_GH_STUB"]
+        if envnames.get("GH_STUB") and self.fixture_mode:
+            env[envnames.name("GH_STUB")] = envnames.get("GH_STUB")
         for name in HOST_LIMIT_ENV:
             if os.environ.get(name):
                 env[name] = os.environ[name]
@@ -2715,7 +2716,7 @@ class Supervisor:
                                              {"PATH": "/usr/bin:/bin", "HOME": os.environ["HOME"],
                                               "HERMES_HOME": os.environ["HERMES_HOME"],
                                               # What the production turn hands Hermes as --run-budget.
-                                              "REVIEW_LOOP_TURN_BUDGET": str(int(budget))}),
+                                              envnames.name("TURN_BUDGET"): str(int(budget))}),
                                          stdin=subprocess.DEVNULL, stdout=out,
                                          stderr=err, close_fds=True,
                                          start_new_session=True)
@@ -3218,14 +3219,14 @@ def main():
     os.environ[WORKER_ENV] = "1"
     try:
         if a.operation == "_fixture-worker":
-            if os.environ.get("REVIEW_LOOP_TEST_FIXTURE") != "1":
+            if envnames.get("TEST_FIXTURE") != "1":
                 raise SystemExit("fixture worker disabled")
             sup = Supervisor(a.db, fixture_mode=True, fixture_command=json.loads(a.command),
                              capacity=json.loads(a.capacity), lease_seconds=a.lease,
                              child_timeout=a.timeout, create=False)
         else:
             home = os.environ.get("HERMES_HOME")
-            if not home or os.environ.get("REVIEW_LOOP_TEST_FIXTURE") != "0":
+            if not home or envnames.get("TEST_FIXTURE") != "0":
                 raise SystemExit("production worker requires explicit host home")
             sup = Supervisor(a.db, production_config=a.command, hermes_home=home,
                              capacity=json.loads(a.capacity), lease_seconds=a.lease,

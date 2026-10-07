@@ -222,8 +222,8 @@ class Filing(Base):
         sup, run_id = self.run_row()
         # Issue #301 was filed (depth 1); the PR under review fixes it.
         self.send(self.broker(run_id), title="first", body="b", labels=[])
-        self.pr["head"]["ref"] = "review-loop/issue-301"            # the PR fixing #301
-        answer = self.send(self.broker(run_id, branch="review-loop/issue-301"),
+        self.pr["head"]["ref"] = "diaktoros/issue-301"            # the PR fixing #301
+        answer = self.send(self.broker(run_id, branch="diaktoros/issue-301"),
                            title="second", body="b", labels=[])
         self.assertTrue(answer["ok"], answer)
         body = self.posts[-1][0]["body"]

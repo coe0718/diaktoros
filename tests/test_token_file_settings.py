@@ -41,9 +41,9 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.root.joinpath("gh-stub").chmod(0o700)
         env = patch.dict(os.environ, {
             "HOME": str(self.home), "HERMES_HOME": str(self.hermes),
-            "REVIEW_LOOP_GH_STUB": str(self.root / "gh-stub"),
-            "REVIEW_LOOP_CONFIG_DIR": str(self.hermes / "review-loops.d"),
-            "REVIEW_LOOP_SUBS": str(self.hermes / "webhook_subscriptions.json")})
+            "DIAKTOROS_GH_STUB": str(self.root / "gh-stub"),
+            "DIAKTOROS_CONFIG_DIR": str(self.hermes / "review-loops.d"),
+            "DIAKTOROS_SUBS": str(self.hermes / "webhook_subscriptions.json")})
         env.start()
         self.addCleanup(env.stop)
         for profile in ("critic", "coder", "arbiter"):

@@ -29,7 +29,7 @@ def outside_guard() -> dict:
     """This suite's environment minus its own guard: a nested run's leaks are its own to
     report, and its guard must arm itself rather than inherit this one."""
     env = dict(os.environ)
-    env.pop('REVIEW_LOOP_LEAK_LOG', None)
+    env.pop('DIAKTOROS_LEAK_LOG', None)
     path = [p for p in env.pop('PYTHONPATH', '').split(os.pathsep) if p and p != str(SITE)]
     if path:
         env['PYTHONPATH'] = os.pathsep.join(path)
@@ -182,7 +182,7 @@ class LanesCatchADisarmMidRun(unittest.TestCase):
 
             class P(unittest.TestCase):
                 def test_a_redirects_the_child_log(self):
-                    os.environ['REVIEW_LOOP_LEAK_LOG'] = os.devnull
+                    os.environ['DIAKTOROS_LEAK_LOG'] = os.devnull
 
                 def test_b_child_leaks(self):
                     subprocess.run([sys.executable, '-c',
@@ -190,7 +190,7 @@ class LanesCatchADisarmMidRun(unittest.TestCase):
             ''')
         err = result.stderr
         self.assertNotEqual(result.returncode, 0, err)
-        self.assertIn("leak guard was disarmed while this test ran: REVIEW_LOOP_LEAK_LOG does not "
+        self.assertIn("leak guard was disarmed while this test ran: DIAKTOROS_LEAK_LOG does not "
                       "name this run's child log", err)
         # Restored: the next test's child reports to the run's own log again.
         self.assertRegex(err, r'ERROR: test_b_child_leaks[^\n]*\n-+\nresource leaked while this '
@@ -234,7 +234,7 @@ class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):
             if kwargs.pop('production', False):
                 kwargs.update(production_config=config, hermes_home=tmp)
             sup = run_supervisor.Supervisor(Path(tmp, 'runs.sqlite'), **kwargs)
-            env = {'REVIEW_LOOP_LEAK_LOG': '/leaks.jsonl'}
+            env = {'DIAKTOROS_LEAK_LOG': '/leaks.jsonl'}
             with mock.patch.dict(os.environ, env), \
                     mock.patch.object(run_supervisor.subprocess, 'Popen') as popen:
                 sup._spawn()
@@ -243,7 +243,7 @@ class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):
 
     def test_fixture_worker_carries_the_recorder(self):
         env = self.spawned_env(fixture_mode=True)
-        self.assertEqual(env['REVIEW_LOOP_LEAK_LOG'], '/leaks.jsonl')
+        self.assertEqual(env['DIAKTOROS_LEAK_LOG'], '/leaks.jsonl')
         self.assertEqual(env['PYTHONPATH'].split(os.pathsep)[0], str(SITE))
 
     def test_a_fixture_command_run_by_the_worker_carries_it_too(self):
@@ -253,7 +253,7 @@ class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
             seen = Path(tmp, 'seen')
             probe = ('import os, sys\nwith open(sys.argv[1], "w") as out:\n'
-                     '    out.write(os.environ.get("REVIEW_LOOP_LEAK_LOG", "") + "\\n"\n'
+                     '    out.write(os.environ.get("DIAKTOROS_LEAK_LOG", "") + "\\n"\n'
                      '              + os.environ.get("PYTHONPATH", ""))\n')
             sup = run_supervisor.Supervisor(Path(tmp, 'runs.sqlite'), fixture_mode=True,
                                             fixture_command=[sys.executable, '-c', probe, str(seen)])
@@ -272,14 +272,14 @@ class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):
         # On the raw discover lane neither var is set, so the scrubbed env is empty and the
         # assertions are vacuous — guard them so the test runs instead of raising KeyError.
         # On the guarded lanes both are set and the carry-through is proven.
-        if 'REVIEW_LOOP_LEAK_LOG' in os.environ:
-            self.assertEqual(log, os.environ['REVIEW_LOOP_LEAK_LOG'])
+        if 'DIAKTOROS_LEAK_LOG' in os.environ:
+            self.assertEqual(log, os.environ['DIAKTOROS_LEAK_LOG'])
         if 'PYTHONPATH' in os.environ:
             self.assertEqual(path.split(os.pathsep)[0], str(SITE))
 
     def test_production_worker_never_does(self):
         env = self.spawned_env(production=True)
-        self.assertNotIn('REVIEW_LOOP_LEAK_LOG', env)
+        self.assertNotIn('DIAKTOROS_LEAK_LOG', env)
         self.assertNotIn(str(SITE), env['PYTHONPATH'].split(os.pathsep))
 
 

@@ -40,8 +40,8 @@ def _package(name, version, source):
 
 
 def _toolchain() -> Path:
-    if os.environ.get("REVIEW_LOOP_TEST_RUST"):
-        return Path(os.environ["REVIEW_LOOP_TEST_RUST"])
+    if os.environ.get("DIAKTOROS_TEST_RUST"):
+        return Path(os.environ["DIAKTOROS_TEST_RUST"])
     return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".rustup/toolchains/stable-x86_64-unknown-linux-gnu"
 
 

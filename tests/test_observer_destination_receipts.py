@@ -22,7 +22,7 @@ class ObserverSafetyTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.subs = pathlib.Path(self.temp.name) / "subscriptions.json"
-        self.env = patch.dict("os.environ", {"REVIEW_LOOP_SUBS": str(self.subs)})
+        self.env = patch.dict("os.environ", {"DIAKTOROS_SUBS": str(self.subs)})
         self.env.start()
         self.addCleanup(self.env.stop)
         self.loop = {"id": "private", "repo": "owner/private", "state_dir": self.temp.name,

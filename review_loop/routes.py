@@ -27,10 +27,11 @@ from contextlib import contextmanager
 
 from . import config, hostdirs
 from .util import log
+from . import envnames
 
 
 def subs_path() -> pathlib.Path:
-    override = os.environ.get("REVIEW_LOOP_SUBS")
+    override = envnames.get("SUBS")
     return (config.guard_real_home(pathlib.Path(override).expanduser()) if override
             else config.home() / "webhook_subscriptions.json")
 

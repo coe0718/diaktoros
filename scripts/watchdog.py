@@ -26,7 +26,7 @@ sweep also warns before the read token's expiry date.
     watchdog.py                       # every configured loop
     watchdog.py --loop name           # one loop
     watchdog.py --loop name --drain --seat reviewer     # start a queued run, nothing else
-    REVIEW_LOOP_TEST=1 watchdog.py     # ignore the paused check, zero grace (real data)
+    DIAKTOROS_TEST=1 watchdog.py     # ignore the paused check, zero grace (real data)
 """
 
 from __future__ import annotations
@@ -44,10 +44,10 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from review_loop import ci_fix, config, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
+from review_loop import ci_fix, config, envnames, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
 from review_loop.util import age_min, epoch, log, now_iso  # noqa: E402
 
-TEST = bool(os.environ.get("REVIEW_LOOP_TEST"))
+TEST = bool(envnames.get("TEST"))
 PUSH_OFF_KIND = "fixer held — unattended fixer pushes are off"
 HEAD_RETENTION_SEC = 30 * 86400  # retain absent PRs long enough for transient listing/state changes
 # A 401/403 is a verdict about the token and alerts at once; a 5xx or no answer at all can be a
@@ -64,7 +64,7 @@ WATCHDOG_PER_CALL_S = 20.0
 
 def watchdog_budget() -> float:
     try:
-        value = float(os.environ.get("REVIEW_LOOP_WATCHDOG_BUDGET_S", WATCHDOG_BUDGET_S))
+        value = float(envnames.get("WATCHDOG_BUDGET_S", WATCHDOG_BUDGET_S))
     except ValueError:
         value = WATCHDOG_BUDGET_S
     return value if 0 < value <= 86400 else WATCHDOG_BUDGET_S

@@ -25,6 +25,8 @@ import tempfile
 import textwrap
 
 from . import config, gh, route_intent, routes, util
+from . import envnames
+from .util import logged
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
 # The events a loop's repo hooks deliver, and the seat route each one feeds (``issues`` only
@@ -45,7 +47,7 @@ _HARNESS = textwrap.dedent('''
         with open(report, "w") as out:
             out.write(json.dumps(effects))
     atexit.register(save)
-    stub = os.environ.get("REVIEW_LOOP_GH_STUB") or ""
+    stub = os.environ.get("DIAKTOROS_GH_STUB") or os.environ.get("REVIEW_LOOP_GH_STUB") or ""
 
     _urlopen = urllib.request.urlopen
     def urlopen(req, *args, **kwargs):
@@ -254,7 +256,7 @@ def outcome(logs: list[str], effects: list, queued: list) -> str:
     if worker or queued:
         seat = queued[0][1] if queued else "isolated"
         return f"would start a {seat} run" if worker else f"would queue a {seat} run"
-    said = [line.split("] ", 1)[-1] for line in logs if line.startswith("[review-loop]")]
+    said = logged(logs)
     held = next((line for line in said if " held: " in line or line.startswith("held")), "")
     if held:
         return f"held — {held}"
@@ -277,7 +279,7 @@ def run(loop: dict, payload: dict, event: str, role: str, out=print) -> int:
         before = set(_rows(ledger))
         report = pathlib.Path(tmp) / "effects.json"
         env = {key: value for key, value in os.environ.items()
-               if key not in ("REVIEW_LOOP_CONFIG_DIR", "REVIEW_LOOP_SUBS")}
+               if key not in (*envnames.both("CONFIG_DIR"), *envnames.both("SUBS"))}
         env["HERMES_HOME"] = str(home)
         env = util.leak_guard_env(env)
         proc = subprocess.run([sys.executable, "-c", util.leak_guard_code(_HARNESS), str(script),

@@ -7,7 +7,7 @@ into an "Exception ignored in ..." line and the run still passes. This module ma
 warning an error *and* catches it in ``sys.unraisablehook``, so each leak is charged to the test
 (or harness group) that was running when the collector found it. Python children get the same
 treatment from ``tests/leaksite/sitecustomize.py``: the guard puts that directory first on
-``PYTHONPATH`` and names a log in ``REVIEW_LOOP_LEAK_LOG``; each child appends every leak there
+``PYTHONPATH`` and names a log in ``DIAKTOROS_LEAK_LOG``; each child appends every leak there
 as it happens (shutdown included) plus any child of its own left running in its session, and
 the guard charges them to the running test, naming the child's argv:
 
@@ -84,7 +84,7 @@ def install() -> None:
     os.close(fd)
     _child_log = Path(name)
     atexit.register(_child_log.unlink, missing_ok=True)
-    os.environ["REVIEW_LOOP_LEAK_LOG"] = name
+    os.environ["DIAKTOROS_LEAK_LOG"] = name
     path = os.environ.get("PYTHONPATH")
     os.environ["PYTHONPATH"] = str(SITE) + (os.pathsep + path if path else "")
 
@@ -98,8 +98,8 @@ def disarmed() -> list[str]:
     problems = []
     if not _installed or _child_log is None:
         problems.append("leakguard.install() never ran in this process")
-    elif os.environ.get("REVIEW_LOOP_LEAK_LOG") != str(_child_log):
-        problems.append("REVIEW_LOOP_LEAK_LOG does not name this run's child log")
+    elif os.environ.get("DIAKTOROS_LEAK_LOG") != str(_child_log):
+        problems.append("DIAKTOROS_LEAK_LOG does not name this run's child log")
     if _hook is None or sys.unraisablehook is not _hook:
         problems.append("sys.unraisablehook is not the guard's")
     first = next((f for f in warnings.filters if issubclass(ResourceWarning, f[2])), None)
@@ -133,7 +133,7 @@ def rearm() -> list[str]:
     if problems and _installed and _child_log is not None:
         warnings.simplefilter("error", ResourceWarning)
         sys.unraisablehook = _hook
-        os.environ["REVIEW_LOOP_LEAK_LOG"] = str(_child_log)
+        os.environ["DIAKTOROS_LEAK_LOG"] = str(_child_log)
     return problems
 
 

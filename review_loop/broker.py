@@ -16,7 +16,7 @@ import sys
 import time
 
 from . import gh, hostdirs
-from .wire import ANSWERS_MARKER  # one home, shared with the sandbox client
+from .wire import ANSWERS_MARKER, ANSWERS_MARKERS  # one home, shared with the sandbox client
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
@@ -216,14 +216,16 @@ def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
 # any other comment: it is only trusted on a comment authored by the fixer seat's own login, and
 # even then the text is the fixer model's words — data for the next seat, never instructions.
 ANSWERS_MAX = 8 * 1024
-_ANSWERS_MARKER = re.compile(re.escape(ANSWERS_MARKER) + r" run=([A-Za-z0-9_.:-]{1,80}) "
+_ANSWERS_MARKER = re.compile("(?:" + "|".join(map(re.escape, ANSWERS_MARKERS)) + ")"
+                             + r" run=([A-Za-z0-9_.:-]{1,80}) "
                              r"head=([0-9a-f]{40}) base=([0-9a-f]{40}) -->\n")
 
 
 def answers_valid(text: object) -> bool:
     """Non-empty text within the bound, with no NUL and no marker of its own."""
     return (isinstance(text, str) and bool(text.strip()) and "\x00" not in text
-            and len(text.encode()) <= ANSWERS_MAX and ANSWERS_MARKER not in text)
+            and len(text.encode()) <= ANSWERS_MAX
+            and not any(marker in text for marker in ANSWERS_MARKERS))
 
 
 def answers_comment_body(text: str, *, head: str, base: str, run_id: str) -> str:

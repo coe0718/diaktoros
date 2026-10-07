@@ -16,6 +16,7 @@ import sys
 import tempfile
 
 from . import config, util
+from .util import LOG_PREFIX
 
 KEEP = 200
 LIMIT = 300
@@ -63,7 +64,7 @@ def record(loop: dict, gate: str, payload: dict, decision: str, reason: str) -> 
             os.close(fd)
     except Exception as exc:  # noqa: BLE001 - best effort by design
         try:
-            print(f"[review-loop] gate decision not recorded: {type(exc).__name__}", file=sys.stderr)
+            print(f"{LOG_PREFIX} gate decision not recorded: {type(exc).__name__}", file=sys.stderr)
         except Exception:  # noqa: BLE001
             pass
 

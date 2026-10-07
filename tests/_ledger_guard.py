@@ -63,7 +63,7 @@ def _install() -> None:
         for path in (db, presence):
             if path is not None and under_real_home(path):
                 raise RealHomeTouched(f"a test opened {path}, under the real {REAL_HERMES}; "
-                                      "pin HERMES_HOME (and REVIEW_LOOP_CONFIG_DIR) to a temp dir")
+                                      "pin HERMES_HOME (and DIAKTOROS_CONFIG_DIR) to a temp dir")
         return original(self, db, *args, **kwargs)
 
     guarded._ledger_guarded = True
@@ -87,7 +87,7 @@ def module_home():
         temp = tempfile.TemporaryDirectory(prefix="rl-home-")
         env = mock.patch.dict(os.environ, {
             "HERMES_HOME": temp.name,
-            "REVIEW_LOOP_CONFIG_DIR": os.path.join(temp.name, "review-loops.d")})
+            "DIAKTOROS_CONFIG_DIR": os.path.join(temp.name, "review-loops.d")})
         env.start()
         held[:] = [env, temp]
 

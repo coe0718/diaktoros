@@ -140,14 +140,14 @@ jobs:
       # config.yaml. (Hermes declares both for 3.14 and above, which is why this job runs there; the
       # 3.11/3.14 standalone coverage lives in `tests`.)
       # HERMES_AGENT_SOURCE points the tests that drive Hermes's own code (the gateway's route-script
-      # resolver, #105) at this checkout; REVIEW_LOOP_REQUIRE_HERMES_SOURCE turns their "no Hermes
+      # resolver, #105) at this checkout; DIAKTOROS_REQUIRE_HERMES_SOURCE turns their "no Hermes
       # here" skip into a failure, so that check cannot quietly vanish from this lane.
       - name: Put the pinned Hermes on the interpreter's path
         run: |
           pip install -q "croniter==6.0.0" "ruamel.yaml==0.18.16"
           echo "PYTHONPATH=$GITHUB_WORKSPACE/hermes" >> "$GITHUB_ENV"
           echo "HERMES_AGENT_SOURCE=$GITHUB_WORKSPACE/hermes" >> "$GITHUB_ENV"
-          echo "REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1" >> "$GITHUB_ENV"
+          echo "DIAKTOROS_REQUIRE_HERMES_SOURCE=1" >> "$GITHUB_ENV"
       # Fail here rather than quietly re-running the standalone mode under a different name.
       - name: Confirm the suite will run in the installed mode
         run: python -c "import hermes_cli; print('installed mode:', hermes_cli.__file__)"
@@ -163,14 +163,14 @@ jobs:
   # (test_seat_models.HermesAgreement, #118).
   # Everywhere else they skip for want of a Hermes checkout, so a green `tests` job never ran
   # them — which is how #110 reached main. Here a missing prerequisite fails the job
-  # (REVIEW_LOOP_REQUIRE_HERMES_SOURCE), and a final step refuses any skip in these modules.
+  # (DIAKTOROS_REQUIRE_HERMES_SOURCE), and a final step refuses any skip in these modules.
   # No credential is involved: every endpoint and token the tests touch is a fake.
   verticals:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       HERMES_AGENT_SOURCE: ${{ github.workspace }}/hermes
-      REVIEW_LOOP_REQUIRE_HERMES_SOURCE: "1"
+      DIAKTOROS_REQUIRE_HERMES_SOURCE: "1"
       # The venv's interpreter must be a uv-managed CPython: the sandbox mounts the directory it
       # lives in, which must hold nothing but that runtime.
       UV_PYTHON_PREFERENCE: only-managed
@@ -249,7 +249,7 @@ jobs:
             tests.test_oauth_seats \
             tests.test_seat_models.HermesAgreement \
             2>&1 | tee "$RUNNER_TEMP/verticals.log"
-      # REVIEW_LOOP_REQUIRE_HERMES_SOURCE already turns the known skips into failures; this catches
+      # DIAKTOROS_REQUIRE_HERMES_SOURCE already turns the known skips into failures; this catches
       # any other skip a later change adds to these modules.
       - name: Refuse any skipped vertical test
         if: success() || failure()

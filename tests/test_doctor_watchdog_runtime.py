@@ -40,7 +40,7 @@ class WatchdogLastRun(unittest.TestCase):
         self.root = pathlib.Path(temp.name)
         patch = mock.patch.dict(os.environ, {
             "HERMES_HOME": str(self.root / "hermes"),
-            "REVIEW_LOOP_CONFIG_DIR": str(self.root / "loops")})
+            "DIAKTOROS_CONFIG_DIR": str(self.root / "loops")})
         patch.start()
         self.addCleanup(patch.stop)
         (self.root / "loops").mkdir()
@@ -121,7 +121,7 @@ class RuntimePaths(unittest.TestCase):
         self.root = pathlib.Path(temp.name)
         patch = mock.patch.dict(os.environ, {
             "HERMES_HOME": str(self.root / "hermes"),
-            "REVIEW_LOOP_CONFIG_DIR": str(self.root / "loops")})
+            "DIAKTOROS_CONFIG_DIR": str(self.root / "loops")})
         patch.start()
         self.addCleanup(patch.stop)
         (self.root / "loops").mkdir()

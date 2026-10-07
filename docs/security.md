@@ -43,7 +43,7 @@ The Diaktoros boundary is not a general sandbox for every Hermes gateway agent. 
 
 The parent environment is rebuilt from scratch. The sandbox model configuration uses a placeholder credential for its local bridge, not a real upstream token. `contained._run` caps each captured stdout/stderr stream at 256 KiB, bounds wall time and kills the process group on timeout, output overflow or other parent-side failure.
 
-Default tmpfs data caps are 2 GiB scratch and 8 GiB checkout/build target. `REVIEW_LOOP_SCRATCH_SIZE_GIB` and `REVIEW_LOOP_CHECKOUT_SIZE_GIB` accept integer GiB values from 1 through 1024; invalid values are reported and ignored in favor of defaults. These are host environment settings inherited by workers, not per-loop permission controls.
+Default tmpfs data caps are 2 GiB scratch and 8 GiB checkout/build target. `DIAKTOROS_SCRATCH_SIZE_GIB` and `DIAKTOROS_CHECKOUT_SIZE_GIB` accept integer GiB values from 1 through 1024; invalid values are reported and ignored in favor of defaults. These are host environment settings inherited by workers, not per-loop permission controls.
 
 ### Two export checks, with different purposes
 

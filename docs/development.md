@@ -67,7 +67,7 @@ Prepare a Hermes checkout at the `HERMES_PINNED` commit in [CI](../.github/workf
 python -m pip install 'croniter==6.0.0' 'ruamel.yaml==0.18.16'
 export HERMES_AGENT_SOURCE="<absolute-hermes-source-path>"
 export PYTHONPATH="$HERMES_AGENT_SOURCE"
-export REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1
+export DIAKTOROS_REQUIRE_HERMES_SOURCE=1
 python -c "import hermes_cli; print(hermes_cli.__file__)"
 python tests/run_tests.py
 python tests/leakguard.py discover -v -s tests -p 'test_gate_shims.py'
@@ -76,7 +76,7 @@ python tests/leakguard.py discover -v -s tests -p 'test_gate_shims.py'
 - `-m pip install` installs the two explicitly pinned packages into the selected interpreter; do this in a disposable development environment. Downloading them is not an offline step.
 - `HERMES_AGENT_SOURCE` names the prepared Hermes Git checkout, not the plugin or a real profile directory. Replace the quoted angle-bracket placeholder with its absolute path.
 - `PYTHONPATH` makes that checkout importable to the parent interpreter; preserve any other needed paths deliberately rather than assuming this example appends them.
-- `REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1` converts supported missing-prerequisite skips into failures. It does not create the missing runtime or eliminate every possible skip.
+- `DIAKTOROS_REQUIRE_HERMES_SOURCE=1` converts supported missing-prerequisite skips into failures. It does not create the missing runtime or eliminate every possible skip.
 - `-c` executes the inline Python import check; printing its path proves which Hermes module is importable.
 - The final discovery pattern selects gateway shim/resolver integration tests only; other flags mean the same as in the boundary lane.
 
@@ -108,7 +108,7 @@ Return to the plugin root and execute the CI-selected vertical tests:
 
 ```sh
 export HERMES_AGENT_SOURCE="<absolute-hermes-source-path>"
-export REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1
+export DIAKTOROS_REQUIRE_HERMES_SOURCE=1
 export PYTHONPATH="$PWD/tests"
 python tests/leakguard.py -v \
   tests.test_route_vertical \
@@ -120,7 +120,7 @@ python tests/leakguard.py -v \
   tests.test_seat_models.HermesAgreement
 ```
 
-- The source placeholder is the prepared Hermes checkout. `REVIEW_LOOP_REQUIRE_HERMES_SOURCE` makes known prerequisite failures explicit, as above.
+- The source placeholder is the prepared Hermes checkout. `DIAKTOROS_REQUIRE_HERMES_SOURCE` makes known prerequisite failures explicit, as above.
 - `PYTHONPATH="$PWD/tests"` makes the test bootstrap modules available; it is intentionally different from the installed-mode lane. Run from the plugin root so `$PWD` is correct.
 - `-v` is verbose unittest output. The remaining arguments are explicit unittest module/class selectors; `HermesAgreement` selects the real-resolver agreement class.
 - The backslashes continue one shell command; they are not unittest options.

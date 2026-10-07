@@ -918,7 +918,7 @@ class RunBroker:
             raise ProtocolError("host run ledger unavailable")
         supervisor = Supervisor(self.scope.ledger_db, create=False)
         # Lineage: a finding on a PR that fixed a filed issue is one generation deeper.
-        match = re.fullmatch(r"review-loop/issue-(\d+)", self.scope.branch or "")
+        match = re.fullmatch(config.ISSUE_FIX_BRANCH_RE, self.scope.branch or "")
         parent = supervisor.filed_depth(self.scope.repo, int(match.group(1))) if match else None
         depth = (parent or 0) + 1
         login = broker.authorize(current, repo=self.scope.repo, number=self.scope.number,

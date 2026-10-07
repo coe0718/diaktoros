@@ -56,8 +56,8 @@ class AdjudicatorCycleTest(unittest.TestCase):
         stub.chmod(0o700)
         self.head_file = self.root / "head"
         self.head_file.write_text(HEAD_A)
-        self.env = {**os.environ, "REVIEW_LOOP_CONFIG_DIR": str(self.config),
-                    "REVIEW_LOOP_GH_STUB": str(stub), "TEST_HEAD": str(self.head_file),
+        self.env = {**os.environ, "DIAKTOROS_CONFIG_DIR": str(self.config),
+                    "DIAKTOROS_GH_STUB": str(stub), "TEST_HEAD": str(self.head_file),
                     "TEST_GH_CALLS": str(self.gh_calls)}
         self.gate_stderr = []
         self.st = state.LoopState(self.loop)

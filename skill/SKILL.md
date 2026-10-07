@@ -169,7 +169,7 @@ python -m review_loop.broker_client open_pr --files src/a.rs src/b.rs --message 
 python -m review_loop.broker_client issue_comment --body-file /tmp/why.md
 ```
 
-`open_pr` pushes your commit to a new branch `review-loop/issue-N`, opens the PR against the base
+`open_pr` pushes your commit to a new branch `diaktoros/issue-N`, opens the PR against the base
 saying it fixes the issue, and requests the loop's reviewer; the same limits as a fixer push apply.
 If you cannot fix it (unclear, too large, or it needs a decision), do not open a PR: post why with
 `issue_comment` so a person can pick it up. You cannot review, merge or close anything.

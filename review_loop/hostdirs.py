@@ -1,7 +1,7 @@
 """Host state directories: host-side commands create them; a detached worker never does.
 
 A worker (``run_supervisor``'s ``_fixture-worker`` / ``_production-worker``, and anything it
-runs in-process, such as the run broker) is marked by ``REVIEW_LOOP_WORKER=1`` in the
+runs in-process, such as the run broker) is marked by ``DIAKTOROS_WORKER=1`` in the
 environment its supervisor builds for it. Host state it writes to must already exist: the
 host created it before the run was enqueued, so a missing directory means something removed
 it, and recreating it would leave stray state behind in a place the operator emptied.
@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import os
 import pathlib
+from . import envnames
 
-WORKER_ENV = "REVIEW_LOOP_WORKER"
+WORKER_ENV = envnames.name("WORKER")
 
 
 class HostStateGone(FileNotFoundError):

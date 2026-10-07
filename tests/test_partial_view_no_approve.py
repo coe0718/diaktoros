@@ -551,7 +551,7 @@ class ExplainShowsIt(unittest.TestCase):
                 "host": "http://127.0.0.1:9"}
         (loops / "widgets.json").write_text(json.dumps(loop))
         env = mock.patch.dict(os.environ, {"HERMES_HOME": str(home),
-                                           "REVIEW_LOOP_CONFIG_DIR": str(loops)})
+                                           "DIAKTOROS_CONFIG_DIR": str(loops)})
         env.start()
         self.addCleanup(env.stop)
         self.db = home / "state" / "diaktoros-runs.sqlite"

@@ -76,7 +76,7 @@ class ArmVerifyTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        env = patch.dict(os.environ, {"REVIEW_LOOP_CONFIG_DIR": str(self.root / "configs"),
+        env = patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": str(self.root / "configs"),
                                       "HERMES_HOME": str(self.root / "hermes")})
         env.start()
         self.addCleanup(env.stop)
@@ -542,7 +542,7 @@ class ApplyHookMoveTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        env = patch.dict(os.environ, {"REVIEW_LOOP_CONFIG_DIR": str(Path(temp.name) / "configs"),
+        env = patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": str(Path(temp.name) / "configs"),
                                       "HERMES_HOME": str(Path(temp.name) / "hermes")})
         env.start()
         self.addCleanup(env.stop)
@@ -648,7 +648,7 @@ class ScheduleFailureTests(unittest.TestCase):
             "--read-token", "rd", "--token", f"rd={tokens / 'rd'}",   # the reader is its own account
             "--schedule", "15m"])
         out = io.StringIO()
-        with patch.dict(os.environ, {"REVIEW_LOOP_CONFIG_DIR": str(self.root / "configs")}), \
+        with patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": str(self.root / "configs")}), \
                 patch.object(cli.shutil, "which", return_value=str(self.hermes)), \
                 redirect_stdout(out):
             rc = args.func(args)

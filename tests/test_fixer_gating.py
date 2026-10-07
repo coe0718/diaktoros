@@ -57,7 +57,7 @@ class Base(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        env = mock.patch.dict(os.environ, {"REVIEW_LOOP_CONFIG_DIR": str(self.root / "cfg"),
+        env = mock.patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": str(self.root / "cfg"),
                                            "HERMES_HOME": str(self.root / "home")})
         env.start()
         self.addCleanup(env.stop)

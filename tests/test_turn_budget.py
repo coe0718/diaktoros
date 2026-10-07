@@ -112,7 +112,7 @@ class CliSurfaces(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = pathlib.Path(temp.name)
         patch = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.root / "hermes"),
-                                             "REVIEW_LOOP_CONFIG_DIR": str(self.root / "loops")})
+                                             "DIAKTOROS_CONFIG_DIR": str(self.root / "loops")})
         patch.start()
         self.addCleanup(patch.stop)
         (self.root / "loops").mkdir()
@@ -336,7 +336,7 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.home = pathlib.Path(temp.name)
         patch = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home),
-                                             "REVIEW_LOOP_CONFIG_DIR": str(self.home / "none")})
+                                             "DIAKTOROS_CONFIG_DIR": str(self.home / "none")})
         patch.start()
         self.addCleanup(patch.stop)
         self.state_mod = state_mod
@@ -491,7 +491,7 @@ class PerSeatClocks(unittest.TestCase):
         wd.TEST = False
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.dict(os.environ, {"HERMES_HOME": tmp,
-                                             "REVIEW_LOOP_CONFIG_DIR": tmp + "/none"}):
+                                             "DIAKTOROS_CONFIG_DIR": tmp + "/none"}):
             loop = {**loop, "state_dir": tmp + "/loop", "unattended_fixer_push": True}
             st = state_mod.state_for(loop)
             st.watch_save({"armed_since": now - 90000, "heads": {"7": {
@@ -619,7 +619,7 @@ class LedgerAndWorker(unittest.TestCase):
         self.child = self.root / "child.py"
         # Records the budget the worker handed it, then sleeps for argv[2] seconds.
         self.child.write_text("import os,sys,time\nfrom pathlib import Path\n"
-                              "Path(sys.argv[1]).write_text(os.environ.get('REVIEW_LOOP_TURN_BUDGET',''))\n"
+                              "Path(sys.argv[1]).write_text(os.environ.get('DIAKTOROS_TURN_BUDGET',''))\n"
                               "time.sleep(float(sys.argv[2]))\n")
         home = self.root / "home"
         home.mkdir()
@@ -697,7 +697,7 @@ class GateToProductionWorker(unittest.TestCase):
         runtime.write_text(json.dumps({"source": "/x", "venv": "/x", "runtime": "/x", "rust": "/x"}))
         runtime.chmod(0o600)
         patch = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home),
-                                             "REVIEW_LOOP_CONFIG_DIR": str(self.home / "none")})
+                                             "DIAKTOROS_CONFIG_DIR": str(self.home / "none")})
         patch.start()
         self.addCleanup(patch.stop)
         raw = _loop(turn_budget_s=1100, state_dir=str(self.home / "state"), read_token="reader")

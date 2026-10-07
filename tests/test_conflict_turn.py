@@ -149,7 +149,7 @@ class Broker(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.home = Path(tmp.name)
         env = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home),
-                                           "REVIEW_LOOP_CONFIG_DIR": str(self.home / "cfg")})
+                                           "DIAKTOROS_CONFIG_DIR": str(self.home / "cfg")})
         env.start()
         self.addCleanup(env.stop)
         (self.home / "state").mkdir()

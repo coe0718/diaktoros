@@ -1,7 +1,7 @@
 """The child half of tests/leakguard.py: a Python child's leaks fail the suite too.
 
 The guard puts this directory first on ``PYTHONPATH`` and names a log in
-``REVIEW_LOOP_LEAK_LOG``, so every Python child the suite starts (gate scripts, the watchdog,
+``DIAKTOROS_LEAK_LOG``, so every Python child the suite starts (gate scripts, the watchdog,
 cleanup, supervisor workers) imports this at startup. ResourceWarning becomes an error, a leak
 reported from a finalizer is recorded with where it was released (and, under
 ``PYTHONTRACEMALLOC``, where it was allocated), a child process still running at exit counts as
@@ -13,7 +13,7 @@ path.
 
 import os
 
-if os.environ.get("REVIEW_LOOP_LEAK_LOG"):
+if os.environ.get("DIAKTOROS_LEAK_LOG"):
     import atexit
     import gc
     import json
@@ -23,7 +23,7 @@ if os.environ.get("REVIEW_LOOP_LEAK_LOG"):
     import tracemalloc
     import warnings
 
-    _log = os.environ["REVIEW_LOOP_LEAK_LOG"]   # as the child started, whatever it sets later
+    _log = os.environ["DIAKTOROS_LEAK_LOG"]   # as the child started, whatever it sets later
     # Tracing every child costs the harness several minutes; a leak released by a statement
     # carries that statement's traceback anyway. PYTHONTRACEMALLOC=N adds allocation sites.
     # A distribution's crash reporter (Fedora's ABRT) hooks uncaught exceptions and leaks its

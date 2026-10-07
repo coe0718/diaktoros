@@ -299,10 +299,10 @@ class Base(unittest.TestCase):
         # .env into os.environ): it must never satisfy a seat's resolution.
         env = {k: v for k, v in os.environ.items()
                if k not in ("OPENROUTER_API_KEY", "DEEPSEEK_API_KEY")}
-        # REVIEW_LOOP_CONFIG_DIR too: an exported one would otherwise point the host policy (and
+        # DIAKTOROS_CONFIG_DIR too: an exported one would otherwise point the host policy (and
         # its lock) at the operator's review-loops.d, not this fixture's (as in #115).
         env.update(HERMES_HOME=str(self.home), OPENROUTER_API_KEY=PARENT_LEAK,
-                   REVIEW_LOOP_CONFIG_DIR=str(self.home / "review-loops.d"))
+                   DIAKTOROS_CONFIG_DIR=str(self.home / "review-loops.d"))
         patcher = mock.patch.dict(os.environ, env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -1176,7 +1176,7 @@ class ProviderExtras(Base):
 # The Hermes checkout to compare against: HERMES_AGENT_SOURCE only, as _home_guard captured it —
 # never a default, and a source inside the live install fails loudly (_home_guard.needs_real_hermes),
 # since probing it can complete a pending source update. Off a prepared host it skips; with
-# REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1 (CI's `verticals` job) a missing checkout fails instead.
+# DIAKTOROS_REQUIRE_HERMES_SOURCE=1 (CI's `verticals` job) a missing checkout fails instead.
 HERMES_SOURCE = str(_home_guard.HERMES_AGENT_SOURCE or "")
 _TRUTH = r"""
 import json, sys
@@ -1356,7 +1356,7 @@ class HermesAgreement(unittest.TestCase):
                     configured=wire["configured"], facts=wire["facts"], entry=wire["entry"],
                     hermes=wire["hermes"])
             rows.append((name, hermes, status, wire and wire["api_mode"], required, possible))
-        if os.environ.get("REVIEW_LOOP_SHOW_AGREEMENT"):
+        if os.environ.get("DIAKTOROS_SHOW_AGREEMENT"):
             for row in rows:
                 print(*row, file=sys.stderr)
         self.assertEqual(len(rows), len(self.CASES))
