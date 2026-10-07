@@ -2760,7 +2760,7 @@ class Supervisor:
         rc, error = None, None
         budget = int(self.budget_of(run_id))
         retry, stopped, observed, breach, claim = False, True, {}, None, None
-        paced_until, account = None, None
+        paced_until, account, ro_turn = None, None, False
         try:
             assert self.production_config is not None
             try:
@@ -2824,6 +2824,21 @@ class Supervisor:
                 error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
                          f"{pacing.when(paced_until)}")
                 return
+            # Review-only PRs may have their own daily cap on reviewer turns, so the operator's
+            # PRs cannot use up the budget the fixer's PRs share. The fixer's PRs never read it.
+            ro_cap = config.review_only_daily(loop) if row['seat'] == 'reviewer' else None
+            if ro_cap is not None and config.review_only(loop):
+                live_pr = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
+                                 login=loop["read_token"])
+                if not isinstance(live_pr, dict):
+                    raise RetryableError("PR unreadable before launch (GitHub read failed)")
+                ro_author = str(((live_pr.get("user") or {}).get("login")) or "").lower()
+                ro_turn = ro_author in config.review_only(loop)
+                if ro_turn and pacing.turns_today(loop['id'], pacing.REVIEW_ONLY_SEAT) >= ro_cap:
+                    paced_until = pacing.next_midnight()
+                    error = (f"held: review-only daily turn cap ({ro_cap}) reached — resumes "
+                             f"{pacing.when(paced_until)}")
+                    return
             if row['seat'] == 'reviewer' and time.time() - row['created'] < CI_WAIT_MAX_S:
                 # A cancelled check (#363) holds every review: the broker would refuse its
                 # APPROVE, so the turn could only spend tokens. Running checks hold it only with
@@ -3014,6 +3029,8 @@ class Supervisor:
             if unpublished_before(row):
                 prompt = PUBLISH_NUDGE + prompt
             pacing.count_turn(loop['id'], row['seat'])
+            if ro_turn:
+                pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT)
             rc = trusted_turn.run_turn(loop, scope, source=Path(settings["source"]),
                   venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
                   rust=Path(settings["rust"]), upstream=inference.upstream,

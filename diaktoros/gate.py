@@ -972,6 +972,12 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif approved:
         kind = "none"
         action = f"nothing — head {short} is approved; a human merges it"
+    elif (review_only and spent is not None and spent >= config.review_only_cap(loop)
+          and not st.review_cap_granted(number, head, spent)):
+        kind = "operator"
+        action = (f"review cap reached on #{number} ({spent} verdicts): no further review until a "
+                  "maintainer grants another round — merge, close, or "
+                  f"`hermes dk review --loop {loop['id']} --pr {number} --another-round`")
     elif review_only and at_head:
         kind = "author-push"
         action = (f"the author {author} pushes a fix and re-requests review of the new head — a "

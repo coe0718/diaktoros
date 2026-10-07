@@ -124,7 +124,15 @@ hermes dk set --loop "<loop-id>" --review-only "<your-login>"
 
 The reviewer then reviews those PRs like a fixer's. A changes-requested verdict comes back
 to you, and the observer notice says so ("returned to the author"); the fixer never gets a
-turn on them. There is no verdict cap and no adjudication on a review-only PR. Push your
+turn on them. There is no adjudication on a review-only PR, but there is a verdict cap:
+`review_only_cap` (default: the loop's `cap`). At the cap the reviewer declines further
+reviews of that PR with nothing spent, says so once per head, and `explain` shows
+`review cap reached`. A maintainer or the operator allows exactly one more verdict on the
+current head with `hermes dk review --loop "<loop-id>" --pr N --another-round`.
+`review_only_daily` (off by default) caps reviewer turns per local day on review-only PRs;
+once spent they wait until midnight and the fixer's PRs are unaffected. Set both with
+`set --review-only-cap N --review-only-daily N` (0 clears), `init`, `setup` or the settings
+form. Push your
 fix and re-request the reviewer on the PR to get the next review: the reviewer gate
 accepts that request from the PR's own review-only author. `explain` shows `next: author-push`
 while a verdict waits for you, and the watchdog never reports a fixer stall on these PRs.

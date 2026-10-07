@@ -181,23 +181,24 @@ class ProductionWorker(unittest.TestCase):
         self.account = pacing.account_key("openai-codex", self.inference.upstream, "fix")
         self.turns = 0
 
-    def run_production(self, run_turn, loop=None):
+    def run_production(self, run_turn, loop=None, seat="fixer", author="fixer"):
         loop = loop or self.loop
         with mock.patch.object(Supervisor, "_spawn"), \
                 mock.patch.object(config, "by_repo", return_value=loop):
-            gate.enqueue_isolated(loop, "fixer", 8, HEAD)
+            gate.enqueue_isolated(loop, seat, 8, HEAD)
         sup = Supervisor(self.home / "state" / "diaktoros-runs.sqlite",
                          production_config=self.home / "diaktoros-runtime.json",
                          hermes_home=self.home)
-        row = sup.get(f"acme/widgets:8:{HEAD}:fixer")
+        row = sup.get(f"acme/widgets:8:{HEAD}:{seat}")
         with closing(sqlite3.connect(sup.db)) as con, con:
-            con.execute("UPDATE runs SET state='launching', owner='w', launch_intent=1 WHERE id=?",
+            con.execute("UPDATE runs SET state='launching', owner='w', launch_intent=1, "
+                        "generation=COALESCE(NULLIF(generation, ''), 'g1') WHERE id=?",
                         (row["id"],))
 
         def counted(*args, **kwargs):
             self.turns += 1
             return run_turn(*args, **kwargs)
-        pr = {"number": 8, "head": {"sha": HEAD, "ref": "fix-8"}}
+        pr = {"number": 8, "head": {"sha": HEAD, "ref": "fix-8"}, "user": {"login": author}}
         with mock.patch.object(config, "by_repo", return_value=loop), \
                 mock.patch.object(seat_model, "load_runtime", return_value={
                     "source": "/x", "venv": "/x", "runtime": "/x", "rust": "/x"}), \
@@ -211,7 +212,7 @@ class ProductionWorker(unittest.TestCase):
                 mock.patch.object(trusted_turn, "run_turn", side_effect=counted), \
                 mock.patch.object(sup, "recover"):
             sup._run_production(row["id"], "w")
-        return sup.get(f"acme/widgets:8:{HEAD}:fixer")
+        return sup.get(f"acme/widgets:8:{HEAD}:{seat}")
 
     def test_a_429d_turn_waits_for_the_reset_without_spending_a_retry(self):
         reset = time.time() + 3600
@@ -261,6 +262,29 @@ class ProductionWorker(unittest.TestCase):
         self.assertEqual((row["state"], row["retries"], self.turns), ("waiting", 0, 0))
         self.assertAlmostEqual(row["retry_at"], pacing.next_midnight(), delta=2)
         self.assertIn("daily turn cap (1) reached", row["error"])
+
+    def review_only_loop(self, daily=1):
+        return config.normalize({**self.raw, "review_only": ["owner-human"],
+                                 "review_only_daily": daily})
+
+    def test_review_only_daily_holds_the_next_review_only_turn(self):
+        loop = self.review_only_loop()
+        pacing.count_turn("widgets", pacing.REVIEW_ONLY_SEAT)      # today's one turn is spent
+        row = self.run_production(lambda *a, **k: self.fail("launched past the cap"), loop,
+                                  seat="reviewer", author="owner-human")
+        self.assertEqual((row["state"], row["retries"], self.turns), ("waiting", 0, 0))
+        self.assertAlmostEqual(row["retry_at"], pacing.next_midnight(), delta=2)
+        self.assertIn("review-only daily turn cap (1) reached", row["error"])
+
+    def test_review_only_daily_counts_review_only_turns_and_leaves_a_fixer_pr_alone(self):
+        loop = self.review_only_loop()
+        pacing.count_turn("widgets", pacing.REVIEW_ONLY_SEAT)
+        row = self.run_production(lambda *a, **k: 1, loop, seat="reviewer", author="fixer")
+        self.assertEqual(self.turns, 1, "a fixer PR's review is not held by the review-only cap")
+        self.assertEqual(pacing.turns_today("widgets", pacing.REVIEW_ONLY_SEAT), 1)
+        loop = self.review_only_loop(daily=5)
+        self.run_production(lambda *a, **k: 1, loop, seat="reviewer", author="owner-human")
+        self.assertEqual(pacing.turns_today("widgets", pacing.REVIEW_ONLY_SEAT), 2)
 
     def test_an_ordinary_failure_still_backs_off_and_counts(self):
         row = self.run_production(lambda *a, **k: 1)

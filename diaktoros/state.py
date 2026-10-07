@@ -702,6 +702,45 @@ class LoopState:
             if number not in raw:
                 self._save(self.dir / "held-fixes-said.json", sorted(raw + [number]))
 
+    # -- review-only verdict cap: its one notice and granted rounds ----------
+
+    def _review_caps(self) -> dict:
+        raw = self._load(self.dir / "review-only-caps.json", {})
+        return raw if isinstance(raw, dict) else {}
+
+    def review_cap_entry(self, number: int) -> dict:
+        entry = self._review_caps().get(str(number))
+        return entry if isinstance(entry, dict) else {}
+
+    def review_cap_notice_once(self, number: int, head: str) -> bool:
+        """Record the cap notice for this PR and head; True only the first time."""
+        with self.locked():
+            data = self._review_caps()
+            entry = data.get(str(number)) if isinstance(data.get(str(number)), dict) else {}
+            if entry.get("notified") == head:
+                return False
+            data[str(number)] = {**entry, "notified": head}
+            self._save(self.dir / "review-only-caps.json", data)
+            return True
+
+    def review_cap_grant(self, number: int, head: str, rounds: int) -> bool:
+        """Allow exactly one more verdict at ``head`` once ``rounds`` verdicts are spent.
+
+        False when this head already holds an unspent grant for these rounds.
+        """
+        with self.locked():
+            data = self._review_caps()
+            entry = data.get(str(number)) if isinstance(data.get(str(number)), dict) else {}
+            if entry.get("grant") == {"head": head, "rounds": rounds}:
+                return False
+            data[str(number)] = {**entry, "grant": {"head": head, "rounds": rounds}}
+            self._save(self.dir / "review-only-caps.json", data)
+            return True
+
+    def review_cap_granted(self, number: int, head: str, rounds: int) -> bool:
+        """Whether a maintainer's grant covers the next verdict: same head, no verdict since."""
+        return self.review_cap_entry(number).get("grant") == {"head": head, "rounds": rounds}
+
     def github_failure_record(self, entry: dict) -> None:
         """Keep the most recent failed GitHub call (see ``gh.record_failure``)."""
         self._save(self.github_reads, {"last_failure": entry})

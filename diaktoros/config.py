@@ -159,6 +159,15 @@ SETTINGS_SCHEMA: dict = {
                     "description": "GitHub logins whose PRs the reviewer reviews but the fixer "
                                    "never touches: a changes-requested verdict goes back to the "
                                    "author. Not a fixer or a reviewer. Blank = not set here"},
+    "review_only_cap": {"label": "Review-only verdict cap", "type": "str", "default": "",
+                        "description": "Verdicts the reviewer may give one review-only PR before it "
+                                       "stops until a maintainer grants another round, a whole "
+                                       "number 1-1000. Blank = not set here: the loop's own value, "
+                                       "else the review cap"},
+    "review_only_daily": {"label": "Review-only daily cap (turns)", "type": "str", "default": "",
+                          "description": "Reviewer turns per local day on review-only PRs, a whole "
+                                         "number 1-1000; once spent they wait until midnight. "
+                                         "Blank = not set here: the loop's own value, else no cap"},
     "required_checks": {"label": "Required CI checks (comma-separated)", "type": "str",
                         "default": "",
                         "description": "The check runs or status contexts that gate an approval, "
@@ -337,6 +346,9 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     if _form_value(settings, "review_only") is not None:
         overlaid["review_only"] = [name.strip() for name in str(d["review_only"]).split(",")
                                    if name.strip()]
+    for key in ("review_only_cap", "review_only_daily"):
+        if _form_value(settings, key) is not None:
+            overlaid[key] = _check_review_only_limit(_form_int(d[key].strip()), key, "settings")
     if _form_value(settings, "required_checks") is not None:
         overlaid["required_checks"] = check_required_checks(
             split_check_names(d["required_checks"]), "settings")
@@ -621,6 +633,8 @@ DEFAULTS: dict = {
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
     "review_only": [],        # authors reviewed but never fixed (#191); [] = fixers only
+    "review_only_cap": None,   # verdicts per review-only PR; None = the loop's `cap`
+    "review_only_daily": None,  # reviewer turns a day on review-only PRs; None = no cap
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
@@ -874,6 +888,32 @@ def check_review_only(value, loop: dict, where: str) -> list[str]:
         raise ConfigError(f"{where}: {', '.join(clash)} cannot be review-only and also a fixer "
                           "or a reviewer")
     return names
+
+
+def _check_review_only_limit(value, key: str, where: str) -> int | None:
+    """``review_only_cap`` / ``review_only_daily``: a positive whole number, or empty (unset)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str):
+        value = _form_int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= DAILY_TURNS_MAX:
+        raise ConfigError(f"{where}: {key} must be a whole number, 1-{DAILY_TURNS_MAX} "
+                          f"(leave it empty for the default), got {value!r}")
+    return value
+
+
+def review_only_cap(loop: dict) -> int:
+    """Verdicts the reviewer may give one review-only PR: ``review_only_cap``, else ``cap``."""
+    value = loop.get("review_only_cap")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return int(loop["cap"])
+
+
+def review_only_daily(loop: dict) -> int | None:
+    """Reviewer turns per local day on review-only PRs, or None (no cap)."""
+    value = loop.get("review_only_daily")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
 def review_only(loop: dict) -> set[str]:
@@ -1826,6 +1866,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     loop["cap"] = _as_int(loop["cap"], "cap", where)
     if loop["cap"] < 2:
         raise ConfigError(f"{where}: 'cap' is the number of verdicts allowed; must be >= 2")
+
+    for key in ("review_only_cap", "review_only_daily"):
+        loop[key] = _check_review_only_limit(loop.get(key), key, where)
 
     loop["tokens"] = {k: str(v) for k, v in (loop.get("tokens") or {}).items()}
     # The reader is named, never inferred: taking "the first token" would make whichever seat

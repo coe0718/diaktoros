@@ -1750,6 +1750,15 @@ def cmd_init(args) -> int:
                         if getattr(args, "review_only", None) is None
                         else [name for name in args.review_only if name.strip()]),
     }
+    # The review-only verdict cap and daily cap: a flag wins over the form; empty = unset.
+    for key in ("review_only_cap", "review_only_daily"):
+        flag = getattr(args, key, None)
+        try:
+            raw[key] = config._check_review_only_limit(
+                flag if flag is not None else d[key], key, "init")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
     # A seat-level capacity wins over the loop default, so only write it when it was asked for.
     for seat, value in _init_seat_concurrency(args, d).items():
         raw["seats"][seat]["concurrency"] = value
@@ -2133,7 +2142,8 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                                        "never touches, comma-separated (blank: none)",
                                        d["review_only"], interactive).split(",") if name.strip()])
     argv += [f"--review-only={name.strip()}" for name in reviewed]
-    for flag in ("reviewer_max_steps", "fixer_max_steps", "fix_daily_turns"):
+    for flag in ("reviewer_max_steps", "fixer_max_steps", "fix_daily_turns",
+                 "review_only_cap", "review_only_daily"):
         if getattr(args, flag, None) is not None:
             argv.append(f"--{flag.replace('_', '-')}={getattr(args, flag)}")
     if admin:
@@ -2410,6 +2420,18 @@ def cmd_set(args) -> int:
             return 2
         if names != (loop.get("review_only") or []):
             changes["review_only"] = names
+    for key in ("review_only_cap", "review_only_daily"):
+        wanted = getattr(args, key, None)
+        if wanted is None:
+            continue
+        try:
+            value = None if str(wanted).strip() in ("0", "") else config._check_review_only_limit(
+                wanted, key, f"--{key.replace('_', '-')}")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if value != loop.get(key):
+            changes[key] = value
     # '' is a real value here: it clears the check.
     if getattr(args, "fixer_check", None) is not None:
         try:
@@ -2842,7 +2864,7 @@ def _apply(args) -> int:
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
-                "required_checks", "review_only"):
+                "required_checks", "review_only", "review_only_cap", "review_only_daily"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -3570,6 +3592,28 @@ def cmd_review(args) -> int:
     from . import state as state_mod
     st = state_mod.state_for(loop)
     key = gate.seat_key(loop, args.pr)
+    if getattr(args, "another_round", False):
+        # One more verdict on a review-only PR that hit its cap. The operator running this on the
+        # host is the maintainer; the grant is recorded against this head and verdict count, so it
+        # buys exactly one verdict and a repeat of the command changes nothing.
+        author = ((pr.get("user") or {}).get("login") or "").lower()
+        if author not in config.review_only(loop):
+            print(f"#{args.pr}: {author or 'its author'} is not review-only — only a review-only "
+                  "PR has a review cap to lift; nothing granted")
+            return 1
+        reviews = gh.reviews(loop, args.pr)
+        if not isinstance(reviews, list):
+            print(f"#{args.pr}: the reviews could not be read — nothing granted")
+            return 2
+        rounds = len(gate.verdicts(reviews, loop))
+        if rounds < config.review_only_cap(loop):
+            print(f"#{args.pr}: {rounds} of {config.review_only_cap(loop)} verdicts spent — the "
+                  "cap is not reached; nothing to grant")
+            return 1
+        if not st.review_cap_grant(args.pr, head, rounds):
+            print(f"#{args.pr} @ {head[:7]}: another round is already granted for this head")
+        else:
+            print(f"#{args.pr} @ {head[:7]}: another round granted — one more verdict")
 
     def queued():
         entry = (st.queue_all().get("reviewer") or {}).get(key) or {}
@@ -4897,6 +4941,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--attribution", choices=("on", "off"), default=None,
                           help="sign what the loop posts with 'Automated by Diaktoros' "
                                f"(default {'on' if d['attribution'] else 'off'})")
+        init.add_argument("--review-only-cap", default=None, metavar="N",
+                          help="verdicts the reviewer gives one review-only PR before it waits "
+                               "for `review --another-round`, 1-1000 (default: the plugin "
+                               "setting, else the review cap)")
+        init.add_argument("--review-only-daily", default=None, metavar="N",
+                          help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
+                               "plugin setting, else no cap)")
         init.add_argument("--review-only", action="append", default=None,
                           help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting)")
         init.add_argument("--required-check", action="append", default=None,
@@ -4960,6 +5011,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         first.add_argument("--adjudicator-profile", default=None,
                            help="Hermes profile that rules when a PR's verdict cap is spent; "
                                 "turns adjudication on (blank: off) (default: the plugin setting)")
+        first.add_argument("--review-only-cap", default=None, metavar="N",
+                           help="verdicts the reviewer gives one review-only PR before it waits "
+                                "for `review --another-round`, 1-1000 (default: the plugin "
+                                "setting, else the review cap)")
+        first.add_argument("--review-only-daily", default=None, metavar="N",
+                           help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
+                                "plugin setting, else no cap)")
         first.add_argument("--review-only", action="append", default=None,
                            help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting)")
         first.add_argument("--required-check", action="append", default=None,
@@ -5007,6 +5065,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                                "(the reviewer gate decides, as for a webhook)")
         review.add_argument("--loop", help="loop id (default: the only configured loop)")
         review.add_argument("--pr", type=int, required=True, help="the pull request to review")
+        review.add_argument("--another-round", action="store_true",
+                            help="allow exactly one more verdict on a review-only PR that has "
+                                 "reached its review cap (maintainer or operator only)")
         review.set_defaults(func=cmd_review)
 
         explain = sub.add_parser("explain",
@@ -5114,6 +5175,11 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                             help="start each review after the head's checks finish (up to an hour), "
                                  "or start at once")
+        change.add_argument("--review-only-cap", default=None, metavar="N",
+                            help="verdicts the reviewer gives one review-only PR before it waits "
+                                 "for `review --another-round`, 1-1000; 0 = the review cap")
+        change.add_argument("--review-only-daily", default=None, metavar="N",
+                            help="reviewer turns a day on review-only PRs, 1-1000; 0 = no cap")
         reviewed = change.add_mutually_exclusive_group()
         reviewed.add_argument("--review-only", action="append", default=None,
                               help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it); replaces the list")
