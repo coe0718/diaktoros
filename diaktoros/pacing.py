@@ -29,6 +29,8 @@ from . import config, hostdirs
 MAX_WAIT_S = 7 * 24 * 3600
 _DURATION = re.compile(r"(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m(?!s))?(?:(\d+(?:\.\d+)?)s)?(?:(\d+)ms)?\Z")
 _KEEP_DAYS = 3
+# The counter key for reviewer turns on review-only PRs (``review_only_daily``), beside the seats'.
+REVIEW_ONLY_SEAT = "review_only"
 
 
 def path():

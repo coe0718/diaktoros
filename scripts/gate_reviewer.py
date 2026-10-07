@@ -161,7 +161,23 @@ def main() -> None:
     rounds = len(gate.verdicts(reviews, loop))
     # A review-only author's PR (#191) has no verdict cap: no fixer rounds are spent, the author
     # answers each verdict by pushing and asking again, so there is nothing to adjudicate.
-    if rounds >= loop["cap"] and author not in config.review_only(loop):
+    if author in config.review_only(loop):
+        # ...but it does have its own verdict cap (review_only_cap, default `cap`). At the cap
+        # the gate declines with nothing spent, whoever asks: the author re-requesting their own
+        # PR is no bypass. Only a maintainer's --another-round (one verdict, this head) lifts it.
+        ro_cap = config.review_only_cap(loop)
+        if rounds >= ro_cap and not st.review_cap_granted(number, head, rounds):
+            if st.review_cap_notice_once(number, head):
+                observer.notify(
+                    loop, st, "held", number, head, identity=f"review-cap:{head}",
+                    outcome=(f"review cap reached on #{number} ({rounds} verdicts): no further "
+                             "review until a maintainer grants another round — merge, close, or "
+                             f"`hermes dk review --loop {loop['id']} --pr {number} "
+                             "--another-round`"),
+                    next_turn="nothing — waiting for a maintainer")
+            silence(f"review cap reached on #{number} ({rounds} verdicts) — no further review "
+                    "until a maintainer grants another round")
+    elif rounds >= loop["cap"]:
         gate.breach(loop, st, number, head, rounds,
                     f"review cap reached — {loop['cap']} verdicts, no approval; another review "
                     f"would loop forever")

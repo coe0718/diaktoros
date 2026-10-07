@@ -962,6 +962,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             kind = parked
         elif review_only and at_head:
             pass                                  # the author's move, not a stall
+        elif (review_only and len(changes) >= config.review_only_cap(loop)
+              and not st.review_cap_granted(number, head, len(changes))):
+            pass                                  # review cap reached: a maintainer's move
         elif len(changes) >= loop["cap"] and head_postdates_arming and not review_only:
             kind = (f"{len(changes)} verdicts, no approval and NO escalation marker — "
                     f"the cap may not have fired")
