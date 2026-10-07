@@ -22,6 +22,7 @@ incident recovery, and the decision to merge.
 - [Bursts and watchdog](#how-it-handles-a-burst)
 - [Conflicts with the base](#conflicts-with-the-base)
 - [Publishing stats](#publishing-stats)
+- [Moving to a renamed plugin or repository](#moving-to-a-renamed-plugin-or-repository)
 
 Replace quoted angle-bracket placeholders, including brackets, with your values.
 `--loop` is the saved loop ID, not a repo or profile. `--pr` is the numeric PR number
@@ -483,3 +484,72 @@ own credentials. For GitHub Pages:
 The ledger's turn timings exist only on the host, which is why the page is built there. A
 repository that wants GitHub-side numbers alone can compute them in a scheduled Actions workflow
 instead; the ledger's columns are not on GitHub.
+
+## Moving to a renamed plugin or repository
+
+Hermes knows a plugin by its manifest name. A plugin installed under a new name therefore starts
+with a blank settings form, and the gate and watchdog shims still run the old folder's scripts.
+A GitHub repository rename moves the repository under the loop: its webhooks then name a repository
+no loop file matches, and its fetches are refused. `migrate` closes both gaps in one step.
+
+Run it between turns, once the new plugin is installed and enabled. The old plugin should be
+disabled but still installed, so its settings and scripts stay readable:
+
+```bash
+hermes review-loop migrate --dry-run   # every step, nothing written
+hermes review-loop migrate
+```
+
+It runs four steps:
+
+1. It copies each settings-form value the old plugin holds and the new one does not. A value
+   already set on the new plugin is kept.
+2. For each loop whose repository GitHub now reports under another name, it moves the loop's
+   records to the new name: the run ledger, the loop's state files and the loop file.
+   - It first checks that both names are the same repository.
+   - It refuses while a run for that repository is in flight or uncertain.
+3. It points the gate and watchdog shims at the new plugin's scripts.
+4. It lists every `doctor` check that isn't verified.
+
+Exit 1 means a step was refused or isn't finished; the line says why. Running it again finishes
+whatever an interrupted run began. When everything checks out, remove the old plugin with
+`hermes plugins remove <old-name>`. Records kept outside the loop's state, such as the
+gate-failure log and the broker audit log, keep the old repository name as history.
+
+**The install is paused while `migrate` runs.** It holds a marker,
+`$HERMES_HOME/state/migrating.json`, so nothing writes under a name it's moving:
+- a gate records its delivery and answers `[SILENT]`, and the watchdog re-drives the review
+  and fix gates' deliveries once the migration ends. The re-drive is quiet when it succeeds;
+  other gates' deliveries are reported as usual;
+- the worker starts no run;
+- the watchdog sweeps nothing and says it's paused.
+
+A `migrate` that dies leaves the marker. The install stays paused, because its records may be
+half moved, and the watchdog says so until you run `migrate` again, which finishes the job.
+
+### Renaming a loop
+
+`--rename-loop OLD=NEW` also gives a loop a new id. A loop's id names its file, its default
+state directory, and its routes (`<id>-review`, `<id>-fix` and so on), and through those the
+URLs its GitHub hooks post to:
+
+```bash
+hermes review-loop migrate --rename-loop "<old-id>=<new-id>" --admin-token "<hook-admin-login>" --dry-run
+hermes review-loop migrate --rename-loop "<old-id>=<new-id>" --admin-token "<hook-admin-login>"
+```
+
+It's refused while one of the loop's runs is in flight or uncertain. Then, in this order:
+
+1. Each route named `<old-id>-…` is copied as `<new-id>-…`, **with the same secret**. A route
+   you named some other way keeps its name.
+2. Each repo hook is moved to its new route's URL, and GitHub is asked to **ping** it.
+   - **Answered:** the route is proven.
+   - **Refused:** the hook is put back, and nothing else is moved.
+   - **No delivery seen**, for example on a paused hook: the hook stays on the new route, but
+     the old route is kept. Run `migrate` again later to prove it and finish.
+3. The default state directory, today's turn counts and the route intent record move to the new
+   id. The new loop file is written and the old one removed.
+4. Each old route is removed once every hook that pointed at it has answered on the new one.
+
+`--admin-token` names the mapped login whose token may edit the repo hooks, as for `apply
+--hooks`. Running it again after it finished is a no-op.

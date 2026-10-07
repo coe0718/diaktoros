@@ -1485,6 +1485,21 @@ def _write_config_locked(loop: dict, *, policy_change: bool = False) -> pathlib.
         pathlib.Path(temporary).unlink(missing_ok=True)
     return path
 
+def _write_moved_repo(loop: dict, new: str) -> pathlib.Path:
+    """Rename a loop's repository for ``migrate`` (#425), the one writer allowed to.
+
+    ``_write_config`` refuses any repository change so a set/apply snapshot can never carry a loop
+    (and its push policy) to another repository. ``migrate`` has verified that ``new`` is the
+    *same* repository by id, so here the loop is re-read under the policy lock, must still name
+    the repository it was read with, and only ``repo`` changes; the push policy is the current one.
+    """
+    with config.push_policy_lock():
+        current = config.load_id(loop["id"])
+        if current["repo"] != loop["repo"]:
+            raise config.ConfigError("repository changed during migrate")
+        return _write_config_locked({**current, "repo": new}, policy_change=True)
+
+
 def _restore_config(path: pathlib.Path, data: bytes) -> None:
     """Publish a previous snapshot without exposing partially restored JSON."""
     with config.push_policy_lock():
@@ -3214,6 +3229,8 @@ def cmd_status(args) -> int:
                 print(f"  running:    {seat} on {key} for {held:.0f}m")
         for line in _dependency_lines(loop):
             print(f"  deps:       {line}")
+        for issue_no, origin in sorted(st.fix_holds().items()):
+            print(f"  held:       issue #{issue_no} fix waits for PR #{origin} to merge")
         for seat in ("reviewer", "fixer"):
             queued = len(st.queue_items(seat))
             if queued:
@@ -3636,6 +3653,9 @@ def cmd_explain(args) -> int:
         print(f"  {'read:':<12}{report['read_at']} (GitHub pulls/reviews/hooks + local state; "
               f"read once, nothing written)")
         print(f"  {'state:':<12}{report['state_line']}")
+        for issue_no, origin in sorted(st.fix_holds().items()):
+            if origin == args.pr:
+                print(f"  {'held:':<12}issue #{issue_no} fix waits for this PR to merge")
         if report['chain']['status'] != 'direct':
             print(f"  {'chain:':<12}{report['chain']['status']} · "
                   f"parents {report['chain']['parents']} · {report['chain']['reason']}")
@@ -3676,6 +3696,169 @@ def cmd_explain(args) -> int:
         print(f"  {'next:':<12}"
               + (next_step(held[-1], loop["id"]) if held else report['next']['action']))
     return 0
+
+
+def _rename_loop(spec: str, *, dry_run: bool, admin: str | None) -> tuple[list[str], bool]:
+    """``migrate --rename-loop OLD=NEW`` (#425 stage 3): ``(lines, refused)``.
+
+    In an order a crash or a re-run cannot hurt: the routes are copied under the new names (the
+    same secret, so a hook moved to one still verifies); each hook is moved to its new route's
+    URL and pinged; then the state directory, today's pacing counts, the new loop file and the
+    route intent record move; the old loop file goes; and an old route is removed only once every
+    hook that pointed at it was answered on the new one. A refused ping puts its hook back.
+    """
+    from . import hook_ping, migrate, pacing, run_supervisor
+    old_id, sep, new_id = spec.partition("=")
+    tag = f"rename-loop: {old_id or '?'} → {new_id or '?'}"
+    if not sep or old_id == new_id or not all(migrate.LOOP_ID.match(x or "") for x in (old_id, new_id)):
+        return [f"{tag}: REFUSED — give OLD=NEW, two different loop ids of letters, digits, "
+                "'.', '_' or '-' (at most 64)"], True
+    directory = config.config_dir()
+    try:
+        old_loop = config.load_id(old_id) if (directory / f"{old_id}.json").exists() else None
+        new_loop = config.load_id(new_id) if (directory / f"{new_id}.json").exists() else None
+    except config.ConfigError as exc:
+        return [f"{tag}: REFUSED — {exc}"], True
+    if old_loop is None and new_loop is None:
+        return [f"{tag}: REFUSED — no loop named {old_id!r}"], True
+    if old_loop is not None and new_loop is not None and old_loop["repo"] != new_loop["repo"]:
+        return [f"{tag}: REFUSED — a loop named {new_id!r} already exists for {new_loop['repo']}"], True
+    base = old_loop or new_loop
+    renames = migrate.route_renames(base, old_id, new_id)
+    target = new_loop or migrate.renamed_loop(old_loop, new_id, renames)
+    busy = migrate.busy_runs(run_supervisor.production_ledger(), base["repo"])
+    if busy:
+        return [f"{tag}: REFUSED — {busy} run(s) for {base['repo']} are in flight or uncertain; "
+                "wait for them (or reconcile them), then run migrate again"], True
+    registry = routes.all_routes()
+    for old, new in renames.items():
+        here = [registry[name] for name in (old, new) if isinstance(registry.get(name), dict)]
+        if not here:
+            return [f"{tag}: REFUSED — route {old} is in the registry under neither name; restore it "
+                    f"first: `hermes dk doctor --loop {base['id']} --repair` (or `apply "
+                    "--recreate-routes`)"], True
+        if not all(route_intent.owned(entry) for entry in here):
+            return [f"{tag}: REFUSED — route {old} or {new} is not one of this plugin's gates"], True
+        if len(here) == 2 and here[0].get("secret") != here[1].get("secret"):
+            return [f"{tag}: REFUSED — route {new} already exists with another secret"], True
+    try:
+        hooks = _hook_listing(base, admin)
+    except config.ConfigError as exc:
+        return [f"{tag}: REFUSED — cannot list the repo hooks: {exc}",
+                f"  fix: {_hook_fix(base, exc, admin)}"], True
+    role_of = {name: role for role, name in route_intent.routes_of(target).items()}
+    moves = []
+    for hook in hooks:
+        name = routes.route_name_of(hook["config"]["url"])
+        if name in renames or name in renames.values():
+            new_name = renames.get(name, name)
+            url = routes.url_for_profile(new_name, config.seat_profile(target, role_of.get(new_name, "")),
+                                         target.get("host"))
+            if not url:
+                return [f"{tag}: REFUSED — cannot build the URL for route {new_name}"], True
+            moves.append((hook, new_name, url))
+    lines = [f"{tag}: routes " + (", ".join(f"{a} → {b}" for a, b in renames.items())
+                                   or "(none follow the loop id)")
+             + f"; {len(moves)} hook(s) to move and ping"]
+    if dry_run:
+        if old_loop is not None:
+            lines.append(f"{tag}: " + migrate.move_state_dir(old_loop, target, dry_run=True))
+        return lines, False
+    copies = {new: dict(registry[old]) for old, new in renames.items()
+              if new not in registry and isinstance(registry.get(old), dict)}
+    if copies:
+        routes.restore_entries(copies)
+        lines.append(f"{tag}: routes copied under the new names (same secrets): {', '.join(copies)}")
+    proven, unproven = set(), set()
+    for hook, new_name, url in moves:
+        before = hook["config"]["url"]
+        if not routes.serves_route_url(before, url):
+            _patch_hook_url(base, hook["id"], url, admin, require_secret=True,
+                            insecure_ssl=hook["config"].get("insecure_ssl"))
+        status, said = hook_ping.ping(base, hook["id"], admin)
+        if status == hook_ping.OK:
+            proven.add(new_name)
+            lines.append(f"{tag}: hook {hook['id']} → {new_name}: {said}")
+        elif status == hook_ping.SILENT:
+            unproven.add(new_name)
+            lines.append(f"{tag}: hook {hook['id']} → {new_name}: {said} — the old route stays "
+                         "until a ping is answered; run migrate again later")
+        else:
+            back = ""
+            if before != url and routes.route(routes.route_name_of(before)):
+                _patch_hook_url(base, hook["id"], before, admin, require_secret=True,
+                                insecure_ssl=hook["config"].get("insecure_ssl"))
+                back = f"; hook {hook['id']} put back on {before}"
+            return lines + [f"{tag}: REFUSED — {said}{back}; nothing else was moved"], True
+    if old_loop is not None:
+        lines.append(f"{tag}: " + migrate.move_state_dir(old_loop, target, dry_run=False))
+    if pacing.rename_loop(old_id, new_id):
+        lines.append(f"{tag}: today's turn counts moved to {new_id}")
+    if new_loop is None:
+        _write_config(target)
+        lines.append(f"{tag}: loop file written as {new_id}.json")
+    route_intent.record_live(target, list(renames.values()))
+    route_intent.forget(target, list(renames))
+    (directory / f"{old_id}.json").unlink(missing_ok=True)
+    live = routes.all_routes()
+    gone = [old for old, new in renames.items() if old in live and new not in unproven]
+    if gone:
+        routes.restore_entries({old: None for old in gone})
+        lines.append(f"{tag}: old routes removed: {', '.join(gone)}")
+    if unproven:
+        lines.append(f"{tag}: NOT FINISHED — not proven yet: {', '.join(sorted(unproven))}")
+    return lines, bool(unproven)
+
+
+def cmd_migrate(args) -> int:
+    """Move an install from the ``hermes-review-loop`` plugin to this one (#425); see ``migrate``.
+
+    Run between turns. The install is paused for the whole run (#431): gates defer, the worker
+    claims nothing, the watchdog sweeps nothing. Exit 1 when a step was refused or is not
+    finished (a run in flight, a shim this plugin did not write, a hook not yet proven);
+    re-running finishes what an interrupted run began.
+    """
+    from . import migrate
+    if args.dry_run:
+        return _migrate(args)
+    try:
+        with migrate.hold() as left:
+            if left is not None:
+                print(f"migrate: picking up — {migrate.describe(left)}")
+            return _migrate(args)
+    except migrate.MigrationBusy as exc:
+        print(f"cannot migrate: {exc}")
+        return 2
+
+
+def _migrate(args) -> int:
+    from . import migrate, run_supervisor
+    try:
+        loops = config.all_loops()
+    except config.ConfigError as exc:
+        print(f"cannot migrate: {exc}")
+        return 2
+    lines = migrate.settings_step(_CTX, dry_run=args.dry_run)
+    lines += migrate.repo_step(loops, _write_moved_repo, dry_run=args.dry_run,
+                               ledger=run_supervisor.production_ledger())
+    if getattr(args, "rename_loop", None):
+        # After the repository step: a hook is written through the repository's current name.
+        renamed, _ = _rename_loop(args.rename_loop, dry_run=args.dry_run,
+                                  admin=getattr(args, "admin_token", None))
+        lines += renamed
+    if not args.dry_run:
+        loops = config.all_loops()                 # a moved repository or id is the loop's name now
+    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    lines += migrate.shim_step(loops, _write_watchdog_shim, config.home() / "scripts" / SHIM_NAME,
+                               SHIM.format(watchdog=watchdog), dry_run=args.dry_run)
+    if not args.dry_run:
+        lines += migrate.doctor_step(loops)
+    lines += migrate.old_plugin_note(config.home() / "plugins")
+    print("\n".join(lines))
+    if args.dry_run:
+        print("dry run: nothing was written")
+    return 1 if any(word in line for line in lines
+                    for word in ("REFUSED", "NOT rewritten", "NOT FINISHED")) else 0
 
 
 def cmd_doctor(args) -> int:
@@ -4502,6 +4685,8 @@ def cmd_uninstall(args) -> int:
 # a running loop would be a nasty thing to debug, so these are *defaults* and a push — never a
 # subscription.
 _SETTINGS: dict = {}
+# The Hermes plugin context register_cli was given: `migrate` writes settings through it (#425).
+_CTX = None
 
 
 RENAMED_NOTE = ("note: `hermes review-loop` is now `hermes dk` (short for `hermes diaktoros`); "
@@ -4523,8 +4708,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
     from, and what ``apply`` pushes onto an existing loop; it never rewrites a loop behind the
     operator's back.
     """
-    global _SETTINGS
+    global _SETTINGS, _CTX
     _SETTINGS = dict(settings or {})
+    _CTX = ctx
     d = config.settings_defaults(settings)
     # Both seats agreeing is the only case where a loop-level default says anything useful: when
     # they disagree the differing seat carries its value explicitly (see _init_seat_concurrency).
@@ -4771,6 +4957,18 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         tracer.add_argument("--admin-token", default="",
                             help="login whose token can read hook deliveries (admin:repo_hook or repo)")
         tracer.set_defaults(func=cmd_trace)
+
+        move = sub.add_parser("migrate", help="Move an install from the hermes-review-loop plugin to "
+                                              "this one: settings, a renamed repository, shims (#425)")
+        move.add_argument("--dry-run", action="store_true",
+                          help="report every step and write nothing")
+        move.add_argument("--rename-loop", metavar="OLD=NEW", default=None,
+                          help="also give a loop a new id: its file, default state directory, "
+                               "routes and the URLs its repo hooks post to (each hook is pinged "
+                               "before the old route goes)")
+        move.add_argument("--admin-token", default=None, metavar="LOGIN",
+                          help="mapped login whose token may edit the repo hooks (--rename-loop)")
+        move.set_defaults(func=cmd_migrate)
 
         preflight = sub.add_parser("doctor", help="Preflight a loop read-only: profiles, tokens, "
                                                   "routes, hooks, scripts, cron, clone")

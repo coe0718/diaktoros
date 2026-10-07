@@ -71,6 +71,19 @@ RESOLVED_RETENTION_S = 7 * 86400
 # (kept, never retired on a guess). sys.float_info.max is exactly that boundary.
 _MAX_TIMESTAMP = sys.float_info.max
 REDRIVABLE = frozenset({"gate_reviewer", "gate_fixer"})
+# A delivery that arrived while a migration held the install (#431): not a failure, re-driven
+# quietly once the migration has ended.
+DEFERRED = "deferred"
+
+
+def _migration() -> dict | None:
+    """The migration marker's facts, or ``None``; never raises (an unreadable check acts)."""
+    try:
+        from . import migrate
+        return migrate.migrating()
+    except Exception as err:  # noqa: BLE001
+        log(f"migration marker check failed: {type(err).__name__}: {err}")
+        return None
 REDRIVE_ENV = "REVIEW_LOOP_GATE_REDRIVE"
 # A GitHub answer about the resource, not a failure to read it.
 _FACT_ERRORS = re.compile(r"^HTTP (404|410|422)\b")
@@ -996,9 +1009,16 @@ def run(gate: str, main: Callable[[], None]) -> None:
         signal.setitimer(signal.ITIMER_REAL, budget + backstop)
     signal.signal(signal.SIGTERM, _stopped)
     kind, exc, code = "", None, 0
+    # A migration holds the install (#431): nothing acts under names being moved. The delivery
+    # is recorded below as deferred, with its payload, and re-driven once the migration ends.
+    paused = _migration()
     try:
         try:
-            main()
+            if paused is not None:
+                print("[SILENT]")
+                kind = DEFERRED
+            else:
+                main()
         finally:
             if alarm:
                 signal.setitimer(signal.ITIMER_REAL, 0)
@@ -1047,6 +1067,11 @@ def run(gate: str, main: Callable[[], None]) -> None:
         error_type = "GitHubReadFailed"
         message = "; ".join(f"{m} {p}: {e}" for m, p, e in failed_reads[:4])
         trace = ""
+    elif kind == DEFERRED:
+        from . import migrate
+        error_type = "MigrationInProgress"
+        message = f"deferred: {migrate.describe(paused)}"
+        trace = ""
     else:
         error_type = type(exc).__name__
         message = str(exc) if not isinstance(exc, SystemExit) else f"exit code {code}"
@@ -1067,7 +1092,9 @@ def run(gate: str, main: Callable[[], None]) -> None:
     # seat release and the exit), and a busy one hands over to the next — the fallback ledger,
     # which every watchdog run sweeps.
     recorded, kept, used = "", {}, None
-    ledgers = _ledgers_for(payload)
+    # A deferred delivery goes to the host's own ledger: the loop's lives in a state directory
+    # the migration may be moving right now.
+    ledgers = ([fallback_ledger()] if kind == DEFERRED else _ledgers_for(payload))
     why_here = ""
     record_wall = time.time()
     for i, ledger in enumerate(ledgers):
@@ -1120,7 +1147,7 @@ def run(gate: str, main: Callable[[], None]) -> None:
         f"; {then}")
     if alarm:
         signal.setitimer(signal.ITIMER_REAL, 0)
-    if kind == "incomplete":
+    if kind in ("incomplete", DEFERRED):
         raise SystemExit(0)   # the gate already printed its [SILENT]; the ledger tells them apart
     raise SystemExit(3 if kind == "timeout" else 143 if kind == "stopped" else 2)
 
@@ -1248,6 +1275,10 @@ def sweep(ledger: Ledger, header: str, scripts_dir: pathlib.Path, *, cooldown_s:
                     ledger.release(key, me, said=False)
                     raise
                 entry = ledger.current(key) or entry
+                if entry.get("kind") == DEFERRED and entry.get("resolved"):
+                    # Held for a migration and now delivered: nothing went wrong, nothing to say.
+                    ledger.release(key, me, said=True, attempts=entry.get("attempts"))
+                    continue
             else:
                 outcome = not_driven(ledger.with_payload_state(key, entry), scripts_dir,
                                      held if not may_redrive else "")

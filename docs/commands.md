@@ -86,6 +86,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | see what a loop did this week, and how long turns took | [`stats`](#stats) |
 | install a loop | [`setup`](#setup) (guided), or [`init`](#init) (flag by flag) |
 | check an install before going live | [`doctor`](#doctor), [`selftest`](#selftest) |
+| move to a renamed plugin or repository | [`migrate`](#migrate) |
 | turn the loop on or off | [`arm`](#arm) |
 | change a setting | [`set`](#set), [`apply`](#apply), [`settings`](#settings) |
 | let the fixer push on its own | [`fixer-push`](#fixer-push) |
@@ -658,6 +659,39 @@ a real isolated seat turn. To prove the isolated path end to end, use [`selftest
 | `--offline` |  |  | skip the two network probes (gateway reachability, repo hooks) |
 | `--strict` |  |  | treat a check that could not be decided as a failure |
 | `--repair` |  |  | restore this loop's own routes from the plugin's intent record (same secret) before checking; the only write doctor makes |
+<!-- /flags -->
+
+### migrate
+
+Moves an install to a renamed plugin, a renamed GitHub repository, or both, in one step run
+between turns. It copies the old plugin's settings into the new plugin's form, keeping any value
+already set there. It moves a renamed repository's ledger rows, state and loop file to the new
+name, after checking by id that both names are the same repository, and refuses while one of its
+runs is in flight. It points the gate and watchdog shims at this plugin's scripts, then lists the
+`doctor` checks that aren't verified. See
+[moving to a renamed plugin or repository](operations.md#moving-to-a-renamed-plugin-or-repository).
+
+```bash
+hermes review-loop migrate --dry-run
+hermes review-loop migrate
+```
+
+`--rename-loop OLD=NEW` also renames a loop: its file, its default state directory, its routes
+and the URLs its repo hooks post to. Each hook is pinged on its new route before the old route
+is removed. See [renaming a loop](operations.md#renaming-a-loop).
+
+The install is paused while it runs: gates defer their deliveries for a later re-drive, and the
+worker and the watchdog wait.
+
+Exit `1` means a step was refused or isn't finished, and the line says why. Running it again
+finishes what an interrupted run began.
+
+<!-- flags:migrate -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--dry-run` |  |  | report every step and write nothing |
+| `--rename-loop` | `OLD=NEW` |  | also give a loop a new id: its file, default state directory, routes and the URLs its repo hooks post to (each hook is pinged before the old route goes) |
+| `--admin-token` | `LOGIN` |  | mapped login whose token may edit the repo hooks (--rename-loop) |
 <!-- /flags -->
 
 ### selftest

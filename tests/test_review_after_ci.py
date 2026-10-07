@@ -130,6 +130,56 @@ class Hold(sm.Worker):
         self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
 
 
+class ConflictHold(Hold):
+    """A PR that conflicts with its base gets no CI from GitHub: hold, spend nothing."""
+
+    def dirty(self, state="dirty", sha=sm.HEAD, checks=ci.CIState(passed=["t"]), **extra):
+        pr = {"number": 7, "state": "open", "draft": False, "head": {"sha": sha, "ref": "fix-7"},
+              "base": {"ref": "main"}, "mergeable_state": state, **extra}
+        reads = []
+
+        def read(loop, head):
+            reads.append(head)
+            return checks
+        with mock.patch.object(ci, "read", side_effect=read), \
+             mock.patch.object(observer, "notify"):
+            seen, row, _ = self.run_seat("reviewer", loop=self.loop, pr=pr)
+        return seen, row, reads
+
+    def test_a_dirty_head_is_held_with_no_model_call(self):
+        seen, row, reads = self.dirty()
+        self.assertEqual(seen, {})
+        self.assertEqual(row, ("waiting", f"{CI_HOLD} on {sm.HEAD[:7]} — conflicts with main "
+                                          "— GitHub runs no CI on it"))
+        with ledger.connect(self.root / "ledger.sqlite") as con:
+            self.assertEqual(con.execute("SELECT retries FROM runs").fetchone()[0], 0)
+
+    def test_clean_or_unknown_starts_normally(self):
+        for state in ("clean", "unstable", "unknown", None):
+            with self.subTest(state=state):
+                seen, row, _ = self.dirty(state=state)
+                self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
+
+    def test_a_merge_push_supersedes_the_held_row(self):
+        seen, row, _ = self.dirty(sha="b" * 40)
+        self.assertEqual(seen, {})
+        self.assertNotEqual(row[0], "succeeded")
+        self.assertNotIn("conflicts with", str(row[1]))
+
+    def test_a_closed_or_draft_dirty_pr_is_not_held_for_conflicts(self):
+        for extra in ({"state": "closed"}, {"draft": True}):
+            with self.subTest(extra=extra):
+                # Eligibility (closed/draft) is the claim stage's job, not this hold's.
+                seen, row, _ = self.dirty(**extra)
+                self.assertNotIn("conflicts with", str(row[1]))
+                self.assertNotEqual(row[0], "waiting")
+
+    def test_the_wait_cap_still_reviews(self):
+        with mock.patch.object(run_supervisor, "CI_WAIT_MAX_S", 0):
+            seen, row, _ = self.dirty(checks=ci.CIState(missing=["tests"]))
+        self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
+
+
 class Linger(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))

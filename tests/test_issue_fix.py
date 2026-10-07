@@ -199,6 +199,11 @@ class Gate(Base):
         self.assertEqual(self.enqueued, [])
         st = state_mod.state_for(self.loop)
         self.assertEqual(st.fix_holds(), {12: 7})
+        self.assertEqual([b["body"] for _p, b, _l in self.posted],
+                         ["waiting for #7 to merge — this finding is about code only on that branch"])
+        fix_hold.sweep(self.loop, st)                   # still open: no second comment, no turn
+        self.run_gate(self.labeled())
+        self.assertEqual((len(self.posted), self.enqueued), (1, []))
         # the PR merges: the watchdog sweep queues the fix from the base and clears the hold
         self.origin_pr = {"number": 7, "state": "closed", "merged": True}
         self.assertEqual(fix_hold.sweep(self.loop, st), [])
@@ -219,11 +224,31 @@ class Gate(Base):
         self.origin_pr = {"number": 7, "state": "closed", "merged": False}
         fix_hold.sweep(self.loop, st)
         self.assertEqual((self.enqueued, st.fix_holds()), ([], {}))
-        self.assertEqual(len(self.posted), 1)
-        self.assertIn("closed without merging", self.posted[0][1]["body"])
+        self.assertEqual(len(self.posted), 2)           # the wait comment, then the moot one
+        self.assertIn("closed without merging", self.posted[1][1]["body"])
         # labelled again with the origin already closed: comment, no turn
         self.run_gate(self.labeled())
-        self.assertEqual((self.enqueued, len(self.posted)), ([], 2))
+        self.assertEqual((self.enqueued, len(self.posted)), ([], 3))
+
+    def test_an_unreadable_origin_is_retried_by_the_sweep_never_guessed(self):
+        self.origin = 7
+        self.origin_pr = None
+        log = self.run_gate(self.labeled())
+        self.assertIn("unreadable", log)
+        st = state_mod.state_for(self.loop)
+        self.assertEqual((self.enqueued, self.posted, st.fix_holds()), ([], [], {12: 7}))
+        fix_hold.sweep(self.loop, st)                   # still unreadable
+        self.assertEqual((self.enqueued, self.posted, st.fix_holds()), ([], [], {12: 7}))
+        self.origin_pr = {"number": 7, "state": "closed", "merged": True}
+        fix_hold.sweep(self.loop, st)
+        self.assertEqual(len(self.enqueued), 1)
+        self.assertEqual(st.fix_holds(), {})
+
+    def test_a_human_filed_issue_is_never_held(self):
+        self.origin = None
+        self.run_gate(self.labeled())
+        self.assertEqual(len(self.enqueued), 1)
+        self.assertEqual((self.posted, state_mod.state_for(self.loop).fix_holds()), ([], {}))
 
     def test_an_origin_already_merged_queues_at_once(self):
         self.origin = 7
