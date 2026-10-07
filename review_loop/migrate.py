@@ -7,7 +7,8 @@ the old folder's scripts. A renamed GitHub repository is the same story for the 
 file, the run ledger and the loop's state all name the repository, and a webhook from the
 renamed repository matches no loop at all.
 
-``migrate`` closes those gaps, in an order that a crash or a re-run cannot hurt:
+``migrate`` closes those gaps, in an order that a crash or a re-run cannot hurt, while the
+install is paused (below):
 
 1. **settings** — every setting the old plugin's form holds and this plugin's form does not is
    copied, through Hermes's own settings writer (``ctx.set_config``). A value already set here is
@@ -23,13 +24,111 @@ renamed repository matches no loop at all.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
 import pathlib
+import re
 import sqlite3
+import time
 
 from . import config, gh, gate_shims, state as state_mod
 
 OLD_PLUGIN = "hermes-review-loop"
+
+
+# -- the pause (#431) ------------------------------------------------------------------------
+# While a migration moves records from one name to another, nothing may write under either: a
+# gate that wrote between the ledger move and the loop file would leave rows a re-run never
+# finds. So ``migrate`` holds a host-wide marker for its whole run, and while it exists every
+# gate records its delivery for a later re-drive instead of acting (``gate_failures.run``), the
+# worker claims no run, and the watchdog sweeps nothing. A marker left by a migrate that died
+# keeps the loop paused — its records may be half moved — until ``migrate`` runs again.
+
+MARKER_FILE = "migrating.json"
+
+
+class MigrationBusy(RuntimeError):
+    """Another migrate is running now."""
+
+
+def marker_path() -> pathlib.Path:
+    return config.home() / "state" / MARKER_FILE
+
+
+def migrating() -> dict | None:
+    """The marker's facts while a migration holds (or held) the install; ``None`` otherwise.
+
+    An unreadable marker still pauses: it says a migration started, and not who or when."""
+    path = marker_path()
+    try:
+        raw = path.read_text()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {"unreadable": True}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {"unreadable": True}
+    return data if isinstance(data, dict) else {"unreadable": True}
+
+
+def lock_path() -> pathlib.Path:
+    return marker_path().with_suffix(".lock")
+
+
+def _running() -> bool:
+    """Whether a migrate holds the lock right now (#447): the lock, not a PID, says so — two
+    runs cannot both take it, and a reused PID cannot pass for a live one."""
+    try:
+        fd = os.open(lock_path(), os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)             # closing releases a lock this probe took
+    return False
+
+
+def describe(info: dict | None) -> str:
+    """One line for the watchdog, explain and the worker about a held marker."""
+    if info is None:
+        return ""
+    if info.get("unreadable"):
+        return f"a migration marker {marker_path()} exists but cannot be read"
+    since = info.get("started")
+    when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(since)) if isinstance(
+        since, (int, float)) else "an unknown time"
+    if _running():
+        return f"`migrate` is running (pid {info.get('pid')}, since {when})"
+    return (f"a `migrate` started {when} did not finish (pid {info.get('pid')} is gone): its "
+            "records may be half moved — run `migrate` again to finish it")
+
+
+@contextlib.contextmanager
+def hold():
+    """Hold the marker for one migration; yields what an interrupted one left, if anything."""
+    path = marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise MigrationBusy(describe(migrating() or {})) from None
+        left = migrating()
+        state_mod._atomic_write(path, {"pid": os.getpid(), "started": time.time()})
+        try:
+            yield left
+        finally:
+            path.unlink(missing_ok=True)
+    finally:
+        os.close(fd)
 
 
 def _hermes_config() -> dict:
@@ -125,6 +224,20 @@ def _ledger_tables(con) -> list[str]:
             if any(col[1] == "repo" for col in con.execute(f'PRAGMA table_info("{name}")'))]
 
 
+def busy_runs(db: pathlib.Path, repo: str) -> int:
+    """Runs for ``repo`` that are claimed, launching, running or uncertain: none may be renamed
+    under."""
+    from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when migrating
+    if not db.exists():
+        return 0
+    con = sqlite3.connect(db, timeout=30)
+    try:
+        return con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND state IN "
+                           f"({','.join('?' * len(ACTIVE))})", (repo, *ACTIVE)).fetchone()[0]
+    finally:
+        con.close()
+
+
 def _move_ledger(db: pathlib.Path, old: str, new: str, *, dry_run: bool) -> tuple[int, str]:
     """Rows moved (or that would be); a refusal reason instead while a run is in flight."""
     from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when migrating
@@ -201,6 +314,76 @@ def repo_step(loops: list[dict], write_loop, *, dry_run: bool, ledger: pathlib.P
     return lines
 
 
+# -- loop id rename (opt-in) ----------------------------------------------------------------
+# ``--rename-loop OLD=NEW`` gives a loop a new id. A loop's id names its file, its default state
+# directory, its routes (``<id>-review`` and so on) and through them the URLs its GitHub hooks
+# post to. The orchestration (routes, hooks, pings) is ``cli._rename_loop``; the pieces that only
+# move host files are here.
+
+LOOP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+
+
+def route_renames(loop: dict, old_id: str, new_id: str) -> dict[str, str]:
+    """``{old route name: new}`` for the routes ``loop`` names under either id's convention
+    (``<id>-…``). A route the operator named otherwise keeps its name.
+
+    ``loop`` may be the old loop or the renamed one, so a re-run after a crash that left only
+    the new loop file still knows which old routes to clear."""
+    from .route_intent import routes_of
+    out: dict[str, str] = {}
+    for name in routes_of(loop).values():
+        for this, other in ((old_id, new_id), (new_id, old_id)):
+            if name.startswith(f"{this}-"):
+                old, new = ((name, other + name[len(this):]) if this == old_id
+                            else (other + name[len(this):], name))
+                out[old] = new
+                break
+    return out
+
+
+def default_state_dir(loop_id: str) -> pathlib.Path:
+    return config.home() / "state" / "review-loops" / loop_id
+
+
+def renamed_loop(loop: dict, new_id: str, renames: dict[str, str]) -> dict:
+    """``loop`` under ``new_id``: its routes renamed, and its state directory too when it is the
+    default one (a directory the operator chose stays where it is)."""
+    new = json.loads(json.dumps(loop))
+    new["id"] = new_id
+    for seat in ("reviewer", "fixer"):
+        entry = (new.get("seats") or {}).get(seat)
+        if isinstance(entry, dict) and entry.get("route") in renames:
+            entry["route"] = renames[entry["route"]]
+    for block in ("adjudicator", "triage"):
+        entry = new.get(block)
+        if isinstance(entry, dict) and entry.get("route") in renames:
+            entry["route"] = renames[entry["route"]]
+    observer = new.get("observer")
+    if isinstance(observer, dict):
+        for key in ("route", "urgent_route"):
+            if observer.get(key) in renames:
+                observer[key] = renames[observer[key]]
+    if pathlib.Path(str(loop.get("state_dir") or "")) == default_state_dir(loop["id"]):
+        new["state_dir"] = str(default_state_dir(new_id))
+    return new
+
+
+def move_state_dir(old: dict, new: dict, *, dry_run: bool) -> str:
+    """Move the loop's state directory with its id, once; a re-run finds it already moved."""
+    source, target = pathlib.Path(old["state_dir"]), pathlib.Path(new["state_dir"])
+    if source == target:
+        return "state: kept where it is (not the default directory)"
+    if target.exists() and not source.exists():
+        return f"state: already at {target}"
+    if target.exists():
+        raise config.ConfigError(f"both {source} and {target} exist — move one aside by hand")
+    if not source.exists():
+        return f"state: {source} does not exist yet — nothing to move"
+    if not dry_run:
+        os.rename(source, target)
+    return f"state: {'would move' if dry_run else 'moved'} {source} → {target}"
+
+
 # -- shims and the closing check ------------------------------------------------------------
 
 def shim_step(loops: list[dict], write_watchdog_shim, watchdog_shim: pathlib.Path, wanted: str,
@@ -236,7 +419,14 @@ def doctor_step(loops: list[dict]) -> list[str]:
 
 
 def old_plugin_note(plugins_dir: pathlib.Path) -> list[str]:
-    if (plugins_dir / OLD_PLUGIN).exists():
-        return [f"next: once you are happy, remove the old plugin: "
-                f"`hermes plugins remove {OLD_PLUGIN}` (its settings stay in config.yaml)"]
-    return []
+    """Name the old plugin for removal only when that folder still holds it: an in-place update
+    keeps the folder's old name, and then it is this plugin, not a leftover."""
+    try:
+        manifest = (plugins_dir / OLD_PLUGIN / "plugin.yaml").read_text()
+    except OSError:
+        return []
+    found = re.search(r"^name:\s*['\"]?([A-Za-z0-9_.-]+)", manifest, re.M)
+    if not found or found.group(1) != OLD_PLUGIN:
+        return []
+    return [f"next: once you are happy, remove the old plugin: "
+            f"`hermes plugins remove {OLD_PLUGIN}` (its settings stay in config.yaml)"]
