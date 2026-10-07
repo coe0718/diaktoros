@@ -43,19 +43,40 @@ class Marker(fg.Base):
         self.assertIsNone(migrate.migrating())
 
     def test_a_live_migration_refuses_and_a_dead_one_is_picked_up(self):
+        # A live migrate is one holding the lock (#447), whatever PID its marker names.
         migrate.marker_path().parent.mkdir(parents=True, exist_ok=True)
-        live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-        self.addCleanup(live.kill)
-        migrate.marker_path().write_text(json.dumps({"pid": live.pid, "started": 1}))
+        migrate.marker_path().write_text(json.dumps({"pid": 999999, "started": 1}))
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import fcntl, os, sys, time\n"
+             "fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)\n"
+             "fcntl.flock(fd, fcntl.LOCK_EX)\nprint('held', flush=True)\ntime.sleep(30)",
+             str(migrate.lock_path())], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.stdout.close)
+        self.addCleanup(holder.kill)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
         with self.assertRaises(migrate.MigrationBusy):
             with migrate.hold():
                 pass
-        live.kill()
-        live.wait()
+        self.assertIn("is running", migrate.describe({"pid": 999999, "started": 1}))
+        holder.kill()
+        holder.wait()
         with migrate.hold() as left:
-            self.assertEqual(left["pid"], live.pid)
+            self.assertEqual(left["pid"], 999999)          # what the interrupted one left
+            self.assertTrue(migrate._running())            # this run holds it now
         self.assertIsNone(migrate.migrating())
-        self.assertIn("did not finish", migrate.describe({"pid": live.pid, "started": 1}))
+        self.assertFalse(migrate._running())
+        self.assertIn("did not finish", migrate.describe({"pid": 999999, "started": 1}))
+
+    def test_the_old_plugin_is_named_only_when_its_folder_still_holds_it(self):
+        plugins = self.root / "plugins"
+        folder = plugins / migrate.OLD_PLUGIN
+        self.assertEqual(migrate.old_plugin_note(plugins), [])
+        folder.mkdir(parents=True)
+        (folder / "plugin.yaml").write_text("name: diaktoros\nversion: 0.2.0\n")
+        self.assertEqual(migrate.old_plugin_note(plugins), [])       # updated in place: ours
+        (folder / "plugin.yaml").write_text("name: hermes-review-loop\nversion: 0.1.1\n")
+        self.assertIn("hermes plugins remove hermes-review-loop",
+                      migrate.old_plugin_note(plugins)[0])
 
     def test_an_unreadable_marker_still_pauses(self):
         migrate.marker_path().parent.mkdir(parents=True, exist_ok=True)
