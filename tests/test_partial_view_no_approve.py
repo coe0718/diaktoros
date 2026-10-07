@@ -554,7 +554,7 @@ class ExplainShowsIt(unittest.TestCase):
                                            "REVIEW_LOOP_CONFIG_DIR": str(loops)})
         env.start()
         self.addCleanup(env.stop)
-        self.db = home / "state" / "review-loop-runs.sqlite"
+        self.db = home / "state" / "diaktoros-runs.sqlite"
         sup = Supervisor(self.db, fixture_mode=True, fixture_command=["true"])
         sup._spawn = lambda: None
         for delivery, head in (("old", "c" * 40), ("new", HEAD)):

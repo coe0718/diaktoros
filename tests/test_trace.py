@@ -111,7 +111,7 @@ class TraceIsTheLiveGate(Base):
         self.assertNotIn("trace: dry run", out)
 
     def test_an_eligible_event_with_a_runtime_file_would_start_a_run(self):
-        runtime = t.HOME / "review-loop-runtime.json"
+        runtime = t.HOME / "diaktoros-runtime.json"
         runtime.parent.mkdir(parents=True, exist_ok=True)
         runtime.write_text(json.dumps({"source": str(t.TMP), "venv": str(t.TMP),
                                        "runtime": str(t.TMP), "rust": str(t.TMP)}))

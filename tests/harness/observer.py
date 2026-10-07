@@ -675,7 +675,7 @@ def group_observer_honesty() -> None:
     # adjudicator tests treat it, and the row is what a real enqueue leaves behind.
     reset(prs={"7": pr(7)})
     observer_route()
-    runtime = HOME / "review-loop-runtime.json"
+    runtime = HOME / "diaktoros-runtime.json"
     runtime.write_text("{}")
     runtime.chmod(0o600)
     try:

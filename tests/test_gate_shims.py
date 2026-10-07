@@ -119,7 +119,7 @@ class Base(unittest.TestCase):
         self.home = self.tmp / "home"
         self.hermes = self.home / ".hermes"           # the classic layout: root under $HOME
         self.env = {"HOME": str(self.home), "HERMES_HOME": str(self.hermes),
-                    "REVIEW_LOOP_CONFIG_DIR": str(self.hermes / "review-loops.d"),
+                    "REVIEW_LOOP_CONFIG_DIR": str(self.hermes / "diaktoros.d"),
                     "REVIEW_LOOP_SUBS": str(self.hermes / "webhook_subscriptions.json")}
         # GitHub is always the stub here: no test in this file may reach the network.
         stub = self.tmp / "gh-world"
@@ -323,7 +323,7 @@ class ShimRunsUnderTheLoopsHome(Base):
                "HOME": str(profile / "home"), "HERMES_REAL_HOME": str(self.home)}
         seen = self.run_shim(env)
         self.assertEqual(seen["hermes_home"], str(self.hermes))
-        self.assertEqual(seen["config_dir"], str(self.hermes / "review-loops.d"))
+        self.assertEqual(seen["config_dir"], str(self.hermes / "diaktoros.d"))
         self.assertEqual(seen["home"], str(self.home))
         scratch = str(self.hermes / "cache" / "scratch")
         self.assertEqual(seen["tmp"], [scratch] * 3)
@@ -343,7 +343,7 @@ class ShimRunsUnderTheLoopsHome(Base):
         self.assertNotEqual(env.get("HERMES_HOME"), str(self.hermes),
                             "premise: Hermes scopes the script's HERMES_HOME to the profile")
         seen = self.run_shim(env)
-        self.assertEqual(seen["config_dir"], str(self.hermes / "review-loops.d"))
+        self.assertEqual(seen["config_dir"], str(self.hermes / "diaktoros.d"))
 
 
 class ShimRunsThePluginScript(Base):
@@ -1992,7 +1992,7 @@ class CronJobRemedies(Base):
     job already exists; create only appends, so the broken job kept answering beside a duplicate.
     Each state's printed remedy, applied, must leave exactly one healthy watchdog job."""
 
-    NAME = "review loop watchdog"  # the shared job name (#60): one job sweeps every loop
+    NAME = "diaktoros watchdog"  # the shared job name (#60): one job sweeps every loop
     BROKEN = {
         "completed": lambda j: j.update(state="completed", enabled=False),
         "paused": lambda j: j.update(state="paused", enabled=False,

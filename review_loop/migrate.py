@@ -330,7 +330,7 @@ def route_renames(loop: dict, old_id: str, new_id: str) -> dict[str, str]:
 
 
 def default_state_dir(loop_id: str) -> pathlib.Path:
-    return config.home() / "state" / "review-loops" / loop_id
+    return config.default_state_dir(loop_id)
 
 
 def renamed_loop(loop: dict, new_id: str, renames: dict[str, str]) -> dict:
@@ -351,7 +351,7 @@ def renamed_loop(loop: dict, new_id: str, renames: dict[str, str]) -> dict:
         for key in ("route", "urgent_route"):
             if observer.get(key) in renames:
                 observer[key] = renames[observer[key]]
-    if pathlib.Path(str(loop.get("state_dir") or "")) == default_state_dir(loop["id"]):
+    if config.is_default_state_dir(loop.get("state_dir") or "", loop["id"]):
         new["state_dir"] = str(default_state_dir(new_id))
     return new
 
@@ -370,6 +370,84 @@ def move_state_dir(old: dict, new: dict, *, dry_run: bool) -> str:
     if not dry_run:
         os.rename(source, target)
     return f"state: {'would move' if dry_run else 'moved'} {source} → {target}"
+
+
+# -- host files (#425 stage 4) ---------------------------------------------------------------
+# The files this plugin keeps under $HERMES_HOME carried the old name (``config.HOST_FILES``).
+# Until they move, every reader uses them where they are (``config.host_path``); this step moves
+# them, with the install paused and no run in flight anywhere, so nothing holds one open.
+
+# Moved in this order: the run ledger first (it is the record a half-done move must not lose),
+# the loop files' own directory last (it is what names everything else).
+HOST_MOVES = ("ledger", "state_root", "gate_failures", "pacing", "seat_locks", "runtime",
+              "config_dir")
+
+
+def _old_new(key: str) -> tuple[pathlib.Path, pathlib.Path]:
+    new, old = config.HOST_FILES[key]
+    return config.home() / old, config.home() / new
+
+
+def _quiet_ledger(path: pathlib.Path) -> None:
+    """Fold the ledger's WAL into the file, so the move carries everything in one file."""
+    con = sqlite3.connect(path, timeout=30)
+    try:
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        con.close()
+
+
+def files_step(write_loop, *, dry_run: bool) -> list[str]:
+    """Move each host file from its old name to its new one; rewrite the loops' state paths."""
+    lines: list[str] = []
+    ledger = config.host_path("ledger")
+    busy = 0
+    if ledger.exists():
+        from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when migrating
+        con = sqlite3.connect(ledger, timeout=30)
+        try:
+            busy = con.execute(f"SELECT COUNT(*) FROM runs WHERE state IN "
+                               f"({','.join('?' * len(ACTIVE))})", ACTIVE).fetchone()[0]
+        except sqlite3.Error:
+            busy = 0                        # no runs table yet: nothing can be in flight
+        finally:
+            con.close()
+    if busy:
+        return [f"files: REFUSED — {busy} run(s) are in flight or uncertain; wait for them (or "
+                "reconcile them), then run migrate again"]
+    old_root, new_root = _old_new("state_root")
+    for key in HOST_MOVES:
+        if key == "config_dir" and os.environ.get("REVIEW_LOOP_CONFIG_DIR"):
+            lines.append("files: the loop files' directory is set by REVIEW_LOOP_CONFIG_DIR — kept")
+            continue
+        old, new = _old_new(key)
+        if not os.path.lexists(old):
+            continue
+        if os.path.lexists(new):
+            lines.append(f"files: REFUSED — both {old} and {new} exist; move one aside by hand")
+            continue
+        if not dry_run:
+            if key == "ledger":
+                _quiet_ledger(old)
+            new.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(old, new)
+            if key == "ledger":
+                for suffix in ("-wal", "-shm"):
+                    side = old.with_name(old.name + suffix)
+                    if side.exists():
+                        os.rename(side, new.with_name(new.name + suffix))
+        lines.append(f"files: {'would move' if dry_run else 'moved'} {old} → {new}")
+    if dry_run:
+        return lines or ["files: every host file already has its new name"]
+    for loop in config.all_loops():
+        state = pathlib.Path(str(loop.get("state_dir") or ""))
+        try:
+            rest = state.relative_to(old_root)
+        except ValueError:
+            continue
+        write_loop({**loop, "state_dir": str(new_root / rest)})
+        lines.append(f"files: {loop['id']}: state_dir now {new_root / rest}")
+    return lines or ["files: every host file already has its new name"]
 
 
 # -- shims and the closing check ------------------------------------------------------------

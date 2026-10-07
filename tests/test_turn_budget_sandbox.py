@@ -145,7 +145,7 @@ def driver(spec_path: str) -> None:
                                 credential_provider=lambda: None, proxy_model='',
                                 client_identity='')
     # The ledger where `hermes dk status/explain` read it.
-    sup = Supervisor(Path(os.environ['HERMES_HOME']) / 'state' / 'review-loop-runs.sqlite',
+    sup = Supervisor(Path(os.environ['HERMES_HOME']) / 'state' / 'diaktoros-runs.sqlite',
                      production_config=root / 'runtime.json',
                      hermes_home=os.environ['HERMES_HOME'], lease_seconds=5,
                      capacity={'reviewer': 1, 'fixer': 1, 'adjudicator': 1})

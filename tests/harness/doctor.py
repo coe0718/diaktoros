@@ -308,7 +308,7 @@ def doctor_runtime_fixture() -> list[pathlib.Path]:
     # #67's ``runtime:rust`` checks for the toolchain's cargo: a Rust toolchain dir, not the
     # Python install root. Give it one so the fixture is a complete, correct installation.
     (rust / "bin" / "cargo").write_text("")
-    runtime = home / "review-loop-runtime.json"
+    runtime = home / "diaktoros-runtime.json"
     runtime.write_text(json.dumps({"source": fake_hermes_source(), "venv": resolver_venv(venv),
                                    "runtime": str(TMP), "rust": str(rust)}))
     runtime.chmod(0o600)
@@ -361,7 +361,7 @@ def doctor_summary(out: str, loop_id: str) -> dict | None:
 # decision someone makes here, not a line the harness never looks at. The per-seat and per-route
 # families are spelled out for the fixture's three seats, three routes and three serving profiles.
 DOCTOR_FIXTURE_CHECKS = frozenset({
-    "config", "turn-budget",
+    "config", "turn-budget", "host-names",
     "profile:reviewer", "profile:fixer", "profile:adjudicator",
     "credential:reviewer", "credential:fixer",
     "model:reviewer", "model:fixer", "model:adjudicator",

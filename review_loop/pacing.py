@@ -7,7 +7,7 @@ on it waits until then without spending a retry (``run_supervisor``), and a new 
 same account is not launched into a closed window. ``seats.<seat>.daily_turns`` adds an optional
 cap per loop and seat, counted here, that holds further turns until local midnight.
 
-One small host file, ``$HERMES_HOME/state/review-loop-pacing.json``, under a lock. It holds only
+One small host file, ``$HERMES_HOME/state/diaktoros-pacing.json``, under a lock. It holds only
 an account key (provider, endpoint and profile, never a credential), a time and a short reason,
 plus per-day turn counts. A hold or count that cannot be read is treated as absent: pacing never
 stops a turn on a guess.
@@ -32,7 +32,7 @@ _KEEP_DAYS = 3
 
 
 def path():
-    return config.home() / "state" / "review-loop-pacing.json"
+    return config.host_path("pacing")
 
 
 def _seconds(text: str) -> float | None:
@@ -140,7 +140,7 @@ def account_key(provider: str, upstream: str, profile: str) -> str:
 def _locked():
     file = path()
     hostdirs.ensure(file.parent)
-    with (file.parent / ".review-loop-pacing.lock").open("a+b") as lock:
+    with (file.parent / f".{file.stem}.lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             yield file

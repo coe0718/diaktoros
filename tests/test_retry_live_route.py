@@ -310,13 +310,13 @@ class LiveRouteRetry(unittest.TestCase):
                    'runtime': str(self.root / 'runtime'), 'rust': str(self.root / 'rust'),
                    'seats': {'reviewer': {'model': 'fixture-model', 'key_file': str(key),
                                           'upstream': f'https://127.0.0.1:{port}{PATH}'}}}
-        (home / 'review-loop-runtime.json').write_text(json.dumps(runtime))
-        (home / 'review-loop-runtime.json').chmod(0o600)
+        (home / 'diaktoros-runtime.json').write_text(json.dumps(runtime))
+        (home / 'diaktoros-runtime.json').chmod(0o600)
         # What the gateway hands a route script: its own (scrubbed) environment, no PYTHONPATH.
         self.env = {'PATH': '/usr/bin:/bin', 'HOME': str(home), 'HERMES_HOME': str(home),
                     'REVIEW_LOOP_GH_STUB': str(stub), 'PYTHONDONTWRITEBYTECODE': '1',
                     'TMPDIR': tempfile.gettempdir()}
-        self.db = home / 'state' / 'review-loop-runs.sqlite'
+        self.db = home / 'state' / 'diaktoros-runs.sqlite'
         self.transcript = []
 
     def tearDown(self):

@@ -366,7 +366,7 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
         st.watch_save({"armed_since": now - 90000, "heads": {"7": {
             "sha": HEAD, "base": "main", "base_sha": "b" * 40, "observed_at": now - 90000,
             "last_seen_at": now}}})
-        ledger = Supervisor(home / "state" / "review-loop-runs.sqlite")
+        ledger = Supervisor(home / "state" / "diaktoros-runs.sqlite")
         if run_state:
             ledger.enqueue(f"adj-{budget}-{status}-{run_state}", loop["repo"], 7, HEAD,
                            "adjudicator", turn_key="breach:3", budget=budget)
@@ -693,7 +693,7 @@ class GateToProductionWorker(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.home = pathlib.Path(temp.name)
-        runtime = self.home / "review-loop-runtime.json"
+        runtime = self.home / "diaktoros-runtime.json"
         runtime.write_text(json.dumps({"source": "/x", "venv": "/x", "runtime": "/x", "rust": "/x"}))
         runtime.chmod(0o600)
         patch = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home),
@@ -710,7 +710,7 @@ class GateToProductionWorker(unittest.TestCase):
         self.addCleanup(by_repo.stop)
 
     def ledger(self):
-        return Supervisor(self.home / "state" / "review-loop-runs.sqlite")
+        return Supervisor(self.home / "state" / "diaktoros-runs.sqlite")
 
     def test_enqueue_isolated_records_each_seats_budget(self):
         with mock.patch.object(Supervisor, "_spawn") as spawn:
@@ -724,8 +724,8 @@ class GateToProductionWorker(unittest.TestCase):
     def run_production(self, run_turn):
         with mock.patch.object(Supervisor, "_spawn"):
             gate.enqueue_isolated(self.loop, "fixer", 8, HEAD)
-        sup = Supervisor(self.home / "state" / "review-loop-runs.sqlite",
-                         production_config=self.home / "review-loop-runtime.json",
+        sup = Supervisor(self.home / "state" / "diaktoros-runs.sqlite",
+                         production_config=self.home / "diaktoros-runtime.json",
                          hermes_home=self.home)
         row = sup.get(f"acme/widgets:8:{HEAD}:fixer")
         with closing(sqlite3.connect(sup.db)) as con, con:
@@ -916,7 +916,7 @@ class GateToProductionWorker(unittest.TestCase):
         self.assertIn("killed at the 2700s turn budget (sandbox stopped 30s past it) — raise "
                       "turn_budget_s (hermes dk set --loop widgets "
                       "--fixer-turn-budget N), then `retry`", row["error"])
-        with run_supervisor.Supervisor(self.home / "state" / "review-loop-runs.sqlite")._connect() as con:
+        with run_supervisor.Supervisor(self.home / "state" / "diaktoros-runs.sqlite")._connect() as con:
             self.assertIsNone(run_supervisor.write_evidence(con, row["id"]))
 
     def test_a_budget_kill_reruns_on_the_raised_budget(self):

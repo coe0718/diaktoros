@@ -68,7 +68,7 @@ No setting named here is an extra CLI flag.
 | Daily-turn options | Integer 1–1000; omitted means existing value or no cap; CLI 0 removes cap | Later turns wait for local midnight; applies only to the named seat. |
 | Grace / TTL options | Integer minutes; fresh grace 35, marker grace 60, slot TTL 45, in-flight TTL 10 | Parser enforces integer type but loader has no positive range for these fields. Use positive values; actual slot/stall clocks also cover the seat's whole worst-case turn. |
 | `--base` | Branch string; fresh default `main` | Gates select eligible PR targets; loader does not validate Git ref syntax. |
-| `--clone`, `--root`, `--state-dir` | Local path strings; fresh clone/roots empty, state derived under `$HERMES_HOME/state/review-loops/` | Roots authorize destructive cleanup of PR-named children; use dedicated directories. Dangerous broad roots are refused. Clone is not a seat's writable shared checkout. |
+| `--clone`, `--root`, `--state-dir` | Local path strings; fresh clone/roots empty, state derived under `$HERMES_HOME/state/diaktoros/` | Roots authorize destructive cleanup of PR-named children; use dedicated directories. Dangerous broad roots are refused. Clone is not a seat's writable shared checkout. |
 | `--host` | HTTP(S) gateway origin, optional port, no path/query/fragment/userinfo | Fresh unset; `init` requires it even without hooks. HTTPS is recommended. Trailing slash stripped. `set` refuses clearing it. |
 | `--skill`, display-name options | String; fresh empty | Skill is a prompt instruction, not installed by this flag. Plugin skill identifier: `diaktoros:review-loop` (a loop that still names `hermes-review-loop:review-loop` is read as the new name). Agent display names are cosmetic, not identities. |
 | `--attribution`, `--comment` | Exactly `on` or `off` | Attribution fresh on; triage comments fresh off. Attribution signs only plugin-mediated writes. |
@@ -200,7 +200,7 @@ A first install in one command, and the easiest way to start. It walks through f
 using the same code as the command named in it:
 
 1. **Runtime paths.** It finds the Hermes checkout, its virtualenv, the Python installation and a
-   Rust toolchain, and writes the private runtime file `~/.hermes/review-loop-runtime.json`
+   Rust toolchain, and writes the private runtime file `~/.hermes/diaktoros-runtime.json`
    (mode 600). A path already in the file that still works is kept; a broken one is replaced. The
    file is written only when every path passes the same checks `selftest` makes.
 2. **The loop.** It asks the [`init`](#init) questions (repository, accounts, profiles, token
@@ -277,7 +277,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 
 Installs a new loop for one repository. Through a staged installation it writes:
 
-1. the loop config: `~/.hermes/review-loops.d/<id>.json`;
+1. the loop config: `~/.hermes/diaktoros.d/<id>.json`;
 2. the webhook routes in the gateway's registry: `<id>-review`, `<id>-fix`, plus the adjudicator
    route with `--adjudicator-route NAME` (any name; `<id>-breach` by convention) and `<id>-observe`
    with `--observer-profile`. Each gets a fresh secret. The adjudicator route never wakes an agent

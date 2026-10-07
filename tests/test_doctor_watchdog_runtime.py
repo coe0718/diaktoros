@@ -143,7 +143,7 @@ class RuntimePaths(unittest.TestCase):
         settings = {"source": str(source), "venv": str(venv),
                     "runtime": str(runtime), "rust": str(rust)}
         settings.update(overrides)
-        path = self.root / "hermes" / "review-loop-runtime.json"
+        path = self.root / "hermes" / "diaktoros-runtime.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(settings))
         path.chmod(0o600)

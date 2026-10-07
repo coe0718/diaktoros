@@ -303,7 +303,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_worker_seat_lock_never_creates_the_lock_dir(self):
         home = self.root / "hermes-home"
-        locks = home / "state" / "review-loop-seat-locks"
+        locks = home / "state" / "diaktoros-seat-locks"
         with patch.object(config, "home", return_value=home):
             with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}):
                 with seat_model.profile_lock("default"):
@@ -324,7 +324,7 @@ class Lifecycle(unittest.TestCase):
         self.assertTrue(state.is_dir())
         self.assertEqual((state / "isolated-runs").stat().st_mode & 0o777, 0o700)
         self.assertEqual((state / "deps").stat().st_mode & 0o777, 0o700)
-        self.assertTrue((home / "state" / "review-loop-seat-locks").is_dir())
+        self.assertTrue((home / "state" / "diaktoros-seat-locks").is_dir())
 
     def test_worker_stderr_goes_to_a_bounded_log_beside_the_ledger(self):
         sup = self.supervisor()
@@ -495,10 +495,10 @@ class Lifecycle(unittest.TestCase):
         alias = self.root / "alias-home"
         alias.symlink_to(real, target_is_directory=True)
         cases = {
-            "HERMES_HOME via the alias": (alias, alias / "state" / "review-loop-runs.sqlite"),
-            "argument via the alias": (real, alias / "state" / "review-loop-runs.sqlite"),
+            "HERMES_HOME via the alias": (alias, alias / "state" / "diaktoros-runs.sqlite"),
+            "argument via the alias": (real, alias / "state" / "diaktoros-runs.sqlite"),
             "argument via the real path, HERMES_HOME via the alias":
-                (alias, real / "state" / "review-loop-runs.sqlite"),
+                (alias, real / "state" / "diaktoros-runs.sqlite"),
         }
         for name, (hermes_home, db_arg) in cases.items():
             with self.subTest(name):
@@ -510,7 +510,7 @@ class Lifecycle(unittest.TestCase):
                 self.assertEqual(swept.count("vanished"), 1, swept)
 
     def test_a_literal_tilde_argument_is_the_home_ledger(self):
-        # `status '~/.hermes/state/review-loop-runs.sqlite'` (no shell expansion) must open the
+        # `status '~/.hermes/state/diaktoros-runs.sqlite'` (no shell expansion) must open the
         # home's ledger, not build ./~/.hermes under the working directory.
         home = self.root / "tilde-home"
         cwd = self.root / "cwd"
@@ -520,7 +520,7 @@ class Lifecycle(unittest.TestCase):
         self.armed_then_wiped(home / ".hermes")
         env = {"HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
                "REVIEW_LOOP_CONFIG_DIR": str(home / ".hermes" / "review-loops.d")}
-        lines, swept = self.status_then_watchdog("~/.hermes/state/review-loop-runs.sqlite", env)
+        lines, swept = self.status_then_watchdog("~/.hermes/state/diaktoros-runs.sqlite", env)
         self.assertEqual(len(lines), 1, lines)
         self.assertEqual(swept.count("vanished"), 1, swept)
         self.assertFalse((cwd / "~").exists())
@@ -557,7 +557,7 @@ class Lifecycle(unittest.TestCase):
         # Installed process-wide by this module's import, so it covers the whole discover run.
         self.assertTrue(getattr(Supervisor.__init__, "_ledger_guarded", False))
         with self.assertRaises(_ledger_guard.RealHomeTouched):
-            Supervisor(real / "state" / "review-loop-runs.sqlite")
+            Supervisor(real / "state" / "diaktoros-runs.sqlite")
         with patch.dict(os.environ, {"HERMES_HOME": str(real)}), \
                 self.assertRaises(_ledger_guard.REFUSED):
             Supervisor(run_supervisor.production_ledger())

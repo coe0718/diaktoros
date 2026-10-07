@@ -22,13 +22,16 @@ import tempfile
 from . import (attribution, config, doctor, gate, gate_shims, gh, observer, prompts,
                route_intent, routes, state as state_mod)
 
-SHIM_NAME = "review-loop-watchdog.py"
+# The shim and job names a fresh install gets; an install not yet migrated keeps the old pair
+# (``config.watchdog_shim`` / ``config.watchdog_job_name`` say which is live).
+SHIM_NAME = "diaktoros-watchdog.py"
 
 # One shared job runs the shim (issue #60): `hermes cron create --script` takes only a filename
 # under ~/.hermes/scripts/ and no arguments, so a job cannot carry `--loop <id>`. A single job
 # whose shim runs the watchdog with no `--loop` sweeps every loop exactly once per tick — N loops
 # cost N sweeps, not N². The shim is shared by that one job and is removed only with the last loop.
-SHARED_JOB_NAME = "review loop watchdog"
+SHARED_JOB_NAME = "diaktoros watchdog"
+SHARED_JOB_NAMES = frozenset(config.WATCHDOG_JOBS.values())
 
 
 def watchdog_job_name(loop: dict) -> str:
@@ -38,7 +41,7 @@ def watchdog_job_name(loop: dict) -> str:
     recognise a legacy per-loop job from before #60). A job created by ``init`` uses
     ``SHARED_JOB_NAME``: one job sweeps every loop.
     """
-    return SHARED_JOB_NAME
+    return config.watchdog_job_name()
 
 
 def _legacy_job_name(loop: dict) -> str:
@@ -1135,7 +1138,7 @@ def _cron_jobs(loop: dict) -> tuple[list[dict] | None, str]:
     jobs = data.get("jobs", []) if isinstance(data, dict) else data
     if not isinstance(jobs, list):
         return None, f"{path} has no job list"
-    wanted = {SHARED_JOB_NAME, _legacy_job_name(loop)}
+    wanted = {*SHARED_JOB_NAMES, _legacy_job_name(loop)}
     return [job for job in jobs if isinstance(job, dict)
             and str(job.get("name") or "").strip() in wanted], ""
 
@@ -1145,7 +1148,7 @@ def _shared_job_present() -> bool:
     jobs, _ = _cron_jobs({"id": ""})
     if jobs is None:
         return False
-    return any(str(job.get("name") or "").strip() == SHARED_JOB_NAME for job in jobs)
+    return any(str(job.get("name") or "").strip() in SHARED_JOB_NAMES for job in jobs)
 
 
 def _other_loops(loop: dict) -> list[str]:
@@ -1168,7 +1171,7 @@ def _remove_cron(loop: dict) -> tuple[list[str], list[str]]:
         return [], [f"cron: {error}"]
     others = _other_loops(loop)
     shared = [job for job in jobs
-              if str(job.get("name") or "").strip() == SHARED_JOB_NAME]
+              if str(job.get("name") or "").strip() in SHARED_JOB_NAMES]
     legacy = [job for job in jobs
               if str(job.get("name") or "").strip() == _legacy_job_name(loop)]
     removing = legacy + (shared if not others else [])
@@ -1211,7 +1214,7 @@ def _remove_cron(loop: dict) -> tuple[list[str], list[str]]:
 
 def _remove_unused_shim() -> str:
     """The cron shim is shared by every loop's job: remove it only when no job runs it any more."""
-    shim = config.home() / "scripts" / SHIM_NAME
+    shim = config.watchdog_shim()
     if not shim.is_symlink() and not shim.is_file():
         return ""
     try:
@@ -1220,7 +1223,7 @@ def _remove_unused_shim() -> str:
         return ""
     jobs = data.get("jobs", []) if isinstance(data, dict) else data
     if not isinstance(jobs, list) or any(
-            isinstance(job, dict) and pathlib.Path(str(job.get("script") or "")).name == SHIM_NAME
+            isinstance(job, dict) and pathlib.Path(str(job.get("script") or "")).name == shim.name
             for job in jobs):
         return ""
     if shim.is_symlink():
@@ -1238,12 +1241,13 @@ def _remove_unused_shim() -> str:
 def _purge_target(loop: dict) -> tuple[pathlib.Path | None, str]:
     """The state directory ``uninstall --purge`` may delete, or ``(None, why not)``.
 
-    Only the default ``<hermes home>/state/review-loops/<id>`` is ever removed: a custom
+    Only the default ``<hermes home>/state/diaktoros/<id>`` (``review-loops/<id>`` before the
+    rename) is ever removed: a custom
     ``state_dir`` could be anything the operator typed, and a recursive delete is not the place
     to find out. No symlink anywhere below the Hermes home is followed.
     """
     base = config.home()
-    default = base / "state" / "review-loops" / loop["id"]
+    default = config.default_state_dir(loop["id"])
     raw = pathlib.Path(str(loop.get("state_dir") or "")).expanduser()
     lid = shlex.quote(loop["id"])
     if os.path.normpath(str(raw)) != os.path.normpath(str(default)):
@@ -1252,7 +1256,7 @@ def _purge_target(loop: dict) -> tuple[pathlib.Path | None, str]:
                       "Check it holds only this loop's state, then run:\n"
                       f"  hermes dk uninstall --loop {lid} && "
                       f"rm -rf -- {shlex.quote(str(raw))}")
-    for path in (base / "state", base / "state" / "review-loops", default):
+    for path in (base / "state", default.parent, default):
         if path.is_symlink():
             return None, (f"{path} is a symlink; --purge never follows one — it may point at "
                           "this loop's own (moved) state or somewhere else entirely, and this "
@@ -1269,10 +1273,9 @@ def _purge_target(loop: dict) -> tuple[pathlib.Path | None, str]:
 
 def _write_watchdog_shim() -> pathlib.Path:
     """The cron shim the watchdog job runs by name, pinned to this plugin's watchdog."""
-    scripts = config.home() / "scripts"
-    scripts.mkdir(parents=True, exist_ok=True)
+    shim = config.watchdog_shim()
+    shim.parent.mkdir(parents=True, exist_ok=True)
     watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
-    shim = scripts / SHIM_NAME
     shim.write_text(SHIM.format(watchdog=watchdog))
     shim.chmod(0o755)
     return shim
@@ -1331,8 +1334,8 @@ def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str
         lines.extend(_remove_legacy_jobs(loop))
         return lines, True
     hermes = _hermes_bin() or "hermes"
-    cmd = [hermes, "cron", "create", schedule, "--name", SHARED_JOB_NAME,
-           "--no-agent", "--script", SHIM_NAME, "--deliver", deliver]
+    cmd = [hermes, "cron", "create", schedule, "--name", config.watchdog_job_name(),
+           "--no-agent", "--script", shim.name, "--deliver", deliver]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except Exception as exc:
@@ -1725,8 +1728,8 @@ def cmd_init(args) -> int:
         "skill": args.skill,
         "tokens": tokens, "read_token": args.read_token,
         "clone": args.clone, "roots": args.root or [],
-        "state_dir": args.state_dir or str(config.home() / "state" / "review-loops"
-                                           / (args.id or args.repo.split("/")[-1])),
+        "state_dir": args.state_dir or str(config.default_state_dir(
+            args.id or args.repo.split("/")[-1])),
         "host": args.host, "grace_min": args.grace_min,
         "ttl_min": args.ttl_min, "inflight_ttl_min": args.inflight_ttl_min,
         "turn_budget_s": getattr(args, "turn_budget", None),
@@ -1949,7 +1952,7 @@ def cmd_init(args) -> int:
     # The seats never hold a GitHub token: every write goes through the host broker with the token
     # files mapped above, so a GH_TOKEN in a seat profile's .env is only an extra copy to leak.
     lid = loop["id"]
-    runtime = config.home() / "review-loop-runtime.json"
+    runtime = config.host_path("runtime")
     steps = ([f"create the runtime file {runtime} (`hermes dk setup --repo "
               f"{shlex.quote(loop['repo'])}` detects and writes it)"]
              if not runtime.exists() else []) + [
@@ -3136,7 +3139,7 @@ def _dependency_lines(loop: dict, pr: int | None = None, limit: int = 5) -> list
     Read-only; an absent or unreadable ledger is simply no lines (status/explain say the rest).
     """
     from .run_supervisor import dependency_view, describe_dependencies
-    rows = dependency_view(config.home() / "state" / "review-loop-runs.sqlite", loop["repo"], pr,
+    rows = dependency_view(config.host_path("ledger"), loop["repo"], pr,
                            limit)
     return [describe_dependencies(row) for row in rows or []]
 
@@ -3273,7 +3276,7 @@ def cmd_status(args) -> int:
 
 
 def _ledger_path() -> pathlib.Path:
-    return config.home() / "state" / "review-loop-runs.sqlite"
+    return config.host_path("ledger")
 
 
 def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> list[dict]:
@@ -3698,6 +3701,65 @@ def cmd_explain(args) -> int:
     return 0
 
 
+def _move_watchdog_job(*, dry_run: bool) -> list[str]:
+    """``migrate`` (#425 stage 4): the shared watchdog job and its shim take the new name.
+
+    The new shim is written and a job created with the old one's schedule and deliver target,
+    read back, and only then the old job removed and its shim deleted. A failed create takes the
+    new shim back out, so the old pair stays the live one.
+    """
+    new_name, old_name = config.HOST_FILES["watchdog_shim"]
+    old_shim, new_shim = config.home() / old_name, config.home() / new_name
+    if not old_shim.exists():
+        return []
+    jobs, error = _cron_jobs({"id": ""})
+    if jobs is None:
+        return [f"watchdog: NOT FINISHED — {error}"]
+    old_job = config.WATCHDOG_JOBS[old_shim.name]
+    old_jobs = [job for job in jobs if str(job.get("name") or "").strip() == old_job]
+    if dry_run:
+        return [f"watchdog: would move job {old_job!r} → {SHARED_JOB_NAME!r} and its shim "
+                f"{old_shim.name} → {new_shim.name}"]
+    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    new_shim.write_text(SHIM.format(watchdog=watchdog))
+    new_shim.chmod(0o755)
+    lines = [f"watchdog: shim written as {new_shim.name}"]
+    if old_jobs and not any(str(job.get("name") or "").strip() == SHARED_JOB_NAME for job in jobs):
+        schedule, deliver = doctor._job_schedule(old_jobs[0]), doctor._job_deliver(old_jobs[0])
+        cmd = [_hermes_bin() or "hermes", "cron", "create", schedule, "--name", SHARED_JOB_NAME,
+               "--no-agent", "--script", new_shim.name, "--deliver", deliver]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            failed = proc.returncode != 0 and (proc.stderr or proc.stdout).strip()[:200]
+        except Exception as exc:
+            failed = str(exc)
+        after, _ = _cron_jobs({"id": ""})
+        if failed or not any(str(job.get("name") or "").strip() == SHARED_JOB_NAME
+                             for job in after or []):
+            new_shim.unlink(missing_ok=True)
+            return [f"watchdog: NOT FINISHED — the new job was not created"
+                    + (f" ({failed})" if failed else "") + f"; the old job keeps running. "
+                    f"Run it yourself, then migrate again: {shlex.join(cmd)}"]
+        lines.append(f"watchdog: job {SHARED_JOB_NAME!r} created ({schedule}, deliver {deliver})")
+    for job in old_jobs:
+        job_id = str(job.get("id") or "")
+        try:
+            proc = subprocess.run([_hermes_bin() or "hermes", "cron", "remove", job_id],
+                                  capture_output=True, text=True, timeout=120)
+            ok = proc.returncode == 0
+        except Exception:
+            ok = False
+        lines.append(f"watchdog: old job {job_id} ({old_job!r}) removed" if ok else
+                     f"watchdog: NOT FINISHED — remove the old job yourself: "
+                     f"hermes cron remove {shlex.quote(job_id)}")
+    remaining, _ = _cron_jobs({"id": ""})
+    if remaining is not None and not any(pathlib.Path(str(job.get("script") or "")).name
+                                         == old_shim.name for job in remaining):
+        old_shim.unlink(missing_ok=True)
+        lines.append(f"watchdog: old shim {old_shim.name} removed")
+    return lines
+
+
 def _rename_loop(spec: str, *, dry_run: bool, admin: str | None) -> tuple[list[str], bool]:
     """``migrate --rename-loop OLD=NEW`` (#425 stage 3): ``(lines, refused)``.
 
@@ -3839,6 +3901,11 @@ def _migrate(args) -> int:
         print(f"cannot migrate: {exc}")
         return 2
     lines = migrate.settings_step(_CTX, dry_run=args.dry_run)
+    # Host files first: everything after reads and writes them under their new names.
+    lines += migrate.files_step(_write_config, dry_run=args.dry_run)
+    lines += _move_watchdog_job(dry_run=args.dry_run)
+    if not args.dry_run:
+        loops = config.all_loops()                 # the loop files may live elsewhere now
     lines += migrate.repo_step(loops, _write_moved_repo, dry_run=args.dry_run,
                                ledger=run_supervisor.production_ledger())
     if getattr(args, "rename_loop", None):
@@ -3849,7 +3916,7 @@ def _migrate(args) -> int:
     if not args.dry_run:
         loops = config.all_loops()                 # a moved repository or id is the loop's name now
     watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
-    lines += migrate.shim_step(loops, _write_watchdog_shim, config.home() / "scripts" / SHIM_NAME,
+    lines += migrate.shim_step(loops, _write_watchdog_shim, config.watchdog_shim(),
                                SHIM.format(watchdog=watchdog), dry_run=args.dry_run)
     if not args.dry_run:
         lines += migrate.doctor_step(loops)
@@ -4249,7 +4316,7 @@ def _cmd_fixer_push_locked(args) -> int:
         try:
             busy = _busy_seats(loop, {"fixer"})
             from .run_supervisor import Supervisor, ACTIVE
-            ledger = config.home() / 'state' / 'review-loop-runs.sqlite'
+            ledger = config.host_path("ledger")
             if ledger.exists():
                 with Supervisor(ledger)._connect() as con:
                     rows = con.execute(
@@ -4568,7 +4635,7 @@ def cmd_uninstall(args) -> int:
         if shim_line.startswith("cron shim removed"):
             removed.append("cron shim")
         else:
-            shim = config.home() / "scripts" / SHIM_NAME
+            shim = config.watchdog_shim()
             leftovers.append((f"the cron shim {shim}", f"rm -- {shlex.quote(str(shim))}"))
     # 3. Forget first: a route the operator removed must not be put back by the next watchdog
     # sweep's self-heal (which only ever restores routes still in the intent record).
@@ -5243,7 +5310,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
 
     summary = "Diaktoros — bounded, autonomous software maintenance: review, fix, triage"
     description = ("Configure, inspect and drive Diaktoros loops. Each loop is one JSON file under "
-                   "~/.hermes/review-loops.d/, and it drives two webhook routes, two GitHub hooks "
+                   "~/.hermes/diaktoros.d/, and it drives two webhook routes, two GitHub hooks "
                    "and (optionally) one cron watchdog job.")
 
     def deprecated(parser) -> None:  # noqa: ANN001

@@ -27,7 +27,7 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def db_path() -> Path:
-    return config.home() / "state" / "review-loop-runs.sqlite"
+    return config.host_path("ledger")
 
 
 def is_ci_fix(turn_key) -> bool:

@@ -60,7 +60,7 @@ class Fixture:
         self.settings = {"source": str(source), "venv": str(venv), "runtime": str(runtime),
                          "rust": str(rust), "key_file": str(key), "model": "tiny-model",
                          "upstream": "https://models.example/v1/chat/completions"}
-        self.runtime_file = self.home / "review-loop-runtime.json"
+        self.runtime_file = self.home / "diaktoros-runtime.json"
         self.write_runtime()
         self.pr = {"number": 7, "state": "open", "draft": False, "user": {"login": "fixer"},
                    "head": {"sha": HEAD, "ref": "fix-7", "repo": {"full_name": "acme/widgets"}},

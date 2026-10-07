@@ -86,7 +86,7 @@ A reviewer submission is associated with a host-owned generation and an exact re
 
 ## Durable state and recovery
 
-Host-wide state includes `review-loop-runs.sqlite` and pacing state beneath `$HERMES_HOME/state/`. The run ledger contains run claims, review receipts, push intents, rulings, triage/issue-fix results, answers and notice delivery state. `ledger.connect` wraps transaction semantics and closes connections deterministically.
+Host-wide state includes `diaktoros-runs.sqlite` and pacing state beneath `$HERMES_HOME/state/`. The run ledger contains run claims, review receipts, push intents, rulings, triage/issue-fix results, answers and notice delivery state. `ledger.connect` wraps transaction semantics and closes connections deterministically.
 
 Per-loop JSON files provide visible claims, pending/in-flight work, breach markers, observations, route intent and other operational records; `broker-audit.jsonl` journals broker metadata. See [configuration](configuration.md) for locations and [operations](operations.md) for reconciliation. Do not treat deleting these files as clearing a harmless cache.
 

@@ -91,7 +91,7 @@ def turn_key(entry):
 
 def ledger_path():
     from . import config
-    return config.home() / "state" / "review-loop-runs.sqlite"
+    return config.host_path("ledger")
 
 
 def read_receipts(loop, number, head, *, ledger=None):

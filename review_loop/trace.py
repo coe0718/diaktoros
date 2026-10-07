@@ -106,20 +106,23 @@ def _copy_home(loop: dict, dst: pathlib.Path) -> tuple[pathlib.Path, dict[str, s
     root = config.home()
     real = {str(dst): str(root)}
     dst.mkdir(mode=0o700)
-    if (root / "review-loop-runtime.json").is_file():
-        shutil.copy2(root / "review-loop-runtime.json", dst / "review-loop-runtime.json")
+    # The copy keeps each host file's name as it is here (old or new), so the gate run in the
+    # copy resolves it exactly as the live install does.
+    runtime = config.host_path("runtime", root)
+    if runtime.is_file():
+        shutil.copy2(runtime, dst / runtime.relative_to(root))
     if routes.subs_path().is_file():      # the route registry, wherever this host keeps it
         shutil.copy2(routes.subs_path(), dst / "webhook_subscriptions.json")
     if (root / "state").is_dir():
         shutil.copytree(root / "state", dst / "state", ignore=_SKIP, symlinks=True)
-    ledger = dst / "state" / "review-loop-runs.sqlite"
-    source = root / "state" / "review-loop-runs.sqlite"
+    source = config.host_path("ledger", root)
+    ledger = dst / source.relative_to(root)
     if source.is_file():
         ledger.parent.mkdir(parents=True, exist_ok=True)
         with contextlib.closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as src, \
                 contextlib.closing(sqlite3.connect(ledger)) as out:
             src.backup(out)
-    configs = dst / "review-loops.d"
+    configs = dst / config.host_path("config_dir", root).relative_to(root)
     configs.mkdir()
     for path in sorted(config.config_dir().glob("*.json")):
         try:

@@ -29,7 +29,7 @@ sandbox has no host home and no credentials), so the **host** resolves it, right
   thread lock plus a ``flock``), so two seats sharing a profile never refresh in parallel, and
   the second one simply reads the token the first refreshed. The sandbox only ever sees a dummy.
 
-``review-loop-runtime.json`` names host paths (``source``, ``venv``, ``runtime``, ``rust``). The
+``diaktoros-runtime.json`` names host paths (``source``, ``venv``, ``runtime``, ``rust``). The
 model may additionally be overridden there. Precedence, per seat:
 
 1. ``seats.<seat>`` in the runtime file — ``{"model", "upstream", "key_file"}`` — an explicit,
@@ -607,7 +607,7 @@ def read_config(raw):
         raise NoYamlReader("this interpreter (" + sys.executable + ") has no YAML library "
                            "(looked for yaml and ruamel.yaml), so it cannot read a profile's "
                            "config at all; name a venv with Hermes's own dependencies in "
-                           "$HERMES_HOME/review-loop-runtime.json (docs/configuration.md)") from None
+                           "$HERMES_HOME/diaktoros-runtime.json (docs/configuration.md)") from None
 
 
 
@@ -911,7 +911,7 @@ def hermes_interpreter(settings: dict | None) -> tuple[str, str]:
         import hermes_cli  # noqa: F401 — the plugin normally runs inside Hermes
     except ImportError:
         raise SeatModelError("Hermes is not importable here and no runtime file names its venv "
-                             "and source; write $HERMES_HOME/review-loop-runtime.json") from None
+                             "and source; write $HERMES_HOME/diaktoros-runtime.json") from None
     return sys.executable, str(Path(hermes_cli.__file__).resolve().parents[1])
 
 
@@ -928,7 +928,7 @@ _PROFILE_LOCKS_GUARD = threading.Lock()
 
 def lock_dir() -> Path:
     """Where the cross-process profile locks live: review-loop's host state, not a profile."""
-    return config.home() / "state" / "review-loop-seat-locks"
+    return config.host_path("seat_locks")
 
 
 @contextlib.contextmanager
@@ -1098,7 +1098,7 @@ def resolve_profile(profile: str, seat: str, settings: dict | None, *,
                            "auth`, or its .env), or add a seats override",
              "config": f"repair {config.profile_dir(profile) / 'config.yaml'}",
              "interpreter": "name a venv with Hermes's own dependencies in the runtime file "
-                            "($HERMES_HOME/review-loop-runtime.json): the interpreter the host "
+                            "($HERMES_HOME/diaktoros-runtime.json): the interpreter the host "
                             "picked cannot read YAML, so no profile's model can be resolved",
              "unavailable": "point source/venv in the runtime file at the Hermes install"}
     if answer.get("error"):
@@ -1224,7 +1224,7 @@ def describe_seat_wire(loop: dict, seat: str,
             if str(answer.get("kind") or "") == "interpreter":
                 return ("fail", f"{reason}; the {seat} turn will be held",
                         "name a venv with Hermes's own dependencies in "
-                        f"{config.home() / 'review-loop-runtime.json'} — the interpreter the host "
+                        f"{config.host_path('runtime')} — the interpreter the host "
                         "picked cannot read YAML at all (docs/configuration.md)", None)
         elif requested in ("", "auto"):
             reason = f"profile {profile} names no model.provider"
@@ -1232,7 +1232,7 @@ def describe_seat_wire(loop: dict, seat: str,
             reason = (f"profile {profile}: {not_asked} — the turn resolves its model through that "
                       "same import")
             fix_missing = ("point source/venv in "
-                           f"{config.home() / 'review-loop-runtime.json'} at the Hermes install")
+                           f"{config.host_path('runtime')} at the Hermes install")
             if legacy is None:
                 return ("fail", f"{reason}; the {seat} turn will be held", fix_missing, None)
         elif hermes is not None and hermes.get("error"):

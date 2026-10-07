@@ -90,7 +90,7 @@ def github(answers: dict):
 
 class Repo(fg.Base):
     def db(self) -> Path:
-        return config.home() / "state" / "review-loop-runs.sqlite"
+        return config.home() / "state" / "diaktoros-runs.sqlite"
 
     def supervisor(self) -> Supervisor:
         sup = Supervisor(self.db())

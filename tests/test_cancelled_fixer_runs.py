@@ -48,10 +48,10 @@ class CancelledFixer(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.pushes(True)
-        runtime = self.home / "review-loop-runtime.json"
+        runtime = self.home / "diaktoros-runtime.json"
         runtime.write_text("{}")
         runtime.chmod(0o600)
-        self.db = self.home / "state" / "review-loop-runs.sqlite"
+        self.db = self.home / "state" / "diaktoros-runs.sqlite"
         self.sup = Supervisor(self.db, production_config=runtime, hermes_home=self.home)
         self.sup._spawn = lambda: None
 

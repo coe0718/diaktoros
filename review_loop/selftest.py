@@ -5,7 +5,7 @@ verification asks: *can the host actually run one isolated turn?* Each step is i
 it can be, prints one ✅/❌ line per check with the command that fixes a failure, and the verb
 exits 1 if anything failed:
 
-1. the private runtime file (``$HERMES_HOME/review-loop-runtime.json``) and the paths it names,
+1. the private runtime file (``$HERMES_HOME/diaktoros-runtime.json``) and the paths it names,
    then each seat's model as the worker would resolve it (its Hermes profile, or a runtime
    override — see ``seat_model``), shown as profile → provider / model with its
    ``[api_mode, API key | OAuth (host-refreshed)]``, never the key or token;
@@ -62,11 +62,11 @@ class WriteBlocked(RuntimeError):
 
 
 def runtime_path() -> Path:
-    return config.home() / "review-loop-runtime.json"
+    return config.host_path("runtime")
 
 
 def ledger_path() -> Path:
-    return config.home() / "state" / "review-loop-runs.sqlite"
+    return config.host_path("ledger")
 
 
 # -- redaction ---------------------------------------------------------------------------------

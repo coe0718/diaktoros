@@ -56,7 +56,7 @@ hermes dk setup --repo "<owner>/<repository>"
 
 Setup performs these steps in order:
 
-1. Detect or keep valid runtime paths and write a private `review-loop-runtime.json`.
+1. Detect or keep valid runtime paths and write a private `diaktoros-runtime.json`.
 2. Show an `init` dry run, confirm installation and create configuration/routes (and paused hooks if a hook admin was named).
 3. Install the shared watchdog job if missing.
 4. Run `doctor` and `selftest --no-model`. Failure stops before arming; already completed steps are kept.
@@ -143,7 +143,7 @@ hermes dk init \
 
 Remove `--dry-run` after inspecting the preview. Explicit flags take precedence over per-profile plugin defaults, but invalid token-path defaults are still validated. `init --arm` exists but bypasses this guide's paused verification sequence; do not use it for first installation.
 
-For manual runtime configuration, create the following JSON at `$HERMES_HOME/review-loop-runtime.json`, substituting real absolute directories (no shell-variable expansion inside JSON):
+For manual runtime configuration, create the following JSON at `$HERMES_HOME/diaktoros-runtime.json`, substituting real absolute directories (no shell-variable expansion inside JSON):
 
 ```json
 {

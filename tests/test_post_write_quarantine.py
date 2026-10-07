@@ -29,7 +29,7 @@ class PostWriteQuarantine(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         (self.home / 'state').mkdir()
-        self.db = self.home / 'state' / 'review-loop-runs.sqlite'
+        self.db = self.home / 'state' / 'diaktoros-runs.sqlite'
         self.sup = Supervisor(self.db)
         self.sup.enqueue('fix', 'acme/widgets', 7, HEAD, 'fixer')
         with ledger.connect(self.db) as con:

@@ -266,10 +266,10 @@ def group_adjudicator() -> None:
 
     # With a private runtime file the wake is a durable isolated enqueue. The detached worker
     # is not started here (it would read real GitHub); the ledger row is the contract.
-    runtime = HOME / "review-loop-runtime.json"
+    runtime = HOME / "diaktoros-runtime.json"
     runtime.write_text("{}")
     runtime.chmod(0o600)
-    db = HOME / "state" / "review-loop-runs.sqlite"
+    db = HOME / "state" / "diaktoros-runs.sqlite"
 
     def adjudicator_rows() -> list:
         if not db.exists():

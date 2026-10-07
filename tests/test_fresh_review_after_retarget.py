@@ -205,7 +205,7 @@ class FreshReviewTest(unittest.TestCase):
         self.assertEqual(self.ledger_rows(), [(C, key)])
 
     def test_enqueue_failure_is_visible_and_retried_next_sweep(self):
-        self.enqueue_error = FileNotFoundError("review-loop-runtime.json")
+        self.enqueue_error = FileNotFoundError("diaktoros-runtime.json")
         lines = self.merge_parent_and_retarget()
         self.assertEqual(len(self.enqueued), 1, "a failure is not retried twice in one sweep")
         self.assertTrue(any("fresh review: retry" in line for line in lines), lines)

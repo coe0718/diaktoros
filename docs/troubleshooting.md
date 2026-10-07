@@ -145,7 +145,7 @@ permission. Do not treat a failed broker push as a harmless retryable model fail
 
 ## Runtime file problems
 
-The production file is `$HERMES_HOME/review-loop-runtime.json`, private mode `0600`.
+The production file is `$HERMES_HOME/diaktoros-runtime.json`, private mode `0600`.
 Both gateway and CLI must address the same home. Never place credentials in this file.
 
 | Symptom | Cause | Action |
@@ -294,7 +294,7 @@ budget is bounded and must fit the gateway's script timeout. Missing/bad payload
 failed read or busy state can stop admission before any model runs.
 **Action:** inspect gateway log, gate-failure ledger and stored payload. Loop failures
 live in `<state_dir>/gate-failures.json`; failures without a resolvable loop can use
-`$HERMES_HOME/state/review-loop-gate-failures/`. Preserve corrupt-copy evidence rather
+`$HERMES_HOME/state/diaktoros-gate-failures/`. Preserve corrupt-copy evidence rather
 than discarding it. If the payload was too large/not retained, use GitHub Recent Deliveries.
 
 Only reviewer/fixer failures are automatically re-driven, at most three times, while

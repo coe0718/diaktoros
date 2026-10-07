@@ -524,7 +524,7 @@ class OAuthResolution(OAuthBase):
 
     def test_doctor_reports_api_mode_and_auth_without_resolving(self):
         loop = {**self.loop, "seats": {**self.loop["seats"], "reviewer": {"profile": "codex"}}}
-        runtime = self.home / "review-loop-runtime.json"
+        runtime = self.home / "diaktoros-runtime.json"
         runtime.write_text(json.dumps(self.settings))
         runtime.chmod(0o600)
         checks = {c.name: c for c in doctor.check_seat_models(loop)}
@@ -588,7 +588,7 @@ class OAuthRefresh(OAuthBase):
                          "the two resolutions overlapped")
 
     def test_the_profile_lock_also_serializes_across_processes(self):
-        lockdir = self.home / "state" / "review-loop-seat-locks"
+        lockdir = self.home / "state" / "diaktoros-seat-locks"
         with seat_model.profile_lock("codex"):
             (lock,) = lockdir.iterdir()
             probe = subprocess.run([sys.executable, "-c",

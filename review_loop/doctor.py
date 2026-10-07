@@ -65,7 +65,7 @@ MARKS = {VERIFIED: "✅", ABSENT: "❌", MISMATCH: "❌", UNKNOWN: "⚠️", SKI
 # What `init` writes, mirrored here because ``cli`` imports this module (so this module cannot
 # import ``cli``) and `tests/run_tests.py` asserts the two spellings agree — a preflight that
 # looks for a filename nothing writes would report a healthy install as broken.
-SHIM_NAME = "review-loop-watchdog.py"
+SHIM_NAME = "diaktoros-watchdog.py"      # a fresh install's; see shim_path() for the live one
 PLUGIN_SCRIPTS = ("watchdog.py", "gate_reviewer.py", "gate_fixer.py",
                   "gate_adjudicator.py", "gate_triage.py", "cleanup.py")
 GATE_SCRIPT = {"reviewer": "gate_reviewer.py", "fixer": "gate_fixer.py",
@@ -112,11 +112,11 @@ def profile_dir(name: str) -> pathlib.Path:
     return config.home() / "profiles" / name
 
 
-SHARED_JOB_NAME = "review loop watchdog"  # one shared job runs the shim (#60)
+SHARED_JOB_NAME = "diaktoros watchdog"  # one shared job runs the shim (#60); see watchdog_job_name
 
 
 def shim_path() -> pathlib.Path:
-    return config.home() / "scripts" / SHIM_NAME
+    return config.watchdog_shim()
 
 
 def cron_store() -> pathlib.Path:
@@ -126,14 +126,14 @@ def cron_store() -> pathlib.Path:
 
 def watchdog_job_name(loop: dict) -> str:
     """The shared job name — one job sweeps every loop (#60). ``loop`` is accepted for callers."""
-    return SHARED_JOB_NAME
+    return config.watchdog_job_name()
 
 
 def cron_fix(loop: dict, deliver: str = "local") -> str:
     """The scheduler's own command for the watchdog job. Never ``init``: it refuses a loop that
     already exists, and the job is the scheduler's to create. ``deliver`` keeps a known target."""
     return (f"`hermes cron create 15m --name \"{watchdog_job_name(loop)}\" --no-agent "
-            f"--script {SHIM_NAME} --deliver {shlex.quote(deliver or 'local')}`")
+            f"--script {shim_path().name} --deliver {shlex.quote(deliver or 'local')}`")
 
 
 def _job_schedule(entry: dict) -> str:
@@ -171,13 +171,13 @@ def migration_fix(loop: dict, shim_jobs: list) -> str:
     if len(values) == 1:
         schedule, deliver = next(iter(values))
         return (f"{removals}, then `hermes cron create {shlex.quote(schedule)} --name "
-                f"\"{name}\" --no-agent --script {SHIM_NAME} "
+                f"\"{name}\" --no-agent --script {shim_path().name} "
                 f"--deliver {shlex.quote(deliver)}`")
     named = "; ".join(f"{e.get('id') or '?'}: {_schedule_label(e)}, deliver "
                       f"{_job_deliver(e)}" for e in shim_jobs)
     return (f"the per-loop jobs disagree ({named}) — choose one schedule and one deliver "
             f"target, then {removals}, then `hermes cron create <schedule> --name "
-            f"\"{name}\" --no-agent --script {SHIM_NAME} --deliver <target>`")
+            f"\"{name}\" --no-agent --script {shim_path().name} --deliver <target>`")
 
 
 def _job_ref(entry: dict, fallback: str) -> str:
@@ -401,14 +401,14 @@ def _watchdog_schedule_minutes(loop: dict) -> int | None:
 def check_runtime_paths(loop: dict) -> list[Check]:
     """Validate every path the runtime file names. (#67)
 
-    ``review-loop-runtime.json`` names four host paths (``source``, ``venv``, ``runtime``,
+    ``diaktoros-runtime.json`` names four host paths (``source``, ``venv``, ``runtime``,
     ``rust``) that the isolated worker mounts. A Hermes upgrade that moves the install
     leaves those paths pointing at directories that no longer exist — and the worker fails
     on every turn while doctor says nothing. Each path is checked independently so the
     operator sees exactly which one is wrong; a missing runtime file is reported as such.
     """
     from . import seat_model
-    path = config.home() / "review-loop-runtime.json"
+    path = config.host_path("runtime")
     if not path.exists():
         return [Check("runtime:file", ABSENT,
                       f"no runtime file at {path}",
@@ -499,7 +499,7 @@ def check_adjudicator_profile(loop: dict) -> Check:
 def runtime_settings() -> tuple[dict | None, Check | None]:
     """The runtime file's settings for the model checks, or a check explaining why not."""
     from . import seat_model
-    path = config.home() / "review-loop-runtime.json"
+    path = config.host_path("runtime")
     if not path.exists():
         return None, None
     try:
@@ -523,7 +523,7 @@ def check_seat_models(loop: dict) -> list[Check]:
     checks = [problem] if problem else []
     if settings is not None and seat_model.legacy_override(settings) is not None:
         checks.append(Check("runtime:legacy-model", UNKNOWN,
-                            "review-loop-runtime.json still sets a top-level model/upstream/"
+                            "diaktoros-runtime.json still sets a top-level model/upstream/"
                             "key_file: a LEGACY fallback used only for a seat whose profile "
                             "cannot be resolved",
                             "drop it once every seat's profile resolves, or move it under "
@@ -571,7 +571,7 @@ def check_seat_extras(loop: dict) -> list[Check]:
     could not be read, or a probe that could not answer, is ``unknown`` — never ``verified``.
     """
     from . import seat_model
-    runtime = config.home() / "review-loop-runtime.json"
+    runtime = config.host_path("runtime")
     settings, problem = runtime_settings()
     venv = str((settings or {}).get("venv") or "")
     probes: dict[str, bool | None] = {}
@@ -1286,7 +1286,7 @@ def check_cron_job(loop: dict) -> Check:
     shared = [entry for entry in jobs if isinstance(entry, dict)
               and str(entry.get("name") or "").strip() == wanted]
     shim_jobs = [entry for entry in jobs if isinstance(entry, dict)
-                 and pathlib.Path(str(entry.get("script") or "")).name == SHIM_NAME]
+                 and pathlib.Path(str(entry.get("script") or "")).name == shim_path().name]
     if not shared and shim_jobs:
         ids = ", ".join(str(entry.get("id") or "?") for entry in shim_jobs)
         fix = migration_fix(loop, shim_jobs)
@@ -1307,9 +1307,9 @@ def check_cron_job(loop: dict) -> Check:
     if job is None:
         # A job the operator wrote by hand: same shim, a name that names the loop.
         job = next((entry for entry in jobs if isinstance(entry, dict)
-                    and pathlib.Path(str(entry.get("script") or "")).name == SHIM_NAME
+                    and pathlib.Path(str(entry.get("script") or "")).name == shim_path().name
                     and (loop["id"] in str(entry.get("name") or "")
-                         or str(entry.get("name") or "").strip() == SHARED_JOB_NAME)), None)
+                         or str(entry.get("name") or "").strip() == watchdog_job_name({}))), None)
     if job is None:
         return Check("cron:job", ABSENT, f"no job named {wanted!r} in {path}",
                      cron_fix(loop))
@@ -1328,7 +1328,7 @@ def check_cron_job(loop: dict) -> Check:
                  if _job_ref(entry, wanted) != job_id]
         removals = "; ".join(f"`hermes cron remove {extra_id}`" for extra_id in extra)
         return Check("cron:job", MISMATCH,
-                     f"{len(shim_jobs)} jobs run {SHIM_NAME} "
+                     f"{len(shim_jobs)} jobs run {shim_path().name} "
                      f"({', '.join(str(e.get('id') or '?') for e in shim_jobs)}) "
                      "— each sweeps every loop (N² sweeps per tick); keep one",
                      removals)
@@ -1345,10 +1345,10 @@ def check_cron_job(loop: dict) -> Check:
                f"`hermes cron resume {job_id}`: the scheduler skips a disabled watchdog")
         return Check("cron:job", MISMATCH, f"{job_id} ({wanted}) is {reason}",
                      fix)
-    if job.get("script") != SHIM_NAME or job.get("no_agent") is not True:
+    if job.get("script") != shim_path().name or job.get("no_agent") is not True:
         return Check("cron:job", MISMATCH,
                      f"{job_id} runs {job.get('script')!r} (no_agent={job.get('no_agent')!r}), "
-                     f"expected {SHIM_NAME!r} with --no-agent", replace)
+                     f"expected {shim_path().name!r} with --no-agent", replace)
     schedule_data = job.get("schedule")
     valid = False
     missing_croniter = False
@@ -1950,10 +1950,23 @@ def check_gateway_scripts(loop: dict) -> list[Check]:
             for name, status, detail, fix in gate_shims.live_checks(loop)]
 
 
+def check_host_names() -> Check:
+    """Whether this install still keeps host files under their names from before the rename
+    (#425): they work where they are, and ``migrate`` moves them."""
+    old = [config.HOST_FILES[key][1] for key in config.HOST_FILES
+           if (config.home() / config.HOST_FILES[key][1]).exists()]
+    if not old:
+        return Check("host-names", VERIFIED, "every host file has its new name")
+    return Check("host-names", UNKNOWN,
+                 f"{len(old)} host file(s) still have their names from before the rename: "
+                 f"{', '.join(old)} — they work where they are",
+                 "between turns, run `hermes dk migrate --dry-run`, then `hermes dk migrate`")
+
+
 def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     """Every check, in the order an operator reads an install: what it is, who runs it, what
     wakes it, what schedules it, and where it works."""
-    checks = [check_config(loop), check_turn_budget(loop)]
+    checks = [check_config(loop), check_turn_budget(loop), check_host_names()]
     duplicate = check_duplicate_repo(loop)
     if duplicate:
         checks.append(duplicate)

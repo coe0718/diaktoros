@@ -493,7 +493,7 @@ def held(seat: str, number: int, head: str, reason: str = "isolated worker unava
 
 
 def no_ledger_run() -> bool:
-    db = TMP / "hermes-home" / "state" / "review-loop-runs.sqlite"
+    db = TMP / "hermes-home" / "state" / "diaktoros-runs.sqlite"
     if not db.exists():
         return True
     with ledger.connect(db) as con:

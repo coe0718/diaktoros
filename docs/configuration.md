@@ -26,9 +26,9 @@ Diaktoros has three configuration layers: a repository's loop JSON, per-profile 
 
 | Layer | Location | What it controls |
 |---|---|---|
-| Loop | `$HERMES_HOME/review-loops.d/<id>.json` | Repository, branches, identities, routes, budgets, policy, and per-loop state paths. `REVIEW_LOOP_CONFIG_DIR` overrides the directory. |
+| Loop | `$HERMES_HOME/diaktoros.d/<id>.json` | Repository, branches, identities, routes, budgets, policy, and per-loop state paths. `REVIEW_LOOP_CONFIG_DIR` overrides the directory. |
 | Plugin settings | `plugins.entries.diaktoros.settings` in the active Hermes profile's configuration | Defaults for `init`; explicitly named values pushed to one existing loop by `apply`. |
-| Host runtime | `$HERMES_HOME/review-loop-runtime.json` | Four host installation paths and optional model overrides. |
+| Host runtime | `$HERMES_HOME/diaktoros-runtime.json` | Four host installation paths and optional model overrides. |
 | Seat profile | The selected Hermes profile's configuration and authentication sources | Provider, model, endpoint, and credentials resolved on the host for that seat. |
 
 `HERMES_HOME` defaults to `~/.hermes`. In this document it means the home used by the Diaktoros host process; do not assume a command launched under another profile sees the same loops or runtime file.
@@ -197,7 +197,7 @@ hermes dk doctor --loop "<loop-id>"
 |---|---|---|
 | `clone` | Empty | Optional local clone; required when effective reviewer/fixer concurrency exceeds `1`. Cleanup uses its registered worktrees. A loader accepting a path is not proof of a valid Git clone; preflight checks the installation. |
 | `roots` | `[]` | Dedicated cleanup discovery directories. Filesystem root, the current home directory, and ancestors of home are refused. Shared roots do not authorize deletion of another repository's PR artifacts. |
-| `state_dir` | `$HERMES_HOME/state/review-loops/<id>` | Per-loop locks, queues, markers, observations, diagnostics, run working directories, and dependency caches. Use a dedicated absolute path if overriding. |
+| `state_dir` | `$HERMES_HOME/state/diaktoros/<id>` | Per-loop locks, queues, markers, observations, diagnostics, run working directories, and dependency caches. Use a dedicated absolute path if overriding. |
 
 The `_path()` helper expands `~`; it does not generally expand shell variables inside JSON paths. Runtime host-path consumers use literal `Path` values, so use absolute paths there rather than `~` or `$VARIABLE` strings. Do not use relative paths merely because a loader can retain them: their meaning depends on the launch directory.
 
@@ -430,9 +430,9 @@ Moving a profile changes its webhook path (`/p/<profile>/webhooks/<route>`), so 
 
 Use `doctor` for preflight, `status` for mapping/registry drift, and `selftest` only when ready for its live credential/provider probes. Ordinary `doctor` is read-only; `doctor --repair` is a different, state-changing operation. See [Troubleshooting](troubleshooting.md).
 
-## Runtime file and seat models (`review-loop-runtime.json`)
+## Runtime file and seat models (`diaktoros-runtime.json`)
 
-The isolated worker requires a private regular host runtime file at `$HERMES_HOME/review-loop-runtime.json`. `setup` detects and atomically writes it with mode `0600`, preserving usable chosen paths and existing model overrides. Missing/invalid runtime configuration is a fail-closed hold, not permission to dispatch a gateway agent.
+The isolated worker requires a private regular host runtime file at `$HERMES_HOME/diaktoros-runtime.json`. `setup` detects and atomically writes it with mode `0600`, preserving usable chosen paths and existing model overrides. Missing/invalid runtime configuration is a fail-closed hold, not permission to dispatch a gateway agent.
 
 ```json
 {
@@ -529,7 +529,7 @@ Refused provider names include `copilot`, `copilot-acp`, `github-copilot`, `bedr
 
 ### OAuth refresh and shared limits
 
-OAuth refresh happens on the host through Hermes's own profile/auth stores and lock behavior. The sandbox never receives refresh tokens. The proxy resolves again within 60 seconds of reported expiry (or a JWT's expiry when needed), and once after upstream 401, requesting rotation of that rejected token and retrying once. Per-profile thread/file locks under `$HERMES_HOME/state/review-loop-seat-locks/` serialize concurrent refresh.
+OAuth refresh happens on the host through Hermes's own profile/auth stores and lock behavior. The sandbox never receives refresh tokens. The proxy resolves again within 60 seconds of reported expiry (or a JWT's expiry when needed), and once after upstream 401, requesting rotation of that rejected token and retrying once. Per-profile thread/file locks under `$HERMES_HOME/state/diaktoros-seat-locks/` serialize concurrent refresh.
 
 `openai-codex`, Claude subscriptions, `xai-oauth`, `qwen-oauth`, and Nous draw from their configured accounts' existing plans/windows. A busy loop can exhaust the operator's subscription, and operator use can starve the loop. Setting more concurrency or changing GitHub accounts does not create more provider quota.
 
@@ -540,7 +540,7 @@ Set production limits in the environment of the process launching the supervisor
 | Variable | Default / accepted value | Effect |
 |---|---|---|
 | `HERMES_HOME` | `~/.hermes` | Host loop/runtime/state home; `~` expands. |
-| `REVIEW_LOOP_CONFIG_DIR` | `$HERMES_HOME/review-loops.d` | Alternative loop-file directory; `~` expands. |
+| `REVIEW_LOOP_CONFIG_DIR` | `$HERMES_HOME/diaktoros.d` | Alternative loop-file directory; `~` expands. |
 | `REVIEW_LOOP_SUBS` | Default gateway subscriptions location | Alternative subscription/route registry path; useful only when the serving gateway reads the same registry. |
 | `REVIEW_LOOP_HERMES` | `hermes` found on `PATH` | Hermes executable used when composing scheduler commands. |
 | `HERMES_REAL_HOME` | Current home | Operator-home hint used by runtime detection when a gateway profile has redirected `HOME`. |
@@ -586,10 +586,10 @@ State is operational data, not additional user configuration. Do not hand-edit l
 
 | Host-wide location under `$HERMES_HOME/state/` | Purpose |
 |---|---|
-| `review-loop-runs.sqlite` | Isolated run states/leases/budgets/retries, broker write-ahead records, rulings, triage, and issue-fix results. |
-| `review-loop-runs.sqlite.workers.log` | Detached worker diagnostics, rotated once to `.1` after 256 KiB. |
-| `review-loop-pacing.json` | Account usage-window holds and local-day start counts; account metadata, not credentials. |
-| `review-loop-seat-locks/` | Per-profile model-resolution/refresh serialization locks. |
+| `diaktoros-runs.sqlite` | Isolated run states/leases/budgets/retries, broker write-ahead records, rulings, triage, and issue-fix results. |
+| `diaktoros-runs.sqlite.workers.log` | Detached worker diagnostics, rotated once to `.1` after 256 KiB. |
+| `diaktoros-pacing.json` | Account usage-window holds and local-day start counts; account metadata, not credentials. |
+| `diaktoros-seat-locks/` | Per-profile model-resolution/refresh serialization locks. |
 
 `status` reports these structures; `explain` combines their non-pruning read views with live GitHub facts. It does not claim, prune, drain, or submit a write. Diagnostic files can still contain private repository metadata even when credentials are redacted. See [Architecture](architecture.md) for ledger ownership and [Security](security.md) before exporting logs/state.
 

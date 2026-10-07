@@ -1,4 +1,5 @@
-"""Loop configuration: one JSON file per loop under ``~/.hermes/review-loops.d/``.
+"""Loop configuration: one JSON file per loop under ``~/.hermes/diaktoros.d/`` (``review-loops.d/``
+before the rename, until ``migrate`` moves it).
 
 Everything a run must know about a repository is data here — the repo, its seats, its
 budget, its credential files, the roots it is allowed to clean. Nothing is a constant in
@@ -1639,9 +1640,59 @@ def home() -> pathlib.Path:
     return guard_real_home(pathlib.Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser())
 
 
+# The host files this plugin keeps under $HERMES_HOME, as (new name, name before the rename).
+# Until `migrate` moves an install's files (#425 stage 4), each is used where it already is; a
+# fresh install gets the new name. Every reader and writer goes through ``host_path``, so one
+# process never splits a file across the two names.
+HOST_FILES = {
+    "config_dir": ("diaktoros.d", "review-loops.d"),
+    "runtime": ("diaktoros-runtime.json", "review-loop-runtime.json"),
+    "ledger": ("state/diaktoros-runs.sqlite", "state/review-loop-runs.sqlite"),
+    "state_root": ("state/diaktoros", "state/review-loops"),
+    "gate_failures": ("state/diaktoros-gate-failures", "state/review-loop-gate-failures"),
+    "pacing": ("state/diaktoros-pacing.json", "state/review-loop-pacing.json"),
+    "seat_locks": ("state/diaktoros-seat-locks", "state/review-loop-seat-locks"),
+    "watchdog_shim": ("scripts/diaktoros-watchdog.py", "scripts/review-loop-watchdog.py"),
+}
+
+
+def host_path(key: str, base: pathlib.Path | None = None) -> pathlib.Path:
+    """The path of host file ``key`` under ``base`` (default ``home()``): the new name, unless
+    only the old one exists."""
+    new, old = HOST_FILES[key]
+    root = home() if base is None else base
+    if os.path.lexists(root / old) and not os.path.lexists(root / new):
+        return root / old
+    return root / new
+
+
+# The shared watchdog job is named after the shim it runs: the two move together.
+WATCHDOG_JOBS = {"diaktoros-watchdog.py": "diaktoros watchdog",
+                 "review-loop-watchdog.py": "review loop watchdog"}
+
+
+def watchdog_shim() -> pathlib.Path:
+    """The cron shim the shared watchdog job runs (the old name until ``migrate`` moves it)."""
+    return host_path("watchdog_shim")
+
+
+def watchdog_job_name() -> str:
+    return WATCHDOG_JOBS[watchdog_shim().name]
+
+
+def default_state_dir(loop_id: str) -> pathlib.Path:
+    return host_path("state_root") / loop_id
+
+
+def is_default_state_dir(path, loop_id: str) -> bool:
+    """Whether ``path`` is ``loop_id``'s default state directory under either name."""
+    return any(pathlib.Path(str(path)) == home() / root / loop_id
+               for root in HOST_FILES["state_root"])
+
+
 def config_dir() -> pathlib.Path:
     override = os.environ.get("REVIEW_LOOP_CONFIG_DIR")
-    return guard_real_home(pathlib.Path(override).expanduser()) if override else home() / "review-loops.d"
+    return guard_real_home(pathlib.Path(override).expanduser()) if override else host_path("config_dir")
 
 
 @contextlib.contextmanager
@@ -1835,7 +1886,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
 
     loop["host"] = webhook_host(loop.get("host"))
     if not loop.get("state_dir"):
-        loop["state_dir"] = str(home() / "state" / "review-loops" / loop["id"])
+        loop["state_dir"] = str(default_state_dir(loop["id"]))
     return loop
 
 

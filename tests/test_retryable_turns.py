@@ -361,7 +361,7 @@ class OperatorCommands(unittest.TestCase):
         env = patch.dict(os.environ, {'HERMES_HOME': str(home), 'REVIEW_LOOP_CONFIG_DIR': str(loops)})
         env.start()
         self.addCleanup(env.stop)
-        self.db = home / 'state' / 'review-loop-runs.sqlite'
+        self.db = home / 'state' / 'diaktoros-runs.sqlite'
         self.sup = Supervisor(self.db, fixture_mode=True, fixture_command=['true'])
         self.sup._spawn = lambda: None
         self.sup.submit('r', 'acme/widgets', 7, HEAD, 'reviewer')
@@ -473,7 +473,7 @@ class OperatorCommands(unittest.TestCase):
         gc.collect()
         before = sorted(p.name for p in self.db.parent.iterdir())
         # The ledger, and the host's record that it exists (#108: a vanished ledger is reported).
-        self.assertEqual(before, ['review-loop-runs.sqlite', 'review-loop-runs.sqlite.present'])
+        self.assertEqual(before, ['diaktoros-runs.sqlite', 'diaktoros-runs.sqlite.present'])
         with contextlib.redirect_stdout(out):
             cli._print_ledger_runs(loop, 7, '  run: ', limit=6)
         text = out.getvalue()
@@ -494,7 +494,7 @@ class OperatorCommands(unittest.TestCase):
         with patch.object(Supervisor, '_spawn') as spawn:
             self.assertFalse(gate.resume_isolated(loop))       # no private runtime: nothing
             spawn.assert_not_called()
-            runtime = Path(os.environ['HERMES_HOME']) / 'review-loop-runtime.json'
+            runtime = Path(os.environ['HERMES_HOME']) / 'diaktoros-runtime.json'
             runtime.write_text('{}')
             runtime.chmod(0o600)
             self.assertTrue(gate.resume_isolated(loop))
