@@ -200,6 +200,32 @@ class Gates(fg.Base):
         self.st.review_cap_grant(7, HEAD, self.loop["cap"])
         self.assertEqual(self.explain()["next"]["kind"], "author-push")
 
+    def review_cmd(self, reviews):
+        args = mock.Mock(loop="one", pr=7, another_round=True)
+        with mock.patch.object(gh, "pr", return_value=self.live), \
+             mock.patch.object(gh, "reviews", return_value=reviews), \
+             mock.patch.object(cli.subprocess, "run") as run, \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            code = cli.cmd_review(args)
+        return code, out.getvalue(), run
+
+    def test_another_round_is_refused_on_a_head_that_already_has_a_verdict(self):
+        cap = self.loop["cap"]
+        code, out, run = self.review_cmd(self.verdicts(cap, HEAD))
+        self.assertEqual(code, 1)
+        self.assertIn("already has a verdict", out)
+        self.assertNotIn("granted —", out)
+        self.assertFalse(self.st.review_cap_granted(7, HEAD, cap))
+        run.assert_not_called()
+        self.assertIn("pushes a new head first", self.explain(cap)["next"]["action"])
+
+    def test_another_round_is_granted_on_a_new_unreviewed_head(self):
+        cap = self.loop["cap"]
+        with mock.patch.object(cli, "_reviewer_runs", return_value=0):
+            code, out, _ = self.review_cmd(self.verdicts(cap, "c" * 40))
+        self.assertIn("another round granted", out)
+        self.assertTrue(self.st.review_cap_granted(7, HEAD, cap))
+
     def test_an_unlisted_author_is_not_reviewed(self):
         block, _ = self.reviewer_gate("outsider", author="outsider")
         block.assert_not_called()

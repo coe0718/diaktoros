@@ -3610,6 +3610,12 @@ def cmd_review(args) -> int:
             print(f"#{args.pr}: {rounds} of {config.review_only_cap(loop)} verdicts spent — the "
                   "cap is not reached; nothing to grant")
             return 1
+        if gate.reviewed_at_head(reviews, loop, head):
+            # The gate declines a head that already has a verdict before it looks at the cap, so a
+            # grant here would be spent on nothing and not match the author's next push.
+            print(f"#{args.pr} @ {head[:7]}: head already has a verdict — push the change, then "
+                  "grant another round; nothing granted")
+            return 1
         if not st.review_cap_grant(args.pr, head, rounds):
             print(f"#{args.pr} @ {head[:7]}: another round is already granted for this head")
         else:
