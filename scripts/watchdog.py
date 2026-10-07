@@ -1205,7 +1205,7 @@ def run(args: argparse.Namespace, budget: float) -> None:
     held = migrate.migrating()
     if held is not None:
         if not args.drain:
-            print(f"⏸️ Review loop: paused — {migrate.describe(held)}", flush=True)
+            print(f"⏸️ Diaktoros: paused — {migrate.describe(held)}", flush=True)
         return
     # The cron job runs this with no --loop: one loop file the loader refuses (for any repo)
     # is reported by name, like any other per-loop failure, and every other loop still sweeps.
