@@ -158,6 +158,8 @@ def main() -> None:
     if st.inflight(f"review:{number}:{head}"):
         silence(f"a review for head {head[:7]} is already out")
 
+    if gate.escalated(st.breach_get(number), head):
+        silence(f"#{number} @ {head[:7]} is escalated to adjudication — no further review here")
     rounds = len(gate.verdicts(reviews, loop))
     # A review-only author's PR (#191) has no verdict cap: no fixer rounds are spent, the author
     # answers each verdict by pushing and asking again, so there is nothing to adjudicate.

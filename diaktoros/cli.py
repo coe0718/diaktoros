@@ -3533,6 +3533,99 @@ def _reviewer_runs(repo: str, number: int, head: str) -> int:
         con.close()
 
 
+def cmd_escalate(args) -> int:
+    """Send one PR to the adjudicator now, whatever its verdict count (#459), as the operator.
+
+    The same breach marker and isolated ruling turn a spent cap starts, marked ``escalated``: the
+    PR is parked at this head as if its cap were spent (no further review or fix there), and the
+    worker re-reads every fact before the ruling runs. Exit 1 when refused, with the reason;
+    2 when the question cannot be asked.
+    """
+    from . import run_supervisor, state as state_mod, transition
+    from .util import now_iso
+    if args.loop:
+        try:
+            loop = config.load_id(args.loop)
+        except config.ConfigError as exc:
+            print(f"no such loop: {exc}")
+            return 2
+    else:
+        loops, refused = config.readable_loops()
+        for loop_id, reason in refused:
+            print(f"skipping {loop_id}.json: {reason}")
+        names = [lp["id"] for lp in loops] + [loop_id for loop_id, _ in refused]
+        if len(names) > 1:
+            print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
+            return 2
+        if refused:
+            return 2
+        if not loops:
+            print(f"no loops configured in {config.config_dir()}")
+            return 2
+        loop = loops[0]
+    number = args.pr
+    say = f"#{number}"
+    if not str((loop.get("adjudicator") or {}).get("route") or ""):
+        print(f"{say}: refused — this loop has no adjudicator; turn it on with "
+              f"`hermes dk set --loop {loop['id']} --adjudicator-profile PROFILE`")
+        return 1
+    pr = gh.pr(loop, number)
+    if not isinstance(pr, dict) or pr.get("number") != number:
+        print(f"{say}: the PR could not be read from GitHub — nothing escalated")
+        return 2
+    head = str((pr.get("head") or {}).get("sha") or "")
+    author = str((pr.get("user") or {}).get("login") or "").lower()
+    say = f"#{number} @ {head[:7]}"
+    if (pr.get("state") != "open" or pr.get("draft") or not head
+            or (pr.get("base") or {}).get("ref") != loop["base"] or author not in loop["fixers"]):
+        print(f"{say}: refused — only an open, ready PR by a fixer ({', '.join(loop['fixers'])}) "
+              f"on {loop['base']} can be escalated")
+        return 1
+    st = state_mod.state_for(loop)
+    reviews = transition.effective_reviews(loop, st, number, head, gh.reviews(loop, number))
+    if not isinstance(reviews, list):
+        print(f"{say}: the reviews could not be read — nothing escalated")
+        return 2
+    latest = gate.latest_effective_review_at_head(reviews, loop, head)
+    if latest is not None and gh.review_state(latest) == "APPROVED":
+        print(f"{say}: refused — approved at this head; there is nothing to rule on")
+        return 1
+    verdicts = len(gate.verdicts(reviews, loop))
+    if verdicts < 1:
+        print(f"{say}: refused — no verdict yet; there is nothing to rule on")
+        return 1
+    marker = st.breach_get(number)
+    if isinstance(marker, dict) and marker.get("head") == head and marker.get("status") in gate.STANDING:
+        print(f"{say}: already awaiting a ruling ({marker.get('status')})")
+        return 1
+    db = run_supervisor.production_ledger()
+    if db.exists():
+        import sqlite3
+        # A queued review or fix is retired by the escalation itself (the worker's claim); only
+        # a turn already running must finish first, since it may still write at this head.
+        busy = run_supervisor.ACTIVE
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            out = con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND state IN "
+                              f"({','.join('?' * len(busy))})", (loop["repo"], number, *busy)).fetchone()[0]
+        finally:
+            con.close()
+        if out:
+            print(f"{say}: refused — {out} run(s) for this PR are in flight; escalate once "
+                  "they finish (a queued review or fix is retired by the escalation)")
+            return 1
+    why = " ".join(str(args.reason or "").split())[:200] or "the operator asked for a ruling"
+    outcome = gate.breach(loop, st, number, head, verdicts, f"escalated: {why}",
+                          escalated={"by": "operator", "at": now_iso(), "reason": why})
+    if outcome == "stale":
+        print(f"{say}: the PR moved while escalating — nothing escalated")
+        return 1
+    print(f"{say}: escalated at {verdicts}/{loop['cap']} verdicts — adjudicator turn "
+          f"{'enqueued' if outcome in ('new', 'retry') else outcome}; the PR is parked at this "
+          f"head (`hermes dk explain --loop {loop['id']} --pr {number}` follows it)")
+    return 0
+
+
 def cmd_review(args) -> int:
     """Ask for a fresh review of a PR's current head (#375), as the operator.
 
@@ -5008,6 +5101,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         review.add_argument("--loop", help="loop id (default: the only configured loop)")
         review.add_argument("--pr", type=int, required=True, help="the pull request to review")
         review.set_defaults(func=cmd_review)
+
+        escalate = sub.add_parser("escalate", help="Send one PR to the adjudicator now, whatever "
+                                                   "its verdict count (#459)")
+        escalate.add_argument("--loop", help="loop id (default: the only configured loop)")
+        escalate.add_argument("--pr", type=int, required=True, help="the pull request to escalate")
+        escalate.add_argument("--reason", default="", help="why, for the ruling's record (one line)")
+        escalate.set_defaults(func=cmd_escalate)
 
         explain = sub.add_parser("explain",
                                  help="Why one PR is not moving, and what has to happen next")

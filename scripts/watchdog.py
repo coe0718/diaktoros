@@ -680,9 +680,10 @@ def retry_pending_breaches(loop: dict, st: state_mod.LoopState, prs: list,
         if latest is not None and gh.review_state(latest) == "APPROVED":
             continue
         changes = gate.verdicts(reviews, loop)
-        if len(changes) >= loop["cap"]:
+        if len(changes) >= loop["cap"] or gate.escalated(marker, head):
             gate.breach(loop, st, number, head, marker.get("rounds", len(changes)),
-                        marker.get("reason", "review cap reached"))
+                        marker.get("reason", "review cap reached"),
+                        escalated=marker.get("escalated") if gate.escalated(marker, head) else None)
 
 
 def finish_reads(loop: dict, watch: dict, now: float, health: Health | None,

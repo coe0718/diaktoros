@@ -480,6 +480,17 @@ def seat_capacity(loop: dict, st: state_mod.LoopState, seat: str) -> tuple[int, 
     """The gate's capacity predicate, with a read-only ledger view for explain."""
     return len(st.live_locks(seat)), config.seat_concurrency(loop, seat)
 
+# A breach marker in one of these states still holds its head for a ruling.
+STANDING = ("delivery-pending", "awaiting-adjudication", "adjudicating")
+
+
+def escalated(marker, head: str) -> bool:
+    """Whether the operator escalated this head (#459) and the escalation still stands: the PR is
+    then parked for a ruling as if its verdict cap were spent. A new head supersedes it."""
+    return (isinstance(marker, dict) and marker.get("head") == head
+            and isinstance(marker.get("escalated"), dict) and marker.get("status") in STANDING)
+
+
 def breach_delivery_status(marker: dict, head: str) -> str:
     """Only a marker for the live head can park or retry this PR."""
     return str(marker.get("status") or "") if marker.get("head") == head else ""
@@ -805,11 +816,12 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     # A marker records a past escalation, not a permanent veto. A dismissed
     # verdict can lower the live count, and the reviewer gate then starts a new
     # review even when the marker still says awaiting-adjudication/adjudicating.
-    parked = local["parked"] and spent is not None and spent >= cap
+    parked = local["parked"] and ((spent is not None and spent >= cap)
+                                  or escalated(marker, head))
     # A dismissed verdict can lower the live count after a failed POST. The
     # watchdog only retries a pending marker while the cap remains spent.
     pending_delivery = (local["delivery_status"] == "delivery-pending"
-                        and spent is not None and spent >= cap)
+                        and ((spent is not None and spent >= cap) or escalated(marker, head)))
     stale_held = {seat for seat, entry in held.items() if entry.get("head") != head}
     # A review-only author's PR (#191) never needs the fixer and has no cap: a verdict at the
     # head is the author's to answer.
@@ -1167,10 +1179,15 @@ def wake_adjudicator(loop: dict, number: int, head: str, rounds: int, reason: st
 
 
 def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: int,
-           reason: str) -> None:
+           reason: str, *, escalated: dict | None = None) -> str:
+    """Park the PR at ``head`` for a ruling and wake the adjudicator; the marker's outcome.
+
+    ``escalated`` (#459): the operator asked for a ruling before the cap was spent; the marker
+    records who and why, and that is what holds the head instead of a spent cap."""
     entry = {
         "pr": number, "head": head, "rounds": rounds, "cap": loop["cap"],
         "reason": reason, "at": now_iso(), "status": "awaiting-adjudication",
+        **({"escalated": dict(escalated)} if escalated else {}),
     }
 
     def current_head() -> bool:
@@ -1185,8 +1202,11 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
 
     route = loop.get("adjudicator", {}).get("route")
     def observe_reserved(marker: dict) -> None:
+        outcome = (f"escalated by the operator at {marker['rounds']}/{loop['cap']} verdicts"
+                   if marker.get("escalated") else
+                   f"{marker['rounds']}/{loop['cap']} verdicts, no approval")
         observer.notify(loop, st, "escalation", number, head, identity=str(marker["rounds"]),
-                        outcome=f"{marker['rounds']}/{loop['cap']} verdicts, no approval",
+                        outcome=outcome,
                         next_turn="adjudicator delivery pending" if route else "you")
 
     outcome = st.breach_deliver(number, entry, current_head,
@@ -1200,6 +1220,7 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
 
     if outcome == "stale":
         log(f"#{number} @ {head[:7]} no longer current — not escalating")
+    return outcome
 
 
 
