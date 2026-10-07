@@ -35,8 +35,11 @@ import tempfile
 import unittest
 
 GUARD_ENV = "DIAKTOROS_TEST_HOME_GUARD"
-# Inherited settings that could point a test at real state; the fixtures set their own.
-_DROP = ("DIAKTOROS_CONFIG_DIR", "DIAKTOROS_SUBS", "DIAKTOROS_TOKEN_FILE")
+# Inherited settings that could point a test at real state; the fixtures set their own. Both
+# spellings: the plugin still reads the REVIEW_LOOP_ name from before the rename (#425), so an
+# operator shell exporting the old one must be scrubbed as surely as the new.
+_DROP = tuple(f"{prefix}{name}" for name in ("CONFIG_DIR", "SUBS", "TOKEN_FILE")
+              for prefix in ("DIAKTOROS_", "REVIEW_LOOP_"))
 
 _FRESH = not (os.environ.get(GUARD_ENV) == "1" and os.environ.get("DIAKTOROS_TEST_USER_HOME"))
 USER_HOME = pathlib.Path.home() if _FRESH else pathlib.Path(os.environ["DIAKTOROS_TEST_USER_HOME"])
@@ -49,8 +52,9 @@ def _protected_homes() -> list[pathlib.Path]:
         homes.append(pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir))
     except (ImportError, KeyError):
         pass
-    if os.environ.get("DIAKTOROS_TEST_REAL_HOME"):     # the plugin's test-only fake real home
-        homes.append(pathlib.Path(os.environ["DIAKTOROS_TEST_REAL_HOME"]))
+    for extra in ("DIAKTOROS_TEST_REAL_HOME", "REVIEW_LOOP_TEST_REAL_HOME"):
+        if os.environ.get(extra):                      # the plugin's test-only fake real home
+            homes.append(pathlib.Path(os.environ[extra]))
     return homes
 
 

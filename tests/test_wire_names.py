@@ -53,6 +53,25 @@ class Env(unittest.TestCase):
                 self.assertFalse(config.test_guard_active())
 
 
+class Guard(unittest.TestCase):
+    def test_the_home_guard_scrubs_both_spellings_of_an_override(self):
+        # An operator shell that still exports a pre-rename override must not reach the tests:
+        # the plugin reads the old name as a fallback, so the guard drops it too.
+        probe = ("import os, sys; sys.path.insert(0, sys.argv[1]); import _home_guard; "
+                 "print(sorted(k for k in os.environ if k.endswith(('_CONFIG_DIR', '_SUBS', "
+                 "'_TOKEN_FILE')) and k.startswith(('DIAKTOROS_', 'REVIEW_LOOP_'))))")
+        env = {k: v for k, v in os.environ.items()
+               if not k.endswith(("TEST_HOME_GUARD", "TEST_USER_HOME", "TEST_SHIM_DIR"))}
+        for name in ("REVIEW_LOOP_CONFIG_DIR", "REVIEW_LOOP_SUBS", "REVIEW_LOOP_TOKEN_FILE",
+                     "DIAKTOROS_CONFIG_DIR", "DIAKTOROS_SUBS", "DIAKTOROS_TOKEN_FILE"):
+            env[name] = "/srv/elsewhere"
+        import subprocess
+        out = subprocess.run([sys.executable, "-c", probe, str(ROOT / "tests")], env=env,
+                             capture_output=True, text=True, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), "[]")
+
+
 class Answers(unittest.TestCase):
     def comment(self, marker):
         return {"user": {"login": "fix"}, "created_at": "t",
