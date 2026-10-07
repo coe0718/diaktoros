@@ -26,7 +26,7 @@ PR/issue text, repository files, build scripts, tool output and model-generated 
 | Model provider / native subscription client | External/host transport sees model input; not a confidentiality boundary for exported code |
 | Observer destinations | Operational notification transports; neither access-control enforcement nor guaranteed audit storage |
 
-The review-loop boundary is not a general sandbox for every Hermes gateway agent. Only turns launched through the contained path receive this boundary. A same-UID host process is not isolated by the fetcher or file modes; a malicious host process can interfere with trusted state. The native DirectSDK helper is host-side trusted code, not a second bubblewrap-contained agent.
+The Diaktoros boundary is not a general sandbox for every Hermes gateway agent. Only turns launched through the contained path receive this boundary. A same-UID host process is not isolated by the fetcher or file modes; a malicious host process can interfere with trusted state. The native DirectSDK helper is host-side trusted code, not a second bubblewrap-contained agent.
 
 ## Sandbox and export policy
 

@@ -211,11 +211,11 @@ def route_remedy(loop: dict) -> str:
         recorded = None
     if (isinstance(recorded, dict) and recorded.get("secret")
             and not routes.contract_mismatch(recorded, route_contract(loop))):
-        return f"`hermes review-loop doctor --loop {loop['id']} --repair`"
+        return f"`hermes dk doctor --loop {loop['id']} --repair`"
     n = 2
     while routes.route(f"{name}-{n}") is not None:
         n += 1
-    return f"`hermes review-loop set --loop {loop['id']} --observer-route {name}-{n}`"
+    return f"`hermes dk set --loop {loop['id']} --observer-route {name}-{n}`"
 
 
 def _target(loop: dict, urgent: bool = False):

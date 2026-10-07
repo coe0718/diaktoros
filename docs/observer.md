@@ -25,11 +25,11 @@ Replace quoted angle-bracket placeholders, including brackets, with your own val
 Configure the desired platform/chat on the destination Hermes profile first, then:
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --observer-profile "<observer-profile>" --observer-deliver telegram
-hermes review-loop set --loop "<loop-id>" --observer-events verdict,escalation,ruling,closed
-hermes review-loop set --loop "<loop-id>" --observer-digest-min 30
-hermes review-loop status --loop "<loop-id>"
-hermes review-loop doctor --loop "<loop-id>"
+hermes dk set --loop "<loop-id>" --observer-profile "<observer-profile>" --observer-deliver telegram
+hermes dk set --loop "<loop-id>" --observer-events verdict,escalation,ruling,closed
+hermes dk set --loop "<loop-id>" --observer-digest-min 30
+hermes dk status --loop "<loop-id>"
+hermes dk doctor --loop "<loop-id>"
 ```
 
 | Option | Effect |
@@ -177,9 +177,9 @@ keep members attached rather than emitting duplicates separately.
 ## Mute, disable and restore
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --observer-mute
-hermes review-loop set --loop "<loop-id>" --observer-unmute
-hermes review-loop set --loop "<loop-id>" --observer-disable
+hermes dk set --loop "<loop-id>" --observer-mute
+hermes dk set --loop "<loop-id>" --observer-unmute
+hermes dk set --loop "<loop-id>" --observer-disable
 ```
 
 These are separate choices: `--observer-mute` keeps configuration but stops new sends

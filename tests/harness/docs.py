@@ -7,7 +7,7 @@ the verbs were different — and nothing could have caught them, because no test
 
 Hermes hands the plugin's ``register_cli`` a ``setup(parser)`` closure for its subcommands, so a
 recorder object can capture that closure and this group can build the real parser itself, with no
-gateway and no network. Every ``hermes review-loop …`` line inside a fenced code block in
+gateway and no network. Every ``hermes dk …`` line inside a fenced code block in
 ``README.md``, ``docs/*.md``, ``skill/SKILL.md`` and ``plugin.yaml`` is then tokenised
 (placeholders normalised, ``#`` comments dropped) and parsed. ``python -m review_loop.<module>``
 and ``scripts/<name>.py`` references must exist, with the generated watchdog shim as the one
@@ -33,7 +33,7 @@ DOCS = ("README.md", "skill/SKILL.md", "plugin.yaml")
 
 
 def _real_parser() -> argparse.ArgumentParser:
-    """The parser ``hermes review-loop`` actually builds, captured from the CLI itself."""
+    """The parser ``hermes dk`` actually builds, captured from the CLI itself."""
     from review_loop import cli
 
     captured: dict = {}
@@ -50,7 +50,7 @@ def _real_parser() -> argparse.ArgumentParser:
             return call
 
     cli.register_cli(_Recorder(), {})
-    parser = argparse.ArgumentParser(prog="hermes review-loop")
+    parser = argparse.ArgumentParser(prog="hermes dk")
     if "setup" in captured:
         captured["setup"](parser)
     return parser
@@ -107,11 +107,11 @@ def _invocations(path: pathlib.Path):
         if line.strip().startswith("```"):
             in_fence = not in_fence
             continue
-        if not in_fence or "hermes review-loop" not in line:
+        if not in_fence or "hermes dk" not in line:
             continue
-        start = line.index("hermes review-loop")
+        start = line.index("hermes dk")
         command = line[start:]
-        # Inside sample output a command is often quoted inline: `hermes review-loop …` — prose
+        # Inside sample output a command is often quoted inline: `hermes dk …` — prose
         # follows the closing backtick, and it is not part of the command.
         if line[:start].endswith("`"):
             command = command.split("`", 1)[0]
@@ -129,7 +129,7 @@ def _argv(command: str) -> list[str] | None:
     drops a trailing ``# …`` note the way a shell would. An elision (``…``) or a bare ``--help``
     is not a command and is skipped.
     """
-    tail = re.sub(r"^hermes\s+review-loop\s*", "", command)
+    tail = re.sub(r"^hermes\s+(?:dk|diaktoros|review-loop)\s*", "", command)
     if not tail:
         return None
     try:
@@ -178,8 +178,8 @@ def group_docs() -> None:
     # A command quoted inline in sample output ends at its closing backtick: the prose after it is
     # not arguments, and a bad command quoted that way must still be caught.
     sample = TMP / "inline-sample.md"
-    sample.write_text("```\n  next: run `hermes review-loop arm --loop widgets --pause` — then wait\n"
-                      "  next: run `hermes review-loop pause --loop widgets` — then wait\n```\n")
+    sample.write_text("```\n  next: run `hermes dk arm --loop widgets --pause` — then wait\n"
+                      "  next: run `hermes dk pause --loop widgets` — then wait\n```\n")
     inline = [_argv(command) for _, command in _invocations(sample)]
     check("an inline-quoted command stops at its closing backtick",
           inline[0], ["arm", "--loop", "widgets", "--pause"])

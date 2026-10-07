@@ -1199,7 +1199,7 @@ def describe_seat_wire(loop: dict, seat: str,
         try:
             answer = run_resolver(profile, "describe", settings)
         except SeatModelError as exc:
-            return ("warn", f"profile {profile}: {exc}", "run `hermes review-loop selftest`", None)
+            return ("warn", f"profile {profile}: {exc}", "run `hermes dk selftest`", None)
         requested = str(answer.get("requested") or "auto")
         model = str(answer.get("model") or "")
         hermes = answer.get("hermes") if isinstance(answer.get("hermes"), dict) else None

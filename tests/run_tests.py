@@ -11,7 +11,7 @@ Runs with a plain interpreter and no network — no ``gh``, no pytest, no GitHub
   never an ambient GitHub bypass or a credential-owning gateway agent;
 * git is real: the cleanup tests build a throwaway clone with detached review worktrees and a
   branch worktree, because the difference between those two is the whole safety story;
-* the documented commands are parsed by the CLI itself: every ``hermes review-loop …`` line in a
+* the documented commands are parsed by the CLI itself: every ``hermes dk …`` line in a
   fenced block in README, docs/ and skill/ has to be a command the parser still accepts.
 
     python3 tests/run_tests.py             # all of it

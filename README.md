@@ -1,4 +1,6 @@
-# hermes-review-loop
+# Diaktoros
+
+**Bounded, autonomous software maintenance for Hermes.**
 
 A Hermes plugin for bounded GitHub pull-request review: an isolated **reviewer** posts a verdict; an optional **fixer** answers changes; deterministic Python controls eligibility, capacity, retries and escalation. The loop never merges.
 
@@ -18,20 +20,22 @@ A Hermes plugin for bounded GitHub pull-request review: an isolated **reviewer**
 Replace quoted angle-bracket placeholders before running examples. `ID` is the installed loop id; `N` is a PR number. No shared webhook host is provided.
 
 ```bash
-hermes plugins install hermes-review-loop
-hermes review-loop setup --repo "<owner>/<repository>"
+hermes plugins install diaktoros
+hermes dk setup --repo "<owner>/<repository>"
 ```
 
-The plugin is in the [Hermes plugin catalog](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog), so `hermes plugins install hermes-review-loop` installs the reviewed release at its pinned commit. Desktop can install it from the catalog too. Catalog updates arrive only through a reviewed pin bump.
+`hermes dk` is short for `hermes diaktoros`; either works. Diaktoros was called hermes-review-loop before v0.2.0: `hermes review-loop` still works for one release and says it was renamed, and `hermes dk migrate` moves an existing install (see [operations](docs/operations.md#moving-to-a-renamed-plugin-or-repository)).
 
-The install scanner rates the plugin **caution**. A catalog install accepts that without a prompt, because the catalog reviewed it at admission. Installing from the repository instead (`hermes plugins install coe0718/hermes-review-loop`) gets the current `main`, shows the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Typical findings concern subprocess execution (`bwrap`, Git, workers and test fixtures), security-probe code, and setup advice mentioning privileged commands. A caution verdict is not a security audit.
+The plugin is in the [Hermes plugin catalog](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog), so `hermes plugins install diaktoros` installs the reviewed release at its pinned commit. Desktop can install it from the catalog too. Catalog updates arrive only through a reviewed pin bump.
+
+The install scanner rates the plugin **caution**. A catalog install accepts that without a prompt, because the catalog reviewed it at admission. Installing from the repository instead (`hermes plugins install coe0718/diaktoros`) gets the current `main`, shows the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Typical findings concern subprocess execution (`bwrap`, Git, workers and test fixtures), security-probe code, and setup advice mentioning privileged commands. A caution verdict is not a security audit.
 
 `setup` detects runtime paths, previews `init`, installs the requested wiring, schedules the watchdog and runs `doctor` plus `selftest --no-model`. It asks before arming; **decline arming until ready**. Name a hook admin to create paused hooks. If that answer is blank and hooks are absent, `doctor` fails and setup prints **stopped before arming**, exiting 1; that is expected until you create the hooks manually. Re-running setup on an existing loop keeps its saved settings; use `set` or `apply` to change them.
 
 The [complete onboarding guide](docs/getting-started.md) includes a reproducible noninteractive setup and a flag-by-flag `init` alternative. To preview explicit wiring instead of the wizard:
 
 ```bash
-hermes review-loop init \
+hermes dk init \
   --repo "<owner>/<repository>" \
   --fixer "<fixer-login>" --reviewer "<reviewer-login>" \
   --fixer-profile "<fixer-profile>" --reviewer-profile "<reviewer-profile>" \
@@ -60,18 +64,18 @@ For a loop already installed with paused hooks:
 
 ```bash
 # setup writes $HERMES_HOME/review-loop-runtime.json; init alone does not.
-hermes review-loop doctor --loop ID
-hermes review-loop selftest --loop ID --no-model
-hermes review-loop selftest --loop ID --pr N
-hermes review-loop selftest --loop ID --pr N --live-turn
-hermes review-loop arm --loop ID
+hermes dk doctor --loop ID
+hermes dk selftest --loop ID --no-model
+hermes dk selftest --loop ID --pr N
+hermes dk selftest --loop ID --pr N --live-turn
+hermes dk arm --loop ID
 ```
 
 `--no-model` skips inference, **not GitHub reads**. The next two selftests spend model quota; the live-turn verdict is printed, not posted. `N` must be an eligible open, non-draft, same-repository PR targeting the loop's base. `arm` activates existing matching hooks and sends a GitHub ping to every hook—a GitHub write—using the reader's token unless `--admin-token "<admin-login>"` is supplied. It exits 1 if a ping is rejected; inspect the output and hook state before continuing. Full checks and their limitations: [Verify and arm](docs/getting-started.md#verify-and-arm).
 
 ## Safety model
 
-> With a valid private `review-loop-runtime.json` and hooks activated by `arm`, an eligible reviewer turn posts a real GitHub review. Gates answer `[SILENT]` so a normal credential-owning gateway agent does not handle the event. Agents run in bubblewrap without GitHub/model credentials or direct network access; host processes provide bounded inference and broker writes. Unattended fixer pushes stay **off** until the host operator explicitly runs `hermes review-loop fixer-push --loop ID --enable --acknowledge-pr-race`. A Git ref lease cannot atomically enforce GitHub PR metadata: the PR can close or retarget between the final API check and push. Read the [security boundary and push policy](docs/security.md) before opting in. No seat can merge; uncertain writes are not automatically replayed.
+> With a valid private `review-loop-runtime.json` and hooks activated by `arm`, an eligible reviewer turn posts a real GitHub review. Gates answer `[SILENT]` so a normal credential-owning gateway agent does not handle the event. Agents run in bubblewrap without GitHub/model credentials or direct network access; host processes provide bounded inference and broker writes. Unattended fixer pushes stay **off** until the host operator explicitly runs `hermes dk fixer-push --loop ID --enable --acknowledge-pr-race`. A Git ref lease cannot atomically enforce GitHub PR metadata: the PR can close or retarget between the final API check and push. Read the [security boundary and push policy](docs/security.md) before opting in. No seat can merge; uncertain writes are not automatically replayed.
 
 Isolation is not immunity: installed plugins are trusted host code, and a kernel/bubblewrap escape would run as the host user. Tests do not establish provider-policy approval or live credentials. Issue triage/fixing and desktop form rendering have offline coverage, not a claimed live acceptance test here. See [security](docs/security.md) and [development](docs/development.md).
 
@@ -84,9 +88,9 @@ The experimental `claude-subscription-directsdk-experimental` provider runs its 
 | Need | Read or run |
 | --- | --- |
 | Understand seats, rounds and handoffs | [Concepts](docs/concepts.md) |
-| Inspect an installed loop | `hermes review-loop status --loop ID` |
-| Explain one stuck PR without changing it | `hermes review-loop explain --loop ID --pr N` |
-| Pause existing hooks | `hermes review-loop arm --loop ID --pause` |
+| Inspect an installed loop | `hermes dk status --loop ID` |
+| Explain one stuck PR without changing it | `hermes dk explain --loop ID --pr N` |
+| Pause existing hooks | `hermes dk arm --loop ID --pause` |
 | Add issue triage or maintainer-triggered fixes | [Issues](docs/issues.md) — opt-in |
 | Receive transition notices without another agent | [Observer feed](docs/observer.md) — opt-in |
 | Change defaults, identities or limits | [Settings](docs/settings.md) and [configuration](docs/configuration.md) |

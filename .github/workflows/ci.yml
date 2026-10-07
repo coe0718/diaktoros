@@ -29,7 +29,7 @@ jobs:
       fail-fast: false
       matrix:
         # 3.11 is what the Hermes venv runs (the turns, gates and resolver); 3.14 is what Hermes
-        # ships for its own CLI (`hermes review-loop …` runs in that process), so test both ends.
+        # ships for its own CLI (`hermes dk …` runs in that process), so test both ends.
         python: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v7

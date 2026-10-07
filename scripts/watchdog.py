@@ -71,7 +71,7 @@ def watchdog_budget() -> float:
 
 
 def budget_spent_line(where: str, budget: float, exc: BaseException) -> str:
-    return (f"⚠️ Review loop {where} watchdog stopped: the sweep ran out of its {budget:g}s "
+    return (f"⚠️ Diaktoros {where} watchdog stopped: the sweep ran out of its {budget:g}s "
             f"budget — GitHub reads were slow or did not answer ({exc}); the rest of this run "
             f"was skipped, and the next sweep starts fresh")
 
@@ -121,7 +121,7 @@ def sweep_gate_failures(ledger: gate_failures.Ledger, header: str, cooldown_s: f
         return gate_failures.sweep(ledger, header, SCRIPTS, cooldown_s=cooldown_s,
                                    may_redrive=may_redrive, held=held, emit=EMIT)
     except Exception as exc:                      # never let this hide the stall scan
-        return [f"⚠️ Review loop {header} gate-failure sweep failed: {type(exc).__name__}: {exc}"]
+        return [f"⚠️ Diaktoros {header} gate-failure sweep failed: {type(exc).__name__}: {exc}"]
 
 
 def valid_clock(value: object, now: float) -> float | None:
@@ -192,7 +192,7 @@ def _read_failed(loop: dict, watch: dict, now: float, who: str, error: str,
             record["alerted"] = True
             hint = gh.failure_hint(status)
             lines.append(
-                f"⚠️ Review loop {header}: {READ_ALERT.format(who=who)}: {error}"
+                f"⚠️ Diaktoros {header}: {READ_ALERT.format(who=who)}: {error}"
                 f"{f' — {hint}' if hint else ''} ({sweeps} sweep(s) since "
                 f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(since))}). "
                 + skipped + "route self-heal and notices continue.")
@@ -237,7 +237,7 @@ def settle_health(loop: dict, watch: dict, now: float, health: Health,
     record = watch.get("github_read") if isinstance(watch.get("github_read"), dict) else {}
     lines = []
     if record.get("alerted"):
-        lines.append(f"✅ Review loop [{loop['id']}] {loop['repo']}: GitHub reads work again as "
+        lines.append(f"✅ Diaktoros [{loop['id']}] {loop['repo']}: GitHub reads work again as "
                      f"{health.who} (after {record.get('sweeps', '?')} failed sweep(s))")
     watch.pop("github_read", None)
     marks = watch.get("github_alerts")
@@ -296,7 +296,7 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
             days = (expires - now) / 86400
             when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(expires))
             named = who if who == configured else f"{who} ({configured})"
-            lines.append(f"⚠️ Review loop {header}: the read token for {named} "
+            lines.append(f"⚠️ Diaktoros {header}: the read token for {named} "
                          + (f"expires {when} — in {days:.1f} day(s); rotate it before then or "
                             "this loop goes blind" if days > 0 else
                             f"expired {when}; rotate it now"))
@@ -320,7 +320,7 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
             hint = gh.failure_hint(status)
             number = re.search(r"/pulls/(\d+)", str(failure.get("path") or ""))
             lines.append(
-                f"⚠️ Review loop {header}: {failure.get('where') or 'a gate'} could not "
+                f"⚠️ Diaktoros {header}: {failure.get('where') or 'a gate'} could not "
                 f"{failure.get('method') or 'GET'} {failure.get('path') or '?'} as "
                 f"{failure.get('login') or configured} at "
                 f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(at))}: "
@@ -330,7 +330,7 @@ def read_health(loop: dict, st: state_mod.LoopState, watch: dict, now: float,
                    if (failure.get("method") or "GET") == "GET" else
                    gh.write_outcome(str(failure.get("method")), str(failure.get("path") or ""),
                                     status))
-                + (f" — `hermes review-loop explain --loop {loop['id']} --pr {number.group(1)}`"
+                + (f" — `hermes dk explain --loop {loop['id']} --pr {number.group(1)}`"
                    " shows it" if number else ""))
     return Health(lines, who, alerted, bool(error))
 
@@ -697,7 +697,7 @@ def finish_reads(loop: dict, watch: dict, now: float, health: Health | None,
     rest = [(n, e) for n, e in pr_failures if n not in covered]
     if rest:
         lines.append(gh.one_line(
-            f"⚠️ Review loop [{loop['id']}] {loop['repo']}: could not read reviews for "
+            f"⚠️ Diaktoros [{loop['id']}] {loop['repo']}: could not read reviews for "
             f"{len(rest)} PR(s) — {_pr_list(rest)} — their stall check skipped this sweep "
             f"(no verdict guessed)", 1000))
 
@@ -737,14 +737,14 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             lines.extend(sweep_gate_failures(
                 gate_failures.loop_ledger(loop), f"[{loop['id']}] {loop['repo']}",
                 0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600, may_redrive=False,
-                held="not re-driven while the loop's hooks are paused; `hermes review-loop arm "
+                held="not re-driven while the loop's hooks are paused; `hermes dk arm "
                      f"--loop {loop['id']}` resumes it, or re-deliver it from GitHub"))
         return lines
     # Armed, or unknown because the hook list could not be read. Unknown is not paused: sweep
     # normally and warn once per cooldown — never silence.
     if armed is None and alert_due(watch, "hooks:unknown", now,
                                    0.0 if TEST else float(loop.get("cooldown_h") or 6) * 3600):
-        lines.append(f"⚠️ Review loop [{loop['id']}] {loop['repo']}: hook state unreadable: "
+        lines.append(f"⚠️ Diaktoros [{loop['id']}] {loop['repo']}: hook state unreadable: "
                      f"{gh.one_line(armed_error or 'no reason given', 200)} — sweeping anyway")
     # With the hooks confirmed, the open-PR listing is read here, before the health check, so
     # that a listing GitHub refuses counts as a failed read in the same sweep (a /user probe
@@ -764,7 +764,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     try:
         healed = route_intent.heal(loop) + gate_shims.heal(loop)
     except Exception as exc:                      # never let the heal hide the stall scan
-        healed = [f"⚠️ Review loop [{loop['id']}] route self-heal failed: "
+        healed = [f"⚠️ Diaktoros [{loop['id']}] route self-heal failed: "
                   f"{type(exc).__name__}: {exc}"]
     if healed:
         lines.extend(healed)
@@ -784,7 +784,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     try:
         gate.resume_isolated(loop)
     except Exception as exc:
-        lines.append(f"⚠️ Review loop [{loop['id']}] isolated retry scheduling failed: "
+        lines.append(f"⚠️ Diaktoros [{loop['id']}] isolated retry scheduling failed: "
                      f"{type(exc).__name__}: {exc}")
 
     if not isinstance(prs, list):
@@ -801,7 +801,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     try:
         lines.extend(fix_hold.sweep(loop, st))
     except Exception as exc:
-        lines.append(f"⚠️ Review loop [{loop['id']}] held issue fixes: "
+        lines.append(f"⚠️ Diaktoros [{loop['id']}] held issue fixes: "
                      f"{type(exc).__name__}: {exc}")
     reconcile_stacked(loop, st, watch, prs, lines)
     retry_fresh_reviews(loop, st, prs, lines, since=now)
@@ -981,7 +981,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             mins = (now - observed_at) / 60 if observed_at is not None else 0.0
             if (TEST or mins > grace["reviewer"]) and head_postdates_arming:
                 kind = (f"reviewer never posted a verdict — head {head[:7]} observed "
-                        f"{mins / 60:.1f}h ago, 0 verdicts at this head (`hermes review-loop "
+                        f"{mins / 60:.1f}h ago, 0 verdicts at this head (`hermes dk "
                         f"review --loop {loop['id']} --pr {number}` asks for one)")
 
         if kind and due(stall_key(number, head, kind)):
@@ -1008,12 +1008,12 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     if alerts or reported:
         header = f"[{loop['id']}] {loop['repo']}"
         if alerts:
-            lines.append(f"⚠️ Review loop {header} — {len(alerts)} silent stall(s):")
+            lines.append(f"⚠️ Diaktoros {header} — {len(alerts)} silent stall(s):")
             for number, kind, title in alerts:
                 lines.append(f"  #{number}  {kind}")
                 lines.append(f"        {title}")
         if reported:
-            lines.append(f"⚠️ Review loop {header} — {len(reported)} stuck state(s):")
+            lines.append(f"⚠️ Diaktoros {header} — {len(reported)} stuck state(s):")
             lines.extend(reported)
         lines.append("Pending adjudicator delivery retries on the next sweep; other stalls "
                      "need investigation. Check the gateway log before re-driving a route.")
@@ -1175,7 +1175,7 @@ def sweep_ledger(ledger: pathlib.Path, presence: pathlib.Path | None = None) -> 
         sup.recover()  # no runtime configured here: never launch a worker
         sup.notify(lambda message: print(message, flush=True))
     except Exception as exc:
-        return [f"⚠️ Review-loop operator notification sweep failed: {type(exc).__name__}: {exc}"]
+        return [f"⚠️ Diaktoros operator notification sweep failed: {type(exc).__name__}: {exc}"]
     return []
 
 
@@ -1221,7 +1221,7 @@ def run(args: argparse.Namespace, budget: float) -> None:
     if args.drain:
         for loop_id, reason in refused:
             # Drain prints nothing else, but a refused file must not go quiet: stderr.
-            print(f"⚠️ Review loop [{loop_id}] not drained: ConfigError: {reason}", file=sys.stderr)
+            print(f"⚠️ Diaktoros [{loop_id}] not drained: ConfigError: {reason}", file=sys.stderr)
         for loop in loops:
             st = state_mod.state_for(loop)
             armed, armed_error = (True, "") if TEST else gate.hooks_read(loop)
@@ -1251,7 +1251,7 @@ def run(args: argparse.Namespace, budget: float) -> None:
     out.extend(sweep_gate_failures(gate_failures.fallback_ledger(), "(no loop)",
                                    0.0 if TEST else 6 * 3600, may_redrive=True))
     for loop_id, reason in refused:
-        out.append(f"⚠️ Review loop [{loop_id}] watchdog failed: ConfigError: {reason}")
+        out.append(f"⚠️ Diaktoros [{loop_id}] watchdog failed: ConfigError: {reason}")
     for loop in loops:
         lines: list[str] = []
         try:
@@ -1266,7 +1266,7 @@ def run(args: argparse.Namespace, budget: float) -> None:
             break
         except Exception as exc:                  # one bad loop must not hide the others
             out.extend(lines)
-            out.append(f"⚠️ Review loop [{loop.get('id', '?')}] watchdog failed: "
+            out.append(f"⚠️ Diaktoros [{loop.get('id', '?')}] watchdog failed: "
                        f"{type(exc).__name__}: {exc}")
     if out:
         print("\n".join(out))
@@ -1276,5 +1276,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:                      # never crash the scheduler silently
-        print(f"⚠️ Review loop watchdog failed: {type(exc).__name__}: {exc}")
+        print(f"⚠️ Diaktoros watchdog failed: {type(exc).__name__}: {exc}")
         sys.exit(0)

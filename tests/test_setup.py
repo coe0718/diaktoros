@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Issue #215: ``hermes review-loop setup`` — a first install in one command, safe to re-run.
+"""Issue #215: ``hermes dk setup`` — a first install in one command, safe to re-run.
 
 The runtime paths are detected on a fabricated host layout (a uv-style Python alias, a venv, a
 Hermes checkout, a rustup toolchain); the loop is installed through the real ``init`` on the

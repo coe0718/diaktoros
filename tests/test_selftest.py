@@ -1,4 +1,4 @@
-"""`hermes review-loop selftest`: checklist output, exit codes, redaction and the no-write broker.
+"""`hermes dk selftest`: checklist output, exit codes, redaction and the no-write broker.
 
 GitHub, the model provider and bubblewrap are all mocked; nothing here needs a network.
 """

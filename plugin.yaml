@@ -1,14 +1,14 @@
-name: hermes-review-loop
+name: diaktoros
 version: 0.1.1
 description: >-
-  Review loop — unattended PR review between two agents: a fixer pushes, a different reviewer
-  returns a verdict, the budget is counted in verdicts, a watchdog finds silent stalls, and a
-  finished PR gives its local disk back. Disclosure — creates webhook routes and (optionally) a
+  Diaktoros — bounded, autonomous software maintenance for Hermes. Unattended PR review between
+  two agents: a fixer pushes, a different reviewer returns a verdict, the budget is counted in
+  verdicts, a watchdog finds silent stalls, and a finished PR gives its local disk back. Disclosure — creates webhook routes and (optionally) a
   cron job, calls the GitHub API with repo-scope tokens you provide, deletes local review
   artifacts for merged or closed PRs, and — only when a loop is given an observer feed — posts
   short read-only notices about that loop's transitions to the chat the feed names.
 author: Jeremy Coe
-homepage: https://github.com/coe0718/hermes-review-loop
+homepage: https://github.com/coe0718/diaktoros
 license: MIT
 requires_hermes: ">=0.21.5"
 platforms:
@@ -16,7 +16,7 @@ platforms:
   - linux
 python_dependencies: []
 # Settings the operator can edit in the desktop (Capabilities → Plugins → review loop). They are
-# the defaults a NEW loop starts from, and what `hermes review-loop apply --loop <id>` pushes onto
+# the defaults a NEW loop starts from, and what `hermes dk apply --loop <id>` pushes onto
 # an existing one — a form that silently renumbered a running loop would be a nasty thing to debug.
 # Mirrored by review_loop/config.py SETTINGS_SCHEMA; the test suite asserts the two agree, because a
 # form that writes keys nothing reads is worse than no form at all.
@@ -155,4 +155,4 @@ config_schema:
     label: "Sign what the loop posts"
     type: bool
     default: true
-    description: "On: every review, comment and commit the loop itself posts ends with 'Automated by hermes-review-loop' and a link (commits get an Automated-By trailer). Off: nothing is added. Never touches what people or agents post by hand."
+    description: "On: every review, comment and commit the loop itself posts ends with 'Automated by Diaktoros' and a link (commits get an Automated-By trailer). Off: nothing is added. Never touches what people or agents post by hand."

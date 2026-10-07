@@ -372,7 +372,7 @@ class ProductionLaunch(Base):
                 contained.run(**self.staged(), entry=["/bin/true"], timeout=5)
         which.assert_called_with("bwrap", path=contained.LAUNCH_PATH)
         self.assertIn("bubblewrap", str(raised.exception))
-        self.assertIn("hermes review-loop retry", str(raised.exception))
+        self.assertIn("hermes dk retry", str(raised.exception))
         # A host fact, not a flake: the worker fails it once instead of spending its retries.
         from review_loop import run_supervisor
         self.assertFalse(run_supervisor.retryable(raised.exception))

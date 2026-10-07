@@ -65,16 +65,16 @@ class SiblingConfigTest(unittest.TestCase):
         swept.unlink(missing_ok=True)
         out, _, err = t.run("watchdog.py", None)
         self.assertNotIn("Traceback", err)
-        self.assertIn("⚠️ Review loop [legacy] watchdog failed: ConfigError: ", out)
+        self.assertIn("⚠️ Diaktoros [legacy] watchdog failed: ConfigError: ", out)
         self.assertIn("'read_token' is not set", out)
-        self.assertNotIn("⚠️ Review loop watchdog failed", out)   # not the whole sweep
+        self.assertNotIn("⚠️ Diaktoros watchdog failed", out)   # not the whole sweep
         self.assertTrue(swept.exists() and swept.read_text().strip(), out)
 
     def test_drain_without_loop_names_a_refused_file_on_stderr(self):
         self.sibling("acme/legacy")
         out, _, err = t.run("watchdog.py", None, "--drain", "--seat", "reviewer")
         self.assertNotIn("Traceback", err)
-        self.assertIn("⚠️ Review loop [legacy] not drained: ConfigError: ", err)
+        self.assertIn("⚠️ Diaktoros [legacy] not drained: ConfigError: ", err)
 
     def test_a_refused_file_that_may_own_this_repo_fails_closed_without_a_traceback(self):
         self.sibling(t.REPO)                       # same repo: ownership cannot be settled

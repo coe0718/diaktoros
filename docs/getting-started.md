@@ -35,12 +35,12 @@ Examples assume the operator/gateway Hermes home is `~/.hermes`. All commands mu
 ## Install the plugin
 
 ```bash
-hermes plugins install hermes-review-loop
+hermes plugins install diaktoros
 ```
 
 This installs the plugin from the Hermes plugin catalog, at the commit the catalog reviewed and pinned; Desktop can install it from the catalog as well. It is the plugin, **not** the repository to review; reviewed-repository examples remain placeholders.
 
-The install scanner rates the plugin **caution**, which a catalog install accepts without a prompt. To run the current `main` instead, install from the repository: `hermes plugins install coe0718/hermes-review-loop`. That install prints the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Typical findings concern subprocesses (`bwrap`, Git, workers and fixtures), security probes, and setup advice mentioning privileged commands; review the actual report rather than assuming a fixed finding count. Plugins execute trusted host code, so a scanner pass is not proof of safety.
+The install scanner rates the plugin **caution**, which a catalog install accepts without a prompt. To run the current `main` instead, install from the repository: `hermes plugins install coe0718/diaktoros`. That install prints the findings and asks `Install anyway? Only continue if you trust the source. [y/N]`. Typical findings concern subprocesses (`bwrap`, Git, workers and fixtures), security probes, and setup advice mentioning privileged commands; review the actual report rather than assuming a fixed finding count. Plugins execute trusted host code, so a scanner pass is not proof of safety.
 
 ## Choose one setup path
 
@@ -49,7 +49,7 @@ Do not use a real `init` run to change a loop already created by `setup`: it ref
 ### A. Guided setup (recommended)
 
 ```bash
-hermes review-loop setup --repo "<owner>/<repository>"
+hermes dk setup --repo "<owner>/<repository>"
 ```
 
 `--repo` names the repository to review; setup asks for omitted logins, profiles, token files, gateway origin and delivery choices. Provide a hook-admin login if you want setup to create paused GitHub hooks. A blank admin answer leaves hooks for manual creation. If those hooks are absent, `doctor` fails and setup prints **stopped before arming**, exiting 1; this is expected until you create them manually and rerun verification. Decline the final arm prompt until you have finished verification.
@@ -65,7 +65,7 @@ Setup performs these steps in order:
 A repeatable, noninteractive example using the reader as hook admin:
 
 ```bash
-hermes review-loop setup \
+hermes dk setup \
   --repo "<owner>/<repository>" --id ID \
   --reviewer "<reviewer-login>" --fixer "<fixer-login>" \
   --reviewer-profile "<reviewer-profile>" --fixer-profile "<fixer-profile>" \
@@ -104,7 +104,7 @@ If detection fails, supply the relevant `--source`, `--venv`, `--runtime` or `--
 `init` writes loop configuration and routes; it **does not create the runtime file**. This example uses a local clone and two reviewer slots, with paused hooks:
 
 ```bash
-hermes review-loop init \
+hermes dk init \
   --repo "<owner>/<repository>" --id ID --base main \
   --reviewer "<reviewer-login>" --fixer "<fixer-login>" \
   --reviewer-profile "<reviewer-profile>" --fixer-profile "<fixer-profile>" \
@@ -166,12 +166,12 @@ Create/edit this file with a private umask and enforce mode 600. Keep models in 
 ## Verify and arm
 
 ```bash
-hermes review-loop doctor --loop ID
-hermes review-loop selftest --loop ID --no-model
-hermes review-loop selftest --loop ID --pr N
-hermes review-loop selftest --loop ID --pr N --live-turn
-hermes review-loop arm --loop ID --admin-token "<reader-login>"
-hermes review-loop status --loop ID
+hermes dk doctor --loop ID
+hermes dk selftest --loop ID --no-model
+hermes dk selftest --loop ID --pr N
+hermes dk selftest --loop ID --pr N --live-turn
+hermes dk arm --loop ID --admin-token "<reader-login>"
+hermes dk status --loop ID
 ```
 
 | Command / option | What it proves or changes |
@@ -191,8 +191,8 @@ Use an **open, non-draft, same-repository PR** authored by a fixer-allowlisted l
 After arming, open/ready/reopen an eligible PR, or explicitly request the configured reviewer from an allowlisted fixer/reviewer account. Arming alone does not replay GitHub's historical webhook deliveries. A bare push (`synchronize`) does not request the next review.
 
 ```bash
-hermes review-loop explain --loop ID --pr N
-hermes review-loop status --loop ID
+hermes dk explain --loop ID --pr N
+hermes dk status --loop ID
 ```
 
 Both commands inspect the selected loop; `--pr` chooses the exact PR. Verify the verdict **on GitHub at the expected commit**, not merely a successful webhook response. `[SILENT]` / an ignored-script response prevents gateway fallback and can describe either a declined event or a queued turn. `trace` explains a delivery; [operations](operations.md) explains monitoring and recovery.
@@ -204,8 +204,8 @@ An approval leaves merging to you. A changes-requested verdict below the cap is 
 Only after reading [security and the PR race](security.md), opt in if appropriate:
 
 ```bash
-hermes review-loop fixer-push --loop ID --enable --acknowledge-pr-race
-hermes review-loop status --loop ID
+hermes dk fixer-push --loop ID --enable --acknowledge-pr-race
+hermes dk status --loop ID
 ```
 
 `--enable` authorizes unattended fixer pushes for this loop; `--acknowledge-pr-race` records the host operator's explicit risk decision, **not GitHub owner consent**. The second command reads the policy back. GitHub PR state and a Git ref update are not one atomic operation; readback can detect some post-push changes but cannot undo publication.

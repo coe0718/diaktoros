@@ -65,7 +65,7 @@ but recorded write outcomes are never blindly replayed.
 Preview the complete policy before enabling:
 
 ```bash
-hermes review-loop triage --loop "<loop-id>" --enable --triage-profile "<triage-profile>" --login "<triage-login>" --author "<trusted-author-login>" --labels bug,docs,question --max-labels 3 --comment off --daily-turns 20 --admin-token "<hook-admin-login>" --dry-run
+hermes dk triage --loop "<loop-id>" --enable --triage-profile "<triage-profile>" --login "<triage-login>" --author "<trusted-author-login>" --labels bug,docs,question --max-labels 3 --comment off --daily-turns 20 --admin-token "<hook-admin-login>" --dry-run
 ```
 
 | Option | Meaning |
@@ -89,10 +89,10 @@ are installed; with `--admin-token`, the issues hook is created **paused**. With
 option, install the hook later:
 
 ```bash
-hermes review-loop apply --loop "<loop-id>" --hooks --admin-token "<hook-admin-login>"
-hermes review-loop arm --loop "<loop-id>" --admin-token "<hook-admin-login>"
-hermes review-loop doctor --loop "<loop-id>"
-hermes review-loop triage --loop "<loop-id>"
+hermes dk apply --loop "<loop-id>" --hooks --admin-token "<hook-admin-login>"
+hermes dk arm --loop "<loop-id>" --admin-token "<hook-admin-login>"
+hermes dk doctor --loop "<loop-id>"
+hermes dk triage --loop "<loop-id>"
 ```
 
 `--hooks` asks apply to ensure repository hooks; review the other settings apply may
@@ -112,9 +112,9 @@ Triage must already be enabled. This feature **publishes a commit and opens a PR
 another confirmation**, and shares the off-by-default fixer push policy.
 
 ```bash
-hermes review-loop fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
-hermes review-loop triage --loop "<loop-id>" --enable --fix-label "<fix-label>" --maintainer "<maintainer-login>" --dry-run
-hermes review-loop triage --loop "<loop-id>" --enable --fix-label "<fix-label>" --maintainer "<maintainer-login>"
+hermes dk fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
+hermes dk triage --loop "<loop-id>" --enable --fix-label "<fix-label>" --maintainer "<maintainer-login>" --dry-run
+hermes dk triage --loop "<loop-id>" --enable --fix-label "<fix-label>" --maintainer "<maintainer-login>"
 ```
 
 Read [push policy](operations.md#first-run) and [security](security.md) first.
@@ -219,8 +219,8 @@ separately; a nonterminal record is not proof that nothing was published.
 ## Turn it off
 
 ```bash
-hermes review-loop triage --loop "<loop-id>" --disable --admin-token "<hook-admin-login>"
-hermes review-loop triage --loop "<loop-id>" --enable --fix-label ''
+hermes dk triage --loop "<loop-id>" --disable --admin-token "<hook-admin-login>"
+hermes dk triage --loop "<loop-id>" --enable --fix-label ''
 ```
 
 The first command disables triage **and issue fixes**, removing configuration, route

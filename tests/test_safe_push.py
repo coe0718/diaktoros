@@ -108,8 +108,8 @@ class SafePushTests(unittest.TestCase):
         self.assertEqual((repo, branch, head, login), (REPO, "fix-7", HEAD, "fix"))
         self.assertEqual(identity, {"name": "fix", "email": "3+fix@users.noreply.github.com"})
         # The seat's message, with the host's attribution trailer (#197).
-        self.assertEqual(message, "Fix review feedback\n\nAutomated-By: hermes-review-loop "
-                                  "(https://github.com/coe0718/hermes-review-loop)")
+        self.assertEqual(message, "Fix review feedback\n\nAutomated-By: Diaktoros "
+                                  "(https://github.com/coe0718/diaktoros)")
         self.assertTrue(files)
         before_push(NEW_HEAD)
         self.fake.branch_head = NEW_HEAD

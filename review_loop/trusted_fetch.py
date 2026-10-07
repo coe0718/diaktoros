@@ -59,7 +59,7 @@ def _request(loop: dict, path: str, login: str, limit: int, accept: str) -> byte
             f"{gh.API}{path}", headers={"Accept": accept,
                 "Authorization": f"Bearer {credential}",
                 "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "hermes-review-loop"})
+                "User-Agent": "diaktoros"})
         with urllib.request.urlopen(req, timeout=30) as response:
             if response.status != 200:
                 raise FetchDenied("GitHub response unavailable")
@@ -210,7 +210,7 @@ def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) ->
             headers={"Accept": "application/vnd.github+json",
                      "Authorization": f"Bearer {gh.token(loop, reader)}",
                      "X-GitHub-Api-Version": "2022-11-28",
-                     "User-Agent": "hermes-review-loop"})
+                     "User-Agent": "diaktoros"})
         with opener.open(req, timeout=30) as response:
             if response.status != 200:
                 raise FetchDenied("GitHub response unavailable")
@@ -251,7 +251,7 @@ def _fetch_tarball_hop(location: str, limit: int) -> bytes:
         location,
         headers={"Accept": "application/vnd.github+json",
                  "X-GitHub-Api-Version": "2022-11-28",
-                 "User-Agent": "hermes-review-loop"})
+                 "User-Agent": "diaktoros"})
     try:
         with opener.open(req, timeout=30) as response:
             if response.status != 200:

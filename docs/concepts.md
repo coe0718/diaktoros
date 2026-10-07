@@ -1,4 +1,4 @@
-# How the review loop works
+# How Diaktoros works
 
 [Documentation map](README.md) · Next: [Accounts](accounts.md) and [Getting started](getting-started.md)
 
@@ -85,8 +85,8 @@ Reviewer findings are graded P0–P3 and classified as blocking or issue-tier. B
 Setup writes runtime paths and can install paused hooks, but does not enable adjudication, issue automation or fixer pushes. The [getting-started guide](getting-started.md) explains the checks before arming.
 
 ```bash
-hermes review-loop fixer-push --loop ID --enable --acknowledge-pr-race
-hermes review-loop arm --loop ID --pause
+hermes dk fixer-push --loop ID --enable --acknowledge-pr-race
+hermes dk arm --loop ID --pause
 ```
 
 `--loop ID` selects one loop. `--enable` opts into unattended fixer publication; `--acknowledge-pr-race` explicitly acknowledges non-atomic GitHub metadata checks. The second command's `--pause` deactivates matching existing repo hooks; add the mapped `--admin-token "<admin-login>"` if reader lacks hook write. These switches do not undo a completed write. Read [security](security.md) before enabling publication.

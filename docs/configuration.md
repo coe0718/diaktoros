@@ -2,7 +2,7 @@
 
 [Getting started](getting-started.md) · [Operations](operations.md) · [Security](security.md) · [Troubleshooting](troubleshooting.md)
 
-Review-loop has three configuration layers: a repository's loop JSON, per-profile plugin defaults, and a private host runtime JSON. A Hermes profile supplies the seat's model; it is not an account credential embedded in the loop file. This reference describes the implemented loaders and their limits, not a JSON Schema that rejects every unknown key.
+Diaktoros has three configuration layers: a repository's loop JSON, per-profile plugin defaults, and a private host runtime JSON. A Hermes profile supplies the seat's model; it is not an account credential embedded in the loop file. This reference describes the implemented loaders and their limits, not a JSON Schema that rejects every unknown key.
 
 ## Contents
 
@@ -27,11 +27,11 @@ Review-loop has three configuration layers: a repository's loop JSON, per-profil
 | Layer | Location | What it controls |
 |---|---|---|
 | Loop | `$HERMES_HOME/review-loops.d/<id>.json` | Repository, branches, identities, routes, budgets, policy, and per-loop state paths. `REVIEW_LOOP_CONFIG_DIR` overrides the directory. |
-| Plugin settings | `plugins.entries.hermes-review-loop.settings` in the active Hermes profile's configuration | Defaults for `init`; explicitly named values pushed to one existing loop by `apply`. |
+| Plugin settings | `plugins.entries.diaktoros.settings` in the active Hermes profile's configuration | Defaults for `init`; explicitly named values pushed to one existing loop by `apply`. |
 | Host runtime | `$HERMES_HOME/review-loop-runtime.json` | Four host installation paths and optional model overrides. |
 | Seat profile | The selected Hermes profile's configuration and authentication sources | Provider, model, endpoint, and credentials resolved on the host for that seat. |
 
-`HERMES_HOME` defaults to `~/.hermes`. In this document it means the home used by the review-loop host process; do not assume a command launched under another profile sees the same loops or runtime file.
+`HERMES_HOME` defaults to `~/.hermes`. In this document it means the home used by the Diaktoros host process; do not assume a command launched under another profile sees the same loops or runtime file.
 
 `init` writes a loop file. `set` changes a named loop; `apply` explicitly overlays plugin settings and coordinates identity changes with installed routes/hooks. `fixer-push` separately controls unattended writes. Changing the settings form alone does not update existing loops. See [Operations](operations.md) for lifecycle commands and [Concepts](concepts.md) for roles and review rounds.
 
@@ -123,7 +123,7 @@ Token paths supplied through settings and the optional adjudicator identity are 
 To repair a missing reader, `set` has a narrow path that first verifies the rest of the file as if the reader were present:
 
 ```bash
-hermes review-loop set --loop "<loop-id>" \
+hermes dk set --loop "<loop-id>" \
   --read-token "<reader-login>" \
   --token "<reader-login>=<absolute-reader-token-file>"
 ```
@@ -146,10 +146,10 @@ The host run ledger enforces capacity. Every isolated turn receives its own exac
 Daily caps count turns started per loop/seat per **local day**. A capped turn waits until midnight without spending a retry. Provider usage-window holds are account-level and can affect several seats or loops using the same provider account. Subscription limits are shared with the operator's ordinary use; separate GitHub identities do not imply separate inference quotas. See [Operations](operations.md) for pacing status and recovery.
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --concurrency 2 --clone "<absolute-clone-path>"
-hermes review-loop set --loop "<loop-id>" --reviewer-concurrency 2 --fixer-concurrency 1
-hermes review-loop set --loop "<loop-id>" --reviewer-daily-turns 20
-hermes review-loop set --loop "<loop-id>" --reviewer-daily-turns 0
+hermes dk set --loop "<loop-id>" --concurrency 2 --clone "<absolute-clone-path>"
+hermes dk set --loop "<loop-id>" --reviewer-concurrency 2 --fixer-concurrency 1
+hermes dk set --loop "<loop-id>" --reviewer-daily-turns 20
+hermes dk set --loop "<loop-id>" --reviewer-daily-turns 0
 ```
 
 The last command removes the reviewer's stored cap. Adjudicator overrides are file-level settings. Triage concurrency and turn budget are also file-only; `triage --enable --daily-turns` changes its daily cap (zero removes it). `issue_fixer` has no independent persisted seat configuration; see [Issue triage and issue fixes](#issue-triage-and-issue-fixes).
@@ -184,9 +184,9 @@ The default worst case is **1830 seconds (30.5 minutes)**. Grace/TTL calculation
 Hermes prompts the agent to wrap up near 80% of its budget; the sandbox's complete process tree is killed after the kill grace. A budget-exhausted turn is not automatically replayed. If no write occurred, increase the budget and use `retry` or a new eligible event. If a write completed during drain, that run is final and retry refuses it; a new head can have a fresh turn. If broker drain cannot settle a possible write, the run becomes `uncertain` and requires reconciliation, not automatic replay. A killed adjudicator returns its marker for re-arming. Other timeouts retain their own failure/retry classification.
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --turn-budget 1200
-hermes review-loop set --loop "<loop-id>" --reviewer-turn-budget 1500 --fixer-turn-budget 1800
-hermes review-loop doctor --loop "<loop-id>"
+hermes dk set --loop "<loop-id>" --turn-budget 1200
+hermes dk set --loop "<loop-id>" --reviewer-turn-budget 1500 --fixer-turn-budget 1800
+hermes dk doctor --loop "<loop-id>"
 ```
 
 `status` and `doctor` show effective seat budgets and raised thresholds. `selftest --live-turn` uses the reviewer budget unless `--timeout` overrides it. See [Troubleshooting](troubleshooting.md) for timeout and uncertain-write recovery.
@@ -218,9 +218,9 @@ Cleanup considers configured roots and the per-loop artifacts tree, rejects syml
 While unattended fixer pushes are off, a changes-requested verdict is held for the operator: no fixer ledger row, worker, or model turn starts. The command below is the supported policy-change path; `set` and `apply` do not change this switch.
 
 ```bash
-hermes review-loop fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
-hermes review-loop fixer-push --loop "<loop-id>" --disable
-hermes review-loop set --loop "<loop-id>" --attribution off
+hermes dk fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
+hermes dk fixer-push --loop "<loop-id>" --disable
+hermes dk set --loop "<loop-id>" --attribution off
 ```
 
 Enabling is **host-operator consent**, not proof that a PR owner or repository maintainer consented. The acknowledgement concerns the unavoidable race between checking a live PR and publishing. CLI policy writes serialize with broker admission/final push checks; uncoordinated manual edits are not an equivalent authorization mechanism. Opt-in does not upgrade old runs into write-authorized ones. See [Security](security.md) before enabling it.
@@ -261,14 +261,14 @@ This is a fragment: merge it into the existing loop without replacing the workin
 `init --adjudicator-route` and `setup` (which asks "Adjudicate a PR whose rounds are spent? Profile") create the route at install. On an existing loop, turn adjudication on or off with `set`:
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --adjudicator-profile "<profile>"   # route <id>-breach; --adjudicator-route NAME overrides
-hermes review-loop set --loop "<loop-id>" --adjudicator off                   # removes the route and block; markers and rulings stay
+hermes dk set --loop "<loop-id>" --adjudicator-profile "<profile>"   # route <id>-breach; --adjudicator-route NAME overrides
+hermes dk set --loop "<loop-id>" --adjudicator off                   # removes the route and block; markers and rulings stay
 ```
 
 It writes the route through the same path `init` uses (ownership check, intent record, gate shim) and the `adjudicator` block. Then add the optional comment identity:
 
 ```bash
-hermes review-loop set --loop "<loop-id>" \
+hermes dk set --loop "<loop-id>" \
   --adjudicator-login "<adjudicator-login>" \
   --token "<adjudicator-login>=<absolute-adjudicator-token-file>"
 ```
@@ -310,13 +310,13 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `held` | A run waiting on its seat's daily cap or its provider's usage window: when it resumes, and how to run it sooner. Once per hold. |
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --observer-profile "<observer-profile>"
-hermes review-loop set --loop "<loop-id>" --observer-route "<observer-route>"
-hermes review-loop set --loop "<loop-id>" --observer-events "verdict,escalation,closed"
-hermes review-loop set --loop "<loop-id>" --observer-digest-min 30
-hermes review-loop set --loop "<loop-id>" --observer-mute
-hermes review-loop set --loop "<loop-id>" --observer-unmute
-hermes review-loop set --loop "<loop-id>" --observer-disable
+hermes dk set --loop "<loop-id>" --observer-profile "<observer-profile>"
+hermes dk set --loop "<loop-id>" --observer-route "<observer-route>"
+hermes dk set --loop "<loop-id>" --observer-events "verdict,escalation,closed"
+hermes dk set --loop "<loop-id>" --observer-digest-min 30
+hermes dk set --loop "<loop-id>" --observer-mute
+hermes dk set --loop "<loop-id>" --observer-unmute
+hermes dk set --loop "<loop-id>" --observer-disable
 ```
 
 A malformed feed is deliberately not a loop-load failure: unusable shape/missing route is reported as `misconfigured`, while seats can continue. Notices carry transition metadata and a PR link, not PATs, signing secrets, diffs, or review bodies. The destination can still reveal private repository metadata; choose its audience accordingly.
@@ -376,7 +376,7 @@ Do not add `seats.issue_fixer` and expect it to tune this behavior: normalizatio
 
 ## Plugin settings and safe application
 
-The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plugins → review loop**. `review_loop/config.py::SETTINGS_SCHEMA` mirrors the manifest; tests check agreement. Settings are per Hermes profile and written through Hermes's configuration writer. See [Operations](operations.md) for the settings workflow.
+The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plugins → diaktoros**. `review_loop/config.py::SETTINGS_SCHEMA` mirrors the manifest; tests check agreement. Settings are per Hermes profile and written through Hermes's configuration writer. See [Operations](operations.md) for the settings workflow.
 
 | Setting | New-loop default | Loop destination |
 |---|---|---|
@@ -399,7 +399,7 @@ The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plu
 | `fixer_check` | Blank | `fixer_check`; blank keeps the loop's own check. |
 | `attribution` | `true` | Overlay targets `attribution` when explicitly named. For an explicit signing change, use `set --attribution on` or `off` for the named loop. |
 
-Use `hermes review-loop set --loop "<loop-id>" --attribution on` or `--attribution off`
+Use `hermes dk set --loop "<loop-id>" --attribution on` or `--attribution off`
 to change signing, then verify `status`.
 
 For a new loop, CLI flags and supplied settings contribute to its initial values. For `apply`, absent, blank, or whitespace-only form values mean **not set here**, not “reset to schema default.” An empty form leaves an existing loop's numbers and identities alone. Form booleans accept `true/on/yes/1` and `false/off/no/0`; loop JSON booleans remain strict. Invalid setting conversions can fall back to schema defaults before loop validation; do not use that as input validation for hand edits.
@@ -414,10 +414,10 @@ Concurrency placement is significant:
 Allowlists, route names, reader identity, observer/triage blocks, roots, marker grace, cooldown, daily caps, and unattended push consent are not settings-form subscriptions. A form does not own all repositories.
 
 ```bash
-hermes review-loop settings
-hermes review-loop apply --loop "<loop-id>" --dry-run
-hermes review-loop apply --loop "<loop-id>"
-hermes review-loop apply --loop "<loop-id>" --while-busy
+hermes dk settings
+hermes dk apply --loop "<loop-id>" --dry-run
+hermes dk apply --loop "<loop-id>"
+hermes dk apply --loop "<loop-id>" --while-busy
 ```
 
 ### Identity changes are staged
@@ -464,8 +464,8 @@ The normal path is each profile's model, resolved with Hermes's own provider/aut
 
 ```bash
 hermes -p "<seat-profile>" model
-hermes review-loop models --profile-name "<seat-profile>"
-hermes review-loop models --seat reviewer --loop "<loop-id>"
+hermes dk models --profile-name "<seat-profile>"
+hermes dk models --seat reviewer --loop "<loop-id>"
 ```
 
 An unresolved seat never borrows another seat's credentials. With no explicit/legacy override it fails before its turn proceeds; the reason is recorded in the run ledger. Legacy fallback is warned about because all falling-back seats share one model/key.

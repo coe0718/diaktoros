@@ -160,8 +160,8 @@ def unavailable() -> str:
     """Why no sandbox can start here, with the fix, or "" when bubblewrap is present."""
     if shutil.which("bwrap", path=LAUNCH_PATH) is None:
         return (f"bubblewrap (bwrap) is not installed in {LAUNCH_PATH}, and a turn never runs "
-                "without it: install the bubblewrap package, confirm with `hermes review-loop "
-                "selftest`, then `hermes review-loop retry`")
+                "without it: install the bubblewrap package, confirm with `hermes dk "
+                "selftest`, then `hermes dk retry`")
     return ""
 
 
