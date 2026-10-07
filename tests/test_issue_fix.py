@@ -193,6 +193,21 @@ class Gate(Base):
         self.assertIn("unreadable", log)
         self.assertEqual(self.enqueued, [])
 
+    def test_a_failed_wait_comment_is_retried_on_a_later_sweep(self):
+        self.origin = 7
+        real = gh.api
+        with mock.patch.object(
+                gh, "api", lambda loop, path, method="GET", body=None, login=None:
+                None if method == "POST" else real(loop, path, method, body, login)):
+            self.run_gate(self.labeled())
+        st = state_mod.state_for(self.loop)
+        self.assertEqual((st.fix_holds(), st.fix_hold_said(12), self.posted), ({12: 7}, False, []))
+        fix_hold.sweep(self.loop, st)                   # GitHub is back: the comment is retried
+        self.assertEqual(len(self.posted), 1)
+        self.assertTrue(st.fix_hold_said(12))
+        fix_hold.sweep(self.loop, st)
+        self.assertEqual(len(self.posted), 1)
+
     def test_a_finding_from_an_open_pr_is_held_until_it_merges(self):
         self.origin = 7
         self.run_gate(self.labeled())
