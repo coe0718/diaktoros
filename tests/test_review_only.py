@@ -1,8 +1,9 @@
 """Review-only authors (#191): the reviewer reviews their PRs, the fixer never touches them.
 
 A changes-requested verdict on a review-only author's PR goes back to that author: no fixer turn,
-no verdict cap, no adjudication, and no "fixer never pushed" stall. The author may ask for the
-next review themselves. The list moves from every settings path, and a login is never both a
+no adjudication, and no "fixer never pushed" stall; its verdicts have their own cap
+(review_only_cap). The author may ask for the next review themselves below that cap.
+The list moves from every settings path, and a login is never both a
 fixer (or a reviewer) and review-only.
 """
 from __future__ import annotations
@@ -58,6 +59,21 @@ class Setting(unittest.TestCase):
         got = config.apply_settings(raw(), {"review_only": " owner-human , other ,"})
         self.assertEqual(got["review_only"], [OWNER, "other"])
         self.assertIn("review_only", (t.ROOT / "plugin.yaml").read_text())
+
+
+class DocsMatchTheCap(unittest.TestCase):
+    """The docs must not say review-only PRs have no verdict cap (they have review_only_cap)."""
+
+    def test_review_only_rows_do_not_claim_no_cap(self):
+        docs = pathlib.Path(__file__).resolve().parent.parent / "docs"
+        for name in ("configuration.md", "settings.md"):
+            rows = [line for line in (docs / name).read_text().splitlines()
+                    if line.startswith("| `review_only` |") and "whose PRs" in line
+                    or line.startswith("| `review_only` |") and "never fixed" in line]
+            self.assertEqual(len(rows), 1, name)
+            self.assertNotIn("no verdict cap", rows[0], name)
+            self.assertNotIn("no cap", rows[0], name)
+            self.assertIn("review_only_cap", rows[0], name)
 
 
 class Gates(fg.Base):
