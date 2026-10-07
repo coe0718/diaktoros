@@ -92,9 +92,12 @@ hint is omitted. A later state change remains possible: inspect GitHub before me
 Retries and digests omit next-turn hints because the recorded transition may be stale.
 Closed notices fire only for PRs this loop worked on (the author is a reviewed author, or the loop holds breach, transition, queue or observer-ledger state for the PR). Other repository PR closures are cleaned up silently.
 
-Issue triage and issue-fix runs produce **no observer transition notices**. The PR opened
-by a successful issue fix becomes a normal review-loop PR and can produce later notices.
-The watchdog's failed-run operator outbox is a different delivery path.
+Issue work does produce observer transitions when the host records an outcome: `triaged`
+after the triage result is recorded (including a no-label/no-comment result), `fixing` when a
+maintainer handoff is queued or held, and `fixed` when the issue-fixer write ends. These are
+outcome notices, not a transcript of the model turn; see the event table above. A PR opened
+by an issue fix then becomes a normal loop PR and can produce later PR notices. The watchdog's
+failed-run operator outbox is a separate delivery path.
 
 ## Privacy and destination binding
 
@@ -165,7 +168,7 @@ The digest groups by PR or issue, in event order, one line each, keeping outcome
 they matter (changes vs approve), at most 25 lines and then "…and N more":
 
 ```
-🗂 [hermes-review-loop] last 30m — 2 PRs, 1 issue
+🗂 [<loop-id>] last 30m — 2 PRs, 1 issue
 #312 opened → reviewed (changes) → fixed → approved · https://github.com/…/pull/312
 #316 opened → approved · …/pull/316
 #318 (issue) handed to fixer · …/issues/318

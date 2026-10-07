@@ -11,6 +11,7 @@ incident recovery, and the decision to merge.
 - [Upgrading from hermes-review-loop](#upgrading-from-hermes-review-loop)
 - [Everyday commands](#everyday-commands) and [reviewing your own PRs](#reviewing-your-own-prs)
 - [Signing](#what-the-loop-signs) and [review findings](#how-the-reviewer-grades-findings)
+- [Automatic CI repair](#automatic-repair-for-failed-required-checks)
 - [Token files](#token-files-one-pat-per-account) and [permissions](#token-scopes-by-role)
 - [Doctor](#preflight-doctor) and [selftest](#verifying-the-isolated-setup-selftest)
 - [Storage limits](#sandbox-size-caps-the-two-writable-mounts)
@@ -164,6 +165,9 @@ hermes dk set --loop "<loop-id>" --attribution off
 
 `--attribution off` changes future writes; `on` restores it. `status` and `doctor` report
 the effective setting. Keep plugin settings consistent before the next `apply`.
+When a later seat reads reviewer history or fixer answers, the host strips only a trailing
+footer matching the current Diaktoros signature or its pre-rename signature. The footer is
+display attribution, not proof of authorship; receipts and the run ledger establish writes.
 
 ## How the reviewer grades findings
 
@@ -186,11 +190,36 @@ or while CI cannot be read. A **cancelled** check (GitHub cancelled the run, for
 hosted runner could be acquired) is not the change's fault: the reviewer is told not to list it
 as a finding, and the review itself waits for the re-run, whether or not `review_after_ci` is
 on, sending one notice that the checks need re-running. The loop cannot re-run CI itself.
-With `required_checks` set, all of the above applies to those checks only: an optional check
-(a bot, a coverage upload) is shown to the reviewer but never blocks, holds or wakes anyone. The refusal spends nothing, so the reviewer's REQUEST_CHANGES in the same turn
-goes through. Checks still running don't block an approval. With `review_after_ci` on, a review
-doesn't start while the head's checks are running: it waits (up to an hour), so it sees them
-finish.
+With `required_checks` set, the gating rules apply to those checks only. Optional checks
+(a bot, a coverage upload) are shown to the reviewer but never block, hold or wake anyone.
+A required check that has not reported at this head is **missing**, not passing: it blocks
+approval. With `review_after_ci` enabled, it also holds the review as outstanding; with that
+off, the reviewer can run but still cannot approve. Verify the configured check name and
+workflow: a missing check is not itself a defect in the PR. The refusal spends nothing, so a
+REQUEST_CHANGES verdict in the same turn can still be submitted. Checks still running do
+not block an approval. With `review_after_ci` on, a review waits up to an hour for checks to
+finish before starting.
+
+### Automatic repair for failed required checks
+
+The watchdog can ask the fixer to repair a red required check without waiting for a
+`CHANGES_REQUESTED` review. This is a separate, opt-in feature: set `fix_ci: true` in the
+loop configuration **and** enable unattended fixer pushes with
+[`fixer-push`](#choose-whether-to-permit-unattended-fixer-pushes). The default is off.
+
+A sweep considers open, non-draft PRs on the configured base by an allowlisted fixer who
+is not in `review_only`. It reads required-check results and queues at most one CI-fix
+turn per PR head. The host rechecks CI before launch and gives the fixer up to three
+failing job logs, including the failing step and bounded log tails, as untrusted data.
+The fixer may propose a scoped patch through the normal broker; the loop does not rerun
+GitHub Actions, modify `.github/` workflow files or merge the PR. A green result on a later
+head ends the repair path naturally.
+
+CI-fix turns count against the same verdict cap. If the cap is spent, or a job from the
+previous CI-fix fails again after the fixer changes the head, the watchdog holds the PR
+for operator action rather than repeating the repair. Normal fixer capacity, pacing,
+checks and push safety still apply. See [configuration](configuration.md#write-policy-and-attribution)
+for `fix_ci` and [observer](observer.md#events-and-meaning) for the `ci_failed` notice.
 
 Fixer answers
 are published as a bounded PR comment before a fresh review request; a final model
@@ -365,8 +394,12 @@ Worker stderr is beside it in `.workers.log`, with bounded rotation.
 Pre-write transient failures wait two, four and eight minutes between attempts;
 the fourth failure exhausts the automatic retry chain. Due work resumes through
 worker-enabled recovery (events, finishing work or an armed watchdog sweep), not an
-independent timer. A turn-budget kill fails immediately rather than automatically
-repeating the same over-budget turn.
+independent timer. A turn-budget kill fails immediately rather than automatically repeating
+the same over-budget turn. A separate case is a clean agent exit without any broker call.
+The host classifies it as unpublished (no broker write was attempted) and retries it once
+with a nudge to publish. If that attempt also exits without calling the broker, it fails
+for operator review. This is not a retry path for a denied or uncertain write.
+
 Write-ahead evidence, not exit code, decides replay safety. Review claims, push intents,
 rulings, answers, triage results and issue-fix records may prohibit replay even if a
 row is `failed`.
@@ -540,6 +573,10 @@ gate-failure log and the broker audit log, keep the old repository name as histo
 
 A `migrate` that dies leaves the marker. The install stays paused, because its records may be
 half moved, and the watchdog says so until you run `migrate` again, which finishes the job.
+A marker that cannot be read or parsed also keeps the install paused; it is not safe to
+remove it as stale by guesswork. Inspect the filesystem and migration state, then rerun
+`migrate` to recover through the supported workflow. During the pause gates defer deliveries
+for later re-drive, workers claim no new runs, and the watchdog skips its sweep.
 
 ### Renaming a loop
 
