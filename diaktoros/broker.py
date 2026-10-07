@@ -192,7 +192,7 @@ def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
     # record it (hostdirs, #108). One line, and the operation still reports its real outcome.
     # Checks only: on the host, the mkdir below creates it as before.
     if hostdirs.in_worker() and not pathlib.Path(loop["state_dir"]).expanduser().is_dir():
-        print(f"review-loop broker: audit record not written: {loop['state_dir']} is gone; "
+        print(f"diaktoros broker: audit record not written: {loop['state_dir']} is gone; "
               "a worker never recreates host state", file=sys.stderr)
         return
 

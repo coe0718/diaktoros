@@ -462,7 +462,7 @@ def render_digest(loop: dict, entries: list) -> str:
     if issues:
         counts.append(f"{issues} issue{'s' if issues != 1 else ''}")
     window = int((loop.get("observer") or {}).get("digest_min") or 0)
-    span = f"last {window}m" if window else "review-loop digest"
+    span = f"last {window}m" if window else "Diaktoros digest"
     lines = [f"🗂 [{loop.get('id')}] {span} — {', '.join(counts)}"]
     for (issue, number), group in list(groups.items())[:DIGEST_LIMIT]:
         label = f"#{number} (issue)" if issue else f"#{number}"

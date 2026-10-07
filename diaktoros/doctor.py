@@ -1955,6 +1955,11 @@ def check_host_names() -> Check:
     (#425): they work where they are, and ``migrate`` moves them."""
     old = [config.HOST_FILES[key][1] for key in config.HOST_FILES
            if (config.home() / config.HOST_FILES[key][1]).exists()]
+    # The ledger's side files (its "a ledger existed" marker, the worker log) carry its old name
+    # too, and are left behind if only the ledger moved.
+    from .migrate import ledger_sides
+    ledger_old = config.home() / config.HOST_FILES["ledger"][1]
+    old += [str(side.relative_to(config.home())) for side in ledger_sides(ledger_old)]
     if not old:
         return Check("host-names", VERIFIED, "every host file has its new name")
     return Check("host-names", UNKNOWN,

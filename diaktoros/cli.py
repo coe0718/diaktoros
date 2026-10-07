@@ -61,14 +61,14 @@ import sys
 
 WATCHDOG = pathlib.Path("{watchdog}")
 if not WATCHDOG.exists():
-    print(f"review-loop watchdog is missing: {{WATCHDOG}}")
+    print(f"diaktoros watchdog is missing: {{WATCHDOG}}")
     sys.exit(0)
 
 proc = subprocess.run([sys.executable, str(WATCHDOG), *sys.argv[1:]], capture_output=True, text=True)
 if proc.stdout.strip():
     print(proc.stdout.strip())
 if proc.returncode != 0 and proc.stderr.strip():
-    print(f"review-loop watchdog failed: {{proc.stderr.strip()[:400]}}")
+    print(f"diaktoros watchdog failed: {{proc.stderr.strip()[:400]}}")
 '''
 
 
@@ -3901,9 +3901,16 @@ def _migrate(args) -> int:
         print(f"cannot migrate: {exc}")
         return 2
     lines = migrate.settings_step(_CTX, dry_run=args.dry_run)
-    # Host files first: everything after reads and writes them under their new names.
-    lines += migrate.files_step(_write_config, dry_run=args.dry_run)
+    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    if not args.dry_run:
+        # Before anything moves, every route and the watchdog run this plugin's code, which
+        # honours the pause. Until now they may run the old plugin's, which does not: a delivery
+        # mid-migration then wrote under the old file names (seen on the first live upgrade).
+        lines += migrate.shim_step(loops, _write_watchdog_shim, config.watchdog_shim(),
+                                   SHIM.format(watchdog=watchdog), dry_run=False)
     lines += _move_watchdog_job(dry_run=args.dry_run)
+    # Then the host files: everything after reads and writes them under their new names.
+    lines += migrate.files_step(_write_config, dry_run=args.dry_run)
     if not args.dry_run:
         loops = config.all_loops()                 # the loop files may live elsewhere now
     lines += migrate.repo_step(loops, _write_moved_repo, dry_run=args.dry_run,
@@ -3915,7 +3922,6 @@ def _migrate(args) -> int:
         lines += renamed
     if not args.dry_run:
         loops = config.all_loops()                 # a moved repository or id is the loop's name now
-    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
     lines += migrate.shim_step(loops, _write_watchdog_shim, config.watchdog_shim(),
                                SHIM.format(watchdog=watchdog), dry_run=args.dry_run)
     if not args.dry_run:
