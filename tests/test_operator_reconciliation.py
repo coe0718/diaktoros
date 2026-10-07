@@ -10,8 +10,8 @@ import threading
 import time
 import unittest
 
-from review_loop import ledger
-from review_loop.run_supervisor import Supervisor
+from diaktoros import ledger
+from diaktoros.run_supervisor import Supervisor
 
 
 class OperatorReconciliation(unittest.TestCase):
@@ -35,7 +35,7 @@ class OperatorReconciliation(unittest.TestCase):
         self.sup.recover()
 
     def cli(self, *args):
-        return subprocess.run([sys.executable, '-m', 'review_loop.run_supervisor',
+        return subprocess.run([sys.executable, '-m', 'diaktoros.run_supervisor',
                                *args], text=True, capture_output=True, check=True)
 
     def test_crash_stale_lease_failed_notification_repeated_sweep_and_reconcile(self):

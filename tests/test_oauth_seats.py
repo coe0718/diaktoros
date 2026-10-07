@@ -25,8 +25,8 @@ from unittest import mock
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
-from review_loop import broker_ipc, contained, doctor, inference_proxy, seat_model, trusted_turn  # noqa: E402
-from review_loop.inference_proxy import (CONTRACTS, Credential, InferenceCapability,  # noqa: E402
+from diaktoros import broker_ipc, contained, doctor, inference_proxy, seat_model, trusted_turn  # noqa: E402
+from diaktoros.inference_proxy import (CONTRACTS, Credential, InferenceCapability,  # noqa: E402
                                          RefreshingCredential, StaticCredential, _UnixHTTP)
 import test_seat_models as tsm  # noqa: E402
 from hermes_prereqs import needs  # noqa: E402
@@ -801,8 +801,8 @@ class RealHermesWireFormats(unittest.TestCase):
                     continue
                 (code / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(SOURCE / name, code / name, follow_symlinks=False)
-            (code / "review_loop").mkdir(exist_ok=True)
-            shutil.copyfile(HERE.parent / "review_loop/inference_proxy.py", code / "review_loop/inference_proxy.py")
+            (code / "diaktoros").mkdir(exist_ok=True)
+            shutil.copyfile(HERE.parent / "diaktoros/inference_proxy.py", code / "diaktoros/inference_proxy.py")
             home, work, rust = root / "home", root / "work", root / "rust"
             for d in (home, work, rust):
                 d.mkdir()
@@ -830,7 +830,7 @@ class RealHermesWireFormats(unittest.TestCase):
                 result = contained.run(
                     code=code, venv=venv, runtime=runtime, home=home, checkout=work, rust=rust,
                     query=home / "query.txt", inference_socket_dir=cap.directory, timeout=240,
-                    entry=["/opt/venv/bin/python", "-m", "review_loop.inference_proxy", "bridge", "--",
+                    entry=["/opt/venv/bin/python", "-m", "diaktoros.inference_proxy", "bridge", "--",
                            "/opt/venv/bin/python", "/opt/venv/bin/hermes", "chat", "--query-file",
                            "/home/agent/query.txt", "--oneshot", "-Q", "--provider", provider, "-m", model,
                            "-t", "terminal", "--ignore-rules", "--max-turns", "4", "--run-budget", "150"])

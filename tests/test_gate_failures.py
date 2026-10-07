@@ -21,7 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from review_loop import config, gate, gate_failures, state as state_mod  # noqa: E402
+from diaktoros import config, gate, gate_failures, state as state_mod  # noqa: E402
 
 SCRIPTS = t.ROOT / "scripts"
 
@@ -379,7 +379,7 @@ class GateFailureTest(unittest.TestCase):
 
     def test_a_crash_between_move_aside_steps_leaves_it_recoverable(self):
         from unittest import mock
-        from review_loop import state as st
+        from diaktoros import state as st
         real = st._atomic_write
         for step in ("fresh save", "copy"):
             with self.subTest(step=step):
@@ -493,11 +493,11 @@ class GateFailureTest(unittest.TestCase):
         return home
 
     def doctor_lines(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         return {c.name: c for c in doctor.check_gate_timeouts(config.load_id("widgets"))}
 
     def test_doctor_checks_every_profile_gateway_hosting_a_loop_route(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         # Root (host) gateway: 30s by default. The reviewer's profile runs its own standalone
         # gateway at 10s; the fixer's profile is multiplexed by the host but sets 60s itself.
         self.gateway_config(None)
@@ -596,7 +596,7 @@ class GateFailureTest(unittest.TestCase):
                                          "extra": {"script_timeout_seconds": 9}}})
         self.assertEqual(gate_failures.gateway_script_timeout(), (9, f"{cfg} webhook.extra"))
         # doctor does not certify a 6s gateway as fitting the default budget.
-        from review_loop import doctor
+        from diaktoros import doctor
         self.gateway_config({"webhook": {"script_timeout_seconds": 6}})
         self.assertEqual(self.doctor_lines()["gate:timeout:default"].status, doctor.MISMATCH)
 
@@ -678,7 +678,7 @@ class GateFailureTest(unittest.TestCase):
                 self.assertEqual(entry["kind"], "timeout")
 
     def test_a_junk_profile_config_never_raises_out_of_the_fit_or_doctor(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 12}}})
         junk = t.HOME / "profiles" / "reviewer-profile"
         self.raw_config(junk, b"\xff\xfe\x00\x81junk\x00")
@@ -690,7 +690,7 @@ class GateFailureTest(unittest.TestCase):
 
     def test_doctor_reports_a_fit_check_that_cannot_run_instead_of_dying(self):
         from unittest import mock
-        from review_loop import doctor
+        from diaktoros import doctor
         with mock.patch.object(gate_failures, "effective_timeout",
                                side_effect=RuntimeError("boom")):
             checks = self.doctor_lines()
@@ -710,7 +710,7 @@ class GateFailureTest(unittest.TestCase):
         self.assertEqual(gate_failures.plan(30), (20.0, 3.0))
 
     def test_doctor_and_plan_agree_on_the_full_budget_threshold(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         for seconds in range(24, 31):
             with self.subTest(timeout=seconds):
                 self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": seconds}}})
@@ -722,7 +722,7 @@ class GateFailureTest(unittest.TestCase):
         self.assertEqual(gate_failures.MIN_TIMEOUT_S, 27)
 
     def test_doctor_says_when_a_timeout_is_too_small_to_record_a_failure(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 3}}})
         check = self.doctor_lines()["gate:timeout:default"]
         self.assertEqual(check.status, doctor.MISMATCH)
@@ -756,7 +756,7 @@ class GateFailureTest(unittest.TestCase):
         script = t.TMP / "stopped_gate.py"
         script.write_text(
             f"import sys\nsys.path.insert(0, {str(t.ROOT)!r})\n"
-            "from review_loop import gate_failures\n"
+            "from diaktoros import gate_failures\n"
             "def main():\n    import time\n    print('ready', file=sys.stderr, flush=True)\n"
             "    time.sleep(60)\n"
             "gate_failures.run('gate_reviewer', main)\n")
@@ -788,7 +788,7 @@ class GateFailureTest(unittest.TestCase):
         script = t.TMP / "claiming_gate.py"
         script.write_text(
             f"import sys\nsys.path.insert(0, {str(t.ROOT)!r})\n"
-            "from review_loop import config, gate_failures, state\n"
+            "from diaktoros import config, gate_failures, state\n"
             "def main():\n"
             "    st = state.state_for(config.load_id('widgets'))\n"
             f"    st.acquire('reviewer', {t.REPO + '#7'!r}, {t.HEAD_A!r}, 'test claim')\n"
@@ -1008,7 +1008,7 @@ class GateFailureTest(unittest.TestCase):
         script = t.TMP / "fault_gate.py"
         script.write_text(
             f"import sys\nsys.path.insert(0, {str(t.ROOT)!r})\n"
-            "from review_loop import gate_failures, state\n"
+            "from diaktoros import gate_failures, state\n"
             f"{patch}\n"
             "def main():\n    raise RuntimeError('boom')\n"
             "gate_failures.run('gate_reviewer', main)\n")
@@ -1386,7 +1386,7 @@ class GateFailureTest(unittest.TestCase):
 
     def test_a_gate_drain_runs_on_the_gates_clock(self):
         from unittest import mock
-        from review_loop import gh
+        from diaktoros import gh
         loop = config.load_id("widgets")
         with mock.patch.object(gate.subprocess, "run") as run:
             gh.begin_gate(time.monotonic() + 1.5)

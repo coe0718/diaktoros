@@ -15,9 +15,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from review_loop import ledger  # noqa: E402
-from review_loop import config, contained, gh, run_supervisor, trusted_turn  # noqa: E402
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros import ledger  # noqa: E402
+from diaktoros import config, contained, gh, run_supervisor, trusted_turn  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO = "acme/widgets"
 HEAD = "a" * 40
@@ -264,8 +264,8 @@ class Worker(Base):
                             "retries=?", (retries,))
                 run_id = con.execute("SELECT id FROM runs").fetchone()[0]
             settings = {k: str(root) for k in ("source", "venv", "runtime", "rust")}
-            with mock.patch("review_loop.seat_model.load_runtime", return_value=settings), \
-                 mock.patch("review_loop.seat_model.resolve_seat"), \
+            with mock.patch("diaktoros.seat_model.load_runtime", return_value=settings), \
+                 mock.patch("diaktoros.seat_model.resolve_seat"), \
                  mock.patch.object(config, "by_repo",
                                    return_value={**self.loop, "state_dir": str(root / "state")}), \
                  mock.patch.object(gh, "fetch", side_effect=world.fetch), \
@@ -311,8 +311,8 @@ class Worker(Base):
                 run_id = con.execute("SELECT id FROM runs").fetchone()[0]
             world = World([changed(1)])
             world.fail.add(FILES)
-            with mock.patch("review_loop.seat_model.load_runtime", return_value={}), \
-                 mock.patch("review_loop.seat_model.resolve_seat"), \
+            with mock.patch("diaktoros.seat_model.load_runtime", return_value={}), \
+                 mock.patch("diaktoros.seat_model.resolve_seat"), \
                  mock.patch.object(config, "by_repo", return_value=self.loop), \
                  mock.patch.object(gh, "fetch", side_effect=world.fetch), \
                  mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
@@ -342,8 +342,8 @@ class Worker(Base):
                 run_id = con.execute("SELECT id FROM runs").fetchone()[0]
             world = World([changed(1)])
             world.pr["head"]["sha"] = "c" * 40  # a new push since the event
-            with mock.patch("review_loop.seat_model.load_runtime", return_value={}), \
-                 mock.patch("review_loop.seat_model.resolve_seat"), \
+            with mock.patch("diaktoros.seat_model.load_runtime", return_value={}), \
+                 mock.patch("diaktoros.seat_model.resolve_seat"), \
                  mock.patch.object(config, "by_repo", return_value=self.loop), \
                  mock.patch.object(gh, "fetch", side_effect=world.fetch), \
                  mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \

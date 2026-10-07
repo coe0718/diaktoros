@@ -15,7 +15,7 @@ renders them at fire time against the payload the gate emits, using dot-notation
   the decision rather than making one.
 
 ``OBSERVER`` is the odd one out: it is not an instruction to anybody, it is a message that has
-already been written. See the note next to it, and ``review_loop.observer``.
+already been written. See the note next to it, and ``diaktoros.observer``.
 """
 
 from __future__ import annotations
@@ -121,7 +121,7 @@ TRIAGE = """Issue #{_loop.number} in {_loop.repo} is queued for triage by the is
 Nothing for the gateway to do: the gate answers [SILENT]."""
 
 # The observer feed's route prompt is a single placeholder, and that is the whole point: the
-# *loop* writes the notice (``review_loop.observer``), because it is the thing that knows what
+# *loop* writes the notice (``diaktoros.observer``), because it is the thing that knows what
 # actually happened. The gateway's job is only to render this and deliver it — with
 # ``deliver_only`` set, the rendered template *is* the message, so no model is woken to paraphrase
 # a transition it did not observe.
@@ -132,13 +132,13 @@ OBSERVER = """{_observer.message}"""
 #
 # The prompts above are *gateway* templates: the gateway renders ``{_loop.x}`` against the gate's
 # payload, and they tell the seat to use ``gh`` and to push, which only a credential-owning agent
-# can do. An isolated turn (``review_loop.run_supervisor``) has neither: it sees an exported tree at
+# can do. An isolated turn (``diaktoros.run_supervisor``) has neither: it sees an exported tree at
 # ``/work``, no credentials and no network, and its only way out is the one-run broker socket.
 #
 # So these are rendered **host-side**, once, by the worker, with plain ``str.format`` fields from
 # facts the host just read from GitHub (never from a webhook snapshot). Same substance as the
 # gateway text — verify, cite evidence with ``file:line``, answer every finding, rule with a reason
-# — but every write goes through ``python -m review_loop.broker_client``. The exact commands for
+# — but every write goes through ``python -m diaktoros.broker_client``. The exact commands for
 # the role are appended by ``trusted_turn``; each role is told only about its own.
 #
 # ``render_isolated`` refuses to return a prompt with a field left unrendered: a literal

@@ -63,11 +63,11 @@ if spec['mode'] == 'push_then_hang':
     # (like one waiting on its tool call) overruns the budget meanwhile.
     with open('/work/src/lib.rs', 'w') as out:
         out.write('// fixed\n')
-    subprocess.run([sys.executable, '-m', 'review_loop.broker_client', 'push', '--files',
+    subprocess.run([sys.executable, '-m', 'diaktoros.broker_client', 'push', '--files',
                     'src/lib.rs', '--message', 'fix'], **quiet)
     while True:
         time.sleep(0.5)
-write = subprocess.run([sys.executable, '-m', 'review_loop.broker_client', 'review',
+write = subprocess.run([sys.executable, '-m', 'diaktoros.broker_client', 'review',
                         '--verdict', 'APPROVE', '--body-file', '/work/review.txt'],
                        capture_output=True, text=True)
 time.sleep(max(0.0, start + spec['finish_after'] - time.time()))
@@ -84,9 +84,9 @@ def driver(spec_path: str) -> None:
     """
     from types import SimpleNamespace
     from unittest import mock
-    from review_loop import config, gh, safe_push, seat_model, trusted_fetch, trusted_turn
-    from review_loop import state as state_mod
-    from review_loop.run_supervisor import Supervisor, describe_run, write_evidence
+    from diaktoros import config, gh, safe_push, seat_model, trusted_fetch, trusted_turn
+    from diaktoros import state as state_mod
+    from diaktoros.run_supervisor import Supervisor, describe_run, write_evidence
 
     spec = json.loads(Path(spec_path).read_text())
     root, seat = Path(spec['root']), spec.get('seat', 'reviewer')
@@ -370,7 +370,7 @@ class SandboxedTurnBudget(unittest.TestCase):
         self.assertEqual(evidence.get('children'), 2)
         # The tree really was there while it ran: bridge, agent, spinner, escapee.
         text = '\n'.join(seen)
-        for part in ('review_loop.inference_proxy bridge', '/opt/venv/bin/hermes',
+        for part in ('diaktoros.inference_proxy bridge', '/opt/venv/bin/hermes',
                      '-spinner', '-escapee'):
             self.assertIn(part, text)
         # Killed at budget + grace, not before and not much after.
@@ -488,7 +488,7 @@ class SandboxedTurnBudget(unittest.TestCase):
     def test_the_ceiling_budget_reaches_the_sandbox_unclamped(self):
         # The largest budget a loop may set (4 h) is carried whole into the real sandbox's
         # argv and deadline; nothing on the way (worker default, lease, selector) caps it.
-        from review_loop import config
+        from diaktoros import config
         ceiling = config.TURN_BUDGET_RANGE[1]
         result, _, evidence = self.turn('finish', finish_after=1, budget=ceiling)
         self.assertEqual(evidence['argv_run_budget'], ceiling)

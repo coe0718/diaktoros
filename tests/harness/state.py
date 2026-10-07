@@ -10,7 +10,7 @@ from .fixture import *  # noqa: F403 - the shared harness namespace
 STATE_RACE_CHILD = r"""
 import json, os, sys, time
 sys.path.insert(0, os.environ["ROOT"])
-from review_loop import config, gate, isolation, state
+from diaktoros import config, gate, isolation, state
 loop = config.load_id("widgets")
 st = state.state_for(loop)
 mode, who = sys.argv[1], int(sys.argv[2])
@@ -67,7 +67,7 @@ def group_state_race() -> None:
 
 def group_open_prs() -> None:
     section("open PR listing — every page, or unknown")
-    from review_loop import gh
+    from diaktoros import gh
 
     loop = {"repo": REPO}
     path = f"/repos/{REPO}/pulls?state=open&per_page=100"
@@ -121,7 +121,7 @@ def group_malformed_marks() -> None:
     """
     section("state — a malformed lock mark degrades, it never raises")
 
-    from review_loop import config, gate, state as state_mod
+    from diaktoros import config, gate, state as state_mod
 
     reset(prs={})
     loop = config.load_id("widgets")
@@ -264,7 +264,7 @@ def group_malformed_queue() -> None:
     """
     section("state — a non-dict queue seat value degrades, it never raises")
 
-    from review_loop import config, gate, observer, state as state_mod
+    from diaktoros import config, gate, observer, state as state_mod
 
     reset(prs={})
     loop = config.load_id("widgets")

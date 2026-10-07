@@ -21,8 +21,8 @@ import unittest
 import uuid
 from unittest import mock
 
-from review_loop import gate, ledger, state as state_mod, transition
-from review_loop.run_supervisor import Supervisor
+from diaktoros import gate, ledger, state as state_mod, transition
+from diaktoros.run_supervisor import Supervisor
 from tests.test_stacked_reconciliation import fixer, reviewer, watchdog
 from tests.test_stacked_situation import A, B, C, D, pr
 
@@ -399,9 +399,9 @@ class FreshReviewTest(unittest.TestCase):
         sup.production_config = pathlib.Path(self.temp.name) / "unused-config"
 
         def claim():
-            with mock.patch("review_loop.config.by_repo", return_value=self.loop), \
-                 mock.patch("review_loop.gh.api", return_value=self.child), \
-                 mock.patch("review_loop.gh.reviews", side_effect=lambda *_, **__: list(self.reviews)):
+            with mock.patch("diaktoros.config.by_repo", return_value=self.loop), \
+                 mock.patch("diaktoros.gh.api", return_value=self.child), \
+                 mock.patch("diaktoros.gh.reviews", side_effect=lambda *_, **__: list(self.reviews)):
                 return sup._claim()
 
         # The latest listed verdict is an old rejection: not a work order after the boundary.
@@ -431,10 +431,10 @@ class FreshReviewTest(unittest.TestCase):
             con.execute("UPDATE runs SET state='pending' WHERE id=?", (run_id,))
         sup = Supervisor(self.db)
         sup.production_config = pathlib.Path(self.temp.name) / "unused-config"
-        with mock.patch("review_loop.config.by_repo", return_value=self.loop), \
-             mock.patch("review_loop.gh.api", return_value=self.child), \
-             mock.patch("review_loop.review_receipt.generation_for", return_value="{}"), \
-             mock.patch("review_loop.gh.reviews", side_effect=lambda *_, **__: list(self.reviews)):
+        with mock.patch("diaktoros.config.by_repo", return_value=self.loop), \
+             mock.patch("diaktoros.gh.api", return_value=self.child), \
+             mock.patch("diaktoros.review_receipt.generation_for", return_value="{}"), \
+             mock.patch("diaktoros.gh.reviews", side_effect=lambda *_, **__: list(self.reviews)):
             claimed = sup._claim()
         with ledger.connect(self.db) as con:
             delivery = con.execute("SELECT delivery FROM runs WHERE id=?", (run_id,)).fetchone()[0]

@@ -1,6 +1,6 @@
-"""Guard: no module-level name in ``review_loop/`` or ``scripts/`` is bound twice by assignment.
+"""Guard: no module-level name in ``diaktoros/`` or ``scripts/`` is bound twice by assignment.
 
-A second top-level ``_PROBE = ...`` in ``review_loop/selftest.py`` (the model prompt) once
+A second top-level ``_PROBE = ...`` in ``diaktoros/selftest.py`` (the model prompt) once
 silently replaced the sandbox probe program defined earlier in the same module, so the live
 sandbox step ran an English sentence as Python. Python never warns about a rebinding, so this
 test does.
@@ -51,13 +51,13 @@ def duplicate_assignments(source: str) -> dict[str, list[int]]:
 
 
 def _modules():
-    return sorted([*ROOT.glob("review_loop/*.py"), *ROOT.glob("scripts/*.py")])
+    return sorted([*ROOT.glob("diaktoros/*.py"), *ROOT.glob("scripts/*.py")])
 
 
 class ModuleLevelNames(unittest.TestCase):
     def test_scan_covers_the_package(self):
         names = {path.relative_to(ROOT).as_posix() for path in _modules()}
-        self.assertIn("review_loop/selftest.py", names)
+        self.assertIn("diaktoros/selftest.py", names)
         self.assertTrue(any(name.startswith("scripts/") for name in names))
 
     def test_the_scan_catches_a_rebinding(self):

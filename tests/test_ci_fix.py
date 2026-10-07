@@ -18,9 +18,9 @@ import test_conflict_turn as tc  # noqa: E402
 import test_fixer_gating as fg  # noqa: E402
 import test_review_after_ci as rac  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from review_loop import (broker_ipc, ci, ci_fix, config, gh, ledger, observer,  # noqa: E402
+from diaktoros import (broker_ipc, ci, ci_fix, config, gh, ledger, observer,  # noqa: E402
                          prompts, safe_push, trusted_turn)
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 RED = ci.CIState(failed=["tests (3.11)"], passed=["lint"], ids={"tests (3.11)": 55},
                  urls={"tests (3.11)": "https://github.com/acme/widgets/runs/55"})
@@ -189,10 +189,10 @@ class Sweep(unittest.TestCase):
         with mock.patch.object(ci, "read", return_value=state), \
              mock.patch.object(ci_fix, "rows", return_value=list(rows)), \
              mock.patch.object(gh, "reviews", return_value=[]), \
-             mock.patch("review_loop.gate.verdicts", return_value=[0] * verdicts), \
+             mock.patch("diaktoros.gate.verdicts", return_value=[0] * verdicts), \
              mock.patch.object(observer, "notify",
                                side_effect=lambda *a, **kw: notices.append((a, kw))), \
-             mock.patch("review_loop.gate.enqueue_isolated",
+             mock.patch("diaktoros.gate.enqueue_isolated",
                         side_effect=lambda *a, **kw: queued.append((a, kw)) or "enqueued"):
             ci_fix.sweep(loop, object(), self.PRS)
         return notices, queued

@@ -10,8 +10,8 @@ import time
 import unittest
 from unittest import mock
 
-from review_loop import gate, situation, transition
-from review_loop.state import LoopState
+from diaktoros import gate, situation, transition
+from diaktoros.state import LoopState
 from tests.test_stacked_situation import A, B, C, D, pr
 
 WATCHDOG_PATH = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"

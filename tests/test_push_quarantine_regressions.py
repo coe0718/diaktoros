@@ -7,9 +7,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-from review_loop import broker, broker_ipc, config, gh, ledger, observer, safe_push
-from review_loop.run_supervisor import Supervisor
-from review_loop.state import LoopState
+from diaktoros import broker, broker_ipc, config, gh, ledger, observer, safe_push
+from diaktoros.run_supervisor import Supervisor
+from diaktoros.state import LoopState
 from tests.test_safe_push import FakeGitHub, HEAD, NEW_HEAD, REPO, manifest
 
 

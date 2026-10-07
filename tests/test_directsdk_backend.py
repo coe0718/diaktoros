@@ -12,8 +12,8 @@ import threading
 import unittest
 from unittest import mock
 
-from review_loop import directsdk_backend, inference_proxy, seat_model
-from review_loop.inference_proxy import InferenceCapability, _UnixHTTP
+from diaktoros import directsdk_backend, inference_proxy, seat_model
+from diaktoros.inference_proxy import InferenceCapability, _UnixHTTP
 
 UPSTREAM = 'process://claude-subscription-directsdk-experimental'
 PROVIDER = 'claude-subscription-directsdk-experimental'

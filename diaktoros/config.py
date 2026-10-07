@@ -42,7 +42,7 @@ File shape (all keys except ``repo`` have defaults)::
 a base branch and two seats is a configuration error, not a run that guesses.
 
 The one key that is *not* strict is ``observer`` — the optional read-only feed (see
-``review_loop.observer``). A seat that cannot be resolved is a loop that cannot turn; an
+``diaktoros.observer``). A seat that cannot be resolved is a loop that cannot turn; an
 observer that cannot be resolved is a loop that turns without telling anyone, so a broken feed
 is dropped with its reason kept under ``misconfigured`` for ``status`` to report.
 """

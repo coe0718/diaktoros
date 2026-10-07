@@ -1,6 +1,6 @@
 """Keep every test, and every process a test starts, out of the operator's real ``~/.hermes``.
 
-Import this before anything from ``review_loop`` — every ``tests/test_*.py`` does so as its first
+Import this before anything from ``diaktoros`` — every ``tests/test_*.py`` does so as its first
 import (``test_home_guard.py`` enforces that), and ``run_tests.py`` does for the harness. On first
 import in a process it:
 

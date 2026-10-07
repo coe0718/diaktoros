@@ -28,8 +28,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import broker, broker_ipc, config, gh, ledger, prompts, run_supervisor  # noqa: E402
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros import broker, broker_ipc, config, gh, ledger, prompts, run_supervisor  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 HEAD = "a" * 40
 REPO = "acme/widgets"
@@ -254,7 +254,7 @@ class Prompt(unittest.TestCase):
         self.assertIn("File each one yourself, before the review", text)
         self.assertIn("labels from this list only: `P3`", text)
         self.assertIn("**Issues filed**", text)
-        from review_loop import trusted_turn
+        from diaktoros import trusted_turn
         tools = trusted_turn.tool_instructions("reviewer")
         self.assertIn("broker_client file_issue --title", tools)
         self.assertIn("at most 3 per review", tools)

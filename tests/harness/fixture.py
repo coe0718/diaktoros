@@ -33,7 +33,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from review_loop import ledger  # noqa: E402 - importable only once ROOT is on the path
+from diaktoros import ledger  # noqa: E402 - importable only once ROOT is on the path
 
 # Fixtures must not inherit the source checkout's Git owner: cleanup correctly
 # refuses to delete artifacts under an unrelated repository, even a test repo.
@@ -357,7 +357,7 @@ def write_loop() -> dict:
 
 
 def write_subs() -> dict:
-    from review_loop import prompts
+    from diaktoros import prompts
     subs = {}
     # Each route carries its role's real prompt, as `init` writes it: the prompt is half of the
     # proof a route is this plugin's, and apply reports a route that has lost it (#112 review).
@@ -587,7 +587,7 @@ class FakeCtx:
 
 def parser_for(settings: dict | None = None):
     """A ``hermes dk`` parser wired to a settings form, for in-process commands."""
-    from review_loop import cli
+    from diaktoros import cli
 
     fake = FakeCtx()
     cli.register_cli(fake, settings=settings)

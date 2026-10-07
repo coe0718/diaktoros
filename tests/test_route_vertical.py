@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest import mock
 
-from review_loop import ledger
+from diaktoros import ledger
 
 ROOT = Path(__file__).resolve().parents[1]
 HEAD = "a" * 40
@@ -80,7 +80,7 @@ class RouteSubprocess(unittest.TestCase):
         self.assertFalse(list(self.root.rglob("*.sqlite")))
 
     def test_missing_runtime_hold_survives_explicit_drain_and_retries_when_available(self):
-        from review_loop import config, gh, routes, state
+        from diaktoros import config, gh, routes, state
         from scripts import watchdog
         payload = {"repository": {"full_name": "acme/widgets"}, "action": "opened",
                    "number": 7, "pull_request": self.pr, "sender": {"login": "dev"}}
@@ -108,7 +108,7 @@ class RouteSubprocess(unittest.TestCase):
                 self.assertNotIn(key, st.queue_items("reviewer"))
 
     def test_drain_preserves_replaced_queue_entry_on_successful_http(self):
-        from review_loop import config, gh, routes, state
+        from diaktoros import config, gh, routes, state
         from scripts import watchdog
         with mock.patch.dict(os.environ, self.env), \
              mock.patch.object(gh, "pr", return_value=self.pr), \
@@ -125,7 +125,7 @@ class RouteSubprocess(unittest.TestCase):
             self.assertEqual(st.queue_items("reviewer")[key]["reason"], "replacement")
 
     def test_gate_compare_pop_does_not_remove_replacement_during_enqueue(self):
-        from review_loop import config, gate, state, run_supervisor
+        from diaktoros import config, gate, state, run_supervisor
         with mock.patch.dict(os.environ, self.env):
             loop = config.load_id("widgets")
             st = state.LoopState(loop)
@@ -146,7 +146,7 @@ class RouteSubprocess(unittest.TestCase):
             self.assertEqual(st.queue_items("reviewer")[key]["reason"], "new turn")
 
     def test_gate_failure_does_not_overwrite_replacement_during_enqueue(self):
-        from review_loop import config, gate, state, run_supervisor
+        from diaktoros import config, gate, state, run_supervisor
         with mock.patch.dict(os.environ, self.env):
             loop = config.load_id("widgets")
             st = state.LoopState(loop)
@@ -167,7 +167,7 @@ class RouteSubprocess(unittest.TestCase):
             self.assertEqual(st.queue_items("reviewer")[key]["reason"], "new turn")
 
     def test_ambiguous_route_post_keeps_hold_without_replaying(self):
-        from review_loop import config, gh, routes, state
+        from diaktoros import config, gh, routes, state
         from scripts import watchdog
         with mock.patch.dict(os.environ, self.env), \
              mock.patch.object(gh, "pr", return_value=self.pr), \
@@ -186,7 +186,7 @@ class RouteSubprocess(unittest.TestCase):
             self.assertIn("manual reconciliation", st.queue_items("reviewer")[key]["reason"])
 
     def test_pre_post_route_failure_remains_retryable(self):
-        from review_loop import config, gh, routes, state
+        from diaktoros import config, gh, routes, state
         from scripts import watchdog
         with mock.patch.dict(os.environ, self.env), \
              mock.patch.object(gh, "pr", return_value=self.pr), \
@@ -203,7 +203,7 @@ class RouteSubprocess(unittest.TestCase):
             self.assertNotIn("manual reconciliation", st.queue_items("reviewer")[key]["reason"])
 
     def test_connection_refused_remains_retryable(self):
-        from review_loop import config, gh, routes, state
+        from diaktoros import config, gh, routes, state
         from scripts import watchdog
         with mock.patch.dict(os.environ, self.env), \
              mock.patch.object(gh, "pr", return_value=self.pr), \
@@ -222,7 +222,7 @@ class RouteSubprocess(unittest.TestCase):
             self.assertNotIn("manual reconciliation", st.queue_items("reviewer")[key]["reason"])
 
     def test_stale_head_read_does_not_erase_replacement(self):
-        from review_loop import config, gh, state
+        from diaktoros import config, gh, state
         from scripts import watchdog
         with mock.patch.dict(os.environ, self.env):
             loop = config.load_id("widgets")
@@ -237,7 +237,7 @@ class RouteSubprocess(unittest.TestCase):
             self.assertEqual(st.queue_items("reviewer")[key]["reason"], "new head")
 
     def test_reverse_ordered_fixer_verdict_uses_latest(self):
-        from review_loop import config, gh, routes, state
+        from diaktoros import config, gh, routes, state
         from scripts import watchdog
         older = {"id": 10, "state": "CHANGES_REQUESTED", "commit_id": HEAD,
                  "user": {"login": "reviewer"}, "submitted_at": "2026-01-01T00:00:00Z"}
@@ -257,7 +257,7 @@ class RouteSubprocess(unittest.TestCase):
                 fire.assert_called_once()
 
     def test_newer_approval_or_unknown_order_cannot_wake_fixer(self):
-        from review_loop import config, gh, routes, state
+        from diaktoros import config, gh, routes, state
         from scripts import watchdog
         old = {"id": 10, "state": "CHANGES_REQUESTED", "commit_id": HEAD,
                "user": {"login": "reviewer"}, "submitted_at": "2026-01-01T00:00:00Z"}

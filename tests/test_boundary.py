@@ -16,7 +16,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import broker, gh, gate, isolation
+from diaktoros import broker, gh, gate, isolation
 
 
 class BoundaryTests(unittest.TestCase):

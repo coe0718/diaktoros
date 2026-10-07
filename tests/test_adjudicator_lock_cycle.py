@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import state
+from diaktoros import state
 
 HEAD_A, HEAD_B = "a" * 40, "b" * 40
 
@@ -113,7 +113,7 @@ class AdjudicatorCycleTest(unittest.TestCase):
 
     def test_the_stub_answers_this_files_gh(self):
         probe = ("import json, sys\nsys.path.insert(0, sys.argv[1])\n"
-                 "from review_loop import gh\n"
+                 "from diaktoros import gh\n"
                  "print(json.dumps(gh.api({'repo': 'acme/widgets'}, '/repos/acme/widgets/pulls/7')))")
         result = subprocess.run([sys.executable, "-c", probe, str(ROOT)], env=self.env,
                                 capture_output=True, text=True, check=True, timeout=30)

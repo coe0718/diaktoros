@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from review_loop import cli, config, gh
+from diaktoros import cli, config, gh
 
 HOST = "https://gw.example"
 
@@ -87,7 +87,7 @@ class ArmVerifyTests(unittest.TestCase):
         self.write_registry({"widgets-review": "reviewer", "widgets-fix": "fixer"})
 
     def write_registry(self, bindings):
-        from review_loop import routes
+        from diaktoros import routes
         path = routes.subs_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({name: {"profile": profile, "secret": "fixture-secret",
@@ -270,7 +270,7 @@ class ArmVerifyTests(unittest.TestCase):
         self.assertNotIn("fix:", out)
 
     def test_a_route_binding_another_profile_is_the_wrong_agent_not_armed(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         self.write_registry({"widgets-review": "someone-else", "widgets-fix": "fixer"})
         fake = FakeGitHub(hooks(False))
         rc, out = self.arm(fake)
@@ -296,13 +296,13 @@ class ArmVerifyTests(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("hook 1 → paused (read back)", out)
         # doctor says the same thing about the same loop.
-        from review_loop import routes
+        from diaktoros import routes
         check = doctor.check_route(config.load_id("widgets"), routes.all_routes(), "reviewer")
         self.assertEqual(check.status, doctor.MISMATCH)
         self.assertIn("the wake would run the wrong agent", check.detail)
 
     def test_the_registry_url_is_the_one_credited(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         loop = config.load_id("widgets")
         self.assertEqual(doctor.seat_hook_url(loop, "widgets-review"),
                          f"{HOST}/p/reviewer/webhooks/widgets-review")
@@ -350,7 +350,7 @@ class ArmVerifyTests(unittest.TestCase):
         # Pinned gateway source: /webhooks/{route_name} and /p/{profile}/webhooks/{route_name}
         # only, so ".../widgets-review/" is a 404. Arming refuses it (and names why); pausing
         # still finds it as this install's hook and stops it; doctor calls it a MISMATCH.
-        from review_loop import doctor
+        from diaktoros import doctor
         slashed = hooks(False)
         slashed[1]["config"]["url"] = f"{HOST}/p/reviewer/webhooks/widgets-review/"
         for start in (False, True):
@@ -381,7 +381,7 @@ class ArmVerifyTests(unittest.TestCase):
         # in no route, so it landed in neither `own` nor `other`, `arm` never saw it, stayed ok,
         # and exited 0 while `gate.hooks_read` correctly reported the seat unarmed. The hook must
         # be named (and arm must fail), the same way the trailing-slash spelling already is.
-        from review_loop import doctor
+        from diaktoros import doctor
         encoded = hooks(False)
         encoded[1]["config"]["url"] = f"{HOST}/p/reviewer/webhooks/widgets-review%2F"
         fake = FakeGitHub(encoded)
@@ -403,7 +403,7 @@ class ArmVerifyTests(unittest.TestCase):
 
     def test_a_query_string_is_the_same_route_url(self):
         # The gateway's router matches the path only, so "?x=1" is delivered like the bare URL.
-        from review_loop import doctor
+        from diaktoros import doctor
         listing = hooks(False)
         listing[1]["config"]["url"] = f"{HOST}/p/reviewer/webhooks/widgets-review?x=1"
         rc, out = self.arm(FakeGitHub(listing))
@@ -488,7 +488,7 @@ class ArmVerifyTests(unittest.TestCase):
             self.assertIn("hook 2 → paused (read back)", out)
 
     def test_doctor_names_the_actual_cause_of_a_mismatch(self):
-        from review_loop import doctor
+        from diaktoros import doctor
         loop = config.load_id("widgets")
         url = f"{HOST}/p/reviewer/webhooks/widgets-review"
         for posted, cause in ((f"{HOST}/p/someone-else/webhooks/widgets-review", "another profile"),

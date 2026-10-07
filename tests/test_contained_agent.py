@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from review_loop import contained
+from diaktoros import contained
 from tests.hermes_prereqs import needs, skip_or_fail
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE

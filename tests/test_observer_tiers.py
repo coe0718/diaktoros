@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from review_loop import config, observer, routes
-from review_loop.state import LoopState
+from diaktoros import config, observer, routes
+from diaktoros.state import LoopState
 
 import _ledger_guard  # noqa: E402
 

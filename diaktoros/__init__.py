@@ -7,7 +7,7 @@ whether a run is already out, whether the loop has gone quiet — is decided by 
 deterministic scripts, never by a model.
 
 Nothing here bakes in a repository, an account or a budget: those live in one JSON file
-per loop (see `review_loop.config`), so a single install can drive several repositories
+per loop (see `diaktoros.config`), so a single install can drive several repositories
 with different seats, caps and credentials.
 
 Why it exists: an unattended loop fails *quietly*. A dropped event, a stalled run, a

@@ -21,9 +21,9 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import ledger  # noqa: E402
-from review_loop import cli, config, doctor, gh, seat_model, trusted_turn  # noqa: E402
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros import ledger  # noqa: E402
+from diaktoros import cli, config, doctor, gh, seat_model, trusted_turn  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 HEAD = "a" * 40
 # What the parent process holds under a provider variable: a plain marker, not secret-shaped (a
@@ -465,15 +465,15 @@ class Worker(Base):
             seen.update(kw, role=scope.role)
             return turn(kw) if turn else 0
         pr = {"number": 7, "head": {"sha": HEAD, "ref": "fix-7"}} if pr is None else pr
-        from review_loop import run_supervisor
+        from diaktoros import run_supervisor
         with mock.patch.object(config, "by_repo", return_value=loop or self.loop), \
              mock.patch.object(gh, "api", return_value=pr) as api, \
              mock.patch.object(gh, "reviews", return_value=[]), \
              mock.patch.object(gh, "review_state", return_value="CHANGES_REQUESTED"), \
-             mock.patch("review_loop.gate.latest_effective_review_at_head", return_value={}), \
+             mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value={}), \
              mock.patch.object(run_supervisor, "adjudication_state",
                                return_value=("ok", {"reviews": [], "marker": {"rounds": 3}})), \
-             mock.patch("review_loop.state.state_for") as state_for, \
+             mock.patch("diaktoros.state.state_for") as state_for, \
              mock.patch.object(run_supervisor, "isolated_prompt", return_value="PROMPT"), \
              mock.patch.object(run_supervisor, "pr_change",
                                return_value=run_supervisor.PRChange("CHANGE", "DIFF")), \
@@ -531,7 +531,7 @@ class Worker(Base):
     def test_an_exit_that_never_called_the_broker_is_retried_once_with_a_nudge(self):
         """#144: a turn that finished its work but never published (it never called the broker)
         waits for one retry, whose prompt opens with the nudge; a second such exit fails."""
-        from review_loop import run_supervisor
+        from diaktoros import run_supervisor
 
         def unpublished(kw):
             raise trusted_turn.TurnUnpublished(run_supervisor.UNPUBLISHED

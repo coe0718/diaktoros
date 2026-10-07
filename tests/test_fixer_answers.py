@@ -21,9 +21,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import ledger  # noqa: E402
-from review_loop import broker, broker_client, broker_ipc, config, gh, run_supervisor, safe_push  # noqa: E402
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros import ledger  # noqa: E402
+from diaktoros import broker, broker_client, broker_ipc, config, gh, run_supervisor, safe_push  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 HEAD = "a" * 40
 NEW_HEAD = "d" * 40
@@ -385,7 +385,7 @@ class Client(unittest.TestCase):
 
 class Instructions(unittest.TestCase):
     def test_fixer_is_told_how_to_publish_answers_and_nobody_else_is(self):
-        from review_loop import prompts, trusted_turn
+        from diaktoros import prompts, trusted_turn
         fixer = trusted_turn.tool_instructions("fixer")
         self.assertIn("request_review --answers-file", fixer)
         self.assertIn("8 KiB", fixer)

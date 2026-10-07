@@ -203,7 +203,7 @@ def group_observer() -> None:
     cfg = json.loads((LOOPS_DIR / "widgets.json").read_text())
     cfg["observer"] = {"profile": "arbiter"}                     # a feed with nowhere to go
     (LOOPS_DIR / "widgets.json").write_text(json.dumps(cfg))
-    from review_loop import config as config_mod
+    from diaktoros import config as config_mod
     check("a route-less observer never refuses the loop",
           config_mod.load_id("widgets")["observer"]["misconfigured"],
           "observer.route is required to deliver anything")
@@ -300,7 +300,7 @@ def group_observer_safety() -> None:
     """Outbox failure, concurrent retry ownership, and route contract regressions."""
     from concurrent.futures import ThreadPoolExecutor
     from unittest.mock import patch as mock_patch
-    from review_loop import config, gate, observer, state as state_mod
+    from diaktoros import config, gate, observer, state as state_mod
 
     section("observer — durable claim and delivery-only destination")
     reset(prs={"7": pr(7)})
@@ -401,7 +401,7 @@ def group_observer_cli() -> None:
     import contextlib
     import io
 
-    from review_loop import cli, config, observer
+    from diaktoros import cli, config, observer
 
     section("observer — configuring the feed, and being told when it is broken")
 
@@ -476,7 +476,7 @@ def group_observer_cli() -> None:
     check("  old observer route removed", "feed-observe" in json.loads(SUBS.read_text()), False)
     rc, out = call_set(observer_route="feed-observe")
     check("route can be reconciled back", rc, 0)
-    from review_loop import state as state_mod
+    from diaktoros import state as state_mod
     st = state_mod.state_for(config.load_id("feed"))
     st.observations.parent.mkdir(parents=True, exist_ok=True)
     st.observations.write_text(json.dumps({"entries": {"old": {"status": "failed"}}}))
@@ -641,8 +641,8 @@ def group_observer_honesty() -> None:
     """
     from unittest.mock import patch as mock_patch
 
-    from review_loop import config, gate, observer, state as state_mod
-    from review_loop.run_supervisor import Supervisor
+    from diaktoros import config, gate, observer, state as state_mod
+    from diaktoros.run_supervisor import Supervisor
 
     section("observer — the notice repeats the loop's record, not the caller's claim")
 

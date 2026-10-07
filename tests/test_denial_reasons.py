@@ -2,7 +2,7 @@
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import unittest
 
-from review_loop import broker, broker_ipc
+from diaktoros import broker, broker_ipc
 
 
 class DenialMessageTests(unittest.TestCase):
@@ -24,7 +24,7 @@ class DenialMessageTests(unittest.TestCase):
 
     def test_an_unconfirmed_push_never_reads_as_not_published(self):
         """#351: the push landed, the PR lagged, and the seat was told "write denied"."""
-        from review_loop import safe_push
+        from diaktoros import safe_push
         lagged = self.msg(safe_push.PushFailure("published_pr_unverified"))
         self.assertIn("the branch moved to your commit", lagged)
         self.assertIn("do not say it was not published", lagged)

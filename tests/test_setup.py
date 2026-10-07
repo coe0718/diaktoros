@@ -22,7 +22,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from test_shared_watchdog_job import FakeHermes  # noqa: E402
-from review_loop import cli, config, runtime_detect  # noqa: E402
+from diaktoros import cli, config, runtime_detect  # noqa: E402
 
 LOOP_ID = "setupwidgets"
 LOOP_FILE = t.LOOPS_DIR / f"{LOOP_ID}.json"

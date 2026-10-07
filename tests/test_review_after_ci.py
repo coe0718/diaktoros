@@ -20,8 +20,8 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from review_loop import ci, cli, config, ledger, observer, run_supervisor  # noqa: E402
-from review_loop.run_supervisor import CI_HOLD, Supervisor  # noqa: E402
+from diaktoros import ci, cli, config, ledger, observer, run_supervisor  # noqa: E402
+from diaktoros.run_supervisor import CI_HOLD, Supervisor  # noqa: E402
 
 RUNNING = ci.CIState(pending=["tests (3.11)"], passed=["lint"])
 

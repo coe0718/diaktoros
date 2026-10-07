@@ -32,7 +32,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from review_loop import trusted_turn  # noqa: E402
+from diaktoros import trusted_turn  # noqa: E402
 from test_selftest import SelftestBase  # noqa: E402  (its fixture: mocked GitHub/model/bwrap)
 
 SENTINEL = 'SENTINEL-4f1c9a7b2e3d5f60a1b2c3d4e5f60718'
@@ -47,7 +47,7 @@ SECRET_FILES = {
 }
 
 # Ordinary source that must survive the filter, including the false-positive guards.
-ORDINARY = ('run_agent.py', 'review_loop/run_supervisor.py', 'review_loop/prompts.py',
+ORDINARY = ('run_agent.py', 'diaktoros/run_supervisor.py', 'diaktoros/prompts.py',
             'monkey.py', 'keyboard.py', 'keyring.py', 'tokenizer.py', 'secretive.py',
             'monkey_business.py', 'docs_map.txt')
 
@@ -157,16 +157,16 @@ class SnapshotSecretTests(GitTree):
         # about credentials. The shape rule reads a module's name only when the sandbox does not
         # import it; the same word on a data file (or a data directory) is a credential.
         self.write({'hermes_cli/subcommands/secrets.py': 'ordinary source\n',
-                    'review_loop/secrets.py': 'ordinary source\n',
+                    'diaktoros/secrets.py': 'ordinary source\n',
                     'agent/secret_sources/registry.py': 'ordinary source\n',
-                    'review_loop/secrets.json': '{"k": "%s"}\n' % SENTINEL})
+                    'diaktoros/secrets.json': '{"k": "%s"}\n' % SENTINEL})
         self.git('add', '.')
         self.commit('modules')
         destination = self.export()
-        for name in ('hermes_cli/subcommands/secrets.py', 'review_loop/secrets.py',
+        for name in ('hermes_cli/subcommands/secrets.py', 'diaktoros/secrets.py',
                      'agent/secret_sources/registry.py'):
             self.assertTrue((destination / name).is_file(), name)
-        self.assertFalse((destination / 'review_loop/secrets.json').exists())
+        self.assertFalse((destination / 'diaktoros/secrets.json').exists())
 
     def test_credential_shaped_content_is_dropped_from_data_and_docs(self):
         # A name rule cannot see these: the leak is the value.
@@ -227,7 +227,7 @@ class ExportedSnapshotProbeTests(GitTree):
 
     def test_probe_flags_imported_code_as_advisory_only(self):
         # Code is never a violation: the sandbox imports it, so dropping it is not an option.
-        violations, advisories = self.probe({'review_loop/config_source.py':
+        violations, advisories = self.probe({'diaktoros/config_source.py':
                                              'API_KEY = "sk-' + 'a' * 30 + '"\n'})
         self.assertEqual(violations, [])
         self.assertTrue(any('config_source.py' in entry for entry in advisories), advisories)
@@ -266,7 +266,7 @@ class SelftestSnapshotCheckTests(SelftestBase):
         self.assertIn('fix these before enabling turns', text)
 
     def test_credential_shaped_text_in_imported_code_is_a_warning(self):
-        stage = self.stage({'review_loop/config_source.py': 'API_KEY = "sk-' + 'b' * 30 + '"\n'})
+        stage = self.stage({'diaktoros/config_source.py': 'API_KEY = "sk-' + 'b' * 30 + '"\n'})
         with mock.patch.object(trusted_turn, '_safe_code_snapshot', side_effect=stage):
             rc, text = self.run_selftest(model=False)
         self.assertEqual(rc, 0, text)

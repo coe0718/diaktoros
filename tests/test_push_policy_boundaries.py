@@ -8,8 +8,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from review_loop import broker_ipc, cli, config, ledger
-from review_loop.run_supervisor import Supervisor
+from diaktoros import broker_ipc, cli, config, ledger
+from diaktoros.run_supervisor import Supervisor
 from tests.test_fixer_push_policy import raw_loop
 
 REPO = 'owner/one'
@@ -65,7 +65,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         scope = broker_ipc.RunScope('owner/one', 3, 'a' * 40, 'fixer', 'branch',
                                    sup.get('old')['id'], str(sup.db))
         server = broker_ipc.RunBroker(config.load_id('one'), scope, self.root)
-        with patch('review_loop.safe_push._manifest'), patch('review_loop.safe_push.push') as push:
+        with patch('diaktoros.safe_push._manifest'), patch('diaktoros.safe_push.push') as push:
             with self.assertRaises(broker_ipc.ProtocolError) as caught:
                 server._dispatch(json.dumps({'operation': 'push', 'manifest': {}}).encode())
         push.assert_not_called()
@@ -81,7 +81,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         self.assertEqual(sup.get('run')['push_admitted'], 1)
         self.assertEqual(self.change(False), 0)
         server = broker_ipc.RunBroker(config.load_id('one'), scope, self.root)
-        with patch('review_loop.safe_push.push') as push:
+        with patch('diaktoros.safe_push.push') as push:
             with self.assertRaises(broker_ipc.ProtocolError):
                 server._dispatch(json.dumps({'operation': 'push', 'manifest': {}}).encode())
         push.assert_not_called()
@@ -140,8 +140,8 @@ class PolicyBoundaryTests(unittest.TestCase):
                 self.path.write_text(json.dumps({**armed, 'unattended_fixer_push': False}))
             return real(repo)
         with patch.object(config, 'by_repo', side_effect=reload), \
-             patch('review_loop.safe_push._manifest'), \
-             patch('review_loop.safe_push.push') as push:
+             patch('diaktoros.safe_push._manifest'), \
+             patch('diaktoros.safe_push.push') as push:
             with self.assertRaises(broker_ipc.ProtocolError):
                 server._dispatch(json.dumps({'operation': 'push', 'manifest': {}}).encode())
         push.assert_not_called()
@@ -151,7 +151,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         self.path.write_text(json.dumps(armed))
         scope = broker_ipc.RunScope('owner/one', 3, 'a' * 40, 'fixer', 'branch')
         server = broker_ipc.RunBroker({**config.load_id('one'), 'id': 'two'}, scope, self.root)
-        with patch('review_loop.safe_push.push') as push:
+        with patch('diaktoros.safe_push.push') as push:
             with self.assertRaises(broker_ipc.ProtocolError):
                 server._dispatch(json.dumps({'operation': 'push', 'manifest': {}}).encode())
         push.assert_not_called()
@@ -180,7 +180,7 @@ class PolicyBoundaryTests(unittest.TestCase):
                 errors.append(exc)
             finally:
                 disabled.set()
-        with patch('review_loop.safe_push._manifest'), patch('review_loop.safe_push.push', side_effect=push):
+        with patch('diaktoros.safe_push._manifest'), patch('diaktoros.safe_push.push', side_effect=push):
             worker = threading.Thread(target=dispatch)
             worker.start()
             operator = None
@@ -208,7 +208,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         scope = self.admitted_scope()
         server = broker_ipc.RunBroker(config.load_id('one'), scope, self.root)
         self.assertEqual(self.change(False), 0)
-        with patch('review_loop.safe_push.push') as push:
+        with patch('diaktoros.safe_push.push') as push:
             with self.assertRaisesRegex(broker_ipc.ProtocolError,
                                         'every write from this turn is refused') as caught:
                 server._dispatch(json.dumps({'operation': 'push', 'manifest': {}}).encode())
@@ -225,7 +225,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         self.assertEqual(self.change(False), 0)
         with patch.object(config, 'by_repo',
                           side_effect=lambda repo: config.load_id('one')), \
-             patch('review_loop.safe_push.push') as push:
+             patch('diaktoros.safe_push.push') as push:
             with self.assertRaisesRegex(broker_ipc.ProtocolError,
                                         'every write from this turn is refused') as caught:
                 server._dispatch(json.dumps({'operation': 'request_review', 'verdict': '',
@@ -236,7 +236,7 @@ class PolicyBoundaryTests(unittest.TestCase):
     def test_policy_hold_reason_is_the_one_denial_wording(self):
         # A single source of truth: the reason the run ledger records, the broker's refusal
         # and the seat queue hold all name the same facts (#81).
-        from review_loop.run_supervisor import FIXER_NOT_ADMITTED, FIXER_PUSH_OFF, FIXER_PUSH_REVOKED
+        from diaktoros.run_supervisor import FIXER_NOT_ADMITTED, FIXER_PUSH_OFF, FIXER_PUSH_REVOKED
         self.path.write_text(json.dumps(raw_loop('one')))
         self.assertEqual(broker_ipc.policy_hold_reason(config.load_id('one')),
                          FIXER_PUSH_OFF)

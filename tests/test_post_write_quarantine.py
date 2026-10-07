@@ -10,8 +10,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from review_loop import broker, broker_ipc, ledger, safe_push
-from review_loop.run_supervisor import Supervisor
+from diaktoros import broker, broker_ipc, ledger, safe_push
+from diaktoros.run_supervisor import Supervisor
 from scripts import gate_fixer
 
 HEAD = 'a' * 40
@@ -44,9 +44,9 @@ class PostWriteQuarantine(unittest.TestCase):
         loop = {'repo': self.scope.repo, 'state_dir': str(self.db.parent),
                 'unattended_fixer_push': True}
         server = broker_ipc.RunBroker(loop, self.scope, self.db.parent)
-        with mock.patch('review_loop.config.by_repo', return_value=loop), \
-             mock.patch('review_loop.safe_push._manifest'), \
-             mock.patch('review_loop.safe_push.push',
+        with mock.patch('diaktoros.config.by_repo', return_value=loop), \
+             mock.patch('diaktoros.safe_push._manifest'), \
+             mock.patch('diaktoros.safe_push.push',
                         side_effect=safe_push.PushFailure(outcome)):
             with self.assertRaises(broker.BrokerDenied):
                 server._dispatch(json.dumps({'operation': 'push', 'manifest': self.manifest}).encode())
@@ -83,7 +83,7 @@ class PostWriteQuarantine(unittest.TestCase):
         with mock.patch.object(gate_fixer.sys, 'stdin', io.StringIO(json.dumps(payload))), \
              contextlib.redirect_stdout(io.StringIO()) as output, \
              mock.patch.object(gate_fixer.gate, 'context', return_value=(loop, st)), \
-             mock.patch('review_loop.config.home', return_value=home), \
+             mock.patch('diaktoros.config.home', return_value=home), \
              mock.patch.object(gate_fixer.gh, 'pr') as live, \
              mock.patch.object(gate_fixer.observer, 'notify') as notice:
             with self.assertRaises(SystemExit) as stopped:
@@ -112,9 +112,9 @@ class PostWriteQuarantine(unittest.TestCase):
         loop = {'repo': self.scope.repo, 'state_dir': str(self.db.parent),
                 'unattended_fixer_push': True}
         server = broker_ipc.RunBroker(loop, self.scope, self.db.parent)
-        with mock.patch('review_loop.config.by_repo', return_value=loop), \
-             mock.patch('review_loop.safe_push._manifest'), \
-             mock.patch('review_loop.safe_push.push', side_effect=OSError('audit unavailable')):
+        with mock.patch('diaktoros.config.by_repo', return_value=loop), \
+             mock.patch('diaktoros.safe_push._manifest'), \
+             mock.patch('diaktoros.safe_push.push', side_effect=OSError('audit unavailable')):
             with self.assertRaises(OSError):
                 server._dispatch(json.dumps({'operation': 'push', 'manifest': self.manifest}).encode())
         self.assertTrue(self.sup.post_write_hold(self.scope.repo, self.scope.number))
@@ -128,9 +128,9 @@ class PostWriteQuarantine(unittest.TestCase):
         def published_then_error(*args, **kwargs):
             ref['sha'] = 'b' * 40
             raise safe_push.PushFailure('unknown')
-        with mock.patch('review_loop.config.by_repo', return_value=loop), \
-             mock.patch('review_loop.safe_push._manifest'), \
-             mock.patch('review_loop.safe_push.push', side_effect=published_then_error), \
+        with mock.patch('diaktoros.config.by_repo', return_value=loop), \
+             mock.patch('diaktoros.safe_push._manifest'), \
+             mock.patch('diaktoros.safe_push.push', side_effect=published_then_error), \
              mock.patch.object(Supervisor, 'quarantine_push', side_effect=OSError('disk full')):
             with self.assertRaisesRegex(broker_ipc.ProtocolError, 'quarantine persistence failed'):
                 server._dispatch(json.dumps({'operation': 'push', 'manifest': self.manifest}).encode())
@@ -150,10 +150,10 @@ class PostWriteQuarantine(unittest.TestCase):
         loop = {'repo': self.scope.repo, 'state_dir': str(self.db.parent),
                 'unattended_fixer_push': True}
         server = broker_ipc.RunBroker(loop, self.scope, self.db.parent)
-        with mock.patch('review_loop.config.by_repo', return_value=loop), \
-             mock.patch('review_loop.safe_push._manifest'), \
+        with mock.patch('diaktoros.config.by_repo', return_value=loop), \
+             mock.patch('diaktoros.safe_push._manifest'), \
              mock.patch.object(Supervisor, 'begin_push', side_effect=OSError('disk full')), \
-             mock.patch('review_loop.safe_push.push') as push:
+             mock.patch('diaktoros.safe_push.push') as push:
             with self.assertRaises(OSError):
                 server._dispatch(json.dumps({'operation': 'push', 'manifest': self.manifest}).encode())
         push.assert_not_called()
@@ -175,9 +175,9 @@ class PostWriteQuarantine(unittest.TestCase):
         loop = {'repo': self.scope.repo, 'state_dir': str(self.db.parent),
                 'unattended_fixer_push': True}
         request = json.dumps({'operation': 'push', 'manifest': self.manifest}).encode()
-        with mock.patch('review_loop.config.by_repo', return_value=loop), \
-             mock.patch('review_loop.safe_push._manifest'), \
-             mock.patch('review_loop.safe_push.push', return_value={'new_head': 'b' * 40}):
+        with mock.patch('diaktoros.config.by_repo', return_value=loop), \
+             mock.patch('diaktoros.safe_push._manifest'), \
+             mock.patch('diaktoros.safe_push.push', return_value={'new_head': 'b' * 40}):
             server = broker_ipc.RunBroker(loop, self.scope, self.db.parent)
             self.assertEqual(server._dispatch(request)['new_head'], 'b' * 40)
         self.assertFalse(self.sup.post_write_hold(self.scope.repo, 7))
@@ -188,9 +188,9 @@ class PostWriteQuarantine(unittest.TestCase):
         with ledger.connect(self.db) as con:
             con.execute('UPDATE runs SET push_intent=NULL,push_confirmed=NULL WHERE id=?',
                         (self.row['id'],))
-        with mock.patch('review_loop.config.by_repo', return_value=loop), \
-             mock.patch('review_loop.safe_push._manifest'), \
-             mock.patch('review_loop.safe_push.push', return_value={'new_head': 'b' * 40}), \
+        with mock.patch('diaktoros.config.by_repo', return_value=loop), \
+             mock.patch('diaktoros.safe_push._manifest'), \
+             mock.patch('diaktoros.safe_push.push', return_value={'new_head': 'b' * 40}), \
              mock.patch.object(Supervisor, 'confirm_push', side_effect=OSError('disk full')):
             server = broker_ipc.RunBroker(loop, self.scope, self.db.parent)
             with self.assertRaises(OSError):

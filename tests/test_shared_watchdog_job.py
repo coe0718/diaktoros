@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from review_loop import cli, config, doctor
+from diaktoros import cli, config, doctor
 
 HOST = "https://gw.example"
 
@@ -133,7 +133,7 @@ class SharedJobTests(unittest.TestCase):
         exactly one sweep per loop per tick. Proven by the watchdog's own contract: with no
         ``--loop`` it loads every readable loop and sweeps each once.
         """
-        from review_loop import config as cfg
+        from diaktoros import config as cfg
         loops, refused = cfg.readable_loops()
         self.assertEqual([loop["id"] for loop in loops], ["gadgets", "gizmos", "widgets"])
         self.assertEqual(refused, [])

@@ -9,8 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from review_loop import broker, broker_ipc, gh, ledger, review_receipt
-from review_loop.run_supervisor import Supervisor
+from diaktoros import broker, broker_ipc, gh, ledger, review_receipt
+from diaktoros.run_supervisor import Supervisor
 
 HEAD = 'a' * 40
 BASE = 'b' * 40

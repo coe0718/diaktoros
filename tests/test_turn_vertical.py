@@ -16,10 +16,10 @@ import threading
 import unittest
 from unittest import mock
 
-from review_loop import contained, gh, ledger, review_receipt, trusted_fetch, trusted_turn
-from review_loop.broker_ipc import RunScope
-from review_loop.run_supervisor import Supervisor
-from review_loop.inference_proxy import PATH
+from diaktoros import contained, gh, ledger, review_receipt, trusted_fetch, trusted_turn
+from diaktoros.broker_ipc import RunScope
+from diaktoros.run_supervisor import Supervisor
+from diaktoros.inference_proxy import PATH
 from tests.hermes_prereqs import needs
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
@@ -85,7 +85,7 @@ class WholeTurn(unittest.TestCase):
                         command = ('cat ' + str(host_pat) + ' ' + str(key_path) +
                                    ' ' + str(_home_guard.USER_HOME / '.hermes/.env') + '; '
                                    'git credential fill </dev/null; cargo test --offline; '
-                                   'python -m review_loop.broker_client review --verdict APPROVE '
+                                   'python -m diaktoros.broker_client review --verdict APPROVE '
                                    '--body-file /work/review.txt')
                         message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                             'id': 'probe', 'type': 'function', 'function': {

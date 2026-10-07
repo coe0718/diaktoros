@@ -16,7 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from review_loop import contained, deps, ledger  # noqa: E402
+from diaktoros import contained, deps, ledger  # noqa: E402
 
 CRATES = "registry+https://github.com/rust-lang/crates.io-index"
 LOCK = f'''version = 4
@@ -549,7 +549,7 @@ class TurnPrefetchTests(unittest.TestCase):
                      "seats": {"reviewer": {"login": "review"}, "fixer": {"login": "fix"}}}
 
     def test_prefetch_is_recorded_before_and_after_and_the_sandbox_gets_its_whole_budget(self):
-        from review_loop import broker_ipc, trusted_turn
+        from diaktoros import broker_ipc, trusted_turn
         events = []
 
         def stage(_loop, **kw):
@@ -608,7 +608,7 @@ class TurnPrefetchTests(unittest.TestCase):
 
     def test_a_repo_with_nothing_to_prefetch_records_that_not_fetching_forever(self):
         """#361: with no manifest, the ledger kept "fetching — started …" after the turn ended."""
-        from review_loop import broker_ipc, trusted_turn
+        from diaktoros import broker_ipc, trusted_turn
 
         def stage(_loop, **kw):
             kw["sandbox_root"].mkdir()
@@ -647,7 +647,7 @@ class TurnPrefetchTests(unittest.TestCase):
         self.assertTrue(progress[1].startswith("nothing to prefetch"))
 
     def test_a_finished_run_is_never_shown_as_still_fetching(self):
-        from review_loop.run_supervisor import describe_dependencies
+        from diaktoros.run_supervisor import describe_dependencies
         row = {"seat": "reviewer", "pr": 351, "head": "b" * 40, "state": "succeeded",
                "deps": "fetching — started 16:09:23Z, bounded at 300s, before the turn budget starts"}
         self.assertEqual(describe_dependencies(row),
@@ -656,7 +656,7 @@ class TurnPrefetchTests(unittest.TestCase):
         self.assertIn("— fetching — started", describe_dependencies({**row, "state": "running"}))
 
     def test_a_failing_progress_sink_never_fails_the_turn(self):
-        from review_loop import trusted_turn
+        from diaktoros import trusted_turn
         calls = []
 
         def sink(text):
@@ -689,7 +689,7 @@ class LedgerTests(unittest.TestCase):
         return run_id
 
     def test_only_the_owner_of_a_live_run_records_and_it_is_bounded(self):
-        from review_loop.run_supervisor import Supervisor, dependency_view
+        from diaktoros.run_supervisor import Supervisor, dependency_view
         sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
                          hermes_home=self.root)
         run_id = self.row(sup)
@@ -702,7 +702,7 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual((view["seat"], view["pr"], view["state"]), ("reviewer", 7, "running"))
         self.assertEqual(dependency_view(sup.db, REPO, 8), [])
         self.assertIsNone(dependency_view(self.root / "absent.sqlite", REPO))
-        # status JSON (python -m review_loop.run_supervisor status) carries it for failed runs.
+        # status JSON (python -m diaktoros.run_supervisor status) carries it for failed runs.
         with ledger.connect(sup.db) as con:
             con.execute("UPDATE runs SET state='failed' WHERE id=?", (run_id,))
         [failed] = sup.status()
@@ -710,8 +710,8 @@ class LedgerTests(unittest.TestCase):
 
     def test_the_worker_records_every_phase_the_turn_reports(self):
         from types import SimpleNamespace
-        from review_loop import config, gh, run_supervisor, seat_model, trusted_turn
-        from review_loop.run_supervisor import Supervisor, dependency_view, describe_dependencies
+        from diaktoros import config, gh, run_supervisor, seat_model, trusted_turn
+        from diaktoros.run_supervisor import Supervisor, dependency_view, describe_dependencies
         sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
                          hermes_home=self.root)
         run_id = self.row(sup, state="launching")
@@ -746,7 +746,7 @@ class LedgerTests(unittest.TestCase):
                          "a git dependency")
 
     def test_a_slow_prefetch_keeps_its_lease_and_is_never_taken_for_a_lost_worker(self):
-        from review_loop.run_supervisor import Supervisor
+        from diaktoros.run_supervisor import Supervisor
         # The lease (5 s) is five sweep periods and three heartbeat periods (5/3 s), so a live
         # heartbeat has ~3.3 s of scheduling slack: what varies is whether it runs at all, never
         # how promptly. What makes the lease expirable is slow_turn's own UPDATE below (the one
@@ -788,8 +788,8 @@ class LedgerTests(unittest.TestCase):
         self.assertGreater(leases[-1], start[1] + sup.lease_seconds, seen)
 
     def test_status_and_explain_lines_come_from_the_ledger(self):
-        from review_loop import cli, config
-        from review_loop.run_supervisor import Supervisor
+        from diaktoros import cli, config
+        from diaktoros.run_supervisor import Supervisor
         (self.root / "state").mkdir()
         sup = Supervisor(self.root / "state/diaktoros-runs.sqlite",
                          production_config=self.runtime, hermes_home=self.root)
@@ -806,8 +806,8 @@ class LedgerTests(unittest.TestCase):
             self.assertEqual(cli._dependency_lines(loop), [])
 
     def test_the_cap_override_reaches_the_worker(self):
-        from review_loop import run_supervisor
-        from review_loop.run_supervisor import Supervisor
+        from diaktoros import run_supervisor
+        from diaktoros.run_supervisor import Supervisor
         sup = Supervisor(self.root / "ledger.sqlite", production_config=self.runtime,
                          hermes_home=self.root)
         with mock.patch.dict(os.environ, {deps.CAP_ENV: "6", "GH_TOKEN": "ghp_x"}), \

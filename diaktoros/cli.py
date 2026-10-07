@@ -3298,7 +3298,7 @@ def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> l
             for line in str(row["detail"]).splitlines()[-6:]:
                 print(f"{' ' * len(prefix)}| {line[:200]}")
     if len(rows) > limit:
-        print(f"{prefix}… {len(rows) - limit} more: python -m review_loop.run_supervisor "
+        print(f"{prefix}… {len(rows) - limit} more: python -m diaktoros.run_supervisor "
               f"status {ledger}")
     return rows
 
@@ -3399,7 +3399,7 @@ def cmd_trace(args) -> int:
 
     The gate script runs for real on a temporary copy of the loop's home, so the answer is the
     live gate's own; nothing is posted, no run is started and the loop's state is untouched (see
-    ``review_loop.trace``). Exit 2 when it cannot be asked: an unknown loop, no such delivery, an
+    ``diaktoros.trace``). Exit 2 when it cannot be asked: an unknown loop, no such delivery, an
     unreadable payload file, or an event or route this loop does not serve.
     """
     from . import trace

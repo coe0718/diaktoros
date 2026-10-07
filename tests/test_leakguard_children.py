@@ -226,7 +226,7 @@ class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):
     """The supervisor scrubs a worker's environment; the recorder crosses it in fixture mode only."""
 
     def spawned_env(self, **kwargs) -> dict:
-        from review_loop import run_supervisor
+        from diaktoros import run_supervisor
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
             config = Path(tmp, 'config.json')
             config.write_text('{}')
@@ -249,7 +249,7 @@ class RecorderReachesOnlyFixtureWorkers(unittest.TestCase):
     def test_a_fixture_command_run_by_the_worker_carries_it_too(self):
         # _spawn forwards the recorder to the worker; the worker's _run_fixture must pass it on
         # to the fixture command, whose environment it scrubs again.
-        from review_loop import run_supervisor
+        from diaktoros import run_supervisor
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
             seen = Path(tmp, 'seen')
             probe = ('import os, sys\nwith open(sys.argv[1], "w") as out:\n'

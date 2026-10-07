@@ -1,4 +1,4 @@
-"""Green CI for tests whose GitHub fake predates the CI gate (``review_loop.ci``).
+"""Green CI for tests whose GitHub fake predates the CI gate (``diaktoros.ci``).
 
 The broker refuses an APPROVE while CI cannot be read, so a ``gh.api`` fake that knows nothing of
 check runs makes every approval fail closed. ``green(fake)`` answers the two CI reads with "no

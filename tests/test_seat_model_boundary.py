@@ -23,8 +23,8 @@ from unittest import mock
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
-from review_loop import broker_ipc, contained, seat_model, trusted_turn  # noqa: E402
-from review_loop.seat_model import SeatInference  # noqa: E402
+from diaktoros import broker_ipc, contained, seat_model, trusted_turn  # noqa: E402
+from diaktoros.seat_model import SeatInference  # noqa: E402
 from test_selftest import SelftestBase  # noqa: E402
 
 HEAD = "a" * 40
@@ -101,7 +101,7 @@ class ProviderPathUpstream(unittest.TestCase):
     def test_host_chosen_upstream_path_and_its_limits(self):
         import http.server
         import threading
-        from review_loop import inference_proxy
+        from diaktoros import inference_proxy
         seen = []
 
         class Upstream(http.server.BaseHTTPRequestHandler):

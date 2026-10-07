@@ -27,7 +27,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from review_loop import broker_ipc, config, contained, trusted_turn  # noqa: E402
+from diaktoros import broker_ipc, config, contained, trusted_turn  # noqa: E402
 
 REPO = "acme/widgets"
 HEAD = "a" * 40
@@ -374,7 +374,7 @@ class ProductionLaunch(Base):
         self.assertIn("bubblewrap", str(raised.exception))
         self.assertIn("hermes dk retry", str(raised.exception))
         # A host fact, not a flake: the worker fails it once instead of spending its retries.
-        from review_loop import run_supervisor
+        from diaktoros import run_supervisor
         self.assertFalse(run_supervisor.retryable(raised.exception))
 
     def test_hermes_gets_exactly_the_terminal_and_file_tools(self):

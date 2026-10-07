@@ -25,9 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 import test_safe_push as tsp  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from review_loop import (broker, broker_ipc, config, contained, gh, ledger,  # noqa: E402
+from diaktoros import (broker, broker_ipc, config, contained, gh, ledger,  # noqa: E402
                          run_supervisor, safe_push, trusted_turn)
-from review_loop.run_supervisor import CONFLICT_KEY, Supervisor  # noqa: E402
+from diaktoros.run_supervisor import CONFLICT_KEY, Supervisor  # noqa: E402
 
 BASE_SHA = "b" * 40
 TREE = "c" * 40
@@ -131,7 +131,7 @@ class Worker(sm.Worker):
                 self.assertIn(words, row[1])
 
     def test_a_git_or_network_failure_is_a_retry(self):
-        from review_loop import broker
+        from diaktoros import broker
         seen, row, _, _ = self.conflict_run(
             merge_error=broker.BrokerDenied("isolated Git transport failed"))
         self.assertEqual((seen, row[0]), ({}, "waiting"))
@@ -168,9 +168,9 @@ class Broker(unittest.TestCase):
         server = broker_ipc.RunBroker(loop, scope, self.home)
         manifest = {"base_head": sm.HEAD, "message": "merge", "files": []}
         result = {"new_head": "d" * 40}
-        with mock.patch("review_loop.config.by_repo", return_value=loop), \
-             mock.patch("review_loop.safe_push._manifest"), \
-             mock.patch("review_loop.safe_push.push", return_value=result) as push:
+        with mock.patch("diaktoros.config.by_repo", return_value=loop), \
+             mock.patch("diaktoros.safe_push._manifest"), \
+             mock.patch("diaktoros.safe_push.push", return_value=result) as push:
             server._dispatch(json.dumps({"operation": "push", "manifest": manifest}).encode())
         return push.call_args.kwargs
 

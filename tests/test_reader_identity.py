@@ -22,7 +22,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from review_loop import cli, config, doctor
+from diaktoros import cli, config, doctor
 
 ROOT = Path(__file__).resolve().parent.parent
 READER, REV, FIX, ADJ = "reader-acct", "rev-acct", "fix-acct", "adj-acct"
@@ -559,8 +559,8 @@ class HookWriteTests(_Loop):
             # #57's stale-hook preflight reads the listing this way; nothing else may go out.
             self.assertEqual((method, path), ("GET", "/repos/acme/widgets/hooks?per_page=100"))
             return [], ""
-        with patch("review_loop.gh.api", side_effect=api), \
-                patch("review_loop.gh.fetch", side_effect=fetch):
+        with patch("diaktoros.gh.api", side_effect=api), \
+                patch("diaktoros.gh.fetch", side_effect=fetch):
             rc, out = self.run_cli(self.init_argv("--hooks"))
         self.assertEqual(rc, 0, out)
         self.assertIn(f"hooks were created paused as {READER}, and `arm` / `arm --pause` edit "
@@ -587,8 +587,8 @@ class HookWriteTests(_Loop):
             self.assertEqual((method, path), ("GET", "/repos/acme/widgets/hooks?per_page=100"))
             listed.append(login)
             return [], ""
-        with patch("review_loop.gh.api", side_effect=api), \
-                patch("review_loop.gh.fetch", side_effect=fetch):
+        with patch("diaktoros.gh.api", side_effect=api), \
+                patch("diaktoros.gh.fetch", side_effect=fetch):
             rc, out = self.run_cli(self.init_argv("--hooks", "--admin-token", "owner",
                                                   "--token", f"owner={self.keys / 'owner-pat'}"))
         self.assertEqual(rc, 0, out)
@@ -600,7 +600,7 @@ class HookWriteTests(_Loop):
         rc, out = self.run_cli(self.init_argv())
         self.assertEqual(rc, 0, out)
         fetch, calls = self.hook_fetch("HTTP 403 Resource not accessible")
-        with patch("review_loop.gh.fetch", side_effect=fetch):
+        with patch("diaktoros.gh.fetch", side_effect=fetch):
             rc, out = self.run_cli(["arm", "--loop", "widgets"])
         self.assertEqual(rc, 1, out)
         self.assertIn("repository_hooks: write", out)

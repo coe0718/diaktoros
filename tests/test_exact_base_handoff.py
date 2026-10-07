@@ -9,8 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from review_loop import observer
-from review_loop.state import LoopState
+from diaktoros import observer
+from diaktoros.state import LoopState
 from scripts import gate_fixer
 
 HEAD = 'a' * 40

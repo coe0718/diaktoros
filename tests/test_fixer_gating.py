@@ -23,9 +23,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from review_loop import ledger  # noqa: E402
-from review_loop import cli, config, doctor, gate, gh, run_supervisor, state as state_mod  # noqa: E402
-from review_loop.run_supervisor import FixerPushDisabled, Supervisor  # noqa: E402
+from diaktoros import ledger  # noqa: E402
+from diaktoros import cli, config, doctor, gate, gh, run_supervisor, state as state_mod  # noqa: E402
+from diaktoros.run_supervisor import FixerPushDisabled, Supervisor  # noqa: E402
 from scripts import gate_fixer, watchdog  # noqa: E402
 
 HEAD = "a" * 40
@@ -320,7 +320,7 @@ class Surfaces(Base):
             self.assertEqual(cli.cmd_fixer_push(args), 0)
         self.assertIn("1 held verdict(s)", out.getvalue())
         self.assertIn("drain --loop one --seat fixer", out.getvalue())
-        source = (ROOT / "review_loop" / "cli.py").read_text()
+        source = (ROOT / "diaktoros" / "cli.py").read_text()
         self.assertIn("decide the fix leg", source)
         self.assertIn("fixer-push --loop", (ROOT / "docs" / "operations.md").read_text())
 
@@ -346,7 +346,7 @@ class PushHelper(unittest.TestCase):
         self.turn = self.root / "turn.json"
         self.turn.write_text(json.dumps({"head": HEAD}))
         (self.root / "msg.txt").write_text("Fix the widget off-by-one\n")
-        from review_loop import broker_client
+        from diaktoros import broker_client
         self.client = broker_client
         for name, value in (("WORK", str(self.work)), ("TURN_FILE", str(self.turn)),
                             ("EXPORT", str(self.export))):
@@ -369,7 +369,7 @@ class PushHelper(unittest.TestCase):
         return code, out.getvalue(), err.getvalue(), sock
 
     def test_helper_builds_a_manifest_the_broker_accepts(self):
-        from review_loop import safe_push
+        from diaktoros import safe_push
         manifest = self.client.build_manifest(["src/a.py", str(self.work / "README.md")],
                                               "Fix the widget")
         self.assertEqual(set(manifest), {"base_head", "message", "files"})
@@ -379,8 +379,8 @@ class PushHelper(unittest.TestCase):
         self.assertEqual(files, [("src/a.py", b"print('fixed')\n"), ("README.md", b"docs\n")])
 
     def test_limits_mirror_the_broker(self):
-        from review_loop import safe_push
-        from review_loop import broker_ipc
+        from diaktoros import safe_push
+        from diaktoros import broker_ipc
         self.assertEqual((self.client.MAX_FILES, self.client.MAX_FILE, self.client.MAX_CONTENT,
                           self.client.MAX_MESSAGE, self.client.MAX_PATCH,
                           self.client.MAX_PATCH_PATHS, self.client.MAX_FRAME),
@@ -390,8 +390,8 @@ class PushHelper(unittest.TestCase):
         # The export a diff is taken against is where contained mounts it (the fixture patches
         # the client's constant, so read the shipped one from its source).
         import re
-        from review_loop import contained
-        source = (ROOT / "review_loop" / "broker_client.py").read_text()
+        from diaktoros import contained
+        source = (ROOT / "diaktoros" / "broker_client.py").read_text()
         self.assertEqual(re.search(r"^EXPORT = '([^']+)'", source, re.M).group(1),
                          contained.EXPORT_DIR)
         self.assertEqual(self.client._CONTROL_FILES, safe_push.CONTROL_FILES)
@@ -445,7 +445,7 @@ class PushHelper(unittest.TestCase):
         sock.assert_not_called()
 
     def test_tampered_base_head_is_still_refused_by_the_broker(self):
-        from review_loop import broker, safe_push
+        from diaktoros import broker, safe_push
         self.turn.write_text(json.dumps({"head": "c" * 40}))
         manifest = self.client.build_manifest(["src/a.py"], "fix")
         loop = {"repo": REPO, "unattended_fixer_push": True}
@@ -467,7 +467,7 @@ class PushHelper(unittest.TestCase):
 
 class FixerInstructions(unittest.TestCase):
     def test_fixer_is_told_the_helper_limits_and_what_a_push_cannot_do(self):
-        from review_loop import prompts, trusted_turn
+        from diaktoros import prompts, trusted_turn
         text = trusted_turn.tool_instructions("fixer")
         for needle in ("broker_client push --files", "--message-file", "--dry-run",
                        "64 files", "512 KiB", "64 KiB", "240 bytes", "changed, added or deleted",
@@ -483,7 +483,7 @@ class FixerInstructions(unittest.TestCase):
 
     def test_run_turn_writes_the_head_read_only_for_the_fixer_only(self):
         import subprocess
-        from review_loop import broker_client, broker_ipc, contained, trusted_turn
+        from diaktoros import broker_client, broker_ipc, contained, trusted_turn
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)

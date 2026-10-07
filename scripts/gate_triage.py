@@ -26,8 +26,8 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from review_loop import config, gate, gh  # noqa: E402
-from review_loop.util import log, silence  # noqa: E402
+from diaktoros import config, gate, gh  # noqa: E402
+from diaktoros.util import log, silence  # noqa: E402
 
 
 def closing_pr(loop: dict, number: int) -> int | None:
@@ -75,7 +75,7 @@ def fix(loop: dict, payload: dict) -> None:
     if not config.issue_fixes_enabled(loop):
         silence(f"issue #{number}: issue fixes need unattended fixer pushes on — "
                 f"{config.fixer_push_enable_command(loop)}")
-    from review_loop import run_supervisor
+    from diaktoros import run_supervisor
     try:
         run_supervisor.issue_fix_issue(loop, number)
     except Exception as exc:
@@ -88,7 +88,7 @@ def fix(loop: dict, payload: dict) -> None:
         _skip_comment(loop, number, existing)
         silence(f"issue #{number}: open PR #{existing} already fixes it; not handed to the fixer")
     # #324: a finding a seat filed from a PR that is still open is about code only there.
-    from review_loop import fix_hold, state as state_mod
+    from diaktoros import fix_hold, state as state_mod
     try:
         origin = fix_hold.origin_pr(loop, number)
     except Exception as exc:
@@ -123,7 +123,7 @@ def fix(loop: dict, payload: dict) -> None:
 
 def _fix_notice(loop: dict, number: int, base: str, outcome: str) -> None:
     """The observer's "handed to the fixer" notice (#231): once per issue and base."""
-    from review_loop import observer, state as state_mod
+    from diaktoros import observer, state as state_mod
     observer.notify(loop, state_mod.state_for(loop), "fixing", number, base, identity=base,
                     outcome=outcome, issue=True)
 
@@ -171,5 +171,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    from review_loop import gate_failures  # noqa: E402
+    from diaktoros import gate_failures  # noqa: E402
     gate_failures.run("gate_triage", main)

@@ -12,8 +12,8 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from review_loop import trusted_fetch, trusted_turn
-from review_loop.trusted_fetch import _MAX_BYTES
+from diaktoros import trusted_fetch, trusted_turn
+from diaktoros.trusted_fetch import _MAX_BYTES
 
 
 LOOPBACK_API = "http://127.0.0.1:9"   # never contacted: urlopen is mocked where it is used
@@ -446,7 +446,7 @@ class TrustedFetchTests(unittest.TestCase):
     def _patch_redirect(self, api, codeload):
         """Point gh.API at the loopback API and _TARBALL_REDIRECT at the loopback codeload."""
         from unittest import mock
-        from review_loop import gh
+        from diaktoros import gh
         return (
             mock.patch.object(gh, "token", return_value="dummy-token"),
             mock.patch.object(gh, "API", api.base),

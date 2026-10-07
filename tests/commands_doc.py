@@ -27,7 +27,7 @@ def parser() -> argparse.ArgumentParser:
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "tests"))
     from harness.fixture import FakeCtx
-    from review_loop import cli
+    from diaktoros import cli
     ctx = FakeCtx()
     # No settings form: every default shown is the schema's, the one a fresh install starts from.
     cli.register_cli(ctx, settings={})

@@ -14,8 +14,8 @@ import unittest
 from unittest import mock
 import warnings
 
-from review_loop import ledger, review_receipt
-from review_loop.run_supervisor import Supervisor
+from diaktoros import ledger, review_receipt
+from diaktoros.run_supervisor import Supervisor
 
 HEAD = 'a' * 40
 REPO = 'acme/widgets'
@@ -82,7 +82,7 @@ class LedgerConnectionsClose(unittest.TestCase):
     def test_a_worker_refusing_a_non_ledger_leaves_nothing_open(self):
         # #113's worker path: _worker_connect opens the host's file, finds no review-loop ledger
         # and raises LedgerMissing, having closed it; ledger.connect never holds it.
-        from review_loop.run_supervisor import LedgerMissing
+        from diaktoros.run_supervisor import LedgerMissing
         other = Path(self.tmp.name) / 'other.sqlite'
         with ledger.connect(other) as con:
             con.execute('CREATE TABLE unrelated(x)')
@@ -128,7 +128,7 @@ class ConnectHelper(unittest.TestCase):
     """``ledger.connect`` keeps ``with con:`` transaction semantics and adds the close."""
 
     def setUp(self):
-        from review_loop import ledger
+        from diaktoros import ledger
         self.connect = ledger.connect
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
         self.addCleanup(self.tmp.cleanup)
@@ -214,7 +214,7 @@ class ConnectHelper(unittest.TestCase):
             return opened[-1]
 
         with mock.patch('sqlite3.connect', tracking), \
-                mock.patch('review_loop.run_supervisor._ledger_problem', side_effect=RuntimeError('boom')):
+                mock.patch('diaktoros.run_supervisor._ledger_problem', side_effect=RuntimeError('boom')):
             with self.assertRaises(RuntimeError):
                 sup._worker_connect()
         self.assertEqual(len(opened), 1)

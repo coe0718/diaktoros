@@ -19,7 +19,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
-from review_loop import cli, config, doctor, routes  # noqa: E402
+from diaktoros import cli, config, doctor, routes  # noqa: E402
 
 LOOP_FILE = t.LOOPS_DIR / "widgets.json"
 
@@ -765,7 +765,7 @@ class PurgeTest(Base):
         # #113's contract: when the last loop is uninstalled, forget that a run ledger existed
         # (run_supervisor.forget_ledger_presence), so a later fresh install is not reported as a
         # vanished ledger. Through #57's full --purge path: state dir gone first, then the marker.
-        from review_loop import run_supervisor
+        from diaktoros import run_supervisor
         self.fresh_install()
         target = self.default_state()
         marker = run_supervisor.presence_marker()
@@ -900,7 +900,7 @@ class PingTest(Base):
 
     def setUp(self):
         super().setUp()
-        from review_loop import hook_ping
+        from diaktoros import hook_ping
         self.hook_ping = hook_ping
         self.fresh_install()
         self.ids = sorted(hook["id"] for hook in self.hooks())
@@ -960,7 +960,7 @@ class PingTest(Base):
                          [p for p in state_before if "pending" in p or "queue" in p])
 
     def test_selftest_ping_never_pings_another_installs_hook(self):
-        from review_loop import selftest
+        from diaktoros import selftest
         loop = config.load_id("widgets")
         theirs = [{**hook, "config": {**hook["config"], "url": hook["config"]["url"].replace(
             t.HOST, "https://other-gateway.example")}} for hook in self.hooks()]
@@ -983,7 +983,7 @@ class PingTest(Base):
         self.assertEqual({r[2] for r in report.results}, {selftest.PASS})
 
     def test_selftest_reads_evidence_and_pings_only_when_asked(self):
-        from review_loop import selftest
+        from diaktoros import selftest
         loop = config.load_id("widgets")
         report = selftest.Report(out=io.StringIO())
         with selftest.github_read_only():

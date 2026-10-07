@@ -51,8 +51,8 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from review_loop import config, gh, state as state_mod  # noqa: E402
-from review_loop.util import human
+from diaktoros import config, gh, state as state_mod  # noqa: E402
+from diaktoros.util import human
 
 # A CLI's report belongs on stdout: the cron that runs a sweep delivers it, and a gate that
 # runs the merge path captures it. (The gates' own logging stays on stderr, where a protocol

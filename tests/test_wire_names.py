@@ -20,7 +20,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from review_loop import broker, broker_client, config, envnames, util, wire  # noqa: E402
+from diaktoros import broker, broker_client, config, envnames, util, wire  # noqa: E402
 
 HEAD, BASE = "a" * 40, "b" * 40
 LOOP = {"seats": {"fixer": {"login": "fix"}}}

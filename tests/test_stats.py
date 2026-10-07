@@ -20,8 +20,8 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from review_loop import gh, ledger, run_supervisor, stats  # noqa: E402
-from review_loop.run_supervisor import Supervisor  # noqa: E402
+from diaktoros import gh, ledger, run_supervisor, stats  # noqa: E402
+from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO = "acme/widgets"
 NOW = 1_800_000_000.0
