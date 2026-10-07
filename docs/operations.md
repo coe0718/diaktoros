@@ -21,6 +21,7 @@ incident recovery, and the decision to merge.
 - [Bursts and watchdog](#how-it-handles-a-burst)
 - [Conflicts with the base](#conflicts-with-the-base)
 - [Publishing stats](#publishing-stats)
+- [Moving to a renamed plugin or repository](#moving-to-a-renamed-plugin-or-repository)
 
 Replace quoted angle-bracket placeholders, including brackets, with your values.
 `--loop` is the saved loop ID, not a repo or profile. `--pr` is the numeric PR number
@@ -460,3 +461,34 @@ own credentials. For GitHub Pages:
 The ledger's turn timings exist only on the host, which is why the page is built there. A
 repository that wants GitHub-side numbers alone can compute them in a scheduled Actions workflow
 instead; the ledger's columns are not on GitHub.
+
+## Moving to a renamed plugin or repository
+
+Hermes knows a plugin by its manifest name. A plugin installed under a new name therefore starts
+with a blank settings form, and the gate and watchdog shims still run the old folder's scripts.
+A GitHub repository rename moves the repository under the loop: its webhooks then name a repository
+no loop file matches, and its fetches are refused. `migrate` closes both gaps in one step.
+
+Run it between turns, once the new plugin is installed and enabled. The old plugin should be
+disabled but still installed, so its settings and scripts stay readable:
+
+```bash
+hermes review-loop migrate --dry-run   # every step, nothing written
+hermes review-loop migrate
+```
+
+It runs four steps:
+
+1. It copies each settings-form value the old plugin holds and the new one does not. A value
+   already set on the new plugin is kept.
+2. For each loop whose repository GitHub now reports under another name, it moves the loop's
+   records to the new name: the run ledger, the loop's state files and the loop file.
+   - It first checks that both names are the same repository.
+   - It refuses while a run for that repository is in flight or uncertain.
+3. It points the gate and watchdog shims at the new plugin's scripts.
+4. It lists every `doctor` check that isn't verified.
+
+Exit 1 means a step was refused; the line says why. Running it again finishes whatever an
+interrupted run began. When everything checks out, remove the old plugin with
+`hermes plugins remove <old-name>`. Records kept outside the loop's state, such as the
+gate-failure log and the broker audit log, keep the old repository name as history.
