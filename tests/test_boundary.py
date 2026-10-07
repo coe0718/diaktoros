@@ -25,7 +25,7 @@ class BoundaryTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = pathlib.Path(self.temp.name)
         # The gate resolves its run ledger and runtime from $HERMES_HOME. Pin it to this fixture:
-        # an ambient home holding a review-loop-runtime.json (an installed host, or a shared test
+        # an ambient home holding a diaktoros-runtime.json (an installed host, or a shared test
         # home another test wrote one into) turns the fail-closed hold into a real enqueue — a row
         # in that home's ledger and a detached production worker (#109).
         self.hermes = self.root / "hermes"

@@ -42,7 +42,7 @@ a partial install is not necessarily a rollback. Setup does not grant fixer push
 
 ## What `init` writes
 
-`init` is the non-wizard path. It writes loop JSON under `$HERMES_HOME/review-loops.d/`,
+`init` is the non-wizard path. It writes loop JSON under `$HERMES_HOME/diaktoros.d/`,
 role routes in the gateway registry and gate shims; the configured skill name is a
 reference, not a promise to generate a new skill. Optional
 observer/adjudicator routes depend on supplied settings. The private runtime file is
@@ -55,7 +55,7 @@ See [configuration](configuration.md)
 for file layouts and [commands](commands.md) for `init`, `apply` and `arm`.
 
 `status` prints the effective loop state directory. Default state is under
-`$HERMES_HOME/state/review-loops/`. Keep the gateway and CLI on the same Hermes home.
+`$HERMES_HOME/state/diaktoros/`. Keep the gateway and CLI on the same Hermes home.
 
 ## First run
 
@@ -252,7 +252,7 @@ hermes dk selftest --loop "<loop-id>" --pr "<pr-number>" --live-turn
 requires a PR and runs a real isolated reviewer conversation, printing rather than
 posting its verdict; model/build costs may apply.
 
-The private `$HERMES_HOME/review-loop-runtime.json` must be mode `0600`. It supplies
+The private `$HERMES_HOME/diaktoros-runtime.json` must be mode `0600`. It supplies
 launcher settings; seat models resolve from the configured Hermes profiles. Selftest
 success is not assurance that every build fits the sandbox or later write remains eligible.
 See [configuration](configuration.md) for runtime keys and [troubleshooting](troubleshooting.md)
@@ -349,7 +349,7 @@ redelivery, and check for ambiguous runs/writes. See
 
 The host commits durable work and launch intent before spawning. Unique
 repo/number/head/seat/turn keys deduplicate deliveries. The supervisor SQLite ledger is
-`$HERMES_HOME/state/review-loop-runs.sqlite`; **it is safety state, not disposable cache**.
+`$HERMES_HOME/state/diaktoros-runs.sqlite`; **it is safety state, not disposable cache**.
 Worker stderr is beside it in `.workers.log`, with bounded rotation.
 
 | State | Meaning | Action |
@@ -500,16 +500,30 @@ hermes dk migrate --dry-run   # every step, nothing written
 hermes dk migrate
 ```
 
-It runs four steps:
+It runs these steps:
 
 1. It copies each settings-form value the old plugin holds and the new one does not. A value
    already set on the new plugin is kept.
-2. For each loop whose repository GitHub now reports under another name, it moves the loop's
+2. It gives the host files under `$HERMES_HOME` their new names. It's refused while any run is in
+   flight or uncertain. The files:
+   - `review-loops.d/` → `diaktoros.d/`, and `review-loop-runtime.json` →
+     `diaktoros-runtime.json`;
+   - under `state/`: the run ledger (`review-loop-runs.sqlite` → `diaktoros-runs.sqlite`), the
+     loops' default state directories (`review-loops/` → `diaktoros/`), the gate-failure log,
+     the pacing file and the seat locks.
+
+   A loop whose state directory moved has its loop file updated. Until a file is moved, it keeps
+   working where it is; `doctor` names any that still have their old names. If both names exist,
+   the step leaves that file for you to sort out.
+3. It moves the shared watchdog job to the new name. A `diaktoros watchdog` job running
+   `diaktoros-watchdog.py` is created with the old job's schedule and delivery target, and read
+   back. Only then is `review loop watchdog` removed, along with its shim.
+4. For each loop whose repository GitHub now reports under another name, it moves the loop's
    records to the new name: the run ledger, the loop's state files and the loop file.
    - It first checks that both names are the same repository.
    - It refuses while a run for that repository is in flight or uncertain.
-3. It points the gate and watchdog shims at the new plugin's scripts.
-4. It lists every `doctor` check that isn't verified.
+5. It points the gate and watchdog shims at the new plugin's scripts.
+6. It lists every `doctor` check that isn't verified.
 
 Exit 1 means a step was refused or isn't finished; the line says why. Running it again finishes
 whatever an interrupted run began. When everything checks out, remove the old plugin with

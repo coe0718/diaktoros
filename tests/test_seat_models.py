@@ -585,7 +585,7 @@ class Worker(Base):
 
 class DoctorAndModels(Base):
     def write_runtime(self, settings: dict) -> None:
-        path = self.home / "review-loop-runtime.json"
+        path = self.home / "diaktoros-runtime.json"
         path.write_text(json.dumps(settings))
         path.chmod(0o600)
 
@@ -709,7 +709,7 @@ class ReaderChain(Base):
         answer = self.describe()
         self.assertEqual(answer.get("kind"), "interpreter")
         self.assertIn("no YAML library", str(answer.get("error")))
-        self.assertIn("review-loop-runtime.json", str(answer.get("error")))
+        self.assertIn("diaktoros-runtime.json", str(answer.get("error")))
         self.assertNotIn("config.yaml unreadable", str(answer.get("error")))
 
     def test_a_json_config_still_resolves_with_no_reader(self):
@@ -724,13 +724,13 @@ class ReaderChain(Base):
         # the seat's own config, in the form a reader-less interpreter cannot parse at all
         write_yaml_profile(self.home, "rev",
                            {"default": "vendor/rev-model", "provider": "openrouter"})
-        runtime = self.home / "review-loop-runtime.json"
+        runtime = self.home / "diaktoros-runtime.json"
         runtime.write_text(json.dumps(self.settings))
         runtime.chmod(0o600)
         checks = {c.name: c for c in doctor.check_seat_models(self.loop)}
         self.assertEqual(checks["model:reviewer"].status, doctor.ABSENT)
         self.assertIn("will be held", checks["model:reviewer"].detail)
-        self.assertIn("review-loop-runtime.json", checks["model:reviewer"].fix)
+        self.assertIn("diaktoros-runtime.json", checks["model:reviewer"].fix)
         self.assertNotIn("set a supported provider", checks["model:reviewer"].fix)
 
 
@@ -755,7 +755,7 @@ class ProviderExtras(Base):
         write_profile(self.home, "rev", {"default": "claude-sonnet", "provider": "anthropic"})
 
     def extras(self, venv: str | None = None, loop: dict | None = None, settings: dict | None = None):
-        runtime = self.home / "review-loop-runtime.json"
+        runtime = self.home / "diaktoros-runtime.json"
         runtime.write_text(json.dumps(settings or {**self.settings, "venv": venv or self.bare}))
         runtime.chmod(0o600)
         return {c.name: c for c in doctor.check_seat_extras(loop or self.loop)}
@@ -1069,7 +1069,7 @@ class ProviderExtras(Base):
         self.assertIn("1 skipped", out.getvalue())
 
     def write_runtime_for(self, venv: str) -> None:
-        runtime = self.home / "review-loop-runtime.json"
+        runtime = self.home / "diaktoros-runtime.json"
         runtime.write_text(json.dumps({**self.settings, "venv": venv}))
         runtime.chmod(0o600)
 
@@ -1089,7 +1089,7 @@ class ProviderExtras(Base):
         self.assertIn("anthropic", check.detail)
         self.assertIn(self.bare, check.detail)
         self.assertIn("hermes pm install --extra anthropic", check.fix)
-        self.assertIn("review-loop-runtime.json", check.fix)
+        self.assertIn("diaktoros-runtime.json", check.fix)
         # custom:acme: Hermes resolves its entry (acme.test/v1) to chat_completions
         self.assertEqual(checks["extras:fixer"].status, doctor.VERIFIED)
         self.assertEqual(checks["extras:adjudicator"].status, doctor.VERIFIED)
@@ -1149,7 +1149,7 @@ class ProviderExtras(Base):
     def test_no_runtime_file_is_unknown(self):
         checks = {c.name: c for c in doctor.check_seat_extras(self.loop)}
         self.assertEqual(checks["extras:reviewer"].status, doctor.UNKNOWN)
-        self.assertIn("review-loop-runtime.json", checks["extras:reviewer"].detail)
+        self.assertIn("diaktoros-runtime.json", checks["extras:reviewer"].detail)
 
     def test_a_runtime_override_needs_no_extra(self):
         settings = {**self.settings, "seats": {"reviewer": {

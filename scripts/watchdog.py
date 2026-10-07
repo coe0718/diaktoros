@@ -1120,7 +1120,7 @@ def parked_kind(loop: dict, marker: dict, number: int, head: str,
                     f"(marker {marker.get('at') or 'unknown'})")
         return ""
     from review_loop.run_supervisor import turn_state
-    run = turn_state(config.home() / "state" / "review-loop-runs.sqlite", loop["repo"],
+    run = turn_state(config.host_path("ledger"), loop["repo"],
                      number, head, "adjudicator")
     if run in LIVE_TURN:
         return ""
@@ -1243,7 +1243,7 @@ def run(args: argparse.Namespace, budget: float) -> None:
     # The supervisor outbox is independent of GitHub listing availability or
     # paused hooks. It uses the existing cron stdout delivery path.
     from review_loop.run_supervisor import presence_marker
-    out.extend(sweep_ledger(config.home() / 'state' / 'review-loop-runs.sqlite',
+    out.extend(sweep_ledger(config.host_path("ledger"),
                             presence=presence_marker()))
     # Failures no loop could be named for (a malformed payload, a broken config) — swept by
     # every run, scoped or not: an install whose cron jobs are all ``--loop``-scoped would

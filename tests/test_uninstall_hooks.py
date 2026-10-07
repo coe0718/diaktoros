@@ -379,7 +379,7 @@ class CronTest(Base):
 
 class PurgeTest(Base):
     def default_state(self) -> pathlib.Path:
-        target = config.home() / "state" / "review-loops" / "widgets"
+        target = config.home() / "state" / "diaktoros" / "widgets"
         cfg = json.loads(LOOP_FILE.read_text())
         cfg["state_dir"] = str(target)
         LOOP_FILE.write_text(json.dumps(cfg))

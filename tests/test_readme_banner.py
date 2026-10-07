@@ -11,7 +11,7 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-RUNTIME = "review-loop-runtime.json"
+RUNTIME = "diaktoros-runtime.json"
 STALE = (r"disabled in this branch", r"worker config absent", r"Do not install this branch",
          r"routes silent", r"not a safely running")
 

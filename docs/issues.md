@@ -46,7 +46,7 @@ but recorded write outcomes are never blindly replayed.
 
 ## Before you start
 
-1. Have a working review loop and a private `$HERMES_HOME/review-loop-runtime.json`.
+1. Have a working review loop and a private `$HERMES_HOME/diaktoros-runtime.json`.
    Run [doctor and selftest](operations.md#preflight-doctor).
 2. Choose an existing triage Hermes profile. It can be the reviewer profile: triage
    does not require a distinct model profile, but the selected model must resolve.
@@ -192,7 +192,7 @@ sqlite3 -readonly "<ledger-path>" "SELECT r.id,r.pr,r.state,r.error,t.state,t.er
 sqlite3 -readonly "<ledger-path>" "SELECT r.id,r.pr,r.state,r.error,f.kind,f.state,f.branch,f.pr_number,f.comment_id,f.error FROM runs r LEFT JOIN issue_fixes f ON f.run_id=r.id WHERE r.seat='issue_fixer' AND r.pr=<issue-number> ORDER BY r.created DESC;"
 ```
 
-`<ledger-path>` is `$HERMES_HOME/state/review-loop-runs.sqlite`. The left join keeps runs
+`<ledger-path>` is `$HERMES_HOME/state/diaktoros-runs.sqlite`. The left join keeps runs
 whose broker result does not exist yet. If multiple repos share that issue number,
 add a repository predicate using your own value; correlate with the loop's repo.
 `r.state` is supervisor state; the result-table state is the broker write stage.

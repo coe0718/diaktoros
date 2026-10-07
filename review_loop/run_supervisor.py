@@ -255,9 +255,10 @@ def ledger_marker(db: str | Path) -> Path:
 
 
 def production_ledger() -> Path:
-    """The run ledger every host caller uses: ``$HERMES_HOME/state/review-loop-runs.sqlite``."""
+    """The run ledger every host caller uses: ``$HERMES_HOME/state/diaktoros-runs.sqlite``
+    (``review-loop-runs.sqlite`` until ``migrate`` moves it)."""
     from . import config
-    return config.home() / "state" / "review-loop-runs.sqlite"
+    return config.host_path("ledger")
 
 
 def presence_marker() -> Path:

@@ -61,7 +61,7 @@ def main() -> None:
     # supervisor hold is authoritative even if a later webhook says approved:
     # neither a merge handoff nor another fixer turn may bypass inspection.
     from review_loop.run_supervisor import Supervisor
-    ledger = config.home() / 'state' / 'review-loop-runs.sqlite'
+    ledger = config.host_path("ledger")
     if ledger.exists() and Supervisor(ledger).post_write_hold(loop['repo'], number):
         silence('post-write push quarantined — operator inspection required; no merge handoff')
 

@@ -1,4 +1,4 @@
-"""Find the four host paths ``review-loop-runtime.json`` names, and write the file (#215).
+"""Find the four host paths ``diaktoros-runtime.json`` names, and write the file (#215).
 
 ``setup`` uses this so a first install never asks the operator to hand-write the runtime file:
 
@@ -36,7 +36,7 @@ _KEPT_KEYS = ("model", "upstream", "key_file", "seats")
 
 
 def path() -> Path:
-    return config.home() / "review-loop-runtime.json"
+    return config.host_path("runtime")
 
 
 def _real_home() -> Path:

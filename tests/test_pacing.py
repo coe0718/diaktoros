@@ -162,7 +162,7 @@ class ProductionWorker(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.home = pathlib.Path(temp.name)
-        runtime = self.home / "review-loop-runtime.json"
+        runtime = self.home / "diaktoros-runtime.json"
         runtime.write_text(json.dumps({"source": "/x", "venv": "/x", "runtime": "/x", "rust": "/x"}))
         runtime.chmod(0o600)
         patch = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home),
@@ -186,8 +186,8 @@ class ProductionWorker(unittest.TestCase):
         with mock.patch.object(Supervisor, "_spawn"), \
                 mock.patch.object(config, "by_repo", return_value=loop):
             gate.enqueue_isolated(loop, "fixer", 8, HEAD)
-        sup = Supervisor(self.home / "state" / "review-loop-runs.sqlite",
-                         production_config=self.home / "review-loop-runtime.json",
+        sup = Supervisor(self.home / "state" / "diaktoros-runs.sqlite",
+                         production_config=self.home / "diaktoros-runtime.json",
                          hermes_home=self.home)
         row = sup.get(f"acme/widgets:8:{HEAD}:fixer")
         with closing(sqlite3.connect(sup.db)) as con, con:
@@ -232,7 +232,7 @@ class ProductionWorker(unittest.TestCase):
         reset = time.time() + 3600
 
         def wrote_then_limited(_loop, scope, observed=None, **kw):
-            with closing(sqlite3.connect(self.home / "state" / "review-loop-runs.sqlite")) as con, con:
+            with closing(sqlite3.connect(self.home / "state" / "diaktoros-runs.sqlite")) as con, con:
                 rid = con.execute("SELECT id FROM runs").fetchone()[0]
                 con.execute("INSERT INTO issue_fixes(run_id,repo,number,base,kind,branch,state,"
                             "created,updated) VALUES(?,?,?,?,?,?,?,?,?)",

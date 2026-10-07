@@ -72,7 +72,7 @@ class Base(unittest.TestCase):
         self.st = state_mod.state_for(self.loop)
 
     def ledger_rows(self) -> list:
-        db = self.root / "home" / "state" / "review-loop-runs.sqlite"
+        db = self.root / "home" / "state" / "diaktoros-runs.sqlite"
         if not db.exists():
             return []
         with ledger.connect(db) as con:
@@ -153,7 +153,7 @@ class SupervisorAdmission(Base):
         settings = self.root / "runtime.json"
         settings.write_text("{}")
         settings.chmod(0o600)
-        return Supervisor(config.home() / "state" / "review-loop-runs.sqlite",
+        return Supervisor(config.home() / "state" / "diaktoros-runs.sqlite",
                           production_config=settings, hermes_home=self.root / "home")
 
     def test_gate_path_enqueue_refuses_before_any_row(self):

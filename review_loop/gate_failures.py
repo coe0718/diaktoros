@@ -913,7 +913,7 @@ def _settle_github_read(repo, key: str, how: str) -> None:
 
 def fallback_ledger() -> Ledger:
     """For a failure before any loop could be named (a malformed payload, a broken config)."""
-    return Ledger(config.home() / "state" / "review-loop-gate-failures")
+    return Ledger(config.host_path("gate_failures"))
 
 
 def _loop_for(payload) -> dict | None:

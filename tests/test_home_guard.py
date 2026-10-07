@@ -33,7 +33,7 @@ import _home_guard, sys
 sys.path.insert(0, sys.argv[1])
 from review_loop import config
 from review_loop.run_supervisor import Supervisor
-Supervisor(config.home() / "state" / "review-loop-runs.sqlite")
+Supervisor(config.home() / "state" / "diaktoros-runs.sqlite")
 """
 
 
@@ -95,9 +95,9 @@ class HomeGuard(unittest.TestCase):
                 with self.assertRaises(config.RealHomeError):
                     config.home()
         with self.assertRaises(config.RealHomeError):
-            Supervisor(real / ".hermes/state/review-loop-runs.sqlite")
+            Supervisor(real / ".hermes/state/diaktoros-runs.sqlite")
         with self.assertRaises(config.RealHomeError):
-            state.LoopState({"state_dir": str(real / ".hermes/state/review-loops/x")})
+            state.LoopState({"state_dir": str(real / ".hermes/state/diaktoros/x")})
         with mock.patch.dict(os.environ, {config.TEST_HOME_GUARD_ENV: ""}):
             self.assertEqual(config.home(), pathlib.Path(os.environ["HERMES_HOME"]))
 
@@ -311,7 +311,7 @@ class RealHomeWrites(unittest.TestCase):
         self.source = pathlib.Path(self.temp.name) / "source"   # a clone to isolate from
         (self.source / ".git").mkdir(parents=True)
         self.loop = {"id": "x", "repo": "acme/widgets",
-                     "state_dir": str(self.real / ".hermes/state/review-loops/x")}
+                     "state_dir": str(self.real / ".hermes/state/diaktoros/x")}
 
     def assert_refused(self, write):
         with self.assertRaises(config.RealHomeError):

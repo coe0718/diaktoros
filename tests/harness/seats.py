@@ -451,13 +451,13 @@ def group_seat_identity() -> None:
     payload = {**pr_payload(7, requested=REVIEWER), "repository": {"full_name": "acme/seats"}}
     kind, out, err = run("gate_reviewer.py", payload)
     check("the new loop gate stays silent", (kind, out), ("SILENT", "[SILENT]"))
-    seats_pending = HOME / "state" / "review-loops" / "seats" / "pending.json"
+    seats_pending = HOME / "state" / "diaktoros" / "seats" / "pending.json"
     queued = json.loads(seats_pending.read_text()) if seats_pending.exists() else {}
     check("  and holds the authorized reviewer head",
           queued.get("reviewer", {}).get("acme/seats#7", {}).get("head"), HEAD_A)
     check("  and never starts a gateway run", no_ledger_run(), True)
 
-    loop_state = HOME / "state" / "review-loops" / "seats"
+    loop_state = HOME / "state" / "diaktoros" / "seats"
     loop_state.mkdir(parents=True, exist_ok=True)
     (loop_state / "locks.json").write_text("{}")
     (loop_state / "pending.json").write_text(json.dumps(

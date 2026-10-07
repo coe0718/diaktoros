@@ -91,10 +91,10 @@ class Enqueue(Base):
         patch = mock.patch.object(config, "home", return_value=self.home)
         patch.start()
         self.addCleanup(patch.stop)
-        self.ledger = self.home / "state" / "review-loop-runs.sqlite"
+        self.ledger = self.home / "state" / "diaktoros-runs.sqlite"
 
     def runtime(self):
-        path = self.home / "review-loop-runtime.json"
+        path = self.home / "diaktoros-runtime.json"
         path.write_text("{}")
         path.chmod(0o600)
 

@@ -38,7 +38,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         settings = self.root / 'production.json'
         settings.write_text('{}')
         settings.chmod(0o600)
-        return Supervisor(config.home() / 'state' / 'review-loop-runs.sqlite',
+        return Supervisor(config.home() / 'state' / 'diaktoros-runs.sqlite',
                           production_config=settings, hermes_home=self.root)
 
     def admitted_scope(self):
@@ -117,7 +117,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         self.assertFalse(config.load_id('one')['unattended_fixer_push'])
 
     def test_supervisor_in_flight_blocks_enable_even_if_gate_state_empty(self):
-        db = config.home() / 'state' / 'review-loop-runs.sqlite'
+        db = config.home() / 'state' / 'diaktoros-runs.sqlite'
         sup = Supervisor(db)
         sup.enqueue('run', 'owner/one', 3, 'a' * 40, 'fixer')
         with ledger.connect(db) as con:

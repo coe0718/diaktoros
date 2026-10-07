@@ -24,7 +24,7 @@ class PostWriteRegressions(unittest.TestCase):
                                            "REVIEW_LOOP_CONFIG_DIR": str(self.root / "review-loops.d")})
         env.start()
         self.addCleanup(env.stop)
-        self.db = self.root / "state" / "review-loop-runs.sqlite"
+        self.db = self.root / "state" / "diaktoros-runs.sqlite"
         self.sup = Supervisor(self.db)
         self.sup.enqueue("fix", REPO, 7, HEAD, "fixer")
         with ledger.connect(self.db) as con:

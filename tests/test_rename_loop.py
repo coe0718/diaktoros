@@ -111,7 +111,7 @@ class Paused(fg.Base):
         settings = self.root / "runtime.json"
         settings.write_text("{}")
         settings.chmod(0o600)
-        sup = Supervisor(config.home() / "state" / "review-loop-runs.sqlite",
+        sup = Supervisor(config.home() / "state" / "diaktoros-runs.sqlite",
                          production_config=settings, hermes_home=self.root / "home")
         with mock.patch.object(sup, "_spawn"):
             sup.enqueue("d", fg.REPO, 7, fg.HEAD, "reviewer")

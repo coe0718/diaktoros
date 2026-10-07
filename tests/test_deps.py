@@ -791,7 +791,7 @@ class LedgerTests(unittest.TestCase):
         from review_loop import cli, config
         from review_loop.run_supervisor import Supervisor
         (self.root / "state").mkdir()
-        sup = Supervisor(self.root / "state/review-loop-runs.sqlite",
+        sup = Supervisor(self.root / "state/diaktoros-runs.sqlite",
                          production_config=self.runtime, hermes_home=self.root)
         run_id = self.row(sup)
         loop = {"repo": REPO}

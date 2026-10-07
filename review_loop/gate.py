@@ -112,9 +112,9 @@ def isolated_supervisor(loop: dict):
 
     # presence= defaults to the config-dir marker for this (the production) ledger path.
     supervisor = Supervisor(
-        config.home() / "state" / "review-loop-runs.sqlite",
+        config.host_path("ledger"),
         presence=presence_marker(),
-        production_config=config.home() / "review-loop-runtime.json", hermes_home=config.home(),
+        production_config=config.host_path("runtime"), hermes_home=config.home(),
         # Every seat, always: a worker spawned by one seat's event claims any pending row, and
         # must know every seat's capacity to do so.
         capacity={s: config.seat_concurrency(loop, s) for s in SEATS},
@@ -156,7 +156,7 @@ def resume_isolated(loop: dict) -> bool:
     """Schedule ledger work that is due — a backed-off pre-write retry (#53), or a pending
     row whose claim-time read failed — by running the worker-enabled recovery. False (and
     nothing launched) when no private runtime is configured."""
-    if not (config.home() / "review-loop-runtime.json").exists():
+    if not config.host_path("runtime").exists():
         return False
     isolated_supervisor(loop).recover()
     return True

@@ -211,7 +211,7 @@ class RouteWorkerVertical(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.settings['upstream'] = f'https://127.0.0.1:{self.server.server_port}{PATH}'
-        settings = self.home / 'review-loop-runtime.json'
+        settings = self.home / 'diaktoros-runtime.json'
         settings.write_text(json.dumps(self.settings))
         settings.chmod(0o600)
         stub = self.root / 'gate-gh-stub.py'
@@ -234,7 +234,7 @@ class RouteWorkerVertical(unittest.TestCase):
                               env=self.env, cwd=self.root, timeout=15)
 
     def result(self, expected, seconds=180):
-        db = self.home / 'state/review-loop-runs.sqlite'
+        db = self.home / 'state/diaktoros-runs.sqlite'
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             if db.exists():
@@ -256,7 +256,7 @@ class RouteWorkerVertical(unittest.TestCase):
         self.assertEqual(len(self.world['writes']), 1)
         self.assertEqual(self.world['writes'][0]['commit_id'], HEAD)
         self.assertEqual(self.world['write_auth'], ['token dummy-reviewer'])
-        with ledger.connect(self.home / 'state/review-loop-runs.sqlite') as con:
+        with ledger.connect(self.home / 'state/diaktoros-runs.sqlite') as con:
             receipt = con.execute('SELECT state,review_id,verdict,principal_id,generation '
                                   'FROM review_receipts').fetchone()
         self.assertEqual(receipt[:4], ('confirmed', 1, 'APPROVED', 2))
@@ -298,7 +298,7 @@ class RouteWorkerVertical(unittest.TestCase):
         output = '\n'.join(str(m.get('content')) for _, request in self.world['model']
                            for m in request.get('messages', []) if m.get('role') == 'tool')
         self.assertIn('the host could not show you the whole change', output)
-        with ledger.connect(self.home / 'state/review-loop-runs.sqlite') as con:
+        with ledger.connect(self.home / 'state/diaktoros-runs.sqlite') as con:
             self.assertEqual(con.execute('SELECT verdict FROM review_receipts').fetchone(),
                              ('CHANGES_REQUESTED',))
             self.assertIn('HTTP 404', con.execute('SELECT partial_view FROM runs').fetchone()[0])

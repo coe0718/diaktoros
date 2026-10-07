@@ -43,7 +43,7 @@ class Claim(fg.Base):
         settings = self.root / "runtime.json"
         settings.write_text("{}")
         settings.chmod(0o600)
-        sup = Supervisor(config.home() / "state" / "review-loop-runs.sqlite",
+        sup = Supervisor(config.home() / "state" / "diaktoros-runs.sqlite",
                          production_config=settings, hermes_home=self.root / "home")
         with mock.patch.object(sup, "_spawn"):
             sup.enqueue("d", fg.REPO, 7, fg.HEAD, "fixer", turn_key=turn_key,
@@ -153,7 +153,7 @@ class Broker(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         (self.home / "state").mkdir()
-        self.db = self.home / "state" / "review-loop-runs.sqlite"
+        self.db = self.home / "state" / "diaktoros-runs.sqlite"
         self.sup = Supervisor(self.db)
         self.sup.enqueue("fix", "acme/widgets", 7, sm.HEAD, "fixer")
         with ledger.connect(self.db) as con:

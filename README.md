@@ -63,7 +63,7 @@ This minimal preview does not install repository hooks, a watchdog schedule or t
 For a loop already installed with paused hooks:
 
 ```bash
-# setup writes $HERMES_HOME/review-loop-runtime.json; init alone does not.
+# setup writes $HERMES_HOME/diaktoros-runtime.json; init alone does not.
 hermes dk doctor --loop ID
 hermes dk selftest --loop ID --no-model
 hermes dk selftest --loop ID --pr N
@@ -88,7 +88,7 @@ Then `hermes dk doctor` should be green, and `hermes review-loop` works again as
 
 ## Safety model
 
-> With a valid private `review-loop-runtime.json` and hooks activated by `arm`, an eligible reviewer turn posts a real GitHub review. Gates answer `[SILENT]` so a normal credential-owning gateway agent does not handle the event. Agents run in bubblewrap without GitHub/model credentials or direct network access; host processes provide bounded inference and broker writes. Unattended fixer pushes stay **off** until the host operator explicitly runs `hermes dk fixer-push --loop ID --enable --acknowledge-pr-race`. A Git ref lease cannot atomically enforce GitHub PR metadata: the PR can close or retarget between the final API check and push. Read the [security boundary and push policy](docs/security.md) before opting in. No seat can merge; uncertain writes are not automatically replayed.
+> With a valid private `diaktoros-runtime.json` and hooks activated by `arm`, an eligible reviewer turn posts a real GitHub review. Gates answer `[SILENT]` so a normal credential-owning gateway agent does not handle the event. Agents run in bubblewrap without GitHub/model credentials or direct network access; host processes provide bounded inference and broker writes. Unattended fixer pushes stay **off** until the host operator explicitly runs `hermes dk fixer-push --loop ID --enable --acknowledge-pr-race`. A Git ref lease cannot atomically enforce GitHub PR metadata: the PR can close or retarget between the final API check and push. Read the [security boundary and push policy](docs/security.md) before opting in. No seat can merge; uncertain writes are not automatically replayed.
 
 Isolation is not immunity: installed plugins are trusted host code, and a kernel/bubblewrap escape would run as the host user. Tests do not establish provider-policy approval or live credentials. Issue triage/fixing and desktop form rendering have offline coverage, not a claimed live acceptance test here. See [security](docs/security.md) and [development](docs/development.md).
 

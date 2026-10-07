@@ -116,14 +116,14 @@ Paths below assume `HERMES_HOME=~/.hermes`; configuration describes supported ov
 
 | Data | Location / ownership |
 | --- | --- |
-| Loop config | `~/.hermes/review-loops.d/<id>.json`; one repository's explicit settings |
+| Loop config | `~/.hermes/diaktoros.d/<id>.json`; one repository's explicit settings |
 | Gateway registry | `~/.hermes/webhook_subscriptions.json`; shared with other plugins |
-| Runtime | `~/.hermes/review-loop-runtime.json`; private host directories, not the basic model selection |
-| Per-loop state | `~/.hermes/state/review-loops/<id>/`; queues, locks, markers, audits, route intent, artifacts |
-| Run ledger | `~/.hermes/state/review-loop-runs.sqlite`; shared isolated-run state |
+| Runtime | `~/.hermes/diaktoros-runtime.json`; private host directories, not the basic model selection |
+| Per-loop state | `~/.hermes/state/diaktoros/<id>/`; queues, locks, markers, audits, route intent, artifacts |
+| Run ledger | `~/.hermes/state/diaktoros-runs.sqlite`; shared isolated-run state |
 | Credentials | Private absolute PAT files, conventionally `~/.hermes/keys/<login>-pat`; host only |
 | Serving-profile scripts | Gate shims in the corresponding profile's `scripts/` directory |
-| Watchdog shim | `~/.hermes/scripts/review-loop-watchdog.py`; shared cron entry calls it |
+| Watchdog shim | `~/.hermes/scripts/diaktoros-watchdog.py`; shared cron entry calls it |
 
 Use `status` and `explain` instead of editing state/ledger files. `doctor` checks installation; `selftest --no-model` verifies runtime/sandbox and actual GitHub identities without inference. Neither an offline suite nor a no-model selftest proves a real provider turn succeeded.
 

@@ -670,7 +670,7 @@ def _deliver(loop: dict, st, key: str, text: str, tag: str, event: str, number, 
         try:
             from . import config
             from .run_supervisor import Supervisor
-            ledger = config.home() / "state" / "review-loop-runs.sqlite"
+            ledger = config.host_path("ledger")
             held = ledger.exists() and Supervisor(ledger).post_write_hold(loop["repo"], number)
         except Exception:
             held = True

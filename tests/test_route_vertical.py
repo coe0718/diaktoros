@@ -101,7 +101,7 @@ class RouteSubprocess(unittest.TestCase):
                 self.assertIn("unavailable", st.queue_items("reviewer")[key]["reason"])
                 self.assertEqual(watchdog.drain(loop, st, "reviewer", quiet=True), 0)
                 self.assertIn(key, st.queue_items("reviewer"))
-                runtime = Path(self.env["HERMES_HOME"]) / "review-loop-runtime.json"
+                runtime = Path(self.env["HERMES_HOME"]) / "diaktoros-runtime.json"
                 runtime.write_text("{}")
                 runtime.chmod(0o600)
                 self.assertEqual(watchdog.drain(loop, st, "reviewer", quiet=True), 1)
@@ -131,7 +131,7 @@ class RouteSubprocess(unittest.TestCase):
             st = state.LoopState(loop)
             key = "acme/widgets#7"
             st.queue_add("reviewer", key, HEAD, "url", "original")
-            runtime = Path(self.env["HERMES_HOME"]) / "review-loop-runtime.json"
+            runtime = Path(self.env["HERMES_HOME"]) / "diaktoros-runtime.json"
             runtime.write_text("{}")
             runtime.chmod(0o600)
             def enqueue(*args, **kwargs):
@@ -152,7 +152,7 @@ class RouteSubprocess(unittest.TestCase):
             st = state.LoopState(loop)
             key = "acme/widgets#7"
             st.queue_add("reviewer", key, HEAD, "url", "original")
-            runtime = Path(self.env["HERMES_HOME"]) / "review-loop-runtime.json"
+            runtime = Path(self.env["HERMES_HOME"]) / "diaktoros-runtime.json"
             runtime.write_text("{}")
             runtime.chmod(0o600)
             def fail(*args, **kwargs):
@@ -316,7 +316,7 @@ class RouteSubprocess(unittest.TestCase):
         self.assertIn("not an authorized fixer", result.stderr)
 
     def test_route_enqueues_deduplicates_and_unreadable_claim_stays_pending(self):
-        runtime = Path(self.env["HERMES_HOME"]) / "review-loop-runtime.json"
+        runtime = Path(self.env["HERMES_HOME"]) / "diaktoros-runtime.json"
         runtime.write_text("{}")  # invalid production settings; no network or key access
         runtime.chmod(0o600)
         payload = {"repository": {"full_name": "acme/widgets"}, "action": "opened",
@@ -326,7 +326,7 @@ class RouteSubprocess(unittest.TestCase):
         for result in (first, second):
             self.assertEqual((result.returncode, result.stdout.strip()), (0, "[SILENT]"),
                              result.stderr)
-        db = Path(self.env["HERMES_HOME"]) / "state" / "review-loop-runs.sqlite"
+        db = Path(self.env["HERMES_HOME"]) / "state" / "diaktoros-runs.sqlite"
         # The detached worker cannot read the PR (no token here): gh.api answers None, which
         # is a read to retry — a counted, backed-off, visible wait, never failed at once (#53)
         # and never an invisible pending row.
@@ -341,14 +341,14 @@ class RouteSubprocess(unittest.TestCase):
     def test_gate_reports_what_the_ledger_did_instead_of_enqueued(self):
         """#73: a deduplicated delivery is not logged as a fresh enqueue; a failed pre-write
         run is re-armed by the redelivery; a run that may have written is not."""
-        runtime = Path(self.env["HERMES_HOME"]) / "review-loop-runtime.json"
+        runtime = Path(self.env["HERMES_HOME"]) / "diaktoros-runtime.json"
         runtime.write_text("{}")
         runtime.chmod(0o600)
         payload = {"repository": {"full_name": "acme/widgets"}, "action": "opened",
                    "number": 7, "pull_request": self.pr, "sender": {"login": "dev"}}
         first = self.route("gate_reviewer.py", payload)
         self.assertIn("reviewer enqueued for isolated worker", first.stderr)
-        db = Path(self.env["HERMES_HOME"]) / "state" / "review-loop-runs.sqlite"
+        db = Path(self.env["HERMES_HOME"]) / "state" / "diaktoros-runs.sqlite"
         time.sleep(1.0)  # the detached worker's claim read fails here: the row stays pending
 
         def redeliver(state, extra=""):
@@ -371,7 +371,7 @@ class RouteSubprocess(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT state FROM runs").fetchone()[0], "failed")
 
     def test_dismissed_same_head_reopens_one_distinct_reviewer_turn(self):
-        runtime = Path(self.env['HERMES_HOME']) / 'review-loop-runtime.json'
+        runtime = Path(self.env['HERMES_HOME']) / 'diaktoros-runtime.json'
         runtime.write_text('{}')
         runtime.chmod(0o600)
         payload = {'repository': {'full_name': 'acme/widgets'}, 'action': 'opened',
@@ -380,7 +380,7 @@ class RouteSubprocess(unittest.TestCase):
         dismissed = {'id': 42, 'state': 'DISMISSED', 'commit_id': HEAD,
                      'user': {'login': 'reviewer'}}
         self.world.write_text(json.dumps({'pr': self.pr, 'reviews': [dismissed]}))
-        db = Path(self.env['HERMES_HOME']) / 'state' / 'review-loop-runs.sqlite'
+        db = Path(self.env['HERMES_HOME']) / 'state' / 'diaktoros-runs.sqlite'
         for _ in range(2):
             result = self.route('gate_reviewer.py', payload)
             self.assertEqual((result.returncode, result.stdout.strip()),
