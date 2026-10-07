@@ -25,6 +25,7 @@ install is paused (below):
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import pathlib
@@ -75,16 +76,24 @@ def migrating() -> dict | None:
     return data if isinstance(data, dict) else {"unreadable": True}
 
 
-def _alive(pid) -> bool:
-    if type(pid) is not int or pid <= 0:
+def lock_path() -> pathlib.Path:
+    return marker_path().with_suffix(".lock")
+
+
+def _running() -> bool:
+    """Whether a migrate holds the lock right now (#447): the lock, not a PID, says so — two
+    runs cannot both take it, and a reused PID cannot pass for a live one."""
+    try:
+        fd = os.open(lock_path(), os.O_RDWR)
+    except FileNotFoundError:
         return False
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
         return True
-    return True
+    finally:
+        os.close(fd)             # closing releases a lock this probe took
+    return False
 
 
 def describe(info: dict | None) -> str:
@@ -96,7 +105,7 @@ def describe(info: dict | None) -> str:
     since = info.get("started")
     when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(since)) if isinstance(
         since, (int, float)) else "an unknown time"
-    if _alive(info.get("pid")):
+    if _running():
         return f"`migrate` is running (pid {info.get('pid')}, since {when})"
     return (f"a `migrate` started {when} did not finish (pid {info.get('pid')} is gone): its "
             "records may be half moved — run `migrate` again to finish it")
@@ -107,17 +116,20 @@ def hold():
     """Hold the marker for one migration; yields what an interrupted one left, if anything."""
     path = marker_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    left = migrating()
-    if left is not None and not left.get("unreadable") and _alive(left.get("pid")) \
-            and left.get("pid") != os.getpid():
-        raise MigrationBusy(describe(left))
-    state_mod._atomic_write(path, {"pid": os.getpid(), "started": time.time()})
+    fd = os.open(lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        yield left
-    finally:
-        current = migrating()
-        if current is not None and current.get("pid") == os.getpid():
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise MigrationBusy(describe(migrating() or {})) from None
+        left = migrating()
+        state_mod._atomic_write(path, {"pid": os.getpid(), "started": time.time()})
+        try:
+            yield left
+        finally:
             path.unlink(missing_ok=True)
+    finally:
+        os.close(fd)
 
 
 def _hermes_config() -> dict:
@@ -486,7 +498,14 @@ def doctor_step(loops: list[dict]) -> list[str]:
 
 
 def old_plugin_note(plugins_dir: pathlib.Path) -> list[str]:
-    if (plugins_dir / OLD_PLUGIN).exists():
-        return [f"next: once you are happy, remove the old plugin: "
-                f"`hermes plugins remove {OLD_PLUGIN}` (its settings stay in config.yaml)"]
-    return []
+    """Name the old plugin for removal only when that folder still holds it: an in-place update
+    keeps the folder's old name, and then it is this plugin, not a leftover."""
+    try:
+        manifest = (plugins_dir / OLD_PLUGIN / "plugin.yaml").read_text()
+    except OSError:
+        return []
+    found = re.search(r"^name:\s*['\"]?([A-Za-z0-9_.-]+)", manifest, re.M)
+    if not found or found.group(1) != OLD_PLUGIN:
+        return []
+    return [f"next: once you are happy, remove the old plugin: "
+            f"`hermes plugins remove {OLD_PLUGIN}` (its settings stay in config.yaml)"]
