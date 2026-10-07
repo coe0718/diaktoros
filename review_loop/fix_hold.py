@@ -56,18 +56,21 @@ def hold(loop: dict, st, number: int, pr: int) -> None:
     """Record the held hand-off and say so once."""
     st.fix_hold_set(number, pr)
     if not st.fix_hold_said(number):
-        _wait_comment(loop, number, pr)
+        if not _wait_comment(loop, number, pr):
+            return                                # POST failed: not "said"; a later sweep retries
         st.fix_hold_say(number)
         _notice(loop, number, "held", pr,
                 f"#{number} waits for PR #{pr} to merge: its finding is about code only there")
 
 
-def _wait_comment(loop: dict, number: int, pr: int) -> None:
+def _wait_comment(loop: dict, number: int, pr: int) -> bool:
+    """Post the wait comment; ``False`` when the POST failed (``gh.api`` returned ``None``)."""
     login = config.triage_login(loop)
-    if login:
-        gh.api(loop, f"/repos/{loop['repo']}/issues/{number}/comments", method="POST",
-               body={"body": f"waiting for #{pr} to merge — this finding is about code only on "
-                             "that branch"}, login=login)
+    if not login:
+        return True                               # nobody to say it as: retrying cannot help
+    return gh.api(loop, f"/repos/{loop['repo']}/issues/{number}/comments", method="POST",
+                  body={"body": f"waiting for #{pr} to merge — this finding is about code only on "
+                                "that branch"}, login=login) is not None
 
 
 def _drop_comment(loop: dict, number: int, pr: int) -> None:
