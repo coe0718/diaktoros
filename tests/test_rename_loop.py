@@ -42,6 +42,20 @@ class Marker(fg.Base):
             self.assertEqual(migrate.migrating()["pid"], os.getpid())
         self.assertIsNone(migrate.migrating())
 
+    def test_two_holds_at_once_cannot_both_start(self):
+        # #447's race, directly: a second hold while the first is held is refused before it
+        # writes anything, even in the same process (flock locks each open, not each process),
+        # and the first run's marker is untouched by the refusal.
+        with migrate.hold():
+            first = migrate.migrating()
+            with self.assertRaises(migrate.MigrationBusy):
+                with migrate.hold():
+                    self.fail("a second migrate started while the first held the lock")
+            self.assertEqual(migrate.migrating(), first)
+        self.assertIsNone(migrate.migrating())
+        with migrate.hold():                   # released: the next one starts
+            pass
+
     def test_a_live_migration_refuses_and_a_dead_one_is_picked_up(self):
         # A live migrate is one holding the lock (#447), whatever PID its marker names.
         migrate.marker_path().parent.mkdir(parents=True, exist_ok=True)
