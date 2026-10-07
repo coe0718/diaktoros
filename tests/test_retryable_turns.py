@@ -126,7 +126,7 @@ class PreWriteTurnFailures(Base):
         self.assertIn('turn exited with status 3', notice)
         self.assertIn(f'upstream HTTP 429: rate limited (attempt {MAX_RETRIES})', notice)
         self.assertIn('No external write was made', notice)
-        self.assertIn('hermes review-loop retry --loop LOOP --pr 1 --seat reviewer', notice)
+        self.assertIn('hermes dk retry --loop LOOP --pr 1 --seat reviewer', notice)
         self.assertNotIn('Do not replay', notice)
         # A new event for this head re-arms it, one attempt per event (#53/#73).
         self.assertEqual(sup.submit('redelivery', 'o/r', 1, HEAD, 'reviewer'), 'rearmed')
@@ -146,7 +146,7 @@ class PreWriteTurnFailures(Base):
             con.execute("UPDATE runs SET state='failed', retries=?", (MAX_REARMS,))
         outcome = sup.submit('d', 'o/r', 1, HEAD, 'reviewer')
         self.assertTrue(outcome.startswith('duplicate failed:'), outcome)
-        self.assertIn('hermes review-loop retry', outcome)
+        self.assertIn('hermes dk retry', outcome)
         self.assertEqual(sup.get('d')['state'], 'failed')
 
     def test_budget_timeout_fails_rearmable_not_auto_retried(self):
@@ -342,7 +342,7 @@ if __name__ == '__main__':
 
 
 class OperatorCommands(unittest.TestCase):
-    """``hermes review-loop retry`` and the ledger lines ``status``/``explain`` print."""
+    """``hermes dk retry`` and the ledger lines ``status``/``explain`` print."""
 
     def setUp(self):
         import json
@@ -478,7 +478,7 @@ class OperatorCommands(unittest.TestCase):
             cli._print_ledger_runs(loop, 7, '  run: ', limit=6)
         text = out.getvalue()
         self.assertIn('reviewer #7 @ aaaaaaa failed — retry limit (4 attempts): turn exited with '
-                      'status 3; no external write — re-arm: hermes review-loop retry --loop '
+                      'status 3; no external write — re-arm: hermes dk retry --loop '
                       'widgets --pr 7 --seat reviewer', text)
         self.assertIn('| stderr: upstream HTTP 429', text)
         self.assertIn('fixer #7 @ aaaaaaa uncertain — worker lost after launch intent; may have '

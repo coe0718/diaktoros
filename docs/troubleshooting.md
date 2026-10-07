@@ -8,7 +8,7 @@ that no GitHub write happened.** Never delete safety state to bypass a refusal.
 ## Contents
 
 - [First checks](#first-three-commands)
-- [Not a hermes command](#review-loop-is-not-a-hermes-command)
+- [Not a hermes command](#dk-is-not-a-hermes-command)
 - [Setup stopped](#setup-stopped-before-the-loop-was-live)
 - [PR did not start](#i-opened-a-pr-or-requested-a-review-and-nothing-happened)
 - [Fixer did not start](#changes-were-requested-but-the-fixer-never-ran)
@@ -34,9 +34,9 @@ issue-run retry). `--admin-token` names an already mapped login, never a secret.
 ## First, three commands
 
 ```bash
-hermes review-loop doctor --loop "<loop-id>"
-hermes review-loop explain --loop "<loop-id>" --pr "<pr-number>"
-hermes review-loop trace --loop "<loop-id>" --delivery "<delivery-id>" --admin-token "<hook-admin-login>"
+hermes dk doctor --loop "<loop-id>"
+hermes dk explain --loop "<loop-id>" --pr "<pr-number>"
+hermes dk trace --loop "<loop-id>" --delivery "<delivery-id>" --admin-token "<hook-admin-login>"
 ```
 
 | Check | Question answered | Limit |
@@ -49,7 +49,7 @@ Trace's `--delivery` takes numeric delivery ID or `X-GitHub-Delivery` GUID; hook
 permission may be needed to retrieve it. A local payload is an alternative:
 
 ```bash
-hermes review-loop trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_request --route "<reviewer-route>"
+hermes dk trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_request --route "<reviewer-route>"
 ```
 
 `--payload` is a JSON-object file, `--event` is `pull_request` (default) or
@@ -57,16 +57,16 @@ hermes review-loop trace --loop "<loop-id>" --payload "<payload-json-file>" --ev
 examples starts a production model or writes GitHub. Use status for local queues/runs:
 
 ```bash
-hermes review-loop status --loop "<loop-id>"
+hermes dk status --loop "<loop-id>"
 ```
 
-## "'review-loop' is not a `hermes` command"
+## "'dk' is not a `hermes` command"
 
-**Symptom:** `hermes review-loop …` says it is not a command, although `hermes plugins list`
-shows the plugin enabled and `hermes review-loop --help` works.
+**Symptom:** `hermes dk …` says it is not a command, although `hermes plugins list`
+shows the plugin enabled and `hermes dk --help` works.
 **Cause:** the command line contains `-p NAME` or `--profile NAME`. `hermes` takes those from
 anywhere on its command line, after the subcommand too, and runs in that profile's Hermes home,
-where the plugin may not be enabled (or, worse, a different loop config is). No review-loop
+where the plugin may not be enabled (or, worse, a different loop config is). No Diaktoros
 command uses those spellings: the triage seat's profile is `--triage-profile`, and
 `models` takes `--profile-name`.
 **Action:** remove the `-p`/`--profile` pair and use the command's own flag.
@@ -95,8 +95,8 @@ signed pings, not only the presence of a route.
 | Base situation changed | Explain stacked/base transition | Follow fresh-review requirement; old same-head verdict may not count |
 
 ```bash
-hermes review-loop apply --loop "<loop-id>" --hooks --admin-token "<hook-admin-login>"
-hermes review-loop arm --loop "<loop-id>" --admin-token "<hook-admin-login>"
+hermes dk apply --loop "<loop-id>" --hooks --admin-token "<hook-admin-login>"
+hermes dk arm --loop "<loop-id>" --admin-token "<hook-admin-login>"
 ```
 
 `--hooks` ensures repository hooks but apply can also apply configured settings; review
@@ -111,8 +111,8 @@ report a queue hold without a model run. This is expected policy, not an outage.
 Choose a manual fix plus a fresh review request, or read the residual race and opt in:
 
 ```bash
-hermes review-loop fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
-hermes review-loop drain --loop "<loop-id>" --seat fixer
+hermes dk fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
+hermes dk drain --loop "<loop-id>" --seat fixer
 ```
 
 `--enable` authorizes host policy; `--acknowledge-pr-race` accepts non-atomic PR metadata
@@ -131,7 +131,7 @@ permission. Do not treat a failed broker push as a harmless retryable model fail
 **Cause/action:**
 
 - No adjudicator route: the marker intentionally leaves the decision to you. To add one
-  later, run `hermes review-loop set --loop ID --adjudicator-profile PROFILE`
+  later, run `hermes dk set --loop ID --adjudicator-profile PROFILE`
   (see [configuration](configuration.md#adjudication)); do not reset the cap marker.
 - Delivery pending: watchdog retries eligible adjudicator enqueue; a marker is not
   confirmation that the model started.
@@ -158,7 +158,7 @@ Both gateway and CLI must address the same home. Never place credentials in this
 | `RealHomeError` or `RealNetworkError` | Harness-only test guard is armed (variable plus sentinel) | In a real gateway, find/unset leaked test settings and restart; in tests, fix the fixture without disabling guards. See [tripwire recovery](operations.md#the-loop-stops-with-realhomeerror-or-realnetworkerror) |
 
 ```bash
-hermes review-loop selftest --loop "<loop-id>" --no-model
+hermes dk selftest --loop "<loop-id>" --no-model
 ```
 
 `--no-model` skips the tiny paid completion but still exercises containment/runtime.
@@ -167,7 +167,7 @@ can instead leave a pending row. Determine which before asking GitHub to redeliv
 After fixing the runtime, request scheduling for already queued reviewer work:
 
 ```bash
-hermes review-loop drain --loop "<loop-id>" --seat reviewer
+hermes dk drain --loop "<loop-id>" --seat reviewer
 ```
 
 Drain rechecks eligibility; it does not bypass an uncertain run or a queue hold.
@@ -181,8 +181,8 @@ the gateway in paths, permissions, provider auth or size-limit overrides.
 and resolve model identity/backend requirements. Test a PR authorization check:
 
 ```bash
-hermes review-loop selftest --loop "<loop-id>" --pr "<pr-number>"
-hermes review-loop selftest --loop "<loop-id>" --pr "<pr-number>" --live-turn
+hermes dk selftest --loop "<loop-id>" --pr "<pr-number>"
+hermes dk selftest --loop "<loop-id>" --pr "<pr-number>" --live-turn
 ```
 
 `--pr` adds live reviewer-authorization dry run. `--live-turn` runs a real isolated
@@ -207,7 +207,7 @@ tail; worker stderr is beside the ledger in `.workers.log` with rotation.
 | Superseded cancellation | PR/head no longer eligible | Fresh eligible head/event, not old-run replay |
 
 ```bash
-hermes review-loop retry --loop "<loop-id>" --pr "<pr-number>" --seat reviewer
+hermes dk retry --loop "<loop-id>" --pr "<pr-number>" --seat reviewer
 ```
 
 `--seat` restricts the candidate seat; omit to consider eligible problem runs at the
@@ -252,7 +252,7 @@ a defect. To keep operator stall warnings but omit the observer's duplicate stal
 set an explicit event list without `stall` (a blank list means all events):
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --observer-events opened,handoff,verdict,approved,escalation,ruling,closed
+hermes dk set --loop "<loop-id>" --observer-events opened,handoff,verdict,approved,escalation,ruling,closed
 ```
 
 An uncertain send is never permission to manually replay it blindly.
@@ -311,7 +311,7 @@ writes and recorded intent mitigate but cannot eliminate every last-syscall race
 **Action:** inspect doctor route contract/intent and use its repair recommendation:
 
 ```bash
-hermes review-loop doctor --loop "<loop-id>" --repair
+hermes dk doctor --loop "<loop-id>" --repair
 ```
 
 `--repair` restores eligible locally recorded intent; it is not authority to overwrite
@@ -329,7 +329,7 @@ cleanup, retained artifacts, or operator uncertainty that intentionally prevents
 eligibility before changing caps or deleting anything.
 
 ```bash
-hermes review-loop cleanup --loop "<loop-id>" --pr "<pr-number>" --dry-run
+hermes dk cleanup --loop "<loop-id>" --pr "<pr-number>" --dry-run
 ```
 
 `--pr` limits cleanup to one closed PR; omit to inspect all known closed PRs. `--dry-run`
@@ -355,7 +355,7 @@ loop's shared ledger or home.
 Read [issue setup](issues.md#turn-on-issue-triage) and inspect settings:
 
 ```bash
-hermes review-loop triage --loop "<loop-id>"
+hermes dk triage --loop "<loop-id>"
 ```
 
 | Cause | Confirmation | Action |
@@ -374,7 +374,7 @@ Use the read-only queries in [issues](issues.md#inspect-results). There is no is
 or issue explain. A safe failed pre-write triage run can use:
 
 ```bash
-hermes review-loop retry --loop "<loop-id>" --pr "<issue-number>" --seat triage
+hermes dk retry --loop "<loop-id>" --pr "<issue-number>" --seat triage
 ```
 
 Here `--pr` is the issue number; `--seat triage` restricts the retry. Recorded write
@@ -413,7 +413,7 @@ See [issue recovery](issues.md#when-it-doesnt-work).
 **Action:** keep it for transparency or change future writes explicitly:
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --attribution off
+hermes dk set --loop "<loop-id>" --attribution off
 ```
 
 `--attribution off` disables future footer/trailer addition; `on` restores it. Existing

@@ -339,7 +339,7 @@ class ArmVerifyTests(unittest.TestCase):
                               "reviewer seat", out)
                 self.assertNotIn(("PATCH", "/repos/owner/widgets/hooks/1", "reader"), fake.calls)
                 self.assertNotIn("hook 1 already active", out)
-                self.assertIn("fix: hook 1: `hermes review-loop doctor --loop widgets`", out)
+                self.assertIn("fix: hook 1: `hermes dk doctor --loop widgets`", out)
         # Pausing it is fine: that only stops deliveries.
         listing = hooks(True)
         listing[1]["events"] = ["push"]

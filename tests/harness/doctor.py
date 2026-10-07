@@ -13,7 +13,7 @@ def doctor_parser():
 
     fake = FakeCtx()
     cli.register_cli(fake)
-    parser = argparse.ArgumentParser(prog="hermes review-loop")
+    parser = argparse.ArgumentParser(prog="hermes dk")
     fake.setup(parser)
     return parser
 
@@ -434,7 +434,7 @@ def doctor_checks(out: str, loop_id: str) -> list[tuple[str, str]] | None:
 
 
 def group_doctor() -> None:
-    """`hermes review-loop doctor` — the read-only preflight of an installation."""
+    """`hermes dk doctor` — the read-only preflight of an installation."""
     from review_loop import cli, config, doctor
 
     section("doctor — a correct installation passes, and says nothing it cannot prove")
@@ -573,7 +573,7 @@ def group_doctor() -> None:
     check("  and it names the route", "❌ route:widgets-fix" in out, True)
     check("  and both profiles", "someone-else" in out and "fixer-profile" in out, True)
     # A command that works on an existing loop (init refuses one): apply rebinds the route.
-    check("  with a remediation", "hermes review-loop apply --loop widgets" in out
+    check("  with a remediation", "hermes dk apply --loop widgets" in out
           and "re-run init" not in out, True)
 
     install_doctor_fixture()
@@ -751,7 +751,7 @@ def group_doctor() -> None:
     rc, out = run_doctor("--loop", "widgets")
     check("a missing cron shim fails", rc, 1)
     check("  and says how to write it", "❌ cron:shim" in out
-          and "hermes review-loop apply --loop widgets --watchdog-shim" in out, True)
+          and "hermes dk apply --loop widgets --watchdog-shim" in out, True)
 
     install_doctor_fixture()
     shim = TMP / "hermes-home" / "scripts" / cli.SHIM_NAME
@@ -1071,7 +1071,7 @@ def group_doctor() -> None:
     # A pre-#21 loop: `init` refuses an existing loop, so the hint must name apply, and apply
     # must actually rebind the route it names.
     check("  and names the command that repairs it",
-          "hermes review-loop apply --loop widgets" in out and "re-run init" not in out, True)
+          "hermes dk apply --loop widgets" in out and "re-run init" not in out, True)
     from review_loop import prompts as prompts_mod
     edit_subs(lambda subs: subs["widgets-breach"].update(prompt=prompts_mod.ADJUDICATOR))
     secret = json.loads(SUBS.read_text())["widgets-breach"]["secret"]
@@ -1232,7 +1232,7 @@ def group_doctor() -> None:
     rc, out = run_doctor()
     check("no loops configured is not an error", (rc, out.strip()),
           (0, f"no loops configured in {LOOPS_DIR} — run "
-              "`hermes review-loop setup` to create one"))
+              "`hermes dk setup` to create one"))
     rc, out = run_doctor("--loop", "nope")
     check("an unknown loop is refused", rc, 2)
     check("  with the reason", "cannot preflight loop" in out, True)

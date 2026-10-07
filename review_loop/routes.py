@@ -389,7 +389,7 @@ def fire(name: str, event: str, payload: dict, tag: str, host: str | None = None
         "X-GitHub-Event": event,
         "X-Hub-Signature-256": "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest(),
         "X-GitHub-Delivery": delivery or delivery_id(tag),
-        "User-Agent": "hermes-review-loop",
+        "User-Agent": "diaktoros",
     })
     try:
         config.guard_network(req.full_url)
@@ -510,7 +510,7 @@ def heal_entries(expected: dict[str, dict], fields, owned) -> tuple[dict, dict]:
             if not diff:
                 continue
             if not owned(live):
-                conflicts[name] = (f"now runs {live.get('script')!r}, not a review-loop gate — "
+                conflicts[name] = (f"now runs {live.get('script')!r}, not a Diaktoros gate — "
                                    "something else holds this name")
                 continue
             merged = {**live, **want}

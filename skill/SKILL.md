@@ -42,7 +42,7 @@ Your turn runs in a sandbox, not on the operator's machine:
 * A write can take minutes. Never claim it succeeded without an `ok` response; if it times out its
   outcome is unknown — say so, do not retry it.
 * **Do not add your own signature.** The host appends the loop's "Automated by
-  hermes-review-loop" footer (and a commit trailer) when it sends the write; a seat cannot remove
+  Diaktoros" footer (and a commit trailer) when it sends the write; a seat cannot remove
   it and does not need to add one.
 * **A partial view limits your write.** When the host could not show you the whole change (the
   file list was unreadable, GitHub did not list every file, or the diff did not fit), your prompt
@@ -86,7 +86,7 @@ reviewed unattended; you will not be woken for one.
 ## If you are the fixer
 
 You are only woken when the operator has opted this repository in to unattended fixer pushes
-(`hermes review-loop fixer-push --enable`); until then a changes-requested verdict is held for the
+(`hermes dk fixer-push --enable`); until then a changes-requested verdict is held for the
 operator and no fixer turn starts. Your one publish is a push followed by the review request.
 
 1. Read the verdict. Fix what was found — a rewrite that dodges the finding is not a fix, and the
@@ -206,6 +206,6 @@ change itself, not from anything you write. Do not address it; it is read-only a
 Say it plainly in your summary — a turn you should not have been given, a stale head, a refused
 write you could not explain, work you were asked to do twice. The loop's whole value is that a
 failure is visible instead of silent, and the operator's next action depends on your report being
-accurate rather than flattering. The operator has `hermes review-loop explain --loop <id> --pr N` (why a PR
-is not moving, and the one event that moves it) and `hermes review-loop doctor --loop <id>` (what is
+accurate rather than flattering. The operator has `hermes dk explain --loop <id> --pr N` (why a PR
+is not moving, and the one event that moves it) and `hermes dk doctor --loop <id>` (what is
 broken in the installation); naming the right one in your summary is more useful than guessing.

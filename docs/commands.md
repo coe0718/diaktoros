@@ -1,12 +1,12 @@
 # Command reference
 
-Every `hermes review-loop` command, what it is for, what it changes, and every flag it takes.
+Every `hermes dk` command, what it is for, what it changes, and every flag it takes.
 New to the loop? Read [How it works](concepts.md) first; the words used here (seat, route, hook,
 reader, arm) are defined there.
 
 The flag tables are generated from `review_loop/cli.py:register_cli` with an empty
 settings form; tests check them against that parser. They describe this checkout, not every
-installed release. `hermes review-loop "<command>" --help` shows your installed parser.
+installed release. `hermes dk "<command>" --help` shows your installed parser.
 The prose also follows the handlers, configuration validation and delegated scripts.
 
 ## Contents
@@ -70,7 +70,7 @@ No setting named here is an extra CLI flag.
 | `--base` | Branch string; fresh default `main` | Gates select eligible PR targets; loader does not validate Git ref syntax. |
 | `--clone`, `--root`, `--state-dir` | Local path strings; fresh clone/roots empty, state derived under `$HERMES_HOME/state/review-loops/` | Roots authorize destructive cleanup of PR-named children; use dedicated directories. Dangerous broad roots are refused. Clone is not a seat's writable shared checkout. |
 | `--host` | HTTP(S) gateway origin, optional port, no path/query/fragment/userinfo | Fresh unset; `init` requires it even without hooks. HTTPS is recommended. Trailing slash stripped. `set` refuses clearing it. |
-| `--skill`, display-name options | String; fresh empty | Skill is a prompt instruction, not installed by this flag. Plugin skill identifier: `hermes-review-loop:review-loop`. Agent display names are cosmetic, not identities. |
+| `--skill`, display-name options | String; fresh empty | Skill is a prompt instruction, not installed by this flag. Plugin skill identifier: `diaktoros:review-loop` (a loop that still names `hermes-review-loop:review-loop` is read as the new name). Agent display names are cosmetic, not identities. |
 | `--attribution`, `--comment` | Exactly `on` or `off` | Attribution fresh on; triage comments fresh off. Attribution signs only plugin-mediated writes. |
 | Observer events | Comma-separated `opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held`; blank = all | Unknown names remain stored without a misconfiguration warning. Unknown-only input matches no transitions, so the feed is silent; use the listed names. |
 | Observer digest | Integer minutes; non-positive = per-transition, positive = watchdog-flushed batches | Negative values silently normalize to immediate delivery, not a misconfigured feed. Hand-edited unparseable values do the same; CLI flags require integers. Muting preserves configuration; disabling removes its route but retains delivery history. |
@@ -110,7 +110,7 @@ Lists every configured loop on one line each: its id, repository, verdict cap, h
 each seat may work at once, and the allowlisted fixer and reviewer logins. Read-only.
 
 ```bash
-hermes review-loop list
+hermes dk list
 ```
 
 A loop file that does not load is named on a `skipping <file>: <reason>` line instead, and the
@@ -128,7 +128,7 @@ caps, and any seat waiting for its usage window), queued and running turns, and 
 watchdog last ran. Read-only.
 
 ```bash
-hermes review-loop status --loop "<loop-id>"
+hermes dk status --loop "<loop-id>"
 ```
 
 Without `--loop` it shows every loop. Use it to answer "what is this loop set to?" Use
@@ -147,10 +147,10 @@ push onto a loop. Each value is marked `[set]` (you changed it) or `[default]`. 
 the seat mapping the form holds and what each existing loop actually runs as. Read-only.
 
 ```bash
-hermes review-loop settings
+hermes dk settings
 ```
 
-The form lives in the Hermes desktop app under **Capabilities → Plugins → review loop**. See
+The form lives in the Hermes desktop app under **Capabilities → Plugins → diaktoros**. See
 [settings.md](settings.md).
 
 <!-- flags:settings -->
@@ -172,8 +172,8 @@ What one loop did over a window, and how long it took. Two sources:
 Read-only: the ledger is opened read-only, and GitHub is only read.
 
 ```bash
-hermes review-loop stats --loop "<loop-id>"
-hermes review-loop stats --loop "<loop-id>" --since 30d --github --html ~/stats/index.html
+hermes dk stats --loop "<loop-id>"
+hermes dk stats --loop "<loop-id>" --since 30d --github --html ~/stats/index.html
 ```
 
 `--json` prints the same data as JSON. `--html FILE` also writes one self-contained page, with no
@@ -213,8 +213,8 @@ using the same code as the command named in it:
 5. **Arm.** Only after a clean pass, and only if you say yes (the question defaults to no).
 
 ```bash
-hermes review-loop setup --repo "<owner>/<repository>"
-hermes review-loop setup --repo "<owner>/<repository>" --dry-run
+hermes dk setup --repo "<owner>/<repository>"
+hermes dk setup --repo "<owner>/<repository>" --dry-run
 ```
 
 Running it again is safe: whatever is already in place is kept, so a second run only repairs what
@@ -263,7 +263,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default: the plugin setting, off) |
-| `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by hermes-review-loop' (default: the plugin setting, on) |
+| `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day, 1-1000 (0 = default); only lands once triage has a fix label (default: the plugin setting) |
@@ -296,7 +296,7 @@ cron and ping failures can leave a partial install. This is not one atomic trans
 GitHub, routes and cron. Follow the failure output before retrying.
 
 ```bash
-hermes review-loop init --repo "<owner>/<repository>" --fixer "<fixer-login>" --reviewer "<reviewer-login>" --fixer-profile "<fixer-profile>" --reviewer-profile "<reviewer-profile>" --read-token "<reader-login>" --token "<reader-login>=<absolute-reader-token-file>" --token "<reviewer-login>=<absolute-reviewer-token-file>" --token "<fixer-login>=<absolute-fixer-token-file>" --host "<gateway-origin>" --hooks --admin-token "<reader-login>" --schedule 15m --dry-run
+hermes dk init --repo "<owner>/<repository>" --fixer "<fixer-login>" --reviewer "<reviewer-login>" --fixer-profile "<fixer-profile>" --reviewer-profile "<reviewer-profile>" --read-token "<reader-login>" --token "<reader-login>=<absolute-reader-token-file>" --token "<reviewer-login>=<absolute-reviewer-token-file>" --token "<fixer-login>=<absolute-fixer-token-file>" --host "<gateway-origin>" --hooks --admin-token "<reader-login>" --schedule 15m --dry-run
 ```
 
 **Always run it with `--dry-run` first.** That prints the seat mapping, the route URLs and the
@@ -345,7 +345,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--state-dir` | `STATE_DIR` |  | where this loop keeps its state files (default: ~/.hermes/state/review-loops/<id>) |
 | `--token` | `TOKEN` (repeatable) |  | login=/path/to/pat (repeatable) |
 | `--read-token` | `READ_TOKEN` |  | required: login whose token reads GitHub — its own account, never a seat or the adjudicator login (the four-identity rule) |
-| `--skill` | `SKILL` |  | skill the seats are told to load. A plugin-provided skill is qualified, e.g. hermes-review-loop:review-loop |
+| `--skill` | `SKILL` |  | skill the seats are told to load. A plugin-provided skill is qualified, e.g. diaktoros:review-loop |
 | `--adjudicator-route` | `ADJUDICATOR_ROUTE` |  | route name for the adjudicator (e.g. <id>-breach): setting it turns adjudication on when the verdict cap is spent |
 | `--adjudicator-login` | `ADJUDICATOR_LOGIN` |  | optional fourth GitHub account the ruling is also posted as (needs --adjudicator-route and its own --token LOGIN=/path) |
 | `--adjudicator-profile` | `ADJUDICATOR_PROFILE` |  | Hermes profile for the adjudicator (default: the plugin setting, else the launch profile) |
@@ -362,7 +362,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--ttl-min` | `TTL_MIN` | `45` | how long a run may hold its seat slot |
 | `--inflight-ttl-min` | `INFLIGHT_TTL_MIN` | `10` | how long an in-flight mark blocks a second run at the same head |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default off) |
-| `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by hermes-review-loop' (default on) |
+| `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default on) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
@@ -386,11 +386,11 @@ Changes one loop's settings in place, through the same checks `init` uses. Only 
 pass change; everything else stays as it is.
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --cap 4
-hermes review-loop set --loop "<loop-id>" --reviewer-turn-budget 1800
-hermes review-loop set --loop "<loop-id>" --reviewer-daily-turns 40
-hermes review-loop set --loop "<loop-id>" --read-token "<reader-login>" --token "<reader-login>=<absolute-reader-token-file>"
-hermes review-loop set --loop "<loop-id>" --observer-events opened,verdict,approved,escalation,ruling
+hermes dk set --loop "<loop-id>" --cap 4
+hermes dk set --loop "<loop-id>" --reviewer-turn-budget 1800
+hermes dk set --loop "<loop-id>" --reviewer-daily-turns 40
+hermes dk set --loop "<loop-id>" --read-token "<reader-login>" --token "<reader-login>=<absolute-reader-token-file>"
+hermes dk set --loop "<loop-id>" --observer-events opened,verdict,approved,escalation,ruling
 ```
 
 What it is for:
@@ -398,7 +398,7 @@ What it is for:
 - numbers: the verdict cap, concurrency, turn budgets, daily caps, the watchdog's patience
   (`--grace-min`, and `--marker-grace-min`: how long an adjudication may wait before the watchdog
   reports it);
-- signing: `--attribution off` stops adding the "Automated by hermes-review-loop" footer and commit
+- signing: `--attribution off` stops adding the "Automated by Diaktoros" footer and commit
   trailer to what this loop posts, and `on` restores it (see
   [what the loop signs](operations.md));
 - the reader account, or the adjudicator's comment account;
@@ -438,7 +438,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--ttl-min` | `TTL_MIN` |  | how long a run may hold its slot |
 | `--inflight-ttl-min` | `INFLIGHT_TTL_MIN` |  | minutes an in-flight mark blocks a second run at the same head |
 | `--turn-budget` | `TURN_BUDGET` |  | seconds one isolated seat turn may run (loop default) |
-| `--attribution` | `on` \| `off` |  | sign what the loop posts ('Automated by hermes-review-loop'), or stop |
+| `--attribution` | `on` \| `off` |  | sign what the loop posts ('Automated by Diaktoros'), or stop |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour), or start at once |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it); replaces the list (one of `--review-only`, `--no-review-only`) |
 | `--no-review-only` |  |  | clear the review-only list (one of `--review-only`, `--no-review-only`) |
@@ -478,8 +478,8 @@ loop config and any route whose profile, prompt or event no longer matches. A fo
 never touches a running loop until you run `apply` for it.
 
 ```bash
-hermes review-loop apply --loop "<loop-id>" --dry-run
-hermes review-loop apply --loop "<loop-id>"
+hermes dk apply --loop "<loop-id>" --dry-run
+hermes dk apply --loop "<loop-id>"
 ```
 
 It also repairs:
@@ -503,7 +503,7 @@ read hook listings but do not make requested writes. Route/hook rebinds are read
 rolled back on failure; installed gate shims and explicitly requested route recreation have
 separate lifecycles, so inspect partial-failure output. Missing routes require intent repair
 or explicit recreation; apply never silently invents them.
-To change signing explicitly, use `hermes review-loop set --loop "<loop-id>" --attribution on`
+To change signing explicitly, use `hermes dk set --loop "<loop-id>" --attribution on`
 or `--attribution off`, then verify `status`.
 A dry run also previews before the live busy-seat check; it is not proof a busy rebind will run.
 
@@ -526,9 +526,9 @@ off, a "changes requested" verdict is held for you and no fixer turn starts. You
 or turn this on.
 
 ```bash
-hermes review-loop fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race --dry-run
-hermes review-loop fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
-hermes review-loop fixer-push --loop "<loop-id>" --disable
+hermes dk fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race --dry-run
+hermes dk fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
+hermes dk fixer-push --loop "<loop-id>" --disable
 ```
 
 `--acknowledge-pr-race` is required to enable it. Read
@@ -555,10 +555,10 @@ Off unless you turn it on. New to it? [Issue triage and issue fixes, step by ste
 walks through the whole setup and a first test.
 
 ```bash
-hermes review-loop triage --loop "<loop-id>"
-hermes review-loop triage --loop "<loop-id>" --enable --triage-profile "<triage-profile>" --author "<issue-author-login>" --labels bug,feature,docs,question,P0,P1,P2,P3 --dry-run
-hermes review-loop triage --loop "<loop-id>" --enable --triage-profile "<triage-profile>" --author "<issue-author-login>" --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token "<hook-admin-login>"
-hermes review-loop triage --loop "<loop-id>" --disable --admin-token "<hook-admin-login>"
+hermes dk triage --loop "<loop-id>"
+hermes dk triage --loop "<loop-id>" --enable --triage-profile "<triage-profile>" --author "<issue-author-login>" --labels bug,feature,docs,question,P0,P1,P2,P3 --dry-run
+hermes dk triage --loop "<loop-id>" --enable --triage-profile "<triage-profile>" --author "<issue-author-login>" --labels bug,feature,docs,question,P0,P1,P2,P3 --admin-token "<hook-admin-login>"
+hermes dk triage --loop "<loop-id>" --disable --admin-token "<hook-admin-login>"
 ```
 
 - **Only issues from `--author` logins are triaged.** Anyone else's issue is dropped before any
@@ -581,7 +581,7 @@ This needs unattended fixer pushes on ([`fixer-push`](#fixer-push)), and the lab
 the triage labels, so only a person can trigger it.
 
 ```bash
-hermes review-loop triage --loop "<loop-id>" --enable --fix-label agent-fix --maintainer "<maintainer-login>"
+hermes dk triage --loop "<loop-id>" --enable --fix-label agent-fix --maintainer "<maintainer-login>"
 ```
 
 Step by step: [issues.md](issues.md). Details: [Issue triage](operations.md) and
@@ -639,8 +639,8 @@ An unknown hook state is not a paused hook. Verify it with an authorized hook-ad
 see [account access and token permissions](accounts.md#choose-pat-type-and-permissions).
 
 ```bash
-hermes review-loop doctor --loop "<loop-id>"
-hermes review-loop doctor --loop "<loop-id>" --offline
+hermes dk doctor --loop "<loop-id>"
+hermes dk doctor --loop "<loop-id>" --offline
 ```
 
 - Exit `1` means at least one ❌. With `--strict`, a ⚠️ counts as a failure too.
@@ -672,8 +672,8 @@ runs is in flight. It points the gate and watchdog shims at this plugin's script
 [moving to a renamed plugin or repository](operations.md#moving-to-a-renamed-plugin-or-repository).
 
 ```bash
-hermes review-loop migrate --dry-run
-hermes review-loop migrate
+hermes dk migrate --dry-run
+hermes dk migrate
 ```
 
 `--rename-loop OLD=NEW` also renames a loop: its file, its default state directory, its routes
@@ -704,9 +704,9 @@ ping the hooks.
 Run it in three stages, each one costing a little more:
 
 ```bash
-hermes review-loop selftest --loop "<loop-id>" --no-model
-hermes review-loop selftest --loop "<loop-id>" --pr 12
-hermes review-loop selftest --loop "<loop-id>" --pr 12 --live-turn
+hermes dk selftest --loop "<loop-id>" --no-model
+hermes dk selftest --loop "<loop-id>" --pr 12
+hermes dk selftest --loop "<loop-id>" --pr 12 --live-turn
 ```
 
 1. `--no-model` skips tiny completions, not all model/credential resolution. It can read and
@@ -745,8 +745,8 @@ Lists the models a profile's provider offers, from Hermes's own catalog. Read-on
 uses a credential.
 
 ```bash
-hermes review-loop models --seat reviewer --loop "<loop-id>"
-hermes review-loop models --profile-name "<reviewer-profile>"
+hermes dk models --seat reviewer --loop "<loop-id>"
+hermes dk models --profile-name "<reviewer-profile>"
 ```
 
 To change the model a seat uses, change that profile's model in Hermes (`hermes -p "<reviewer-profile>" model`).
@@ -778,8 +778,8 @@ whether your gateway accepted the signature. A hook that looks armed but cannot 
 wakes nothing, and this catches it.
 
 ```bash
-hermes review-loop arm --loop "<loop-id>" --admin-token "<hook-admin-login>"
-hermes review-loop arm --loop "<loop-id>" --pause --admin-token "<hook-admin-login>"
+hermes dk arm --loop "<loop-id>" --admin-token "<hook-admin-login>"
+hermes dk arm --loop "<loop-id>" --pause --admin-token "<hook-admin-login>"
 ```
 
 Run it after `doctor` and `selftest` pass. It reads back each hook and exits `1` unless GitHub
@@ -818,7 +818,7 @@ GitHub and the loop's state and shows:
 Read-only.
 
 ```bash
-hermes review-loop explain --loop "<loop-id>" --pr 12
+hermes dk explain --loop "<loop-id>" --pr 12
 ```
 
 Its conclusions come from the same checks the live gates run, so it is not a second opinion. It
@@ -841,7 +841,7 @@ reviewer or a maintainer (`triage.maintainers`), so this is the path for everyon
 loops without triage.
 
 ```bash
-hermes review-loop review --loop "<loop-id>" --pr 12
+hermes dk review --loop "<loop-id>" --pr 12
 ```
 
 The real reviewer gate decides, fed a `ready_for_review` event built from the live PR, so the
@@ -866,8 +866,8 @@ declined or queued alike. `trace` replays one delivery through the **real** gate
 temporary copy of this loop's home, and prints the gate's own reasons:
 
 ```bash
-hermes review-loop trace --loop "<loop-id>" --delivery "<delivery-guid-or-id>" --admin-token "<hook-admin-login>"
-hermes review-loop trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_request
+hermes dk trace --loop "<loop-id>" --delivery "<delivery-guid-or-id>" --admin-token "<hook-admin-login>"
+hermes dk trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_request
 ```
 
 - `--delivery` takes the GUID from the hook's **Recent Deliveries** page on GitHub (repo →
@@ -900,8 +900,8 @@ four attempts in all, waiting 2, 4 and 8 minutes between them, then it ends as `
 `retry` re-arms it once more, for example after you raised its turn budget or fixed its model.
 
 ```bash
-hermes review-loop retry --loop "<loop-id>" --pr 12
-hermes review-loop retry --loop "<loop-id>" --pr 12 --seat fixer
+hermes dk retry --loop "<loop-id>" --pr 12
+hermes dk retry --loop "<loop-id>" --pr 12 --seat fixer
 ```
 
 It selects the newest offerable ledger head (a GitHub PR read breaks a supersession tie).
@@ -924,7 +924,7 @@ Starts a queued turn now, if its seat has room, instead of waiting for the next 
 Turns queue when a seat is already busy (see `concurrency`).
 
 ```bash
-hermes review-loop drain --loop "<loop-id>" --seat reviewer
+hermes dk drain --loop "<loop-id>" --seat reviewer
 ```
 
 `--seat` defaults to reviewer; only reviewer/fixer queues are exposed by this command.
@@ -950,9 +950,9 @@ the loop's clone and its `roots`. A merged PR can leave gigabytes behind. Branch
 own working copies) are never touched.
 
 ```bash
-hermes review-loop cleanup --loop "<loop-id>" --dry-run
-hermes review-loop cleanup --loop "<loop-id>"
-hermes review-loop cleanup --loop "<loop-id>" --pr 12
+hermes dk cleanup --loop "<loop-id>" --dry-run
+hermes dk cleanup --loop "<loop-id>"
+hermes dk cleanup --loop "<loop-id>" --pr 12
 ```
 
 Without `--pr` it sweeps every closed PR the clone knows about. Closing a PR also runs cleanup
@@ -979,7 +979,7 @@ still needs it), its routes and gate shims, and its config. With `--purge` it al
 loop's default state directory.
 
 ```bash
-hermes review-loop uninstall --loop "<loop-id>" --admin-token "<hook-admin-login>"
+hermes dk uninstall --loop "<loop-id>" --admin-token "<hook-admin-login>"
 ```
 
 It undoes the parts that need the config first. If any of them cannot be undone (say, deleting a

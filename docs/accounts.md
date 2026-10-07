@@ -111,10 +111,10 @@ For a first installation, follow the full [getting-started examples](getting-sta
 ### Change the reader or add an admin later
 
 ```bash
-hermes review-loop set --loop ID \
+hermes dk set --loop ID \
   --read-token "<reader-login>" \
   --token "<reader-login>=$HOME/.hermes/keys/<reader-login>-pat"
-hermes review-loop set --loop ID \
+hermes dk set --loop ID \
   --token "<admin-login>=$HOME/.hermes/keys/<admin-login>-pat"
 ```
 
@@ -131,8 +131,8 @@ If the reader is changed, default hook-editing commands now act as the new reade
 ## Verify files, accounts and access
 
 ```bash
-hermes review-loop doctor --loop ID
-hermes review-loop selftest --loop ID --no-model
+hermes dk doctor --loop ID
+hermes dk selftest --loop ID --no-model
 ```
 
 | Check | Evidence | Does not establish |

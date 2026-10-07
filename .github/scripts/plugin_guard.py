@@ -22,7 +22,7 @@ def main() -> int:
     from tools.plugin_guard import (PLUGIN_SCANNER_VERSION, format_scan_report, scan_plugin,
                                     should_allow_plugin_install)
 
-    result = scan_plugin(plugin, source="https://github.com/coe0718/hermes-review-loop.git")
+    result = scan_plugin(plugin, source="https://github.com/coe0718/diaktoros.git")
     counts = Counter(f.severity for f in result.findings)
     allowed, reason = should_allow_plugin_install(result, force=True)
     print(format_scan_report(result))

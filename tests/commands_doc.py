@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The flag tables in docs/commands.md, generated from the real ``hermes review-loop`` parser.
+"""The flag tables in docs/commands.md, generated from the real ``hermes dk`` parser.
 
 Each command's section in docs/commands.md holds a table between two markers:
 
@@ -31,7 +31,7 @@ def parser() -> argparse.ArgumentParser:
     ctx = FakeCtx()
     # No settings form: every default shown is the schema's, the one a fresh install starts from.
     cli.register_cli(ctx, settings={})
-    root = argparse.ArgumentParser(prog="hermes review-loop")
+    root = argparse.ArgumentParser(prog="hermes dk")
     ctx.setup(root)
     return root
 

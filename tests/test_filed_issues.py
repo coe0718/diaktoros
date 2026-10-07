@@ -117,7 +117,7 @@ class Filing(Base):
         self.assertEqual(set(payload), {"title", "body", "labels"})
         self.assertEqual(payload["labels"], ["P3", "bug"])        # the list's own spelling
         self.assertIn("evidence at x:1", payload["body"])
-        self.assertIn("Filed by the review loop's reviewer from PR #7", payload["body"])
+        self.assertIn("Filed by the Diaktoros reviewer from PR #7", payload["body"])
         self.assertIn("Lineage depth 1.", payload["body"])
         self.assertIn("Automated by", payload["body"])           # host attribution (#197)
         self.assertFalse(server.completed)       # filing is not the review: still owed

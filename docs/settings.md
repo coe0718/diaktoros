@@ -1,6 +1,6 @@
 # Desktop settings reference
 
-The form at **Capabilities → Plugins → review loop** holds plugin-level defaults in the
+The form at **Capabilities → Plugins → diaktoros** holds plugin-level defaults in the
 Hermes profile that saved them. It is not a live editor for every repository. A loop's
 JSON file remains its effective configuration; changes reach an existing loop only through
 an explicit `apply --loop "<loop-id>"`.
@@ -147,11 +147,11 @@ is the explicit clearing path.
 Replace the quoted placeholders with actual values; quoting only protects shell syntax.
 
 ```bash
-hermes review-loop settings
-hermes review-loop apply --loop "<loop-id>" --dry-run
-hermes review-loop apply --loop "<loop-id>"
-hermes review-loop status --loop "<loop-id>"
-hermes review-loop doctor --loop "<loop-id>"
+hermes dk settings
+hermes dk apply --loop "<loop-id>" --dry-run
+hermes dk apply --loop "<loop-id>"
+hermes dk status --loop "<loop-id>"
+hermes dk doctor --loop "<loop-id>"
 ```
 
 - `settings` takes no plugin flags and displays current-profile defaults plus current loops.
@@ -169,7 +169,7 @@ shims, explicit missing-route recreation and optional hook/cron repairs have sep
 If a role being rebound has a live turn, normal apply refuses. The override is explicit:
 
 ```bash
-hermes review-loop apply --loop "<loop-id>" --while-busy --admin-token "<hook-admin-login>"
+hermes dk apply --loop "<loop-id>" --while-busy --admin-token "<hook-admin-login>"
 ```
 
 Here `--while-busy` permits the rebind while the live turn retains its starting identity;
@@ -181,7 +181,7 @@ Apply also reconciles drifted plugin-owned route profiles/contracts and older ad
 scripts. If routes are missing, try intent-based `doctor --repair` first. Explicit extras:
 
 ```bash
-hermes review-loop apply --loop "<loop-id>" --recreate-routes --hooks --watchdog-shim --admin-token "<hook-admin-login>" --dry-run
+hermes dk apply --loop "<loop-id>" --recreate-routes --hooks --watchdog-shim --admin-token "<hook-admin-login>" --dry-run
 ```
 
 - `--recreate-routes` writes missing routes with new secrets from loop config and re-keys owned
@@ -201,7 +201,7 @@ Full options and exit codes: [Command reference](commands.md).
   alone can report “already matches” without saving it. Use this direct path and verify status:
 
   ```bash
-  hermes review-loop set --loop "<loop-id>" --attribution off
+  hermes dk set --loop "<loop-id>" --attribution off
   ```
 
   `--loop` names the repository loop; `--attribution off` disables its plugin-added signatures.

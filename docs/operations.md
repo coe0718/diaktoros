@@ -8,6 +8,7 @@ incident recovery, and the decision to merge.
 
 - [Install](#first-install-setup) and [generated files](#what-init-writes)
 - [First run and push policy](#first-run)
+- [Upgrading from hermes-review-loop](#upgrading-from-hermes-review-loop)
 - [Everyday commands](#everyday-commands) and [reviewing your own PRs](#reviewing-your-own-prs)
 - [Signing](#what-the-loop-signs) and [review findings](#how-the-reviewer-grades-findings)
 - [Token files](#token-files-one-pat-per-account) and [permissions](#token-scopes-by-role)
@@ -31,7 +32,7 @@ a seat. Full argument details are in [commands](commands.md).
 ## First install: `setup`
 
 ```bash
-hermes review-loop setup
+hermes dk setup
 ```
 
 The interactive wizard checks prerequisites, collects configuration/account mappings,
@@ -72,9 +73,9 @@ for file layouts and [commands](commands.md) for `init`, `apply` and `arm`.
 launching a model. Policy also gates fixer answers/review-request writes and issue fixes.
 
 ```bash
-hermes review-loop fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race --dry-run
-hermes review-loop fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
-hermes review-loop status --loop "<loop-id>"
+hermes dk fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race --dry-run
+hermes dk fixer-push --loop "<loop-id>" --enable --acknowledge-pr-race
+hermes dk status --loop "<loop-id>"
 ```
 
 `--enable` opts this repository into host policy. `--dry-run` validates without writing;
@@ -90,7 +91,7 @@ needs explicit `retry` after opt-in; redelivery never upgrades admission. The br
 checks live policy again before writing.
 
 ```bash
-hermes review-loop fixer-push --loop "<loop-id>" --disable
+hermes dk fixer-push --loop "<loop-id>" --disable
 ```
 
 `--disable` revokes future unattended writes; it cannot undo accepted writes or eliminate
@@ -101,11 +102,11 @@ a kill switch for a worker already running.
 
 | Task | Command | Interpretation |
 | --- | --- | --- |
-| Inspect wiring and holds | `hermes review-loop status --loop "<loop-id>"` | Local state and recent problem rows, not a full audit |
-| Check prerequisites | `hermes review-loop doctor --loop "<loop-id>"` | Install checks, not proof every GitHub write will succeed |
-| Explain one PR | `hermes review-loop explain --loop "<loop-id>" --pr "<pr-number>"` | Live facts and `next:` recommendation |
-| Drain a queue | `hermes review-loop drain --loop "<loop-id>" --seat reviewer` | State-changing scheduling request with eligibility rechecks |
-| Enable and verify hooks | `hermes review-loop arm --loop "<loop-id>" --admin-token "<hook-admin-login>"` | Activates loop hooks and verifies signed pings |
+| Inspect wiring and holds | `hermes dk status --loop "<loop-id>"` | Local state and recent problem rows, not a full audit |
+| Check prerequisites | `hermes dk doctor --loop "<loop-id>"` | Install checks, not proof every GitHub write will succeed |
+| Explain one PR | `hermes dk explain --loop "<loop-id>" --pr "<pr-number>"` | Live facts and `next:` recommendation |
+| Drain a queue | `hermes dk drain --loop "<loop-id>" --seat reviewer` | State-changing scheduling request with eligibility rechecks |
+| Enable and verify hooks | `hermes dk arm --loop "<loop-id>" --admin-token "<hook-admin-login>"` | Activates loop hooks and verifies signed pings |
 
 For drain, `--seat reviewer` is the default; `--seat fixer` chooses the fixer queue and
 still respects push policy. `--admin-token` names a mapped login with hook-management
@@ -117,7 +118,7 @@ permission, never a token value. For a deliberate hook pause use the workflow in
 List your login (or any account whose PRs you fix yourself) as review-only:
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --review-only "<your-login>"
+hermes dk set --loop "<loop-id>" --review-only "<your-login>"
 ```
 
 The reviewer then reviews those PRs like a fixer's. A changes-requested verdict comes back
@@ -128,15 +129,37 @@ accepts that request from the PR's own review-only author. `explain` shows `next
 while a verdict waits for you, and the watchdog never reports a fixer stall on these PRs.
 `set --no-review-only` clears the list. A login can't be both review-only and a fixer.
 
+## Upgrading from hermes-review-loop
+
+Diaktoros was called hermes-review-loop before v0.2.0. Hermes keys a plugin by its manifest name: the
+`plugins.enabled` entry, the settings form (`plugins.entries.<name>.settings`) and the skill's
+namespace all follow it. An updated plugin whose manifest now says `diaktoros` is therefore **not
+enabled**, even in the old folder. It doesn't load, so `hermes dk`, the kept `hermes review-loop`
+alias and the `diaktoros:review-loop` skill are all missing until you enable it. The gates and the
+watchdog run by path through their shims, so the loops keep turning; nothing tells you it's missing.
+
+Between turns:
+
+1. Update in place, `hermes plugins update hermes-review-loop`, or install `diaktoros` alongside it.
+   If you install alongside, disable `hermes-review-loop` first, so the two don't both claim
+   `hermes review-loop`.
+2. `hermes plugins enable diaktoros`. The plugin loads again.
+3. `hermes dk migrate --dry-run`, then `hermes dk migrate`. This copies your settings form from
+   `hermes-review-loop`, gives the host files and the watchdog job their new names, and points the
+   shims at the plugin's scripts. See [moving to a renamed plugin or repository](#moving-to-a-renamed-plugin-or-repository).
+4. `hermes dk doctor`. If you installed alongside, `hermes plugins remove hermes-review-loop`.
+
+After step 2, `hermes review-loop` works as an alias for one release. Each use says it was renamed.
+
 ## What the loop signs
 
 By default the host adds an automation footer to reviews, fixer answers, ruling comments,
 triage comments, issue-fix PR descriptions and issue comments. Fixer commits carry an
-`Automated-By: hermes-review-loop (…)` trailer. Labels cannot carry a signature. Attribution
+`Automated-By: Diaktoros (…)` trailer. Labels cannot carry a signature. Attribution
 is added by the host, not parsed from the model's summary.
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --attribution off
+hermes dk set --loop "<loop-id>" --attribution off
 ```
 
 `--attribution off` changes future writes; `on` restores it. `status` and `doctor` report
@@ -182,7 +205,7 @@ profile name does not establish GitHub identity: the broker checks the token pri
 See [accounts](accounts.md) for separation, least privilege and rotation.
 
 ```bash
-hermes review-loop set --loop "<loop-id>" --token "<github-login>=<absolute-token-file>"
+hermes dk set --loop "<loop-id>" --token "<github-login>=<absolute-token-file>"
 ```
 
 `--token` maps a login to a path (repeatable), not to literal token contents. Never paste
@@ -207,8 +230,8 @@ repository access, expiry, SSO approval or identity. Do not use the read token a
 ## Preflight: `doctor`
 
 ```bash
-hermes review-loop doctor --loop "<loop-id>"
-hermes review-loop doctor --loop "<loop-id>" --repair
+hermes dk doctor --loop "<loop-id>"
+hermes dk doctor --loop "<loop-id>" --repair
 ```
 
 Inspect the first report before mutating anything. `--repair` permits local route/shim
@@ -219,9 +242,9 @@ warning is expected if you intentionally keep pushes off.
 ## Verifying the isolated setup: `selftest`
 
 ```bash
-hermes review-loop selftest --loop "<loop-id>" --no-model
-hermes review-loop selftest --loop "<loop-id>" --pr "<pr-number>"
-hermes review-loop selftest --loop "<loop-id>" --pr "<pr-number>" --live-turn
+hermes dk selftest --loop "<loop-id>" --no-model
+hermes dk selftest --loop "<loop-id>" --pr "<pr-number>"
+hermes dk selftest --loop "<loop-id>" --pr "<pr-number>" --live-turn
 ```
 
 `--no-model` skips the tiny real completion while checking containment/runtime.
@@ -262,7 +285,7 @@ never disable test guards to obtain a passing test or permit publication.
 ## Why isn't this PR moving?
 
 ```bash
-hermes review-loop explain --loop "<loop-id>" --pr "<pr-number>"
+hermes dk explain --loop "<loop-id>" --pr "<pr-number>"
 ```
 
 Read head/base, effective review, queues/claims, cap marker, problem runs and `next:`
@@ -280,8 +303,8 @@ A refused invocation is not an instruction to change or replay the PR.
 ## Why did that delivery start nothing? `trace`
 
 ```bash
-hermes review-loop trace --loop "<loop-id>" --delivery "<delivery-id>" --admin-token "<hook-admin-login>"
-hermes review-loop trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_request_review --route "<fixer-route>"
+hermes dk trace --loop "<loop-id>" --delivery "<delivery-id>" --admin-token "<hook-admin-login>"
+hermes dk trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_request_review --route "<fixer-route>"
 ```
 
 The two sources are alternatives. `--delivery` selects a numeric hook-delivery ID or
@@ -349,7 +372,7 @@ rulings, answers, triage results and issue-fix records may prohibit replay even 
 row is `failed`.
 
 ```bash
-hermes review-loop retry --loop "<loop-id>" --pr "<pr-number>" --seat reviewer
+hermes dk retry --loop "<loop-id>" --pr "<pr-number>" --seat reviewer
 ```
 
 `--seat` restricts candidates; omitted, it considers eligible problem runs at the newest
@@ -431,7 +454,7 @@ The loop does not resolve, and hands to you instead (the run ends `failed` with
 - a base that **changed workflow files** since the PR branched: GitHub refuses that push from a
   token without the `workflow` scope, which the loop never asks for.
 
-Merge the base into the branch yourself, then `hermes review-loop review --pr N`.
+Merge the base into the branch yourself, then `hermes dk review --pr N`.
 
 ## Publishing stats
 
@@ -452,7 +475,7 @@ own credentials. For GitHub Pages:
    ```bash
    #!/bin/sh
    set -e
-   hermes review-loop stats --loop "<loop-id>" --since 30d --github --html ~/review-loop-stats/index.html
+   hermes dk stats --loop "<loop-id>" --since 30d --github --html ~/review-loop-stats/index.html
    git -C ~/review-loop-stats add index.html
    git -C ~/review-loop-stats commit -qm "stats $(date -u +%F)"
    git -C ~/review-loop-stats push -q
@@ -473,8 +496,8 @@ Run it between turns, once the new plugin is installed and enabled. The old plug
 disabled but still installed, so its settings and scripts stay readable:
 
 ```bash
-hermes review-loop migrate --dry-run   # every step, nothing written
-hermes review-loop migrate
+hermes dk migrate --dry-run   # every step, nothing written
+hermes dk migrate
 ```
 
 It runs four steps:
@@ -511,8 +534,8 @@ state directory, and its routes (`<id>-review`, `<id>-fix` and so on), and throu
 URLs its GitHub hooks post to:
 
 ```bash
-hermes review-loop migrate --rename-loop "<old-id>=<new-id>" --admin-token "<hook-admin-login>" --dry-run
-hermes review-loop migrate --rename-loop "<old-id>=<new-id>" --admin-token "<hook-admin-login>"
+hermes dk migrate --rename-loop "<old-id>=<new-id>" --admin-token "<hook-admin-login>" --dry-run
+hermes dk migrate --rename-loop "<old-id>=<new-id>" --admin-token "<hook-admin-login>"
 ```
 
 It's refused while one of the loop's runs is in flight or uncertain. Then, in this order:

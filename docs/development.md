@@ -39,7 +39,7 @@ python tests/run_tests.py watchdog
 - `--list` lists area/group selectors without executing them.
 - `watchdog` is a positional area selector, not a flag or live watchdog launch. Other area/group names must come from `--list`.
 
-The harness also validates fenced `hermes review-loop` command examples in README/docs/skill against the CLI parser. Keep commands valid and explain every option next to the example; parser acceptance alone does not verify operational effects.
+The harness also validates fenced `hermes dk` command examples in README/docs/skill against the CLI parser. Keep commands valid and explain every option next to the example; parser acceptance alone does not verify operational effects.
 
 ### Boundary and regression suite
 

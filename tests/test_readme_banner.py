@@ -53,7 +53,7 @@ class BannerMatchesFirstRun(unittest.TestCase):
     def test_the_steps_and_the_banner_name_the_same_two_switches(self):
         # The steps create the runtime file and arm the hooks …
         self.assertIn(RUNTIME, self.steps)
-        self.assertRegex(self.steps, r"hermes review-loop arm --loop ID")
+        self.assertRegex(self.steps, r"hermes dk arm --loop ID")
         # … and the banner says those are what make a seat turn run, and what it then does.
         self.assertIn(RUNTIME, self.banner)
         self.assertRegex(self.banner, r"`arm`")
@@ -61,7 +61,7 @@ class BannerMatchesFirstRun(unittest.TestCase):
         self.assertRegex(self.banner, r"fixer pushes stay \*\*off\*\*")
 
     def test_the_fix_leg_banner_names_the_command_that_opts_in(self):
-        self.assertIn("hermes review-loop fixer-push --loop ID --enable --acknowledge-pr-race",
+        self.assertIn("hermes dk fixer-push --loop ID --enable --acknowledge-pr-race",
                       self.banner.replace("\n", " "))
 
 

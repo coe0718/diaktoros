@@ -2,7 +2,7 @@
 """#197: what the loop posts is signed as the loop's — and only what it posts, and only when on.
 
 Every write the plugin sends (the receipted review, ``broker.perform``, the fixer's answers
-comment, the ruling comment, the fixer's commit) carries "Automated by hermes-review-loop": a body
+comment, the ruling comment, the fixer's commit) carries "Automated by Diaktoros": a body
 footer, or an ``Automated-By`` commit trailer. It is added on the host, at the write, so a seat
 cannot strip or pre-empt it; ``attribution: false`` turns both off. The loop config, the settings
 form, ``init`` and ``set`` carry the switch.
@@ -24,8 +24,8 @@ from review_loop import attribution, broker, config, gh, review_receipt, routes 
 HEAD = "a" * 40
 BASE = "b" * 40
 REPO = "acme/widgets"
-LINK = "[hermes-review-loop](https://github.com/coe0718/hermes-review-loop)"
-TRAILER = "Automated-By: hermes-review-loop (https://github.com/coe0718/hermes-review-loop)"
+LINK = "[Diaktoros](https://github.com/coe0718/diaktoros)"
+TRAILER = "Automated-By: Diaktoros (https://github.com/coe0718/diaktoros)"
 
 
 def loop(**extra) -> dict:

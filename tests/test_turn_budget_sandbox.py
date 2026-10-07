@@ -144,7 +144,7 @@ def driver(spec_path: str) -> None:
                                 model='fixture-model', api_mode='chat_completions',
                                 credential_provider=lambda: None, proxy_model='',
                                 client_identity='')
-    # The ledger where `hermes review-loop status/explain` read it.
+    # The ledger where `hermes dk status/explain` read it.
     sup = Supervisor(Path(os.environ['HERMES_HOME']) / 'state' / 'review-loop-runs.sqlite',
                      production_config=root / 'runtime.json',
                      hermes_home=os.environ['HERMES_HOME'], lease_seconds=5,
@@ -381,7 +381,7 @@ class SandboxedTurnBudget(unittest.TestCase):
         self.assertEqual(result['error'],
                          f'isolated turn failed: TimeoutExpired — killed at the {BUDGET}s turn '
                          f'budget (sandbox stopped {GRACE}s past it) — raise turn_budget_s '
-                         '(hermes review-loop set --loop widgets --reviewer-turn-budget N), '
+                         '(hermes dk set --loop widgets --reviewer-turn-budget N), '
                          'then `retry`')
         # #53 x #49: failed before any write, and not backed off for an automatic retry — the
         # same budget would run out again. It is re-armable (`retry`), which the text says.
@@ -406,14 +406,14 @@ class SandboxedTurnBudget(unittest.TestCase):
         self.assertIn(f'killed at the {BUDGET}s turn budget', notice)
         self.assertIn('seat=reviewer', notice)
         self.assertIn('No external write was made', notice)
-        self.assertIn('hermes review-loop retry --loop widgets --pr 7 --seat reviewer', notice)
-        # The line `hermes review-loop status` and `explain` print for it.
+        self.assertIn('hermes dk retry --loop widgets --pr 7 --seat reviewer', notice)
+        # The line `hermes dk status` and `explain` print for it.
         [line] = [text for text in result['described'] if text.startswith('reviewer #7')]
         self.assertIn(f'killed at the {BUDGET}s turn budget', line)
         self.assertIn('raise turn_budget_s', line)
         self.assertIn(f'no external write — raise the turn budget (now {BUDGET}s): hermes '
-                      'review-loop set --loop widgets --reviewer-turn-budget N, then re-arm: '
-                      'hermes review-loop retry --loop widgets --pr 7 --seat reviewer', line)
+                      'dk set --loop widgets --reviewer-turn-budget N, then re-arm: '
+                      'hermes dk retry --loop widgets --pr 7 --seat reviewer', line)
 
     def test_a_seat_that_finishes_just_under_the_budget_completes(self):
         result, _, evidence = self.turn('finish', finish_after=BUDGET - 1)

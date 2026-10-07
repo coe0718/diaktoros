@@ -914,7 +914,7 @@ class GateToProductionWorker(unittest.TestCase):
         # Failed, not waiting (#53 x #49): the same budget would run out again. Re-armable.
         self.assertEqual((row["state"], row["retries"], row["retry_at"]), ("failed", 0, None))
         self.assertIn("killed at the 2700s turn budget (sandbox stopped 30s past it) — raise "
-                      "turn_budget_s (hermes review-loop set --loop widgets "
+                      "turn_budget_s (hermes dk set --loop widgets "
                       "--fixer-turn-budget N), then `retry`", row["error"])
         with run_supervisor.Supervisor(self.home / "state" / "review-loop-runs.sqlite")._connect() as con:
             self.assertIsNone(run_supervisor.write_evidence(con, row["id"]))

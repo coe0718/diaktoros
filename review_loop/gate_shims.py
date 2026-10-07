@@ -38,14 +38,17 @@ import tempfile
 from . import config, route_intent, routes
 
 GATE_SCRIPT = route_intent.GATE_SCRIPT
-MARKER = "# hermes-review-loop gate shim"
+MARKER = "# diaktoros gate shim"
+# The marker shims carried before the rename (#425): still ours, so `apply`/`migrate` rewrite them
+# as stale rather than refuse them as foreign.
+OLD_MARKERS = ("# hermes-review-loop gate shim",)
 # The tail of divergence()'s missing-route detail, exported so tests assert the real wording
 # instead of a hand-copied literal that silently disarms if the message is reworded (#153).
 GATEWAY_404_TAIL = "— the gateway 404s this seat"
 MODE = 0o755          # the gateway runs [sys.executable, path], so read suffices; x lets a human run it
 
 SHIM = '''#!/usr/bin/env python3
-{marker} — written by `hermes review-loop init/apply`; do not edit.
+{marker} — written by `hermes dk init/apply`; do not edit.
 """The webhook gateway only runs a route's script from this profile's scripts/ directory, and
 refuses one that resolves outside it (so a symlink will not do). This runs the plugin's own gate
 in this process, exactly as if the gateway had run it by its real path."""
@@ -72,8 +75,8 @@ else:
 if os.environ.get("HERMES_REAL_HOME"):
     os.environ["HOME"] = os.environ["HERMES_REAL_HOME"]
 if not os.path.isfile(TARGET):
-    sys.stderr.write("hermes-review-loop: gate script missing: " + TARGET
-                     + " — reinstall the plugin, then `hermes review-loop apply`\\n")
+    sys.stderr.write("diaktoros: gate script missing: " + TARGET
+                     + " — reinstall the plugin, then `hermes dk apply`\\n")
     sys.exit(1)
 if sys.path and os.path.realpath(sys.path[0] or os.curdir) == os.path.dirname(os.path.realpath(__file__)):
     sys.path[0] = os.path.dirname(TARGET)
@@ -124,7 +127,8 @@ def resolve(home: pathlib.Path, script_value) -> tuple[pathlib.Path | None, str 
 
 
 def _ours(text: str | None) -> bool:
-    return text is not None and text.startswith("#!/usr/bin/env python3\n" + MARKER)
+    return text is not None and any(text.startswith("#!/usr/bin/env python3\n" + marker)
+                                     for marker in (MARKER, *OLD_MARKERS))
 
 
 def _read(path: pathlib.Path) -> str | None:
@@ -145,9 +149,9 @@ def state(home: pathlib.Path, script: str) -> tuple[str, pathlib.Path, str]:
         return "foreign", path, f"{path} is not a regular file this plugin wrote"
     text = _read(path)
     if not _ours(text):
-        return "foreign", path, f"{path} exists and was not written by hermes-review-loop"
+        return "foreign", path, f"{path} exists and was not written by Diaktoros"
     if text != render(script):
-        return "stale", path, f"{path} is an older review-loop shim (not pinned to {plugin_script(script)})"
+        return "stale", path, f"{path} is an older Diaktoros shim (not pinned to {plugin_script(script)})"
     return "ok", path, f"{path} → {plugin_script(script)}"
 
 
@@ -168,7 +172,7 @@ def _side(profile: str, script: str) -> str:
 def recreate_fix(loop: dict) -> str:
     """The command that writes a loop's missing routes when no intent record can restore them.
     ``init`` refuses an existing loop, so it is never the answer here."""
-    return (f"`hermes review-loop apply --loop {loop.get('id', '?')} --recreate-routes` (writes "
+    return (f"`hermes dk apply --loop {loop.get('id', '?')} --recreate-routes` (writes "
             "it from the loop config with a new secret and re-keys the repo hook that points at it)")
 
 
@@ -229,7 +233,7 @@ def divergence(loop: dict, *, include_missing: bool = True, contract: bool = Fal
         recorded = intent.get(name) if isinstance(intent.get(name), dict) else None
         restorable = recorded is not None and (
             routes.route_profile(recorded), recorded.get("script")) == want
-        repair = f"`hermes review-loop doctor --loop {lid} --repair` (restores the route the plugin wrote)"
+        repair = f"`hermes dk doctor --loop {lid} --repair` (restores the route the plugin wrote)"
         if not isinstance(entry, dict):
             if include_missing:
                 out[name] = (f"loop config says {_side(*want)}, but the registry holds no route "
@@ -240,9 +244,9 @@ def divergence(loop: dict, *, include_missing: bool = True, contract: bool = Fal
         if served is None:
             # An explicit null/blank/non-string profile is not "no profile": the gateway refuses
             # every request for the route (``_route_allows_profile``), whatever the config says.
-            fix = (f"`hermes review-loop apply --loop {lid}` (rebinds the route to the config)"
+            fix = (f"`hermes dk apply --loop {lid}` (rebinds the route to the config)"
                    if want[0] and route_intent.owned(entry) else
-                   f"name the {role} profile in the loop config, then `hermes review-loop apply "
+                   f"name the {role} profile in the loop config, then `hermes dk apply "
                    f"--loop {lid}`" if route_intent.owned(entry) else
                    f"remove or rename that entry, then {repair if restorable else recreate_fix(loop)}")
             out[name] = (f"registry route has profile {entry.get('profile')!r}, which the gateway "
@@ -256,7 +260,7 @@ def divergence(loop: dict, *, include_missing: bool = True, contract: bool = Fal
                 # Without the role's prompt the route is not provably ours, so apply will not
                 # rewrite it; every other field it rewrites from the config (secret kept).
                 if "prompt" not in drift:
-                    fix = (f"`hermes review-loop apply --loop {lid}` (rewrites it from the loop "
+                    fix = (f"`hermes dk apply --loop {lid}` (rewrites it from the loop "
                            "config, secret kept)")
                 elif recorded is not None and recorded.get("prompt") == route_intent.ROUTE_PROMPT[role]:
                     fix = repair
@@ -271,19 +275,19 @@ def divergence(loop: dict, *, include_missing: bool = True, contract: bool = Fal
             # Something else holds the name: repair reports it as a conflict and apply refuses
             # to take it over, so neither may be named first. The entry has to move out of the way.
             then = repair if restorable else recreate_fix(loop)
-            out[name] = (f"{detail} — {entry.get('script')!r} is not a review-loop gate: "
+            out[name] = (f"{detail} — {entry.get('script')!r} is not a Diaktoros gate: "
                          "something else holds this route name",
                          f"remove or rename that entry (it is not this plugin's, so repair and "
                          f"apply leave it alone), then {then}", "mismatch")
             continue
         if not want[0]:
             fix = (f"name the {role} seat's profile (its `profile` under `seats.{role}` in the loop config, or "
-                   f"the plugin settings' {role} profile), then `hermes review-loop apply --loop "
+                   f"the plugin settings' {role} profile), then `hermes dk apply --loop "
                    f"{lid}`")
         elif restorable:
             fix = f"{repair} — or, if the registry is right, change the config and apply"
         else:
-            fix = f"`hermes review-loop apply --loop {lid}` (rebinds the route to the config)"
+            fix = f"`hermes dk apply --loop {lid}` (rebinds the route to the config)"
         out[name] = (detail, fix, "mismatch")
     return out
 
@@ -332,7 +336,7 @@ def _write(path: pathlib.Path, text: str) -> None:
         os.chmod(temp, MODE)
         # Re-check just before publishing: never replace a file someone else put there meanwhile.
         if os.path.lexists(path) and (path.is_symlink() or not _ours(_read(path))):
-            raise ShimError(f"{path} appeared and was not written by hermes-review-loop; left alone")
+            raise ShimError(f"{path} appeared and was not written by Diaktoros; left alone")
         os.replace(temp, path)
     finally:
         if os.path.exists(temp):
@@ -388,22 +392,22 @@ def heal(loop: dict) -> list[str]:
     for profile, script in sorted(live(loop)):
         status, path, detail = state(home_for(profile), script)
         if status == "foreign":
-            alerts.append(f"⚠️ Review loop {label} — gate shim NOT restored: {detail}; the gateway "
+            alerts.append(f"⚠️ Diaktoros {label} — gate shim NOT restored: {detail}; the gateway "
                           f"runs that instead of the gate for profile {profile!r}. Move it aside, "
-                          f"then `hermes review-loop apply --loop {lid}`.")
+                          f"then `hermes dk apply --loop {lid}`.")
         elif status == "nohome":
-            alerts.append(f"⚠️ Review loop {label} — gate shim NOT restored: {detail}, so the "
+            alerts.append(f"⚠️ Diaktoros {label} — gate shim NOT restored: {detail}, so the "
                           f"gateway drops every event on the routes it serves as {profile!r}. "
-                          f"`hermes review-loop doctor --loop {lid}` names the fix.")
+                          f"`hermes dk doctor --loop {lid}` names the fix.")
         else:
             pairs.add((profile, script))
     try:
         written = install(loop, pairs=pairs)
     except (OSError, config.ConfigError) as exc:
-        return alerts + [f"⚠️ Review loop {label} — gate shims NOT restored ({exc}); the gateway "
+        return alerts + [f"⚠️ Diaktoros {label} — gate shims NOT restored ({exc}); the gateway "
                          "drops this loop's events where a shim is missing"]
     if written:
-        alerts += [f"🔧 Review loop {label} — restored {len(written)} gate shim(s) the gateway "
+        alerts += [f"🔧 Diaktoros {label} — restored {len(written)} gate shim(s) the gateway "
                    "needs:", *(f"  {line}" for line in written)]
     return alerts
 
@@ -428,7 +432,7 @@ def live_checks(loop: dict) -> list[tuple[str, str, str, str]]:
     disagree (or that the registry lacks) is reported as that, with both sides named.
     """
     registry = routes.all_routes()
-    fix = f"`hermes review-loop apply --loop {loop.get('id', '?')}` (writes the gate shims)"
+    fix = f"`hermes dk apply --loop {loop.get('id', '?')}` (writes the gate shims)"
     diverged = divergence(loop)
     out = []
     for role, name in sorted(route_intent.routes_of(loop).items()):
@@ -449,7 +453,7 @@ def live_checks(loop: dict) -> list[tuple[str, str, str, str]]:
                         f"(profile {profile!r})", fix))
             continue
         if script not in route_intent.PLUGIN_SCRIPTS or found.parent.name != "scripts":
-            out.append((label, "mismatch", f"{script!r} resolves to {found}, not a review-loop gate",
+            out.append((label, "mismatch", f"{script!r} resolves to {found}, not a Diaktoros gate",
                         fix))
             continue
         status, _path, detail = state(home, found.name)

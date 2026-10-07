@@ -586,12 +586,12 @@ class FakeCtx:
         self.skill = name
 
 def parser_for(settings: dict | None = None):
-    """A ``hermes review-loop`` parser wired to a settings form, for in-process commands."""
+    """A ``hermes dk`` parser wired to a settings form, for in-process commands."""
     from review_loop import cli
 
     fake = FakeCtx()
     cli.register_cli(fake, settings=settings)
-    parser = argparse.ArgumentParser(prog="hermes review-loop")
+    parser = argparse.ArgumentParser(prog="hermes dk")
     fake.setup(parser)
     return parser
 

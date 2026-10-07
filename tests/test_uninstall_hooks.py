@@ -200,7 +200,7 @@ class UninstallRefusalTest(Base):
         self.assertEqual(sorted(hook["id"] for hook in self.hooks()), ids)
         for hook_id in ids:
             self.assertIn(f"  gh api -X DELETE repos/{t.REPO}/hooks/{hook_id}\n", out)
-        self.assertIn("hermes review-loop uninstall --loop widgets --admin-token <login>", out)
+        self.assertIn("hermes dk uninstall --loop widgets --admin-token <login>", out)
         # The printed re-run still parses: the config it needs is still there.
         t.parser_for().parse_args(["uninstall", "--loop", "widgets"])
         rc, out = self.cli("uninstall", "--loop", "widgets", "--admin-token", t.FIXER)
@@ -407,7 +407,7 @@ class PurgeTest(Base):
         self.assertEqual(rc, 2, out)
         self.assertIn("not the default", out)
         self.assertIn(f"rm -rf -- {shlex.quote(str(t.STATE_DIR))}", out)
-        self.assertIn("hermes review-loop uninstall --loop widgets &&", out)
+        self.assertIn("hermes dk uninstall --loop widgets &&", out)
         self.assertTrue(LOOP_FILE.exists())
         self.assertTrue((t.STATE_DIR / "keep.json").exists())
 
@@ -592,7 +592,7 @@ class PurgeTest(Base):
         summary = next(line for line in out.splitlines() if line.startswith("uninstall INCOMPLETE"))
         self.assertIn("removed: repo hooks", summary)
         self.assertIn("left behind: the routes widgets-review, widgets-fix", summary)
-        self.assertIn("  hermes review-loop uninstall --loop widgets   # once", out)
+        self.assertIn("  hermes dk uninstall --loop widgets   # once", out)
         self.assertTrue(LOOP_FILE.exists())
 
     def test_a_symlinked_shim_is_named_as_left_behind(self):

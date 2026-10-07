@@ -230,7 +230,7 @@ def answers_comment_body(text: str, *, head: str, base: str, run_id: str) -> str
     return (f"{ANSWERS_MARKER} run={run_id} head={head} base={base} -->\n"
             f"**Fixer's answers to the review of `{base[:12]}`** — pushed as `{head[:12]}`\n\n"
             f"{text.strip()}\n\n"
-            "_Posted by the review loop's host for the fixer seat; the fixer's own words, "
+            "_Posted by the Diaktoros host for the fixer seat; the fixer's own words, "
             "not verified by the loop._")
 
 
@@ -489,7 +489,7 @@ FILED_ISSUE_BODY_MAX = 6 * 1024
 
 def lineage_note(*, pr: int, head: str, depth: int) -> str:
     """The host's line under a filed issue: where it came from, and how deep the chain is."""
-    note = (f"\n\n---\nFiled by the review loop's reviewer from PR #{pr} (head `{head[:7]}`). "
+    note = (f"\n\n---\nFiled by the Diaktoros reviewer from PR #{pr} (head `{head[:7]}`). "
             f"Lineage depth {depth}.")
     if depth > 1:
         note += (" This finding came from reviewing an automatic fix of a filed issue: a person "

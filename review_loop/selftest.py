@@ -1,4 +1,4 @@
-"""``hermes review-loop selftest`` — verify the live isolated path, step by step.
+"""``hermes dk selftest`` — verify the live isolated path, step by step.
 
 ``doctor`` answers "is this loop installed?". This answers the question the issue #16 live
 verification asks: *can the host actually run one isolated turn?* Each step is independent where
@@ -559,7 +559,7 @@ def check_seats(report: Report, loop: dict, settings: dict | None, resolver=None
             inference = seat_model.resolve_seat(loop, seat, settings, resolver=resolver)
         except seat_model.SeatModelError as exc:
             report.add(step, name, FAIL, f"{exc}; the {seat} turn would be held",
-                       f"`hermes review-loop models --seat {seat} --loop {loop['id']}` lists what "
+                       f"`hermes dk models --seat {seat} --loop {loop['id']}` lists what "
                        "its profile's provider offers")
             continue
         report.redact.add(inference.key)
@@ -685,7 +685,7 @@ def _one_completion(report: Report, seats: str, inference) -> None:
                    else f"{where} was rejected — replace it"),
              403: f"{where} may not use model {inference.model!r}",
              404: f"the provider does not know model {inference.model!r} at this URL — "
-                  "`hermes review-loop models` lists what it offers",
+                  "`hermes dk models` lists what it offers",
              429: ("the subscription's rate limit is spent — it is shared with your own use of "
                    "this account" if oauth else
                    "the provider rate-limited or the account is out of credit"),
@@ -738,17 +738,17 @@ def check_identities(report: Report, loop: dict) -> bool:
         if not login:
             ok = False
             report.add(step, name, FAIL, f"no login configured for the {role} identity",
-                       f"hermes review-loop set --loop {loop.get('id') or '<id>'} --read-token "
+                       f"hermes dk set --loop {loop.get('id') or '<id>'} --read-token "
                        "LOGIN --token LOGIN=/path/to/pat" if role == "read" else
                        f"name the {role} login: reviewer_login/fixer_login in the plugin settings, "
-                       f"then `hermes review-loop apply --loop {loop.get('id') or '<id>'}` (a new "
+                       f"then `hermes dk apply --loop {loop.get('id') or '<id>'}` (a new "
                        "loop takes them from `init --reviewer/--reviewer-seat/--fixer`)")
             continue
         raw = (loop.get("tokens") or {}).get(login)
         if not raw:
             ok = False
             report.add(step, name, FAIL, f"{login}: no token file mapped",
-                       f"run `hermes review-loop set --loop <id> --token {login}=/path/to/pat` (chmod 600)")
+                       f"run `hermes dk set --loop <id> --token {login}=/path/to/pat` (chmod 600)")
             continue
         check = doctor.check_token(login, raw)
         if check.status != doctor.VERIFIED:
@@ -1040,8 +1040,8 @@ def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict 
         report.add(step, "observer", SKIP, "no observer configured (alerts go to the cron outbox only)")
     elif reason:
         report.add(step, "observer", FAIL, reason,
-                   "run `hermes review-loop set --loop <id> --observer-route <route>` (and --observer-profile), then "
-                   "`hermes review-loop doctor`")
+                   "run `hermes dk set --loop <id> --observer-route <route>` (and --observer-profile), then "
+                   "`hermes dk doctor`")
     else:
         report.add(step, "observer", PASS, "observer route registered with a secret and URL")
 
@@ -1101,7 +1101,7 @@ def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | 
                    f"turn did not finish with a verdict ({error or f'rc={rc}'})"
                    + ("; last output: " + " | ".join(t[:120] for t in tail) if tail else ""),
                    f"if it timed out ({timeout}s), production would kill it too: raise the "
-                   f"budget with `hermes review-loop set --loop {loop['id']} "
+                   f"budget with `hermes dk set --loop {loop['id']} "
                    "--reviewer-turn-budget N`; otherwise read the output above — the production "
                    "worker runs the same turn")
         return
@@ -1140,7 +1140,7 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
         own, foreign = doctor.split_route_hooks(loop, hooks, names)
     except config.ConfigError as exc:
         report.add(step, "hooks:signature", FAIL, f"cannot tell this loop's hooks apart: {exc}",
-                   f"hermes review-loop set --loop {loop['id']} --host https://your-gateway.example")
+                   f"hermes dk set --loop {loop['id']} --host https://your-gateway.example")
         return
     ours = [(names[doctor.hook_route_name(hook)], hook) for hook in own]
     if not ours:
@@ -1170,7 +1170,7 @@ def check_hook_signatures(report: Report, loop: dict, *, ping: bool = False,
             _from_doctor(report, step, found)
         elif found.startswith("no deliveries"):
             report.add(step, name, WARN, f"{seat}: {found}",
-                       f"`hermes review-loop selftest --loop {loop['id']} --no-model --ping` "
+                       f"`hermes dk selftest --loop {loop['id']} --no-model --ping` "
                        "(or `arm`, which pings) sends one harmless signed ping")
         else:
             report.add(step, name, PASS, f"{seat}: {found} — signature accepted")

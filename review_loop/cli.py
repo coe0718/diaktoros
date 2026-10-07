@@ -1,8 +1,8 @@
-"""``hermes review-loop`` — install, inspect and drive the loop from the CLI.
+"""``hermes dk`` — install, inspect and drive the loop from the CLI.
 
 The plugin does not try to own the gateway. Everything the loop needs beyond its own scripts —
 webhook routes, GitHub hooks, a cron entry — is written through the same config surfaces the
-operator would touch by hand, so `hermes review-loop uninstall` is really just the inverse of
+operator would touch by hand, so `hermes dk uninstall` is really just the inverse of
 `init` and nothing lives in a place you cannot see.
 """
 
@@ -46,7 +46,7 @@ def _legacy_job_name(loop: dict) -> str:
     return f"review loop watchdog ({loop['id']})"
 
 SHIM = '''#!/usr/bin/env python3
-"""Cron shim written by `hermes review-loop init`.
+"""Cron shim written by `hermes dk init`.
 
 The scheduler runs scripts from ~/.hermes/scripts/, so this forwards to the plugin's own
 watchdog and delivers its stdout. Keep the plugin as the single copy of the code.
@@ -312,12 +312,12 @@ def _route_state(loop: dict, role: str) -> str:
     got = routes.route_profile(entry)
     if got is None:
         return (f"{role} {name} → {entry.get('profile')!r} (blank — the gateway refuses it), "
-                f"not {want}: MISMATCH — hermes review-loop apply --loop {loop['id']}")
+                f"not {want}: MISMATCH — hermes dk apply --loop {loop['id']}")
     if got == want:
         muted = role in ("observer", "observer_urgent") and (loop.get("observer") or {}).get("mute")
         return f"{role} {name} → {got} (ok{', muted' if muted else ''})"
     return (f"{role} {name} → {got}, not {want}: MISMATCH — "
-            f"hermes review-loop apply --loop {loop['id']}")
+            f"hermes dk apply --loop {loop['id']}")
 
 
 def _seat_diffs(was: dict, now: dict) -> tuple[list[tuple[str, object, object]], set[str]]:
@@ -556,7 +556,7 @@ def _hook_fix(loop: dict, exc: Exception, token_login: str | None = None) -> str
     """The remedy for a failed hook step, matched to its cause."""
     if isinstance(exc, HookAccessError):
         return f"re-run with --admin-token <login> ({hook_write_need(loop, token_login)})"
-    return f"`hermes review-loop doctor --loop {loop['id']}` names what to repair first"
+    return f"`hermes dk doctor --loop {loop['id']}` names what to repair first"
 
 
 def _hook_listing(loop: dict, token_login: str | None = None, *,
@@ -656,7 +656,7 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         own, foreign = doctor.split_route_hooks(loop, hooks, wanted, ownership=not active)
     except config.ConfigError as exc:
         return [f"cannot tell this loop's hooks from anyone else's: {exc}",
-                f"fix: hermes review-loop set --loop {loop.get('id')} --host "
+                f"fix: hermes dk set --loop {loop.get('id')} --host "
                 "https://your-gateway.example"], False
     out, ok = [], True
     failed: list[tuple[int, list[str]]] = []      # (hook id, the errors that decide its fix)
@@ -736,9 +736,9 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         out.append(f"hook:{name} ABSENT ({role} seat) — {reason}")
     if miswired:
         out.append(f"fix: hook{'s' if len(miswired) > 1 else ''} {', '.join(map(str, miswired))}:"
-                   f" `hermes review-loop doctor --loop {loop.get('id')}` names what each needs "
+                   f" `hermes dk doctor --loop {loop.get('id')}` names what each needs "
                    "(re-run init --hooks, or on GitHub set the event / content_type, or drop the "
-                   f"URL's trailing slash — `hermes review-loop apply --hooks --loop {loop.get('id')}` "
+                   f"URL's trailing slash — `hermes dk apply --hooks --loop {loop.get('id')}` "
                    "repoints a slashed hook), then run `arm` again")
     # The fix is per hook: one refused hook must not hide the retry advice another hook's 5xx
     # earned. Hooks that need the same fix share its line.
@@ -753,12 +753,12 @@ def _set_hooks(loop: dict, active: bool, token_login: str | None) -> tuple[list[
         out.append(f"fix: hook{'s' if len(ids) > 1 else ''} {', '.join(map(str, ids))}: {text}")
     if unbound:
         ok = False
-        out.append(f"fix: `hermes review-loop doctor --loop {loop.get('id')}` names what each "
+        out.append(f"fix: `hermes dk doctor --loop {loop.get('id')}` names what each "
                    "route needs (its `route:` line and fix) — repair the route first, then run "
                    f"`arm{' --pause' if not active else ''}` again")
     if [pair for pair in missing if pair not in unbound]:
         ok = False
-        out.append(f"fix: `hermes review-loop doctor --loop {loop.get('id')}` shows the hook each "
+        out.append(f"fix: `hermes dk doctor --loop {loop.get('id')}` shows the hook each "
                    "seat needs; add the missing one (by hand with its route's URL and secret, or "
                    "via `init --hooks` for a loop being set up — hook write on "
                    f"{loop.get('repo')}, --admin-token <login>), then run "
@@ -835,7 +835,7 @@ def _hook_moves(before: dict, after: dict, binds: dict, token_login: str | None 
                 if not routes.same_webhook_url(hook["config"]["url"], dest):
                     raise config.ConfigError(
                         f"installed {role} hook {hook['id']} points at unexpected URL "
-                        f"{hook['config']['url']!r}; no changes made — `hermes review-loop doctor "
+                        f"{hook['config']['url']!r}; no changes made — `hermes dk doctor "
                         f"--loop {after.get('id')}` names what it is")
         else:
             continue
@@ -1250,7 +1250,7 @@ def _purge_target(loop: dict) -> tuple[pathlib.Path | None, str]:
         return None, (f"state_dir {raw} is not the default {default}, so --purge will not delete "
                       "it: a custom directory could hold anything the operator pointed it at. "
                       "Check it holds only this loop's state, then run:\n"
-                      f"  hermes review-loop uninstall --loop {lid} && "
+                      f"  hermes dk uninstall --loop {lid} && "
                       f"rm -rf -- {shlex.quote(str(raw))}")
     for path in (base / "state", base / "state" / "review-loops", default):
         if path.is_symlink():
@@ -1260,7 +1260,7 @@ def _purge_target(loop: dict) -> tuple[pathlib.Path | None, str]:
                           "--purge, remove the link, and remove the directory it points at by "
                           "hand if it is this loop's:\n"
                           f"  ls -ld -- {shlex.quote(str(path))}   # where it points\n"
-                          f"  hermes review-loop uninstall --loop {lid} && "
+                          f"  hermes dk uninstall --loop {lid} && "
                           f"rm -- {shlex.quote(str(path))}   # the link itself")
     if default.exists() and not default.is_dir():
         return None, f"{default} is not a directory"
@@ -1356,7 +1356,7 @@ def _install_shims(loop: dict, report: bool = True, pairs=None) -> bool:
         return True
     except (OSError, config.ConfigError) as exc:
         print(f"gate shim install FAILED: {exc}")
-        print(f"  fix it, then: hermes review-loop apply --loop {loop['id']}")
+        print(f"  fix it, then: hermes dk apply --loop {loop['id']}")
         return False
 
 
@@ -1612,7 +1612,7 @@ def _pinned_seat_notes(loop: dict) -> list[str]:
         own = (loop["seats"].get(seat) or {}).get("concurrency")
         if own == 1 and loop.get("concurrency", 1) > 1:
             notes.append(f"{seat} is pinned at 1 by seats.{seat}.concurrency (loop default "
-                         f"{loop['concurrency']}) — to raise it: `hermes review-loop set "
+                         f"{loop['concurrency']}) — to raise it: `hermes dk set "
                          f"--loop {loop['id']} --{seat}-concurrency {loop['concurrency']}`")
     return notes
 
@@ -1671,7 +1671,7 @@ def cmd_init(args) -> int:
         return 2
     if not reviewer_profile or not fixer_profile:
         print("both seats need a Hermes profile: pass --reviewer-profile/--fixer-profile, or set "
-              "them in the plugin settings (Capabilities → Plugins → review loop)")
+              "them in the plugin settings (Capabilities → Plugins → diaktoros)")
         return 2
     configured_reviewer = d["reviewer_login"]
     reviewer_seat = args.reviewer_seat or (
@@ -1767,7 +1767,7 @@ def cmd_init(args) -> int:
             config._check_daily_turns(cap, "triage.fix_daily_turns", "init")
             # A new loop has no triage block (so no fix_label) for the cap to live in.
             print(f"note: issue-fix daily cap {cap} is not written: a new loop has no "
-                  "triage.fix_label yet — set it with `hermes review-loop triage "
+                  "triage.fix_label yet — set it with `hermes dk triage "
                   "--fix-daily-turns N` once issue fixes are on")
     except config.ConfigError as exc:
         print(f"refused: {exc}")
@@ -1793,7 +1793,7 @@ def cmd_init(args) -> int:
         if others:
             raise config.ConfigError(
                 f"{loop['repo']} is already configured as loop {', '.join(repr(i) for i in others)}"
-                " — change it with `hermes review-loop set`, or remove it first")
+                " — change it with `hermes dk set`, or remove it first")
         # Routes are installed even without --hooks; never write a partial loop with
         # route URLs that cannot resolve to this operator's own gateway.
         config.webhook_host(loop["host"], required=True)
@@ -1844,7 +1844,7 @@ def cmd_init(args) -> int:
 
     path = config.config_dir() / f"{loop['id']}.json"
     if path.exists():
-        print(f"refused: loop {loop['id']!r} already exists; use `hermes review-loop set` "
+        print(f"refused: loop {loop['id']!r} already exists; use `hermes dk set` "
               "to change it without losing observer destination/receipt bindings")
         return 2
     observer_name = (loop.get("observer") or {}).get("route")
@@ -1940,21 +1940,21 @@ def cmd_init(args) -> int:
         # Config, routes and hooks are in place; only the job is missing. Say so and fail, so an
         # install script's `init && ...` does not read a missing watchdog as success.
         print("\ninit INCOMPLETE: the watchdog job was not scheduled — run the command above, "
-              f"then `hermes review-loop doctor --loop {loop['id']}`")
+              f"then `hermes dk doctor --loop {loop['id']}`")
         return 1
     if not pinged:
         print(f"\ninit INCOMPLETE: a hook's ping was rejected — see the ❌ line above, then "
-              f"`hermes review-loop doctor --loop {loop['id']}`")
+              f"`hermes dk doctor --loop {loop['id']}`")
         return 1
     # The seats never hold a GitHub token: every write goes through the host broker with the token
     # files mapped above, so a GH_TOKEN in a seat profile's .env is only an extra copy to leak.
     lid = loop["id"]
     runtime = config.home() / "review-loop-runtime.json"
-    steps = ([f"create the runtime file {runtime} (`hermes review-loop setup --repo "
+    steps = ([f"create the runtime file {runtime} (`hermes dk setup --repo "
               f"{shlex.quote(loop['repo'])}` detects and writes it)"]
              if not runtime.exists() else []) + [
-             f"hermes review-loop doctor --loop {lid}",
-             f"hermes review-loop selftest --loop {lid} --no-model, then --pr N, then --pr N --live-turn"]
+             f"hermes dk doctor --loop {lid}",
+             f"hermes dk selftest --loop {lid} --no-model, then --pr N, then --pr N --live-turn"]
     if not config.unattended_fixer_push_enabled(loop):
         steps.append("decide the fix leg: unattended fixer pushes are off, so a changes-requested "
                      "verdict is held for you and no fixer turn starts. To let the fixer answer "
@@ -1962,7 +1962,7 @@ def cmd_init(args) -> int:
                      "(read docs/operations.md on the PR-metadata race first)")
     if args.hooks and not getattr(args, "arm", False):
         admin = f" --admin-token {args.admin_token}" if args.admin_token else ""
-        steps.append(f"hermes review-loop arm --loop {lid}{admin}   (the hooks were created "
+        steps.append(f"hermes dk arm --loop {lid}{admin}   (the hooks were created "
                      "paused)")
     elif args.hooks:
         steps.append("the hooks are ARMED: until the runtime file exists every turn is held")
@@ -1974,13 +1974,13 @@ def cmd_init(args) -> int:
     return 0 if shims_ok else 1
 
 
-# The root ``hermes review-loop`` parser, kept by register_cli so ``setup`` runs the other verbs
+# The root ``hermes dk`` parser, kept by register_cli so ``setup`` runs the other verbs
 # through the very parser (and settings defaults) the operator would.
 _PARSER: argparse.ArgumentParser | None = None
 
 
 def _verb(*argv: str) -> int:
-    """Run another ``hermes review-loop`` verb in-process; argparse refusing it is exit 2."""
+    """Run another ``hermes dk`` verb in-process; argparse refusing it is exit 2."""
     try:
         parsed = _PARSER.parse_args(list(argv))
     except SystemExit:
@@ -2092,7 +2092,7 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
         "on" if _agree("Start each review after the head's CI finishes (up to an hour)?",
                        d["review_after_ci"], interactive, d["review_after_ci"]) else "off")
     attribution = args.attribution or (
-        "on" if _agree("Sign what the loop posts ('Automated by hermes-review-loop')?",
+        "on" if _agree("Sign what the loop posts ('Automated by Diaktoros')?",
                        d["attribution"], interactive, d["attribution"]) else "off")
     adjudicator = (args.adjudicator_profile if args.adjudicator_profile is not None else
                    _ask("Adjudicate a PR whose rounds are spent? Profile [blank = no]",
@@ -2159,7 +2159,7 @@ def cmd_setup(args) -> int:
         print("setup needs the repository as owner/name (--repo)")
         return 2
     loop_id = args.id or repo.split("/")[-1]
-    print(f"hermes review-loop setup — {repo} (loop {loop_id!r}). Safe to re-run: what is already "
+    print(f"hermes dk setup — {repo} (loop {loop_id!r}). Safe to re-run: what is already "
           "in place is kept." + (" Dry run: nothing is written." if args.dry_run else ""))
 
     runtime_ok = _setup_runtime(args, interactive)
@@ -2178,7 +2178,7 @@ def cmd_setup(args) -> int:
                   "a new loop")
             return 2
         print(f"   ✅ loop {loop_id!r} is configured — kept as it is (change it with `hermes "
-              f"review-loop set --loop {loop_id}`)")
+              f"dk set --loop {loop_id}`)")
     else:
         argv, admin = _setup_init_argv(args, repo, loop_id, interactive)
         print("   init dry run:")
@@ -2213,13 +2213,13 @@ def cmd_setup(args) -> int:
     selftest_rc = _verb("selftest", f"--loop={loop_id}", "--no-model")
     if doctor_rc or selftest_rc or not scheduled or not runtime_ok:
         print("\nsetup stopped before arming: fix each ❌ above (its fix line says how), then "
-              f"re-run `hermes review-loop setup --repo {shlex.quote(repo)}` — it keeps what is done")
+              f"re-run `hermes dk setup --repo {shlex.quote(repo)}` — it keeps what is done")
         return 1
 
     print("\n5. Arm")
     if not (args.arm or _agree("Arm the repo hooks now? The loop goes live.", False,
                                interactive, False)):
-        print(f"   not armed. When ready: hermes review-loop arm --loop {loop_id}"
+        print(f"   not armed. When ready: hermes dk arm --loop {loop_id}"
               + (f" --admin-token {admin}" if admin else ""))
         return 0
     if not admin:
@@ -2327,7 +2327,7 @@ def _set_adjudication(args, loop: dict) -> int:
             print(f"warning: old adjudicator route {old_route!r} remains; remove it manually: {exc}")
     shims_ok = _install_shims(updated)
     print("  no repo hook is needed: the loop wakes the adjudicator itself when the cap is spent")
-    print(f"  next: hermes review-loop doctor --loop {loop['id']}")
+    print(f"  next: hermes dk doctor --loop {loop['id']}")
     return 0 if shims_ok else 1
 
 
@@ -2468,7 +2468,7 @@ def cmd_set(args) -> int:
             if not (loop.get("adjudicator") or {}).get("route"):
                 print("refused: this loop has no adjudicator route, so nothing rules — an "
                       "adjudicator login would never post; turn adjudication on first with "
-                      f"`hermes review-loop set --loop {loop['id']} --adjudicator-profile PROFILE`")
+                      f"`hermes dk set --loop {loop['id']} --adjudicator-profile PROFILE`")
                 return 2
             adj_seat["login"] = adj_after
         else:
@@ -2709,7 +2709,7 @@ def cmd_set(args) -> int:
               f"{observer.describe(updated.get('observer') or {})}")
     print(f"loop config updated: {path}")
     if updated.get("host") != loop.get("host"):
-        print(f"  next: `hermes review-loop apply --loop {updated['id']}` "
+        print(f"  next: `hermes dk apply --loop {updated['id']}` "
               "(rewrites the routes' origin; add --hooks to repoint the hooks)")
 
     if "turn_budget_s" in changes:
@@ -2788,7 +2788,7 @@ def _apply(args) -> int:
         # doctor fails this loop; apply must not report success over it either.
         print(f"settings refused: {updated['id']}: read_token {reader!r} has no entry in "
               "'tokens' — the gates read GitHub as that login and have no file to read it from")
-        print(f"fix: hermes review-loop set --loop {updated['id']} --read-token {reader} "
+        print(f"fix: hermes dk set --loop {updated['id']} --read-token {reader} "
               f"--token {reader}=/path/to/pat")
         return 2
 
@@ -2920,7 +2920,7 @@ def _apply(args) -> int:
         print(f"  route {name}: script {script} → {GATE_SCRIPT[role]}   (installed by an older "
               "release)")
     for name in missing_routes:
-        print(f"  route {name}: not installed — `hermes review-loop init` creates routes; "
+        print(f"  route {name}: not installed — `hermes dk init` creates routes; "
               "apply will not invent one behind your back")
     if missed := [role for role, name in _routes_of(updated).items()
                   if role in touched and name in missing_routes]:
@@ -3040,7 +3040,7 @@ def _apply(args) -> int:
 def cmd_settings(args) -> int:
     """Show the plugin-level defaults — what a new loop starts from, and what ``apply`` pushes."""
     d = config.settings_defaults(_SETTINGS)
-    print("plugin settings (desktop: Capabilities → Plugins → review loop)")
+    print("plugin settings (desktop: Capabilities → Plugins → diaktoros)")
     width = max(len(key) for key in config.SETTINGS_SCHEMA)
     for key, spec in config.SETTINGS_SCHEMA.items():
         value = d[key]
@@ -3079,7 +3079,7 @@ def cmd_settings(args) -> int:
                 print(f"  {'':<18} token files: " + " · ".join(refs))
     if not _SETTINGS:
         print("\nnothing set — every value above is the schema default")
-    print("\napply them to a loop with: hermes review-loop apply --loop <id>"
+    print("\napply them to a loop with: hermes dk apply --loop <id>"
           "\n(settings are defaults, not a subscription: an existing loop keeps its own seats, "
           "profiles and numbers until you apply — and blank fields above never erase them)")
     return 0
@@ -3166,7 +3166,7 @@ def cmd_status(args) -> int:
             print(line)
         if not loops and not skipped:
             print(f"no loops configured in {config.config_dir()} — run "
-                  "`hermes review-loop setup` to create one")
+                  "`hermes dk setup` to create one")
     for loop in loops:
         from . import state as state_mod
 
@@ -3188,7 +3188,7 @@ def cmd_status(args) -> int:
         print("  fixer push: " + ("ENABLED — operator accepted PR-metadata/ref race"
                                   if config.unattended_fixer_push_enabled(loop)
                                   else "off (unattended pushes disabled)"))
-        print("  signed:     " + ("on — what the loop posts says 'Automated by hermes-review-loop'"
+        print("  signed:     " + ("on — what the loop posts says 'Automated by Diaktoros'"
                                   if attribution.enabled(loop)
                                   else "off (no footer or commit trailer)"))
         print(f"  state:      {st.dir}")
@@ -3407,7 +3407,7 @@ def cmd_trace(args) -> int:
     admin = getattr(args, "admin_token", "") or None
     if admin and gh.token_path(loop, admin) is None:
         print(f"refused: --admin-token {admin!r} has no token file mapped on this loop — map it "
-              f"with `hermes review-loop set --loop {shlex.quote(loop['id'])} --token "
+              f"with `hermes dk set --loop {shlex.quote(loop['id'])} --token "
               f"{shlex.quote(admin)}=/abs/path`")
         return 2
     try:
@@ -3584,7 +3584,7 @@ def cmd_review(args) -> int:
         return 2
     if _reviewer_runs(loop["repo"], args.pr, head) > before[0]:
         print(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker "
-              f"(`hermes review-loop explain --loop {loop['id']} --pr {args.pr}` follows it)")
+              f"(`hermes dk explain --loop {loop['id']} --pr {args.pr}` follows it)")
         return 0
     waiting = queued()
     if waiting and waiting != before[1]:
@@ -3876,7 +3876,7 @@ def cmd_doctor(args) -> int:
         return 2
     if not loops:
         print(f"no loops configured in {config.config_dir()} — run "
-              "`hermes review-loop setup` to create one")
+              "`hermes dk setup` to create one")
         return 0
     failed = 0
     for loop in loops:
@@ -4210,14 +4210,14 @@ def cmd_triage(args) -> int:
             state = "active" if kept.get("active") else "paused"
             print(f"  hook {kept['id']} kept ({state})")
             if not kept.get("active"):
-                print(f"  next: hermes review-loop arm --loop {loop['id']} --admin-token {admin} "
+                print(f"  next: hermes dk arm --loop {loop['id']} --admin-token {admin} "
                       "(the hook is paused; arm turns every loop hook on)")
         else:
             print("  hook created (paused)")
-            print(f"  next: hermes review-loop arm --loop {loop['id']} --admin-token {admin} "
+            print(f"  next: hermes dk arm --loop {loop['id']} --admin-token {admin} "
                   "(arm turns every loop hook on)")
     else:
-        print(f"  next: hermes review-loop apply --loop {loop['id']} --hooks --admin-token LOGIN "
+        print(f"  next: hermes dk apply --loop {loop['id']} --hooks --admin-token LOGIN "
               "creates the issues hook (paused), then `arm`")
     return 0 if shims_ok else 1
 
@@ -4294,7 +4294,7 @@ def _cmd_fixer_push_locked(args) -> int:
             held = []
         if held:
             print(f"  {len(held)} held verdict(s) ({', '.join(sorted(held))}) start on the next "
-                  f"watchdog sweep, or now: `hermes review-loop drain --loop {loop['id']} "
+                  f"watchdog sweep, or now: `hermes dk drain --loop {loop['id']} "
                   "--seat fixer`")
     return 0
 
@@ -4369,7 +4369,7 @@ def _unloadable_teardown_advice(loop_id: str) -> None:
     for job in jobs or []:
         print(f"  hermes cron remove {shlex.quote(str(job.get('id') or '<id>'))}   "
               f"# {watchdog_job_name(raw)}")
-    print("then fix the file (the reason above) and re-run `hermes review-loop uninstall "
+    print("then fix the file (the reason above) and re-run `hermes dk uninstall "
           f"--loop {shlex.quote(loop_id)}`, or remove what is listed by hand and delete "
           f"{config.config_dir() / (loop_id + '.json')}")
 
@@ -4410,7 +4410,7 @@ def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
         print(f"  {_hook_find_command(loop)}   # the ids")
         print(f"  gh api {shlex.quote(f'repos/' + loop['repo'] + '/hooks/<id>')} --jq .config.url"
               "   # where each posts")
-        print("then either set this loop's host (`hermes review-loop set --loop "
+        print("then either set this loop's host (`hermes dk set --loop "
               f"{lid} --host https://your-gateway.example`) so uninstall can tell its own hooks "
               "apart, or delete the ones that are this install's by hand")
     elif accepted_unread and not left_hooks:
@@ -4427,7 +4427,7 @@ def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
         for command in _hook_delete_commands(loop, left_hooks):
             print(f"  {command}")
         print("or map such a token on this loop and let uninstall do it:")
-        print(f"  hermes review-loop uninstall --loop {lid} --admin-token <login>")
+        print(f"  hermes dk uninstall --loop {lid} --admin-token <login>")
     elif any(reason.startswith(("hook", "could not")) for reason in reasons):
         # Nothing was read (or read back), so nothing is known about which hooks exist — or
         # whose they are. No liveness claim, and no DELETE on a guess.
@@ -4443,7 +4443,7 @@ def _uninstall_refused(loop: dict, reasons: list[str], left_hooks: list[int],
             print(f"  hermes cron remove {shlex.quote(str(job.get('id') or '<id>'))}")
     print("then re-run:")
     admin = getattr(args, "admin_token", "") or ""
-    print(f"  hermes review-loop uninstall --loop {lid}"
+    print(f"  hermes dk uninstall --loop {lid}"
           + (f" --admin-token {shlex.quote(admin)}" if admin else "")
           + (" --keep-config" if args.keep_config else "")
           + (" --purge" if getattr(args, "purge", False) else ""))
@@ -4494,7 +4494,7 @@ def cmd_uninstall(args) -> int:
             return 2
     if admin and gh.token_path(loop, admin) is None:
         print(f"refused: --admin-token {admin!r} has no token file mapped on this loop — map it "
-              f"with `hermes review-loop set --loop {shlex.quote(loop['id'])} --token "
+              f"with `hermes dk set --loop {shlex.quote(loop['id'])} --token "
               f"{shlex.quote(admin)}=/abs/path/to/pat`")
         return 2
     jobs, error = _cron_jobs(loop)
@@ -4573,7 +4573,7 @@ def cmd_uninstall(args) -> int:
     # 3. Forget first: a route the operator removed must not be put back by the next watchdog
     # sweep's self-heal (which only ever restores routes still in the intent record).
     lid = shlex.quote(loop["id"])
-    finish = f"hermes review-loop uninstall --loop {lid}"
+    finish = f"hermes dk uninstall --loop {lid}"
     try:
         route_intent.forget(loop, _routes_of(loop).values())
         for name in _routes_of(loop).values():
@@ -4689,8 +4689,20 @@ _SETTINGS: dict = {}
 _CTX = None
 
 
+RENAMED_NOTE = ("note: `hermes review-loop` is now `hermes dk` (short for `hermes diaktoros`); "
+                "the old name will be removed in a later release")
+
+
+def _renamed(func):
+    """``func`` run through the old command name: the rename note on stderr, then the verb."""
+    def run(args):  # noqa: ANN001
+        print(RENAMED_NOTE, file=sys.stderr)
+        return func(args)
+    return run
+
+
 def register_cli(ctx, settings: dict | None = None) -> None:
-    """Wire ``hermes review-loop`` into the CLI.
+    """Wire ``hermes diaktoros``, its short name ``hermes dk``, and the old ``hermes review-loop``.
 
     ``settings`` is the plugin-level settings form. It supplies the defaults a new loop starts
     from, and what ``apply`` pushes onto an existing loop; it never rewrites a loop behind the
@@ -4707,15 +4719,15 @@ def register_cli(ctx, settings: dict | None = None) -> None:
     def setup(parser) -> None:  # noqa: ANN001
         """Build the command's argparse tree.
 
-        The framework hands this the parser for ``hermes review-loop`` itself — the subcommands are
+        The framework hands this the parser for ``hermes dk`` itself — the subcommands are
         ours to create. (Claiming a subparsers action here compiles, loads, validates, and then
-        quietly offers zero subcommands: ``hermes review-loop list`` is "unrecognized arguments".)
+        quietly offers zero subcommands: ``hermes dk list`` is "unrecognized arguments".)
         """
         sub = parser.add_subparsers(dest="command", metavar="<command>")
         global _PARSER
         _PARSER = parser
 
-        def _usage(_args) -> int:      # bare `hermes review-loop` prints the commands, not an error
+        def _usage(_args) -> int:      # bare `hermes dk` prints the commands, not an error
             parser.print_help()
             return 0
 
@@ -4765,7 +4777,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                "a seat or the adjudicator login (the four-identity rule)")
         init.add_argument("--skill", default="",
                           help="skill the seats are told to load. A plugin-provided skill is "
-                               "qualified, e.g. hermes-review-loop:review-loop")
+                               "qualified, e.g. diaktoros:review-loop")
         init.add_argument("--adjudicator-route", default="",
                           help="route name for the adjudicator (e.g. <id>-breach): setting it "
                                "turns adjudication on when the verdict cap is spent")
@@ -4810,7 +4822,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="start each review after the head's checks finish (up to an hour) "
                                f"(default {'on' if d['review_after_ci'] else 'off'})")
         init.add_argument("--attribution", choices=("on", "off"), default=None,
-                          help="sign what the loop posts with 'Automated by hermes-review-loop' "
+                          help="sign what the loop posts with 'Automated by Diaktoros' "
                                f"(default {'on' if d['attribution'] else 'off'})")
         init.add_argument("--review-only", action="append", default=None,
                           help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting)")
@@ -4884,7 +4896,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         first.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                            help="start each review after the head's checks finish (up to an hour) (default: the plugin setting, off)")
         first.add_argument("--attribution", choices=("on", "off"), default=None,
-                           help="sign what the loop posts with 'Automated by hermes-review-loop' "
+                           help="sign what the loop posts with 'Automated by Diaktoros' "
                                 "(default: the plugin setting, on)")
         first.add_argument("--reviewer-max-steps", type=int, default=None,
                            help="agent steps one reviewer turn may take, 8-200 (0 = default 60) "
@@ -5024,7 +5036,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--turn-budget", type=int,
                             help="seconds one isolated seat turn may run (loop default)")
         change.add_argument("--attribution", choices=("on", "off"), default=None,
-                            help="sign what the loop posts ('Automated by hermes-review-loop'), "
+                            help="sign what the loop posts ('Automated by Diaktoros'), "
                                  "or stop")
         change.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                             help="start each review after the head's checks finish (up to an hour), "
@@ -5229,11 +5241,31 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                help="also delete the loop's default state directory")
         uninstall.set_defaults(func=cmd_uninstall)
 
-    ctx.register_cli_command(
-        "review-loop",
-        "Unattended PR review loop between two agents (fixer + reviewer, budget counted in verdicts)",
-        setup,
-        description="Configure, inspect and drive review loops. Each loop is one JSON file under "
-                    "~/.hermes/review-loops.d/, and it drives two webhook routes, two GitHub hooks "
-                    "and (optionally) one cron watchdog job.",
-    )
+    summary = "Diaktoros — bounded, autonomous software maintenance: review, fix, triage"
+    description = ("Configure, inspect and drive Diaktoros loops. Each loop is one JSON file under "
+                   "~/.hermes/review-loops.d/, and it drives two webhook routes, two GitHub hooks "
+                   "and (optionally) one cron watchdog job.")
+
+    def deprecated(parser) -> None:  # noqa: ANN001
+        """``hermes review-loop`` (#425): the same commands, each saying once that it was renamed.
+
+        It never becomes ``_PARSER``: verbs one command runs for another go through the real name.
+        """
+        global _PARSER
+        kept = _PARSER
+        setup(parser)
+        _PARSER = kept if kept is not None else parser
+        if parser.get_default("func") is not None:          # the bare command prints its usage
+            parser.set_defaults(func=_renamed(parser.get_default("func")))
+        for action in parser._subparsers._group_actions if parser._subparsers else ():
+            for verb in action.choices.values():
+                func = verb.get_default("func")
+                if func is not None:
+                    verb.set_defaults(func=_renamed(func))
+
+    # The old name first and the full name last: a host that keeps one registration keeps that one.
+    ctx.register_cli_command("review-loop", "Renamed: use `hermes dk` (Diaktoros)", deprecated,
+                             description=description)
+    ctx.register_cli_command("dk", summary + " (short for `hermes diaktoros`)", setup,
+                             description=description)
+    ctx.register_cli_command("diaktoros", summary, setup, description=description)

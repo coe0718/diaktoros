@@ -1,4 +1,4 @@
-"""``hermes review-loop review --pr N`` (#375): the operator asks for a fresh review.
+"""``hermes dk review --pr N`` (#375): the operator asks for a fresh review.
 
 The real reviewer gate decides (fed a ready_for_review built from the live PR), so the command
 cannot start a review the gate would not, and a refusal names the gate's own reason. Driven

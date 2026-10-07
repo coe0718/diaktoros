@@ -2,7 +2,7 @@
 
 Registers two things and nothing else:
 
-* the ``hermes review-loop`` CLI (``init`` / ``list`` / ``status`` / ``explain`` / ``doctor`` /
+* the ``hermes diaktoros`` CLI, also ``hermes dk`` and (renamed, for a release) ``hermes review-loop`` (``init`` / ``list`` / ``status`` / ``explain`` / ``doctor`` /
   ``selftest`` / ``models`` / ``arm`` / ``pause`` / ``drain`` / ``cleanup`` / ``uninstall``);
 * the loop's skill, so the reviewer and fixer agents can load the protocol the prompts refer
   to and know what "round 2 of 3" obliges them to do.

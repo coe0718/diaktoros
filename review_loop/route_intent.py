@@ -235,22 +235,22 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
     try:
         intent = load(loop)
     except IntentError as exc:
-        return [f"⚠️ Review loop {label} — route intent record unreadable, routes NOT self-healed: "
-                f"{exc}. Re-run `hermes review-loop apply` or restore the file."]
+        return [f"⚠️ Diaktoros {label} — route intent record unreadable, routes NOT self-healed: "
+                f"{exc}. Re-run `hermes dk apply` or restore the file."]
     subs = routes.subs_path()
     try:
         raw = subs.read_bytes()
     except FileNotFoundError:
         registry = {}
     except OSError as exc:
-        return [f"⚠️ Review loop {label} — route registry unreadable, routes NOT self-healed: {exc}"]
+        return [f"⚠️ Diaktoros {label} — route registry unreadable, routes NOT self-healed: {exc}"]
     else:
         try:
             registry = json.loads(raw)
         except ValueError as exc:
             registry = exc
         if not isinstance(registry, dict):
-            return [f"⚠️ Review loop {label} — route registry {subs} is malformed; it was NOT "
+            return [f"⚠️ Diaktoros {label} — route registry {subs} is malformed; it was NOT "
                     "overwritten and no route was restored. Repair it by hand (the plugin's "
                     f"copy of this loop's routes is in {path(loop)})."]
     lines = []
@@ -262,7 +262,7 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
                 record(loop, found)
                 intent.update(found)
             except (OSError, IntentError) as exc:
-                lines.append(f"⚠️ Review loop {label} — could not record route intent: {exc}")
+                lines.append(f"⚠️ Diaktoros {label} — could not record route intent: {exc}")
     expected = {name: entry for name, entry in intent.items()
                 if name in set(routes_of(loop).values())}
     if not expected or not drift(loop, registry, expected):
@@ -272,16 +272,16 @@ def heal(loop: dict, *, adopt: bool = True) -> list[str]:
         restored, conflicts = routes.heal_entries(
             expected, {name: watched(role_of[name]) for name in expected}, owned)
     except (OSError, ValueError) as exc:
-        return lines + [f"⚠️ Review loop {label} — route registry changed by another writer and "
+        return lines + [f"⚠️ Diaktoros {label} — route registry changed by another writer and "
                         f"could NOT be restored (fail closed): {exc}"]
     if restored:
-        lines.append(f"🔧 Review loop {label} — restored {len(restored)} route(s) another "
+        lines.append(f"🔧 Diaktoros {label} — restored {len(restored)} route(s) another "
                      "registry writer erased or changed (same secret, so GitHub's hook still "
                      "authenticates):")
         for name, fields in sorted(restored.items()):
             what = "was missing" if fields == ["missing"] else "had changed " + ", ".join(fields)
             lines.append(f"  {name}: {what}")
     for name, reason in sorted(conflicts.items()):
-        lines.append(f"⚠️ Review loop {label} — route {name} NOT restored: {reason}. "
+        lines.append(f"⚠️ Diaktoros {label} — route {name} NOT restored: {reason}. "
                      "Pick another route name or remove the other entry.")
     return lines
