@@ -45,7 +45,7 @@ def digest(*roots: pathlib.Path) -> str:
 
 
 def gate_lines(text: str) -> list[str]:
-    return [line.strip() for line in text.splitlines() if line.strip().startswith("[review-loop]")]
+    return [line.strip() for line in text.splitlines() if line.strip().startswith("[diaktoros]")]
 
 
 class Base(unittest.TestCase):
@@ -183,7 +183,7 @@ with urllib.request.urlopen({url!r}, timeout=5) as resp:
 """)
             report = pathlib.Path(tmp) / "effects.json"
             env = util.leak_guard_env({k: v for k, v in os.environ.items()
-                                       if k != "REVIEW_LOOP_GH_STUB"})
+                                       if k != "DIAKTOROS_GH_STUB"})
             proc = subprocess.run([sys.executable, "-c", util.leak_guard_code(trace._HARNESS),
                                    str(probe), str(trace.PLUGIN), str(report)],
                                   input="{}", capture_output=True, text=True, timeout=60, env=env)

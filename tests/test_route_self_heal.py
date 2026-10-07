@@ -32,8 +32,8 @@ class Fixture(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         root = pathlib.Path(self.tmp.name)
         self.subs = root / "webhook_subscriptions.json"
-        env = {"REVIEW_LOOP_SUBS": str(self.subs), "HERMES_HOME": str(root / "hermes"),
-               "REVIEW_LOOP_CONFIG_DIR": str(root / "loops")}
+        env = {"DIAKTOROS_SUBS": str(self.subs), "HERMES_HOME": str(root / "hermes"),
+               "DIAKTOROS_CONFIG_DIR": str(root / "loops")}
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)

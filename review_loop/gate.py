@@ -33,6 +33,7 @@ import time
 
 from . import config, gate_decisions, gate_failures, gh, isolation, observer, situation, transition, state as state_mod
 from .util import iso_at, log, now_iso, silence
+from . import envnames
 
 
 def payload_loop(payload: dict) -> dict:
@@ -1110,7 +1111,7 @@ def drain_seat(loop: dict, seat: str) -> None:
     if timeout < 1:
         log(f"drain {seat} deferred to the watchdog — the gate's time budget is nearly spent")
         return
-    env = {**os.environ, "REVIEW_LOOP_WATCHDOG_BUDGET_S": f"{max(0.5, timeout - 0.5):.1f}"}
+    env = {**os.environ, envnames.name("WATCHDOG_BUDGET_S"): f"{max(0.5, timeout - 0.5):.1f}"}
     try:
         subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve().parents[1]
                                             / "scripts" / "watchdog.py"),

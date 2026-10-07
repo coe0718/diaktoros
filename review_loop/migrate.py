@@ -33,6 +33,7 @@ import sqlite3
 import time
 
 from . import config, gh, gate_shims, state as state_mod
+from . import envnames
 
 OLD_PLUGIN = "hermes-review-loop"
 
@@ -417,8 +418,8 @@ def files_step(write_loop, *, dry_run: bool) -> list[str]:
                 "reconcile them), then run migrate again"]
     old_root, new_root = _old_new("state_root")
     for key in HOST_MOVES:
-        if key == "config_dir" and os.environ.get("REVIEW_LOOP_CONFIG_DIR"):
-            lines.append("files: the loop files' directory is set by REVIEW_LOOP_CONFIG_DIR — kept")
+        if key == "config_dir" and envnames.get("CONFIG_DIR"):
+            lines.append("files: the loop files' directory is set by DIAKTOROS_CONFIG_DIR — kept")
             continue
         old, new = _old_new(key)
         if not os.path.lexists(old):

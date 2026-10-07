@@ -42,6 +42,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from . import envnames
 
 MAX_CAPTURE = 256 * 1024
 # The only PATH the launch sees: the parent environment is discarded, so bwrap must be here.
@@ -92,25 +93,25 @@ def live_ignored_overrides() -> list[tuple[str, str, str]]:
     corrected — this record is process-wide and the resolution is read once per process.
     """
     return [o for o in IGNORED_SIZE_OVERRIDES
-            if os.environ.get(f"REVIEW_LOOP_{o[0]}_GIB", "").strip() == o[1]]
+            if (envnames.get(f"{o[0]}_GIB") or "").strip() == o[1]]
 
 
 def _size_from_env(name: str, gib: int) -> int:
-    """A mount bound, overridable with ``REVIEW_LOOP_<NAME>_GIB``.
+    """A mount bound, overridable with ``DIAKTOROS_<NAME>_GIB``.
 
     These are environment settings rather than config keys because the number that matters is a
     property of the *host* — its RAM, and how large a build in the repos it watches grows — not of
     one loop. A value nobody can parse is reported and ignored rather than fatal: a bound that
     cannot be read must not take an unattended loop down.
     """
-    raw = os.environ.get(f"REVIEW_LOOP_{name}_GIB", "").strip()
+    raw = (envnames.get(f"{name}_GIB") or "").strip()
     try:
         value = int(raw) if raw else gib
         if not 1 <= value <= 1024:
             raise ValueError("outside 1..1024")
     except ValueError as exc:
         if raw:
-            print(f"contained: ignoring REVIEW_LOOP_{name}_GIB={raw!r} ({exc}); using {gib} GiB",
+            print(f"contained: ignoring DIAKTOROS_{name}_GIB={raw!r} ({exc}); using {gib} GiB",
                   file=sys.stderr)
             _note_ignored_override(name, raw, str(exc))
         value = gib

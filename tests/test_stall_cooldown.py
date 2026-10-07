@@ -3,9 +3,9 @@
 
 The sweep used to stamp every stall it *saw* into the cooldown map, alerted or not, so each
 15-minute sweep refreshed the key and ``now - alerts[key]`` never passed the cooldown: an
-unresolved stall spoke exactly once. The harness cannot see that — ``REVIEW_LOOP_TEST=1`` makes
+unresolved stall spoke exactly once. The harness cannot see that — ``DIAKTOROS_TEST=1`` makes
 the cooldown 0 — so these run the real ``scripts/watchdog.py`` the way cron does (no
-``REVIEW_LOOP_TEST``, the loop's own 6h cooldown) against the fixture's GitHub stub, and move
+``DIAKTOROS_TEST``, the loop's own 6h cooldown) against the fixture's GitHub stub, and move
 time by ageing the watchdog's own state file rather than by waiting.
 """
 from __future__ import annotations
@@ -29,8 +29,8 @@ COOLDOWN_H = 6            # the loop default; nothing below sets it to zero
 
 
 def watchdog(**extra: str) -> str:
-    """One sweep exactly as cron runs it: no REVIEW_LOOP_TEST, so the real cooldown applies."""
-    env = {**{k: v for k, v in t.env().items() if k != "REVIEW_LOOP_TEST"}, **extra}
+    """One sweep exactly as cron runs it: no DIAKTOROS_TEST, so the real cooldown applies."""
+    env = {**{k: v for k, v in t.env().items() if k != "DIAKTOROS_TEST"}, **extra}
     proc = subprocess.run([sys.executable, str(SCRIPTS / "watchdog.py")], capture_output=True,
                           text=True, cwd=str(SCRIPTS), timeout=120, env=env)
     assert "Traceback" not in proc.stdout + proc.stderr, proc.stdout + proc.stderr
@@ -148,10 +148,10 @@ class StallCooldown(unittest.TestCase):
             f"else:\n    os.execv({str(t.STUB)!r}, [{str(t.STUB)!r}, *sys.argv[1:]])\n")
         stub.chmod(0o755)
         mode.write_text("true")
-        watchdog(REVIEW_LOOP_GH_STUB=str(stub))
+        watchdog(DIAKTOROS_GH_STUB=str(stub))
         self.assertEqual(watch()["alerts"], marks)
         mode.write_text("false")                                     # reads work again
-        self.assertEqual(self.stalls(watchdog(REVIEW_LOOP_GH_STUB=str(stub))), [])
+        self.assertEqual(self.stalls(watchdog(DIAKTOROS_GH_STUB=str(stub))), [])
 
 
 class StallKey(unittest.TestCase):

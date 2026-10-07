@@ -1,6 +1,6 @@
 """Skip-or-fail for the tests that drive the real Hermes in bubblewrap.
 
-Off a prepared host these tests skip. With ``REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1`` (the CI
+Off a prepared host these tests skip. With ``DIAKTOROS_REQUIRE_HERMES_SOURCE=1`` (the CI
 ``verticals`` job) a missing prerequisite is a failure instead, so a broken setup cannot turn
 the job green by quietly skipping the tests it exists to run.
 """
@@ -8,11 +8,11 @@ import functools
 import os
 import unittest
 
-REQUIRED = os.environ.get("REVIEW_LOOP_REQUIRE_HERMES_SOURCE") == "1"
+REQUIRED = os.environ.get("DIAKTOROS_REQUIRE_HERMES_SOURCE") == "1"
 
 
 def _message(reason):
-    return (f"REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1 but {reason} — set HERMES_AGENT_SOURCE to a "
+    return (f"DIAKTOROS_REQUIRE_HERMES_SOURCE=1 but {reason} — set HERMES_AGENT_SOURCE to a "
             "hermes-agent checkout with a venv, install bubblewrap and a stable Rust toolchain")
 
 

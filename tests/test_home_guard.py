@@ -1,7 +1,7 @@
 """The suites never read or write the operator's real ~/.hermes, and an escape fails loudly.
 
 ``_home_guard`` gives every test process a temp HOME/HERMES_HOME and arms the plugin's tripwire;
-these tests prove each half. The escape probes use a *fake* real home (``REVIEW_LOOP_TEST_REAL_HOME``
+these tests prove each half. The escape probes use a *fake* real home (``DIAKTOROS_TEST_REAL_HOME``
 names a temp directory) so proving the tripwire never touches the operator's actual home.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
@@ -103,14 +103,14 @@ class HomeGuard(unittest.TestCase):
 
     def _run_leaking_test(self, fake_home: pathlib.Path, *, escaped: bool, argv=None):
         env = {k: v for k, v in os.environ.items() if k not in ("HERMES_HOME", "HOME")}
-        env.update(HOME=str(fake_home), REVIEW_LOOP_TEST_REAL_HOME=str(fake_home))
+        env.update(HOME=str(fake_home), DIAKTOROS_TEST_REAL_HOME=str(fake_home))
         if escaped:
             # What an escape looks like: the guard believes it already ran, but HOME is the
             # "real" home and HERMES_HOME is unset, so config.home() defaults into it.
-            env.update({config.TEST_HOME_GUARD_ENV: "1", "REVIEW_LOOP_TEST_USER_HOME": str(fake_home)})
+            env.update({config.TEST_HOME_GUARD_ENV: "1", "DIAKTOROS_TEST_USER_HOME": str(fake_home)})
         else:
             env.pop(config.TEST_HOME_GUARD_ENV, None)
-            env.pop("REVIEW_LOOP_TEST_USER_HOME", None)
+            env.pop("DIAKTOROS_TEST_USER_HOME", None)
         argv = argv or ["-m", "unittest", "-v", LEAKING]
         return subprocess.run([sys.executable, *argv], cwd=TESTS, env=env,
                               text=True, capture_output=True, timeout=120)
@@ -161,9 +161,9 @@ class GuardedWorker(unittest.TestCase):
             root = pathlib.Path(tmp)
             (root / "home").mkdir()
             env = {k: v for k, v in os.environ.items()
-                   if k not in (config.TEST_HOME_GUARD_ENV, "REVIEW_LOOP_TEST_USER_HOME",
-                                "HERMES_HOME", "REVIEW_LOOP_TEST_SHIM_DIR")}
-            env.update(HOME=str(root / "home"), REVIEW_LOOP_TEST_REAL_HOME=str(root / "home"))
+                   if k not in (config.TEST_HOME_GUARD_ENV, "DIAKTOROS_TEST_USER_HOME",
+                                "HERMES_HOME", "DIAKTOROS_TEST_SHIM_DIR")}
+            env.update(HOME=str(root / "home"), DIAKTOROS_TEST_REAL_HOME=str(root / "home"))
             result = subprocess.run([sys.executable, "-c", _SPAWN_A_WORKER, str(TESTS.parent), tmp],
                                     cwd=TESTS, env=env, text=True, capture_output=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -176,12 +176,12 @@ class GuardedWorker(unittest.TestCase):
                        shim_dir: pathlib.Path | None = None):
         # By default no inherited shim dir: the child must place its own, as it would for a HOME
         # it made. With ``shim_dir``, the child inherits that one instead.
-        env = {k: v for k, v in os.environ.items() if k != "REVIEW_LOOP_TEST_SHIM_DIR"}
+        env = {k: v for k, v in os.environ.items() if k != "DIAKTOROS_TEST_SHIM_DIR"}
         env.update({"HOME": str(home), "HERMES_HOME": str(hermes_home),
-                    config.TEST_HOME_GUARD_ENV: "1", "REVIEW_LOOP_TEST_USER_HOME": str(real),
+                    config.TEST_HOME_GUARD_ENV: "1", "DIAKTOROS_TEST_USER_HOME": str(real),
                     config.TEST_REAL_HOME_ENV: str(real)})
         if shim_dir is not None:
-            env["REVIEW_LOOP_TEST_SHIM_DIR"] = str(shim_dir)
+            env["DIAKTOROS_TEST_SHIM_DIR"] = str(shim_dir)
         return subprocess.run([sys.executable, "-c", "import _home_guard; print(_home_guard.SHIM_DIR)"],
                               cwd=TESTS, env=env, text=True, capture_output=True, timeout=60)
 
@@ -243,12 +243,12 @@ class GuardedWorker(unittest.TestCase):
                      " 'rc': run.returncode, 'out': run.stdout, 'err': run.stderr}))\n")
             for fake in binaries.values():
                 with self.subTest(fake=str(fake.relative_to(real))):
-                    env = {k: v for k, v in os.environ.items() if k != "REVIEW_LOOP_TEST_SHIM_DIR"}
+                    env = {k: v for k, v in os.environ.items() if k != "DIAKTOROS_TEST_SHIM_DIR"}
                     env.update({"HOME": str(root / "home"), "HERMES_HOME": str(root / "home/.hermes"),
                                 config.TEST_HOME_GUARD_ENV: "1",
-                                "REVIEW_LOOP_TEST_USER_HOME": str(real),
+                                "DIAKTOROS_TEST_USER_HOME": str(real),
                                 config.TEST_REAL_HOME_ENV: str(real),
-                                "REVIEW_LOOP_TEST_SHIM_DIR": str(real / ".hermes/bin"),
+                                "DIAKTOROS_TEST_SHIM_DIR": str(real / ".hermes/bin"),
                                 "PATH": os.pathsep.join([str(real / ".hermes/bin"),
                                                          str(real / ".local/bin"), "/usr/bin", "/bin"]),
                                 _home_guard.FAKE_HERMES_ENV: str(fake)})
@@ -281,7 +281,7 @@ class GuardedWorker(unittest.TestCase):
             real.mkdir()
             env = {k: v for k, v in os.environ.items() if k not in ("HERMES_HOME",)}
             env.update({"HOME": str(real / "projects/x"), config.TEST_HOME_GUARD_ENV: "1",
-                        "REVIEW_LOOP_TEST_USER_HOME": str(real), config.TEST_REAL_HOME_ENV: str(real)})
+                        "DIAKTOROS_TEST_USER_HOME": str(real), config.TEST_REAL_HOME_ENV: str(real)})
             result = subprocess.run([sys.executable, "-c", DEFAULT_HOME_WRITER, str(TESTS.parent)],
                                     cwd=TESTS, env=env, text=True, capture_output=True, timeout=60)
             self.assertNotEqual(result.returncode, 0, result.stderr)
@@ -340,8 +340,8 @@ class RealHomeWrites(unittest.TestCase):
 
     def test_env_overrides_of_hermes_home_paths_are_refused(self):
         for var, resolve, target in (
-                ("REVIEW_LOOP_CONFIG_DIR", config.config_dir, ".hermes/review-loops.d"),
-                ("REVIEW_LOOP_SUBS", routes.subs_path, ".hermes/webhook_subscriptions.json")):
+                ("DIAKTOROS_CONFIG_DIR", config.config_dir, ".hermes/review-loops.d"),
+                ("DIAKTOROS_SUBS", routes.subs_path, ".hermes/webhook_subscriptions.json")):
             with self.subTest(var), mock.patch.dict(os.environ, {var: str(self.real / target)}):
                 self.assert_refused(resolve)
 
@@ -356,10 +356,10 @@ class TmpdirUnderHome(unittest.TestCase):
             home = pathlib.Path(tmp) / "home"
             (home / "tmp").mkdir(parents=True)
             env = {k: v for k, v in os.environ.items()
-                   if k not in (config.TEST_HOME_GUARD_ENV, "REVIEW_LOOP_TEST_USER_HOME",
-                                "HERMES_HOME", "REVIEW_LOOP_TEST_SHIM_DIR")}
+                   if k not in (config.TEST_HOME_GUARD_ENV, "DIAKTOROS_TEST_USER_HOME",
+                                "HERMES_HOME", "DIAKTOROS_TEST_SHIM_DIR")}
             env.update(HOME=str(home), TMPDIR=str(home / "tmp"),
-                       REVIEW_LOOP_TEST_REAL_HOME=str(home))
+                       DIAKTOROS_TEST_REAL_HOME=str(home))
             result = subprocess.run([sys.executable, "-m", "unittest", "test_home_guard.HermesShim"],
                                     cwd=TESTS, env=env, text=True, capture_output=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -367,7 +367,7 @@ class TmpdirUnderHome(unittest.TestCase):
 
 
 class TripwireOutsideTheHarness(unittest.TestCase):
-    """REVIEW_LOOP_TEST_HOME_GUARD alone — inherited by a real loop — must not brick it: the
+    """DIAKTOROS_TEST_HOME_GUARD alone — inherited by a real loop — must not brick it: the
     tripwire arms only with the guard's own sentinel, which only tests/_home_guard.py creates."""
 
     PROBE = ("import sys; sys.path.insert(0, sys.argv[1])\n"
@@ -645,7 +645,7 @@ class LiveHermesSource(unittest.TestCase):
 
     def test_real_hermes_suites_fail_loudly_not_skip(self):
         env = {k: v for k, v in os.environ.items()
-               if k not in (config.TEST_HOME_GUARD_ENV, "REVIEW_LOOP_TEST_USER_HOME", "HERMES_HOME")}
+               if k not in (config.TEST_HOME_GUARD_ENV, "DIAKTOROS_TEST_USER_HOME", "HERMES_HOME")}
         env.update(HOME=str(self.home), HERMES_AGENT_SOURCE=str(self.live),
                    PYTHONPATH=os.pathsep.join([str(TESTS), str(TESTS.parent)]))
         suites = ["test_contained_agent", "test_inference_proxy", "test_turn_vertical",
@@ -686,7 +686,7 @@ class NoRealGitHub(unittest.TestCase):
         env = mock.patch.dict(os.environ)
         env.start()
         self.addCleanup(env.stop)
-        os.environ.pop("REVIEW_LOOP_GH_STUB", None)
+        os.environ.pop("DIAKTOROS_GH_STUB", None)
 
     def test_mocking_only_gh_api_still_cannot_reach_github_through_gh_fetch(self):
         with mock.patch.object(gh, "api", return_value=[]):

@@ -166,7 +166,7 @@ class ProductionWorker(unittest.TestCase):
         runtime.write_text(json.dumps({"source": "/x", "venv": "/x", "runtime": "/x", "rust": "/x"}))
         runtime.chmod(0o600)
         patch = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home),
-                                             "REVIEW_LOOP_CONFIG_DIR": str(self.home / "none")})
+                                             "DIAKTOROS_CONFIG_DIR": str(self.home / "none")})
         patch.start()
         self.addCleanup(patch.stop)
         self.raw = {"id": "widgets", "repo": "acme/widgets", "fixers": ["fixer"],

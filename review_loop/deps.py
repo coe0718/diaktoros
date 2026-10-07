@@ -21,7 +21,7 @@ proxy or credential variables, a throwaway ``HOME``), the configured toolchain's
 output capture.
 
 Bounded in bytes as well as packages (a PR chooses the lockfile, so it chooses how much the host
-downloads): the whole cache is capped at ``cache_cap()`` — 2 GiB unless ``REVIEW_LOOP_CRATE_CACHE_GIB``
+downloads): the whole cache is capped at ``cache_cap()`` — 2 GiB unless ``DIAKTOROS_CRATE_CACHE_GIB``
 says otherwise — and the cap is enforced *while* cargo runs: the cache's disk usage is measured every
 ``POLL`` seconds and the fetch is killed the moment it passes the cap, then everything that fetch
 added is removed. A cache that outgrew the cap across many PRs is retired (renamed, and deleted once
@@ -51,6 +51,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from . import envnames
 
 READY, UNAVAILABLE = "ready", "unavailable"
 
@@ -73,7 +74,7 @@ GIB = 1024 ** 3
 # runs the supervisor, like the sandbox size caps; forwarded to the detached worker by
 # ``run_supervisor.HOST_LIMIT_ENV``. Sized from a real lockfile: one workspace's 224 crates.io
 # crates are a 263 MB cache, so 2 GiB holds several generations of a large workspace.
-CAP_ENV = "REVIEW_LOOP_CRATE_CACHE_GIB"
+CAP_ENV = envnames.name("CRATE_CACHE_GIB")
 DEFAULT_CAP_GIB = 2
 POLL = 0.2                     # how often the cache is measured while cargo runs
 IN_USE = ".in-use"             # a turn's shared lock on the cache generation it mounts
@@ -130,7 +131,7 @@ def _cap_setting() -> tuple[int, str | None]:
 
 
 def cache_cap() -> int:
-    """The crate cache's byte cap: ``REVIEW_LOOP_CRATE_CACHE_GIB`` (1-1024), else 2 GiB.
+    """The crate cache's byte cap: ``DIAKTOROS_CRATE_CACHE_GIB`` (1-1024), else 2 GiB.
 
     Read at each prefetch. A value nobody can parse keeps the default rather than taking an
     unattended loop down, and ``refused_cap_override`` names it so selftest can say so.

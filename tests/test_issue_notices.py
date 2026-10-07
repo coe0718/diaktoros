@@ -49,13 +49,13 @@ class Rendering(unittest.TestCase):
 
 class Outcomes(fixture.Base):
     def scope(self, run_id):
-        return broker_ipc.RunScope(REPO, 12, BASE, "issue_fixer", "review-loop/issue-12",
+        return broker_ipc.RunScope(REPO, 12, BASE, "issue_fixer", "diaktoros/issue-12",
                                    run_id, str(self.db))
 
     def test_issue_fix_outcomes_read_from_the_ledger(self):
         sup, run_id = self.fix_row()
         self.assertEqual(broker_ipc._issue_fix_outcome(self.scope(run_id)), "")  # no write yet
-        sup.record_issue_fix(run_id, REPO, 12, BASE, "pr", "review-loop/issue-12")
+        sup.record_issue_fix(run_id, REPO, 12, BASE, "pr", "diaktoros/issue-12")
         sup.issue_fix_status(run_id, "opened", pr_number=280)
         self.assertEqual(broker_ipc._issue_fix_outcome(self.scope(run_id)), "PR #280 opened")
         sup.issue_fix_status(run_id, "requested")
@@ -64,7 +64,7 @@ class Outcomes(fixture.Base):
 
     def test_an_uncertain_push_says_to_inspect(self):
         sup, run_id = self.fix_row()
-        sup.record_issue_fix(run_id, REPO, 12, BASE, "pr", "review-loop/issue-12")
+        sup.record_issue_fix(run_id, REPO, 12, BASE, "pr", "diaktoros/issue-12")
         sup.issue_fix_status(run_id, "uncertain", error="push unknown")
         outcome = broker_ipc._issue_fix_outcome(self.scope(run_id))
         self.assertIn("uncertain: push unknown", outcome)
@@ -72,7 +72,7 @@ class Outcomes(fixture.Base):
 
     def test_a_could_not_fix_comment(self):
         sup, run_id = self.fix_row()
-        sup.record_issue_fix(run_id, REPO, 12, BASE, "comment", "review-loop/issue-12")
+        sup.record_issue_fix(run_id, REPO, 12, BASE, "comment", "diaktoros/issue-12")
         sup.issue_fix_status(run_id, "posted", comment_id=5)
         self.assertIn("could not fix", broker_ipc._issue_fix_outcome(self.scope(run_id)))
 

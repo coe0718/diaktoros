@@ -32,7 +32,7 @@ class HttpErrorsAreClosed(unittest.TestCase):
         env = mock.patch.dict(os.environ)   # restored after the test, stub or not
         env.start()
         self.addCleanup(env.stop)
-        os.environ.pop('REVIEW_LOOP_GH_STUB', None)   # the real transport, not the stub
+        os.environ.pop('DIAKTOROS_GH_STUB', None)   # the real transport, not the stub
 
     def test_gh_request(self):
         with mock.patch.object(gh, 'token', return_value='t'):

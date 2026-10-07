@@ -125,8 +125,8 @@ class GateFailureTest(unittest.TestCase):
         hang.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
         hang.chmod(0o755)
         proc, elapsed = gateway_run("gate_reviewer.py", t.pr_payload(7),
-                                    {"REVIEW_LOOP_GH_STUB": str(hang),
-                                     "REVIEW_LOOP_GATE_BUDGET_S": "1"})
+                                    {"DIAKTOROS_GH_STUB": str(hang),
+                                     "DIAKTOROS_GATE_BUDGET_S": "1"})
         self.assertEqual(proc.returncode, 3)
         self.assertLess(elapsed, 10)
         (entry,) = loop_entries().values()
@@ -141,7 +141,7 @@ class GateFailureTest(unittest.TestCase):
         with open(st.dir / "state.lock", "a+") as held:
             fcntl.flock(held, fcntl.LOCK_EX)
             proc, elapsed = gateway_run("gate_reviewer.py", t.pr_payload(7),
-                                        {"REVIEW_LOOP_GATE_BUDGET_S": "1"})
+                                        {"DIAKTOROS_GATE_BUDGET_S": "1"})
         self.assertEqual(proc.returncode, 3)
         self.assertLess(elapsed, 1 + gate_failures.BACKSTOP_S + 5)
         (entry,) = loop_entries().values()
@@ -152,7 +152,7 @@ class GateFailureTest(unittest.TestCase):
         failing.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('HTTP 502')\nsys.exit(1)\n")
         failing.chmod(0o755)
         proc, _ = gateway_run("gate_reviewer.py", t.pr_payload(7),
-                              {"REVIEW_LOOP_GH_STUB": str(failing)})
+                              {"DIAKTOROS_GH_STUB": str(failing)})
         self.assertEqual((proc.returncode, proc.stdout.strip()), (0, "[SILENT]"))
         (key, entry), = loop_entries().items()
         self.assertEqual((entry["kind"], entry["error_type"]), ("incomplete", "GitHubReadFailed"))
@@ -265,7 +265,7 @@ class GateFailureTest(unittest.TestCase):
                         "if sys.argv[1].endswith('/pulls/7'):\n    time.sleep(2)\n"
                         f"os.execv({str(t.STUB)!r}, [{str(t.STUB)!r}, *sys.argv[1:]])\n")
         slow.chmod(0o755)
-        env = {**t.env(), "REVIEW_LOOP_GH_STUB": str(slow)}
+        env = {**t.env(), "DIAKTOROS_GH_STUB": str(slow)}
         procs = [subprocess.Popen([sys.executable, str(SCRIPTS / "watchdog.py")], text=True,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   cwd=str(SCRIPTS), env=env) for _ in range(2)]
@@ -553,7 +553,7 @@ class GateFailureTest(unittest.TestCase):
         hang.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
         hang.chmod(0o755)
         proc, elapsed = gateway_run("gate_reviewer.py", t.pr_payload(7),
-                                    {"REVIEW_LOOP_GH_STUB": str(hang), "HERMES_HOME": str(solo)})
+                                    {"DIAKTOROS_GH_STUB": str(hang), "HERMES_HOME": str(solo)})
         self.assertEqual(proc.returncode, 3)
         self.assertLess(elapsed, 12)
         (entry,) = loop_entries().values()
@@ -565,7 +565,7 @@ class GateFailureTest(unittest.TestCase):
         hang.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
         hang.chmod(0o755)
         proc, elapsed = gateway_run("gate_reviewer.py", t.pr_payload(7),
-                                    {"REVIEW_LOOP_GH_STUB": str(hang)})
+                                    {"DIAKTOROS_GH_STUB": str(hang)})
         self.assertEqual(proc.returncode, 3)
         self.assertLess(elapsed, 10)                      # inside the gateway's 10s kill
         (entry,) = loop_entries().values()
@@ -605,7 +605,7 @@ class GateFailureTest(unittest.TestCase):
         self.gateway_config({"webhook": {"script_timeout_seconds": 6}})
         try:
             proc, elapsed = gateway_run("gate_reviewer.py", t.pr_payload(7),
-                                        {"REVIEW_LOOP_GH_STUB": str(self.hang_stub())},
+                                        {"DIAKTOROS_GH_STUB": str(self.hang_stub())},
                                         kill_after=6)
         except subprocess.TimeoutExpired:
             self.fail("the gateway killed the gate at 6s before it recorded anything")
@@ -669,7 +669,7 @@ class GateFailureTest(unittest.TestCase):
                 self.assertIn("cannot be decoded", where)
                 try:
                     proc, elapsed = gateway_run("gate_reviewer.py", t.pr_payload(7),
-                                                {"REVIEW_LOOP_GH_STUB": str(self.hang_stub())},
+                                                {"DIAKTOROS_GH_STUB": str(self.hang_stub())},
                                                 kill_after=6)
                 except subprocess.TimeoutExpired:
                     self.fail("the gateway killed the gate at 6s before it recorded anything")
@@ -739,7 +739,7 @@ class GateFailureTest(unittest.TestCase):
             fcntl.flock(held, fcntl.LOCK_EX)
             try:
                 proc, elapsed = gateway_run("gate_reviewer.py", t.pr_payload(7),
-                                            {"REVIEW_LOOP_GH_STUB": str(self.hang_stub())},
+                                            {"DIAKTOROS_GH_STUB": str(self.hang_stub())},
                                             kill_after=6)
             except subprocess.TimeoutExpired:
                 self.fail("killed at 6s with the ledger lock held, nothing recorded")
@@ -796,7 +796,7 @@ class GateFailureTest(unittest.TestCase):
             "gate_failures.run('gate_reviewer', main)\n")
         proc = subprocess.run([sys.executable, str(script)], input=json.dumps(t.pr_payload(7)),
                               capture_output=True, text=True, timeout=30,
-                              env={**t.env(), "REVIEW_LOOP_GATE_BUDGET_S": "1"})
+                              env={**t.env(), "DIAKTOROS_GATE_BUDGET_S": "1"})
         return proc, state_mod.LoopState(config.load_id("widgets"))
 
     def test_a_timeout_after_claiming_a_seat_releases_it(self):
@@ -821,7 +821,7 @@ class GateFailureTest(unittest.TestCase):
         hang.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
         hang.chmod(0o755)
         proc, _ = gateway_run("gate_fixer.py", t.review_payload(7),
-                              {"REVIEW_LOOP_GH_STUB": str(hang), "REVIEW_LOOP_GATE_BUDGET_S": "1"})
+                              {"DIAKTOROS_GH_STUB": str(hang), "DIAKTOROS_GATE_BUDGET_S": "1"})
         self.assertEqual(proc.returncode, 3)
         self.assertEqual(t.load_state("locks.json"), {})
         self.assertEqual(t.load_state("inflight.json"), {})
@@ -835,8 +835,8 @@ class GateFailureTest(unittest.TestCase):
         started = time.monotonic()
         proc = subprocess.run([sys.executable, str(SCRIPTS / "watchdog.py")], capture_output=True,
                               text=True, cwd=str(SCRIPTS), timeout=60,
-                              env={**t.env(), "REVIEW_LOOP_GH_STUB": str(hang),
-                                   "REVIEW_LOOP_WATCHDOG_BUDGET_S": "2"})
+                              env={**t.env(), "DIAKTOROS_GH_STUB": str(hang),
+                                   "DIAKTOROS_WATCHDOG_BUDGET_S": "2"})
         self.assertLess(time.monotonic() - started, 15)
         self.assertEqual(proc.returncode, 0)
         # One sweep that ran out of time is not yet an outage (slow reads spend it too): like
@@ -846,8 +846,8 @@ class GateFailureTest(unittest.TestCase):
         for _ in range(wd.READ_FAILURE_SWEEPS - 1):
             proc = subprocess.run([sys.executable, str(SCRIPTS / "watchdog.py")],
                                   capture_output=True, text=True, cwd=str(SCRIPTS), timeout=60,
-                                  env={**t.env(), "REVIEW_LOOP_GH_STUB": str(hang),
-                                       "REVIEW_LOOP_WATCHDOG_BUDGET_S": "2"})
+                                  env={**t.env(), "DIAKTOROS_GH_STUB": str(hang),
+                                       "DIAKTOROS_WATCHDOG_BUDGET_S": "2"})
         (line,) = [x for x in proc.stdout.splitlines() if "watchdog stopped" in x]
         self.assertIn("the sweep ran out of its 2s budget", line)
         self.assertIn("reads were slow or did not answer", line)
@@ -875,9 +875,9 @@ class GateFailureTest(unittest.TestCase):
         return stub
 
     def normal_watchdog(self, stub: pathlib.Path, budget: str = "600"):
-        """The watchdog exactly as cron runs it — no REVIEW_LOOP_TEST — against the stub."""
-        env = {k: v for k, v in t.env().items() if k != "REVIEW_LOOP_TEST"}
-        env.update(REVIEW_LOOP_GH_STUB=str(stub), REVIEW_LOOP_WATCHDOG_BUDGET_S=budget)
+        """The watchdog exactly as cron runs it — no DIAKTOROS_TEST — against the stub."""
+        env = {k: v for k, v in t.env().items() if k != "DIAKTOROS_TEST"}
+        env.update(DIAKTOROS_GH_STUB=str(stub), DIAKTOROS_WATCHDOG_BUDGET_S=budget)
         started = time.monotonic()
         proc = subprocess.run([sys.executable, str(SCRIPTS / "watchdog.py")], capture_output=True,
                               text=True, cwd=str(SCRIPTS), timeout=120, env=env)
@@ -913,7 +913,7 @@ class GateFailureTest(unittest.TestCase):
     def test_normal_mode_owned_and_unowned_failed_reads_are_each_said_once(self):
         t.set_prs({"7": t.pr(7, requested=t.SEAT), "8": t.pr(8, requested=t.SEAT)})
         stub = self.switch_stub("world", {"/pulls/7": 502, "/pulls/8": 410})
-        env = {"REVIEW_LOOP_GH_STUB": str(stub)}
+        env = {"DIAKTOROS_GH_STUB": str(stub)}
         gateway_run("gate_reviewer.py", t.pr_payload(7), env)   # owned by gate-failures.json
         gateway_run("gate_reviewer.py", t.pr_payload(8), env)   # 410: an answer, #54 reports it
         (key, entry), = loop_entries().items()
@@ -1068,7 +1068,7 @@ class GateFailureTest(unittest.TestCase):
         t.STATE_DIR.mkdir(parents=True, exist_ok=True)
         with open(t.STATE_DIR / "gate-failures.lock", "a+") as held:
             fcntl.flock(held, fcntl.LOCK_EX)            # the loop ledger is busy
-            gateway_run("gate_reviewer.py", t.pr_payload(7), {"REVIEW_LOOP_GH_STUB": str(failing)})
+            gateway_run("gate_reviewer.py", t.pr_payload(7), {"DIAKTOROS_GH_STUB": str(failing)})
         (key, _), = gate_failures.fallback_ledger().entries().items()
         loop = config.load_id("widgets")
         shown = gate_failures.open_for(loop, 7)
@@ -1103,7 +1103,7 @@ class GateFailureTest(unittest.TestCase):
         failing.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('HTTP 502')\nsys.exit(1)\n")
         failing.chmod(0o755)
         t.set_prs({"7": t.pr(7, requested=t.SEAT)})
-        gateway_run("gate_reviewer.py", t.pr_payload(7), {"REVIEW_LOOP_GH_STUB": str(failing)})
+        gateway_run("gate_reviewer.py", t.pr_payload(7), {"DIAKTOROS_GH_STUB": str(failing)})
         (key, _), = loop_entries().items()
         loop = config.load_id("widgets")
         st = state_mod.LoopState(loop)
@@ -1160,7 +1160,7 @@ class GateFailureTest(unittest.TestCase):
         failing.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('HTTP 502')\nsys.exit(1)\n")
         failing.chmod(0o755)
         t.set_prs({"7": t.pr(7, requested=t.SEAT)})
-        gateway_run("gate_reviewer.py", t.pr_payload(7), {"REVIEW_LOOP_GH_STUB": str(failing)})
+        gateway_run("gate_reviewer.py", t.pr_payload(7), {"DIAKTOROS_GH_STUB": str(failing)})
         (key, _), = loop_entries().items()
         loop = config.load_id("widgets")
         st = state_mod.LoopState(loop)
@@ -1205,7 +1205,7 @@ class GateFailureTest(unittest.TestCase):
         failing.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('HTTP 502')\nsys.exit(1)\n")
         failing.chmod(0o755)
         t.set_prs({"7": t.pr(7, requested=t.SEAT)})
-        gateway_run("gate_reviewer.py", t.pr_payload(7), {"REVIEW_LOOP_GH_STUB": str(failing)})
+        gateway_run("gate_reviewer.py", t.pr_payload(7), {"DIAKTOROS_GH_STUB": str(failing)})
         (key, _), = loop_entries().items()
         return key, config.load_id("widgets")
 
@@ -1402,7 +1402,7 @@ class GateFailureTest(unittest.TestCase):
                 gh.end_gate()
         timeout = run.call_args.kwargs["timeout"]
         self.assertTrue(4 < timeout <= 5, timeout)
-        self.assertLess(float(run.call_args.kwargs["env"]["REVIEW_LOOP_WATCHDOG_BUDGET_S"]), 5)
+        self.assertLess(float(run.call_args.kwargs["env"]["DIAKTOROS_WATCHDOG_BUDGET_S"]), 5)
 
     def test_secrets_are_scrubbed_and_text_bounded(self):
         text = gate_failures._bounded("x" * 50 + " ghp_" + "A" * 36, 40)

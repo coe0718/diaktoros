@@ -222,7 +222,7 @@ class RouteWorkerVertical(unittest.TestCase):
         self.env = {'HOME': str(self.home), 'HERMES_HOME': str(self.home),
                     'PATH': '/usr/bin:/bin', 'PYTHONPATH': str(package),
                     'OFFLINE_GITHUB_PORT': str(self.server.server_port),
-                    'REVIEW_LOOP_GH_STUB': str(stub), 'GATE_WORLD': str(self.root / 'gate-world.json'),
+                    'DIAKTOROS_GH_STUB': str(stub), 'GATE_WORLD': str(self.root / 'gate-world.json'),
                     'TMPDIR': tempfile.gettempdir(), 'PYTHONDONTWRITEBYTECODE': '1'}
         self.payload = {'repository': {'full_name': 'acme/widgets'}, 'action': 'opened',
                         'number': 7, 'pull_request': self.world['pr'], 'sender': {'login': 'dev'}}

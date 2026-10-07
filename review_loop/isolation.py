@@ -35,6 +35,7 @@ import sys
 
 from . import config
 from .util import log
+from . import envnames
 
 CLONE_DIR = "repo"
 TARGET_DIR = "target"
@@ -185,10 +186,10 @@ def env(loop: dict, number: int, seat: str = "reviewer") -> dict:
     """
     p = paths(loop, number, seat)
     merged = {"CARGO_TARGET_DIR": str(p["target"]), "TMPDIR": str(p["tmp"]),
-              "REVIEW_LOOP_WORKSPACE": str(p["root"]), "REVIEW_LOOP_PR": str(number),
-              "REVIEW_LOOP_SEAT": seat}
+              envnames.name("WORKSPACE"): str(p["root"]), envnames.name("PR"): str(number),
+              envnames.name("SEAT"): seat}
     if loop.get("clone"):
-        merged["REVIEW_LOOP_SHARED_CLONE"] = str(config.clone_path(loop))
+        merged[envnames.name("SHARED_CLONE")] = str(config.clone_path(loop))
     return merged
 
 

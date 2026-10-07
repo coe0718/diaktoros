@@ -1466,7 +1466,7 @@ def check_sandbox_caps(loop: dict) -> Check:
               f" = {_gib(per_turn)} per turn, {_gib(worst)} at {turns} concurrent turns")
     refused_overrides = contained.live_ignored_overrides()
     if refused_overrides:
-        refused = ", ".join(f"REVIEW_LOOP_{name}_GIB={raw!r} ({why})"
+        refused = ", ".join(f"DIAKTOROS_{name}_GIB={raw!r} ({why})"
                             for name, raw, why in refused_overrides)
         return Check("sandbox:caps", MISMATCH, f"{detail} — with an override refused: {refused}",
                      "fix the value (an integer 1..1024 GiB) and restart the gateway: the launcher "
@@ -1478,8 +1478,8 @@ def check_sandbox_caps(loop: dict) -> Check:
     if worst > available:
         return Check("sandbox:caps", MISMATCH,
                      f"{detail} — more than the {_gib(available)} available of {_gib(total)}",
-                     "lower the caps (REVIEW_LOOP_CHECKOUT_SIZE_GIB / "
-                     "REVIEW_LOOP_SCRATCH_SIZE_GIB), add memory, or let the seats run one at a "
+                     "lower the caps (DIAKTOROS_CHECKOUT_SIZE_GIB / "
+                     "DIAKTOROS_SCRATCH_SIZE_GIB), add memory, or let the seats run one at a "
                      "time: tmpfs is charged against RAM and swap")
     return Check("sandbox:caps", VERIFIED, f"{detail} — {_gib(available)} available of {_gib(total)}")
 

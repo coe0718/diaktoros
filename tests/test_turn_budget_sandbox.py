@@ -14,7 +14,7 @@ tree through ``/proc``: every process seen under the turn's bwrap must be gone a
 
 The budgets are seconds, not the 60 s minimum a loop may configure (the ledger row takes any
 positive budget), and the kill grace is shortened to match, so the whole file runs in ~30 s.
-``REVIEW_LOOP_SANDBOX_BUDGET``/``REVIEW_LOOP_SANDBOX_GRACE`` override both for a longer demo.
+``DIAKTOROS_SANDBOX_BUDGET``/``DIAKTOROS_SANDBOX_GRACE`` override both for a longer demo.
 """
 from __future__ import annotations
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
@@ -34,8 +34,8 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 HEAD7, HEAD8 = 'a' * 40, 'c' * 40
-BUDGET = int(os.environ.get('REVIEW_LOOP_SANDBOX_BUDGET') or 6)
-GRACE = int(os.environ.get('REVIEW_LOOP_SANDBOX_GRACE') or 4)
+BUDGET = int(os.environ.get('DIAKTOROS_SANDBOX_BUDGET') or 6)
+GRACE = int(os.environ.get('DIAKTOROS_SANDBOX_GRACE') or 4)
 
 # The fake agent. It runs inside the sandbox as `/opt/venv/bin/python /opt/venv/bin/hermes chat
 # ... --run-budget N` under the real inference bridge, exactly where Hermes would.
@@ -303,7 +303,7 @@ class SandboxedTurnBudget(unittest.TestCase):
                         'runtime': str(self.python.parents[1]), 'rust': str(self.root / 'rust')}}))
         env = {'PATH': '/usr/bin:/bin', 'HOME': str(self.home),
                'HERMES_HOME': str(self.home / '.hermes'), 'TMPDIR': self.tmpdir,
-               'REVIEW_LOOP_CONFIG_DIR': str(self.root / 'no-config')}
+               'DIAKTOROS_CONFIG_DIR': str(self.root / 'no-config')}
         worker = subprocess.Popen([sys.executable, __file__, '--driver', str(spec)], env=env,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         seen: dict = {}

@@ -42,7 +42,7 @@ def group_watchdog() -> None:
     state_file("pending.json").write_text(json.dumps({"reviewer": {
         f"{REPO}#7": {"at": time.time(), "head": HEAD_A, "url": "u", "reason": "busy"}}}))
     run("watchdog.py", None, "--loop", "widgets", "--drain", "--seat", "reviewer",
-        extra_env={"REVIEW_LOOP_GH_STUB": "/bin/false"})
+        extra_env={"DIAKTOROS_GH_STUB": "/bin/false"})
     check("unreadable fresh PR keeps queue for retry", f"{REPO}#7" in
           load_state("pending.json").get("reviewer", {}), True)
     # A genuinely new B request is independently eligible, rather than inheriting A.
@@ -106,7 +106,7 @@ def group_watchdog() -> None:
         f"{REPO}#7": {"at": time.time(), "head": HEAD_A, "url": "u", "reason": "capacity"}}}))
     before = len(RECEIVED)
     out, _, _ = run("watchdog.py", None, "--loop", "widgets",
-                    extra_env={"REVIEW_LOOP_TEST": ""})
+                    extra_env={"DIAKTOROS_TEST": ""})
     check("zero-alert sweep wakes queued PR after lock expiry", len(RECEIVED) - before, 1)
     check("  the eligible PR was woken", json.loads(RECEIVED[-1]["body"])["number"] if RECEIVED else None, 7)
     check("  no stall warning is required", "silent stall" in out or "stuck state" in out, False)
@@ -114,7 +114,7 @@ def group_watchdog() -> None:
           f"{REPO}#7" in load_state("pending.json").get("reviewer", {}), True)
     check("  expired lock is cleared", load_state("locks.json"), {})
     before = len(RECEIVED)
-    run("watchdog.py", None, "--loop", "widgets", extra_env={"REVIEW_LOOP_TEST": ""})
+    run("watchdog.py", None, "--loop", "widgets", extra_env={"DIAKTOROS_TEST": ""})
     check("  uncertain route is not automatically replayed", len(RECEIVED) - before, 0)
 
     # A spare slot must not wake a PR already held by that seat.
@@ -126,7 +126,7 @@ def group_watchdog() -> None:
     state_file("pending.json").write_text(json.dumps({"reviewer": {
         f"{REPO}#7": {"at": time.time(), "head": HEAD_A, "url": "u", "reason": "busy"}}}))
     before = len(RECEIVED)
-    run("watchdog.py", None, "--loop", "widgets", extra_env={"REVIEW_LOOP_TEST": ""})
+    run("watchdog.py", None, "--loop", "widgets", extra_env={"DIAKTOROS_TEST": ""})
     check("spare slot does not re-wake an active PR", len(RECEIVED) - before, 0)
     check("  active PR stays queued for its handoff", f"{REPO}#7" in
           load_state("pending.json").get("reviewer", {}), True)
@@ -138,7 +138,7 @@ def group_watchdog() -> None:
     state_file("pending.json").write_text(json.dumps({"fixer": {
         f"{REPO}#7": {"at": time.time(), "head": HEAD_A, "url": "u", "reason": "busy"}}}))
     before = len(RECEIVED)
-    run("watchdog.py", None, "--loop", "widgets", extra_env={"REVIEW_LOOP_TEST": ""})
+    run("watchdog.py", None, "--loop", "widgets", extra_env={"DIAKTOROS_TEST": ""})
     check("zero-alert sweep drains eligible fixer", len(RECEIVED) - before, 1)
     check("  fixer route received the verdict", RECEIVED[-1]["event"], "pull_request_review")
     check("  fixer hold remains until gate acknowledgement",
@@ -153,7 +153,7 @@ def group_watchdog() -> None:
              "base": {"ref": "parent", "sha": HEAD_B},
              "reviews": [review(REVIEWER, head=HEAD_A, rid=71)]}
     reset(prs={"7": parent, "9": child})
-    run("watchdog.py", None, "--loop", "widgets", extra_env={"REVIEW_LOOP_TEST": ""})
+    run("watchdog.py", None, "--loop", "widgets", extra_env={"DIAKTOROS_TEST": ""})
     stacked = load_state("watchdog.json").get("stacked_wait", {}).get("9")
     check("stacked child observed before draft retarget", stacked.get("head") if stacked else None, HEAD_A)
     key = f"{REPO}#9"
@@ -168,7 +168,7 @@ def group_watchdog() -> None:
     child["base"] = {"ref": "main", "sha": HEAD_A}
     set_prs({"7": parent, "9": child})
     before = len(RECEIVED)
-    run("watchdog.py", None, "--loop", "widgets", extra_env={"REVIEW_LOOP_TEST": ""})
+    run("watchdog.py", None, "--loop", "widgets", extra_env={"DIAKTOROS_TEST": ""})
     check("draft retarget records same-head hold", load_state("stack-transitions.json").get("9", {}).get("head"), HEAD_A)
     check("draft retarget clears stacked wait", "9" in load_state("watchdog.json").get("stacked_wait", {}), False)
     check("draft retarget drops both stale seat requests", load_state("pending.json"), {})
@@ -177,7 +177,7 @@ def group_watchdog() -> None:
     check("draft retarget never starts an agent", len(RECEIVED) - before, 0)
     child["draft"] = False
     set_prs({"7": parent, "9": child})
-    run("watchdog.py", None, "--loop", "widgets", extra_env={"REVIEW_LOOP_TEST": ""})
+    run("watchdog.py", None, "--loop", "widgets", extra_env={"DIAKTOROS_TEST": ""})
     check("ready transition keeps same-head hold", load_state("stack-transitions.json").get("9", {}).get("head"), HEAD_A)
     check("ready transition does not wake stale work", len(RECEIVED) - before, 0)
     # Owner policy (#23): the ready, retargeted child gets ONE fresh isolated reviewer turn.
@@ -186,7 +186,7 @@ def group_watchdog() -> None:
     check("ready retarget attempts the fresh reviewer turn", fresh.get("state"), "retry")
     check("  under the transition's own turn key",
           str(fresh.get("turn_key", "")).startswith("retarget:parent:"), True)
-    _, out, _ = run("watchdog.py", None, "--loop", "widgets", extra_env={"REVIEW_LOOP_TEST": ""})
+    _, out, _ = run("watchdog.py", None, "--loop", "widgets", extra_env={"DIAKTOROS_TEST": ""})
     check("  a failed fresh enqueue is reported and retried next sweep",
           "fresh review after retarget not enqueued" in out, True)
 
@@ -224,8 +224,8 @@ def group_watchdog() -> None:
     out, _, _ = run("watchdog.py", None, "--loop", "widgets")
     check("stall: cap spent, no escalation marker", "NO escalation marker" in out, True)
 
-    # Real grace/baseline mode (not REVIEW_LOOP_TEST's zero-grace bypass).
-    normal = {"REVIEW_LOOP_TEST": ""}
+    # Real grace/baseline mode (not DIAKTOROS_TEST's zero-grace bypass).
+    normal = {"DIAKTOROS_TEST": ""}
     reset(prs={"7": pr(7)})
     DATA["world"]["commit_dates"] = {HEAD_A: "2020-01-01T00:00:00Z",
                                        HEAD_B: "2020-01-01T00:00:00Z"}
@@ -452,7 +452,7 @@ def group_watchdog() -> None:
 
     reset(prs={"7": pr(7)}, hooks_active=False)
     out, _, _ = run("watchdog.py", None, "--loop", "widgets", "--drain", "--seat", "reviewer",
-                    extra_env={"REVIEW_LOOP_TEST": ""})
+                    extra_env={"DIAKTOROS_TEST": ""})
     check("paused loop drains nothing", "hooks are paused" in out, True)
 
     # Unknown is not paused (#54/#78): a dead read token is said out loud, never slept through.
@@ -460,7 +460,7 @@ def group_watchdog() -> None:
     dead.write_text("#!/usr/bin/env python3\nprint('{\"__gh_stub_response__\": {\"status\": 401, "
                     "\"body\": {\"message\": \"Bad credentials\"}}}')\n")
     os.chmod(dead, 0o755)
-    blind = {"REVIEW_LOOP_TEST": "", "REVIEW_LOOP_GH_STUB": str(dead)}
+    blind = {"DIAKTOROS_TEST": "", "DIAKTOROS_GH_STUB": str(dead)}
     reset(prs={"7": pr(7)})
     out, _, _ = run("watchdog.py", None, "--loop", "widgets", extra_env=blind)
     check("unreadable hooks alert with login and status",
@@ -807,7 +807,7 @@ def group_explain() -> None:
     check("  suggests retrying the malformed PR read", "retry the PR read" in out, True)
 
     reset(prs={"7": pr(7)})
-    rc, out = explain(extra_env={"REVIEW_LOOP_GH_STUB": "/bin/false"})
+    rc, out = explain(extra_env={"DIAKTOROS_GH_STUB": "/bin/false"})
     check("API failure: labelled a stale/failing read", "stale/failing GitHub read" in out, True)
     check("  the PR is unknown rather than closed",
           "unknown — the PR itself could not be read" in out, True)

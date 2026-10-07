@@ -239,7 +239,7 @@ class Reads(unittest.TestCase):
         path = self.tmp / "stub.py"
         path.write_text(f"#!{sys.executable}\nprint({body!r})\n")
         path.chmod(0o755)
-        patcher = mock.patch.dict(os.environ, {"REVIEW_LOOP_GH_STUB": str(path)})
+        patcher = mock.patch.dict(os.environ, {"DIAKTOROS_GH_STUB": str(path)})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -272,7 +272,7 @@ class Reads(unittest.TestCase):
         err = urllib.error.HTTPError("https://api.github.com/user", 401, "Unauthorized", {}, body)
         # A loopback API: under the test guard a request to api.github.com is refused before
         # urlopen, mocked or not.
-        with mock.patch.dict(os.environ, {"REVIEW_LOOP_GH_STUB": ""}), \
+        with mock.patch.dict(os.environ, {"DIAKTOROS_GH_STUB": ""}), \
              mock.patch.object(gh, "API", "http://127.0.0.1:9"), \
              mock.patch.object(gh, "token", return_value="t"), \
              mock.patch.object(gh.urllib.request, "urlopen", side_effect=err):

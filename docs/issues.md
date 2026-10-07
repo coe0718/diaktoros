@@ -133,7 +133,7 @@ fixer profile and account, not a separate issue-fixer profile.
 If a fix is possible, the broker:
 
 1. Records the intent before external writes.
-2. Pushes one commit to new branch `review-loop/issue-N` from the captured base SHA.
+2. Pushes one commit to new branch `diaktoros/issue-N` from the captured base SHA.
    The branch must be absent; an existing branch is never overwritten.
 3. Opens a PR against the configured base, with `Fixes #N` in its description.
 4. Requests the configured reviewer. The opened PR then follows the regular review loop.
@@ -179,7 +179,7 @@ Issue fixes are serialized (concurrency one), use the loop-wide `turn_budget_s` 
 how many happen; this cap does. A successful proposal adds the costs of the
 ordinary PR review loop. Removing/reapplying the fix label at the same base commit
 cannot create a second independent turn. At a new base commit it can create fresh work,
-but an existing `review-loop/issue-N` branch still prevents publication. Repeated
+but an existing `diaktoros/issue-N` branch still prevents publication. Repeated
 labeling is not a safe recovery procedure after a possible write.
 
 ## Inspect results
@@ -248,7 +248,7 @@ uncertain runs and reconciled runs cannot be retried. **Any** `triage_results` o
 other review/push/ruling write evidence also prohibits replay. Inspect the queries above
 and actual GitHub state rather than treating a failed supervisor row as proof of no write.
 
-An intentional new issue-fix attempt also requires remote `review-loop/issue-N` to be
+An intentional new issue-fix attempt also requires remote `diaktoros/issue-N` to be
 absent. Inspect the earlier run, branch, PR, comments and review request first. Only
 when you have established a safe new attempt—not an ambiguous or already published
 result—deliberately remove that inspected remote branch, then have an authorized

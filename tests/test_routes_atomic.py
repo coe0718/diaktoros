@@ -18,14 +18,14 @@ from review_loop import routes
 
 
 def add(path: str, name: str, start) -> None:
-    os.environ["REVIEW_LOOP_SUBS"] = path
+    os.environ["DIAKTOROS_SUBS"] = path
     start.wait()
     routes.new_route(name, profile="default", prompt="test", events=["push"],
                      script="test.py", deliver="none")
 
 
 def remove(path: str, name: str, start) -> None:
-    os.environ["REVIEW_LOOP_SUBS"] = path
+    os.environ["DIAKTOROS_SUBS"] = path
     start.wait()
     if not routes.remove_route(name):
         raise RuntimeError(f"route {name} disappeared")
@@ -39,15 +39,15 @@ class RouteRegistryTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(dir=scratch)
         self.addCleanup(self.tmp.cleanup)
         self.path = pathlib.Path(self.tmp.name) / "subscriptions.json"
-        self.old = os.environ.get("REVIEW_LOOP_SUBS")
-        os.environ["REVIEW_LOOP_SUBS"] = str(self.path)
+        self.old = os.environ.get("DIAKTOROS_SUBS")
+        os.environ["DIAKTOROS_SUBS"] = str(self.path)
         self.addCleanup(self.restore_env)
 
     def restore_env(self):
         if self.old is None:
-            os.environ.pop("REVIEW_LOOP_SUBS", None)
+            os.environ.pop("DIAKTOROS_SUBS", None)
         else:
-            os.environ["REVIEW_LOOP_SUBS"] = self.old
+            os.environ["DIAKTOROS_SUBS"] = self.old
 
     def create(self, name="one"):
         return routes.new_route(name, profile="default", prompt="test", events=["push"],

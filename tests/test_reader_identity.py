@@ -81,8 +81,8 @@ class _Home(unittest.TestCase):
         self.hermes = self.home / ".hermes"
         env = patch.dict(os.environ, {
             "HOME": str(self.home), "HERMES_HOME": str(self.hermes),
-            "REVIEW_LOOP_CONFIG_DIR": str(self.hermes / "review-loops.d"),
-            "REVIEW_LOOP_SUBS": str(self.hermes / "webhook_subscriptions.json")})
+            "DIAKTOROS_CONFIG_DIR": str(self.hermes / "review-loops.d"),
+            "DIAKTOROS_SUBS": str(self.hermes / "webhook_subscriptions.json")})
         env.start()
         self.addCleanup(env.stop)
         # No test here may reach GitHub: an unpatched call fails loudly instead of sending a

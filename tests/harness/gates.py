@@ -138,7 +138,7 @@ def group_reviewer_gate() -> None:
     reset(prs={"7": pr(7)})
     check("failed fresh PR lookup is silent",
           run("gate_reviewer.py", pr_payload(),
-              extra_env={"REVIEW_LOOP_GH_STUB": "/bin/false"})[0], "SILENT")
+              extra_env={"DIAKTOROS_GH_STUB": "/bin/false"})[0], "SILENT")
 
     # a head that already has a verdict from a reviewer
     reset(prs={"7": {**pr(7), "reviews": [review(REVIEWER)]}})
@@ -167,7 +167,7 @@ def group_reviewer_gate() -> None:
 
     # the review list is unreadable: never guess a round count
     reset(prs={"7": pr(7)})
-    kind, _, err = run("gate_reviewer.py", pr_payload(), extra_env={"REVIEW_LOOP_GH_STUB": "/bin/false"})
+    kind, _, err = run("gate_reviewer.py", pr_payload(), extra_env={"DIAKTOROS_GH_STUB": "/bin/false"})
     check("unreadable review list → silent (never guess)", kind, "SILENT")
     check("  and it says why", "unavailable" in err or "not guessing" in err, True)
 
@@ -384,7 +384,7 @@ def group_fixer_gate() -> None:
     check("live PR closed → silent", run("gate_fixer.py", review_payload(rid=5))[0], "SILENT")
     reset(prs={"7": {**pr(7), "reviews": [review(REVIEWER, rid=5)]}})
     check("unreadable live PR → silent", run("gate_fixer.py", review_payload(rid=5),
-          extra_env={"REVIEW_LOOP_GH_STUB": "/bin/false"})[0], "SILENT")
+          extra_env={"DIAKTOROS_GH_STUB": "/bin/false"})[0], "SILENT")
     later_approval = {**review(REVIEWER, state="APPROVED", rid=6),
                       "submitted_at": "2026-01-02T00:00:00Z"}
     reset(prs={"7": {**pr(7), "reviews": [review(REVIEWER, rid=5), later_approval]}})
@@ -402,7 +402,7 @@ def group_fixer_gate() -> None:
     state_file("locks.json").write_text(json.dumps(
         {"reviewer": {f"{REPO}#7": {"at": time.time(), "head": HEAD_A, "why": "review"}}}))
     run("gate_fixer.py", review_payload(state="approved", rid=9),
-        extra_env={"REVIEW_LOOP_GH_STUB": "/bin/false"})
+        extra_env={"DIAKTOROS_GH_STUB": "/bin/false"})
     check("approval with an unreadable PR still frees the reviewer seat",
           "reviewer" in load_state("locks.json"), False)
 

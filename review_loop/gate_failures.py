@@ -16,7 +16,7 @@ What the Hermes gateway does with a route script (``gateway/platforms/webhook_fi
 
 So every gate runs under :func:`run`, which
 
-1. budgets the gate well under the gateway's timeout (``REVIEW_LOOP_GATE_BUDGET_S``, default
+1. budgets the gate well under the gateway's timeout (``DIAKTOROS_GATE_BUDGET_S``, default
    20s): every GitHub call is clipped to what is left, a spent budget raises
    :class:`gh.GateBudgetExceeded`, and a ``SIGALRM`` backstop a few seconds later interrupts
    anything else that hangs (a lock, a subprocess);
@@ -57,6 +57,7 @@ from collections.abc import Callable
 
 from . import config, gh
 from .util import iso_at, log
+from . import envnames
 
 LEDGER = "gate-failures.json"
 PAYLOADS = "gate-failures"
@@ -84,7 +85,7 @@ def _migration() -> dict | None:
     except Exception as err:  # noqa: BLE001
         log(f"migration marker check failed: {type(err).__name__}: {err}")
         return None
-REDRIVE_ENV = "REVIEW_LOOP_GATE_REDRIVE"
+REDRIVE_ENV = envnames.name("GATE_REDRIVE")
 # A GitHub answer about the resource, not a failure to read it.
 _FACT_ERRORS = re.compile(r"^HTTP (404|410|422)\b")
 _SECRETS = re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})")
@@ -97,7 +98,7 @@ def _bounded(text: str, limit: int) -> str:
 
 def budget_s() -> float:
     try:
-        value = float(os.environ.get("REVIEW_LOOP_GATE_BUDGET_S", DEFAULT_BUDGET_S))
+        value = float(envnames.get("GATE_BUDGET_S", DEFAULT_BUDGET_S))
     except ValueError:
         value = DEFAULT_BUDGET_S
     return value if 0 < value < 600 else DEFAULT_BUDGET_S

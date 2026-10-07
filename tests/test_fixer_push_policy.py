@@ -25,7 +25,7 @@ class FixerPushPolicyTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        env = patch.dict(os.environ, {"REVIEW_LOOP_CONFIG_DIR": str(self.root / "configs"),
+        env = patch.dict(os.environ, {"DIAKTOROS_CONFIG_DIR": str(self.root / "configs"),
                                    "HERMES_HOME": str(self.root / "hermes")})
         env.start()
         self.addCleanup(env.stop)

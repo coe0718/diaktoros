@@ -47,7 +47,7 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 
-from . import config, doctor, gh
+from . import config, doctor, envnames, gh
 
 PASS, FAIL, WARN, SKIP = "pass", "fail", "warn", "skip"
 MARKS = {PASS: "✅", FAIL: "❌", WARN: "⚠️ ", SKIP: "⏭️ "}
@@ -843,7 +843,7 @@ def check_build_fits(report: Report, loop: dict, number: int | None) -> None:
     caps = (f"/work {_gib(contained.CHECKOUT_SIZE)}, /tmp {_gib(contained.SCRATCH_SIZE)}")
     for name, raw, why in contained.live_ignored_overrides():
         report.add(step, f"sandbox:override:{name}", FAIL,
-                   f"REVIEW_LOOP_{name}_GIB={raw!r} was refused ({why}); the default is in force",
+                   f"DIAKTOROS_{name}_GIB={raw!r} was refused ({why}); the default is in force",
                    "fix the value: an integer 1..1024 GiB")
     if number is None:
         report.add(step, "sandbox:build-fits", SKIP, f"caps are {caps}",
@@ -856,7 +856,7 @@ def check_build_fits(report: Report, loop: dict, number: int | None) -> None:
                    f"no build output to measure (looked for {'<clone>/target' if target else 'a clone'}); "
                    f"caps are {caps}",
                    "point `set --clone` at the working clone, or raise "
-                   "REVIEW_LOOP_CHECKOUT_SIZE_GIB if a real target outgrows the cap")
+                   "DIAKTOROS_CHECKOUT_SIZE_GIB if a real target outgrows the cap")
         return
     size = _du(target)
     # A FAIL has to mean a real seat's build will not fit. The clone's accumulated target cannot
@@ -868,7 +868,7 @@ def check_build_fits(report: Report, loop: dict, number: int | None) -> None:
                    f"/work is {_gib(contained.CHECKOUT_SIZE)}, under the "
                    f"{_gib(contained.SCOPED_BUILD_FLOOR)} a scoped build needs "
                    "(measured 2.4 GiB for a real workspace's largest crate)",
-                   "raise REVIEW_LOOP_CHECKOUT_SIZE_GIB in the environment the gateway runs in, "
+                   "raise DIAKTOROS_CHECKOUT_SIZE_GIB in the environment the gateway runs in, "
                    "restart it, and confirm with `doctor`")
         return
     if size > contained.CHECKOUT_SIZE:
@@ -1192,9 +1192,9 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
     report = Report(out, redact)
     report.text(f"[{loop['id']}] {loop['repo']} — isolated-path selftest "
                 "(GitHub: reads only, nothing is posted; no token or key is printed)")
-    if os.environ.get("REVIEW_LOOP_GH_STUB"):
-        report.add("preconditions", "github:stub", FAIL, "REVIEW_LOOP_GH_STUB is set: GitHub is faked",
-                   "unset REVIEW_LOOP_GH_STUB — the selftest must talk to the real API")
+    if envnames.get("GH_STUB"):
+        report.add("preconditions", "github:stub", FAIL, "DIAKTOROS_GH_STUB is set: GitHub is faked",
+                   "unset DIAKTOROS_GH_STUB / REVIEW_LOOP_GH_STUB — the selftest must talk to the real API")
     with github_read_only(), worker_tempdir():
         report.step("1. Runtime config and seat models")
         settings = check_runtime(report, runtime_file)

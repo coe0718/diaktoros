@@ -10,14 +10,14 @@ the write broker, and launches the turn.
 Two fakes, nothing else:
 
 * GitHub is one local HTTP world. The gate, CLI and watchdog reach it through the
-  ``REVIEW_LOOP_GH_STUB`` executable; the worker (which production strips of that stub) through
+  ``DIAKTOROS_GH_STUB`` executable; the worker (which production strips of that stub) through
   ``sitecustomize`` in a disposable copy of the plugin, which points ``gh.API`` at it.
 * The same ``sitecustomize`` replaces only ``contained.run`` (the bwrap launcher) with a fake
   agent: a real child that calls the real inference proxy (whose upstream answers 429) or the
   real broker (which POSTs the review), or a launch that fails before any child exists.
 
 No real Hermes, model, sandbox, GitHub, user HOME or credential is used. Set
-``REVIEW_LOOP_TRANSCRIPT=/path`` to write the operator-visible transcript of each run.
+``DIAKTOROS_TRANSCRIPT=/path`` to write the operator-visible transcript of each run.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import hashlib
@@ -314,7 +314,7 @@ class LiveRouteRetry(unittest.TestCase):
         (home / 'diaktoros-runtime.json').chmod(0o600)
         # What the gateway hands a route script: its own (scrubbed) environment, no PYTHONPATH.
         self.env = {'PATH': '/usr/bin:/bin', 'HOME': str(home), 'HERMES_HOME': str(home),
-                    'REVIEW_LOOP_GH_STUB': str(stub), 'PYTHONDONTWRITEBYTECODE': '1',
+                    'DIAKTOROS_GH_STUB': str(stub), 'PYTHONDONTWRITEBYTECODE': '1',
                     'TMPDIR': tempfile.gettempdir()}
         self.db = home / 'state' / 'diaktoros-runs.sqlite'
         self.transcript = []
@@ -324,7 +324,7 @@ class LiveRouteRetry(unittest.TestCase):
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline and self._active():
             time.sleep(0.2)
-        path = os.environ.get('REVIEW_LOOP_TRANSCRIPT')
+        path = os.environ.get('DIAKTOROS_TRANSCRIPT')
         if path:
             with open(path, 'a') as out:
                 out.write(f'\n######## {self.id()}\n' + '\n'.join(self.transcript) + '\n')

@@ -59,7 +59,7 @@ MAX_ANSWERS = 8 * 1024
 FILED_ISSUE_BODY_MAX = 6 * 1024    # broker.FILED_ISSUE_BODY_MAX
 ISSUE_TITLE_MAX = 120              # broker.ISSUE_PR_TITLE_MAX
 MAX_REQUEST = 16 * 1024
-from review_loop.wire import ANSWERS_MARKER  # copied into the sandbox with this client
+from review_loop.wire import ANSWERS_MARKER, ANSWERS_MARKERS  # noqa: F401 - copied into the sandbox with this client
 _SHA = re.compile(r'[0-9a-f]{40}\Z')
 _SEGMENT = re.compile(r'[A-Za-z0-9_.-]{1,128}\Z')
 _CONTROL_FILES = {'.gitmodules', '.gitattributes'}
@@ -229,7 +229,7 @@ def read_answers(path: str) -> str:
     text = raw.decode('utf-8')
     if not text.strip() or '\x00' in text:
         raise ManifestError('the answers must be non-empty text')
-    if ANSWERS_MARKER in text:
+    if any(marker in text for marker in ANSWERS_MARKERS):
         raise ManifestError('the answers may not contain the host\'s answers marker')
     frame = json.dumps({'operation': 'request_review', 'verdict': '', 'body': text},
                        separators=(',', ':')).encode()

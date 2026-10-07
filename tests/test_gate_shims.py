@@ -90,7 +90,7 @@ def real_python():
 
 
 def require_real_resolver(test: unittest.TestCase) -> None:
-    """Skip without the Hermes source — or fail, under REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1 (CI's
+    """Skip without the Hermes source — or fail, under DIAKTOROS_REQUIRE_HERMES_SOURCE=1 (CI's
     installed-mode lane), via #117's shared ``hermes_prereqs.skip_or_fail``."""
     if not (SOURCE / "gateway" / "platforms" / "webhook_filters.py").exists():
         skip_or_fail(test, f"no Hermes source at {SOURCE}")
@@ -119,13 +119,13 @@ class Base(unittest.TestCase):
         self.home = self.tmp / "home"
         self.hermes = self.home / ".hermes"           # the classic layout: root under $HOME
         self.env = {"HOME": str(self.home), "HERMES_HOME": str(self.hermes),
-                    "REVIEW_LOOP_CONFIG_DIR": str(self.hermes / "diaktoros.d"),
-                    "REVIEW_LOOP_SUBS": str(self.hermes / "webhook_subscriptions.json")}
+                    "DIAKTOROS_CONFIG_DIR": str(self.hermes / "diaktoros.d"),
+                    "DIAKTOROS_SUBS": str(self.hermes / "webhook_subscriptions.json")}
         # GitHub is always the stub here: no test in this file may reach the network.
         stub = self.tmp / "gh-world"
         stub.write_text('#!/bin/sh\ncase "$1" in */hooks*) echo "[]";; *) echo "{}";; esac\n')
         stub.chmod(0o755)
-        self.env["REVIEW_LOOP_GH_STUB"] = str(stub)
+        self.env["DIAKTOROS_GH_STUB"] = str(stub)
         patcher = patch.dict(os.environ, self.env)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -177,7 +177,7 @@ class Base(unittest.TestCase):
                             "--adjudicator-profile", "default", "--observer-profile", "arbiter")
 
     def loop_routes(self, loop_id="widgets") -> dict:
-        path = pathlib.Path(self.env["REVIEW_LOOP_SUBS"])
+        path = pathlib.Path(self.env["DIAKTOROS_SUBS"])
         registry = json.loads(path.read_text()) if path.exists() else {}
         return {name: entry for name, entry in registry.items() if name.startswith(loop_id + "-")}
 
@@ -318,7 +318,7 @@ class ShimRunsUnderTheLoopsHome(Base):
     def test_the_gate_reads_the_root_loops_under_a_profile_scoped_env(self):
         profile = self.hermes / "profiles" / "critic"
         # The gateway's child env: the profile as HERMES_HOME, HOME moved, the real one alongside;
-        # and no REVIEW_LOOP_CONFIG_DIR, which only tests ever set.
+        # and no DIAKTOROS_CONFIG_DIR, which only tests ever set.
         env = {"PATH": os.environ["PATH"], "HERMES_HOME": str(profile),
                "HOME": str(profile / "home"), "HERMES_REAL_HOME": str(self.home)}
         seen = self.run_shim(env)
@@ -339,7 +339,7 @@ class ShimRunsUnderTheLoopsHome(Base):
         if built.returncode != 0:
             skip_or_fail(self, f"Hermes not importable from {SOURCE}: {built.stderr[-300:]}")
         env = json.loads(built.stdout)
-        env.pop("REVIEW_LOOP_CONFIG_DIR", None)
+        env.pop("DIAKTOROS_CONFIG_DIR", None)
         self.assertNotEqual(env.get("HERMES_HOME"), str(self.hermes),
                             "premise: Hermes scopes the script's HERMES_HOME to the profile")
         seen = self.run_shim(env)
@@ -354,7 +354,7 @@ class ShimRunsThePluginScript(Base):
         return stub
 
     def sh(self, argv, cwd, payload: str):
-        env = {**os.environ, **self.env, "REVIEW_LOOP_GH_STUB": str(self.stub())}
+        env = {**os.environ, **self.env, "DIAKTOROS_GH_STUB": str(self.stub())}
         return subprocess.run(argv, input=payload, capture_output=True, text=True, cwd=cwd,
                               env=env, timeout=60)
 
@@ -550,7 +550,7 @@ class DoctorApplyUninstall(Base):
     # -- config and registry disagree (review of #106): loud, and the named remedy works -------
 
     def edit_registry(self, mutate):
-        path = pathlib.Path(self.env["REVIEW_LOOP_SUBS"])
+        path = pathlib.Path(self.env["DIAKTOROS_SUBS"])
         data = json.loads(path.read_text())
         mutate(data)
         path.write_text(json.dumps(data, indent=2))
@@ -773,7 +773,7 @@ class DoctorApplyUninstall(Base):
                 print("{{}}")
         """))
         stub.chmod(0o755)
-        os.environ["REVIEW_LOOP_GH_STUB"] = str(stub)
+        os.environ["DIAKTOROS_GH_STUB"] = str(stub)
         return world
 
     def hook_config(self, world: pathlib.Path, hook_id=None) -> dict:
@@ -1176,7 +1176,7 @@ class DoctorApplyUninstall(Base):
         broken = self.tmp / "gh-broken"
         broken.write_text("#!/bin/sh\nexit 1\n")
         broken.chmod(0o755)
-        os.environ["REVIEW_LOOP_GH_STUB"] = str(broken)
+        os.environ["DIAKTOROS_GH_STUB"] = str(broken)
         rc, out = self.run_cli(["apply", "--loop", "widgets", "--recreate-routes"])
         self.assertEqual(rc, 2, out)
         self.assertIn("hook listing", out)
@@ -1386,7 +1386,7 @@ class ObserverStatusDoctor(Base):
         route_intent.path(config.load_id("widgets")).unlink()
 
     def edit_registry(self, name, mutate):
-        path = pathlib.Path(self.env["REVIEW_LOOP_SUBS"])
+        path = pathlib.Path(self.env["DIAKTOROS_SUBS"])
         data = json.loads(path.read_text())
         mutate(data[name])
         path.write_text(json.dumps(data, indent=2))
@@ -1591,7 +1591,7 @@ class ObserverStatusDoctor(Base):
         self.observer_install()
         if not with_record:
             self.forget_intent()
-        subs = pathlib.Path(self.env["REVIEW_LOOP_SUBS"])
+        subs = pathlib.Path(self.env["DIAKTOROS_SUBS"])
         pristine = subs.read_text()
         results = {}
         for label, mutate in self.MUTATIONS.items():
@@ -1898,7 +1898,7 @@ class HookAndCronRemedies(Base):
                 print("{{}}")
         """))
         stub.chmod(0o755)
-        os.environ["REVIEW_LOOP_GH_STUB"] = str(stub)
+        os.environ["DIAKTOROS_GH_STUB"] = str(stub)
         return world
 
     @staticmethod

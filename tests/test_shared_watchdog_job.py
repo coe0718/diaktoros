@@ -93,9 +93,9 @@ class SharedJobTests(unittest.TestCase):
         self.home = self.root / "hermes"
         self.hermes = FakeHermes(self.home)
         env = patch.dict(os.environ, {
-            "REVIEW_LOOP_CONFIG_DIR": str(self.root / "configs"),
+            "DIAKTOROS_CONFIG_DIR": str(self.root / "configs"),
             "HERMES_HOME": str(self.home),
-            "REVIEW_LOOP_HERMES": str(self.hermes.bin)})
+            "DIAKTOROS_HERMES": str(self.hermes.bin)})
         env.start()
         self.addCleanup(env.stop)
         config.config_dir().mkdir()

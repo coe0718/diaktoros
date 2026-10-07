@@ -14,8 +14,8 @@ import in a process it:
   watchdog) land there. Both are created on import, in a guarded child too (never inside a
   real home);
 * puts a ``hermes`` shim first on PATH that refuses to run (see ``FAKE_HERMES_ENV``);
-* arms the plugin's tripwire (``REVIEW_LOOP_TEST_HOME_GUARD`` plus the sentinel file named by
-  ``REVIEW_LOOP_TEST_GUARD_SENTINEL``, which only this module creates — the variable alone arms
+* arms the plugin's tripwire (``DIAKTOROS_TEST_HOME_GUARD`` plus the sentinel file named by
+  ``DIAKTOROS_TEST_GUARD_SENTINEL``, which only this module creates — the variable alone arms
   nothing): while armed, resolving the Hermes home, a ledger, a state dir or a cleanup root
   anywhere inside the real home raises ``config.RealHomeError`` — so a test that escapes this guard
   fails instead of writing.
@@ -34,12 +34,12 @@ import shutil
 import tempfile
 import unittest
 
-GUARD_ENV = "REVIEW_LOOP_TEST_HOME_GUARD"
+GUARD_ENV = "DIAKTOROS_TEST_HOME_GUARD"
 # Inherited settings that could point a test at real state; the fixtures set their own.
-_DROP = ("REVIEW_LOOP_CONFIG_DIR", "REVIEW_LOOP_SUBS", "REVIEW_LOOP_TOKEN_FILE")
+_DROP = ("DIAKTOROS_CONFIG_DIR", "DIAKTOROS_SUBS", "DIAKTOROS_TOKEN_FILE")
 
-_FRESH = not (os.environ.get(GUARD_ENV) == "1" and os.environ.get("REVIEW_LOOP_TEST_USER_HOME"))
-USER_HOME = pathlib.Path.home() if _FRESH else pathlib.Path(os.environ["REVIEW_LOOP_TEST_USER_HOME"])
+_FRESH = not (os.environ.get(GUARD_ENV) == "1" and os.environ.get("DIAKTOROS_TEST_USER_HOME"))
+USER_HOME = pathlib.Path.home() if _FRESH else pathlib.Path(os.environ["DIAKTOROS_TEST_USER_HOME"])
 
 
 def _protected_homes() -> list[pathlib.Path]:
@@ -49,8 +49,8 @@ def _protected_homes() -> list[pathlib.Path]:
         homes.append(pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir))
     except (ImportError, KeyError):
         pass
-    if os.environ.get("REVIEW_LOOP_TEST_REAL_HOME"):     # the plugin's test-only fake real home
-        homes.append(pathlib.Path(os.environ["REVIEW_LOOP_TEST_REAL_HOME"]))
+    if os.environ.get("DIAKTOROS_TEST_REAL_HOME"):     # the plugin's test-only fake real home
+        homes.append(pathlib.Path(os.environ["DIAKTOROS_TEST_REAL_HOME"]))
     return homes
 
 
@@ -90,12 +90,12 @@ else:
     for _var in _DROP:
         os.environ.pop(_var, None)
     os.environ.update({"HOME": str(TEST_HOME), "HERMES_HOME": str(TEST_HOME / ".hermes"),
-                       "REVIEW_LOOP_TEST_USER_HOME": str(USER_HOME), GUARD_ENV: "1"})
+                       "DIAKTOROS_TEST_USER_HOME": str(USER_HOME), GUARD_ENV: "1"})
 
 # The plugin's tripwires arm only with GUARD_ENV *and* this sentinel (config.test_guard_active), so
 # the bare variable inherited by a real loop arms nothing. A guarded child keeps its parent's; one
 # whose sentinel is missing (or never inherited) makes its own. Empty: nothing secret in it.
-SENTINEL_ENV = "REVIEW_LOOP_TEST_GUARD_SENTINEL"
+SENTINEL_ENV = "DIAKTOROS_TEST_GUARD_SENTINEL"
 if not (os.environ.get(SENTINEL_ENV) and os.path.isfile(os.environ[SENTINEL_ENV])):
     _sentinel_dir = pathlib.Path(tempfile.mkdtemp(prefix="review-loop-test-guard-")).resolve()
     atexit.register(shutil.rmtree, _sentinel_dir, ignore_errors=True)
@@ -106,23 +106,23 @@ if not (os.environ.get(SENTINEL_ENV) and os.path.isfile(os.environ[SENTINEL_ENV]
 # the real install (a bare `hermes` once resumed an interrupted source update and rebuilt the real
 # hermes-agent's UI builds). A shim goes FIRST on PATH and fails loudly, unless a test names its
 # own fake in FAKE_HERMES_ENV — and even then never the real binary.
-FAKE_HERMES_ENV = "REVIEW_LOOP_TEST_FAKE_HERMES"
+FAKE_HERMES_ENV = "DIAKTOROS_TEST_FAKE_HERMES"
 BLOCKED = "real hermes blocked under test guard"
 SHIM_EXIT = 97
 _SHIM = """#!/bin/sh
 real={real}
 refuse() {{ echo "{blocked}: $1" >&2; exit {code}; }}
-inside() {{ case "$fake/" in "$1"/*) refuse "REVIEW_LOOP_TEST_FAKE_HERMES is inside a protected home ($1)";; esac; }}
-if [ -n "$REVIEW_LOOP_TEST_FAKE_HERMES" ]; then
-  fake=$(readlink -f -- "$REVIEW_LOOP_TEST_FAKE_HERMES")
+inside() {{ case "$fake/" in "$1"/*) refuse "DIAKTOROS_TEST_FAKE_HERMES is inside a protected home ($1)";; esac; }}
+if [ -n "$DIAKTOROS_TEST_FAKE_HERMES" ]; then
+  fake=$(readlink -f -- "$DIAKTOROS_TEST_FAKE_HERMES")
   if [ -n "$real" ] && {{ [ "$fake" = "$(readlink -f -- "$real")" ] || [ "$fake" -ef "$real" ]; }}; then
-    refuse "REVIEW_LOOP_TEST_FAKE_HERMES names the real binary"
+    refuse "DIAKTOROS_TEST_FAKE_HERMES names the real binary"
   fi
   {home_checks}
-  if [ -n "$REVIEW_LOOP_TEST_REAL_HOME" ]; then inside "$(readlink -f -- "$REVIEW_LOOP_TEST_REAL_HOME")"; fi
-  exec "$REVIEW_LOOP_TEST_FAKE_HERMES" "$@"
+  if [ -n "$DIAKTOROS_TEST_REAL_HOME" ]; then inside "$(readlink -f -- "$DIAKTOROS_TEST_REAL_HOME")"; fi
+  exec "$DIAKTOROS_TEST_FAKE_HERMES" "$@"
 fi
-refuse "set REVIEW_LOOP_TEST_FAKE_HERMES to a fake (tests/_home_guard.py)"
+refuse "set DIAKTOROS_TEST_FAKE_HERMES to a fake (tests/_home_guard.py)"
 """
 
 
@@ -165,7 +165,7 @@ def _real_hermes(skip: set[pathlib.Path]) -> str:
 # else — a guarded child with no inherited shim dir, whose HOME it did not make — a temp dir of
 # its own. Never anywhere under a protected home, whatever was inherited: an inherited shim dir
 # there is replaced, never created or written.
-_INHERITED_SHIM = os.environ.get("REVIEW_LOOP_TEST_SHIM_DIR")
+_INHERITED_SHIM = os.environ.get("DIAKTOROS_TEST_SHIM_DIR")
 SHIM_DIR = pathlib.Path(_INHERITED_SHIM or TEST_HOME / ".review-loop-test-bin")
 if (not _INHERITED_SHIM and not _FRESH) or _under_a_home(SHIM_DIR):
     SHIM_DIR = pathlib.Path(tempfile.mkdtemp(prefix="review-loop-test-bin-")).resolve()
@@ -177,7 +177,7 @@ if not (SHIM_DIR / "hermes").exists():
     (SHIM_DIR / "hermes").chmod(0o755)
 _path = os.environ.get("PATH", "/usr/bin:/bin").split(os.pathsep)
 os.environ["PATH"] = os.pathsep.join([str(SHIM_DIR), *(p for p in _path if p != str(SHIM_DIR))])
-os.environ["REVIEW_LOOP_TEST_SHIM_DIR"] = str(SHIM_DIR)
+os.environ["DIAKTOROS_TEST_SHIM_DIR"] = str(SHIM_DIR)
 
 # The Hermes source the opt-in real-Hermes tests run (in bwrap, by its venv's own `hermes`). Only
 # ever an explicit HERMES_AGENT_SOURCE — there is no default, because the obvious default is the
@@ -212,7 +212,7 @@ def needs_real_hermes(*prerequisites: bool, reason: str = "real-Hermes test prer
 
     A HERMES_AGENT_SOURCE inside the live install fails the test loudly, whatever else is
     missing. Otherwise no source or a missing prerequisite skips it — or fails it, under
-    ``REVIEW_LOOP_REQUIRE_HERMES_SOURCE=1`` (``hermes_prereqs.needs``, the CI verticals job).
+    ``DIAKTOROS_REQUIRE_HERMES_SOURCE=1`` (``hermes_prereqs.needs``, the CI verticals job).
     """
     def decorate(target):
         refusal = source_refusal()

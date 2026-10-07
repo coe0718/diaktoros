@@ -3,7 +3,7 @@
 
 Runs with a plain interpreter and no network — no ``gh``, no pytest, no GitHub:
 
-* GitHub is a stub executable (``REVIEW_LOOP_GH_STUB``) answering from a JSON "world" file, so
+* GitHub is a stub executable (``DIAKTOROS_GH_STUB``) answering from a JSON "world" file, so
   the tests can put a fixer, a verdict and a review request exactly where they want them;
 * the webhook endpoint is a real local HTTP server, so watchdog wake paths still exercise
   signature validation; eligible gate runs return [SILENT] and fail closed without runtime;

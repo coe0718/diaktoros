@@ -46,8 +46,8 @@ def junk_shapes(good: dict) -> dict[str, object]:
 
 
 def sweep() -> str:
-    """One sweep as cron runs it (no REVIEW_LOOP_TEST), failing on any traceback."""
-    env = {k: v for k, v in t.env().items() if k != "REVIEW_LOOP_TEST"}
+    """One sweep as cron runs it (no DIAKTOROS_TEST), failing on any traceback."""
+    env = {k: v for k, v in t.env().items() if k != "DIAKTOROS_TEST"}
     proc = subprocess.run([sys.executable, str(SCRIPTS / "watchdog.py")], capture_output=True,
                           text=True, cwd=str(SCRIPTS), timeout=120, env=env)
     assert "Traceback" not in proc.stdout + proc.stderr, proc.stdout + proc.stderr

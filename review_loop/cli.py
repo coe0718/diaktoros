@@ -19,8 +19,9 @@ import sys
 import time
 import tempfile
 
-from . import (attribution, config, doctor, gate, gate_shims, gh, observer, prompts,
+from . import (attribution, config, doctor, envnames, gate, gate_shims, gh, observer, prompts,
                route_intent, routes, state as state_mod)
+from .util import logged
 
 # The shim and job names a fresh install gets; an install not yet migrated keeps the old pair
 # (``config.watchdog_shim`` / ``config.watchdog_job_name`` say which is live).
@@ -1115,9 +1116,9 @@ def _delete_loop_hooks(loop: dict, login: str | None
 
 
 def _hermes_bin() -> str | None:
-    """The ``hermes`` executable the scheduler commands run. ``REVIEW_LOOP_HERMES`` names a
+    """The ``hermes`` executable the scheduler commands run. ``DIAKTOROS_HERMES`` names a
     stand-in (the test suite's fake), so no test ever drives the operator's real install."""
-    found = os.environ.get("REVIEW_LOOP_HERMES") or shutil.which("hermes")
+    found = envnames.get("HERMES") or shutil.which("hermes")
     # Under the test guard (#101), never the operator's real hermes — for cron create and remove.
     return config.guard_real_hermes(found) if found else None
 
@@ -3594,8 +3595,7 @@ def cmd_review(args) -> int:
         reason = waiting.get("reason") or "the reviewer seat is busy"
         print(f"#{args.pr} @ {head[:7]}: review queued, waiting — {reason}")
         return 0
-    reasons = [line.split("] ", 1)[1] for line in done.stderr.splitlines()
-               if line.startswith("[review-loop] ") and "] " in line]
+    reasons = logged(done.stderr.splitlines())
     print(f"#{args.pr} @ {head[:7]}: no review started — "
           + (reasons[-1] if reasons else "the reviewer gate declined without a reason"
              + (f" (exit {done.returncode})" if done.returncode else "")))

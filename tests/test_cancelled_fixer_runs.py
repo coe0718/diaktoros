@@ -44,7 +44,7 @@ class CancelledFixer(unittest.TestCase):
         self.loops = self.home / "review-loops.d"
         self.loops.mkdir()
         env = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home),
-                                           "REVIEW_LOOP_CONFIG_DIR": str(self.loops)})
+                                           "DIAKTOROS_CONFIG_DIR": str(self.loops)})
         env.start()
         self.addCleanup(env.stop)
         self.pushes(True)

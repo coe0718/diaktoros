@@ -969,12 +969,12 @@ def group_doctor() -> None:
     check("  with the permission to fix", "read:repo_hook" in out, True)
 
     install_doctor_fixture()
-    denial = os.environ["REVIEW_LOOP_GH_STUB"]
-    os.environ["REVIEW_LOOP_GH_STUB"] = "/bin/false"
+    denial = os.environ["DIAKTOROS_GH_STUB"]
+    os.environ["DIAKTOROS_GH_STUB"] = "/bin/false"
     try:
         rc, out = run_doctor("--loop", "widgets")
     finally:
-        os.environ["REVIEW_LOOP_GH_STUB"] = denial
+        os.environ["DIAKTOROS_GH_STUB"] = denial
     check("an unreachable GitHub is not a failure either", rc, 0)
     check("  and is also unknown, not absent", "⚠️ hooks" in out and "❌ hook:" in out, False)
 

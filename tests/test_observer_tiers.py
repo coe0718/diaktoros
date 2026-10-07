@@ -21,7 +21,7 @@ class ObserverTierTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.subs = pathlib.Path(self.temp.name) / "subscriptions.json"
-        env = patch.dict("os.environ", {"REVIEW_LOOP_SUBS": str(self.subs)})
+        env = patch.dict("os.environ", {"DIAKTOROS_SUBS": str(self.subs)})
         env.start()
         self.addCleanup(env.stop)
         self.loop = {"id": "feed", "repo": "owner/feed", "state_dir": self.temp.name,

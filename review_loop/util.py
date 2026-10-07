@@ -7,9 +7,21 @@ from pathlib import Path
 import sys
 import time
 from typing import NoReturn
+from . import envnames
+
+# What every line the plugin logs starts with. ``trace`` and ``review`` read a gate's reasons back
+# by it, so they also accept the prefix from before the rename (#425), in logs already written.
+LOG_PREFIX = "[diaktoros]"
+LOG_PREFIXES = (LOG_PREFIX, "[review-loop]")
+
+
+def logged(lines) -> list[str]:
+    """What each of ``lines`` the plugin logged says, without its prefix (either spelling)."""
+    return [line.split("] ", 1)[1] for line in lines
+            if line.startswith(tuple(f"{prefix} " for prefix in LOG_PREFIXES))]
 
 # The test suite's leak recorder for child processes (tests/leakguard.py). Only that guard sets
-# REVIEW_LOOP_LEAK_LOG, and only this checkout's own file is ever loaded: the variable is a
+# DIAKTOROS_LEAK_LOG, and only this checkout's own file is ever loaded: the variable is a
 # switch and a log path, never a code path. With it unset, every helper below returns its
 # input unchanged, so a production child's argv, script and environment are byte-identical.
 _LEAK_SITE = Path(__file__).resolve().parents[1] / "tests" / "leaksite" / "sitecustomize.py"
@@ -18,12 +30,12 @@ _LEAK_SITE = Path(__file__).resolve().parents[1] / "tests" / "leaksite" / "sitec
 def log(message: str, quiet: bool = False) -> None:
     """Diagnostics go to stderr always — a gate's stdout is a protocol, not a console."""
     if not quiet:
-        print(f"[review-loop] {message}", file=sys.stderr)
+        print(f"{LOG_PREFIX} {message}", file=sys.stderr)
 
 
 def leak_guard() -> str | None:
     """The leak log when tests/leakguard.py runs this process, else None."""
-    log = os.environ.get("REVIEW_LOOP_LEAK_LOG")
+    log = envnames.get("LEAK_LOG")
     return log if log and _LEAK_SITE.is_file() else None
 
 
@@ -35,7 +47,7 @@ def leak_guard_env(env: dict, *, pythonpath: bool = True) -> dict:
     """
     log = leak_guard()
     if log:
-        env["REVIEW_LOOP_LEAK_LOG"] = log
+        env[envnames.name("LEAK_LOG")] = log
         if pythonpath:
             site = str(_LEAK_SITE.parent)
             env["PYTHONPATH"] = site + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")

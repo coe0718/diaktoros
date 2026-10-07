@@ -339,7 +339,7 @@ def group_cleanup() -> None:
     reset(prs={"7": pr(7, state="closed")})
     marker = state_file("breach.json")
     marker.write_text(json.dumps({f"{REPO}#7": {"status": "awaiting-adjudication"}}))
-    failed_lookup = {"REVIEW_LOOP_GH_STUB": "/bin/false"}
+    failed_lookup = {"DIAKTOROS_GH_STUB": "/bin/false"}
     run("cleanup.py", None, "--loop", "widgets", "--pr", "7", extra_env=failed_lookup)
     check("failed GitHub command: direct keeps worktree", (REVIEWS / "pr7-wt").exists(), True)
     check("failed GitHub command: direct keeps state", f"{REPO}#7" in load_state("breach.json"), True)

@@ -179,7 +179,7 @@ class Lifecycle(unittest.TestCase):
             stack.enter_context(patch.object(sys, "argv", argv))
             # A spawned worker always has HOME and HERMES_HOME (_spawn sets both); the fixture
             # child's environment is built from them.
-            stack.enter_context(patch.dict(os.environ, {"REVIEW_LOOP_TEST_FIXTURE": "1",
+            stack.enter_context(patch.dict(os.environ, {"DIAKTOROS_TEST_FIXTURE": "1",
                                                         "HOME": str(self.root),
                                                         "HERMES_HOME": str(self.root)}))
             stack.enter_context(contextlib.redirect_stderr(err))
@@ -282,7 +282,7 @@ class Lifecycle(unittest.TestCase):
         state = self.root / "turn-state"
         loop = {"repo": "o/r", "state_dir": str(state)}
         scope = broker_ipc.RunScope("o/r", 1, "a" * 40, "reviewer", "b")
-        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}), \
+        with patch.dict(os.environ, {"DIAKTOROS_WORKER": "1"}), \
                 self.assertRaises(HostStateGone):
             trusted_turn.run_turn(loop, scope, source=self.root / "none", venv=self.root,
                                   runtime=self.root, rust=self.root, upstream="https://x",
@@ -294,18 +294,18 @@ class Lifecycle(unittest.TestCase):
         state = self.root / "cache-state"
         state.mkdir()
         loop = {"state_dir": str(state)}
-        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}):
+        with patch.dict(os.environ, {"DIAKTOROS_WORKER": "1"}):
             self.assertIsNone(trusted_turn.dependency_cache(loop))  # runs without the cache
         self.assertFalse((state / "deps").exists())
         self.assertEqual(trusted_turn.dependency_cache(loop), state / "deps")  # host creates it
-        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}):
+        with patch.dict(os.environ, {"DIAKTOROS_WORKER": "1"}):
             self.assertEqual(trusted_turn.dependency_cache(loop), state / "deps")
 
     def test_worker_seat_lock_never_creates_the_lock_dir(self):
         home = self.root / "hermes-home"
         locks = home / "state" / "diaktoros-seat-locks"
         with patch.object(config, "home", return_value=home):
-            with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}):
+            with patch.dict(os.environ, {"DIAKTOROS_WORKER": "1"}):
                 with seat_model.profile_lock("default"):
                     pass  # the in-process lock still serializes this worker's threads
             self.assertFalse(locks.exists())
@@ -440,7 +440,7 @@ class Lifecycle(unittest.TestCase):
     def pin_production_home(self):
         home = self.root / "hermes-home"
         env = patch.dict(os.environ, {"HERMES_HOME": str(home),
-                                      "REVIEW_LOOP_CONFIG_DIR": str(home / "review-loops.d")})
+                                      "DIAKTOROS_CONFIG_DIR": str(home / "review-loops.d")})
         env.start()
         self.addCleanup(env.stop)
         return home
@@ -470,7 +470,7 @@ class Lifecycle(unittest.TestCase):
     def armed_then_wiped(self, home: Path) -> None:
         """An armed install under ``home`` whose whole state dir is then removed."""
         with patch.dict(os.environ, {"HERMES_HOME": str(home),
-                                     "REVIEW_LOOP_CONFIG_DIR": str(home / "review-loops.d")}):
+                                     "DIAKTOROS_CONFIG_DIR": str(home / "review-loops.d")}):
             Supervisor(run_supervisor.production_ledger())
         shutil.rmtree(home / "state")
 
@@ -504,7 +504,7 @@ class Lifecycle(unittest.TestCase):
             with self.subTest(name):
                 self.armed_then_wiped(real)
                 env = {"HERMES_HOME": str(hermes_home),
-                       "REVIEW_LOOP_CONFIG_DIR": str(hermes_home / "review-loops.d")}
+                       "DIAKTOROS_CONFIG_DIR": str(hermes_home / "review-loops.d")}
                 lines, swept = self.status_then_watchdog(str(db_arg), env)
                 self.assertEqual(len(lines), 1, lines)
                 self.assertEqual(swept.count("vanished"), 1, swept)
@@ -519,7 +519,7 @@ class Lifecycle(unittest.TestCase):
         os.chdir(cwd)
         self.armed_then_wiped(home / ".hermes")
         env = {"HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
-               "REVIEW_LOOP_CONFIG_DIR": str(home / ".hermes" / "review-loops.d")}
+               "DIAKTOROS_CONFIG_DIR": str(home / ".hermes" / "review-loops.d")}
         lines, swept = self.status_then_watchdog("~/.hermes/state/diaktoros-runs.sqlite", env)
         self.assertEqual(len(lines), 1, lines)
         self.assertEqual(swept.count("vanished"), 1, swept)
@@ -593,7 +593,7 @@ class Lifecycle(unittest.TestCase):
         state = self.root / "loop-state"
         loop = {"state_dir": str(state)}
         err = io.StringIO()
-        with patch.dict(os.environ, {"REVIEW_LOOP_WORKER": "1"}), contextlib.redirect_stderr(err):
+        with patch.dict(os.environ, {"DIAKTOROS_WORKER": "1"}), contextlib.redirect_stderr(err):
             broker._audit(loop, "o/r", 1, "a" * 40, "b", "reviewer", "review", "login")
         self.assertFalse(state.exists())
         self.assertEqual(len(own_lines(err)), 1, err.getvalue())
@@ -606,7 +606,7 @@ class Lifecycle(unittest.TestCase):
         sup = self.supervisor()
         with patch("review_loop.run_supervisor.subprocess.Popen") as popen:
             sup._spawn()
-        self.assertEqual(popen.call_args.kwargs["env"].get("REVIEW_LOOP_WORKER"), "1")
+        self.assertEqual(popen.call_args.kwargs["env"].get("DIAKTOROS_WORKER"), "1")
 
     def test_host_enqueue_creates_a_missing_ledger_dir(self):
         state = self.root / "fresh-state"
@@ -764,7 +764,7 @@ class ReviewerClaimConcurrency(unittest.TestCase):
         # A fixer claim takes the host policy lock under $HERMES_HOME/review-loops.d: keep it in
         # this fixture, never the operator's home (#109).
         env = patch.dict(os.environ, {'HERMES_HOME': self.tmp.name,
-                                      'REVIEW_LOOP_CONFIG_DIR': str(Path(self.tmp.name) / 'review-loops.d')})
+                                      'DIAKTOROS_CONFIG_DIR': str(Path(self.tmp.name) / 'review-loops.d')})
         env.start()
         self.addCleanup(env.stop)
         self.db = Path(self.tmp.name) / 'ledger.sqlite'

@@ -40,7 +40,7 @@ class Home(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home)})
         env.start()
         self.addCleanup(env.stop)
-        os.environ.pop("REVIEW_LOOP_CONFIG_DIR", None)
+        os.environ.pop("DIAKTOROS_CONFIG_DIR", None)
 
     def old_install(self):
         """An install from before the rename: every host file under its old name."""

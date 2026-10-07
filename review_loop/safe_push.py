@@ -198,7 +198,7 @@ def _audit(loop: dict, record: dict) -> None:
 # Git's credential prompt: the login for "Username", the token file's contents for "Password".
 _ASKPASS = ("import os,sys\nfrom pathlib import Path\n"
             "print('x-access-token' if 'Username' in sys.argv[1] "
-            "else Path(os.environ['REVIEW_LOOP_TOKEN_FILE']).read_text().strip())\n")
+            "else Path(os.environ['DIAKTOROS_TOKEN_FILE']).read_text().strip())\n")
 
 
 class _Isolated:
@@ -244,7 +244,7 @@ def _isolated(loop: dict, login: str, identity: dict, remote: str | None):
                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
                "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": str(askpass),
                "GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": str(root / "manifest.index"),
-               "REVIEW_LOOP_TOKEN_FILE": str(gh.token_path(loop, login)), "LC_ALL": "C",
+               "DIAKTOROS_TOKEN_FILE": str(gh.token_path(loop, login)), "LC_ALL": "C",
                "GIT_AUTHOR_NAME": identity["name"], "GIT_AUTHOR_EMAIL": identity["email"],
                "GIT_COMMITTER_NAME": identity["name"], "GIT_COMMITTER_EMAIL": identity["email"]}
         util.leak_guard_env(env, pythonpath=False)   # the askpass loads it by path

@@ -42,8 +42,8 @@ class PostCapApprovalTest(unittest.TestCase):
                         "'user': {'login': 'fixer'}, 'head': {'sha': '" + HEAD + "'}}))\n")
         stub.chmod(0o700)
         self.env = {**os.environ, "HOME": str(root), "HERMES_HOME": str(root / "hermes"),
-                    "TMPDIR": str(root), "REVIEW_LOOP_CONFIG_DIR": str(config),
-                    "REVIEW_LOOP_GH_STUB": str(stub), "TEST_REVIEWS": str(self.reviews)}
+                    "TMPDIR": str(root), "DIAKTOROS_CONFIG_DIR": str(config),
+                    "DIAKTOROS_GH_STUB": str(stub), "TEST_REVIEWS": str(self.reviews)}
         self.payload = {"action": "review_loop_breach", "number": 7,
                         "repository": {"full_name": "acme/widgets"},
                         "_loop": {"role": "adjudicator", "pr": 7, "head": HEAD}}

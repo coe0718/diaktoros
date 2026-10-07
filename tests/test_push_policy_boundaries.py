@@ -21,7 +21,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
-        env = patch.dict(os.environ, {'REVIEW_LOOP_CONFIG_DIR': str(self.root / 'cfg'),
+        env = patch.dict(os.environ, {'DIAKTOROS_CONFIG_DIR': str(self.root / 'cfg'),
                                    'HERMES_HOME': str(self.root / 'home')})
         env.start()
         self.addCleanup(env.stop)
