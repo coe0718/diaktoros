@@ -3815,6 +3815,9 @@ def cmd_explain(args) -> int:
         # it); only an operator can end it, so it is said here rather than left to the cap.
         for line in _view_lines(loop, args.pr, report.get("head")):
             print(f"  {'view:':<12}{line}")
+        from . import findings as findings_mod
+        for text in findings_mod.lines(st.findings_get(args.pr)):
+            print(f"  {'finding:':<12}{text}")
         print(f"  {'escalation:':<12}{report['escalation']}")
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")

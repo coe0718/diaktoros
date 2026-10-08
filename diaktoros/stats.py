@@ -214,6 +214,11 @@ def collect(loop: dict, db: Path, since: float, with_github: bool,
     report = {"repo": loop["repo"], "loop": loop.get("id", ""), "since": since, "until": now,
               "turns": ledger(db, loop["repo"], since),
               "revisions": revisions(db, loop["repo"], since)}
+    try:
+        from . import findings
+        report["findings_missed"] = findings.missed_count(loop)
+    except Exception:
+        report["findings_missed"] = None
     if with_github:
         report["github"] = github(loop, since)
     return report
@@ -311,6 +316,8 @@ def text(report: dict) -> str:
                     for key, g in groups.items()]
             out += ["", f"By {title} (verdicts posted; rounds = most turns on one PR and seat)",
                     *_table([title, "turns", "verdicts", "rounds (max)"], rows)]
+    if report.get("findings_missed") is not None:
+        out += ["", f"Findings marked 'missed earlier' by reviewers: {report['findings_missed']}"]
     if "github" in report:
         notes, tables = _github_parts(report["github"])
         out += ["", "GitHub", *notes]

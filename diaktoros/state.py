@@ -741,6 +741,22 @@ class LoopState:
         """Whether a maintainer's grant covers the next verdict: same head, no verdict since."""
         return self.review_cap_entry(number).get("grant") == {"head": head, "rounds": rounds}
 
+    # -- numbered review findings (#475) --------------------------------------
+
+    def findings_all(self) -> dict:
+        raw = self._load(self.dir / "findings.json", {})
+        return raw if isinstance(raw, dict) else {}
+
+    def findings_get(self, number: int) -> dict:
+        entry = self.findings_all().get(str(number))
+        return entry if isinstance(entry, dict) else {}
+
+    def findings_put(self, number: int, entry: dict) -> None:
+        with self.locked():
+            data = self.findings_all()
+            data[str(number)] = entry
+            self._save(self.dir / "findings.json", data)
+
     def github_failure_record(self, entry: dict) -> None:
         """Keep the most recent failed GitHub call (see ``gh.record_failure``)."""
         self._save(self.github_reads, {"last_failure": entry})
