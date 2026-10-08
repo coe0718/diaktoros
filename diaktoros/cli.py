@@ -5046,7 +5046,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--observer-events", default="",
                           help="comma-separated transitions to send, from "
                                "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                               "triaged,fixing,fixed,failed,held,conflict,ci_failed (default: all)")
+                               "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated (default: all)")
         init.add_argument("--observer-digest-min", type=int, default=0,
                           help="batch the feed into one message per this many minutes "
                                "(0 = one notice per transition)")
@@ -5389,7 +5389,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--observer-events", default=None,
                             help="comma-separated transitions to send, from "
                                  "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                                 "triaged,fixing,fixed,failed,held,conflict,ci_failed (blank = all)")
+                                 "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated (blank = all)")
         change.add_argument("--observer-digest-min", type=int, default=None,
                             help="batch the feed into one message per N minutes (0 = per "
                                  "transition)")
