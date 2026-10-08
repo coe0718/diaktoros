@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import NamedTuple
 
@@ -228,12 +229,40 @@ def fetch(loop: dict, path: str, method: str = "GET", body=None,
     return response.data, response.error
 
 
+class _TokenlessRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect without carrying the token to another host.
+
+    urllib copies every header but the content ones onto a redirected request, ``Authorization``
+    included, so GitHub's redirect from a job log to its log storage would hand the read token
+    to that storage host. Here the token stays on the host it was meant for, an https request is
+    never followed down to http, and the target passes the same network guard as the first URL.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        before, after = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(new.full_url)
+        if before.scheme == "https" and after.scheme != "https":
+            raise urllib.error.HTTPError(new.full_url, code, "refused: redirect leaves https",
+                                         headers, fp)
+        from .config import guard_network
+        guard_network(new.full_url)
+        if (after.hostname, after.port) != (before.hostname, before.port):
+            new.remove_header("Authorization")
+        return new
+
+
+_TEXT_OPENER = urllib.request.build_opener(_TokenlessRedirect)
+
+
 def read_text(loop: dict, path: str, login: str | None = None, limit: int = 262144) -> str | None:
     """A plain-text body (an Actions job log), at most its last ``limit`` bytes, or None.
 
-    GitHub answers a log request with a redirect to the file; urllib follows it. The read is
-    bounded, so a huge log never lands in memory whole. Under the test stub, a stub that prints
-    a JSON string (or ``{"text": ...}``) stands in for the log.
+    GitHub answers a log request with a redirect to the file in its log storage; the redirect is
+    followed without the token (``_TokenlessRedirect``). The read is bounded, so a huge log never
+    lands in memory whole. Under the test stub, a stub that prints a JSON string (or
+    ``{"text": ...}``) stands in for the log.
     """
     if envnames.get("GH_STUB"):
         data = _stub(path, "GET", None, login or loop.get("read_token") or "").data
@@ -247,7 +276,7 @@ def read_text(loop: dict, path: str, login: str | None = None, limit: int = 2621
                      "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "diaktoros"})
         from .config import guard_network
         guard_network(req.full_url)
-        with urllib.request.urlopen(req, timeout=_budgeted("GET", path)) as resp:
+        with _TEXT_OPENER.open(req, timeout=_budgeted("GET", path)) as resp:
             # Only the tail matters: keep reading, keep the last ``limit`` bytes.
             kept = b""
             while True:
