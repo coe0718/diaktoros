@@ -120,3 +120,73 @@ def sweep(loop: dict, st) -> list[str]:
             _notice(loop, number, "fixing", pr,
                     f"PR #{pr} merged; fix turn queued from {loop['base']} at {base[:7]}")
     return lines
+
+
+AUTO_FIX_SEAT = "auto_fix"      # pacing counter key for automatic hand-offs (#232)
+
+
+def closing_pr(loop: dict, number: int) -> int | None:
+    """The number of an open PR whose body says it fixes issue ``number``, else ``None`` (#308).
+
+    Raises ``RuntimeError`` when the open PR listing is unknown.
+    """
+    import re
+    prs, error = gh.open_prs_read(loop)
+    if prs is None:
+        raise RuntimeError(f"open PR listing unreadable: {error}")
+    repo = re.escape(str(loop["repo"]))
+    pattern = re.compile(
+        r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+"
+        rf"(?:(?:{repo})?#|https://github\.com/{repo}/issues/){number}(?!\d)", re.IGNORECASE)
+    for pr in prs:
+        if type(pr.get("number")) is int and pattern.search(str(pr.get("body") or "")):
+            return pr["number"]
+    return None
+
+
+def auto_offer(loop: dict, number: int) -> str:
+    """Host-side hand-off of a triaged issue to the fixer (#232); returns what happened.
+
+    Called after the triage write is recorded; the triage seat never applies ``fix_label``. The
+    same guards as a maintainer's label: the live issue must carry an ``auto_fix_labels`` label
+    and no P0/P1/P2, no open PR may already fix it, a finding from an unmerged PR is held, and
+    the lineage depth and the daily cap bound it. Best effort: never raises.
+    """
+    from . import pacing, run_supervisor, state as state_mod
+    try:
+        if not config.auto_fix_labels(loop):
+            return ""
+        try:
+            run_supervisor.issue_fix_issue(loop, number)   # open, allowlisted, eligible labels
+        except Exception as exc:
+            return f"not auto-offered: {exc}"
+        depth = gate.isolated_supervisor(loop).filed_depth(loop["repo"], number)
+        if depth is not None and depth > config.AUTO_FIX_MAX_DEPTH:
+            return f"not auto-offered: lineage depth {depth} needs a person"
+        existing = closing_pr(loop, number)
+        if existing is not None:
+            return f"not auto-offered: open PR #{existing} already fixes it"
+        origin = origin_pr(loop, number)
+        st = state_mod.state_for(loop)
+        if origin is not None:
+            origin_state = pr_state(loop, origin)
+            if origin_state is None:
+                st.fix_hold_set(number, origin)
+                return f"not auto-offered: PR #{origin} unreadable; held"
+            if origin_state == "open":
+                hold(loop, st, number, origin)
+                return f"held until PR #{origin} merges"
+            if origin_state == "closed":
+                return f"not auto-offered: PR #{origin} closed unmerged"
+            st.fix_hold_drop(number)
+        cap = config.auto_fix_daily(loop)
+        if pacing.turns_today(loop["id"], AUTO_FIX_SEAT) >= cap:
+            return f"not auto-offered: daily cap ({cap}) reached"
+        base, outcome = queue_fix(loop, number)
+        if outcome in ("enqueued", "rearmed", "pending"):
+            pacing.count_turn(loop["id"], AUTO_FIX_SEAT)
+            _notice(loop, number, "fixing", 0,
+                    f"auto-offered; fix turn queued from {loop['base']} at {base[:7]}")
+        return f"auto-offered at {base[:7]}: {outcome}"
+    except Exception as exc:
+        return f"not auto-offered: {type(exc).__name__}: {exc}"

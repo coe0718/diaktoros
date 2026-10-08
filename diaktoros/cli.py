@@ -4352,6 +4352,15 @@ def cmd_triage(args) -> int:
                    else args.fix_daily_turns or None)
         if fix_cap:
             block["fix_daily_turns"] = fix_cap
+        # Automatic hand-off (#232): omitted keeps the current list, an empty value clears it.
+        auto = (current.get("auto_fix_labels") if args.auto_fix_label is None
+                else [x for x in args.auto_fix_label if x])
+        if auto:
+            block["auto_fix_labels"] = auto
+            auto_cap = (current.get("auto_fix_daily") if args.auto_fix_daily is None
+                        else args.auto_fix_daily or None)
+            if auto_cap:
+                block["auto_fix_daily"] = auto_cap
     tokens = dict(loop.get("tokens") or {})
     for pair in args.token or []:
         if "=" not in pair:
@@ -5428,6 +5437,12 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                             help="at most this many issue-fix turns per day (0 = the default, "
                                  f"{config.DEFAULT_FIX_DAILY_TURNS}); issue fixes are always "
                                  "capped")
+        triage.add_argument("--auto-fix-label", action="append", default=None,
+                            help="a triage label that hands an issue to the fixer without a "
+                                 "maintainer (#232; repeatable; never P0-P2; '' clears the list)")
+        triage.add_argument("--auto-fix-daily", type=int, default=None,
+                            help="at most this many automatic issue fixes per day (0 = the "
+                                 f"default, {config.DEFAULT_AUTO_FIX_DAILY})")
         triage.add_argument("--admin-token", default="",
                             help="login whose token can create or delete repo hooks")
         triage.add_argument("--dry-run", action="store_true", help="show the change, write nothing")

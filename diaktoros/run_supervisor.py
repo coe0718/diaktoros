@@ -922,7 +922,7 @@ def issue_fix_issue(loop: dict, number: int) -> dict:
     must still be an open issue (not a PR) by an allowlisted author, still carrying the fix
     label a maintainer applied.
     """
-    from . import gh
+    from . import config, gh
     triage = loop.get('triage') or {}
     if not triage.get('route') or not triage.get('fix_label'):
         raise ValueError('issue fixes are off for this loop')
@@ -937,7 +937,9 @@ def issue_fix_issue(loop: dict, number: int) -> dict:
         raise ValueError('issue author is not in triage.authors')
     present = {str((label or {}).get('name') or '').casefold()
                for label in issue.get('labels') or [] if isinstance(label, dict)}
-    if triage['fix_label'].casefold() not in present:
+    # A maintainer's fix label, or (#232) a triage label the loop auto-offers (never with P0-P2).
+    if (triage['fix_label'].casefold() not in present
+            and not config.auto_fix_eligible(loop, present)):
         raise ValueError(f"the {triage['fix_label']!r} label is no longer on the issue")
     return issue
 
