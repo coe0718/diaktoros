@@ -20,6 +20,7 @@ already been written. See the note next to it, and ``diaktoros.observer``.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import string
 
@@ -445,6 +446,15 @@ Never claim the push or the review request succeeded without an ok response from
 ISOLATED = {"reviewer": ISOLATED_REVIEWER, "fixer": ISOLATED_FIXER,
             "adjudicator": ISOLATED_ADJUDICATOR, "triage": ISOLATED_TRIAGE,
             "issue_fixer": ISOLATED_ISSUE_FIX, "conflict": ISOLATED_CONFLICT, "ci_fix": ISOLATED_CI_FIX}
+
+def revision(role: str) -> str:
+    """A short hash of the isolated prompt template for ``role`` (never its text): which wording a
+    turn ran under, for the run ledger and ``stats``."""
+    template = ISOLATED.get(role)
+    if template is None:
+        raise ValueError("no isolated prompt for this role")
+    return hashlib.sha256(template.encode()).hexdigest()[:12]
+
 
 _FIELD = re.compile(r"\{[A-Za-z_][\w.]*\}")
 

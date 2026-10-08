@@ -139,6 +139,10 @@ _MIGRATIONS = (
     # When the latest attempt ended (``stats``): ``updated`` moves again on a re-arm or a
     # reconcile, so it is not a turn's end. NULL on rows that ended before this column.
     ("finished", "ALTER TABLE runs ADD COLUMN finished REAL", ()),
+    # What a turn ran under (#472), written at launch: a hash of the prompt template, and the
+    # model the seat's profile resolved to. NULL on rows from before: unknown.
+    ("prompt_rev", "ALTER TABLE runs ADD COLUMN prompt_rev TEXT", ()),
+    ("model", "ALTER TABLE runs ADD COLUMN model TEXT", ()),
 )
 # Worker stderr (one diagnostic line, or a traceback) goes to <ledger>.workers.log, rotated
 # once to .1 by the host when it passes this size.
@@ -1405,6 +1409,19 @@ class Supervisor:
             with os.fdopen(fd, "w") as out:
                 out.write(_canonical(self.db) + "\n")
             os.replace(temp, presence)
+
+    def record_launch(self, run_id: str, owner: str, prompt_rev: str, model: str) -> None:
+        """The owning worker's record of the prompt revision and resolved model a turn launches
+        with (#472). Written before the seat starts; a write that lands nowhere raises."""
+        def clean(value):
+            return "".join(c if c.isprintable() else " " for c in str(value or ''))[:200]
+        with self._connect() as con:
+            changed = con.execute("UPDATE runs SET prompt_rev=?, model=?, updated=? WHERE id=? "
+                                  "AND owner=? AND state IN ('launching','running')",
+                                  (clean(prompt_rev), clean(model), time.time(), run_id,
+                                   owner)).rowcount
+        if changed != 1:
+            raise ValueError("run ownership lost before the launch was recorded")
 
     def _connect(self):
         pragmas = ("busy_timeout=10000", "journal_mode=WAL", "synchronous=FULL")
@@ -3040,6 +3057,13 @@ class Supervisor:
                                                                  marker['rounds']) is None:
                             raise ValueError('breach marker already claimed or replaced')
                         breach = (state_mod.state_for(loop), marker['rounds'])
+            if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(CONFLICT_KEY):
+                role = 'conflict'
+            elif row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
+                role = 'ci_fix'
+            else:
+                role = row['seat']
+            self.record_launch(run_id, owner, prompts.revision(role), inference.model)
             if unpublished_before(row):
                 prompt = PUBLISH_NUDGE + prompt
             pacing.count_turn(loop['id'], row['seat'])
