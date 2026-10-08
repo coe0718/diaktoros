@@ -105,19 +105,20 @@ def revisions(db: Path, repo: str, since: float) -> dict | None:
         columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
         rev = "r.prompt_rev" if "prompt_rev" in columns else "NULL"
         model = "r.model" if "model" in columns else "NULL"
+        think = "r.thinking" if "thinking" in columns else "NULL"
         try:
             rows = con.execute(
-                f"SELECT {rev} AS prompt_rev, {model} AS model, r.seat, r.pr, x.verdict "
+                f"SELECT {rev} AS prompt_rev, {model} AS model, {think} AS thinking, r.seat, r.pr, x.verdict "
                 "FROM runs r LEFT JOIN review_receipts x ON x.run_id=r.id AND x.state='posted' "
                 "WHERE r.repo=? AND r.created>=?", (repo, since)).fetchall()
         except sqlite3.OperationalError:
             rows = con.execute(
-                f"SELECT {rev} AS prompt_rev, {model} AS model, r.seat, r.pr, NULL AS verdict "
+                f"SELECT {rev} AS prompt_rev, {model} AS model, {think} AS thinking, r.seat, r.pr, NULL AS verdict "
                 "FROM runs r WHERE r.repo=? AND r.created>=?", (repo, since)).fetchall()
     finally:
         con.close()
     out = {}
-    for kind in ("prompt_rev", "model"):
+    for kind in ("prompt_rev", "model", "thinking"):
         groups: dict = {}
         for row in rows:
             g = groups.setdefault(row[kind] or "unknown",
@@ -307,7 +308,8 @@ def text(report: dict) -> str:
     else:
         out += ["Turns (run ledger: 'ran' is a succeeded turn's own time, 'waited' is queued "
                 "until it started)", *_table(TURN_HEAD, _turn_rows(report))]
-    for kind, title in (("prompt_rev", "prompt revision"), ("model", "model")):
+    for kind, title in (("prompt_rev", "prompt revision"), ("model", "model"),
+                        ("thinking", "thinking")):
         groups = (report.get("revisions") or {}).get(kind)
         if groups:
             rows = [[key, str(g["turns"]),

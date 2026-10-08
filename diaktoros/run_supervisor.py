@@ -143,6 +143,9 @@ _MIGRATIONS = (
     # model the seat's profile resolved to. NULL on rows from before: unknown.
     ("prompt_rev", "ALTER TABLE runs ADD COLUMN prompt_rev TEXT", ()),
     ("model", "ALTER TABLE runs ADD COLUMN model TEXT", ()),
+    # The thinking level the turn ran at (#513), as the proxy saw its first model request
+    # after the clamp: budget:<tokens>, effort:<level> or off. NULL: unknown.
+    ("thinking", "ALTER TABLE runs ADD COLUMN thinking TEXT", ()),
 )
 # Worker stderr (one diagnostic line, or a traceback) goes to <ledger>.workers.log, rotated
 # once to .1 by the host when it passes this size.
@@ -1422,6 +1425,16 @@ class Supervisor:
                                    owner)).rowcount
         if changed != 1:
             raise ValueError("run ownership lost before the launch was recorded")
+
+    def record_thinking(self, run_id: str, owner: str, thinking) -> None:
+        """The thinking level the proxy saw on the turn's first request (#513). Nothing to
+        record (no request seen, or a level it cannot tell) writes NULL: unknown, and a retry
+        does not keep an earlier attempt's level."""
+        value = ("".join(c if c.isprintable() else " " for c in thinking)[:64] or None
+                 if isinstance(thinking, str) else None)
+        with self._connect() as con:
+            con.execute("UPDATE runs SET thinking=? WHERE id=? AND owner=?",
+                        (value, run_id, owner))
 
     def _connect(self):
         pragmas = ("busy_timeout=10000", "journal_mode=WAL", "synchronous=FULL")
@@ -3129,6 +3142,10 @@ class Supervisor:
             if isinstance(exc, trusted_turn.TurnDenied) and 'did not shut down' in str(exc):
                 stopped = False  # a live broker thread may still write: quarantine
         finally:
+            try:
+                self.record_thinking(run_id, owner, observed.get('thinking'))
+            except Exception:
+                pass    # a lost note must not change how the turn ends
             state = self.complete_uncertain(
                 run_id, owner, rc, error, stopped=stopped, retry=retry,
                 detail=output_detail(observed.get('stdout'), observed.get('stderr')),

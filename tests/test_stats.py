@@ -135,6 +135,37 @@ class Ledger(unittest.TestCase):
         self.assertIn("By prompt revision", stats.text(report))
         self.assertIn("m1", stats.text(report))
 
+    def test_stats_group_by_thinking_and_unknown_is_not_off(self):
+        since = NOW - 7 * DAY
+        for i in range(4):
+            self.row("reviewer", "succeeded", NOW - 100 - i, NOW - 90 - i, NOW - 30 - i)
+        with ledger.connect(self.db) as con:
+            for delivery, level in (("d1", "budget:8000"), ("d2", "off")):
+                con.execute("UPDATE runs SET thinking=? WHERE delivery=?", (level, delivery))
+        got = stats.revisions(self.db, REPO, since)
+        self.assertEqual({k: g["turns"] for k, g in got["thinking"].items()},
+                         {"budget:8000": 1, "off": 1, "unknown": 2})
+        report = {"repo": REPO, "loop": "w", "since": since, "until": NOW,
+                  "turns": stats.ledger(self.db, REPO, since), "revisions": got}
+        self.assertIn("By thinking", stats.text(report))
+        self.assertIn("budget:8000", stats.text(report))
+        legacy = self.db.with_name("legacy3.sqlite")
+        con = sqlite3.connect(legacy)
+        con.execute("CREATE TABLE runs (seat TEXT, state TEXT, repo TEXT, created REAL, pr INTEGER)")
+        con.execute("INSERT INTO runs VALUES ('reviewer','succeeded',?,?,1)", (REPO, NOW - 100))
+        con.commit()
+        con.close()
+        self.assertEqual(stats.revisions(legacy, REPO, 0)["thinking"]["unknown"]["turns"], 1)
+
+    def test_old_ledger_gains_the_thinking_column(self):
+        old = self.db.with_name("old2.sqlite")
+        Supervisor(old)
+        with ledger.connect(old) as con:
+            con.execute("ALTER TABLE runs DROP COLUMN thinking")
+        Supervisor(old)
+        with ledger.connect(old) as con:
+            self.assertIn("thinking", {r[1] for r in con.execute("PRAGMA table_info(runs)")})
+
     def test_an_old_ledger_without_the_columns_reads_as_unknown(self):
         legacy = self.db.with_name("legacy2.sqlite")
         con = sqlite3.connect(legacy)
@@ -182,6 +213,19 @@ class Finished(sm.Worker):
         self.assertRegex(rev, r"^[0-9a-f]{12}$")
         self.assertTrue(model)
         self.assertEqual(seat, "reviewer")
+
+    def test_a_turn_records_the_thinking_level_the_proxy_saw(self):
+        def seen(level):
+            def turn(kw):
+                kw["observed"]["thinking"] = level
+                return 0
+            return turn
+        for level in ("budget:8000", "effort:high", "off", None):
+            with self.subTest(level=level):
+                self.run_seat("reviewer", turn=seen(level))
+                with ledger.connect(self.root / "ledger.sqlite") as con:
+                    got = con.execute("SELECT thinking FROM runs ORDER BY rowid DESC").fetchone()[0]
+                self.assertEqual(got, level)
 
 
 for _name in [n for n in dir(sm.Worker) if n.startswith("test_")]:
