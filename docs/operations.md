@@ -232,6 +232,8 @@ A sweep considers open, non-draft PRs on the configured base by an allowlisted f
 is not in `review_only`. It reads required-check results and queues at most one CI-fix
 turn per PR head. The host rechecks CI before launch and gives the fixer up to three
 failing job logs, including the failing step and bounded log tails, as untrusted data.
+GitHub serves each log through a redirect to its log storage; the host follows it over HTTPS
+only, and never sends the reader's token to the storage host.
 The fixer may propose a scoped patch through the normal broker; the loop does not rerun
 GitHub Actions, modify `.github/` workflow files or merge the PR. A green result on a later
 head ends the repair path naturally.
