@@ -196,6 +196,10 @@ What to do:
      tested in this repository: weigh that reason, and when it holds up, accept it and say so
      instead of blocking; a reason that does not hold up blocks. Any blocking finding makes
      the verdict REQUEST_CHANGES.
+   - **Number every blocking finding** on its own line, `F1: path/to/file.py: what is wrong`.
+     On a later round, give every finding still open its state on its own line — `F1: fixed`,
+     `F2: open` or `F3: withdrawn` — or the broker refuses the review. A new finding must name a
+     file changed in that round, or say `missed earlier` (the stats count those against you).
    - **issue** — everything else (usually P2/P3): real, but not worth another round. With only
      issue-tier findings the verdict is APPROVE. File each one yourself, before the review,
      through the broker's `file_issue` command (below): a one-line title, the finding with its
