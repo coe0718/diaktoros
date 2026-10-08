@@ -45,6 +45,62 @@ class Corpus(unittest.TestCase):
             with self.assertRaises(corpus.CorpusError):
                 corpus.load(d)
 
+    def test_non_string_finding_fields_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            (d / "a.json").write_text(json.dumps({"id": "a", "pr": 1, "findings": [{"id": "x", "pattern": 5}]}))
+            with self.assertRaises(corpus.CorpusError):
+                corpus.load(d)
+
+
+class LiveReview(unittest.TestCase):
+    def _run(self, case, submissions):
+        from unittest import mock
+        from diaktoros import gh, run_supervisor, selftest, trusted_turn
+        change = mock.Mock(diff="THE DIFF")
+        seen = {}
+
+        def fake_turn(loop, scope, **kw):
+            seen["scope"], seen["kw"] = scope, kw
+            kw["observed"]["submissions"] = submissions
+        reviewer = mock.Mock(upstream="u", key="k", model="m", api_mode="a",
+                             proxy_model="pm", client_identity="ci")
+        reviewer.credential_provider.return_value = "cred"
+        settings = {"source": "/s", "venv": "/v", "runtime": "/r", "rust": "/x"}
+        loop = {"repo": "o/r"}
+        with mock.patch.object(gh, "fetch", return_value=({"head": {"sha": "TIP", "ref": "br"}}, None)), \
+                mock.patch.object(gh, "reviews", return_value=[]), \
+                mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
+                mock.patch.object(run_supervisor, "pr_change", return_value=change) as pc, \
+                mock.patch.object(run_supervisor, "isolated_prompt", return_value="PROMPT"), \
+                mock.patch.object(selftest, "ledger_path", return_value="/l"), \
+                mock.patch.object(selftest, "_work_root", return_value="/w"), \
+                mock.patch.object(trusted_turn, "run_turn", side_effect=fake_turn):
+            review = corpus.live_review(loop, settings, reviewer, 60)
+            try:
+                body = review(case)
+            finally:
+                seen["row"] = pc.call_args[0][1] if pc.call_args else None
+        return body, seen
+
+    def test_turn_runs_no_write_at_the_case_head_and_returns_last_body(self):
+        body, seen = self._run({"id": "c", "pr": 7, "head": "OLD", "findings": []},
+                               [{"body": "first"}, {"body": "SQL injection"}])
+        self.assertEqual(body, "SQL injection")
+        self.assertIs(seen["kw"]["no_write"], True)
+        self.assertEqual(seen["scope"].head, "OLD")
+        self.assertEqual(seen["row"]["head"], "OLD")
+        self.assertEqual(seen["kw"]["review_diff"], "THE DIFF")
+        self.assertEqual(seen["kw"]["prompt"], "PROMPT")
+
+    def test_head_defaults_to_the_prs_current_head(self):
+        _, seen = self._run({"id": "c", "pr": 7, "findings": []}, [{"body": "x"}])
+        self.assertEqual(seen["scope"].head, "TIP")
+
+    def test_no_submission_raises(self):
+        with self.assertRaises(corpus.CorpusError):
+            self._run({"id": "c", "pr": 7, "findings": []}, [])
+
 
 if __name__ == "__main__":
     unittest.main()

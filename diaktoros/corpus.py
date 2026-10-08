@@ -45,7 +45,9 @@ def load(directory: Path) -> list[dict]:
         if not isinstance(findings, list) or not findings:
             raise CorpusError(f"{path.name}: needs at least one finding")
         for finding in findings:
-            if not isinstance(finding, dict) or not finding.get("id") or not finding.get("pattern"):
+            if (not isinstance(finding, dict) or not isinstance(finding.get("id"), str)
+                    or not isinstance(finding.get("pattern"), str)
+                    or not finding["id"] or not finding["pattern"]):
                 raise CorpusError(f"{path.name}: each finding needs an id and a pattern")
             try:
                 re.compile(finding["pattern"])
