@@ -150,6 +150,17 @@ SETTINGS_SCHEMA: dict = {
                         "description": "Agent steps one fixer turn (and an issue fix) may take, "
                                        "8-200. Blank = not set here: the loop keeps its own value "
                                        "or the role default"},
+    "auto_fix_labels": {"label": "Auto-fix labels (comma-separated)", "type": "str", "default": "",
+                        "description": "Triage labels (from triage.labels) that hand an issue to "
+                                       "the fixer without a maintainer, e.g. P3, documentation. "
+                                       "Needs the loop's triage.fix_label. P0-P2 are never "
+                                       "auto-offered. Blank = not set here: the loop keeps its "
+                                       "own value (empty by default: person-only trigger)"},
+    "auto_fix_daily": {"label": "Auto-fix daily cap (issues)", "type": "str", "default": "",
+                       "description": "Automatic issue fixes per loop per local day, 1-1000 "
+                                      "(default 25). Needs the loop's triage.auto_fix_labels. "
+                                      "Blank = not set here: the loop keeps its own value or "
+                                      "the default"},
     "fix_daily_turns": {"label": "Issue-fix daily cap (turns)", "type": "str", "default": "",
                         "description": "Issue-fix turns per local day, 1-1000. Needs the loop's "
                                        "triage.fix_label. Blank = not set here: the loop keeps "
@@ -369,6 +380,20 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
                               "to cap")
         triage["fix_daily_turns"] = _check_daily_turns(
             _form_int(raw_cap), "triage.fix_daily_turns", "settings")
+        overlaid["triage"] = triage
+    raw_auto = _form_value(settings, "auto_fix_labels")
+    raw_auto_cap = _form_value(settings, "auto_fix_daily")
+    if raw_auto is not None or raw_auto_cap is not None:
+        triage = dict(overlaid.get("triage") or loop_raw.get("triage") or {})
+        if not triage.get("fix_label"):
+            raise ConfigError("settings: auto_fix_labels and auto_fix_daily need the loop's "
+                              "triage.fix_label — the automatic hand-off is the same path")
+        if raw_auto is not None:
+            triage["auto_fix_labels"] = [x.strip() for x in str(raw_auto).split(",")
+                                         if x.strip()]
+        if raw_auto_cap is not None:
+            triage["auto_fix_daily"] = _check_daily_turns(
+                _form_int(raw_auto_cap), "triage.auto_fix_daily", "settings")
         overlaid["triage"] = triage
     # Seat identity rides the same push: the form names who serves each seat, and a blank field
     # stays blank rather than unsetting what the loop already answered for itself.
@@ -1067,7 +1092,14 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
 # run is keyed by the issue number (``pr``) with seat ``triage`` and turn key ``triage``.
 TRIAGE_HEAD = "issue"
 TRIAGE_KEYS = {"route", "profile", "authors", "labels", "max_labels", "comment", "login",
-               "fix_label", "maintainers", "fix_daily_turns"}
+               "fix_label", "maintainers", "fix_daily_turns", "auto_fix_labels",
+               "auto_fix_daily"}
+# Automatic issue fixes per loop per local day when the loop sets none (#232).
+DEFAULT_AUTO_FIX_DAILY = 25
+# Priorities a person owns: an issue carrying one is never auto-offered (#232).
+AUTO_FIX_BLOCKED = re.compile(r"P[012]\Z", re.IGNORECASE)
+# The deepest filed-issue lineage (#247) still auto-offered: past it a person must hand it over.
+AUTO_FIX_MAX_DEPTH = 2
 # Issue-fix turns per local day when the loop sets none (#247): the chain bound. Every issue fix
 # opens a new PR, so the per-PR verdict cap never limits how many happen; this does.
 DEFAULT_FIX_DAILY_TURNS = 10
@@ -1099,6 +1131,27 @@ def issue_fixes_enabled(loop: dict) -> bool:
     and the repository's unattended fixer pushes, which the operator opts into separately."""
     return bool(triage_enabled(loop) and (loop.get("triage") or {}).get("fix_label")
                 and unattended_fixer_push_enabled(loop))
+
+
+def auto_fix_labels(loop: dict) -> set[str]:
+    """The triage labels (casefolded) that hand an issue to the fixer automatically (#232)."""
+    if not issue_fixes_enabled(loop):
+        return set()
+    return {str(x).casefold() for x in (loop.get("triage") or {}).get("auto_fix_labels") or []}
+
+
+def auto_fix_daily(loop: dict) -> int:
+    """Automatic issue fixes per loop per local day: ``triage.auto_fix_daily``, else 25."""
+    value = (loop.get("triage") or {}).get("auto_fix_daily")
+    return (value if isinstance(value, int) and not isinstance(value, bool) and value > 0
+            else DEFAULT_AUTO_FIX_DAILY)
+
+
+def auto_fix_eligible(loop: dict, present) -> bool:
+    """Whether an issue with the labels ``present`` may be auto-offered: one of the
+    ``auto_fix_labels`` and none of P0/P1/P2 (#232)."""
+    names = {str(x).casefold() for x in present}
+    return bool(names & auto_fix_labels(loop)) and not any(AUTO_FIX_BLOCKED.match(x) for x in names)
 
 
 def maintainers(loop: dict) -> set[str]:
@@ -1175,9 +1228,29 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
         if raw.get("fix_daily_turns") not in (None, ""):
             out["fix_daily_turns"] = _check_daily_turns(raw["fix_daily_turns"],
                                                         "triage.fix_daily_turns", where)
+        auto = raw.get("auto_fix_labels")
+        if auto not in (None, []):
+            known = {x.casefold(): x for x in out["labels"]}
+            if (not isinstance(auto, list) or not all(isinstance(x, str) for x in auto)
+                    or any(x.casefold() not in known for x in auto)):
+                raise ConfigError(f"{where}: triage.auto_fix_labels must list labels from "
+                                  "triage.labels — the ones the triage seat applies")
+            if any(AUTO_FIX_BLOCKED.match(x) for x in auto):
+                raise ConfigError(f"{where}: triage.auto_fix_labels may not hold P0, P1 or P2: "
+                                  "a person decides those")
+            out["auto_fix_labels"] = list(dict.fromkeys(known[x.casefold()] for x in auto))
+        if raw.get("auto_fix_daily") not in (None, ""):
+            if not out.get("auto_fix_labels"):
+                raise ConfigError(f"{where}: triage.auto_fix_daily needs triage.auto_fix_labels")
+            out["auto_fix_daily"] = _check_daily_turns(raw["auto_fix_daily"],
+                                                       "triage.auto_fix_daily", where)
     elif raw.get("maintainers") not in (None, []):
         raise ConfigError(f"{where}: triage.maintainers only means something with "
                           "triage.fix_label")
+    elif (raw.get("auto_fix_labels") not in (None, [])
+          or raw.get("auto_fix_daily") not in (None, "")):
+        raise ConfigError(f"{where}: triage.auto_fix_labels and auto_fix_daily need "
+                          "triage.fix_label — the automatic hand-off is the same path")
     who = out.get("login") or str((loop["seats"].get("reviewer") or {}).get("login") or "").lower()
     if not who:
         raise ConfigError(f"{where}: triage needs a login to label as (triage.login, or the "

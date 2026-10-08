@@ -1074,6 +1074,13 @@ def _write_triage(launch_loop: dict, scope: RunScope, supervisor, labels: list[s
                                  error=f"POST outcome unknown: {_why(exc)}")
         return
     supervisor.triage_status(scope.run_id, "posted", comment_id=comment_id)
+    # #232: the hand-off is the host's, after the triage write is recorded; the seat never
+    # applies fix_label. The live issue is re-read there, so only labels that really landed count.
+    if labels and config.auto_fix_labels(loop):
+        from . import fix_hold, util
+        outcome = fix_hold.auto_offer(loop, scope.number)
+        if outcome:
+            util.log(f"issue #{scope.number}: {outcome}")
 
 
 def _deliver_ruling(launch_loop: dict, scope: RunScope, supervisor, turn_key: str,

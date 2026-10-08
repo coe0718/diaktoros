@@ -627,6 +627,8 @@ may preserve activation; do not assume every update pauses a live hook.
 | `--maintainer` | `MAINTAINER` (repeatable) |  | login whose applying --fix-label counts (repeatable) |
 | `--daily-turns` | `DAILY_TURNS` |  | at most this many triage turns per day (0 removes the cap) |
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | at most this many issue-fix turns per day (0 = the default, 10); issue fixes are always capped |
+| `--auto-fix-label` | `AUTO_FIX_LABEL` (repeatable) |  | a triage label that hands an issue to the fixer without a maintainer (#232; repeatable; never P0-P2; '' clears the list) |
+| `--auto-fix-daily` | `AUTO_FIX_DAILY` |  | at most this many automatic issue fixes per day (0 = the default, 25) |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can create or delete repo hooks |
 | `--dry-run` |  |  | show the change, write nothing |
 <!-- /flags -->

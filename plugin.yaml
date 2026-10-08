@@ -131,6 +131,16 @@ config_schema:
     type: str
     default: ""
     description: "Issue-fix turns per local day, 1-1000. Needs the loop's triage.fix_label. Blank = not set here: the loop keeps its own value or the default"
+  auto_fix_labels:
+    label: "Auto-fix labels (comma-separated)"
+    type: str
+    default: ""
+    description: "Triage labels (from triage.labels) that hand an issue to the fixer without a maintainer, e.g. P3, documentation. Needs the loop's triage.fix_label. P0-P2 are never auto-offered. Blank = not set here: the loop keeps its own value (empty by default: person-only trigger)"
+  auto_fix_daily:
+    label: "Auto-fix daily cap (issues)"
+    type: str
+    default: ""
+    description: "Automatic issue fixes per loop per local day, 1-1000 (default 25). Needs the loop's triage.auto_fix_labels. Blank = not set here: the loop keeps its own value or the default"
   review_only:
     label: "Review-only authors (comma-separated)"
     type: str
