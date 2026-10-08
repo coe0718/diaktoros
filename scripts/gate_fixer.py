@@ -214,6 +214,8 @@ def main() -> None:
                         round_no=prior + 1)
         silence(f"#{number} changes requested on a review-only author's PR — returned to {author}")
 
+    if gate.escalated(st.breach_get(number), pr_head):
+        silence(f"#{number} @ {pr_head[:7]} is escalated to adjudication — no fix turn")
     if prior + 1 >= loop["cap"]:
         gate.breach(loop, st, number, pr_head, prior + 1,
                     f"verdict {prior + 1} returned changes requested — loop exhausted "

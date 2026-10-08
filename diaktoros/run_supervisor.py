@@ -467,9 +467,10 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
     if latest is not None and gh.review_state(latest) == 'APPROVED':
         return 'superseded', {}
     counted = gate.verdicts(reviews, loop)
-    if len(counted) < loop['cap']:
-        return 'superseded', {}
     marker = state_mod.state_for(loop).breach_get(row['pr'])
+    # The operator's escalation (#459) holds this head for a ruling in place of a spent cap.
+    if len(counted) < loop['cap'] and not gate.escalated(marker, row['head']):
+        return 'superseded', {}
     if (not isinstance(marker, dict) or marker.get('pr') != row['pr']
             or marker.get('head') != row['head'] or marker.get('rounds') != rounds
             or marker.get('status') not in ('delivery-pending', 'awaiting-adjudication')):
@@ -2381,6 +2382,17 @@ class Supervisor:
                     read_error = f'{type(exc).__name__}: {exc}'[:200]
             if row['seat'] not in self.capacity:
                 continue  # a worker spawned with another seat set never claims this row
+            if self.production_config and row['seat'] in ('reviewer', 'fixer') and not superseded:
+                # The operator escalated this head (#459): it waits for a ruling, so a review or
+                # fix queued for it is retired, as a spent cap would have stopped it.
+                from . import config, gate, state as state_mod
+                try:
+                    escalated_loop = config.by_repo(row['repo'])
+                    if escalated_loop is not None and gate.escalated(
+                            state_mod.state_for(escalated_loop).breach_get(row['pr']), row['head']):
+                        superseded = 'escalated to adjudication at this head'
+                except Exception as exc:
+                    read_error = read_error or f'{type(exc).__name__}: {exc}'[:200]
             if self.production_config and row['seat'] == 'adjudicator':
                 from . import config
                 try:

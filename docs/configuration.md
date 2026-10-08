@@ -239,7 +239,7 @@ Enabling is **host-operator consent**, not proof that a PR owner or repository m
 | Key | Default | Accepted value and behavior |
 |---|---|---|
 | `adjudicator` | `{}` | Disabled unless it has a route. A profile-only block normalizes to disabled; a nontrivial route-less block is refused. |
-| `adjudicator.route` | None | Enables an isolated ruling when the cap is spent. The legacy gateway route remains silent: it does not run a credential-owning adjudicator agent. |
+| `adjudicator.route` | None | Enables an isolated ruling when the cap is spent, or when the operator escalates a PR sooner with `escalate --pr N`. The legacy gateway route remains silent: it does not run a credential-owning adjudicator agent. |
 | `adjudicator.profile` | `default` when enabled | Profile used to resolve the ruling model; installation requires independence from both working seats. |
 | `seats.adjudicator.login` | Unset | Optional fourth GitHub identity used **only** to also post the ruling as a PR comment. Needs its own token mapping and private file. |
 | `seats.adjudicator.concurrency` | `1` | Independent capacity, not inherited from loop concurrency. |

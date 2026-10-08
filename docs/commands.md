@@ -93,6 +93,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | label new issues automatically | [`triage`](#triage) |
 | find out why a PR is not moving | [`explain`](#explain) |
 | ask for a fresh review of a PR | [`review`](#review) |
+| send a PR to the adjudicator now | [`escalate`](#escalate) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
 | start a queued turn now | [`drain`](#drain) |
@@ -863,6 +864,35 @@ no `--loop` names one, or the gate did not finish within 120 seconds.
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
 | `--pr` | `PR` | **required** | the pull request to review |
 | `--another-round` |  |  | allow exactly one more verdict on a review-only PR that has reached its review cap (maintainer or operator only) |
+<!-- /flags -->
+
+### escalate
+
+Sends one PR to the adjudicator **now**, whatever its verdict count: the reviewer and the fixer
+are talking past each other, or you want to see a ruling. The PR gets the same breach marker and
+isolated ruling turn a spent cap gives it, marked as your escalation, and it's parked at its
+current head as if its cap were spent:
+- the reviewer and the fixer start nothing more there;
+- a review or fix already queued for that head is retired;
+- the watchdog retries a pending delivery;
+- `explain` shows it parked.
+
+A new head (someone pushes) supersedes the escalation.
+
+```bash
+hermes dk escalate --loop "<loop-id>" --pr 12 --reason "the fix and the finding disagree on scope"
+```
+
+It's refused unless the loop has an adjudicator, and only for an open, ready PR by a fixer that
+has at least one verdict, isn't approved at its head, isn't already awaiting a ruling and has no
+turn running. Exit `1` means it was refused, and the line says why.
+
+<!-- flags:escalate -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
+| `--pr` | `PR` | **required** | the pull request to escalate |
+| `--reason` | `REASON` |  | why, for the ruling's record (one line) |
 <!-- /flags -->
 
 ### trace
