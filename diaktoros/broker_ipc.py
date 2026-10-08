@@ -502,6 +502,14 @@ class RunBroker:
             # verdict in the same turn. A COMMENT would neither wake the fixer nor cue a merge.
             raise ProtocolError("review verdict must be APPROVE or REQUEST_CHANGES with a non-empty "
                                 "body (COMMENT is not a verdict); nothing was written, resubmit")
+        if operation == "review":
+            # Numbered findings (#475): every open one accounted for, new ones on changed code.
+            # Before the capability is consumed, so the reviewer can resubmit in the same turn.
+            from . import findings, state as state_mod
+            entry = state_mod.state_for(self._loop).findings_get(self.scope.number)
+            reason = findings.check(self._loop, entry, self.scope.number, self.scope.head, body)
+            if reason:
+                raise ProtocolError(reason)
         if operation == "review" and verdict == "APPROVE":
             reason = self._partial_view()
             if reason:
@@ -576,6 +584,12 @@ class RunBroker:
                                     head=head, role=self.scope.role, branch=self.scope.branch,
                                     operation=operation, verdict=verdict, body=body,
                                     require_verdict=not after_push)
+        if operation == 'review':
+            try:
+                from . import findings
+                findings.record(self._loop, self.scope.number, self.scope.head, body)
+            except Exception:
+                pass  # the review is already written; state is best effort
         self.completed = True
         return result
 

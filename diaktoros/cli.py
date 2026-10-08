@@ -3837,6 +3837,9 @@ def cmd_explain(args) -> int:
         # it); only an operator can end it, so it is said here rather than left to the cap.
         for line in _view_lines(loop, args.pr, report.get("head")):
             print(f"  {'view:':<12}{line}")
+        from . import findings as findings_mod
+        for text in findings_mod.lines(st.findings_get(args.pr)):
+            print(f"  {'finding:':<12}{text}")
         print(f"  {'escalation:':<12}{report['escalation']}")
         print(f"  {'hooks:':<12}{report['hooks']}")
         print(f"  {'sweep:':<12}{report['sweep']}")
@@ -5046,7 +5049,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--observer-events", default="",
                           help="comma-separated transitions to send, from "
                                "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                               "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated (default: all)")
+                               "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red "
+                               "(default: all)")
         init.add_argument("--observer-digest-min", type=int, default=0,
                           help="batch the feed into one message per this many minutes "
                                "(0 = one notice per transition)")
@@ -5389,7 +5393,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--observer-events", default=None,
                             help="comma-separated transitions to send, from "
                                  "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                                 "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated (blank = all)")
+                                 "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red "
+                                 "(blank = all)")
         change.add_argument("--observer-digest-min", type=int, default=None,
                             help="batch the feed into one message per N minutes (0 = per "
                                  "transition)")

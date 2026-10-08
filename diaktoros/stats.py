@@ -92,6 +92,48 @@ def ledger(db: Path, repo: str, since: float) -> dict | None:
     return seats
 
 
+def revisions(db: Path, repo: str, since: float) -> dict | None:
+    """Turns, verdicts and rounds grouped by prompt revision and by resolved model (#472). Rows
+    from before the columns (or never launched) group as "unknown". A verdict is the review a
+    turn posted (its receipt); rounds are the most turns one PR and seat took within the group."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        con.row_factory = sqlite3.Row
+        columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
+        rev = "r.prompt_rev" if "prompt_rev" in columns else "NULL"
+        model = "r.model" if "model" in columns else "NULL"
+        try:
+            rows = con.execute(
+                f"SELECT {rev} AS prompt_rev, {model} AS model, r.seat, r.pr, x.verdict "
+                "FROM runs r LEFT JOIN review_receipts x ON x.run_id=r.id AND x.state='posted' "
+                "WHERE r.repo=? AND r.created>=?", (repo, since)).fetchall()
+        except sqlite3.OperationalError:
+            rows = con.execute(
+                f"SELECT {rev} AS prompt_rev, {model} AS model, r.seat, r.pr, NULL AS verdict "
+                "FROM runs r WHERE r.repo=? AND r.created>=?", (repo, since)).fetchall()
+    finally:
+        con.close()
+    out = {}
+    for kind in ("prompt_rev", "model"):
+        groups: dict = {}
+        for row in rows:
+            g = groups.setdefault(row[kind] or "unknown",
+                                  {"turns": 0, "verdicts": Counter(), "prs": Counter(),
+                                   "seats": Counter()})
+            g["turns"] += 1
+            g["seats"][row["seat"]] += 1
+            g["prs"][(row["seat"], row["pr"])] += 1
+            if row["verdict"]:
+                g["verdicts"][str(row["verdict"])] += 1
+        out[kind] = {key: {"turns": g["turns"], "verdicts": dict(g["verdicts"]),
+                           "seats": dict(g["seats"]), "rounds": summary(list(g["prs"].values()))}
+                     for key, g in sorted(groups.items())}
+    return out
+
+
 def _iso(text) -> float | None:
     try:
         return datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
@@ -170,7 +212,13 @@ def collect(loop: dict, db: Path, since: float, with_github: bool,
             now: float | None = None) -> dict:
     now = time.time() if now is None else now
     report = {"repo": loop["repo"], "loop": loop.get("id", ""), "since": since, "until": now,
-              "turns": ledger(db, loop["repo"], since)}
+              "turns": ledger(db, loop["repo"], since),
+              "revisions": revisions(db, loop["repo"], since)}
+    try:
+        from . import findings
+        report["findings_missed"] = findings.missed_count(loop)
+    except Exception:
+        report["findings_missed"] = None
     if with_github:
         report["github"] = github(loop, since)
     return report
@@ -259,6 +307,17 @@ def text(report: dict) -> str:
     else:
         out += ["Turns (run ledger: 'ran' is a succeeded turn's own time, 'waited' is queued "
                 "until it started)", *_table(TURN_HEAD, _turn_rows(report))]
+    for kind, title in (("prompt_rev", "prompt revision"), ("model", "model")):
+        groups = (report.get("revisions") or {}).get(kind)
+        if groups:
+            rows = [[key, str(g["turns"]),
+                     ", ".join(f"{n} {v}" for v, n in sorted(g["verdicts"].items())) or "-",
+                     str(g["rounds"]["max"]) if g["rounds"] else "-"]
+                    for key, g in groups.items()]
+            out += ["", f"By {title} (verdicts posted; rounds = most turns on one PR and seat)",
+                    *_table([title, "turns", "verdicts", "rounds (max)"], rows)]
+    if report.get("findings_missed") is not None:
+        out += ["", f"Findings marked 'missed earlier' by reviewers: {report['findings_missed']}"]
     if "github" in report:
         notes, tables = _github_parts(report["github"])
         out += ["", "GitHub", *notes]

@@ -45,7 +45,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import review_only_conflict  # noqa: E402
-from diaktoros import ci_fix, config, envnames, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
+from diaktoros import ci_fix, config, main_check, envnames, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
 from diaktoros.util import age_min, epoch, log, now_iso  # noqa: E402
 
 TEST = bool(envnames.get("TEST"))
@@ -645,6 +645,24 @@ def retry_fresh_reviews(loop: dict, st: state_mod.LoopState, prs: list, lines: l
             lines.append(f"#{number} fresh review after retarget enqueued ({detail})")
 
 
+
+def base_tip(loop: dict) -> str | None:
+    """The base branch's current commit, or None when it cannot be read.
+
+    A conflict turn merges this, not a PR's ``base.sha`` (the base as of the PR's last update).
+    """
+    from urllib.parse import quote
+    ref = gh.api(loop, f"/repos/{loop['repo']}/git/ref/heads/{quote(loop['base'], safe='/')}",
+                 login=loop["read_token"])
+    obj = ref.get("object") if isinstance(ref, dict) else None
+    sha = obj.get("sha") if isinstance(obj, dict) else None
+    if (not isinstance(ref, dict) or ref.get("ref") != f"refs/heads/{loop['base']}"
+            or not isinstance(obj, dict) or obj.get("type") != "commit"
+            or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha)):
+        return None
+    return sha.lower()
+
+
 def retry_pending_breaches(loop: dict, st: state_mod.LoopState, prs: list,
                            failures: list | None = None) -> None:
     """Retry listed eligible heads only after reviews verify the cap.
@@ -1060,10 +1078,22 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         ci_fix.sweep(loop, st, prs, log)      # #306: a red required check, said once per head
     except Exception as exc:
         log(f"ci sweep failed: {type(exc).__name__}: {exc}")
+    try:
+        main_check.sweep(loop, st, log)       # a required check red on main after merges
+    except Exception as exc:
+        log(f"main check failed: {type(exc).__name__}: {exc}")
     resolving = config.unattended_fixer_push_enabled(loop)
-    for number, head, base_sha, author in conflicts:
+    tip = base_tip(loop) if resolving and conflicts else None
+    for number, head, _pr_base_sha, author in conflicts:
         # A review-only author's PR (#191) is never the fixer's, a conflict included.
         review_only = author in config.review_only(loop)
+        # The turn is pinned to the base branch's tip, not the PR's ``base.sha``: GitHub leaves
+        # that at the base commit of the PR's last update, so a conflict a later merge caused
+        # would be merged against a base that never conflicted ("nothing to resolve").
+        base_sha = tip or ""
+        if resolving and not review_only and not base_sha:
+            log(f"#{number} @ {head[:7]} conflict turn not queued: {loop['base']}'s tip "
+                "unreadable (GitHub read failed); the next sweep retries")
         if resolving and not review_only and re.fullmatch(r"[0-9a-f]{40}", base_sha):
             # #303 stage 3: one resolving fixer turn per (head, base); the ledger's turn key
             # dedups every later sweep. The worker merges and may still hand it to a person
@@ -1073,9 +1103,10 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             try:
                 outcome = gate.enqueue_isolated(loop, "fixer", number, head,
                                                 turn_key=f"{CONFLICT_KEY}{base_sha}")
-                log(f"#{number} @ {head[:7]} conflict with {loop['base']}: fixer {outcome}")
+                log(f"#{number} @ {head[:7]} conflict with {loop['base']} at {base_sha[:7]}: "
+                    f"fixer {outcome}")
             except Exception as exc:
-                log(f"#{number} @ {head[:7]} conflict turn not queued: "
+                log(f"#{number} @ {head[:7]} conflict turn at {base_sha[:7]} not queued: "
                     f"{type(exc).__name__}: {exc}")
         next_review_only = ""
         if review_only:

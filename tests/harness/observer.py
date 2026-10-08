@@ -129,7 +129,10 @@ def group_observer() -> None:
            and block["url"].endswith("/pull/7")), True)
 
     # -- a loop PR that no longer merges into its base is said once per head (#303) ------
-    reset(prs={"7": {**pr(7, head=HEAD_A), "mergeable_state": "dirty"}})
+    # Its ``base.sha`` is stale (the base of its last update, as GitHub reports it after a later
+    # merge into main): the conflict turn must be pinned to main's tip (``c`` * 40), not to it.
+    stale = pr(7, head=HEAD_A)
+    reset(prs={"7": {**stale, "mergeable_state": "dirty", "base": {**stale["base"], "sha": "d" * 40}}})
     observer_route()
     state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
     _, _, err = run("watchdog.py", None, "--loop", "widgets")
@@ -147,8 +150,9 @@ def group_observer() -> None:
            and "resolves it" not in conflict[0]["message"]), True)
     # #303 stage 3: with unattended fixer pushes on, the sweep asks for a resolving fixer turn
     # (held here: the harness has no worker runtime) and still finishes and notifies.
-    check("  the sweep asks for a resolving fixer turn",
-          "conflict with main: fixer" in err or "conflict turn not queued" in err, True)
+    check("  the sweep asks for a resolving fixer turn at main's tip, not the stale base.sha",
+          "conflict with main at ccccccc: fixer" in err
+          or "conflict turn at ccccccc not queued" in err, True)
     run("watchdog.py", None, "--loop", "widgets")
     check("  the next sweep at the same head says nothing new",
           len([p for p in observer_posts() if notice(p)["event"] == "conflict"]), 1)
