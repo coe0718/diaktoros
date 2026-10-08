@@ -63,9 +63,14 @@ class AutoOffer(Base):
         sup = mock.Mock()
         sup.filed_depth.side_effect = lambda repo, n: self.depth
 
+        self.posted, self.bodies = [], {}
+
         def api(loop, path, method="GET", body=None, login=None):
+            if method == "POST":
+                self.posted.append(body["body"])
+                return {"id": 1}
             if "/pulls/" in path:
-                return {"number": self.origin, "state": "open" if self.origin_state == "open"
+                return {"number": int(path.rsplit("/", 1)[1]), "state": "open" if self.origin_state == "open"
                         else "closed", "merged": self.origin_state == "merged"}
             if "/git/ref/" in path:
                 return {"object": {"sha": BASE}}
@@ -115,6 +120,60 @@ class AutoOffer(Base):
         self.depth, self.origin, self.origin_state = 1, 7, "open"
         self.assertIn("held until PR #7", fix_hold.auto_offer(self.loop, 12))
         self.assertEqual(self.enqueued, ["held"])
+
+    def test_same_comments_as_the_label_path(self):
+        # already-fixed and closed-unmerged post the one comment the label path posts
+        self.open_prs = [{"number": 9, "body": "Fixes #12"}]
+        fix_hold.auto_offer(self.loop, 12)
+        self.assertEqual(self.posted, ["PR #9 already fixes this; not handing it to the fixer."])
+        self.posted.clear()
+        self.open_prs, self.origin, self.origin_state = [], 7, "closed"
+        self.assertIn("closed unmerged", fix_hold.auto_offer(self.loop, 12))
+        self.assertEqual(len(self.posted), 1)
+        self.assertIn("PR #7 closed without merging", self.posted[0])
+        self.assertEqual(self.enqueued, [])
+
+    def test_person_issue_naming_an_open_pr_is_held_then_released(self):
+        from diaktoros import state as state_mod
+        self.open_prs = [{"number": 20, "body": ""}]
+        self.live = issue(labels=("P3",), body="Docs for the thing in #20.")
+        self.origin_state = "open"
+        self.assertIn("held until PR #20", fix_hold.auto_offer(self.loop, 12))
+        self.assertEqual(self.enqueued, ["held"])
+        st = state_mod.state_for(self.loop)
+        st.fix_hold_set(12, 20)                       # (hold() is stubbed in this class)
+        self.origin_state = "merged"
+        fix_hold.sweep(self.loop, st)
+        self.assertEqual(self.enqueued[-1], ("issue_fixer", 12))
+        self.assertEqual(st.fix_holds(), {})
+        self.assertEqual(pacing.turns_today(self.loop["id"], fix_hold.AUTO_FIX_SEAT), 1)
+
+    def test_person_issue_naming_a_url_to_an_open_pr_is_held(self):
+        self.open_prs = [{"number": 20, "body": ""}]
+        self.live = issue(labels=("P3",), body=f"https://github.com/{REPO}/pull/20")
+        self.origin_state = "open"
+        self.assertIn("held until PR #20", fix_hold.auto_offer(self.loop, 12))
+
+    def test_person_issue_naming_a_merged_pr_or_an_issue_is_not_held(self):
+        self.open_prs = [{"number": 20, "body": ""}]   # 21 merged, 22 an issue: not in the list
+        for body in ("see #21 and #22", f"see https://github.com/{REPO}/pull/21"):
+            self.live = issue(labels=("P3",), body=body)
+            self.assertIn("auto-offered at", fix_hold.auto_offer(self.loop, 12))
+        self.assertNotIn("held", self.enqueued)
+
+    def test_release_past_the_cap_waits_for_the_next_day(self):
+        from diaktoros import state as state_mod
+        for _ in range(2):
+            pacing.count_turn(self.loop["id"], fix_hold.AUTO_FIX_SEAT)
+        st = state_mod.state_for(self.loop)
+        st.fix_hold_set(12, 20)
+        self.origin_state = "merged"
+        fix_hold.sweep(self.loop, st)
+        self.assertEqual((self.enqueued, st.fix_holds()), ([], {12: 20}))
+        with mock.patch.object(pacing, "_today", lambda now: "2999-01-01"):
+            fix_hold.sweep(self.loop, st)
+        self.assertEqual(self.enqueued, [("issue_fixer", 12)])
+        self.assertEqual(st.fix_holds(), {})
 
 
 class WriteTriageHandoff(Base):
