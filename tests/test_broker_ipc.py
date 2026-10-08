@@ -50,6 +50,10 @@ class BrokerIPCTests(unittest.TestCase):
         self.reviews = [{'id': 41, 'state': 'CHANGES_REQUESTED', 'commit_id': HEAD,
                          'submitted_at': '2026-01-01T00:00:00Z',
                          'user': {'login': 'review'}}]
+        # A PR that closes no issue (#511): the Requirements check reads nothing here.
+        issue_patch = mock.patch("diaktoros.issue_facts.closing_numbers", return_value=[])
+        issue_patch.start()
+        self.addCleanup(issue_patch.stop)
         review_patch = mock.patch.object(gh, 'reviews', side_effect=lambda *args: self.reviews)
         review_patch.start()
         self.addCleanup(review_patch.stop)
