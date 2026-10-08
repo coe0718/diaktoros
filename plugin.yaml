@@ -1,5 +1,5 @@
 name: diaktoros
-version: 0.1.1
+version: 0.2.0
 description: >-
   Diaktoros — bounded, autonomous software maintenance for Hermes. Unattended PR review between
   two agents: a fixer pushes, a different reviewer returns a verdict, the budget is counted in
