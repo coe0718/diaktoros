@@ -97,6 +97,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
 | start a queued turn now | [`drain`](#drain) |
+| check the reviewer still catches known problems | [`corpus`](#corpus) |
 | see which models a seat can use | [`models`](#models) |
 | free disk space | [`cleanup`](#cleanup) |
 | remove a loop | [`uninstall`](#uninstall) |
@@ -752,6 +753,25 @@ It is ignored for ordinary tiny probes. Live turn verdicts never post a review o
 | `--ping` |  |  | ask GitHub to ping each loop hook and report whether the gateway accepted its signature (the selftest's only GitHub write) |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token may ping hooks (admin:repo_hook or repo) |
 | `--timeout` | `TIMEOUT` |  | live turn budget in seconds (default: the loop's reviewer turn_budget_s — the budget the production worker enforces) |
+<!-- /flags -->
+
+### corpus
+
+Golden corpus (#491): replays historical PRs with known P1s through the reviewer and reports,
+per case, which findings were caught and which missed. On demand only (it costs model tokens)
+and no-write, like `selftest --live-turn`. Cases are JSON files in `<state dir>/corpus/`:
+`{"id": "...", "pr": 12, "head": "<sha>", "findings": [{"id": "...", "pattern": "<regex>"}]}`;
+a finding is caught when its regex matches the review body the turn would submit. Each run is
+appended to `<state dir>/corpus_scores.jsonl` with the prompt revision and model. Exit 1 when
+anything was missed; a malformed case file stops the run (exit 2).
+
+<!-- flags:corpus -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id |
+| `--dir` | `DIR` |  | directory of case files (default: corpus/ in the loop's state directory) |
+| `--timeout` | `TIMEOUT` |  | per-case turn budget in seconds (default: the reviewer's) |
+| `--history` |  |  | print the recorded scores and run nothing |
 <!-- /flags -->
 
 ### models
