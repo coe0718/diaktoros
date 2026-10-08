@@ -512,6 +512,11 @@ class RunBroker:
             reason = findings.check(self._loop, entry, self.scope.number, self.scope.head, body)
             if reason:
                 raise ProtocolError(reason)
+            # Requirements of the issue(s) the PR closes (#511); a PR closing none is unaffected.
+            from . import issue_facts
+            reason = issue_facts.check(self._loop, self.scope.number, verdict, body)
+            if reason:
+                raise ProtocolError(reason)
         if operation == "review" and verdict == "APPROVE":
             reason = self._partial_view()
             if reason:

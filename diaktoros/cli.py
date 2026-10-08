@@ -4163,6 +4163,48 @@ def cmd_selftest(args) -> int:
                         ping_login=getattr(args, "admin_token", "") or None)
 
 
+def cmd_corpus(args) -> int:
+    """Replay the golden corpus through the reviewer (no-write) and record the scores (#491)."""
+    from . import corpus, prompts, seat_model, selftest
+    try:
+        loop = config.load_id(args.loop)
+        directory = corpus.corpus_dir(loop, args.dir)
+        cases = corpus.load(directory)
+        scores = config.state_dir(loop) / corpus.SCORES_FILE
+    except (config.ConfigError, corpus.CorpusError) as exc:
+        print(f"cannot run corpus: {doctor._safe_report_text(str(exc))}")
+        return 2
+    if args.history:
+        for entry in corpus.history(scores):
+            print(f"{entry['prompt_rev']}  {entry['model']}  caught {entry['caught']}  "
+                  f"missed {entry['missed']}")
+        return 0
+    if not cases:
+        print(f"no cases in {directory}")
+        return 2
+    try:
+        settings = selftest.check_runtime(selftest.Report(None, selftest.Redactor()),
+                                          selftest.runtime_path())
+        if settings is None:
+            raise corpus.CorpusError("no usable runtime config; run `hermes dk selftest` first")
+        reviewer = seat_model.resolve_seat(loop, "reviewer", settings)
+        review = corpus.live_review(loop, settings, reviewer,
+                                    args.timeout or config.turn_budget(loop, "reviewer"))
+    except Exception as exc:
+        print(f"cannot run corpus: {doctor._safe_report_text(str(exc))}")
+        return 2
+    with selftest.github_read_only(), selftest.worker_tempdir():
+        results = corpus.replay(cases, review)
+    for r in results:
+        print(f"{r['case']}: caught {len(r['caught'])} missed {len(r['missed'])}"
+              + (f" ({', '.join(r['missed'])})" if r["missed"] else "")
+              + (f" [{r['error']}]" if r.get("error") else ""))
+    entry = corpus.record(scores, prompts.revision("reviewer"), reviewer.model, results)
+    print(f"caught {entry['caught']}, missed {entry['missed']} "
+          f"(prompt {entry['prompt_rev']}, model {entry['model']}); recorded in {scores}")
+    return 1 if entry["missed"] else 0
+
+
 def cmd_models(args) -> int:
     """Read-only: what a profile's provider offers, from Hermes's model catalog (issue #32).
 
@@ -5291,6 +5333,19 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="live turn budget in seconds (default: the loop's reviewer "
                                 "turn_budget_s — the budget the production worker enforces)")
         check.set_defaults(func=cmd_selftest)
+
+        corpus_cmd = sub.add_parser("corpus", help="Replay historical PRs with known problems "
+                                                   "through the reviewer (no-write) and score "
+                                                   "what it caught, per prompt revision and model")
+        corpus_cmd.add_argument("--loop", required=True, help="loop id")
+        corpus_cmd.add_argument("--dir", default="",
+                                help="directory of case files (default: corpus/ in the loop's "
+                                     "state directory)")
+        corpus_cmd.add_argument("--timeout", type=int, default=None,
+                                help="per-case turn budget in seconds (default: the reviewer's)")
+        corpus_cmd.add_argument("--history", action="store_true",
+                                help="print the recorded scores and run nothing")
+        corpus_cmd.set_defaults(func=cmd_corpus)
 
         models = sub.add_parser("models", help="Read-only: list the models a seat's Hermes "
                                                "profile's provider offers (Hermes catalog)")

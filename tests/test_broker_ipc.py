@@ -50,6 +50,10 @@ class BrokerIPCTests(unittest.TestCase):
         self.reviews = [{'id': 41, 'state': 'CHANGES_REQUESTED', 'commit_id': HEAD,
                          'submitted_at': '2026-01-01T00:00:00Z',
                          'user': {'login': 'review'}}]
+        # A PR that closes no issue (#511): the Requirements check reads nothing here.
+        issue_patch = mock.patch("diaktoros.issue_facts.closing_numbers", return_value=[])
+        issue_patch.start()
+        self.addCleanup(issue_patch.stop)
         review_patch = mock.patch.object(gh, 'reviews', side_effect=lambda *args: self.reviews)
         review_patch.start()
         self.addCleanup(review_patch.stop)
@@ -94,6 +98,21 @@ class BrokerIPCTests(unittest.TestCase):
         self.assertEqual(json.loads(audit)["head"], HEAD)
         self.assertNotIn("DUMMY_SECRET", audit)
         self.assertNotIn("DUMMY_SECRET", str(self.send(server, self.review())))
+
+    def test_linked_issue_review_without_requirements_is_refused_then_resubmittable(self):
+        # #511: through the real request path, for a PR that closes an issue.
+        server = self.start()
+        with mock.patch("diaktoros.issue_facts.closing_numbers", return_value=[5]):
+            refused = self.send(server, self.review())
+            self.assertFalse(refused["ok"])
+            self.assertIn("Requirements", refused["error"])
+            self.assertNotIn("POST", [c[1] for c in self.calls])  # nothing written
+            notmet = {"operation": "review", "verdict": "APPROVE",
+                      "body": "## Requirements\n- one: not met\n\nNot verified: nothing\n"}
+            self.assertIn("not met", self.send(server, notmet)["error"])
+            good = {"operation": "review", "verdict": "APPROVE",
+                    "body": "## Requirements\n- one: met (test_x)\n\nNot verified: nothing\n"}
+            self.assertTrue(self.send(server, good)["ok"])   # capability was not consumed
 
     def test_arbitrary_github_response_is_not_relayed(self):
         server = self.start()

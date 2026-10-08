@@ -27,6 +27,14 @@ class FixerRules(unittest.TestCase):
                 self.assertIn("**Say what can't fire.**", text)
                 self.assertIn("Don't ship it as if it works everywhere", text)
 
+    def test_the_rules_are_written_once(self):
+        # Rule 1 applied to the rules themselves: one text both prompts are built from, so the
+        # issue-fix and fix-round copies cannot drift apart.
+        source = (Path(prompts.__file__)).read_text()
+        self.assertEqual(source.count("Three rules for the code you write"), 1)
+        self.assertIn(prompts.code_rules("fix", "your answers"), prompts.ISOLATED_FIXER)
+        self.assertIn(prompts.code_rules("issue", "the PR description"), prompts.ISOLATED_ISSUE_FIX)
+
 
 class ReviewerRule(unittest.TestCase):
     def test_reviewer_prompt_demands_the_line(self):
