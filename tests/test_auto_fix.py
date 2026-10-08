@@ -117,5 +117,51 @@ class AutoOffer(Base):
         self.assertEqual(self.enqueued, ["held"])
 
 
+class WriteTriageHandoff(Base):
+    """_write_triage calls auto_offer only after the triage write is recorded as posted."""
+
+    def setUp(self):
+        super().setUp()
+        self.raw["triage"].update(labels=["bug", "P3"], auto_fix_labels=["P3"])
+        self.loop = config.normalize(self.raw)
+        self.sup = mock.Mock()
+        self.scope = mock.Mock(repo=REPO, number=12, run_id="r1")
+        self.offers = []
+
+    def run_write(self, labels=("P3",), post=None, auth=None):
+        from diaktoros import broker, broker_ipc
+        post = post or mock.Mock(return_value=77)
+        patches = [
+            mock.patch.object(config, "by_repo", lambda repo: self.loop),
+            mock.patch.object(config, "triage_enabled", lambda loop: True),
+            mock.patch.object(broker, "authorize_triage", auth or mock.Mock(return_value="bot")),
+            mock.patch.object(broker, "post_triage", post),
+            mock.patch.object(fix_hold, "auto_offer",
+                              lambda loop, n: self.offers.append(n) or "ok"),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        broker_ipc._write_triage(self.loop, self.scope, self.sup, list(labels), "body")
+
+    def test_posted_write_invokes_offer(self):
+        self.run_write()
+        self.assertEqual(self.offers, [12])
+        self.sup.triage_status.assert_called_with("r1", "posted", comment_id=77)
+
+    def test_uncertain_write_does_not_offer(self):
+        self.run_write(post=mock.Mock(side_effect=RuntimeError("boom")))
+        self.assertEqual(self.offers, [])
+
+    def test_denied_write_does_not_offer(self):
+        from diaktoros import broker
+        self.run_write(auth=mock.Mock(side_effect=broker.BrokerDenied("no")))
+        self.assertEqual(self.offers, [])
+
+    def test_no_labels_does_not_offer(self):
+        self.run_write(labels=())
+        self.assertEqual(self.offers, [])
+
+
 if __name__ == "__main__":
     unittest.main()
