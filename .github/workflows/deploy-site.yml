@@ -18,10 +18,12 @@ permissions:
   pages: write
   id-token: write
 
-# One deploy at a time, the newest push last: a slower older run can never land on top.
+# One deploy at a time, the newest push last: a slower older run can never land on top. A
+# deploy already running finishes (cancelling one mid-publish leaves an errored deployment);
+# of the runs waiting behind it only the newest is kept.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
