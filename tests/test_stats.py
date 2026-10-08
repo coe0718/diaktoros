@@ -106,6 +106,57 @@ class Ledger(unittest.TestCase):
         con.close()
         self.assertEqual(stats.ledger(legacy, REPO, 0)["reviewer"]["ran"]["mean"], 60)
 
+    def test_prompt_revision_changes_with_the_template(self):
+        from diaktoros import prompts
+        before = prompts.revision("reviewer")
+        with mock.patch.dict(prompts.ISOLATED, {"reviewer": prompts.ISOLATED["reviewer"] + "x"}):
+            self.assertNotEqual(prompts.revision("reviewer"), before)
+        self.assertNotEqual(prompts.revision("fixer"), before)
+
+    def test_stats_group_by_prompt_revision_and_model(self):
+        since = NOW - 7 * DAY
+        self.row("reviewer", "succeeded", NOW - 100, NOW - 90, NOW - 30)       # old row: unknown
+        self.row("reviewer", "succeeded", NOW - 200, NOW - 190, NOW - 130)
+        self.row("reviewer", "succeeded", NOW - 300, NOW - 290, NOW - 230)
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET prompt_rev='aaa', model='m1' WHERE delivery IN ('d2','d3')")
+            con.execute("UPDATE runs SET pr=5, head=delivery WHERE delivery IN ('d2','d3')")
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,verdict,"
+                        "created) SELECT id,'posted','g',1,'APPROVE',created FROM runs "
+                        "WHERE delivery='d2'")
+        got = stats.revisions(self.db, REPO, since)
+        self.assertEqual(set(got["prompt_rev"]), {"aaa", "unknown"})
+        self.assertEqual(got["prompt_rev"]["aaa"]["turns"], 2)
+        self.assertEqual(got["prompt_rev"]["aaa"]["verdicts"], {"APPROVE": 1})
+        self.assertEqual(got["prompt_rev"]["aaa"]["rounds"]["max"], 2)
+        self.assertEqual(got["model"]["unknown"]["turns"], 1)
+        report = {"repo": REPO, "loop": "w", "since": since, "until": NOW,
+                  "turns": stats.ledger(self.db, REPO, since), "revisions": got}
+        self.assertIn("By prompt revision", stats.text(report))
+        self.assertIn("m1", stats.text(report))
+
+    def test_an_old_ledger_without_the_columns_reads_as_unknown(self):
+        legacy = self.db.with_name("legacy2.sqlite")
+        con = sqlite3.connect(legacy)
+        con.execute("CREATE TABLE runs (seat TEXT, state TEXT, repo TEXT, created REAL, pr INTEGER)")
+        con.execute("INSERT INTO runs VALUES ('reviewer','succeeded',?,?,1)", (REPO, NOW - 100))
+        con.commit()
+        con.close()
+        got = stats.revisions(legacy, REPO, 0)
+        self.assertEqual(got["prompt_rev"]["unknown"]["turns"], 1)
+        self.assertEqual(got["model"]["unknown"]["turns"], 1)
+
+    def test_old_ledger_is_migrated_additively(self):
+        old = self.db.with_name("old.sqlite")
+        Supervisor(old)    # current schema
+        with ledger.connect(old) as con:
+            con.execute("ALTER TABLE runs DROP COLUMN prompt_rev")
+            con.execute("ALTER TABLE runs DROP COLUMN model")
+        Supervisor(old)
+        with ledger.connect(old) as con:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(runs)")}
+        self.assertTrue({"prompt_rev", "model", "seat"} <= cols)
+
     def test_the_ledger_is_opened_read_only(self):
         with mock.patch.object(stats.sqlite3, "connect", wraps=sqlite3.connect) as connect:
             stats.ledger(self.db, REPO, 0)
@@ -120,6 +171,17 @@ class Finished(sm.Worker):
         with ledger.connect(self.root / "ledger.sqlite") as con:
             end = con.execute("SELECT finished FROM runs").fetchone()[0]
         self.assertGreaterEqual(end, before)
+
+    def test_a_launched_turn_records_prompt_revision_and_resolved_model(self):
+        from diaktoros import prompts
+        _, row, _ = self.run_seat("reviewer")
+        self.assertEqual(row[0], "succeeded")
+        with ledger.connect(self.root / "ledger.sqlite") as con:
+            rev, model, seat = con.execute("SELECT prompt_rev, model, seat FROM runs").fetchone()
+        self.assertEqual(rev, prompts.revision("reviewer"))
+        self.assertRegex(rev, r"^[0-9a-f]{12}$")
+        self.assertTrue(model)
+        self.assertEqual(seat, "reviewer")
 
 
 for _name in [n for n in dir(sm.Worker) if n.startswith("test_")]:
