@@ -21,41 +21,12 @@ from __future__ import annotations
 
 import json
 import pathlib
-import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import config, gate, gh  # noqa: E402
 from diaktoros.util import log, silence  # noqa: E402
-
-
-def closing_pr(loop: dict, number: int) -> int | None:
-    """The number of an open PR whose body says it fixes issue ``number``, else ``None``.
-
-    One listing read with the reader token. Raises ``RuntimeError`` when the listing is unknown.
-    """
-    prs, error = gh.open_prs_read(loop)
-    if prs is None:
-        raise RuntimeError(f"open PR listing unreadable: {error}")
-    repo = re.escape(str(loop["repo"]))
-    pattern = re.compile(
-        r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+"
-        rf"(?:(?:{repo})?#|https://github\.com/{repo}/issues/){number}(?!\d)", re.IGNORECASE)
-    for pr in prs:
-        if type(pr.get("number")) is int and pattern.search(str(pr.get("body") or "")):
-            return pr["number"]
-    return None
-
-
-def _skip_comment(loop: dict, number: int, pr: int) -> None:
-    """Say once, as the triage login, why the issue is not handed to the fixer (best effort)."""
-    login = config.triage_login(loop)
-    if not login:
-        return
-    gh.api(loop, f"/repos/{loop['repo']}/issues/{number}/comments", method="POST",
-           body={"body": f"PR #{pr} already fixes this; not handing it to the fixer."},
-           login=login)
 
 
 def fix(loop: dict, payload: dict) -> None:
@@ -77,36 +48,12 @@ def fix(loop: dict, payload: dict) -> None:
                 f"{config.fixer_push_enable_command(loop)}")
     from diaktoros import run_supervisor
     try:
-        run_supervisor.issue_fix_issue(loop, number)
+        live = run_supervisor.issue_fix_issue(loop, number)
     except Exception as exc:
         silence(f"issue #{number} not handed to the fixer: {exc}")
+    from diaktoros import fix_hold
     try:
-        existing = closing_pr(loop, number)
-    except RuntimeError as exc:
-        silence(f"issue #{number} not handed to the fixer: {exc}")
-    if existing is not None:
-        _skip_comment(loop, number, existing)
-        silence(f"issue #{number}: open PR #{existing} already fixes it; not handed to the fixer")
-    # #324: a finding a seat filed from a PR that is still open is about code only there.
-    from diaktoros import fix_hold, state as state_mod
-    try:
-        origin = fix_hold.origin_pr(loop, number)
-    except Exception as exc:
-        silence(f"issue #{number} not handed to the fixer: lineage unreadable: {exc}")
-    if origin is not None:
-        origin_state = fix_hold.pr_state(loop, origin)
-        if origin_state is None:
-            state_mod.state_for(loop).fix_hold_set(number, origin)   # the sweep retries
-            silence(f"issue #{number} not handed to the fixer: PR #{origin} unreadable")
-        if origin_state == "open":
-            fix_hold.hold(loop, state_mod.state_for(loop), number, origin)
-            silence(f"issue #{number} held until PR #{origin} merges")
-        if origin_state == "closed":
-            fix_hold._drop_comment(loop, number, origin)
-            silence(f"issue #{number}: PR #{origin} closed unmerged; finding is moot")
-        state_mod.state_for(loop).fix_hold_drop(number)
-    try:
-        base, outcome = fix_hold.queue_fix(loop, number)
+        kind, text, base, outcome = fix_hold.hand_off(loop, number, live, auto=False)
     except RuntimeError as exc:
         silence(f"issue #{number}: {exc}")
     except Exception as exc:
@@ -115,6 +62,8 @@ def fix(loop: dict, payload: dict) -> None:
         if failed_base:
             _fix_notice(loop, number, failed_base, f"held — {reason}")
         silence(f"issue #{number} fix held: {reason}")
+    if kind != "queued":
+        silence(f"issue #{number}: {text}; not handed to the fixer")
     log(f"issue #{number} handed to the fixer at {base[:7]}: {outcome}")
     if outcome in ("enqueued", "rearmed", "pending"):
         _fix_notice(loop, number, base, f"fix turn queued from {loop['base']} at {base[:7]}")
