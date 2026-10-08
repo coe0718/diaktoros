@@ -397,7 +397,7 @@ class BuildCheckTests(SelftestBase):
 
 class LiveTurnTests(SelftestBase):
     def agent(self, verdict="REQUEST_CHANGES", body=None, extra=None):
-        body = body if body is not None else f"Needs a test.\nleaked? {SECRETS['fixer']}"
+        body = body if body is not None else f"Needs a test.\nNot verified: nothing\nleaked? {SECRETS['fixer']}"
 
         def run(**kwargs):
             if "broker_socket_dir" not in kwargs:        # step 2's probe
@@ -510,9 +510,9 @@ class NoWriteBrokerTests(unittest.TestCase):
         server = self.serve(require_receipt=True, no_write=True)
         with mock.patch.object(broker, "perform", side_effect=AssertionError), \
              mock.patch.object(review_receipt, "submit", side_effect=AssertionError):
-            answer = broker_ipc.request("review", verdict="APPROVE", body="LGTM",
+            answer = broker_ipc.request("review", verdict="APPROVE", body="LGTM\nNot verified: nothing",
                                         socket_path=str(server.socket_path))
-            again = broker_ipc.request("review", verdict="APPROVE", body="LGTM",
+            again = broker_ipc.request("review", verdict="APPROVE", body="LGTM\nNot verified: nothing",
                                        socket_path=str(server.socket_path))
         self.assertTrue(answer["ok"])
         self.assertEqual(again, {"ok": False, "error": "run capability already used"})

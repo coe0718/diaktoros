@@ -153,6 +153,16 @@ def _signed(loop: dict, body: str, seat: str, head: str) -> str:
 # fixer. A COMMENT is neither, so it would spend the reviewer's one write and stall the PR.
 REVIEW_VERDICTS = ("APPROVE", "REQUEST_CHANGES")
 
+# Every review says what it did not check, so a thin review looks thin (`Not verified: nothing`
+# when the list is empty). A line that starts with the label and says something after it.
+_NOT_VERIFIED = re.compile(r"^[ \t>*_#-]*Not verified:[ \t*_]*\S", re.IGNORECASE | re.MULTILINE)
+NOT_VERIFIED_REFUSAL = ("review has no `Not verified:` line: add one listing what you did not "
+                        "check (or `Not verified: nothing`); nothing was written, resubmit")
+
+
+def has_not_verified(body: str) -> bool:
+    return bool(_NOT_VERIFIED.search(body or ""))
+
 
 def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
             branch: str, operation: str, verdict: str = "", body: str = "",

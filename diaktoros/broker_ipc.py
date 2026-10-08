@@ -502,6 +502,8 @@ class RunBroker:
             # verdict in the same turn. A COMMENT would neither wake the fixer nor cue a merge.
             raise ProtocolError("review verdict must be APPROVE or REQUEST_CHANGES with a non-empty "
                                 "body (COMMENT is not a verdict); nothing was written, resubmit")
+        if operation == "review" and not broker.has_not_verified(body):
+            raise ProtocolError(broker.NOT_VERIFIED_REFUSAL)
         if operation == "review":
             # Numbered findings (#475): every open one accounted for, new ones on changed code.
             # Before the capability is consumed, so the reviewer can resubmit in the same turn.
