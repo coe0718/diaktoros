@@ -464,6 +464,14 @@ def _on_off(args, name: str, default):
     return default if value is None else value == "on"
 
 
+BRANCH_PUSH_REFUSAL = (
+    "refused: review_only_update lets the host push a merge commit to a branch the loop does not "
+    "own (a review-only author's, same repository only, only a clean merge, with a lease on the "
+    "head it read), as the account that makes host merge pushes, and needs unattended fixer "
+    "pushes. If the author pushes meanwhile the lease fails and nothing is overwritten, but a "
+    "published merge cannot be undone by the loop. Pass --acknowledge-branch-push to opt in.")
+
+
 def _attribution_arg(args, default):
     """``--attribution on|off`` as a bool; ``default`` when the flag was not given (#197)."""
     value = getattr(args, "attribution", None)
@@ -1738,6 +1746,8 @@ def cmd_init(args) -> int:
         # Sign what the loop posts (#197): on unless --attribution off or the form says so.
         "attribution": _attribution_arg(args, d["attribution"]),
         "review_after_ci": _on_off(args, "review_after_ci", d["review_after_ci"]),
+        # Host merge pushes to a review-only author's branch: off unless asked for and acknowledged.
+        "review_only_update": _on_off(args, "review_only_update", d["review_only_update"]),
         # The checks CI always runs, which a fixer running only its touched tests would miss.
         "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
                         else args.fixer_check),
@@ -1750,6 +1760,9 @@ def cmd_init(args) -> int:
                         if getattr(args, "review_only", None) is None
                         else [name for name in args.review_only if name.strip()]),
     }
+    if raw["review_only_update"] and not getattr(args, "acknowledge_branch_push", False):
+        print(BRANCH_PUSH_REFUSAL)
+        return 2
     # The review-only verdict cap and daily cap: a flag wins over the form; empty = unset.
     for key in ("review_only_cap", "review_only_daily"):
         flag = getattr(args, key, None)
@@ -2142,6 +2155,10 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                                        "never touches, comma-separated (blank: none)",
                                        d["review_only"], interactive).split(",") if name.strip()])
     argv += [f"--review-only={name.strip()}" for name in reviewed]
+    if getattr(args, "review_only_update", None) is not None:
+        argv.append(f"--review-only-update={args.review_only_update}")
+    if getattr(args, "acknowledge_branch_push", False):
+        argv.append("--acknowledge-branch-push")
     for flag in ("reviewer_max_steps", "fixer_max_steps", "fix_daily_turns",
                  "review_only_cap", "review_only_daily"):
         if getattr(args, flag, None) is not None:
@@ -2398,7 +2415,12 @@ def cmd_set(args) -> int:
               "inflight_ttl_min": args.inflight_ttl_min, "host": host,
               "turn_budget_s": getattr(args, "turn_budget", None),
               "attribution": _attribution_arg(args, None),
-              "review_after_ci": _on_off(args, "review_after_ci", None)}
+              "review_after_ci": _on_off(args, "review_after_ci", None),
+              "review_only_update": _on_off(args, "review_only_update", None)}
+    if (wanted["review_only_update"] and not loop.get("review_only_update")
+            and not getattr(args, "acknowledge_branch_push", False)):
+        print(BRANCH_PUSH_REFUSAL)
+        return 2
     changes = {k: v for k, v in wanted.items()
                if v is not None and v != "" and v != loop.get(k)}
     if getattr(args, "required_check", None) is not None or getattr(args, "no_required_checks",
@@ -2864,7 +2886,7 @@ def _apply(args) -> int:
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
-                "required_checks", "review_only", "review_only_cap", "review_only_daily"):
+                "review_only_update", "required_checks", "review_only", "review_only_cap", "review_only_daily"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -5027,7 +5049,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--observer-events", default="",
                           help="comma-separated transitions to send, from "
                                "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                               "triaged,fixing,fixed,failed,held,conflict,ci_failed,main_red (default: all)")
+                               "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red "
+                               "(default: all)")
         init.add_argument("--observer-digest-min", type=int, default=0,
                           help="batch the feed into one message per this many minutes "
                                "(0 = one notice per transition)")
@@ -5046,6 +5069,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="how long a run may hold its seat slot")
         init.add_argument("--inflight-ttl-min", type=int, default=d["inflight_ttl_min"],
                           help="how long an in-flight mark blocks a second run at the same head")
+        init.add_argument("--review-only-update", choices=("on", "off"), default=None,
+                          help="push a clean merge of the base into a review-only author's PR "
+                               "branch (same repository only; off by default; turning it on "
+                               "needs --acknowledge-branch-push)")
+        init.add_argument("--acknowledge-branch-push", action="store_true",
+                          help="accept that the host pushes to a branch the loop does not own; "
+                               "required to turn --review-only-update on")
         init.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                           help="start each review after the head's checks finish (up to an hour) "
                                f"(default {'on' if d['review_after_ci'] else 'off'})")
@@ -5135,6 +5165,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         first.add_argument("--fixer-check", default=None,
                            help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
+        first.add_argument("--review-only-update", choices=("on", "off"), default=None,
+                           help="push a clean merge of the base into a review-only author's PR "
+                                "branch (same repository only; off by default; turning it on "
+                                "needs --acknowledge-branch-push)")
+        first.add_argument("--acknowledge-branch-push", action="store_true",
+                           help="accept that the host pushes to a branch the loop does not own; "
+                                "required to turn --review-only-update on")
         first.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                            help="start each review after the head's checks finish (up to an hour) (default: the plugin setting, off)")
         first.add_argument("--attribution", choices=("on", "off"), default=None,
@@ -5290,6 +5327,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--attribution", choices=("on", "off"), default=None,
                             help="sign what the loop posts ('Automated by Diaktoros'), "
                                  "or stop")
+        change.add_argument("--review-only-update", choices=("on", "off"), default=None,
+                            help="push a clean merge of the base into a review-only author's PR "
+                                 "branch (same repository only), or stop; turning it on needs "
+                                 "--acknowledge-branch-push")
+        change.add_argument("--acknowledge-branch-push", action="store_true",
+                            help="accept that the host pushes to a branch the loop does not own; "
+                                 "required to turn --review-only-update on")
         change.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                             help="start each review after the head's checks finish (up to an hour), "
                                  "or start at once")
@@ -5349,7 +5393,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--observer-events", default=None,
                             help="comma-separated transitions to send, from "
                                  "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                                 "triaged,fixing,fixed,failed,held,conflict,ci_failed,main_red (blank = all)")
+                                 "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red "
+                                 "(blank = all)")
         change.add_argument("--observer-digest-min", type=int, default=None,
                             help="batch the feed into one message per N minutes (0 = per "
                                  "transition)")

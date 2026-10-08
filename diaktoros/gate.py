@@ -643,7 +643,17 @@ def explain_facts(loop: dict, number: int) -> dict:
             receipts = transition.read_receipts(loop, number, head)
     except Exception as exc:
         receipts_error = f"{type(exc).__name__}: {exc}"
-    return {"pr": pr, "pr_error": pr_error, "reviews": reviews, "reviews_error": reviews_error,
+    ro_conflict = None
+    if (isinstance(pr, dict) and pr.get("mergeable_state") == "dirty" and isinstance(head, str)
+            and head and str(((pr.get("user") or {}).get("login")) or "").lower()
+            in config.review_only(loop)):
+        try:    # a dry merge in a private repository; nothing is pushed
+            from . import review_only_conflict
+            ro_conflict = review_only_conflict.assess(loop, number, head, pr)
+        except Exception:
+            ro_conflict = None
+    return {"review_only_conflict": ro_conflict,
+            "pr": pr, "pr_error": pr_error, "reviews": reviews, "reviews_error": reviews_error,
             "armed": armed, "armed_error": armed_error, "read_at": time.time(),
             "chain": chain, "parent_readiness": readiness,
             "receipts": receipts, "receipts_error": receipts_error}
@@ -1096,6 +1106,13 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             # #303 stage 1: GitHub cannot merge it as it is; nothing in the loop resolves that yet.
             bits.append(f"CONFLICTS with {base or 'its base'} — merge {base or 'the base'} into "
                         "the branch")
+            facts_ro = facts.get("review_only_conflict")
+            if author in config.review_only(loop) and isinstance(facts_ro, dict):
+                # The same facts the watchdog's notice carries (review-only, #412).
+                from . import review_only_conflict
+                bits.append(review_only_conflict.cause(loop, facts_ro) + "; "
+                            + review_only_conflict.files(facts_ro) + "; run: "
+                            + review_only_conflict.commands(loop, facts_ro))
         state_line = " · ".join(bits)
 
     return {

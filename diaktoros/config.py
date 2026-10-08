@@ -179,6 +179,15 @@ SETTINGS_SCHEMA: dict = {
                           "description": "Reviewer turns per local day on review-only PRs, a whole "
                                          "number 1-1000; once spent they wait until midnight. "
                                          "Blank = not set here: the loop's own value, else no cap"},
+    "review_only_update": {"label": "Merge the base into review-only PRs", "type": "bool",
+                           "default": False,
+                           "description": "Off (default): a review-only PR that conflicts gets a "
+                                          "notice naming the merged PRs, the files and the commands. "
+                                          "On: the host also pushes a clean merge of the base into "
+                                          "the author's same-repository branch, with a lease on the "
+                                          "head it read (a push to a branch the loop does not own; "
+                                          "needs unattended fixer pushes). Never resolves a real "
+                                          "conflict or a workflow change"},
     "required_checks": {"label": "Required CI checks (comma-separated)", "type": "str",
                         "default": "",
                         "description": "The check runs or status contexts that gate an approval, "
@@ -354,6 +363,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         overlaid["attribution"] = d["attribution"]
     if _form_value(settings, "review_after_ci") is not None:
         overlaid["review_after_ci"] = d["review_after_ci"]
+    if _form_value(settings, "review_only_update") is not None:
+        overlaid["review_only_update"] = d["review_only_update"]
     if _form_value(settings, "review_only") is not None:
         overlaid["review_only"] = [name.strip() for name in str(d["review_only"]).split(",")
                                    if name.strip()]
@@ -658,6 +669,7 @@ DEFAULTS: dict = {
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
     "review_only": [],        # authors reviewed but never fixed (#191); [] = fixers only
+    "review_only_update": False,  # push a clean merge of the base into a review-only PR (opt-in)
     "review_only_cap": None,   # verdicts per review-only PR; None = the loop's `cap`
     "review_only_daily": None,  # reviewer turns a day on review-only PRs; None = no cap
 }
@@ -1869,6 +1881,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if type(loop["review_after_ci"]) is not bool:
         raise ConfigError(f"{where}: 'review_after_ci' must be a JSON boolean (true holds a "
                           "review until the head's checks finish)")
+    if type(loop["review_only_update"]) is not bool:
+        raise ConfigError(f"{where}: 'review_only_update' must be a JSON boolean (true lets the "
+                          "host push a clean merge of the base into a review-only PR)")
     if type(loop["fix_ci"]) is not bool:
         raise ConfigError(f"{where}: 'fix_ci' must be a JSON boolean (true hands a failed "
                           "required check on a fixer's PR to the fixer)")
@@ -2192,6 +2207,11 @@ def fix_ci(loop: dict) -> bool:
     """Whether a failed required check on a fixer's PR becomes a fixer turn (#306). Off unless
     set, and it needs unattended fixer pushes too, which it never turns on."""
     return loop.get("fix_ci") is True and unattended_fixer_push_enabled(loop)
+
+
+def review_only_update(loop: dict) -> bool:
+    """Whether the host may push a clean merge of the base into a review-only PR. Off unless set."""
+    return loop.get("review_only_update") is True
 
 
 def review_after_ci(loop: dict) -> bool:
