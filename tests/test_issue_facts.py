@@ -92,6 +92,24 @@ class Prompts(unittest.TestCase):
         self.assertNotIn("STRANGER-TEXT", text)
         self.assertLess(text.index("BODY5"), text.index("MAINTAINER-REQ"))
 
+    def test_fixer_round_prompt_carries_the_closing_issue_facts(self):
+        # #511: isolated_prompt (fixer, fix round) appends the same issue section.
+        fake = Fake()
+        row = {"seat": "fixer", "repo": "acme/w", "pr": 7, "head": "a" * 40}
+        change = run_supervisor.PRChange("RECORD", "DIFF")
+        loop = {**LOOP, "cap": 3, "seats": {}}
+        with mock.patch.object(gh, "api", side_effect=fake.api), \
+                mock.patch.object(gh, "issue_comments_read", side_effect=fake.comments), \
+                mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
+                mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None), \
+                mock.patch("diaktoros.gh.pr_url", return_value="https://github.com/acme/w/pull/7"), \
+                mock.patch("diaktoros.ci.read", return_value=None), \
+                mock.patch("diaktoros.ci.section", return_value=""):
+            text = run_supervisor.isolated_prompt(loop, row, [], change=change)
+        self.assertIn("BODY5", text)
+        self.assertIn("MAINTAINER-REQ", text)
+        self.assertNotIn("STRANGER-TEXT", text)
+
 
 if __name__ == "__main__":
     unittest.main()

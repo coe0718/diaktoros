@@ -99,6 +99,21 @@ class BrokerIPCTests(unittest.TestCase):
         self.assertNotIn("DUMMY_SECRET", audit)
         self.assertNotIn("DUMMY_SECRET", str(self.send(server, self.review())))
 
+    def test_linked_issue_review_without_requirements_is_refused_then_resubmittable(self):
+        # #511: through the real request path, for a PR that closes an issue.
+        server = self.start()
+        with mock.patch("diaktoros.issue_facts.closing_numbers", return_value=[5]):
+            refused = self.send(server, self.review())
+            self.assertFalse(refused["ok"])
+            self.assertIn("Requirements", refused["error"])
+            self.assertNotIn("POST", [c[1] for c in self.calls])  # nothing written
+            notmet = {"operation": "review", "verdict": "APPROVE",
+                      "body": "## Requirements\n- one: not met\n"}
+            self.assertIn("not met", self.send(server, notmet)["error"])
+            good = {"operation": "review", "verdict": "APPROVE",
+                    "body": "## Requirements\n- one: met (test_x)\n"}
+            self.assertTrue(self.send(server, good)["ok"])   # capability was not consumed
+
     def test_arbitrary_github_response_is_not_relayed(self):
         server = self.start()
         with mock.patch.object(gh, "api", side_effect=_ci_green.green(lambda loop, path, method="GET", **kw:
