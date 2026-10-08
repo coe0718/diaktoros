@@ -44,7 +44,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from diaktoros import ci_fix, config, envnames, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
+from diaktoros import ci_fix, config, main_check, envnames, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
 from diaktoros.util import age_min, epoch, log, now_iso  # noqa: E402
 
 TEST = bool(envnames.get("TEST"))
@@ -1054,6 +1054,10 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         ci_fix.sweep(loop, st, prs, log)      # #306: a red required check, said once per head
     except Exception as exc:
         log(f"ci sweep failed: {type(exc).__name__}: {exc}")
+    try:
+        main_check.sweep(loop, st, log)       # a required check red on main after merges
+    except Exception as exc:
+        log(f"main check failed: {type(exc).__name__}: {exc}")
     resolving = config.unattended_fixer_push_enabled(loop)
     for number, head, base_sha, author in conflicts:
         # A review-only author's PR (#191) is never the fixer's, a conflict included.
