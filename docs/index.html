@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#071018" />
+  <link rel="icon" href="data:," />
+  <title>Diaktoros — Autonomous software maintenance for Hermes</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f2f0eb;
+      --surface: #faf9f5;
+      --surface-2: #e8e5de;
+      --text: #131a20;
+      --muted: #505b65;
+      --line: #c9c6bf;
+      --strong-line: #929ca5;
+      --ink: #071018;
+      --paper: #f4f0e8;
+      --red: #b83637;
+      --red-deep: #8e272b;
+      --blue: #1481b8;
+      --amber: #b66c16;
+      --violet: #7d52ae;
+      --green: #258768;
+      --shadow: 0 24px 70px rgba(17, 24, 30, .14);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #071018;
+        --surface: #0d1821;
+        --surface-2: #12222e;
+        --text: #edf1f2;
+        --muted: #a6b0b8;
+        --line: #263846;
+        --strong-line: #526575;
+        --paper: #f1ede5;
+        --red: #ef6562;
+        --red-deep: #ff7b73;
+        --blue: #58bceb;
+        --amber: #f0a64f;
+        --violet: #b98bea;
+        --green: #55c89f;
+        --shadow: 0 26px 90px rgba(0, 0, 0, .42);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      text-rendering: optimizeLegibility;
+    }
+    a { color: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    button { font: inherit; }
+    img { display: block; max-width: 100%; }
+    svg { display: block; }
+
+    .shell {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .mast {
+      padding: clamp(44px, 8vw, 104px) 0 30px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(280px, .9fr);
+      gap: clamp(34px, 6vw, 86px);
+      align-items: end;
+    }
+
+    .kicker {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 0 0 22px;
+      color: var(--muted);
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+    .kicker::before {
+      content: "";
+      width: 36px;
+      height: 1px;
+      background: var(--red);
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      margin-bottom: 28px;
+      max-width: 820px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-weight: 400;
+      font-size: clamp(44px, 7vw, 92px);
+      line-height: .98;
+      letter-spacing: -.045em;
+    }
+    h1 em {
+      color: var(--red);
+      font-style: italic;
+    }
+    .lead {
+      max-width: 680px;
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: clamp(18px, 2vw, 23px);
+      line-height: 1.45;
+    }
+
+    .mast-side {
+      padding-bottom: 8px;
+      border-top: 1px solid var(--strong-line);
+    }
+    .principle {
+      padding: 22px 0 24px;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .principle strong {
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      letter-spacing: .08em;
+    }
+    .principle p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .principle-num {
+      color: var(--red);
+      font-family: Georgia, serif;
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 28px;
+    }
+    .button {
+      min-height: 46px;
+      padding: 12px 18px;
+      border: 1px solid var(--strong-line);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 14px;
+      transition: background-color .2s ease, color .2s ease, border-color .2s ease;
+    }
+    .button.primary {
+      background: var(--text);
+      border-color: var(--text);
+      color: var(--bg);
+    }
+    .button:hover, .button:focus-visible {
+      border-color: var(--red);
+      outline: none;
+    }
+    .button.primary:hover, .button.primary:focus-visible {
+      background: var(--red-deep);
+      border-color: var(--red-deep);
+      color: #fff;
+    }
+
+    .poster-wrap {
+      margin: 34px auto clamp(72px, 10vw, 130px);
+      padding: 10px;
+      background: #05090c;
+      box-shadow: var(--shadow);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+    .poster-wrap img {
+      width: 100%;
+      height: auto;
+      background: #05090c;
+    }
+    .poster-caption {
+      padding: 13px 5px 3px;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      color: #9caab4;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .section {
+      padding: clamp(66px, 8vw, 108px) 0;
+      border-top: 1px solid var(--line);
+    }
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, .8fr) minmax(280px, 1.2fr);
+      gap: clamp(30px, 6vw, 90px);
+      align-items: start;
+      margin-bottom: 52px;
+    }
+    .section-index {
+      margin-bottom: 15px;
+      color: var(--red);
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      letter-spacing: .14em;
+    }
+    h2 {
+      margin-bottom: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(34px, 5vw, 62px);
+      font-weight: 400;
+      line-height: 1.04;
+      letter-spacing: -.035em;
+    }
+    .section-intro {
+      max-width: 620px;
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: clamp(17px, 1.7vw, 21px);
+    }
+
+    .handoff {
+      display: grid;
+      grid-template-columns: 230px minmax(0, 1fr);
+      gap: clamp(28px, 5vw, 72px);
+      align-items: stretch;
+    }
+    .stage-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .stage-button {
+      width: 100%;
+      padding: 17px 10px 17px 18px;
+      border: 0;
+      border-left: 2px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      text-align: left;
+      cursor: pointer;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      letter-spacing: .05em;
+      transition: border-color .2s ease, color .2s ease, background-color .2s ease;
+    }
+    .stage-button:hover, .stage-button:focus-visible {
+      color: var(--text);
+      outline: none;
+      background: color-mix(in srgb, var(--surface-2) 62%, transparent);
+    }
+    .stage-button[aria-selected="true"] {
+      color: var(--text);
+      border-left-color: var(--stage-color, var(--red));
+      background: var(--surface-2);
+    }
+
+    .stage-panel {
+      min-height: 330px;
+      padding: clamp(28px, 4vw, 54px);
+      background: var(--surface);
+      border-top: 3px solid var(--stage-color, var(--red));
+      box-shadow: 0 16px 55px rgba(8, 18, 26, .08);
+    }
+    .stage-panel[hidden] { display: none; }
+    .stage-panel h3 {
+      margin-bottom: 14px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(29px, 4vw, 45px);
+      font-weight: 400;
+      line-height: 1.1;
+    }
+    .stage-role {
+      margin-bottom: 30px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+    .stage-points {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px 34px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .stage-points li {
+      position: relative;
+      padding-left: 20px;
+      color: var(--muted);
+    }
+    .stage-points li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: .68em;
+      width: 7px;
+      height: 7px;
+      background: var(--stage-color, var(--red));
+    }
+    .stage-points strong { color: var(--text); }
+
+    .proof-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(310px, .72fr);
+      gap: clamp(36px, 7vw, 96px);
+      align-items: start;
+    }
+    .manifesto {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(30px, 5vw, 60px);
+      line-height: 1.14;
+      letter-spacing: -.025em;
+    }
+    .manifesto span { color: var(--red); }
+    .rules {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      border-top: 1px solid var(--strong-line);
+    }
+    .rules li {
+      padding: 18px 0;
+      display: grid;
+      grid-template-columns: 26px 1fr;
+      gap: 14px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+    }
+    .rules strong { color: var(--text); }
+    .rule-mark {
+      color: var(--green);
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-weight: 800;
+    }
+
+    .closing {
+      position: relative;
+      margin-top: clamp(70px, 10vw, 140px);
+      padding: clamp(52px, 8vw, 98px) 0;
+      background: var(--ink);
+      color: var(--paper);
+      overflow: hidden;
+    }
+    .closing::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: .25;
+      background-image: linear-gradient(rgba(255,255,255,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px);
+      background-size: 34px 34px;
+      mask-image: linear-gradient(to right, transparent, black 45%, black);
+    }
+    .closing-inner {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 28px;
+      align-items: end;
+    }
+    .closing h2 {
+      max-width: 820px;
+      color: var(--paper);
+    }
+    .closing h2 span { color: #ff6b67; }
+    .closing p {
+      max-width: 630px;
+      margin: 22px 0 0;
+      color: #aebbc4;
+      font-size: 17px;
+    }
+    .closing .button {
+      min-width: 150px;
+      color: var(--paper);
+      border-color: #53636f;
+      background: transparent;
+    }
+    .closing .button:hover,
+    .closing .button:focus-visible {
+      color: #fff;
+      border-color: #ff6b67;
+      background: #9f2f31;
+    }
+
+    footer {
+      padding: 24px 0 calc(24px + env(safe-area-inset-bottom));
+      background: var(--ink);
+      color: #82909a;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    footer .shell {
+      padding-top: 20px;
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      border-top: 1px solid #273541;
+    }
+
+    @media (max-width: 820px) {
+      .shell { width: min(100% - 28px, 700px); }
+      .mast, .section-head, .proof-grid, .closing-inner { grid-template-columns: 1fr; }
+      .mast { align-items: start; }
+      .mast-side { max-width: 620px; }
+      .poster-wrap { margin-top: 10px; padding: 5px; }
+      .poster-caption { align-items: flex-start; flex-direction: column; }
+      .handoff { grid-template-columns: 1fr; }
+      .stage-list {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0;
+      }
+      .stage-button {
+        padding: 13px 6px;
+        border-left: 0;
+        border-bottom: 2px solid var(--line);
+        text-align: center;
+        font-size: 11px;
+      }
+      .stage-button[aria-selected="true"] { border-bottom-color: var(--stage-color, var(--red)); }
+      .closing .button { justify-self: start; }
+    }
+
+    @media (max-width: 540px) {
+      .shell { width: min(100% - 22px, 500px); }
+      h1 { font-size: clamp(42px, 15vw, 62px); }
+      .mast { padding-top: 34px; }
+      .lead { font-size: 17px; }
+      .actions { flex-direction: column; }
+      .button { width: 100%; }
+      .poster-wrap { margin-left: -5px; margin-right: -5px; }
+      .poster-caption span:last-child { display: none; }
+      .section { padding: 58px 0; }
+      .section-head { margin-bottom: 34px; }
+      .stage-list { grid-template-columns: repeat(2, 1fr); }
+      .stage-panel { min-height: auto; padding: 25px 20px; }
+      .stage-points { grid-template-columns: 1fr; gap: 14px; }
+      .manifesto { font-size: 35px; }
+      footer .shell { flex-direction: column; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="shell mast" aria-labelledby="hero-title">
+      <div>
+        <p class="kicker">Autonomous software maintenance for Hermes</p>
+        <h1 id="hero-title">Automate the work.<br><em>Preserve control.</em></h1>
+        <p class="lead">Diaktoros guides a pull request from issue triage through implementation, independent review, CI, and dispute resolution—without ever taking the final merge away from a human.</p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/coe0718/diaktoros/blob/HEAD/skill/SKILL.md" target="_blank" rel="noopener noreferrer">
+            Explore the source
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h9M8.5 3.5 13 8l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square"/></svg>
+          </a>
+          <a class="button" href="#handoff">Trace the handoff</a>
+        </div>
+      </div>
+      <div class="mast-side" aria-label="Core principles">
+        <div class="principle">
+          <span class="principle-num">I</span>
+          <div><strong>Exact-head</strong><p>Every review and write is bound to the commit it was meant for.</p></div>
+        </div>
+        <div class="principle">
+          <span class="principle-num">II</span>
+          <div><strong>Policy-driven</strong><p>Deterministic gates define what agents may do. The model never does.</p></div>
+        </div>
+        <div class="principle">
+          <span class="principle-num">III</span>
+          <div><strong>Human authority</strong><p>Agents can propose, critique, fix, and rule. Only a person merges.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <figure class="shell poster-wrap">
+      <img id="diaktoros-poster" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1206" height="804" alt="Diaktoros orchestration diagram showing triage, fixer, reviewer, and adjudicator agents around the core, connected to GitHub events, policy gates, CI, a run ledger, and watchdog." />
+      <figcaption class="poster-caption"><span>The orchestration core</span><span>Isolated agents · strict bounds · durable recovery</span></figcaption>
+    </figure>
+
+    <section class="shell section" id="handoff" aria-labelledby="handoff-title">
+      <div class="section-head">
+        <div>
+          <div class="section-index">01 / The handoff</div>
+          <h2 id="handoff-title">Four seats.<br>One bounded loop.</h2>
+        </div>
+        <p class="section-intro">Each turn starts with a fresh sandbox and the exact context it needs. The host owns state, limits, retries, and writes; the agents own judgment inside their lane.</p>
+      </div>
+
+      <div class="handoff">
+        <div class="stage-list" role="tablist" aria-label="Agent seats">
+          <button class="stage-button" style="--stage-color: var(--violet)" id="tab-triage" role="tab" aria-selected="true" aria-controls="panel-triage">01 Triage</button>
+          <button class="stage-button" style="--stage-color: var(--amber)" id="tab-fixer" role="tab" aria-selected="false" aria-controls="panel-fixer" tabindex="-1">02 Fixer</button>
+          <button class="stage-button" style="--stage-color: var(--blue)" id="tab-reviewer" role="tab" aria-selected="false" aria-controls="panel-reviewer" tabindex="-1">03 Reviewer</button>
+          <button class="stage-button" style="--stage-color: var(--red)" id="tab-adjudicator" role="tab" aria-selected="false" aria-controls="panel-adjudicator" tabindex="-1">04 Adjudicator</button>
+        </div>
+
+        <div>
+          <article class="stage-panel" style="--stage-color: var(--violet)" id="panel-triage" role="tabpanel" aria-labelledby="tab-triage">
+            <h3>Turn noise into work.</h3>
+            <p class="stage-role">Triage reads an incoming issue, applies only allowed labels, and routes it without touching code.</p>
+            <ul class="stage-points">
+              <li><strong>Constrained taxonomy.</strong> Labels come from the maintainer’s allowlist.</li>
+              <li><strong>One scoped write.</strong> No closing, editing, reviewing, or pushing.</li>
+              <li><strong>Issue context only.</strong> The sandbox begins empty by design.</li>
+              <li><strong>Human-selected entry.</strong> Maintainers decide what moves into fixing.</li>
+            </ul>
+          </article>
+
+          <article class="stage-panel" style="--stage-color: var(--amber)" id="panel-fixer" role="tabpanel" aria-labelledby="tab-fixer" hidden>
+            <h3>Propose, prove, answer.</h3>
+            <p class="stage-role">The fixer implements the requested change, checks it, and publishes through a broker that enforces every boundary.</p>
+            <ul class="stage-points">
+              <li><strong>No credentials.</strong> The agent cannot reach GitHub directly.</li>
+              <li><strong>Bounded changes.</strong> File count, size, and protected-path rules are host-enforced.</li>
+              <li><strong>Exact-head push.</strong> A moved branch causes a refusal, never an overwrite.</li>
+              <li><strong>Answers travel forward.</strong> Every finding gets a concrete response for the next review.</li>
+            </ul>
+          </article>
+
+          <article class="stage-panel" style="--stage-color: var(--blue)" id="panel-reviewer" role="tabpanel" aria-labelledby="tab-reviewer" hidden>
+            <h3>Verify before verdict.</h3>
+            <p class="stage-role">The reviewer reads the full change, runs relevant checks, and issues one evidence-backed decision.</p>
+            <ul class="stage-points">
+              <li><strong>Independent seat.</strong> Review runs apart from the authoring agent.</li>
+              <li><strong>Evidence required.</strong> Findings include severity, command output, and source location.</li>
+              <li><strong>Binary handoff.</strong> Approve, or request changes that wake the fixer.</li>
+              <li><strong>No false green.</strong> A partial view can never produce approval.</li>
+            </ul>
+          </article>
+
+          <article class="stage-panel" style="--stage-color: var(--red)" id="panel-adjudicator" role="tabpanel" aria-labelledby="tab-adjudicator" hidden>
+            <h3>End the endless round.</h3>
+            <p class="stage-role">When the verdict budget is exhausted, the adjudicator resolves the dispute instead of buying another cycle.</p>
+            <ul class="stage-points">
+              <li><strong>Reads both sides.</strong> Findings and the fixer’s published answers arrive together.</li>
+              <li><strong>Three rulings.</strong> Accept, reject, or respec the disputed goal.</li>
+              <li><strong>Read-only workspace.</strong> The deciding seat cannot alter the change.</li>
+              <li><strong>Human conclusion.</strong> Its ruling reaches the operator; it still cannot merge.</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="shell section" aria-labelledby="trust-title">
+      <div class="section-head">
+        <div>
+          <div class="section-index">02 / The trust boundary</div>
+          <h2 id="trust-title">Autonomy with hard edges.</h2>
+        </div>
+        <p class="section-intro">Diaktoros keeps the creative work inside disposable sandboxes and the irreversible decisions inside deterministic infrastructure.</p>
+      </div>
+      <div class="proof-grid">
+        <p class="manifesto">A confident answer is not proof. A clean diff is not permission. A model’s intent is not a boundary. <span>The host verifies all three.</span></p>
+        <ol class="rules">
+          <li><span class="rule-mark">01</span><span><strong>Isolation</strong><br>Agents hold no GitHub credentials.</span></li>
+          <li><span class="rule-mark">02</span><span><strong>Policy</strong><br>Writes pass deterministic gates.</span></li>
+          <li><span class="rule-mark">03</span><span><strong>Ledger</strong><br>State and decisions survive every turn.</span></li>
+          <li><span class="rule-mark">04</span><span><strong>Recovery</strong><br>The watchdog detects, retries, and reconciles.</span></li>
+          <li><span class="rule-mark">05</span><span><strong>Authority</strong><br>The system never merges.</span></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="closing">
+      <div class="shell closing-inner">
+        <div>
+          <h2>Let agents do the work.<br><span>Keep the decision.</span></h2>
+          <p>Built for maintainers who want more throughput without pretending autonomy is the same thing as trust.</p>
+        </div>
+        <a class="button" href="https://github.com/coe0718/diaktoros/blob/HEAD/skill/SKILL.md" target="_blank" rel="noopener noreferrer">
+          Read the protocol
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h9M8.5 3.5 13 8l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square"/></svg>
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell"><span>Diaktoros · Guide of agents</span><span>Autonomous software maintenance for Hermes</span></div>
+  </footer>
+
+  <script>
+    (function () {
+      var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+      var panels = Array.prototype.slice.call(document.querySelectorAll('[role="tabpanel"]'));
+
+      function activate(tab) {
+        tabs.forEach(function (item) {
+          var selected = item === tab;
+          item.setAttribute('aria-selected', selected ? 'true' : 'false');
+          item.tabIndex = selected ? 0 : -1;
+        });
+        panels.forEach(function (panel) {
+          panel.hidden = panel.id !== tab.getAttribute('aria-controls');
+        });
+      }
+
+      tabs.forEach(function (tab, index) {
+        tab.addEventListener('click', function () { activate(tab); });
+        tab.addEventListener('keydown', function (event) {
+          var next = index;
+          if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % tabs.length;
+          else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (index - 1 + tabs.length) % tabs.length;
+          else if (event.key === 'Home') next = 0;
+          else if (event.key === 'End') next = tabs.length - 1;
+          else return;
+          event.preventDefault();
+          activate(tabs[next]);
+          tabs[next].focus();
+        });
+      });
+    }());
+  </script>
+<script src="poster.js"></script>
+<script>document.getElementById("diaktoros-poster").src=window.DIAKTOROS_POSTER;</script>
+</body>
+</html>
