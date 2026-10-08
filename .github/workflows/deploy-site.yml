@@ -1,11 +1,16 @@
-name: Deploy launch site to Pages
+name: Deploy site to Pages
+
+# The only thing that publishes coe0718.github.io/diaktoros. Pages' source must be
+# "GitHub Actions" (Settings → Pages); a "Deploy from a branch" source runs GitHub's own
+# Jekyll build of the repository root as well, and whichever finishes last wins.
+#
+# One artifact holds both halves: the docs rendered by the same Jekyll build Pages used
+# (README and docs/*.md → /docs/*.html, so existing links keep working), then the launch
+# page from docs/site/ laid over the root.
 
 on:
   push:
     branches: [main]
-    paths:
-      - 'docs/site/**'
-      - '.github/workflows/deploy-site.yml'
   workflow_dispatch:
 
 permissions:
@@ -13,14 +18,30 @@ permissions:
   pages: write
   id-token: write
 
+# One deploy at a time, the newest push last: a slower older run can never land on top.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./
+          destination: ./_jekyll
+      - name: Lay the launch page over the docs
+        run: |
+          mkdir site
+          cp -R _jekyll/. site/
+          cp -R docs/site/. site/
+          test -f site/index.html && test -f site/poster.js && test -f site/docs/commands.html
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/site
+          path: site
   deploy:
     needs: build
     runs-on: ubuntu-latest
