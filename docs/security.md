@@ -75,6 +75,8 @@ For ordinary PR writes, `broker.authorize` verifies:
 | `triage` | Configured labels, at most configured `max_labels`, and optional allowed comment | Live open issue, allowlisted author and triage policy are rechecked |
 | `issue_fixer` | New branch/PR/review-request sequence, or one explanation comment | Live issue/fix-label/author/maintainer policy; unattended issue fixing must be enabled |
 
+The optional Desktop page's backend routes (`loops`, `stats`, `now`) are read-only: they read the loop files and the run ledger, never a token, never GitHub, and never write. Its renderer half imports only the Desktop SDK and React (Hermes's catalog lint enforces this).
+
 Host-recorded incomplete change views block reviewer approval and fixer pushes before writing. So does CI: the broker re-reads the head's check runs and commit statuses and refuses an APPROVE while one has failed or CI cannot be read. The review receipt claim repeats the approval check in its transaction. A reviewer may still request changes. A no-write reviewer broker exists for the live selftest: its host-only constructor flag records the proposed verdict and runs authorization reads without a POST. A socket request cannot enable or disable that mode.
 
 Capability consumption and write-ahead records precede external writes. Invalid input can be rejected before consumption; an attempted external write with a lost reply cannot simply be replayed. Sandbox replies contain only acceptance/safe status, not arbitrary GitHub response fields or host exception details. These restrictions do not determine whether review prose is accurate or appropriate.

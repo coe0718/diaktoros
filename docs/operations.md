@@ -24,6 +24,7 @@ incident recovery, and the decision to merge.
 - [Conflicts with the base](#conflicts-with-the-base)
 - [Publishing stats](#publishing-stats)
 - [Moving to a renamed plugin or repository](#moving-to-a-renamed-plugin-or-repository)
+- [The Desktop page](#the-desktop-page)
 
 Replace quoted angle-bracket placeholders, including brackets, with your values.
 `--loop` is the saved loop ID, not a repo or profile. `--pr` is the numeric PR number
@@ -631,3 +632,23 @@ It's refused while one of the loop's runs is in flight or uncertain. Then, in th
 
 `--admin-token` names the mapped login whose token may edit the repo hooks, as for `apply
 --hooks`. Running it again after it finished is a no-op.
+
+## The Desktop page
+
+In Hermes Desktop, the plugin adds a **Diaktoros** page (with a sidebar entry) and a status-bar
+summary such as `loop: 1 running · 1 held`. The page shows:
+- **Right now:** every queued, running, held or uncertain run, and the last day's failures, each
+  with a short host-written reason (a hold's own line, such as `held: waiting for CI …`). It never
+  shows a turn's output; `explain --pr N` has the detail.
+- **Seat turns** for the last 24 hours, 7 days or 30 days: the run ledger's half of
+  [`stats`](commands.md#stats).
+
+It refreshes every 30–60 seconds. Both halves ship **off**:
+1. **The Python half**, which serves the page's data: add `diaktoros` to
+   `plugins.enabled` in `config.yaml` and restart the gateway.
+2. **The Desktop half:** turn on **Diaktoros** under **Capabilities → Plugins**.
+
+The backend (`dashboard/plugin_api.py`, mounted at `/api/plugins/diaktoros/` behind the
+gateway's own auth) has three read-only routes, `loops`, `stats` and `now`. They read the loop files
+and the run ledger only: no GitHub call, no token, no write. GitHub-side numbers stay with
+`stats --github`.
