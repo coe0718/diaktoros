@@ -265,6 +265,8 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
+| `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only; off by default; turning it on needs --acknowledge-branch-push) |
+| `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default: the plugin setting, off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
@@ -364,6 +366,8 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--grace-min` | `GRACE_MIN` | `35` | minutes a PR may sit quiet before the watchdog reports a stall |
 | `--ttl-min` | `TTL_MIN` | `45` | how long a run may hold its seat slot |
 | `--inflight-ttl-min` | `INFLIGHT_TTL_MIN` | `10` | how long an in-flight mark blocks a second run at the same head |
+| `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only; off by default; turning it on needs --acknowledge-branch-push) |
+| `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default on) |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
@@ -444,6 +448,8 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--inflight-ttl-min` | `INFLIGHT_TTL_MIN` |  | minutes an in-flight mark blocks a second run at the same head |
 | `--turn-budget` | `TURN_BUDGET` |  | seconds one isolated seat turn may run (loop default) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts ('Automated by Diaktoros'), or stop |
+| `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only), or stop; turning it on needs --acknowledge-branch-push |
+| `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour), or start at once |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000; 0 = no cap |

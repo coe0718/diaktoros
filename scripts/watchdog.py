@@ -44,6 +44,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from diaktoros import review_only_conflict  # noqa: E402
 from diaktoros import ci_fix, config, envnames, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, transition, state as state_mod  # noqa: E402
 from diaktoros.util import age_min, epoch, log, now_iso  # noqa: E402
 
@@ -906,6 +907,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         return True
 
     conflicts: list[tuple[int, str, str, str]] = []
+    conflict_live: dict[int, dict] = {}
     for pr in prs:
         if not isinstance(pr, dict):
             continue
@@ -922,9 +924,13 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         # The listing carries no mergeability, so this is one read of the PR; GitHub computes it
         # lazily, and an unknown answer (null) is simply not a conflict yet.
         live = gh.pr(loop, number)
-        if (isinstance(live, dict) and live.get("mergeable_state") == "dirty"
+        # A review-only PR that merely fell behind counts too, when the host may update it.
+        stale = ("dirty", "behind") if (author in config.review_only(loop)
+                                        and config.review_only_update(loop)) else ("dirty",)
+        if (isinstance(live, dict) and live.get("mergeable_state") in stale
                 and (live.get("head") or {}).get("sha") == head):
             conflicts.append((number, head, str((live.get("base") or {}).get("sha") or ""), author))
+            conflict_live[number] = live
 
         # A held head is judged only by host-receipted post-boundary reviews: an old verdict
         # is not a current stall, and a missing fresh verdict is the reviewer's to post.
@@ -1071,12 +1077,38 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             except Exception as exc:
                 log(f"#{number} @ {head[:7]} conflict turn not queued: "
                     f"{type(exc).__name__}: {exc}")
+        next_review_only = ""
+        if review_only:
+            # The cause, the files and the commands (a dry merge on the host, nothing pushed);
+            # with review_only_update on, a clean merge is pushed first, once, under a lease.
+            tried = ""
+            try:
+                facts = review_only_conflict.assess(loop, number, head,
+                                                    conflict_live.get(number) or {})
+                if (conflict_live.get(number) or {}).get("mergeable_state") == "behind" \
+                        and (facts["conflicted"] or facts["error"]):
+                    continue                  # behind, not conflicting: nothing to say
+                pushed, tried = review_only_conflict.update(loop, number, head, facts)
+                if pushed:
+                    log(f"#{number} @ {head[:7]} merged {loop['base']} in: {pushed[:7]}")
+                    observer.notify(loop, st, "updated", number, pushed, identity="updated",
+                                    outcome=f"merged {loop['base']} into #{number} at "
+                                            f"{pushed[:7]}; review resumes",
+                                    next_turn="reviewer: the new head is reviewed as usual")
+                    continue
+                next_review_only = review_only_conflict.message(loop, author, facts, tried)
+            except Exception as exc:
+                log(f"#{number} review-only conflict facts unavailable: "
+                    f"{type(exc).__name__}: {exc}")
+                next_review_only = (f"{author}: merge {loop['base']} into the branch "
+                                    "(review-only — no fixer)")
+            if (conflict_live.get(number) or {}).get("mergeable_state") == "behind":
+                continue                      # behind and the host did not update: no conflict
         # Keyed by head (the observer dedups on it): a new push that still conflicts is a new
         # notice, a sweep that sees the same conflicted head again is not.
         observer.notify(loop, st, "conflict", number, head, identity="conflict",
                         outcome=f"conflicts with {loop['base']} — GitHub cannot merge it as it is",
-                        next_turn=(f"{author}: merge {loop['base']} into the branch (review-only "
-                                   "— no fixer)" if review_only else
+                        next_turn=(next_review_only if review_only else
                                    f"the fixer will try to merge {loop['base']} into the branch "
                                    "and resolve it (a whole-file conflict or workflow changes "
                                    "come back to you)" if resolving else

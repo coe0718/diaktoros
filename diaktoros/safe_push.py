@@ -732,3 +732,160 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
             "Git ref update not confirmed (unchanged)")
         raise failure from error
     return {**receipt, "new_head": new_head, "outcome": outcome}
+
+
+# -- the base merged into a review-only author's PR (opt-in, ``review_only_update``) -----------
+
+NEW_COMMITS_MAX = 200
+
+
+class NotClean(broker.BrokerDenied):
+    """The base does not merge into the head cleanly, or brings what the loop never pushes."""
+
+
+def _fetch_pair(git: "_Isolated", url: str, branch: str, head: str, base_ref: str) -> str:
+    """Fetch the PR branch (it must be at ``head``) and the base branch; return the base tip."""
+    code, _ = git.run_rc("check-ref-format", "--branch", base_ref)
+    if code:
+        raise broker.BrokerDenied("invalid base branch name")
+    bare = str(git.bare)
+    git.run("--git-dir", bare, "fetch", "--no-tags", "--no-recurse-submodules", url,
+            f"refs/heads/{branch}:refs/heads/snapshot", f"refs/heads/{base_ref}:refs/heads/base")
+    if _sha(git.run("--git-dir", bare, "rev-parse", "refs/heads/snapshot").decode()) != head:
+        raise broker.BrokerDenied("fetched PR branch moved")
+    return _sha(git.run("--git-dir", bare, "rev-parse", "refs/heads/base").decode())
+
+
+def _dry(git: "_Isolated", head: str, tip: str) -> dict:
+    """The merge of ``tip`` into ``head`` without a worktree: clean or not, the tree when clean,
+    the conflicted paths, whether the base brought workflow changes, and the base's new commits
+    (``[(sha, subject)]``) since the two split."""
+    bare = str(git.bare)
+    code, out = git.run_rc("--git-dir", bare, "merge-tree", "--write-tree", "--no-messages",
+                           "-z", head, tip)
+    if code not in (0, 1):
+        raise broker.BrokerDenied("merge of the base could not be computed")
+    fields = [field for field in out.split(b"\0") if field]
+    if not fields:
+        raise broker.BrokerDenied("merge of the base could not be computed")
+    tree = _sha(fields[0].decode())
+    conflicted: set[str] = set()
+    if code == 1:
+        for record in fields[1:]:
+            meta, _, path = record.partition(b"\t")
+            if path and len(meta.split()) == 3:
+                conflicted.add(path.decode("utf-8", "surrogateescape"))
+        if not conflicted:
+            raise broker.BrokerDenied("merge of the base could not be computed")
+    split = _sha(git.run("--git-dir", bare, "merge-base", head, tip).decode())
+    workflows = bool(git.run("--git-dir", bare, "diff", "--name-only", split, tip, "--",
+                             ".github/workflows"))
+    log = git.run("--git-dir", bare, "log", f"-n{NEW_COMMITS_MAX}", "--format=%H%x09%s",
+                  f"{split}..{tip}").decode("utf-8", "replace")
+    commits = [tuple(line.split("\t", 1)) for line in log.splitlines() if "\t" in line]
+    return {"clean": code == 0, "tree": tree, "conflicted": sorted(conflicted),
+            "workflows": workflows, "base": tip, "split": split, "commits": commits}
+
+
+def dry_merge(loop: dict, *, branch: str, head: str, base_ref: str, login: str,
+              remote: str | None = None) -> dict:
+    """A dry merge of the base's tip into the PR head, in a private bare repository: nothing is
+    pushed, nothing is written outside it (the same isolated merge the conflict turn uses)."""
+    _sha(head)
+    identity = {"name": "review-loop", "email": "review-loop@localhost"}
+    with _isolated(loop, login, identity, remote) as (git, url):
+        return _dry(git, head, _fetch_pair(git, url, branch, head, base_ref))
+
+
+def update_branch(loop: dict, *, repo: str, number: int, head: str, branch: str,
+                  remote: str | None = None) -> dict:
+    """Merge the base into a review-only author's same-repository PR branch and push the merge
+    commit with a lease on ``head``. Only a clean merge that carries no workflow change is pushed
+    (``NotClean`` otherwise); the author pushing meanwhile makes the lease fail, overwriting nothing.
+
+    Pushes as the account that makes the host's merge pushes (the fixer seat), within the push
+    policy: ``review_only_update`` and unattended fixer pushes must both be on."""
+    _sha(head)
+    if not config.review_only_update(loop):
+        raise broker.BrokerDenied("review-only updates disabled")
+    if not config.unattended_fixer_push_enabled(loop):
+        raise broker.BrokerDenied("unattended fixer push disabled")
+    login = config.seat_login(loop, "fixer")
+    reader = loop.get("read_token")
+    if (not login or not reader or not gh.token_path(loop, login) or not gh.token_path(loop, reader)
+            or login.casefold() == str(reader).casefold()):
+        raise broker.BrokerDenied("explicit seat and read token mappings required")
+    if not isinstance(branch, str) or len(branch) > 200 or not all(
+            SEGMENT.fullmatch(part) and not part.startswith(".") and not part.endswith(".")
+            and ".." not in part and not part.endswith(".lock") for part in branch.split("/")):
+        raise broker.BrokerDenied("unsafe branch ref")
+
+    def authorize() -> None:
+        current = gh.api(loop, f"/repos/{repo}/pulls/{number}", login=reader)
+        if not isinstance(current, dict):
+            raise broker.BrokerDenied("cannot verify live PR")
+        pr_head, pr_base = current.get("head") or {}, current.get("base") or {}
+        author = str((current.get("user") or {}).get("login") or "").lower()
+        if (current.get("number") != number or current.get("state") != "open"
+                or current.get("draft") is not False):
+            raise broker.BrokerDenied("PR identity, state or draft status changed")
+        if (pr_base.get("repo") or {}).get("full_name") != repo or pr_base.get("ref") != loop.get("base"):
+            raise broker.BrokerDenied("PR base branch mismatch")
+        if pr_head.get("sha") != head:
+            raise broker.BrokerDenied("stale PR head")
+        if pr_head.get("ref") != branch or (pr_head.get("repo") or {}).get("full_name") != repo:
+            raise broker.BrokerDenied("fork head not permitted for credentialed writes")
+        if author not in config.review_only(loop):
+            raise broker.BrokerDenied("PR author is not review-only")
+
+    authorize()
+    seat = _api(loop, "/user", login=login)
+    if (not isinstance(seat.get("login"), str) or seat["login"].casefold() != login.casefold()
+            or type(seat.get("id")) is not int or seat["id"] <= 0
+            or not re.fullmatch(r"[A-Za-z0-9-]+", seat["login"])):
+        raise broker.BrokerDenied("fixer identity changed")
+    identity = {"name": seat["login"],
+                "email": f"{seat['id']}+{seat['login']}@users.noreply.github.com"}
+    ref = f"refs/heads/{branch}"
+    ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
+    receipt = {"repo": repo, "pr": number, "old_head": head, "branch": branch,
+               "role": "review_only_update", "login": login, "paths": [],
+               "operation": "update_branch"}
+    new_head = None
+    attempt_started = False
+    error = None
+    with _isolated({**loop, "repo": repo}, login, identity, remote) as (git, url):
+        bare = str(git.bare)
+        tip = _fetch_pair(git, url, branch, head, loop["base"])
+        merged = _dry(git, head, tip)
+        if not merged["clean"]:
+            raise NotClean(f"{len(merged['conflicted'])} file(s) conflict: "
+                           + ", ".join(merged["conflicted"][:5]))
+        if merged["workflows"]:
+            raise NotClean(f"{loop['base']} changed workflow files, which a push without the "
+                           "`workflow` scope cannot carry")
+        message = attribution.sign_commit(loop, f"Merge {loop['base']} into {branch}")
+        new_head = _sha(git.run("--git-dir", bare, "commit-tree", merged["tree"], "-p", head,
+                                "-p", tip, input=message.encode("utf-8") + b"\n").decode())
+        receipt["merge_base"] = tip
+        authorize()
+        attempt_started = True
+        _audit(loop, {**receipt, "new_head": new_head, "phase": "attempt"})
+        try:
+            git.run("--git-dir", bare, "push", "--porcelain",
+                    f"--force-with-lease={ref}:{head}", url, f"{new_head}:{ref}")
+        except Exception as exc:
+            error = exc
+    observed = None
+    try:
+        got = _api(loop, ref_path, login=login)
+        observed = _sha((got.get("object") or {}).get("sha")) if got.get("ref") == ref else None
+    except Exception:
+        observed = None
+    outcome = ("published" if observed == new_head
+               else "unchanged" if observed == head else "unknown")
+    _audit(loop, {**receipt, "new_head": new_head, "phase": "reconciled",
+                  "outcome": outcome, "observed_head": observed})
+    if error is not None or outcome != "published":
+        raise PushFailure(outcome) from error
+    return {**receipt, "new_head": new_head, "base": tip, "outcome": outcome}

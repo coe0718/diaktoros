@@ -156,6 +156,11 @@ config_schema:
     type: str
     default: ""
     description: "Reviewer turns per local day on review-only PRs, a whole number 1-1000; once spent they wait until midnight. Blank = not set here: the loop's own value, else no cap"
+  review_only_update:
+    label: "Merge the base into review-only PRs"
+    type: bool
+    default: false
+    description: "Off (default): a review-only PR that conflicts gets a notice naming the merged PRs, the files and the commands. On: the host also pushes a clean merge of the base into the author's same-repository branch, with a lease on the head it read (a push to a branch the loop does not own; needs unattended fixer pushes). Never resolves a real conflict or a workflow change"
   required_checks:
     label: "Required CI checks (comma-separated)"
     type: str

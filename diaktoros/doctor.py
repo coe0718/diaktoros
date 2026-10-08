@@ -1498,6 +1498,40 @@ def check_fixer_push(loop: dict) -> Check:
                  f"`{config.fixer_push_enable_command(loop)}`")
 
 
+def check_review_only_update(loop: dict, offline: bool = False) -> Check | None:
+    """The host's merge pushes to a review-only author's branch (a branch the loop does not own):
+    off is the default; on, the pushing token must be able to push to the repository."""
+    lid = shlex.quote(str(loop.get("id") or "<id>"))
+    if not config.review_only_update(loop):
+        return None
+    if not config.unattended_fixer_push_enabled(loop):
+        return Check("review-only-update", MISMATCH,
+                     "on, but unattended fixer pushes are off, so the host pushes nothing",
+                     f"`{config.fixer_push_enable_command(loop)}`, or `hermes dk set --loop {lid} "
+                     "--review-only-update off`")
+    login = config.seat_login(loop, "fixer")
+    if offline:
+        return Check("review-only-update", UNKNOWN,
+                     f"on — {login} pushes merge commits to review-only branches; the token's push "
+                     "access was not probed (--offline)")
+    repo = gh.api(loop, f"/repos/{loop['repo']}", login=login)
+    perms = repo.get("permissions") if isinstance(repo, dict) else None
+    if not isinstance(perms, dict):
+        return Check("review-only-update", UNKNOWN,
+                     f"on — could not read {login}'s access to {loop['repo']}",
+                     f"check {login}'s token can read {loop['repo']}")
+    if perms.get("push") is not True:
+        return Check("review-only-update", MISMATCH,
+                     f"on, but {login}'s token cannot push to {loop['repo']}: the host's merge "
+                     "push would be refused",
+                     f"give {login} write access to {loop['repo']}, or `hermes dk set --loop {lid} "
+                     "--review-only-update off`")
+    return Check("review-only-update", VERIFIED,
+                 f"on — {login} can push to {loop['repo']}; clean merges of {loop['base']} are "
+                 "pushed to same-repository review-only branches under a lease, never conflicts, "
+                 "workflow changes or forks")
+
+
 def check_attribution(loop: dict) -> Check:
     """Whether what the loop posts is signed (#197). Both answers are valid; this only says which."""
     from . import attribution
@@ -1985,6 +2019,9 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.extend(check_seat_models(loop))
     checks.extend(check_seat_extras(loop))
     checks.append(check_fixer_push(loop))
+    update = check_review_only_update(loop, offline)
+    if update:
+        checks.append(update)
     checks.append(check_attribution(loop))
     checks.append(check_sandbox_caps(loop))
     identity = check_adjudicator_identity(loop)
