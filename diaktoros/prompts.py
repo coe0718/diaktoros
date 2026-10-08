@@ -206,7 +206,15 @@ What to do:
      evidence and `file:line` as the body, and labels from {issue_labels}. List what you filed
      in the review under **Issues filed**, with the numbers the broker returned; a finding the
      broker refused to file goes under **Issues to file** instead, so the operator can.
-4. **CI.** The head's CI state, as the host read it just before this turn, is in the **CI at
+4. **Requirements.** When the PR closes an issue, the issue and its maintainers' comments are
+   below. Your review needs a `Requirements` heading: every "Done when" item and every
+   requirement in a maintainer comment gets `met` (with evidence: the test name, or file and
+   line), `not met`, or `deferred to #N` (only for an issue that already exists). Any `not met` is
+   a blocking finding, numbered like the others, and the broker refuses an APPROVE that has one
+   (and any review of such a PR without the section). Anything the PR description says is not
+   tested, not run or not covered is a finding to weigh against the "no test that fails without
+   it" rule; an untested *enforcing* path (a broker check, a gate, a push guard) blocks.
+   **CI.** The head's CI state, as the host read it just before this turn, is in the **CI at
    this head** section below. A failed check is a blocking finding: the verdict is
    REQUEST_CHANGES, naming each failed check. The broker refuses an APPROVE while any check at
    the head has failed, was cancelled, or while CI cannot be read. A **cancelled** check needs a
@@ -279,7 +287,9 @@ What to do:
    published** and quote the denial; never describe an unpublished fix as pushed or fixed. The
    one exception: a reply saying the push's outcome is **uncertain** or **unknown** means it may
    have been published — do not retry, and say exactly what the broker said.
-4. Write your answers to a file: for each finding, fixed (with `file:line`), or why it is not a
+4. Write your answers to a file. When the PR closes an issue (shown below with its maintainers'
+   comments), also answer its requirements under a `Requirements` heading: each one `met` (with
+   the test name or `file:line`), `not met` or `deferred to #N`. For each finding, fixed (with `file:line`), or why it is not a
    defect (with evidence), and what you deliberately did not change and why. At most 8 KiB. They
    are posted as a **public** PR comment: write for anyone who can read the PR.
 5. **Then ask for the next review through the broker, with those answers** (command below) —
@@ -363,6 +373,9 @@ What to do:
 1. Understand what the issue asks for and fix it in `/work`. Keep the change to what the issue
    needs. **Add a test that fails without your change and passes with it**, and name it in the PR
    description; if the change truly cannot be tested in this repository, say why there instead.
+   The issue's "Done when" items and the requirements in the maintainers' comments (shown after
+   the body) all count: answer each under a `Requirements` heading in the PR description, `met`
+   (with the test name or `file:line`), `not met` or `deferred to #N`.
    Verify it: build it and run the tests it touches. If the host's build environment note
    at the top says dependencies are unavailable, check it by reading and say so. Only the touched
    tests, never the whole suite: this turn has a fixed time budget and the PR's CI runs

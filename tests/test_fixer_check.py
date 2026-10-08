@@ -59,10 +59,12 @@ class Prompts(unittest.TestCase):
         with mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
              mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None), \
              mock.patch("diaktoros.gh.pr_url", return_value="https://github.com/acme/widgets/pull/7"), \
+             mock.patch("diaktoros.issue_facts.section", return_value=""), \
              mock.patch("diaktoros.gh.issue_comments_read", return_value=([], None)):
             fixer = run_supervisor.isolated_prompt(loop, row, [], change=change)
         with mock.patch.object(run_supervisor, "issue_fix_issue",
-                               return_value={"title": "T", "body": "B"}):
+                               return_value={"title": "T", "body": "B"}), \
+             mock.patch("diaktoros.gh.issue_comments_read", return_value=([], "")):
             issue = run_supervisor.issue_fix_prompt(loop, {**row, "seat": "issue_fixer"})
         for text in (fixer, issue):
             self.assertIn("## Always-run check (set by the loop's operator)", text)

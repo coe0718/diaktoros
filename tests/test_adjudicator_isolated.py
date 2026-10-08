@@ -453,6 +453,8 @@ class Prompts(Base):
         super().setUp()
         # The reviewer's and fixer's prompts read the head's CI (no checks here); nothing else.
         def no_other_read(loop, path, *args, **kwargs):
+            if path.endswith("/pulls/7"):      # #511: the PR's closing issues (none here)
+                return {"number": 7, "body": ""}
             raise AssertionError(f"unexpected GitHub read {path}")
         patch = mock.patch.object(gh, "api", side_effect=_ci_green.green(no_other_read))
         patch.start()

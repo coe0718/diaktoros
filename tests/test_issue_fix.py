@@ -285,6 +285,9 @@ class Worker(Base):
         patch = mock.patch.object(gh, "api", side_effect=lambda *a, **k: self.live)
         patch.start()
         self.addCleanup(patch.stop)
+        comments = mock.patch.object(gh, "issue_comments_read", return_value=([], ""))
+        comments.start()
+        self.addCleanup(comments.stop)
 
     def test_the_prompt_names_the_base_branch_and_carries_the_issue_as_data(self):
         text = run_supervisor.issue_fix_prompt(self.loop, {"repo": REPO, "pr": 12, "head": BASE})
@@ -451,6 +454,7 @@ class WorkerLaunch(Base):
                                   side_effect=resolve_profile), \
                 mock.patch.object(config, "by_repo", return_value=self.loop), \
                 mock.patch.object(gh, "api", return_value=issue()), \
+                mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
                 mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
                 mock.patch.object(sup, "recover"), \
                 mock.patch.dict(os.environ, {"HERMES_HOME": str(self.root)}):

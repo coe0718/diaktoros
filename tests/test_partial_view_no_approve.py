@@ -488,9 +488,12 @@ class LaunchPathRefuses(pc.Base):
                 sock = str(Path(kw["broker_socket_dir"]) / "broker.sock")
                 seat["query"] = Path(kw["query"]).read_text()
                 seat["approve"] = broker_client.call("review", verdict="APPROVE",
-                                                     body="looks fine", socket_path=sock)
+                                                     body="looks fine\n\n## Requirements\n"
+                                                          "- item: met (test_x)\n",
+                                                     socket_path=sock)
                 seat["changes"] = broker_client.call("review", verdict="REQUEST_CHANGES",
-                                                     body="the file list was unavailable",
+                                                     body="the file list was unavailable\n\n"
+                                                          "## Requirements\n- item: not met\n",
                                                      socket_path=sock)
                 return subprocess.CompletedProcess([], 0, "", "")
 
