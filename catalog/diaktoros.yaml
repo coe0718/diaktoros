@@ -1,19 +1,19 @@
 # Copy of the catalog entry for this plugin.
 #
-# The live entry lives in NousResearch/hermes-agent at plugin-catalog/hermes-review-loop.yaml.
+# The live entry lives in NousResearch/hermes-agent at plugin-catalog/diaktoros.yaml.
 # This copy is kept here so the entry and the code it points at move together: a SHA bump here is
 # the reminder that the catalog PR needs the same change. `sha` below is filled in by the release
 # step (it must be a full 40-character commit SHA — the loader rejects branches and short SHAs).
-name: hermes-review-loop
-repo: https://github.com/coe0718/hermes-review-loop
+name: diaktoros
+repo: https://github.com/coe0718/diaktoros
 sha: 0000000000000000000000000000000000000000   # replaced with the release commit at publish time
 description: "Unattended GitHub pull-request review between two Hermes agents: one pushes fixes, a different one reviews, rounds are capped in verdicts, a watchdog reports silent stalls, and the loop never merges. Disclosure — runs unattended Hermes agent turns inside bubblewrap (terminal and file tools, no network, no credentials); a host-side broker and the CLI write to GitHub (reviews, comments, labels, issues, repo webhooks, opt-in fixer pushes) with repo-scope PAT files you provide; edits Hermes's webhook_subscriptions.json directly and its watchdog re-adds this loop's routes while armed; writes gate scripts into the seat profiles' scripts/ folders and creates one hermes cron job; downloads PR archives from codeload.github.com and Rust crates from crates.io on the host; deletes its own state and closed-PR review dirs in roots you configure; on OAuth seats its host proxy may force Hermes token refreshes that rewrite ~/.claude, ~/.codex, ~/.qwen and profile auth.json credentials, and on Claude subscription logins it identifies as Claude Code (Claude Code user-agent, x-app and OAuth beta headers). Nothing runs until you arm a loop. Linux only."
 maintainer: coe0718
 tier: community
 category: automation
 requires_hermes: '>=0.21.5'
-docs_url: https://github.com/coe0718/hermes-review-loop#readme
-version: "0.1.1"
+docs_url: https://github.com/coe0718/diaktoros#readme
+version: "0.2.0"
 platforms:
   # Linux only: every seat turn runs in bubblewrap (user namespaces), which macOS lacks.
   - linux
