@@ -153,6 +153,10 @@ class Broker(pv.Broker):
         patch = mock.patch.object(gh, "api", side_effect=self.api)
         patch.start()
         self.addCleanup(patch.stop)
+        files = mock.patch.object(gh, "pr_files_read", return_value=(
+            [{"filename": "src/lib.rs", "patch": "@@ -1,2 +1,3 @@\n a\n+b\n c"}], ""))
+        files.start()
+        self.addCleanup(files.stop)
 
     def api(self, loop, path, method="GET", body=None, login=None):
         if "/check-runs" in path:
@@ -172,7 +176,7 @@ class Broker(pv.Broker):
         self.assertEqual(self.posts, [])
         self.assertEqual(self.receipts(sup), [])
         self.assertFalse(server.completed)
-        self.assertTrue(self.send(server, "REQUEST_CHANGES", "tests (3.11) fails\nNot verified: nothing")["ok"])
+        self.assertTrue(self.send(server, "REQUEST_CHANGES", "F1: src/lib.rs:1: tests (3.11) fails\nNot verified: nothing")["ok"])
         self.assertEqual([p["event"] for p in self.posts], ["REQUEST_CHANGES"])
         self.assertTrue(server.completed)
 

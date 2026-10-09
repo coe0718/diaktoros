@@ -29,6 +29,7 @@ from scripts import broker_client as script_client
 HEAD = "a" * 40
 BASE = "b" * 40
 REPO = "acme/widgets"
+CITED = "F1: src/lib.rs:2: wrong\nNot verified: nothing"
 REFUSAL = "review verdict must be APPROVE or REQUEST_CHANGES"
 
 
@@ -54,6 +55,10 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
         patch = mock.patch.object(gh, "api", side_effect=_ci_green.green(self.api))
         patch.start()
         self.addCleanup(patch.stop)
+        files = mock.patch.object(gh, "pr_files_read", return_value=(
+            [{"filename": "src/lib.rs", "patch": "@@ -1,2 +1,3 @@\n a\n+b\n c"}], ""))
+        files.start()
+        self.addCleanup(files.stop)
 
     def api(self, loop, path, method="GET", body=None, login=None):
         if path == "/user":
@@ -108,6 +113,41 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
         self.assertEqual(self.send(server, "REQUEST_CHANGES")["error"], "run capability already used")
         self.assertEqual(len(self.posts), 1)
 
+    def test_broker_refuses_uncited_or_out_of_diff_block_then_cited_one_goes_through(self):
+        # #476, through the RunBroker entry point: removing the call in broker_ipc turns it red.
+        server = self.start(broker_ipc.RunScope(REPO, 7, HEAD, "reviewer", "fix-7"))
+        for body in ("F1: it is wrong\nNot verified: nothing",
+                     "F1: src/lib.rs:99: wrong\nNot verified: nothing",
+                     "just bad\nNot verified: nothing"):
+            refused = self.send(server, "REQUEST_CHANGES", body)
+            self.assertFalse(refused["ok"])
+            self.assertIn("nothing was written", refused["error"])
+        self.assertEqual(self.posts, [])
+        self.assertTrue(self.send(server, "REQUEST_CHANGES", CITED)["ok"])
+        self.assertEqual([p["event"] for p in self.posts], ["REQUEST_CHANGES"])
+
+    def test_red_ci_is_blocked_by_naming_the_failed_check(self):
+        # #348 refuses the APPROVE on red CI and tells the reviewer to request changes naming the
+        # failed checks; the failure may live in a file this PR never touched, so the check's
+        # name is the citation. Without it the reviewer could neither approve nor block.
+        from diaktoros import ci
+        server = self.start(broker_ipc.RunScope(REPO, 7, HEAD, "reviewer", "fix-7"))
+        with mock.patch.object(ci, "read", return_value=ci.CIState(failed=["tests (3.11)"])):
+            uncited = self.send(server, "REQUEST_CHANGES", "F1: it is wrong\nNot verified: nothing")
+            self.assertFalse(uncited["ok"])
+            named = self.send(server, "REQUEST_CHANGES",
+                              "F1: required check tests (3.11) fails in tests/test_other.py\n"
+                              "Not verified: nothing")
+        self.assertTrue(named["ok"], named)
+
+    def test_unreadable_ci_does_not_hold_a_block_to_the_diff(self):
+        from diaktoros import ci
+        server = self.start(broker_ipc.RunScope(REPO, 7, HEAD, "reviewer", "fix-7"))
+        with mock.patch.object(ci, "read", return_value=None):
+            response = self.send(server, "REQUEST_CHANGES",
+                                 "F1: CI could not be read at this head\nNot verified: CI")
+        self.assertTrue(response["ok"], response)
+
     def test_receipted_run_comment_refused_before_claim_then_verdict_confirms(self):
         sup, scope = self.receipt_scope()
         server = self.start(scope)
@@ -115,7 +155,7 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
         with ledger.connect(sup.db) as con:
             self.assertIsNone(con.execute("SELECT * FROM review_receipts").fetchone())
         self.assertEqual(self.posts, [])
-        self.assertTrue(self.send(server, "REQUEST_CHANGES")["ok"])
+        self.assertTrue(self.send(server, "REQUEST_CHANGES", CITED)["ok"])
         with ledger.connect(sup.db) as con:
             self.assertEqual(con.execute("SELECT state,review_id,verdict FROM review_receipts")
                              .fetchone(), ("confirmed", 19, "CHANGES_REQUESTED"))
