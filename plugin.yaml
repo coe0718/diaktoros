@@ -176,6 +176,11 @@ config_schema:
     type: bool
     default: false
     description: "On: a review waits while the head's checks are still running (up to an hour), then starts with their results. Off: it starts at once, and the reviewer sees whatever CI has finished so far."
+  fix_ci:
+    label: "Fix a failed CI check"
+    type: bool
+    default: false
+    description: "On: a failed required check on a fixer's PR becomes one fixer turn per head (needs unattended fixer pushes on). Off: a red check is only reported."
   attribution:
     label: "Sign what the loop posts"
     type: bool

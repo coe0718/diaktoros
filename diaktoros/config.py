@@ -205,6 +205,10 @@ SETTINGS_SCHEMA: dict = {
                                        "running (up to an hour), then starts with their results. "
                                        "Off: it starts at once, and the reviewer sees whatever CI "
                                        "has finished so far."},
+    "fix_ci": {"label": "Fix a failed CI check", "type": "bool", "default": False,
+               "description": "On: a failed required check on a fixer's PR becomes one fixer "
+                              "turn per head (needs unattended fixer pushes on). Off: a red "
+                              "check is only reported."},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by Diaktoros' and "
@@ -363,6 +367,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         overlaid["attribution"] = d["attribution"]
     if _form_value(settings, "review_after_ci") is not None:
         overlaid["review_after_ci"] = d["review_after_ci"]
+    if _form_value(settings, "fix_ci") is not None:
+        overlaid["fix_ci"] = d["fix_ci"]
     if _form_value(settings, "review_only_update") is not None:
         overlaid["review_only_update"] = d["review_only_update"]
     if _form_value(settings, "review_only") is not None:

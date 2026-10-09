@@ -1498,6 +1498,24 @@ def check_fixer_push(loop: dict) -> Check:
                  f"`{config.fixer_push_enable_command(loop)}`")
 
 
+def check_fix_ci(loop: dict) -> Check:
+    """Whether a failed required check on a fixer's PR becomes a fixer turn (#526). On needs
+    unattended fixer pushes, since the CI-fix turn publishes a push."""
+    lid = shlex.quote(str(loop.get("id") or "<id>"))
+    if loop.get("fix_ci") is not True:
+        return Check("fix-ci", VERIFIED,
+                     f"off — a red check is only reported (`hermes dk set --loop {lid} "
+                     "--fix-ci on` to hand it to the fixer)")
+    if not config.unattended_fixer_push_enabled(loop):
+        return Check("fix-ci", MISMATCH,
+                     "on, but unattended fixer pushes are off, so no CI-fix turn can push",
+                     f"`{config.fixer_push_enable_command(loop)}`, or `hermes dk set --loop {lid} "
+                     "--fix-ci off`")
+    return Check("fix-ci", VERIFIED,
+                 "on — a failed required check on a fixer's PR becomes one fixer turn per head "
+                 f"(`hermes dk set --loop {lid} --fix-ci off` to stop)")
+
+
 def check_review_only_update(loop: dict, offline: bool = False) -> Check | None:
     """The host's merge pushes to a review-only author's branch (a branch the loop does not own):
     off is the default; on, the pushing token must be able to push to the repository."""
@@ -2022,6 +2040,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     update = check_review_only_update(loop, offline)
     if update:
         checks.append(update)
+    checks.append(check_fix_ci(loop))
     checks.append(check_attribution(loop))
     checks.append(check_sandbox_caps(loop))
     identity = check_adjudicator_identity(loop)
