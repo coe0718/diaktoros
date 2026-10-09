@@ -1747,6 +1747,8 @@ def cmd_init(args) -> int:
         "attribution": _attribution_arg(args, d["attribution"]),
         "review_after_ci": _on_off(args, "review_after_ci", d["review_after_ci"]),
         "fix_ci": _on_off(args, "fix_ci", d["fix_ci"]),
+        "ci_fix_cap": (d["ci_fix_cap"] if getattr(args, "ci_fix_cap", None) is None
+                       else args.ci_fix_cap),
         # Host merge pushes to a review-only author's branch: off unless asked for and acknowledged.
         "review_only_update": _on_off(args, "review_only_update", d["review_only_update"]),
         # The checks CI always runs, which a fixer running only its touched tests would miss.
@@ -2163,8 +2165,10 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
         argv.append(f"--review-only-update={args.review_only_update}")
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
+    if getattr(args, "ci_fix_cap", None) is None and d["ci_fix_cap"] != config.DEFAULTS["ci_fix_cap"]:
+        argv.append(f"--ci-fix-cap={d['ci_fix_cap']}")
     for flag in ("reviewer_max_steps", "fixer_max_steps", "fix_daily_turns",
-                 "review_only_cap", "review_only_daily"):
+                 "review_only_cap", "review_only_daily", "ci_fix_cap"):
         if getattr(args, flag, None) is not None:
             argv.append(f"--{flag.replace('_', '-')}={getattr(args, flag)}")
     if admin:
@@ -2426,6 +2430,12 @@ def cmd_set(args) -> int:
             and not getattr(args, "acknowledge_branch_push", False)):
         print(BRANCH_PUSH_REFUSAL)
         return 2
+    if getattr(args, "ci_fix_cap", None) is not None:
+        try:
+            wanted["ci_fix_cap"] = config.check_ci_fix_cap(args.ci_fix_cap, "--ci-fix-cap")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
     changes = {k: v for k, v in wanted.items()
                if v is not None and v != "" and v != loop.get(k)}
     if getattr(args, "required_check", None) is not None or getattr(args, "no_required_checks",
@@ -2891,7 +2901,8 @@ def _apply(args) -> int:
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
-                "fix_ci", "review_only_update", "required_checks", "review_only", "review_only_cap", "review_only_daily"):
+                "fix_ci", "ci_fix_cap", "review_only_update", "required_checks", "review_only",
+                "review_only_cap", "review_only_daily"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -5163,6 +5174,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="hand a failed required check on a fixer's PR to the fixer, one "
                                "turn per head; needs unattended fixer pushes "
                                f"(default {'on' if d['fix_ci'] else 'off'})")
+        init.add_argument("--ci-fix-cap", type=int, default=None, metavar="N",
+                          help="CI-fix turns per PR across its heads, 1-10; they never count "
+                               f"against the review cap (default {d['ci_fix_cap']}; needs --fix-ci on)")
         init.add_argument("--attribution", choices=("on", "off"), default=None,
                           help="sign what the loop posts with 'Automated by Diaktoros' "
                                f"(default {'on' if d['attribution'] else 'off'})")
@@ -5236,6 +5250,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         first.add_argument("--adjudicator-profile", default=None,
                            help="Hermes profile that rules when a PR's verdict cap is spent; "
                                 "turns adjudication on (blank: off) (default: the plugin setting)")
+        first.add_argument("--ci-fix-cap", type=int, default=None, metavar="N",
+                           help="CI-fix turns per PR across its heads, 1-10; they never count "
+                                "against the review cap (default: the plugin setting, else 3)")
         first.add_argument("--review-only-cap", default=None, metavar="N",
                            help="verdicts the reviewer gives one review-only PR before it waits "
                                 "for `review --another-round`, 1-1000 (default: the plugin "
@@ -5440,6 +5457,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--fix-ci", choices=("on", "off"), default=None,
                             help="hand a failed required check on a fixer's PR to the fixer "
                                  "(needs unattended fixer pushes), or stop")
+        change.add_argument("--ci-fix-cap", type=int, default=None, metavar="N",
+                            help="CI-fix turns per PR across its heads, 1-10 (needs --fix-ci on)")
         change.add_argument("--review-only-cap", default=None, metavar="N",
                             help="verdicts the reviewer gives one review-only PR before it waits "
                                  "for `review --another-round`, 1-1000; 0 = the review cap")

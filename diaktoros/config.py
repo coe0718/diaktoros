@@ -209,6 +209,11 @@ SETTINGS_SCHEMA: dict = {
                "description": "On: a failed required check on a fixer's PR becomes one fixer "
                               "turn per head (needs unattended fixer pushes on). Off: a red "
                               "check is only reported."},
+    "ci_fix_cap": {"label": "CI-fix turns per PR", "type": "int", "default": 3,
+                   "description": "CI-fix turns the fixer gets per PR, across its heads, 1-10. "
+                                  "While any remain, a red required check goes to the fixer and "
+                                  "the reviewer waits; they never count against the review cap. "
+                                  "Needs 'Fix a failed CI check' on"},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by Diaktoros' and "
@@ -369,6 +374,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         overlaid["review_after_ci"] = d["review_after_ci"]
     if _form_value(settings, "fix_ci") is not None:
         overlaid["fix_ci"] = d["fix_ci"]
+    if _form_value(settings, "ci_fix_cap") is not None:
+        overlaid["ci_fix_cap"] = check_ci_fix_cap(_form_int(d["ci_fix_cap"]), "settings")
     if _form_value(settings, "review_only_update") is not None:
         overlaid["review_only_update"] = d["review_only_update"]
     if _form_value(settings, "review_only") is not None:
@@ -672,6 +679,7 @@ DEFAULTS: dict = {
     "attribution": True,      # sign what the loop posts (#197); false turns footer and trailer off
     "review_after_ci": False,  # hold a review while the head's checks are still running (#241)
     "fix_ci": False,          # hand a red required check on a fixer's PR to the fixer (#306)
+    "ci_fix_cap": 3,          # CI-fix turns per PR across its heads (#539); never spends a verdict
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
     "review_only": [],        # authors reviewed but never fixed (#191); [] = fixers only
@@ -943,6 +951,27 @@ def _check_review_only_limit(value, key: str, where: str) -> int | None:
         raise ConfigError(f"{where}: {key} must be a whole number, 1-{DAILY_TURNS_MAX} "
                           f"(leave it empty for the default), got {value!r}")
     return value
+
+
+CI_FIX_CAP_MAX = 10
+
+
+def check_ci_fix_cap(value, where: str) -> int:
+    """``ci_fix_cap``: a whole number, 1-10."""
+    if isinstance(value, str):
+        value = _form_int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= CI_FIX_CAP_MAX:
+        raise ConfigError(f"{where}: ci_fix_cap must be a whole number, 1-{CI_FIX_CAP_MAX}, "
+                          f"got {value!r}")
+    return value
+
+
+def ci_fix_cap(loop: dict) -> int:
+    """CI-fix turns one PR may get across its heads (#539)."""
+    value = loop.get("ci_fix_cap")
+    if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= CI_FIX_CAP_MAX:
+        return value
+    return DEFAULTS["ci_fix_cap"]
 
 
 def review_only_cap(loop: dict) -> int:
@@ -1961,6 +1990,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if loop["cap"] < 2:
         raise ConfigError(f"{where}: 'cap' is the number of verdicts allowed; must be >= 2")
 
+    loop["ci_fix_cap"] = check_ci_fix_cap(loop["ci_fix_cap"], where)
     for key in ("review_only_cap", "review_only_daily"):
         loop[key] = _check_review_only_limit(loop.get(key), key, where)
 

@@ -20,7 +20,8 @@ import test_review_after_ci as rac  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import (broker_ipc, ci, ci_fix, config, gh, ledger, observer,  # noqa: E402
                          prompts, safe_push, trusted_turn)
-from diaktoros.run_supervisor import Supervisor  # noqa: E402
+from diaktoros import issue_facts, run_supervisor as run_supervisor_mod  # noqa: E402
+from diaktoros.run_supervisor import CI_HOLD, Supervisor  # noqa: E402
 
 RED = ci.CIState(failed=["tests (3.11)"], passed=["lint"], ids={"tests (3.11)": 55},
                  urls={"tests (3.11)": "https://github.com/acme/widgets/runs/55"})
@@ -29,27 +30,66 @@ LOOP = {"repo": "acme/widgets", "cap": 3, "read_token": "reader", "base": "main"
 
 
 class Decide(unittest.TestCase):
-    def decide(self, **kw):
-        base = dict(number=7, head="h2", failed=["tests"], verdicts=0, previous=None, used=0)
-        return ci_fix.decide(LOOP, **{**base, **kw})
+    """#539: the budget is ci_fix_cap turns per PR; the verdict cap and repeat failures are not in it."""
 
-    def test_a_first_red_head_is_queued(self):
-        self.assertEqual(self.decide(), ("queue", ""))
+    def test_turns_are_queued_until_the_budget_is_spent(self):
+        loop = {**LOOP, "ci_fix_cap": 3}
+        self.assertEqual([ci_fix.decide(loop, used=n)[0] for n in range(5)],
+                         ["queue", "queue", "queue", "spent", "spent"])
 
-    def test_ci_fixes_count_toward_the_verdict_cap(self):
-        self.assertEqual(self.decide(verdicts=1, used=1)[0], "queue")
-        action, why = self.decide(verdicts=2, used=1)
-        self.assertEqual(action, "hold")
-        self.assertIn("cap spent", why)
+    def test_the_verdict_cap_does_not_enter_it(self):
+        self.assertEqual(ci_fix.decide({**LOOP, "cap": 2, "ci_fix_cap": 3}, used=2)[0], "queue")
 
-    def test_the_same_job_failing_again_after_a_fix_holds_the_pr(self):
-        action, why = self.decide(previous={"head": "h1", "jobs": ["tests", "lint"]})
-        self.assertEqual(action, "hold")
-        self.assertIn("failed again after a fix", why)
-        self.assertIn('"tests"', why)
+    def test_the_default_is_three(self):
+        self.assertEqual(config.ci_fix_cap(LOOP), 3)
+        self.assertEqual(ci_fix.decide(LOOP, used=3)[0], "spent")
 
-    def test_a_different_job_failing_is_not_the_same_job(self):
-        self.assertEqual(self.decide(previous={"head": "h1", "jobs": ["lint"]})[0], "queue")
+    def test_red_goes_to_the_fixer_only_while_the_budget_remains(self):
+        loop = {**LOOP, "fix_ci": True, "unattended_fixer_push": True, "review_only": [],
+                "ci_fix_cap": 2}
+        done = [{"head": "h1", "state": "succeeded"}, {"head": "h2", "state": "succeeded"}]
+        with mock.patch.object(ci_fix, "rows", return_value=done[:1]):
+            self.assertTrue(ci_fix.red_goes_to_fixer(loop, "r/r", 1, "h2", "fix"))
+            self.assertFalse(ci_fix.red_goes_to_fixer(loop, "r/r", 1, "h1", "fix"))   # ran, ended
+            self.assertFalse(ci_fix.red_goes_to_fixer(loop, "r/r", 1, "h2", "someone"))
+            self.assertFalse(ci_fix.red_goes_to_fixer({**loop, "fix_ci": False}, "r/r", 1, "h2", "fix"))
+        with mock.patch.object(ci_fix, "rows", return_value=done):
+            self.assertFalse(ci_fix.red_goes_to_fixer(loop, "r/r", 1, "h3", "fix"))   # spent
+        live = [{"head": "h1", "state": "running"}]
+        with mock.patch.object(ci_fix, "rows", return_value=live):
+            self.assertTrue(ci_fix.red_goes_to_fixer(loop, "r/r", 1, "h1", "fix"))
+
+    def test_budget_line(self):
+        loop = {**LOOP, "fix_ci": True, "unattended_fixer_push": True, "ci_fix_cap": 3}
+        with mock.patch.object(ci_fix, "rows", return_value=[{"head": "a", "state": "failed"}] * 2):
+            self.assertEqual(ci_fix.budget_line(loop, "r/r", 1), "CI fixes: 2/3 spent")
+        with mock.patch.object(ci_fix, "rows", return_value=[]):
+            self.assertEqual(ci_fix.budget_line({**LOOP, "fix_ci": False}, "r/r", 1), "")
+
+    def test_test_paths(self):
+        for path in ("tests/test_a.py", "src/foo.test.ts", "pkg/a_test.go", "test_x.py",
+                     "spec/models/a_spec.rb", "web/__tests__/a.js"):
+            self.assertTrue(ci_fix.is_test_path(path), path)
+        for path in ("src/contest.py", "docs/testing.md", "src/latest.py"):
+            self.assertFalse(ci_fix.is_test_path(path), path)
+
+
+class Setting(unittest.TestCase):
+    def test_range_default_and_type(self):
+        self.assertEqual(config.normalize(rac.raw())["ci_fix_cap"], 3)
+        self.assertEqual(config.normalize(rac.raw(ci_fix_cap=10))["ci_fix_cap"], 10)
+        for bad in (0, 11, True, "x", 2.5):
+            with self.subTest(bad=bad), self.assertRaises(config.ConfigError):
+                config.normalize(rac.raw(ci_fix_cap=bad))
+
+    def test_form_overlay_schema_and_plugin_yaml(self):
+        self.assertNotIn("ci_fix_cap", config.apply_settings(rac.raw(), {}))
+        self.assertEqual(config.apply_settings(rac.raw(), {"ci_fix_cap": "5"})["ci_fix_cap"], 5)
+        with self.assertRaises(config.ConfigError):
+            config.apply_settings(rac.raw(), {"ci_fix_cap": "11"})
+        self.assertEqual(config.SETTINGS_SCHEMA["ci_fix_cap"]["default"], 3)
+        self.assertIn("  ci_fix_cap:", (Path(config.__file__).resolve().parents[1]
+                                        / "plugin.yaml").read_text())
 
 
 class Config(unittest.TestCase):
@@ -221,15 +261,168 @@ class Sweep(unittest.TestCase):
         self.assertEqual(queued, [])
         self.assertEqual(len(notices), 1)
 
-    def test_a_repeat_failure_holds_and_says_so(self):
-        notices, queued = self.run_sweep(rows=[{"head": "old", "state": "succeeded"}])
-        self.assertEqual(queued, [])
-        self.assertIn("failed again after a fix", notices[0][1]["next_turn"])
+    def test_the_notice_says_which_attempt_it_is(self):
+        for earlier, want in ((0, "CI fix 1 of 3 queued"), (1, "CI fix 2 of 3 queued"),
+                              (2, "CI fix 3 of 3 queued")):
+            rows = [{"head": f"old{i}", "state": "succeeded"} for i in range(earlier)]
+            notices, queued = self.run_sweep(rows=rows)
+            self.assertEqual(notices[0][1]["next_turn"], want)
+            self.assertEqual(len(queued), 1)
 
-    def test_the_verdict_cap_holds(self):
-        notices, queued = self.run_sweep(verdicts=3)
+    def test_a_job_failing_again_is_not_a_hold_and_the_verdict_cap_is_not_the_bound(self):
+        rows = [{"head": "old", "state": "succeeded"}]
+        notices, queued = self.run_sweep(rows=rows, verdicts=3)
+        self.assertEqual(len(queued), 1)
+        self.assertNotIn("holds", notices[0][1]["next_turn"])
+
+    def test_a_spent_budget_queues_nothing_and_says_the_reviewer_takes_it(self):
+        rows = [{"head": f"old{i}", "state": "failed"} for i in range(3)]
+        notices, queued = self.run_sweep(rows=rows)
         self.assertEqual(queued, [])
-        self.assertIn("cap spent", notices[0][1]["next_turn"])
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0][1]["identity"], "ci_fix_spent")
+        self.assertIn("budget spent (3 of 3)", notices[0][1]["outcome"])
+        self.assertIn("reviewer reviews", notices[0][1]["next_turn"])
+
+    def test_the_cap_is_the_loops(self):
+        rows = [{"head": f"old{i}", "state": "failed"} for i in range(3)]
+        notices, queued = self.run_sweep({"ci_fix_cap": 4}, rows=rows)
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(notices[0][1]["next_turn"], "CI fix 4 of 4 queued")
+
+
+class ReviewerGate(rac.Hold):
+    """The enforcing entry point (#539): the reviewer worker leaves a red head to the fixer while
+    the PR's CI-fix budget remains, and reviews it (one verdict) once it is spent."""
+
+    def setUp(self):
+        super().setUp()
+        self.ci_loop = {**self.loop, "fix_ci": True, "unattended_fixer_push": True, "fixers": ["fixer"],
+                        "review_only": [], "ci_fix_cap": 3}
+        self.pr = {"number": 7, "state": "open", "draft": False, "user": {"login": "fixer"},
+                   "head": {"sha": sm.HEAD, "ref": "fix-7"}}
+
+    def review(self, n_fixes, checks=RED, loop=None, live=False):
+        rows = [{"head": f"old{i}", "state": "succeeded"} for i in range(n_fixes)]
+        if live:
+            rows = [{"head": sm.HEAD, "state": "running"}] + rows
+        with mock.patch.object(ci_fix, "rows", return_value=rows), \
+             mock.patch.object(ci, "read", return_value=checks), \
+             mock.patch.object(observer, "notify"):
+            seen, row, _ = self.run_seat("reviewer", loop=loop or self.ci_loop, pr=self.pr)
+        return seen, row
+
+    def test_three_red_heads_get_no_reviewer_turn(self):
+        for fixes in (0, 1, 2):
+            with self.subTest(fixes=fixes):
+                seen, row = self.review(fixes)
+                self.assertEqual(seen, {}, "no review launched")
+                self.assertEqual(row[0], "waiting")
+                self.assertTrue(row[1].startswith(CI_HOLD))
+                self.assertIn(f"CI fix {fixes + 1} of 3", row[1])
+
+    def test_it_holds_without_review_after_ci(self):
+        self.assertNotIn("review_after_ci", self.ci_loop)
+        seen, row = self.review(0)
+        self.assertEqual((seen, row[0]), ({}, "waiting"))
+
+    def test_the_fourth_red_head_is_reviewed(self):
+        seen, row = self.review(3)
+        self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
+
+    def test_a_green_head_after_fixes_reviews_normally(self):
+        seen, row = self.review(2, checks=ci.CIState(passed=["tests (3.11)"]))
+        self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
+
+    def test_a_queued_fix_at_this_head_holds_even_at_the_cap(self):
+        seen, row = self.review(2, live=True)
+        self.assertEqual((seen, row[0]), ({}, "waiting"))
+
+    def test_off_or_not_a_fixers_pr_reviews_a_red_head(self):
+        seen, row = self.review(0, loop={**self.ci_loop, "fix_ci": False})
+        self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
+        self.pr = {**self.pr, "user": {"login": "someone"}}
+        seen, row = self.review(0)
+        self.assertEqual((seen["role"], row[0]), ("reviewer", "succeeded"))
+
+
+for _name in [n for n in dir(sm.Worker) if n.startswith("test_")]:
+    setattr(ReviewerGate, _name, None)
+for _name in [n for n in dir(rac.Hold) if n.startswith("test_")]:
+    setattr(ReviewerGate, _name, None) if not hasattr(ReviewerGate.__dict__.get(_name), "__call__") else None
+
+
+class Prompt(unittest.TestCase):
+    """#539: the reviewer gets the CI-fix commits and their test files as data, or nothing."""
+
+    LOOP = {**LOOP, "id": "w", "fix_ci": True, "unattended_fixer_push": True, "seats": {},
+            "reviewers": ["rev"], "reviewer_seat": "rev", "review_only": []}
+    ROW = {"seat": "reviewer", "repo": "acme/widgets", "pr": 7, "head": "c" * 40}
+    COMMITS = [{"sha": "b" * 40, "parents": [{"sha": "a" * 40}],
+                "commit": {"message": "make CI pass\n\nbody"}},
+               {"sha": "c" * 40, "parents": [{"sha": "b" * 40}], "commit": {"message": "human"}}]
+
+    def prompt(self, rows, state=RED, commits=None, detail=None, reviews=()):
+        detail = detail or {"files": [{"filename": "tests/test_a.py", "status": "modified",
+                                       "additions": 1, "deletions": 9},
+                                      {"filename": "src/a.py", "status": "modified"}]}
+        pages = (self.COMMITS if commits is None else commits, "")
+        with mock.patch.object(ci, "read", return_value=state), \
+             mock.patch.object(ci_fix, "rows", return_value=rows), \
+             mock.patch.object(gh, "_read_pages", return_value=pages), \
+             mock.patch.object(gh, "api", return_value=detail), \
+             mock.patch.object(ci_fix, "section", return_value="\nJOBS"), \
+             mock.patch.object(issue_facts, "section", return_value=""), \
+             mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
+             mock.patch.object(gh, "pr_url", return_value="https://github.com/acme/widgets/pull/7"):
+            return run_supervisor_mod.isolated_prompt(
+                self.LOOP, self.ROW, list(reviews),
+                change=run_supervisor_mod.PRChange("RECORD", "DIFF"), db="x")
+
+    def test_a_review_after_ci_fix_commits_gets_the_list(self):
+        text = self.prompt([{"head": "a" * 40, "state": "succeeded"}], state=ci.CIState(passed=["t"]))
+        self.assertIn("## CI-fix commits on this PR", text)
+        self.assertIn("bbbbbbbbbbbb | make CI pass", text)
+        self.assertIn("test file: tests/test_a.py (modified, +1 -9)", text)
+        self.assertIn("weakened, skipped or removed a test", text)
+        self.assertIn("blocking", text)
+        self.assertNotIn("cccccccccccc | human", text)       # not a CI-fix commit
+
+    def test_a_review_with_no_ci_fix_history_gets_none(self):
+        text = self.prompt([], state=ci.CIState(passed=["t"]))
+        self.assertNotIn("CI-fix commits", text)
+
+    def test_commits_already_reviewed_are_not_listed_again(self):
+        text = self.prompt([{"head": "a" * 40, "state": "succeeded"}], state=ci.CIState(passed=["t"]),
+                           reviews=[{"commit_id": "b" * 40}])
+        self.assertNotIn("CI-fix commits", text)
+
+    def test_unreadable_commits_are_said_not_skipped(self):
+        with mock.patch.object(gh, "_read_pages", return_value=(None, "boom")):
+            text = ci_fix.commits_section(self.LOOP, 7, [], db="x") if False else None
+        pages = (None, "HTTP 500")
+        with mock.patch.object(ci_fix, "rows", return_value=[{"head": "a", "state": "failed"}]), \
+             mock.patch.object(gh, "_read_pages", return_value=pages):
+            text = ci_fix.commits_section(self.LOOP, 7, [])
+        self.assertIn("could not be read", text)
+
+    def test_a_head_still_red_after_the_budget_gets_logs_and_the_reason(self):
+        rows = [{"head": f"{i}" * 40, "state": "failed"} for i in range(3)]
+        text = self.prompt(rows)
+        self.assertIn("still red after 3 CI-fix attempt(s)", text)
+        self.assertIn("counts as a verdict", text)
+        self.assertTrue("JOBS" in text)
+
+    def test_a_red_head_within_the_budget_gets_no_spent_section(self):
+        text = self.prompt([{"head": "a" * 40, "state": "failed"}])
+        self.assertNotIn("still red after", text)
+
+
+class Stall(unittest.TestCase):
+    def test_a_queued_or_running_ci_fix_is_not_a_stall(self):
+        from scripts import watchdog
+        src = Path(watchdog.__file__).read_text()
+        self.assertIn("ci_fix.pending_at(loop[\"repo\"], number, head)", src)
 
 
 class Hold(unittest.TestCase):

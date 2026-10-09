@@ -181,6 +181,11 @@ config_schema:
     type: bool
     default: false
     description: "On: a failed required check on a fixer's PR becomes one fixer turn per head (needs unattended fixer pushes on). Off: a red check is only reported."
+  ci_fix_cap:
+    label: "CI-fix turns per PR"
+    type: int
+    default: 3
+    description: "CI-fix turns the fixer gets per PR across its heads, 1-10. While any remain, a red required check goes to the fixer and the reviewer waits; these turns never count against the review cap. Once spent, a red head gets a normal review. Only takes effect with 'Fix a failed CI check' on (and unattended fixer pushes)"
   attribution:
     label: "Sign what the loop posts"
     type: bool

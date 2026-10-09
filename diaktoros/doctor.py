@@ -1504,7 +1504,8 @@ def check_fix_ci(loop: dict) -> Check:
     lid = shlex.quote(str(loop.get("id") or "<id>"))
     if loop.get("fix_ci") is not True:
         return Check("fix-ci", VERIFIED,
-                     f"off — a red check is only reported (`hermes dk set --loop {lid} "
+                     f"off (ci_fix_cap={config.ci_fix_cap(loop)} has no effect) — a red check is "
+                     f"only reported (`hermes dk set --loop {lid} "
                      "--fix-ci on` to hand it to the fixer)")
     if not config.unattended_fixer_push_enabled(loop):
         return Check("fix-ci", MISMATCH,
@@ -1512,7 +1513,8 @@ def check_fix_ci(loop: dict) -> Check:
                      f"`{config.fixer_push_enable_command(loop)}`, or `hermes dk set --loop {lid} "
                      "--fix-ci off`")
     return Check("fix-ci", VERIFIED,
-                 "on — a failed required check on a fixer's PR becomes one fixer turn per head "
+                 "on — a failed required check on a fixer's PR becomes one fixer turn per head, "
+                 f"up to ci_fix_cap={config.ci_fix_cap(loop)} per PR, before the reviewer sees it "
                  f"(`hermes dk set --loop {lid} --fix-ci off` to stop)")
 
 

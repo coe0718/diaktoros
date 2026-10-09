@@ -242,9 +242,24 @@ The fixer may propose a scoped patch through the normal broker; the loop does no
 GitHub Actions, modify `.github/` workflow files or merge the PR. A green result on a later
 head ends the repair path naturally.
 
-CI-fix turns count against the same verdict cap. If the cap is spent, or a job from the
-previous CI-fix fails again after the fixer changes the head, the watchdog holds the PR
-for operator action rather than repeating the repair. Normal fixer capacity, pacing,
+CI-fix turns have their own budget, `ci_fix_cap` (default 3, 1-10) per PR across its heads,
+and never count against the verdict `cap`. While the budget remains, a head with failing
+required checks goes to the fixer and the reviewer gate starts no review there (it holds,
+spending no verdict, whether or not `review_after_ci` is on). When the budget is spent and
+CI is still red, the reviewer reviews once, counted as a verdict; its prompt carries the
+failing checks and log tails and asks why the fixer's attempts failed. A green head after
+any CI fix is reviewed as usual. A job failing again no longer holds the PR for a person;
+the cap is the bound. `explain` shows `CI fixes: 2/3 spent`, the `ci_failed` notice says
+"CI fix 2 of 3 queued", and a notice says when the budget runs out. The watchdog does not
+call a PR with a CI-fix turn queued or running a stall.
+
+The first review of a head that CI-fix commits reached gets a host-written list of those
+commits with the test files each changed, as data, and is asked to treat a weakened,
+skipped or removed test as a blocking finding.
+
+`ci_fix_cap` only takes effect with `fix_ci` on and unattended fixer pushes enabled;
+otherwise red CI goes to the reviewer as before and `doctor` says the cap is inert. It
+applies to fixer-authored PRs only, not `review_only` authors. Normal fixer capacity, pacing,
 checks and push safety still apply. See [configuration](configuration.md#write-policy-and-attribution)
 for `fix_ci` and [observer](observer.md#events-and-meaning) for the `ci_failed` notice.
 

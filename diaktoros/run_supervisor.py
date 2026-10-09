@@ -810,7 +810,7 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
                     author.lower() if isinstance(author, str) else '')
 
 
-def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
+def isolated_prompt(loop: dict, row, reviews, marker=None, change=None, db=None) -> str:
     """Render the role's isolated prompt from host facts plus the bounded PR record."""
     from . import config, gate, gh, prompts
     seat = row['seat']
@@ -865,6 +865,18 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
         state = ci.read(loop, row['head'])
         required = config_mod.required_checks(loop)
         text += ci.section(state, required)
+        if seat == 'reviewer':
+            # #539: a head the CI-fix turns reached. Their commits, with the test files each
+            # changed, go to the reviewer as data; a head still red after the budget gets its
+            # failing jobs and why it is being reviewed.
+            from . import ci_fix
+            names = ci_fix.failing(state, required)
+            if names and ci_fix.used(row['repo'], row['pr'], db) >= config.ci_fix_cap(loop) > 0 \
+                    and config.fix_ci(loop):
+                text += ci_fix.spent_section(loop, row['repo'], row['pr'], db)
+                text += ci_fix.section(loop, state, names)
+            if config.fix_ci(loop):
+                text += ci_fix.commits_section(loop, row['pr'], reviews, db)
         if seat == 'fixer':
             # #569: a fix round on a red head gets the failing jobs, their failing step and log
             # tails, exactly as a CI-fix turn does: a verdict that says "required check X failed"
@@ -2929,9 +2941,13 @@ class Supervisor:
                 checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
                 # #306: with review-after-CI, a red head whose CI-fix turn is still to run goes
                 # to the fixer first: no review is spent on code that does not build.
-                fixing = bool(checks is not None and checks.failed and after_ci
-                              and config.fix_ci(loop)
-                              and ci_fix.pending_at(row['repo'], row['pr'], row['head'], self.db))
+                # #539: this holds while the PR's CI-fix budget remains, whatever review_after_ci
+                # says; a spent budget lets the review through, as one counted verdict.
+                pr_author = (((queued or {}).get('user') or {}).get('login')
+                             if isinstance(queued, dict) else '')
+                fixing = bool(checks is not None and checks.failed
+                              and ci_fix.red_goes_to_fixer(loop, row['repo'], row['pr'],
+                                                           row['head'], pr_author, self.db))
                 # #374: a failure releases the cancelled/missing holds only (the review would
                 # otherwise go unreported); the pending wait survives it, so one review names
                 # every failure once CI finishes.
@@ -2946,7 +2962,9 @@ class Supervisor:
                              + (f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
                                 f"GitHub ({ci._names(checks.cancelled[:5])})"
                                 if checks.cancelled else
-                                f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
+                                f"{len(checks.failed)} check(s) failed, the fixer is taking them first "
+                                f"(CI fix {ci_fix.used(row['repo'], row['pr'], self.db) + 1} of "
+                                f"{config.ci_fix_cap(loop)})"
                                 if fixing else
                                 f"{len(checks.missing)} required check(s) never reported "
                                 f"({ci._names(checks.missing[:5])}); check the name"
@@ -3066,7 +3084,7 @@ class Supervisor:
                         final = (row['retries'] or 0) + 1 >= MAX_RETRIES
                         change = (pr_change(loop, row, final=final)
                                   if row['seat'] in ('reviewer', 'fixer') else None)
-                        prompt = isolated_prompt(loop, row, reviews, marker, change)
+                        prompt = isolated_prompt(loop, row, reviews, marker, change, db=self.db)
                     except ValueError as exc:
                         if str(exc) in ('fixer answers unreadable', 'PR unreadable') \
                                 or str(exc).startswith('PR files unreadable'):

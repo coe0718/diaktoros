@@ -811,6 +811,11 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         budget = (f"{spent if spent is not None else 'unknown'}/{cap} verdicts spent · "
                   f"head unknown")
 
+    from . import ci_fix
+    ci_line = ci_fix.budget_line(loop, loop["repo"], number)
+    if ci_line:
+        budget += f" · {ci_line}"
+
     # -- local state: who holds it, what waits, what is marked -------------------------------
     local = _explain_state(loop, st, key, number, head, now)
     pending_stack = (st.watch().get("stacked_wait") or {}).get(str(number))
