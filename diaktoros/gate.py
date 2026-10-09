@@ -1002,9 +1002,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif approved:
         kind = "none"
         action = f"nothing — head {short} is approved; a human merges it"
-    elif head and st.human_hold(number, head):
+    elif head and isinstance(st.human_hold(number, head), dict):
         kind = "operator"
-        held = st.human_hold(number, head) or {}
+        held = st.human_hold(number, head)
         action = (f"a person must review and approve head {short}: the loop would approve, but "
                   f"{held.get('why') or 'it touches human_paths'}")
     elif (review_only and spent is not None and spent >= config.review_only_cap(loop)
