@@ -147,6 +147,38 @@ class Restore(Base):
         self.assertNotIn(SECRET, text)
         self.assertFalse(migrate.marker_path().exists())          # the pause is released
 
+    def test_real_doctor_reads_the_restored_install_like_the_original(self):
+        """The unstubbed doctor runs inside restore. Profiles, tokens and the runtime file are
+        outside the archive, so a bare fixture is not all green; what restore owns (loop file,
+        routes, state dir, cron job) must read exactly as it did before the wipe."""
+        from diaktoros import doctor
+
+        def readout():
+            return {c.name: c.status for c in doctor.check_loop(config.all_loops()[0], offline=True)}
+        before = readout()
+        self.assertEqual(before["config"], doctor.VERIFIED)
+        out = self.take()
+        self.wipe()
+        self.assertEqual(config.all_loops(), [])
+        buf = io.StringIO()
+
+        def fake_cron(cmd, **kw):
+            self.jobs.append({**JOB})
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with contextlib.redirect_stdout(buf), \
+                mock.patch.object(cli.gate_shims, "install", return_value=[]), \
+                mock.patch.object(cli.subprocess, "run", fake_cron):
+            code = cli.cmd_restore(argparse.Namespace(file=str(out), dry_run=False, force=False))
+        after = readout()
+        owned = [n for n in before if n.split(":")[0] in
+                 ("config", "route", "gateway-script", "state_dir", "tokens", "read_token")]
+        self.assertTrue(owned)
+        self.assertEqual({n: after[n] for n in owned}, {n: before[n] for n in owned})
+        self.assertEqual(readout()["state_dir"], doctor.VERIFIED)
+        self.assertIn("doctor: one:", buf.getvalue())      # the real step ran and reported
+        self.assertNotIn("doctor: every check verified", buf.getvalue())
+        self.assertEqual(code, 1)                          # unverified checks => exit 1
+
     def test_restore_recreates_the_cron_job_and_reads_it_back(self):
         out = self.take()
         self.wipe()
