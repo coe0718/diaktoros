@@ -92,7 +92,7 @@ class Broker(unittest.TestCase):
         self.addCleanup(server.close)
         return server
 
-    def send(self, server, verdict, body="reviewed", **extra):
+    def send(self, server, verdict, body="reviewed\nNot verified: nothing", **extra):
         """The sandbox's side: the real client over the real socket, when the request is legal."""
         if not extra:
             return broker_client.call("review", verdict=verdict, body=body,
@@ -123,7 +123,7 @@ class Broker(unittest.TestCase):
         self.assertEqual(self.receipts(sup), [])                  # no receipt claim either
         self.assertFalse(server.completed)
         # The capability is unspent: the seat's REQUEST_CHANGES in the same turn is the write.
-        self.assertTrue(self.send(server, "REQUEST_CHANGES", "file list unavailable")["ok"])
+        self.assertTrue(self.send(server, "REQUEST_CHANGES", "file list unavailable\nNot verified: nothing")["ok"])
         self.assertEqual([p["event"] for p in self.posts], ["REQUEST_CHANGES"])
         self.assertEqual(self.receipts(sup), [("confirmed", 19, "CHANGES_REQUESTED")])
         self.assertTrue(server.completed)
@@ -489,11 +489,11 @@ class LaunchPathRefuses(pc.Base):
                 seat["query"] = Path(kw["query"]).read_text()
                 seat["approve"] = broker_client.call("review", verdict="APPROVE",
                                                      body="looks fine\n\n## Requirements\n"
-                                                          "- item: met (test_x)\n",
+                                                          "- item: met (test_x)\n\nNot verified: nothing\n",
                                                      socket_path=sock)
                 seat["changes"] = broker_client.call("review", verdict="REQUEST_CHANGES",
                                                      body="the file list was unavailable\n\n"
-                                                          "## Requirements\n- item: not met\n",
+                                                          "## Requirements\n- item: not met\n\nNot verified: nothing\n",
                                                      socket_path=sock)
                 return subprocess.CompletedProcess([], 0, "", "")
 

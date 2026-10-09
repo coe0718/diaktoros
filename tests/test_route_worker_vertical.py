@@ -189,7 +189,7 @@ class RouteWorkerVertical(unittest.TestCase):
         blobs = {
             'Cargo.toml': b'[package]\nname="vertical_probe"\nversion="0.1.0"\nedition="2021"\n',
             'src/lib.rs': b'#[test] fn works() { assert_eq!(2 + 2, 4); }\n',
-            'review.txt': b'offline verified',
+            'review.txt': b'offline verified\nNot verified: nothing',
         }
         self.world = {'pr': {'number': 7, 'state': 'open', 'draft': False,
                              'user': {'login': 'dev'},

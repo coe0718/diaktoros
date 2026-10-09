@@ -292,7 +292,7 @@ class SandboxedTurnBudget(unittest.TestCase):
             {'mode': mode, 'marker': marker, 'finish_after': finish_after}))
         checkout = self.root / f'checkout-{mode}'
         checkout.mkdir()
-        (checkout / 'review.txt').write_text('checked offline')
+        (checkout / 'review.txt').write_text('checked offline\nNot verified: nothing')
         (checkout / 'src').mkdir()
         (checkout / 'src/lib.rs').write_text('// before\n')
         spec = self.root / f'spec-{mode}.json'

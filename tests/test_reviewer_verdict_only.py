@@ -76,7 +76,7 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
         self.addCleanup(server.close)
         return server
 
-    def send(self, server, verdict, body="reviewed"):
+    def send(self, server, verdict, body="reviewed\nNot verified: nothing"):
         raw = json.dumps({"operation": "review", "verdict": verdict, "body": body}).encode() + b"\n"
         with socket.socket(socket.AF_UNIX) as client:
             client.settimeout(6)

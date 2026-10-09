@@ -172,7 +172,7 @@ class Broker(pv.Broker):
         self.assertEqual(self.posts, [])
         self.assertEqual(self.receipts(sup), [])
         self.assertFalse(server.completed)
-        self.assertTrue(self.send(server, "REQUEST_CHANGES", "tests (3.11) fails")["ok"])
+        self.assertTrue(self.send(server, "REQUEST_CHANGES", "tests (3.11) fails\nNot verified: nothing")["ok"])
         self.assertEqual([p["event"] for p in self.posts], ["REQUEST_CHANGES"])
         self.assertTrue(server.completed)
 

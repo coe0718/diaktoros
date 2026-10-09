@@ -107,7 +107,7 @@ if reply.status != 200:
     print(f'Error code: {reply.status} - {data}', file=sys.stderr)
     print('API call failed after provider error; giving up this turn', file=sys.stderr)
     sys.exit(1)
-answer = broker_ipc.request('review', verdict='APPROVE', body='offline verified',
+answer = broker_ipc.request('review', verdict='APPROVE', body='offline verified\nNot verified: nothing',
                             socket_path=broker_sock)
 print(json.dumps(answer), flush=True)
 if mode == 'write-then-crash':

@@ -1004,7 +1004,7 @@ class RealTurnArgv(test_selftest.SelftestBase):
             seen.update(entry=kwargs["entry"], timeout=kwargs["timeout"])
             sock = str(pathlib.Path(kwargs["broker_socket_dir"]) / "broker.sock")
             request = threading.Thread(target=lambda: seen.update(answer=broker_ipc.request(
-                "review", verdict="REQUEST_CHANGES", body="late", socket_path=sock)), daemon=True)
+                "review", verdict="REQUEST_CHANGES", body="late\nNot verified: nothing", socket_path=sock)), daemon=True)
             request.start()
             if not time_out:
                 request.join()

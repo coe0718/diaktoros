@@ -117,7 +117,7 @@ class WholeTurn(unittest.TestCase):
                 (checkout / 'src').mkdir(parents=True)
                 (checkout / 'Cargo.toml').write_text('[package]\nname="vertical_probe"\nversion="0.1.0"\nedition="2021"\n')
                 (checkout / 'src/lib.rs').write_text('#[test] fn works() { assert_eq!(2 + 2, 4); }\n')
-                (checkout / 'review.txt').write_text('offline verified')
+                (checkout / 'review.txt').write_text('offline verified\nNot verified: nothing')
                 return checkout
             # Existing contained.run discards HOME/HERMES_HOME. Supply both at
             # the outer bwrap subprocess until the launcher is fixed upstream.

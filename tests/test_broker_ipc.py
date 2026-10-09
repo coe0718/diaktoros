@@ -77,17 +77,17 @@ class BrokerIPCTests(unittest.TestCase):
             return json.loads(client.recv(16384))
 
     def review(self):
-        return {"operation": "review", "verdict": "APPROVE", "body": "verified"}
+        return {"operation": "review", "verdict": "APPROVE", "body": "verified\nNot verified: nothing"}
 
     def test_success_rechecks_live_head_and_audits_without_secrets(self):
         server = self.start()
         with mock.patch.object(broker_client, "SOCKET", str(server.socket_path)):
-            self.assertEqual(broker_client.request("review", "APPROVE", "verified"),
+            self.assertEqual(broker_client.request("review", "APPROVE", "verified\nNot verified: nothing"),
                              {"ok": True, "result": {"accepted": True}})
         self.assertEqual([c[1] for c in self.calls if c[0] != "/user"], ["GET", "POST"])
         self.assertEqual(self.calls[3][-1], "read")
         # The seat's body, signed by the host as the loop's own write (#197).
-        signed = ("verified\n\n---\n<sub>🤖 Automated by [Diaktoros]"
+        signed = ("verified\nNot verified: nothing\n\n---\n<sub>🤖 Automated by [Diaktoros]"
                   "(https://github.com/coe0718/diaktoros) · reviewer seat · head "
                   f"`{HEAD[:7]}`</sub>")
         self.assertEqual(self.calls[4], (f"/repos/{REPO}/pulls/7/reviews", "POST",
@@ -108,10 +108,10 @@ class BrokerIPCTests(unittest.TestCase):
             self.assertIn("Requirements", refused["error"])
             self.assertNotIn("POST", [c[1] for c in self.calls])  # nothing written
             notmet = {"operation": "review", "verdict": "APPROVE",
-                      "body": "## Requirements\n- one: not met\n"}
+                      "body": "## Requirements\n- one: not met\n\nNot verified: nothing\n"}
             self.assertIn("not met", self.send(server, notmet)["error"])
             good = {"operation": "review", "verdict": "APPROVE",
-                    "body": "## Requirements\n- one: met (test_x)\n"}
+                    "body": "## Requirements\n- one: met (test_x)\n\nNot verified: nothing\n"}
             self.assertTrue(self.send(server, good)["ok"])   # capability was not consumed
 
     def test_arbitrary_github_response_is_not_relayed(self):
@@ -299,7 +299,7 @@ class BrokerIPCTests(unittest.TestCase):
                "--setenv", "HOME", "/tmp", "--setenv", "HOST_PAT", self.loop["tokens"]["review"],
                "--chdir", "/tmp", "--", "/usr/bin/python3", "-c",
                "import os,runpy,sys; assert not os.path.exists(os.environ['HOST_PAT']); "
-               "sys.argv=['/client.py','review','APPROVE','verified']; runpy.run_path('/client.py',run_name='__main__')"]
+               "sys.argv=['/client.py','review','APPROVE','verified\\nNot verified: nothing']; runpy.run_path('/client.py',run_name='__main__')"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
                                 env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"})
         if "Creating new namespace failed" in result.stderr:

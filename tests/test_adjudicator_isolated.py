@@ -324,7 +324,7 @@ class Ruling(Base):
         for bad in (self.ruling("APPROVE"), self.ruling(body="   "),
                     self.ruling(body="x" * (broker_ipc.MAX_BODY + 1)),
                     {**self.ruling(), "extra": 1}, {"operation": "ruling", "verdict": "ACCEPT"},
-                    {"operation": "review", "verdict": "APPROVE", "body": "x"},
+                    {"operation": "review", "verdict": "APPROVE", "body": "x\nNot verified: nothing"},
                     {"operation": "push", "manifest": {}},
                     {"operation": "request_review", "verdict": "", "body": ""}):
             with self.subTest(bad):
@@ -342,7 +342,7 @@ class Ruling(Base):
         reviewer = self.start(role="reviewer")
         reviewer.scope = broker_ipc.RunScope(REPO, 7, HEAD, "reviewer", "fix-7")
         self.assertTrue(self.send(reviewer, {"operation": "review", "verdict": "APPROVE",
-                                             "body": "verified"})["ok"])
+                                             "body": "verified\nNot verified: nothing"})["ok"])
         with self.assertRaises(broker.BrokerDenied):
             broker.authorize(self.loop, repo=REPO, number=7, head=HEAD, role="adjudicator",
                              branch="fix-7", operation="ruling")

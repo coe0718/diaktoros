@@ -24,6 +24,24 @@ import hashlib
 import re
 import string
 
+
+def code_rules(what: str, where: str) -> str:
+    """The fixer's three rules for the code it writes (#512), one text for every fixer prompt:
+    ``what`` is the work ("fix", "issue"), ``where`` where it reports ("your answers")."""
+    return f"""   Three rules for the code you write:
+   - **Reuse before writing.** Before adding a function, search the package for an existing one
+     that does the same check, and call it or extend it instead of copying it. If the logic must
+     be shared between two callers, factor it into one function both use.
+   - **Test the enforcing entry point.** When the change adds a rule that the broker, a gate, the
+     watchdog sweep or the worker enforces, at least one test must drive it through that entry
+     point (the `RunBroker` operation, the gate script's `main`, the sweep), not only the helper
+     the entry point calls. Removing the call at the entry point must turn a test red.
+   - **Say what can't fire.** If part of the {what} can't take effect in some configuration, or in
+     this repository's (a setting, branch protection, a missing scope), say so in {where} and in
+     the docs for that setting. Don't ship it as if it works everywhere.
+"""
+
+
 REVIEWER = """A pull request in {_loop.repo} needs its review.
 
 You are the **reviewer** of an unattended loop: you review, {_loop.fixer_agent} fixes, and nobody
@@ -224,6 +242,9 @@ What to do:
 5. You get exactly one review write. The broker pins it to head {head}; if the head moved, the
    write is refused — say so rather than retrying. A verdict other than APPROVE or
    REQUEST_CHANGES is refused before anything is written: resubmit with a real verdict.
+   **End the review body with a `Not verified:` line** listing what you did not check (for
+   example "didn't run the watchdog harness", "didn't drive the broker path"). If there is
+   nothing, write `Not verified: nothing`. The broker refuses a review without the line.
 6. Finish with a 3-5 line summary: verdict, what you verified, what you did not verify.
 
 Never approve what you did not verify. If you are uncertain — something you could not verify —
@@ -274,7 +295,7 @@ What to do:
    turn has a fixed time budget and the PR's CI runs everything. If an **always-run check**
    follows this message, run it too and make it pass before you publish. Read large files by
    the parts you need (`grep -n`, `sed -n`), not whole.
-3. Publish the fix through the broker's push (command below): name every file you changed, added
+""" + code_rules("fix", "your answers") + """3. Publish the fix through the broker's push (command below): name every file you changed, added
    or deleted, and give a short commit message — the client builds the manifest (small files
    whole, otherwise a diff against this head, so a large file is fine) and checks the limits
    before anything is sent (`--dry-run` checks without sending). Regular files only: no symlink
@@ -382,7 +403,8 @@ What to do:
    everything. If an **always-run check** follows this message, run it too and make it pass
    before you publish. Read large files by the parts you need (`grep -n`, `sed -n`), not whole. Publish
    once the fix and its tests are done; a turn that runs out of time publishes nothing.
-2. When it is fixed, open the PR through the broker's `open_pr` command (below): name the files
+
+""" + code_rules("issue", "the PR description") + """2. When it is fixed, open the PR through the broker's `open_pr` command (below): name the files
    you changed, a short commit message, a PR title, and a PR description file saying what you
    changed and how you verified it. The host pushes your commit to a new branch `{branch}` from
    `{head}`, opens the PR against `{base}` saying it fixes #{number}, and requests the review
