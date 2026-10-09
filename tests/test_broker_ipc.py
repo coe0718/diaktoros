@@ -120,9 +120,14 @@ class BrokerIPCTests(unittest.TestCase):
         st = state_mod.state_for(self.loop)
         body = "Not verified: nothing\n"
         server = self.start()
-        with mock.patch.object(findings, "changed_files", return_value={"src/a.py"}):
+        # #476 also holds a block to the diff: a cited line in the PR's (faked) file list, CI green.
+        from diaktoros import ci
+        files = [{"filename": "src/a.py", "patch": "@@ -1,1 +1,5 @@\n+x"}]
+        with mock.patch.object(findings, "changed_files", return_value={"src/a.py"}), \
+                mock.patch.object(gh, "pr_files_read", return_value=(files, "")), \
+                mock.patch.object(ci, "read", return_value=ci.CIState()):
             omit = {"operation": "review", "verdict": "REQUEST_CHANGES",
-                    "body": "F2: src/a.py: new\n" + body}
+                    "body": "F2: src/a.py:3: new\n" + body}
             refused = self.send(server, omit)
             self.assertFalse(refused["ok"])
             self.assertIn("F1", refused["error"])
@@ -132,7 +137,7 @@ class BrokerIPCTests(unittest.TestCase):
             self.assertIn("cannot APPROVE", self.send(server, approve)["error"])
             self.assertNotIn("POST", [c[1] for c in self.calls])
             good = {"operation": "review", "verdict": "REQUEST_CHANGES",
-                    "body": "F1: fixed\nF2: src/a.py: new\n" + body}
+                    "body": "F1: fixed\nF2: src/a.py:3: new\n" + body}
             self.assertTrue(self.send(server, good)["ok"])
         got = st.findings_get(7)
         self.assertEqual((got["findings"]["F1"]["state"], got["findings"]["F2"]["state"]),
