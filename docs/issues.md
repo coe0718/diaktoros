@@ -216,6 +216,12 @@ for the comment path; `denied` and `uncertain` expose refused/unknown outcomes. 
 can exist even though requesting review failed. Inspect its branch, PR and request
 separately; a nonterminal record is not proof that nothing was published.
 
+After the push, the host reads the new branch back and waits out GitHub's lag (a few
+re-reads over about 15 seconds) before it calls the push unknown. When the push's or the
+PR's outcome is still unknown, the run itself ends `uncertain` (`post-write push
+quarantine: unknown` or `…: pr_create_unknown`), never `succeeded`: `run_supervisor
+status` lists it, and after you inspect the branch and issue, `reconcile` releases it.
+
 ## Turn it off
 
 ```bash

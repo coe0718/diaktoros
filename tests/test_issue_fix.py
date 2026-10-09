@@ -400,12 +400,32 @@ class BrokerWrite(Base):
             self.server._dispatch(self.open_pr())
         self.assertIsNone(self.sup.issue_fix_result(self.run_id))
 
+    def run_row(self):
+        with ledger.connect(self.db) as con:
+            return tuple(con.execute("SELECT state, error FROM runs WHERE id=?",
+                                     (self.run_id,)).fetchone())
+
     def test_an_unknown_push_outcome_is_uncertain_and_opens_no_pr(self):
         safe_push.open_branch.side_effect = safe_push.PushFailure("unknown")
         with self.assertRaisesRegex(broker_ipc.ProtocolError, "unknown"):
             self.server._dispatch(self.open_pr())
         self.assertEqual(self.sup.issue_fix_result(self.run_id)["state"], "uncertain")
         self.assertEqual(self.posts(), [])
+        # #522: the run itself is held uncertain, so `status` lists it and `reconcile` applies;
+        # it never ends `succeeded` with its write unknown.
+        self.assertEqual(self.run_row(), ("uncertain", "post-write push quarantine: unknown"))
+
+    def test_an_unknown_pr_create_holds_the_run_uncertain(self):
+        def api(loop, path, method="GET", body=None, login=None):
+            if path == f"/repos/{REPO}/pulls" and method == "POST":
+                raise OSError("lost response")
+            return {"login": login, "id": 3} if path == "/user" else self.live
+        gh.api.side_effect = api
+        with self.assertRaisesRegex(broker_ipc.ProtocolError, "PR could not be confirmed"):
+            self.server._dispatch(self.open_pr())
+        self.assertEqual(self.sup.issue_fix_result(self.run_id)["state"], "uncertain")
+        self.assertEqual(self.run_row(),
+                         ("uncertain", "post-write push quarantine: pr_create_unknown"))
 
     def test_could_not_fix_is_one_signed_comment_on_the_issue(self):
         self.server._dispatch(json.dumps({"operation": "issue_comment",
@@ -537,6 +557,78 @@ class OpenBranchExisting(OpenBranchGuards):
         with self.assertRaises(broker.BrokerDenied):    # the stubbed push fails; it was reached
             self.open()
         safe_push._git_cas.assert_called_once()
+
+
+class ConfirmAfterPush(OpenBranchGuards):
+    """#522: GitHub may not serve a just-pushed ref at once. The read-back waits it out, so a
+    landed issue-fix branch is ``published`` (and its PR opens), not ``unknown``."""
+
+    NEW = "e" * 40
+
+    def setUp(self):
+        super().setUp()
+        self.reads = []
+        self.sleeps = []
+        self.visible_after = 2                    # reads that 404 before the ref shows
+
+        def api(loop, path, **kw):
+            if path == "/user":
+                return self.user
+            self.reads.append(path)
+            if len(self.reads) <= self.visible_after:
+                raise broker.BrokerDenied("GitHub read request failed")      # 404, as _api says
+            return {"ref": "refs/heads/diaktoros/issue-12", "object": {"sha": self.NEW}}
+
+        def cas(loop, repo, branch, base, files, message, login, identity, *, before_push,
+                **kw):
+            before_push(self.NEW)
+        for target, name, value in (
+                (safe_push, "_api", mock.Mock(side_effect=api)),
+                (safe_push, "_git_cas", mock.Mock(side_effect=cas)),
+                (safe_push, "_audit", mock.Mock()),
+                (safe_push.time, "sleep", mock.Mock(side_effect=self.sleeps.append)),
+                (safe_push.gh, "fetch", mock.Mock(return_value=(None, "HTTP 404 Not Found")))):
+            patch = mock.patch.object(target, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_a_ref_that_shows_late_is_published(self):
+        result = self.open()
+        self.assertEqual((result["outcome"], result["new_head"]), ("published", self.NEW))
+        self.assertEqual(len(self.reads), 3)
+        self.assertEqual(self.sleeps, list(safe_push.CONFIRM_WAITS[:2]))
+
+    def test_a_ref_that_never_shows_is_unknown_after_the_window(self):
+        self.visible_after = 99
+        with self.assertRaises(safe_push.PushFailure) as failed:
+            self.open()
+        self.assertEqual(failed.exception.outcome, "unknown")
+        self.assertEqual(self.sleeps, list(safe_push.CONFIRM_WAITS))
+
+
+class ConfirmRef(unittest.TestCase):
+    """The shared read-back (#522): what ends the wait, and what it never waits for."""
+
+    def confirm(self, answers, prior="a" * 40, push_failed=False):
+        reads, sleeps = list(answers), []
+        with mock.patch.object(safe_push, "_read_ref", side_effect=lambda *a: reads.pop(0)), \
+                mock.patch.object(safe_push.time, "sleep", side_effect=sleeps.append):
+            observed = safe_push._confirm_ref({}, "/ref", "b", "fix", "n" * 40, prior,
+                                              push_failed=push_failed)
+        return observed, sleeps
+
+    def test_the_old_head_is_lag_after_a_reported_push(self):
+        self.assertEqual(self.confirm(["a" * 40, "n" * 40]), ("n" * 40, [1]))
+
+    def test_another_commit_ends_the_wait_at_once(self):
+        self.assertEqual(self.confirm(["c" * 40]), ("c" * 40, []))
+
+    def test_a_refused_push_that_left_the_old_head_is_read_once(self):
+        self.assertEqual(self.confirm(["a" * 40], push_failed=True), ("a" * 40, []))
+
+    def test_a_missing_ref_is_waited_out_even_after_a_failed_push(self):
+        # A lost response: Git raised, the ref may still have landed.
+        self.assertEqual(self.confirm([None, "n" * 40], push_failed=True), ("n" * 40, [1]))
 
 
 class RealBareBranch(unittest.TestCase):

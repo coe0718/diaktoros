@@ -173,6 +173,44 @@ def _api(loop: dict, path: str, *, login: str, method: str = "GET", body=None) -
     return result
 
 
+# GitHub does not always serve a just-written ref at once (#522: a landed issue-fix branch read
+# back as 404, so the push was "unknown" and its PR never opened; the fixer's PR head lagged ~4s,
+# #360). A read that shows no ref, or the ref still at its old commit, is read again before the
+# outcome is called. A different commit ends the wait at once: that is another writer, not lag.
+CONFIRM_WAITS = (1, 2, 4, 8)
+
+
+def _read_ref(loop: dict, ref_path: str, branch: str, login: str) -> str | None:
+    """The commit ``refs/heads/<branch>`` points at, or None when GitHub does not show it."""
+    try:
+        got = _api(loop, ref_path, login=login)
+        if got.get("ref") != f"refs/heads/{branch}":
+            return None
+        return _sha((got.get("object") or {}).get("sha"))
+    except Exception:
+        return None
+
+
+def _confirm_ref(loop: dict, ref_path: str, branch: str, login: str, new_head: str | None,
+                 prior: str | None, *, push_failed: bool) -> str | None:
+    """Read the ref back after a push attempt, waiting out GitHub's lag before giving up.
+
+    Re-reads (``CONFIRM_WAITS``) while the ref is missing, or still at ``prior`` after a push that
+    Git reported as done. A push Git refused that left the ref at ``prior`` is read once: that is
+    the refusal, not lag."""
+    observed = _read_ref(loop, ref_path, branch, login)
+    if new_head is None:
+        return observed
+    for wait in CONFIRM_WAITS:
+        if observed == new_head:
+            break
+        if observed is not None and (observed != prior or push_failed):
+            break
+        time.sleep(wait)
+        observed = _read_ref(loop, ref_path, branch, login)
+    return observed
+
+
 def _audit(loop: dict, record: dict) -> None:
     """Durable metadata journal; failure aborts the write."""
     audit = config.state_dir(loop) / "broker-audit.jsonl"
@@ -606,11 +644,8 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     outcome = "unknown"
     try:
         # Read back independently even on timeout, rejection, or lost response.
-        try:
-            ref = _api(loop, ref_path, login=login)
-            observed = _sha((ref.get("object") or {}).get("sha")) if ref.get("ref") == f"refs/heads/{branch}" else None
-        except Exception:
-            observed = None
+        observed = _confirm_ref(loop, ref_path, branch, login, new_head, head,
+                                push_failed=error is not None)
         outcome = "published" if new_head is not None and observed == new_head else ("unchanged" if observed == head else "unknown")
         if outcome == "published" and new_head is not None:
             # Git's lease verifies only the ref. The PR may have closed during receive-pack
@@ -716,13 +751,8 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
                  login, identity, before_push=before_push, from_branch=loop["base"], **extra)
     except Exception as exc:
         error = exc
-    observed = None
-    try:
-        ref = gh.api(loop, ref_path, login=login)
-        if isinstance(ref, dict) and ref.get("ref") == f"refs/heads/{branch}":
-            observed = _sha((ref.get("object") or {}).get("sha"))
-    except Exception:
-        observed = None
+    observed = _confirm_ref(loop, ref_path, branch, login, new_head, None,
+                            push_failed=error is not None)
     outcome = "published" if new_head is not None and observed == new_head else "unknown"
     if attempt_started:
         _audit(loop, {**receipt, "new_head": new_head, "phase": "reconciled",
@@ -876,12 +906,8 @@ def update_branch(loop: dict, *, repo: str, number: int, head: str, branch: str,
                     f"--force-with-lease={ref}:{head}", url, f"{new_head}:{ref}")
         except Exception as exc:
             error = exc
-    observed = None
-    try:
-        got = _api(loop, ref_path, login=login)
-        observed = _sha((got.get("object") or {}).get("sha")) if got.get("ref") == ref else None
-    except Exception:
-        observed = None
+    observed = _confirm_ref(loop, ref_path, branch, login, new_head, head,
+                            push_failed=error is not None)
     outcome = ("published" if observed == new_head
                else "unchanged" if observed == head else "unknown")
     _audit(loop, {**receipt, "new_head": new_head, "phase": "reconciled",
