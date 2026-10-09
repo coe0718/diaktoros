@@ -175,6 +175,11 @@ SETTINGS_SCHEMA: dict = {
                                        "stops until a maintainer grants another round, a whole "
                                        "number 1-1000. Blank = not set here: the loop's own value, "
                                        "else the review cap"},
+    "ci_fix_cap": {"label": "CI-fix turns per PR", "type": "str", "default": "",
+                   "description": "CI-fix turns per PR (across its heads) before the reviewer "
+                                  "reviews a red head, a whole number 1-10. Red required CI goes "
+                                  "to the fixer first and spends no review verdict. Blank = not "
+                                  "set here: the loop's own value, else 3"},
     "review_only_daily": {"label": "Review-only daily cap (turns)", "type": "str", "default": "",
                           "description": "Reviewer turns per local day on review-only PRs, a whole "
                                          "number 1-1000; once spent they wait until midnight. "
@@ -374,6 +379,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     if _form_value(settings, "review_only") is not None:
         overlaid["review_only"] = [name.strip() for name in str(d["review_only"]).split(",")
                                    if name.strip()]
+    if _form_value(settings, "ci_fix_cap") is not None:
+        overlaid["ci_fix_cap"] = check_ci_fix_cap(_form_int(d["ci_fix_cap"].strip()), "settings")
     for key in ("review_only_cap", "review_only_daily"):
         if _form_value(settings, key) is not None:
             overlaid[key] = _check_review_only_limit(_form_int(d[key].strip()), key, "settings")
@@ -678,6 +685,7 @@ DEFAULTS: dict = {
     "review_only_update": False,  # push a clean merge of the base into a review-only PR (opt-in)
     "review_only_cap": None,   # verdicts per review-only PR; None = the loop's `cap`
     "review_only_daily": None,  # reviewer turns a day on review-only PRs; None = no cap
+    "ci_fix_cap": None,       # CI-fix turns per PR before the reviewer reviews red CI; None = 3
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
@@ -951,6 +959,29 @@ def review_only_cap(loop: dict) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return int(loop["cap"])
+
+
+CI_FIX_CAP_DEFAULT = 3
+CI_FIX_CAP_MAX = 10
+
+
+def check_ci_fix_cap(value, where: str) -> int | None:
+    """``ci_fix_cap`` (#539): a whole number 1-10, or empty (unset: the default, 3)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str):
+        value = _form_int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= CI_FIX_CAP_MAX:
+        raise ConfigError(f"{where}: ci_fix_cap must be a whole number, 1-{CI_FIX_CAP_MAX} "
+                          f"(leave it empty for {CI_FIX_CAP_DEFAULT}), got {value!r}")
+    return value
+
+
+def ci_fix_cap(loop: dict) -> int:
+    """CI-fix turns one PR gets before a red head goes to the reviewer (#539)."""
+    value = loop.get("ci_fix_cap")
+    ok = isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= CI_FIX_CAP_MAX
+    return value if ok else CI_FIX_CAP_DEFAULT
 
 
 def review_only_daily(loop: dict) -> int | None:
@@ -1963,6 +1994,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
 
     for key in ("review_only_cap", "review_only_daily"):
         loop[key] = _check_review_only_limit(loop.get(key), key, where)
+    loop["ci_fix_cap"] = check_ci_fix_cap(loop.get("ci_fix_cap"), where)
 
     loop["tokens"] = {k: str(v) for k, v in (loop.get("tokens") or {}).items()}
     # The reader is named, never inferred: taking "the first token" would make whichever seat

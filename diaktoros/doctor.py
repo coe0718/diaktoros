@@ -1511,9 +1511,11 @@ def check_fix_ci(loop: dict) -> Check:
                      "on, but unattended fixer pushes are off, so no CI-fix turn can push",
                      f"`{config.fixer_push_enable_command(loop)}`, or `hermes dk set --loop {lid} "
                      "--fix-ci off`")
+    cap = config.ci_fix_cap(loop)
     return Check("fix-ci", VERIFIED,
-                 "on — a failed required check on a fixer's PR becomes one fixer turn per head "
-                 f"(`hermes dk set --loop {lid} --fix-ci off` to stop)")
+                 f"on — red required CI on a fixer's PR goes to the fixer first, up to {cap} "
+                 "CI-fix turn(s) per PR, spending no review verdict; then the reviewer reviews it "
+                 f"(`hermes dk set --loop {lid} --ci-fix-cap N` to change, `--fix-ci off` to stop)")
 
 
 def check_review_only_update(loop: dict, offline: bool = False) -> Check | None:

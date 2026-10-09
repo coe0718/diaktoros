@@ -151,6 +151,11 @@ config_schema:
     type: str
     default: ""
     description: "Verdicts the reviewer may give one review-only PR before it stops until a maintainer grants another round, a whole number 1-1000. Blank = not set here: the loop's own value, else the review cap"
+  ci_fix_cap:
+    label: "CI-fix turns per PR"
+    type: str
+    default: ""
+    description: "CI-fix turns per PR (across its heads) before the reviewer reviews a red head, a whole number 1-10. Red required CI goes to the fixer first and spends no review verdict. Blank = not set here: the loop's own value, else 3"
   review_only_daily:
     label: "Review-only daily cap (turns)"
     type: str

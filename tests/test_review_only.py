@@ -314,6 +314,14 @@ class Gates(fg.Base):
         self.assertNotIn("reviewer never posted a verdict", text)
         fire.assert_not_called()
 
+    def test_explain_counts_ci_fixes_against_their_own_budget(self):
+        # #539: CI fixes are shown next to the verdict count, against ci_fix_cap.
+        from diaktoros import ci_fix
+        self.loop = {**self.loop, "fix_ci": True, "unattended_fixer_push": True, "ci_fix_cap": 4}
+        with mock.patch.object(ci_fix, "rows", return_value=[{"head": "x", "state": "succeeded"}]):
+            report = self.explain(0)
+        self.assertIn("CI fixes 1/4", report["budget"])
+
     def test_a_conflict_goes_to_the_author_and_queues_no_fixer_turn(self):
         self.live = {**self.live, "mergeable_state": "dirty", "base": {"ref": "main", "sha": "b" * 40}}
         with mock.patch.object(gate, "enqueue_isolated") as enqueue, \

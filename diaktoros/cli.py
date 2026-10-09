@@ -1764,6 +1764,14 @@ def cmd_init(args) -> int:
     if raw["review_only_update"] and not getattr(args, "acknowledge_branch_push", False):
         print(BRANCH_PUSH_REFUSAL)
         return 2
+    # #539: CI-fix turns per PR; a flag wins over the form; empty = the default.
+    try:
+        raw["ci_fix_cap"] = config.check_ci_fix_cap(
+            getattr(args, "ci_fix_cap", None) if getattr(args, "ci_fix_cap", None) is not None
+            else d["ci_fix_cap"], "init")
+    except config.ConfigError as exc:
+        print(f"refused: {exc}")
+        return 2
     # The review-only verdict cap and daily cap: a flag wins over the form; empty = unset.
     for key in ("review_only_cap", "review_only_daily"):
         flag = getattr(args, key, None)
@@ -2164,7 +2172,7 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
     for flag in ("reviewer_max_steps", "fixer_max_steps", "fix_daily_turns",
-                 "review_only_cap", "review_only_daily"):
+                 "review_only_cap", "review_only_daily", "ci_fix_cap"):
         if getattr(args, flag, None) is not None:
             argv.append(f"--{flag.replace('_', '-')}={getattr(args, flag)}")
     if admin:
@@ -2447,6 +2455,15 @@ def cmd_set(args) -> int:
             return 2
         if names != (loop.get("review_only") or []):
             changes["review_only"] = names
+    if getattr(args, "ci_fix_cap", None) is not None:
+        try:
+            value = (None if str(args.ci_fix_cap).strip() in ("0", "")
+                     else config.check_ci_fix_cap(args.ci_fix_cap, "--ci-fix-cap"))
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if value != loop.get("ci_fix_cap"):
+            changes["ci_fix_cap"] = value
     for key in ("review_only_cap", "review_only_daily"):
         wanted = getattr(args, key, None)
         if wanted is None:
@@ -2891,7 +2908,7 @@ def _apply(args) -> int:
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
-                "fix_ci", "review_only_update", "required_checks", "review_only", "review_only_cap", "review_only_daily"):
+                "fix_ci", "review_only_update", "required_checks", "review_only", "review_only_cap", "review_only_daily", "ci_fix_cap"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -5170,6 +5187,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="verdicts the reviewer gives one review-only PR before it waits "
                                "for `review --another-round`, 1-1000 (default: the plugin "
                                "setting, else the review cap)")
+        init.add_argument("--ci-fix-cap", default=None, metavar="N",
+                          help="CI-fix turns per PR before a red head goes to the reviewer, 1-10 "
+                               "(default: the plugin setting, else 3)")
         init.add_argument("--review-only-daily", default=None, metavar="N",
                           help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
                                "plugin setting, else no cap)")
@@ -5240,6 +5260,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="verdicts the reviewer gives one review-only PR before it waits "
                                 "for `review --another-round`, 1-1000 (default: the plugin "
                                 "setting, else the review cap)")
+        first.add_argument("--ci-fix-cap", default=None, metavar="N",
+                           help="CI-fix turns per PR before a red head goes to the reviewer, 1-10 "
+                                "(default: the plugin setting, else 3)")
         first.add_argument("--review-only-daily", default=None, metavar="N",
                            help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
                                 "plugin setting, else no cap)")
@@ -5443,6 +5466,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--review-only-cap", default=None, metavar="N",
                             help="verdicts the reviewer gives one review-only PR before it waits "
                                  "for `review --another-round`, 1-1000; 0 = the review cap")
+        change.add_argument("--ci-fix-cap", default=None, metavar="N",
+                            help="CI-fix turns per PR before a red head goes to the reviewer, "
+                                 "1-10; 0 = the default (3)")
         change.add_argument("--review-only-daily", default=None, metavar="N",
                             help="reviewer turns a day on review-only PRs, 1-1000; 0 = no cap")
         reviewed = change.add_mutually_exclusive_group()
