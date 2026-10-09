@@ -157,12 +157,7 @@ def alert_due(watch: dict, key: str, now: float, cooldown: float) -> bool:
 
 def parse_expiry(value: str) -> float | None:
     """GitHub's expiry header (``2026-10-01 12:00:00 UTC``, or a numeric offset) as epoch."""
-    from datetime import datetime, timezone
-    text = str(value or "").strip().replace(" UTC", " +0000")
-    try:
-        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S %z").astimezone(timezone.utc).timestamp()
-    except ValueError:
-        return None
+    return gh.parse_token_expiry(value)
 
 
 READ_ALERT = "cannot read GitHub as {who}"   # the health alert's opening words

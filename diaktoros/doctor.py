@@ -2020,6 +2020,153 @@ def check_host_names() -> Check:
                  "between turns, run `hermes dk migrate --dry-run`, then `hermes dk migrate`")
 
 
+EXPIRY_WARN_DAYS = 14
+# The classic-token scopes each role needs (any one satisfies it). Fine-grained tokens send no
+# ``x-oauth-scopes`` header, so their permissions cannot be read here.
+ROLE_SCOPES = {"reviewer": ("repo",), "fixer": ("repo",), "triage": ("repo",),
+               "adjudicator": ("repo",), "reader": ("repo", "read:repo_hook")}
+
+
+def _token_roles(loop: dict) -> dict[str, list[str]]:
+    """``{login: [roles]}`` for every identity with a nonempty token file."""
+    roles: dict[str, list[str]] = {}
+    seats = loop.get("seats") or {}
+    named = [(str((seats.get(seat) or {}).get("login") or ""), seat) for seat in ("reviewer", "fixer")]
+    named.append((str(loop.get("read_token") or ""), "reader"))
+    if config.triage_enabled(loop):
+        named.append((config.triage_login(loop) or "", "triage"))
+    named.append((config.adjudicator_login(loop) or "", "adjudicator"))
+    for login, role in named:
+        path = gh.token_path(loop, login) if login else None
+        if path is not None and path.is_file() and path.stat().st_size > 0:
+            roles.setdefault(login, []).append(role)
+    return roles
+
+
+def check_token_expiry_scopes(loop: dict, offline: bool, now: float | None = None) -> list[Check]:
+    """Per login: days to the token's expiry and the scopes its roles need (read-only GET /user)."""
+    now = time.time() if now is None else now
+    checks: list[Check] = []
+    for login, roles in sorted(_token_roles(loop).items()):
+        name = f"token-expiry:{login}"
+        if offline:
+            checks.append(Check(name, UNKNOWN, "not probed (--offline) — expiry and scopes not read"))
+            continue
+        response = gh.request(loop, "/user", login=login)
+        if response.error:
+            checks.append(Check(name, UNKNOWN,
+                                f"could not read GET /user as {login}: {gh.one_line(response.error)}",
+                                f"check the PAT for {login} (expired, revoked, or no network)"))
+            continue
+        headers = {str(k).lower(): str(v) for k, v in (response.headers or {}).items()}
+        raw = headers.get(gh.TOKEN_EXPIRY_HEADER)
+        expires = gh.parse_token_expiry(raw) if raw else None
+        fix = (f"rotate the PAT for {login} and rewrite {gh.token_path(loop, login)} "
+               "before it lapses")
+        if raw and expires is None:
+            checks.append(Check(name, UNKNOWN, f"unreadable expiry header {raw!r}"))
+        elif expires is None:
+            checks.append(Check(name, VERIFIED, "no expiry reported"))
+        else:
+            days = (expires - now) / 86400
+            when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(expires))
+            if days <= 0:
+                checks.append(Check(name, MISMATCH, f"expired {when}", fix))
+            elif days < EXPIRY_WARN_DAYS:
+                checks.append(Check(name, UNKNOWN, f"expires {when} — in {days:.1f} day(s)", fix))
+            else:
+                checks.append(Check(name, VERIFIED, f"expires {when} — in {days:.0f} day(s)"))
+        scopes = f"token-scopes:{login}"
+        if "x-oauth-scopes" not in headers:
+            checks.append(Check(scopes, SKIPPED,
+                                "no x-oauth-scopes header (fine-grained token): permissions not readable"))
+            continue
+        have = {x.strip() for x in headers["x-oauth-scopes"].split(",") if x.strip()}
+        short = [role for role in roles if not have & set(ROLE_SCOPES[role])]
+        if short:
+            needs = "; ".join(f"{r}: {' or '.join(ROLE_SCOPES[r])}" for r in short)
+            checks.append(Check(scopes, MISMATCH,
+                                f"has [{', '.join(sorted(have)) or 'none'}] but needs {needs}",
+                                f"regenerate the PAT for {login} with the missing scope(s)"))
+        else:
+            checks.append(Check(scopes, VERIFIED, f"scopes cover {', '.join(roles)}"))
+    return checks
+
+
+def _read_list(loop: dict, path: str) -> tuple[list | None, str]:
+    items: list = []
+    for page in range(1, 101):
+        response = gh.request(loop, f"{path}?per_page=100&page={page}")
+        if response.error or not isinstance(response.data, list):
+            return None, response.error or "not a list"
+        items.extend(response.data)
+        if len(response.data) < 100:
+            return items, ""
+    return None, "listing too long"
+
+
+def check_labels(loop: dict, offline: bool) -> Check | None:
+    """Every label in the triage allowlist exists on the repo (None when triage is off)."""
+    if not config.triage_enabled(loop):
+        return None
+    wanted = list((loop.get("triage") or {}).get("labels") or [])
+    if offline:
+        return Check("labels", UNKNOWN, "not probed (--offline)")
+    found, error = _read_list(loop, f"/repos/{loop['repo']}/labels")
+    if found is None:
+        return Check("labels", UNKNOWN, f"could not read the repo's labels: {gh.one_line(error)}",
+                     f"check by hand with `gh api repos/{loop['repo']}/labels`")
+    have = {str(x.get("name")).casefold() for x in found if isinstance(x, dict)}
+    missing = [x for x in wanted if str(x).casefold() not in have]
+    if missing:
+        return Check("labels", MISMATCH, f"triage labels missing on {loop['repo']}: {', '.join(missing)}",
+                     "create them: " + "; ".join(f"`gh label create {m!r} -R {loop['repo']}`"
+                                                 for m in missing))
+    return Check("labels", VERIFIED, f"all {len(wanted)} triage labels exist")
+
+
+def check_branch_protection(loop: dict, offline: bool) -> Check | None:
+    """The base's required status checks against the loop's ``required_checks``.
+
+    Only a mismatch (or an unreadable answer) is reported; None when the loop names no checks
+    or they agree. A warning, not a failure: the loop runs, it just gates differently than GitHub.
+    """
+    wanted = config.required_checks(loop)
+    if not wanted or offline:
+        return None
+    base = str(loop.get("base") or "main")
+    response = gh.request(loop, f"/repos/{loop['repo']}/branches/{base}/protection/required_status_checks")
+    if response.status == 404:
+        have: set[str] = set()
+    elif response.error or not isinstance(response.data, dict):
+        return Check("branch-protection", UNKNOWN,
+                     f"could not read protection of {base}: {gh.one_line(response.error)}",
+                     "the read token needs admin read access; compare by hand in repo settings → branches")
+    else:
+        have = {str(c) for c in response.data.get("contexts") or []}
+        have |= {str(c.get("context")) for c in response.data.get("checks") or []
+                 if isinstance(c, dict)}
+    want = set(wanted)
+    if want == have:
+        return None
+    parts = []
+    if want - have:
+        parts.append(f"loop requires but {base} does not: {', '.join(sorted(want - have))}")
+    if have - want:
+        parts.append(f"{base} requires but the loop does not: {', '.join(sorted(have - want))}")
+    return Check("branch-protection", UNKNOWN, "; ".join(parts),
+                 f"align `required_checks` with the required status checks of {base}")
+
+
+def check_environment(loop: dict, offline: bool) -> list[Check]:
+    """The GitHub-side contract: token expiry and scopes, triage labels, branch protection."""
+    checks = check_token_expiry_scopes(loop, offline)
+    for extra in (check_labels(loop, offline), check_branch_protection(loop, offline)):
+        if extra:
+            checks.append(extra)
+    return checks
+
+
 def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     """Every check, in the order an operator reads an install: what it is, who runs it, what
     wakes it, what schedules it, and where it works."""
@@ -2061,6 +2208,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.append(check_roots(loop))
     checks.append(check_gateway(loop, offline))
     checks.extend(check_hooks(loop, offline))
+    checks.extend(check_environment(loop, offline))
     return checks
 
 
