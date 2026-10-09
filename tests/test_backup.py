@@ -170,10 +170,12 @@ class Restore(Base):
                 mock.patch.object(cli.subprocess, "run", fake_cron):
             code = cli.cmd_restore(argparse.Namespace(file=str(out), dry_run=False, force=False))
         after = readout()
-        owned = [n for n in before if n.split(":")[0] in
-                 ("config", "route", "gateway-script", "state_dir", "tokens", "read_token")]
-        self.assertTrue(owned)
-        self.assertEqual({n: after[n] for n in owned}, {n: before[n] for n in owned})
+        # every check, not a hand-picked subset: the restored install reads exactly as the
+        # original did (the scheduler's checks excepted: `hermes cron` is stubbed here)
+        def unowned(d):
+            return {n: v for n, v in d.items() if not n.startswith("cron:")}
+        self.assertTrue(before)
+        self.assertEqual(unowned(after), unowned(before))
         self.assertEqual(readout()["state_dir"], doctor.VERIFIED)
         self.assertIn("doctor: one:", buf.getvalue())      # the real step ran and reported
         self.assertNotIn("doctor: every check verified", buf.getvalue())
