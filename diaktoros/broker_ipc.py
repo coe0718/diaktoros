@@ -532,6 +532,11 @@ class RunBroker:
                                                     config.required_checks(self._loop)))
             if refusal:
                 raise ProtocolError(refusal)
+            # Paths only a human may approve (#478): also before the capability is consumed, so
+            # the seat's REQUEST_CHANGES in the same turn still goes through.
+            refusal = self._human_paths_refusal()
+            if refusal:
+                raise ProtocolError(refusal)
         # Consume BEFORE an external write: a lost response cannot lead to a replay.
         self._used = True
         after_push = operation == "request_review" and bool(self._pushed_head)
@@ -614,6 +619,40 @@ class RunBroker:
                 pass  # the review is already written; state is best effort
         self.completed = True
         return result
+
+    def _human_paths_refusal(self) -> str:
+        """Why the loop may not APPROVE this head because of ``human_paths``, or '' (#478).
+
+        The diff is read live from GitHub (never from the seat or the PR). If it cannot be read
+        completely the approval is refused: a path list that cannot be checked is not passed.
+        One operator notice per PR and head (the observer's key makes repeats a no-op).
+        """
+        if not config.human_paths(self._loop):
+            return ""
+        from . import gh
+        files, error = gh.pr_files_read(self._loop, self.scope.number)
+        if files is None:
+            return (f"the PR's file list could not be read ({error[:200]}), so the loop cannot "
+                    "check it against human_paths; nothing was written, request changes or retry")
+        paths = []
+        for item in files:
+            for key in ("filename", "previous_filename"):
+                if isinstance(item.get(key), str):
+                    paths.append(item[key])
+        hits = config.human_path_hits(self._loop, paths)
+        if not hits:
+            return ""
+        names = ", ".join(hits[:10]) + (f" and {len(hits) - 10} more" if len(hits) > 10 else "")
+        from . import observer, state as state_mod
+        try:
+            observer.notify(self._loop, state_mod.state_for(self._loop), "human_paths",
+                            self.scope.number, self.scope.head,
+                            outcome=f"touches {names}: a person must review and approve")
+        except Exception:
+            pass                 # a notice never changes the refusal
+        return (f"this change touches paths reserved for a human verdict ({names}); the loop "
+                "does not approve them. Nothing was written: request changes, or leave the "
+                "approval to a person")
 
     def _partial_view(self) -> str:
         """Why this run's seat could not see the whole change, or '' — from host records only.
