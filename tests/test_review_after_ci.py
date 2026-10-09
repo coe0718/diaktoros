@@ -291,6 +291,71 @@ class Cli(unittest.TestCase):
         self.assertIn("--review-after-ci=off", argv)
 
 
+class FixCi(Cli):
+    """fix_ci (#526) moves from every path, exactly like review_after_ci."""
+
+    def written(self) -> bool:
+        return json.loads(LOOP_FILE.read_text()).get("fix_ci", False)
+
+    def test_form_overlay_only_when_named(self):
+        self.assertNotIn("fix_ci", config.apply_settings(raw(), {}))
+        self.assertIs(config.apply_settings(raw(), {"fix_ci": True})["fix_ci"], True)
+        self.assertIs(config.apply_settings(raw(fix_ci=True), {"fix_ci": "off"})["fix_ci"], False)
+        self.assertIn("fix_ci", config.SETTINGS_SCHEMA)
+        self.assertIn("  fix_ci:", (pathlib.Path(config.__file__).resolve().parents[1]
+                                     / "plugin.yaml").read_text())
+
+    def test_init_form_and_flag(self):
+        for extra, settings, want in (((), None, False), ((), {"fix_ci": True}, True),
+                                      (("--fix-ci", "off"), {"fix_ci": True}, False),
+                                      (("--fix-ci", "on"), None, True)):
+            with self.subTest(extra=extra, settings=settings):
+                LOOP_FILE.unlink(missing_ok=True)
+                rc, out = self.init(*extra, settings=settings)
+                self.assertEqual(rc, 0, out)
+                self.assertIs(self.written(), want)
+
+    def test_set_and_apply_move_it(self):
+        self.assertEqual(self.init()[0], 0)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--fix-ci", "on")
+        self.assertEqual(rc, 0, out)
+        self.assertIs(self.written(), True)
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"fix_ci": False})
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("already matches", out)
+        self.assertIs(self.written(), False)
+
+    def test_setup_hands_init_the_answer(self):
+        for settings, flags, want in (({"fix_ci": True}, [], "on"), ({}, ["--fix-ci", "on"], "on"),
+                                      ({}, [], "off")):
+            args = t.parser_for(settings).parse_args(["setup", "--repo", t.REPO, *flags])
+            argv, _ = cli._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+            self.assertIn(f"--fix-ci={want}", argv)
+
+    def test_doctor_names_state_and_push_mismatch(self):
+        from diaktoros import doctor
+        loop = config.normalize(raw())
+        self.assertEqual(doctor.check_fix_ci(loop).status, doctor.VERIFIED)
+        self.assertIn("off", doctor.check_fix_ci(loop).detail)
+        on = config.normalize(raw(fix_ci=True))
+        self.assertFalse(config.unattended_fixer_push_enabled(on))
+        self.assertEqual(doctor.check_fix_ci(on).status, doctor.MISMATCH)
+        pushing = config.normalize(raw(fix_ci=True, unattended_fixer_push=True))
+        check = doctor.check_fix_ci(pushing)
+        self.assertEqual(check.status, doctor.VERIFIED)
+        self.assertIn("on", check.detail)
+
+    def test_doctor_check_loop_runs_it(self):
+        from diaktoros import doctor
+        checks = doctor.check_loop(config.normalize(raw(fix_ci=True)), offline=True)
+        found = [c for c in checks if c.name == "fix-ci"]
+        self.assertEqual([c.status for c in found], [doctor.MISMATCH])
+
+
+for _name in [n for n in dir(Cli) if n.startswith("test_")
+              and n in ("test_init_starts_from_the_form_and_the_flag_wins",)]:
+    setattr(FixCi, _name, None)
+
 # Hold inherits test_seat_models' Worker for its run_seat; its own tests run in that module.
 for _name in [n for n in dir(sm.Worker) if n.startswith("test_")]:
     setattr(Hold, _name, None)

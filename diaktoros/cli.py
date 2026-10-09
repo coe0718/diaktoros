@@ -1746,6 +1746,7 @@ def cmd_init(args) -> int:
         # Sign what the loop posts (#197): on unless --attribution off or the form says so.
         "attribution": _attribution_arg(args, d["attribution"]),
         "review_after_ci": _on_off(args, "review_after_ci", d["review_after_ci"]),
+        "fix_ci": _on_off(args, "fix_ci", d["fix_ci"]),
         # Host merge pushes to a review-only author's branch: off unless asked for and acknowledged.
         "review_only_update": _on_off(args, "review_only_update", d["review_only_update"]),
         # The checks CI always runs, which a fixer running only its touched tests would miss.
@@ -2117,6 +2118,9 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     after_ci = args.review_after_ci or (
         "on" if _agree("Start each review after the head's CI finishes (up to an hour)?",
                        d["review_after_ci"], interactive, d["review_after_ci"]) else "off")
+    fix_ci = args.fix_ci or (
+        "on" if _agree("Give a failed CI check on a fixer's PR to the fixer (needs fixer pushes)?",
+                       d["fix_ci"], interactive, d["fix_ci"]) else "off")
     attribution = args.attribution or (
         "on" if _agree("Sign what the loop posts ('Automated by Diaktoros')?",
                        d["attribution"], interactive, d["attribution"]) else "off")
@@ -2135,7 +2139,7 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     argv = ["init", f"--repo={repo}", f"--id={loop_id}", f"--reviewer={reviewer}",
             f"--fixer={fixer}", f"--reviewer-profile={reviewer_profile}",
             f"--fixer-profile={fixer_profile}", f"--read-token={reader}", f"--host={host}",
-            f"--attribution={attribution}", f"--review-after-ci={after_ci}"]
+            f"--attribution={attribution}", f"--review-after-ci={after_ci}", f"--fix-ci={fix_ci}"]
     for login, file in ((reviewer, reviewer_file), (fixer, fixer_file), (reader, reader_file),
                         (admin, admin_file)):
         if login and file:
@@ -2416,6 +2420,7 @@ def cmd_set(args) -> int:
               "turn_budget_s": getattr(args, "turn_budget", None),
               "attribution": _attribution_arg(args, None),
               "review_after_ci": _on_off(args, "review_after_ci", None),
+              "fix_ci": _on_off(args, "fix_ci", None),
               "review_only_update": _on_off(args, "review_only_update", None)}
     if (wanted["review_only_update"] and not loop.get("review_only_update")
             and not getattr(args, "acknowledge_branch_push", False)):
@@ -2886,7 +2891,7 @@ def _apply(args) -> int:
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
-                "review_only_update", "required_checks", "review_only", "review_only_cap", "review_only_daily"):
+                "fix_ci", "review_only_update", "required_checks", "review_only", "review_only_cap", "review_only_daily"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -5154,6 +5159,10 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                           help="start each review after the head's checks finish (up to an hour) "
                                f"(default {'on' if d['review_after_ci'] else 'off'})")
+        init.add_argument("--fix-ci", choices=("on", "off"), default=None,
+                          help="hand a failed required check on a fixer's PR to the fixer, one "
+                               "turn per head; needs unattended fixer pushes "
+                               f"(default {'on' if d['fix_ci'] else 'off'})")
         init.add_argument("--attribution", choices=("on", "off"), default=None,
                           help="sign what the loop posts with 'Automated by Diaktoros' "
                                f"(default {'on' if d['attribution'] else 'off'})")
@@ -5249,6 +5258,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                 "required to turn --review-only-update on")
         first.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                            help="start each review after the head's checks finish (up to an hour) (default: the plugin setting, off)")
+        first.add_argument("--fix-ci", choices=("on", "off"), default=None,
+                           help="hand a failed required check on a fixer's PR to the fixer "
+                                "(default: the plugin setting, off)")
         first.add_argument("--attribution", choices=("on", "off"), default=None,
                            help="sign what the loop posts with 'Automated by Diaktoros' "
                                 "(default: the plugin setting, on)")
@@ -5425,6 +5437,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--review-after-ci", choices=("on", "off"), default=None,
                             help="start each review after the head's checks finish (up to an hour), "
                                  "or start at once")
+        change.add_argument("--fix-ci", choices=("on", "off"), default=None,
+                            help="hand a failed required check on a fixer's PR to the fixer "
+                                 "(needs unattended fixer pushes), or stop")
         change.add_argument("--review-only-cap", default=None, metavar="N",
                             help="verdicts the reviewer gives one review-only PR before it waits "
                                  "for `review --another-round`, 1-1000; 0 = the review cap")

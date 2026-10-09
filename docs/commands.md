@@ -269,6 +269,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only; off by default; turning it on needs --acknowledge-branch-push) |
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default: the plugin setting, off) |
+| `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (default: the plugin setting, off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
@@ -370,6 +371,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only; off by default; turning it on needs --acknowledge-branch-push) |
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default off) |
+| `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer, one turn per head; needs unattended fixer pushes (default off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default on) |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
@@ -452,6 +454,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only), or stop; turning it on needs --acknowledge-branch-push |
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour), or start at once |
+| `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (needs unattended fixer pushes), or stop |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000; 0 = no cap |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it); replaces the list (one of `--review-only`, `--no-review-only`) |

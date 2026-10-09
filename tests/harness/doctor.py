@@ -384,6 +384,8 @@ DOCTOR_FIXTURE_CHECKS = frozenset({
     # its five new checks merged unnamed and main went red here — which is the roster working: a
     # new check is a decision, and this is the decision.
     "watchdog:run",
+    # #526: whether a failed required check on a fixer's PR becomes a fixer turn (off by default).
+    "fix-ci",
     "runtime:runtime", "runtime:rust", "runtime:source", "runtime:venv",
 })
 
