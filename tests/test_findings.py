@@ -62,6 +62,44 @@ class Findings(unittest.TestCase):
                                     "F1: fixed\nF2: open\nF3: src/a.py: x\n")
         self.assertIn("could not read", reason)
 
+    def test_approve_with_an_open_finding_is_refused(self):
+        entry = self.st.findings_get(7)
+        with mock.patch.object(findings, "changed_files", return_value={"src/a.py"}):
+            for body in ("F1: fixed\nF2: open\n", "F1: fixed\n"):
+                self.assertIn("cannot APPROVE",
+                              findings.check(self.loop, entry, 7, H2, body, "APPROVE"))
+            self.assertIn("cannot APPROVE", findings.check(
+                self.loop, entry, 7, H2, "F1: fixed\nF2: fixed\nF3: src/a.py: new\n", "APPROVE"))
+            self.assertEqual(findings.check(self.loop, entry, 7, H2,
+                                            "F1: fixed\nF2: withdrawn\n", "APPROVE"), "")
+            self.assertEqual(findings.check(self.loop, entry, 7, H2,
+                                            "F1: fixed\nF2: open\n", "REQUEST_CHANGES"), "")
+
+    def test_new_finding_starting_with_a_state_word_is_recorded(self):
+        findings.record(self.loop, 7, H2,
+                        "F1: fixed\nF2: open\nF3: open file handle leaks in x.py\n"
+                        "F4: Fixed-size buffer in y.py\n")
+        got = self.st.findings_get(7)["findings"]
+        self.assertEqual((got["F3"]["state"], got["F4"]["state"]), ("open", "open"))
+        self.assertIn("file handle", got["F3"]["text"])
+        self.assertEqual(got["F1"]["state"], "fixed")
+        kinds = [k for _, k, _ in findings.parse("F2: open: still\nF5: fixed\nF6: open file x")]
+        self.assertEqual(kinds, ["open", "fixed", "new"])
+
+    def test_citation_is_a_whole_path_token(self):
+        base = "F1: fixed\nF2: open\n"
+        self.assertIn("F3", self.check(base + "F3: data.py: broken\n"))
+        self.assertIn("F3", self.check(base + "F3: src/a.pyc: broken\n"))
+        self.assertEqual(self.check(base + "F3: `src/a.py`: broken\n"), "")
+        self.assertEqual(self.check(base + "F3: see src/a.py, line 3\n"), "")
+
+    def test_unreadable_change_does_not_advise_missed(self):
+        with mock.patch.object(findings, "changed_files", return_value=None):
+            reason = findings.check(self.loop, self.st.findings_get(7), 7, H2,
+                                    "F1: fixed\nF2: open\nF3: src/a.py: x\n")
+        self.assertNotIn("missed", reason)
+        self.assertIn("retry", reason)
+
     def test_states_are_kept_and_listed_for_explain(self):
         findings.record(self.loop, 7, H2,
                         "F1: fixed\nF2: open\nF3: src/c.py: missed earlier: late\n")

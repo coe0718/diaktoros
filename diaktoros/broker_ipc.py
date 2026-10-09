@@ -509,7 +509,8 @@ class RunBroker:
             # Before the capability is consumed, so the reviewer can resubmit in the same turn.
             from . import findings, state as state_mod
             entry = state_mod.state_for(self._loop).findings_get(self.scope.number)
-            reason = findings.check(self._loop, entry, self.scope.number, self.scope.head, body)
+            reason = findings.check(self._loop, entry, self.scope.number, self.scope.head, body,
+                                    verdict)
             if reason:
                 raise ProtocolError(reason)
             # Requirements of the issue(s) the PR closes (#511); a PR closing none is unaffected.

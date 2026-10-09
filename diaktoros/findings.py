@@ -21,13 +21,22 @@ _LINE = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?(F\d+)\b(.*)$")
 _STATUS = re.compile(r"^[\s:*\-–—]*(fixed|open|withdrawn)\b", re.IGNORECASE)
 
 
-def parse(body: str) -> list[tuple[str, str, str]]:
-    """``(id, kind, rest)`` per finding line; kind is a state word or ``new``."""
+# For an id not yet known a state needs the word to be the whole line plus an optional reason:
+# 'F3: open file handle leaks' and 'F4: Fixed-size buffer' are new findings, not states.
+_BARE_STATUS = re.compile(r"^[\s:*\-–—]*(fixed|open|withdrawn)(?:\*\*)?(?:\s*$|\s*[:;,.(]|\s+[-–—]\s)",
+                          re.IGNORECASE)
+
+
+def parse(body: str, known=()) -> list[tuple[str, str, str]]:
+    """``(id, kind, rest)`` per finding line; kind is a state word or ``new``.
+
+    A line is a state when its id is in ``known``, or when the state word is the whole line
+    (plus an optional reason); otherwise it is a new finding."""
     out = []
     for line in body.splitlines():
         found = _LINE.match(line)
         if found:
-            status = _STATUS.match(found.group(2))
+            status = (_STATUS if found.group(1) in known else _BARE_STATUS).match(found.group(2))
             out.append((found.group(1), status.group(1).lower() if status else "new",
                         found.group(2).strip()))
     return out
@@ -53,10 +62,15 @@ def changed_files(loop: dict, number: int, prev_head: str | None, head: str) -> 
     return {f["filename"] for f in files if isinstance(f, dict) and isinstance(f.get("filename"), str)}
 
 
-def check(loop: dict, entry: dict, number: int, head: str, body: str) -> str:
+def cites(rest: str, name: str) -> bool:
+    """Whether ``rest`` names the path ``name`` as a whole token (``a.py`` is not in ``data.py``)."""
+    return re.search(r"(?<![\w./-])" + re.escape(name) + r"(?![\w-]|\.\w)", rest) is not None
+
+
+def check(loop: dict, entry: dict, number: int, head: str, body: str, verdict: str = "") -> str:
     """The reason this review must be refused, or ''. Reads only; writes nothing."""
-    lines = parse(body)
     known = entry.get("findings") if isinstance(entry.get("findings"), dict) else {}
+    lines = parse(body, known)
     stated = {}
     new = []
     for fid, kind, rest in lines:
@@ -69,6 +83,12 @@ def check(loop: dict, entry: dict, number: int, head: str, body: str) -> str:
             return f"finding {fid} appears twice; nothing was written, resubmit"
         else:
             new.append((fid, rest))
+    if verdict == "APPROVE":
+        still = [f for f in open_ids(entry) if stated.get(f) not in ("fixed", "withdrawn")]
+        still += [fid for fid, _ in new]
+        if still:
+            return (f"cannot APPROVE with open finding(s) {', '.join(sorted(set(still)))}: mark each "
+                    "one fixed or withdrawn, or request changes; nothing was written, resubmit")
     later = bool(entry.get("last_head"))
     if later:
         omitted = [f for f in open_ids(entry) if f not in stated]
@@ -81,10 +101,10 @@ def check(loop: dict, entry: dict, number: int, head: str, body: str) -> str:
             changed = changed_files(loop, number, entry["last_head"], head)
             if changed is None:
                 return ("the host could not read what changed this round, so a new finding "
-                        f"({needs[0][0]}) cannot be checked: mark it '{MISSED}'; nothing was "
-                        "written, resubmit")
+                        f"({needs[0][0]}) cannot be checked: this is a GitHub read failure, "
+                        "not the finding's fault; nothing was written, retry shortly")
             for fid, rest in needs:
-                if not any(name in rest for name in changed):
+                if not any(cites(rest, name) for name in changed):
                     return (f"new finding {fid} cites no file changed this round: name a changed "
                             f"file in it, or mark it '{MISSED}'; nothing was written, resubmit")
     return ""
@@ -94,7 +114,7 @@ def apply(entry: dict, head: str, body: str) -> dict:
     """The entry after this review: new findings open, states updated, ``last_head`` moved."""
     entry = {**entry, "findings": {k: dict(v) for k, v in (entry.get("findings") or {}).items()}}
     later = bool(entry.get("last_head"))
-    for fid, kind, rest in parse(body):
+    for fid, kind, rest in parse(body, entry["findings"]):
         if kind == "new":
             entry["findings"][fid] = {
                 "state": "open", "text": rest[:300], "head": head,
