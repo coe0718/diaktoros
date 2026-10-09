@@ -216,3 +216,7 @@ Implementation boundaries: `diaktoros/observer.py` (`route_contract`, `_target`,
 `notify`, `_deliver`, `retry`, `flush`), `scripts/observe.py`, CLI observer setters,
 `diaktoros/state.py` receipt paths, and `scripts/watchdog.py` sweep callers.
 For run recovery rather than feed recovery, see [operations](operations.md#when-an-isolated-run-fails).
+
+### `stale_approval` (#473)
+
+| `stale_approval` | A loop PR is approved at head H, and a required check at H is then red, cancelled, or never reported within 30 minutes of the approval. One notice per PR and head ("approval at H is stale: <check> is red"); `explain` shows it as a blocker. Found by the watchdog sweep; writes nothing to GitHub | You: re-run the check or push a fix. A new head clears it. A PR that is not approved at its head is never flagged. "Never reported" can only fire when `required_checks` names checks (with none, every reported check gates and none can be missing). The ready-to-merge queue (#479) is not in this repository yet; it should skip a PR for which `stale_approval.is_stale(watch, pr, head)` is true |

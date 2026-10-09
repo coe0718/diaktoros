@@ -783,6 +783,14 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             reviewed = reviewed_at_head(reviews, loop, head)
             head_states = sorted({gh.review_state(r) for r in reviews_at_head(reviews, loop, head)})
 
+    stale_line = ""
+    if approved and head:
+        from . import stale_approval
+        found = stale_approval.record(st.watch(), number)
+        if found and found.get("head") == head:
+            stale_line = stale_approval.line(found)
+            blockers.append(stale_line)
+
     # -- the budget line ---------------------------------------------------------------------
     if reviews is None:
         budget = (f"unknown — the review list could not be read "
@@ -1122,7 +1130,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                   ("unverified" if stacked else "direct"), "reason": chain_reason if stacked else "direct trunk base",
                   "parents": list(chain_parents),
                   "identity": chain.identity.key if isinstance(chain, situation.Resolution) and chain.identity else ""},
-        "approved": approved, "reviewed": reviewed, "request_pending": request_pending,
+        "approved": approved, "stale_approval": stale_line, "reviewed": reviewed, "request_pending": request_pending,
         "read_at": iso_at(now),
         "state_line": state_line, "budget": budget, "seat": local["seat"], "queue": local["queue"],
         "inflight": local["inflight"], "escalation": local["escalation"], "hooks": hooks_line,
