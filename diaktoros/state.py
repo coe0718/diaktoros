@@ -113,6 +113,33 @@ def mark_at(entry) -> float | None:
     return float(at)
 
 
+def _clock(value) -> float | None:
+    """A bare epoch (an in-flight mark's value), or None when it is not a finite plain number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def _mapping(raw) -> dict:
+    """A state file's top level as a dict: a file that is not a mapping holds nothing (#80)."""
+    return raw if isinstance(raw, dict) else {}
+
+
+def _seat(data: dict, seat: str) -> dict:
+    """``data[seat]`` for writing, replacing a value that is not a mapping (#547, #548): a writer
+    heals the shape its readers already ignore, instead of raising on it."""
+    items = data.get(seat)
+    if not isinstance(items, dict):
+        items = data[seat] = {}
+    return items
+
+
+def _seat_read(data: dict, seat: str) -> dict:
+    """``data[seat]`` for reading; {} when it is not a mapping."""
+    items = data.get(seat)
+    return items if isinstance(items, dict) else {}
+
+
 class LoopState:
     def __init__(self, loop: dict):
         self.loop = loop
@@ -290,21 +317,21 @@ class LoopState:
         own budget and id (#98); the claim's TTL never shrinks below the budget it was taken
         with, and only a release naming the same ``run`` may free it."""
         with self.locked():
-            data = self._load(self.locks, {}) or {}
+            data = _mapping(self._load(self.locks, {}))
             at = time.time()
             entry = {"at": at, "head": head, "why": why,
                      "budget": budget if budget is not None else config.turn_budget(self.loop, seat)}
             if run is not None:
                 entry["run"] = run
-            data.setdefault(seat, {})[key] = entry
+            _seat(data, seat)[key] = entry
             self._save(self.locks, data)
             CLAIMS.append((self, seat, key, at))
 
     def release_exact(self, seat: str, key: str, at: float) -> bool:
         """Free one claim only if it is still the very claim made at ``at``."""
         with self.locked():
-            data = self._load(self.locks, {}) or {}
-            entry = (data.get(seat) or {}).get(key)
+            data = _mapping(self._load(self.locks, {}))
+            entry = _seat_read(data, seat).get(key)
             if not isinstance(entry, dict) or entry.get("at") != at:
                 return False
             data[seat].pop(key)
@@ -323,8 +350,8 @@ class LoopState:
         reconciling it) must never free a newer run's claim on the same seat, PR and head.
         """
         with self.locked():
-            data = self._load(self.locks, {}) or {}
-            entry = (data.get(seat) or {}).get(key)
+            data = _mapping(self._load(self.locks, {}))
+            entry = _seat_read(data, seat).get(key)
             if entry is None or (head is not None and not (
                     isinstance(entry, dict) and entry.get("head") == head)):
                 return False
@@ -338,8 +365,9 @@ class LoopState:
 
     def release_all(self, seat: str) -> int:
         with self.locked():
-            data = self._load(self.locks, {}) or {}
-            count = len(data.pop(seat, {}) or {})
+            data = _mapping(self._load(self.locks, {}))
+            stored = data.pop(seat, {})
+            count = len(stored) if isinstance(stored, dict) else 0
             if count:
                 self._save(self.locks, data)
             return count
@@ -368,20 +396,20 @@ class LoopState:
 
     def queue_add(self, seat: str, key: str, head: str, url: str, reason: str) -> None:
         with self._queue_lock():
-            data = self._load(self.pending, {}) or {}
-            data.setdefault(seat, {})[key] = {"at": time.time(), "head": head, "url": url,
-                                              "reason": reason, "id": uuid.uuid4().hex}
+            data = _mapping(self._load(self.pending, {}))
+            _seat(data, seat)[key] = {"at": time.time(), "head": head, "url": url,
+                                      "reason": reason, "id": uuid.uuid4().hex}
             self._save_queue(data)
 
     def queue_replace_if(self, seat: str, key: str, expected: dict | None,
                          head: str, url: str, reason: str) -> bool:
         """Record a failed dispatch only if no newer event replaced its queue entry."""
         with self._queue_lock():
-            data = self._load(self.pending, {}) or {}
-            if (data.get(seat) or {}).get(key) != expected:
+            data = _mapping(self._load(self.pending, {}))
+            if _seat_read(data, seat).get(key) != expected:
                 return False
-            data.setdefault(seat, {})[key] = {"at": time.time(), "head": head, "url": url,
-                                              "reason": reason, "id": uuid.uuid4().hex}
+            _seat(data, seat)[key] = {"at": time.time(), "head": head, "url": url,
+                                      "reason": reason, "id": uuid.uuid4().hex}
             self._save_queue(data)
             return True
 
@@ -421,12 +449,12 @@ class LoopState:
             return junk
 
     def queue_all(self) -> dict:
-        return self._load(self.pending, {}) or {}
+        return _mapping(self._load(self.pending, {}))
 
     def queue_pop(self, seat: str, key: str) -> None:
         with self._queue_lock():
-            data = self._load(self.pending, {}) or {}
-            items = data.get(seat) or {}
+            data = _mapping(self._load(self.pending, {}))
+            items = _seat_read(data, seat)
             if items.pop(key, None) is not None:
                 if not items:
                     data.pop(seat, None)
@@ -435,8 +463,8 @@ class LoopState:
     def queue_pop_head(self, seat: str, key: str, head: str) -> bool:
         """Do not discard a newer head while removing a stale queued request."""
         with self._queue_lock():
-            data = self._load(self.pending, {}) or {}
-            items = data.get(seat) or {}
+            data = _mapping(self._load(self.pending, {}))
+            items = _seat_read(data, seat)
             entry = items.get(key)
             if not isinstance(entry, dict) or entry.get("head") != head:
                 return False
@@ -449,8 +477,8 @@ class LoopState:
     def queue_pop_if(self, seat: str, key: str, expected: dict | None) -> bool:
         """Acknowledge only the entry observed before enqueue, never its replacement."""
         with self._queue_lock():
-            data = self._load(self.pending, {}) or {}
-            items = data.get(seat) or {}
+            data = _mapping(self._load(self.pending, {}))
+            items = _seat_read(data, seat)
             if expected is None or items.get(key) != expected:
                 return False
             items.pop(key)
@@ -470,18 +498,20 @@ class LoopState:
         now = time.time()
         if record:
             with self.locked():
-                data = self._load(self.inflight_file, {}) or {}
+                data = _mapping(self._load(self.inflight_file, {}))
                 data[key] = now
-                data = {k: v for k, v in data.items() if now - v < 24 * 3600}
+                # #545: an unageable mark is dropped, never subtracted from.
+                data = {k: v for k, v in data.items()
+                        if _clock(v) is not None and now - _clock(v) < 24 * 3600}
                 self._save(self.inflight_file, data)
             return False
-        data = self._load(self.inflight_file, {}) or {}
-        return now - data.get(key, 0) < self.loop["inflight_ttl_min"] * 60
+        at = _clock(_mapping(self._load(self.inflight_file, {})).get(key))
+        return at is not None and now - at < self.loop["inflight_ttl_min"] * 60
 
     def inflight_clear(self, key: str) -> None:
         """Drop one in-flight mark: its run has ended (the isolated worker's release, #98)."""
         with self.locked():
-            data = self._load(self.inflight_file, {}) or {}
+            data = _mapping(self._load(self.inflight_file, {}))
             if data.pop(key, None) is not None:
                 self._save(self.inflight_file, data)
 
@@ -491,18 +521,18 @@ class LoopState:
         ``inflight()`` answers yes/no; an operator asking "how long has this been out" needs the
         timestamp, and recomputing the TTL comparison anywhere else would be a second rule.
         """
-        return float((self._load(self.inflight_file, {}) or {}).get(key, 0) or 0)
+        return _clock(_mapping(self._load(self.inflight_file, {})).get(key)) or 0.0
 
     def quarantine(self, number: int, head: str) -> None:
         """Erase head-only run and escalation tokens after a base transition."""
         with self.locked():
-            data = self._load(self.inflight_file, {}) or {}
+            data = _mapping(self._load(self.inflight_file, {}))
             for prefix in (f"review:{number}:{head}", f"fix:{number}:{head}"):
                 data.pop(prefix, None)
             self._save(self.inflight_file, data)
         key = f"{self.loop['repo']}#{number}"
         with self._breach_lock():
-            markers = self._load(self.breach, {}) or {}
+            markers = _mapping(self._load(self.breach, {}))
             if key in markers:
                 markers.pop(key)
                 self._breach_save(markers)
@@ -528,13 +558,13 @@ class LoopState:
         _atomic_write(self.breach, data)
 
     def breach_get(self, number: int) -> dict:
-        return (self._load(self.breach, {}) or {}).get(f"{self.loop['repo']}#{number}") or {}
+        return _mapping(_mapping(self._load(self.breach, {})).get(f"{self.loop['repo']}#{number}"))
 
     def breach_set(self, number: int, entry: dict) -> dict:
         key = f"{self.loop['repo']}#{number}"
         with self._breach_lock():
-            data = self._load(self.breach, {}) or {}
-            prior = data.get(key) or {}
+            data = _mapping(self._load(self.breach, {}))
+            prior = _mapping(data.get(key))
             # Duplicate cap events cannot re-arm an already claimed head.
             if prior.get("head") == entry.get("head"):
                 return prior
@@ -556,8 +586,8 @@ class LoopState:
         with self._breach_lock():
             if not current():
                 return "stale"
-            data = self._load(self.breach, {}) or {}
-            prior = data.get(key) or {}
+            data = _mapping(self._load(self.breach, {}))
+            prior = _mapping(data.get(key))
             new = prior.get("head") != head
             if not new and (prior.get("status") != "delivery-pending"
                             or (prior.get("delivery_token")
@@ -579,7 +609,7 @@ class LoopState:
             log(f"adjudicator delivery failed: {exc}")
             delivered = False
         with self._breach_lock():
-            data = self._load(self.breach, {}) or {}
+            data = _mapping(self._load(self.breach, {}))
             latest = data.get(key) or {}
             if (latest.get("head") == head
                     and latest.get("delivery_token") == marker["delivery_token"]):
@@ -597,7 +627,7 @@ class LoopState:
         """Claim exactly one wake for this PR/head across gateway processes."""
         key = f"{self.loop['repo']}#{number}"
         with self._breach_lock():
-            data = self._load(self.breach, {}) or {}
+            data = _mapping(self._load(self.breach, {}))
             marker = data.get(key)
             if (not isinstance(marker, dict) or marker.get("pr") != number
                     or marker.get("head") != head
@@ -621,7 +651,7 @@ class LoopState:
         """
         key = f"{self.loop['repo']}#{number}"
         with self._breach_lock():
-            data = self._load(self.breach, {}) or {}
+            data = _mapping(self._load(self.breach, {}))
             marker = data.get(key)
             if (not isinstance(marker, dict) or marker.get("pr") != number
                     or marker.get("head") != head or marker.get("rounds") != rounds
@@ -641,7 +671,7 @@ class LoopState:
         count, and only from ``adjudicating``; anything else is left alone."""
         key = f"{self.loop['repo']}#{number}"
         with self._breach_lock():
-            data = self._load(self.breach, {}) or {}
+            data = _mapping(self._load(self.breach, {}))
             marker = data.get(key)
             if (not isinstance(marker, dict) or marker.get("pr") != number
                     or marker.get("head") != head or marker.get("rounds") != rounds
@@ -652,7 +682,7 @@ class LoopState:
             return data[key]
 
     def breach_all(self) -> dict:
-        return self._load(self.breach, {}) or {}
+        return _mapping(self._load(self.breach, {}))
 
     # -- watchdog memory ----------------------------------------------------
 
