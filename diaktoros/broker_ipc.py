@@ -587,10 +587,24 @@ class RunBroker:
                 # outcome, the loop still continues with the request.
                 self.answers_outcome = self._publish_answers(head, body)
                 body = ''
+            # #532: a request for a reviewer who is still requested (no verdict yet, e.g. after a
+            # CI-fix push) makes GitHub send no event. Read that before the request, and if so
+            # deliver the gate the event GitHub will not.
+            pending = None
+            if after_push:
+                try:
+                    from . import gh, review_kick
+                    live = gh.api(self._loop, gh.pr_path(self._loop, self.scope.number),
+                                  login=self._loop["read_token"])
+                    pending = live if review_kick.already_requested(self._loop, live) else None
+                except Exception:
+                    pending = None
             result = broker.perform(self._loop, repo=self.scope.repo, number=self.scope.number,
                                     head=head, role=self.scope.role, branch=self.scope.branch,
                                     operation=operation, verdict=verdict, body=body,
                                     require_verdict=not after_push)
+            if pending is not None:
+                self._kick_review(pending, head)
         if operation == 'review':
             try:
                 from . import findings
@@ -890,6 +904,23 @@ class RunBroker:
             return {"accepted": True}
         supervisor.issue_fix_status(run_id, "requested")
         return {"accepted": True}
+
+    def _kick_review(self, pr: dict, head: str) -> None:
+        """Start the review GitHub will not announce (#532). Best effort: the request itself
+        succeeded, and the watchdog's sweep is the backstop if this delivery does not land."""
+        from . import review_kick
+        from .util import log
+        sender = str((self._loop.get("seats") or {}).get("fixer", {}).get("login")
+                     or (self._loop.get("fixers") or [""])[0])
+        try:
+            sent = review_kick.kick(self._loop, pr, head, sender,
+                                    f"kick-review-{self.scope.number}")
+        except Exception as exc:
+            sent = False
+            log(f"#{self.scope.number} @ {head[:7]}: review start not delivered: "
+                f"{type(exc).__name__}: {exc}")
+        log(f"#{self.scope.number} @ {head[:7]}: reviewer was already requested, so GitHub sends "
+            f"no event — {'delivered the review request to the gate' if sent else 'the watchdog will start it'}")
 
     def _hold_issue_fix(self, supervisor, outcome: str) -> None:
         """An issue-fix write whose outcome is unknown holds its run ``uncertain`` (#522), as the

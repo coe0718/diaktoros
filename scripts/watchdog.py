@@ -45,10 +45,14 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import review_only_conflict  # noqa: E402
+from diaktoros import review_kick  # noqa: E402
 from diaktoros import ci_fix, config, main_check, envnames, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, stale_approval, transition, state as state_mod  # noqa: E402
 from diaktoros.util import age_min, epoch, log, now_iso  # noqa: E402
 
 TEST = bool(envnames.get("TEST"))
+# #532: how long a head may sit with a pending, unannounced review request before the sweep
+# delivers it to the gate itself (one sweep interval).
+KICK_AFTER_MIN = 15
 PUSH_OFF_KIND = "fixer held — unattended fixer pushes are off"
 HEAD_RETENTION_SEC = 30 * 86400  # retain absent PRs long enough for transient listing/state changes
 # A 401/403 is a verdict about the token and alerts at once; a 5xx or no answer at all can be a
@@ -464,10 +468,7 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False) -
                 st.queue_pop_if(seat, key, entry)
                 log(f"drain: #{number} head {head[:7]} already reviewed — dropped")
                 continue
-            payload = {"repository": {"full_name": loop["repo"]}, "action": "review_requested",
-                       "requested_reviewer": {"login": loop["reviewer_seat"]},
-                       "sender": {"login": loop["fixers"][0]}, "number": number,
-                       "pull_request": short}
+            payload = review_kick.review_requested(loop, short, head, loop["fixers"][0])
             event, tag = "pull_request", f"drain-review-{number}"
 
         attempted = False
@@ -926,6 +927,10 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
 
     conflicts: list[tuple[int, str, str, str]] = []
     conflict_live: dict[int, dict] = {}
+    # #532: heads whose pending review request the sweep already delivered to the gate itself.
+    kicks = watch.get("review_kicks") if isinstance(watch.get("review_kicks"), dict) else {}
+    open_numbers = {str(p.get("number")) for p in prs if isinstance(p, dict)}
+    kicks = {k: v for k, v in kicks.items() if k in open_numbers}
     for pr in prs:
         if not isinstance(pr, dict):
             continue
@@ -1007,6 +1012,25 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                         f"{head[:7]} by {gate.reviewer_login(at_head[-1])}")
         else:
             mins = (now - observed_at) / 60 if observed_at is not None else 0.0
+            # #532: a request GitHub never announced (the reviewer was already requested when the
+            # fixer pushed) leaves the head with a pending request, no verdict and no run. After
+            # one sweep interval, deliver that request to the gate once per head; the gate's own
+            # rules and the ledger's dedup decide, so a held or queued review is not doubled.
+            # A same-head transition hold (a retarget) starts its own one fresh review under its
+            # turn key; a pending request is not delivered across it.
+            if (review_kick.already_requested(loop, pr) and kicks.get(str(number)) != head
+                    and not boundary
+                    and head_postdates_arming and (TEST or mins >= KICK_AFTER_MIN)):
+                try:
+                    sent = review_kick.kick(loop, pr, head, author, f"sweep-review-{number}")
+                except Exception as exc:
+                    sent = False
+                    log(f"#{number} @ {head[:7]}: review request not delivered: "
+                        f"{type(exc).__name__}: {exc}")
+                if sent:
+                    kicks[str(number)] = head
+                    log(f"#{number} @ {head[:7]}: a pending review request had started no "
+                        "review — delivered it to the reviewer gate")
             if (TEST or mins > grace["reviewer"]) and head_postdates_arming:
                 kind = (f"reviewer never posted a verdict — head {head[:7]} observed "
                         f"{mins / 60:.1f}h ago, 0 verdicts at this head (`hermes dk "
@@ -1056,6 +1080,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                           if (k in present or k.startswith(tuple(unjudged)))
                           and valid_clock(v, now) is not None},
                        **raised}
+    watch["review_kicks"] = kicks
     watch["last_run"] = now_iso()
     st.watch_save(watch)
 
