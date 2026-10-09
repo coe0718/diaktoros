@@ -129,6 +129,10 @@ def epoch(iso: str | None) -> float:
             return 0.0
 
 
-def age_min(iso: str | None) -> float:
+def age_min(iso: str | None) -> float | None:
+    """Minutes since ``iso``, or None when it is missing or unreadable (#563).
+
+    Never 0 for a bad clock: a stall decision that read an unreadable time as "just now" would
+    never fire. Callers treat None as past any grace and say the time was unreadable."""
     t = epoch(iso)
-    return (time.time() - t) / 60 if t else 0.0
+    return (time.time() - t) / 60 if t else None
