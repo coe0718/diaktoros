@@ -114,6 +114,31 @@ class BrokerIPCTests(unittest.TestCase):
                     "body": "## Requirements\n- one: met (test_x)\n\nNot verified: nothing\n"}
             self.assertTrue(self.send(server, good)["ok"])   # capability was not consumed
 
+    def test_findings_are_enforced_and_recorded_through_the_broker(self):
+        from diaktoros import findings, state as state_mod
+        findings.record(self.loop, 7, "c" * 40, "F1: src/a.py: leak\n")
+        st = state_mod.state_for(self.loop)
+        body = "Not verified: nothing\n"
+        server = self.start()
+        with mock.patch.object(findings, "changed_files", return_value={"src/a.py"}):
+            omit = {"operation": "review", "verdict": "REQUEST_CHANGES",
+                    "body": "F2: src/a.py: new\n" + body}
+            refused = self.send(server, omit)
+            self.assertFalse(refused["ok"])
+            self.assertIn("F1", refused["error"])
+            self.assertNotIn("POST", [c[1] for c in self.calls])   # capability not spent
+            self.assertEqual(list(st.findings_get(7)["findings"]), ["F1"])
+            approve = {"operation": "review", "verdict": "APPROVE", "body": "F1: open\n" + body}
+            self.assertIn("cannot APPROVE", self.send(server, approve)["error"])
+            self.assertNotIn("POST", [c[1] for c in self.calls])
+            good = {"operation": "review", "verdict": "REQUEST_CHANGES",
+                    "body": "F1: fixed\nF2: src/a.py: new\n" + body}
+            self.assertTrue(self.send(server, good)["ok"])
+        got = st.findings_get(7)
+        self.assertEqual((got["findings"]["F1"]["state"], got["findings"]["F2"]["state"]),
+                         ("fixed", "open"))
+        self.assertEqual(got["last_head"], HEAD)
+
     def test_arbitrary_github_response_is_not_relayed(self):
         server = self.start()
         with mock.patch.object(gh, "api", side_effect=_ci_green.green(lambda loop, path, method="GET", **kw:
