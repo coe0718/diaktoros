@@ -863,6 +863,7 @@ class RunBroker:
                                                manifest=request["manifest"])
             except safe_push.PushFailure as exc:
                 supervisor.issue_fix_status(run_id, "uncertain", error=f"push {exc.outcome}")
+                self._hold_issue_fix(supervisor, "unknown")
                 raise ProtocolError("the push's outcome is unknown: do not retry; say so")
             except broker.BrokerDenied as exc:
                 supervisor.issue_fix_status(run_id, "denied", error=str(exc)[:200])
@@ -874,6 +875,7 @@ class RunBroker:
         except Exception as exc:
             supervisor.issue_fix_status(run_id, "uncertain",
                                         error=f"PR create outcome unknown: {_why(exc)}")
+            self._hold_issue_fix(supervisor, "pr_create_unknown")
             raise ProtocolError("the branch was pushed but the PR could not be confirmed: do "
                                 "not retry; say so")
         supervisor.issue_fix_status(run_id, "opened", pr_number=pr)
@@ -886,6 +888,15 @@ class RunBroker:
             return {"accepted": True}
         supervisor.issue_fix_status(run_id, "requested")
         return {"accepted": True}
+
+    def _hold_issue_fix(self, supervisor, outcome: str) -> None:
+        """An issue-fix write whose outcome is unknown holds its run ``uncertain`` (#522), as the
+        fixer's push does: ``status`` lists it, ``reconcile`` releases it, nothing replays it."""
+        try:
+            supervisor.quarantine_push(self.scope.run_id, self.scope.repo, self.scope.number,
+                                       self.scope.head, outcome, seat="issue_fixer")
+        except Exception as exc:
+            raise ProtocolError("post-write quarantine persistence failed") from exc
 
     def _file_issue(self, raw: bytes, request: object) -> object:
         """File one issue from an issue-tier finding (#247), as the reviewer's own login.

@@ -1501,20 +1501,24 @@ class Supervisor:
             raise ValueError("run ownership lost before the view was recorded")
 
     def quarantine_push(self, run_id: str, repo: str, pr: int, head: str,
-                        outcome: str) -> None:
+                        outcome: str, seat: str = 'fixer') -> None:
         """Persist an ambiguous post-write push before answering the sandbox.
 
         Keep the uncertain seat occupied even after the worker exits; only an
-        operator may reconcile it after inspecting the remote ref and PR.
+        operator may reconcile it after inspecting the remote ref and PR. The issue
+        fixer's branch push or PR create (#522) is held the same way, so its run ends
+        ``uncertain`` (listed by ``status``, released by ``reconcile``), not ``succeeded``.
         """
-        if outcome not in ('unknown', 'published_pr_unverified'):
+        allowed = {'fixer': ('unknown', 'published_pr_unverified'),
+                   'issue_fixer': ('unknown', 'pr_create_unknown')}
+        if outcome not in allowed.get(seat, ()):
             raise ValueError('not a post-write hold outcome')
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
             row = con.execute('SELECT repo,pr,head,seat,state,launch_intent FROM runs WHERE id=?',
                               (run_id,)).fetchone()
             if (row is None or (row['repo'], row['pr'], row['head'], row['seat']) !=
-                    (repo, pr, head, 'fixer') or row['launch_intent'] is None or
+                    (repo, pr, head, seat) or row['launch_intent'] is None or
                     row['state'] not in ('launching', 'running', 'uncertain')):
                 raise ValueError('post-write run identity unavailable')
             con.execute("UPDATE runs SET state='uncertain',error=?,updated=? WHERE id=?",
