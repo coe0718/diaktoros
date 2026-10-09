@@ -611,8 +611,11 @@ Triage capacity and budget are file-only settings (`seats.triage.concurrency` an
 `--fix-label ""` disables issue handoff; a nonempty fix label must not be a triage label and
 requires maintainers. `--daily-turns 0` removes the triage cap. `--token` maps paths for the
 selected writing/admin identities; it never accepts token values. A first enable's default
-login is the reviewer. With neither enable nor disable all update flags are ignored and the
-command only displays current triage. Disable without admin leaves any GitHub issues hook
+login is the reviewer. With neither `--enable` nor `--disable` and no other flag, the command
+only displays current triage (including the `auto-offer:` line). Any update flag given alone
+(for example `hermes dk triage --loop "<loop-id>" --auto-fix-label P3 --auto-fix-daily 25`)
+applies like `--enable` when triage is on, keeping the route's secret and hook; when triage is
+off it is refused, naming `--enable`. Disable without admin leaves any GitHub issues hook
 posting to a removed route (404); delete it separately. Triage enable rewrites its route;
 verify secrets/hooks when changing an already installed route. Existing hook reconciliation
 may preserve activation; do not assume every update pauses a live hook.
