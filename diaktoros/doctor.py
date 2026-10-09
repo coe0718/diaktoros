@@ -2072,7 +2072,7 @@ def check_token_expiry_scopes(loop: dict, offline: bool, now: float | None = Non
             when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(expires))
             if days <= 0:
                 checks.append(Check(name, MISMATCH, f"expired {when}", fix))
-            elif days < EXPIRY_WARN_DAYS:
+            elif days <= EXPIRY_WARN_DAYS:
                 checks.append(Check(name, UNKNOWN, f"expires {when} — in {days:.1f} day(s)", fix))
             else:
                 checks.append(Check(name, VERIFIED, f"expires {when} — in {days:.0f} day(s)"))

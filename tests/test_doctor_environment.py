@@ -76,6 +76,13 @@ class Environment(unittest.TestCase):
         self.assertFalse(c.failed)
         self.assertIn("rotate", c.fix)
 
+    def test_expiry_exactly_14_days_warns(self):
+        self.headers[gh.TOKEN_EXPIRY_HEADER] = stamp(14)
+        c = self.run_check()["token-expiry:rev"]
+        self.assertEqual(c.status, doctor.UNKNOWN)
+        self.headers[gh.TOKEN_EXPIRY_HEADER] = stamp(14.01)
+        self.assertEqual(self.run_check()["token-expiry:rev"].status, doctor.VERIFIED)
+
     def test_expiry_past_fails(self):
         self.headers[gh.TOKEN_EXPIRY_HEADER] = stamp(-1)
         c = self.run_check()["token-expiry:rev"]
