@@ -482,7 +482,7 @@ class SetAdjudication(Base):
             reviewer="rev", fixer="fix", reviewer_profile="critic", fixer_profile="coder",
             reviewer_token="", fixer_token="", read_token="reader", read_token_file="",
             host="https://gateway.example", admin_token="", admin_token_file="",
-            observer_profile="", review_after_ci="off", attribution="on", fixer_check="",
+            observer_profile="", review_after_ci="off", fix_ci="off", attribution="on", fixer_check="",
             required_check=[], adjudicator_profile="arbiter")
         argv, _admin = cli._setup_init_argv(args, "acme/widgets", "widgets", False)
         self.assertIn("--adjudicator-route=widgets-breach", argv)
