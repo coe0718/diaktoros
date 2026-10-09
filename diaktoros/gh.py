@@ -43,6 +43,8 @@ MAX_PR_PAGES = 100
 # GitHub's pulls/N/files listing stops at 3,000 files (30 full pages); the 31st page is what
 # proves the listing ended, so a PR at GitHub's cap still reads as complete-as-GitHub-lists-it.
 MAX_PR_FILE_PAGES = 31
+# GitHub's pulls/N/files stops listing here; a list this long may be a prefix.
+PR_FILES_LISTING_LIMIT = 3000
 
 
 class GitHubError(Exception):

@@ -634,6 +634,10 @@ class RunBroker:
         if files is None:
             return (f"the PR's file list could not be read ({error[:200]}), so the loop cannot "
                     "check it against human_paths; nothing was written, request changes or retry")
+        if len(files) >= gh.PR_FILES_LISTING_LIMIT:
+            return (f"GitHub lists at most {gh.PR_FILES_LISTING_LIMIT} changed files and this PR "
+                    "reaches that limit, so the loop cannot check all of it against human_paths; "
+                    "nothing was written, request changes or leave the approval to a person")
         paths = []
         for item in files:
             for key in ("filename", "previous_filename"):

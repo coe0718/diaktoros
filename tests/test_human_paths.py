@@ -5,6 +5,7 @@ GitHub and the notice route are fakes. REQUEST_CHANGES and unlisted paths are un
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
+import os
 from pathlib import Path
 import sys
 import unittest
@@ -12,7 +13,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import config, gh, observer, routes  # noqa: E402
+import run_tests as t  # noqa: E402
 import test_partial_view_no_approve as pv  # noqa: E402
+from diaktoros import cli  # noqa: E402
 
 FILES = f"/repos/{pv.REPO}/pulls/7/files?per_page=100"
 
@@ -60,8 +63,11 @@ class Broker(pv.Broker):
         self.addCleanup(fire.stop)
 
     def fetch(self, loop, path, method="GET", body=None, login=None):
-        if path == FILES:
-            return (self.files, "") if self.files is not None else (None, "HTTP 500")
+        if path == FILES or path.startswith(FILES + "&page="):
+            if self.files is None:
+                return None, "HTTP 500"
+            page = int(path.rsplit("=", 1)[1]) if "&page=" in path else 1
+            return self.files[(page - 1) * 100:page * 100], ""
         return None, "unexpected " + path
 
     def notices(self):
@@ -102,12 +108,94 @@ class Broker(pv.Broker):
         self.files = None                                  # would refuse if it were read
         self.assertTrue(self.approve()[1]["ok"])
 
+    def test_a_listing_at_githubs_cap_refuses_approve(self):
+        self.files = [{"filename": f"src/f{i}.py"} for i in range(gh.PR_FILES_LISTING_LIMIT)]
+        server, got = self.approve()
+        self.assertFalse(got["ok"])
+        self.assertIn("limit", got["error"])
+        self.assertEqual(self.posts, [])
+
     def test_an_unreadable_file_list_refuses_approve(self):
         self.files = None
         server, got = self.approve()
         self.assertFalse(got["ok"])
         self.assertIn("could not be read", got["error"])
         self.assertEqual(self.posts, [])
+
+
+LOOP_ID = "humans"
+LOOP_FILE = t.LOOPS_DIR / f"{LOOP_ID}.json"
+
+
+class Cli(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        t.HOST = t.start_sink()
+        t.DATA["host"] = t.HOST
+        cls._env = dict(os.environ)
+        os.environ.update(t.env())
+
+    @classmethod
+    def tearDownClass(cls):
+        os.environ.clear()
+        os.environ.update(cls._env)
+
+    def setUp(self):
+        t.reset(prs={})
+        (t.LOOPS_DIR / "widgets.json").unlink(missing_ok=True)
+        LOOP_FILE.unlink(missing_ok=True)
+        self.addCleanup(LOOP_FILE.unlink, missing_ok=True)
+
+    def cli(self, *argv, settings=None):
+        return t.run_cli(t.parser_for(settings).parse_args(list(argv)))
+
+    def init(self, *extra, settings=None):
+        return self.cli("init", "--repo", t.REPO, "--id", LOOP_ID, "--host", t.HOST,
+                        "--reviewer", t.REVIEWER, "--fixer", t.FIXER,
+                        "--reviewer-profile", "reviewer-profile",
+                        "--fixer-profile", "fixer-profile",
+                        "--token", f"{t.REVIEWER}={t.SEAT_PATS[0]}",
+                        "--token", f"{t.FIXER}={t.SEAT_PATS[1]}", *t.READER_ARGS, *extra,
+                        settings=settings)
+
+    def written(self) -> list:
+        return json.loads(LOOP_FILE.read_text()).get("human_paths", [])
+
+    def test_init_from_the_form_and_the_flags_win(self):
+        form = {"human_paths": ".github/**, release/*"}
+        for extra, settings, want in (((), None, []), ((), form, [".github/**", "release/*"]),
+                                      (("--human-path", "ci/**"), form, ["ci/**"])):
+            with self.subTest(extra=extra, settings=settings):
+                LOOP_FILE.unlink(missing_ok=True)
+                rc, out = self.init(*extra, settings=settings)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self.written(), want)
+
+    def test_set_replaces_clears_and_refuses_and_apply_moves_it(self):
+        self.assertEqual(self.init()[0], 0)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--human-path", ".github/**",
+                           "--human-path", "release/*")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.written(), [".github/**", "release/*"])
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--human-path", "a", "--human-path", "a")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self.written(), [".github/**", "release/*"])
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--no-human-paths")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.written(), [])
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"human_paths": "ci/**"})
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.written(), ["ci/**"])
+
+    def test_setup_hands_init_each_pattern(self):
+        args = t.parser_for({"human_paths": ".github/**, release/*"}
+                            ).parse_args(["setup", "--repo", t.REPO])
+        argv, _ = cli._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        self.assertEqual([a for a in argv if a.startswith("--human-path")],
+                         ["--human-path=.github/**", "--human-path=release/*"])
+        args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--human-path", "ci/**"])
+        argv, _ = cli._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        self.assertEqual([a for a in argv if a.startswith("--human-path")], ["--human-path=ci/**"])
 
 
 if __name__ == "__main__":
