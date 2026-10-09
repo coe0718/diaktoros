@@ -79,23 +79,30 @@ class Broker(pv.Broker):
         server = self.start(scope, require_receipt=True)
         return server, self.send(server, "APPROVE")
 
-    def test_a_listed_path_refuses_approve_with_one_notice_and_request_changes_goes_through(self):
-        self.files = [{"filename": "src/lib.rs"}, {"filename": ".github/workflows/ci.yml"}]
-        server, refused = self.approve()
-        self.assertFalse(refused["ok"])
-        self.assertIn(".github/workflows/ci.yml", refused["error"])
+    def held(self, got):
+        self.assertTrue(got["ok"], got)
+        self.assertEqual(got["result"].get("held"), "human_paths", got)
         self.assertEqual(self.posts, [])
-        self.assertFalse(server.completed)
-        again = self.send(server, "APPROVE")           # same head: refused again, no second notice
-        self.assertFalse(again["ok"])
+
+    def test_a_listed_path_leaves_the_approval_to_a_person_and_ends_the_turn(self):
+        # #478: no approval is written, the turn is complete (so neither retried nor failed),
+        # the head is held for a person, and the operator gets one notice naming the path.
+        self.files = [{"filename": "src/lib.rs"}, {"filename": ".github/workflows/ci.yml"}]
+        server, got = self.approve()
+        self.held(got)
+        self.assertTrue(server.completed)
+        from diaktoros import state as state_mod
+        hold = state_mod.state_for(self.loop).human_hold(7, server.scope.head)
+        self.assertIn(".github/workflows/ci.yml", hold["why"])
         self.assertEqual(len(self.notices()), 1)
         self.assertIn(".github/workflows/ci.yml", self.notices()[0]["message"])
-        self.assertTrue(self.send(server, "REQUEST_CHANGES", "no\nNot verified: nothing")["ok"])
-        self.assertEqual([p["event"] for p in self.posts], ["REQUEST_CHANGES"])
+        again = self.send(server, "REQUEST_CHANGES", "no\nNot verified: nothing")
+        self.assertFalse(again["ok"])                     # the turn's one write is spent
+        self.assertEqual(self.posts, [])
 
     def test_a_renamed_away_listed_path_counts(self):
         self.files = [{"filename": "docs/ci.yml", "previous_filename": ".github/ci.yml"}]
-        self.assertFalse(self.approve()[1]["ok"])
+        self.held(self.approve()[1])
 
     def test_other_paths_approve_as_before(self):
         server, got = self.approve()
@@ -108,12 +115,11 @@ class Broker(pv.Broker):
         self.files = None                                  # would refuse if it were read
         self.assertTrue(self.approve()[1]["ok"])
 
-    def test_a_listing_at_githubs_cap_refuses_approve(self):
+    def test_a_listing_at_githubs_cap_is_left_to_a_person(self):
         self.files = [{"filename": f"src/f{i}.py"} for i in range(gh.PR_FILES_LISTING_LIMIT)]
         server, got = self.approve()
-        self.assertFalse(got["ok"])
-        self.assertIn("limit", got["error"])
-        self.assertEqual(self.posts, [])
+        self.held(got)
+        self.assertIn("limit", got["result"]["reason"])
 
     def test_an_unreadable_file_list_refuses_approve(self):
         self.files = None

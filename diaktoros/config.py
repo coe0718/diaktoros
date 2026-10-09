@@ -198,10 +198,11 @@ SETTINGS_SCHEMA: dict = {
     "human_paths": {"label": "Human-only paths (comma-separated globs)", "type": "str",
                     "default": "",
                     "description": "Glob patterns, e.g. '.github/**, scripts/release*'. If a "
-                                   "reviewed diff touches one, the loop never approves it: the "
-                                   "broker refuses APPROVE and tells the operator once per head; "
-                                   "REQUEST_CHANGES still works. '*' also matches '/'. Blank = "
-                                   "not set here (an unset list means no path is reserved)"},
+                                   "reviewed diff touches one, the loop never approves it: when "
+                                   "the reviewer would approve, the approval is left to a person "
+                                   "(the head is held, one notice per head); REQUEST_CHANGES "
+                                   "still works. '*' also matches '/'. Blank = not set here (an "
+                                   "unset list means no path is reserved)"},
     "fixer_check": {"label": "Fixer's always-run check (command)", "type": "str", "default": "",
                     "description": "One command the fixer runs in the checkout before every "
                                    "push or issue-fix PR, besides the tests it touched: the "

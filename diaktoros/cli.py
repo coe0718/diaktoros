@@ -5196,7 +5196,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--required-check", action="append", default=None,
                           help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         init.add_argument("--human-path", action="append", default=None,
-                          help="a glob pattern for paths only a human may approve: the broker refuses the loop's APPROVE of a diff touching one (repeat it; none = no path reserved) (default: the plugin setting)")
+                          help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
         init.add_argument("--fixer-check", default=None,
                           help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
         init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
@@ -5268,7 +5268,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         first.add_argument("--required-check", action="append", default=None,
                            help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         first.add_argument("--human-path", action="append", default=None,
-                           help="a glob pattern for paths only a human may approve: the broker refuses the loop's APPROVE of a diff touching one (repeat it; none = no path reserved) (default: the plugin setting)")
+                           help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
         first.add_argument("--fixer-check", default=None,
                            help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
         first.add_argument("--review-only-update", choices=("on", "off"), default=None,
