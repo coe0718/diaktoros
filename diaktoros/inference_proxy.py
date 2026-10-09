@@ -417,6 +417,16 @@ def thinking_level(body: bytes, contract: Contract) -> str | None:
             return 'off'
     else:
         effort = payload.get('reasoning_effort')
+        reasoning = payload.get('reasoning')    # OpenRouter-style object
+        if effort is None and reasoning is not None:
+            if not isinstance(reasoning, dict):
+                return None
+            effort = reasoning.get('effort')
+            budget = reasoning.get('max_tokens')
+            if effort is None and type(budget) is int and budget > 0:
+                return f'budget:{budget}'
+            if effort is None:
+                return None    # a reasoning object we cannot read: unknown, never off
         if effort is None:
             return 'off'
     if isinstance(effort, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,32}', effort):

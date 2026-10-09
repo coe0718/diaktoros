@@ -188,6 +188,25 @@ class ModeContracts(Tmp):
                                                 "reasoning": {"effort": "low"}})[0], 200)
                     self.assertEqual(cap.thinking, want)     # only the first request counts
 
+    def test_chat_reasoning_object_is_read_and_unreadable_is_unknown(self):
+        """#525: reasoning {effort|max_tokens} is read; an unreadable one is None, not off."""
+        cases = (({"reasoning": {"effort": "high"}}, "effort:high"),
+                 ({"reasoning": {"max_tokens": 2000}}, "budget:2000"),
+                 ({"reasoning_effort": "low"}, "effort:low"),
+                 ({"reasoning": {"enabled": True}}, None),
+                 ({"reasoning": "high"}, None),
+                 ({"reasoning": {"effort": {"x": 1}}}, None),
+                 ({}, "off"))
+        for extra, want in cases:
+            with self.subTest(extra=extra):
+                body = json.dumps({"model": "x", "messages": [], **extra}).encode()
+                self.assertEqual(inference_proxy.thinking_level(body, CONTRACTS["chat_completions"]), want)
+        with Upstream(lambda h, r: send_json(h)) as up, \
+                InferenceCapability(self.socket_dir(), up.url("/v1/chat/completions"), "KEY",
+                                    model="m", quota=3) as cap:
+            self.assertEqual(post(cap, {"messages": [], "reasoning": {"effort": "high"}})[0], 200)
+            self.assertEqual(cap.thinking, "effort:high")
+
     def test_anthropic_messages_contract_api_key_and_oauth(self):
         cap_limit = CONTRACTS["anthropic_messages"].cap
         for scheme, token in (("x-api-key", "sk-ant-api-HOST-KEY"), ("bearer", "sk-ant-oat-HOST-TOKEN")):
