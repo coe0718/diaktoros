@@ -62,9 +62,12 @@ def changed_files(loop: dict, number: int, prev_head: str | None, head: str) -> 
     return {f["filename"] for f in files if isinstance(f, dict) and isinstance(f.get("filename"), str)}
 
 
+_PATH_START = r"(?<![\w./-])"     # a path token starts here: ``a.py`` is not in ``data.py``
+
+
 def cites(rest: str, name: str) -> bool:
     """Whether ``rest`` names the path ``name`` as a whole token (``a.py`` is not in ``data.py``)."""
-    return re.search(r"(?<![\w./-])" + re.escape(name) + r"(?![\w-]|\.\w)", rest) is not None
+    return re.search(_PATH_START + re.escape(name) + r"(?![\w-]|\.\w)", rest) is not None
 
 
 def check(loop: dict, entry: dict, number: int, head: str, body: str, verdict: str = "") -> str:
@@ -132,11 +135,15 @@ def diff_ranges(files: list) -> dict:
     return out
 
 
-def _cited(rest: str, ranges: dict) -> bool:
+def _cited(rest: str, ranges: dict, failing=()) -> bool:
+    # A failed or missing required check is a block the diff need not contain: the broker refuses
+    # an APPROVE on it and tells the reviewer to request changes naming the check.
+    if any(name and name.lower() in rest.lower() for name in failing):
+        return True
     for name, spans in ranges.items():
-        if name not in rest:
+        if not cites(rest, name):
             continue
-        for m in re.finditer(re.escape(name) + r"(?::|#L)(\d+)(?:-L?(\d+))?", rest):
+        for m in re.finditer(_PATH_START + re.escape(name) + r"(?::|#L)(\d+)(?:-L?(\d+))?", rest):
             first, last = int(m.group(1)), int(m.group(2) or m.group(1))
             if spans is None or any(first <= b and last >= a for a, b in spans):
                 return True
@@ -145,8 +152,11 @@ def _cited(rest: str, ranges: dict) -> bool:
     return False
 
 
-def check_citations(loop: dict, number: int, verdict: str, body: str) -> str:
-    """The reason a REQUEST_CHANGES must be refused for an uncited blocking finding, or ''."""
+def check_citations(loop: dict, number: int, verdict: str, body: str, failing=()) -> str:
+    """The reason a REQUEST_CHANGES must be refused for an uncited blocking finding, or ''.
+
+    ``failing``: the failed or missing required checks at the head; a finding that names one is
+    cited by CI itself, whatever file the failure lives in."""
     if verdict != "REQUEST_CHANGES":
         return ""
     parsed = parse(body)
@@ -163,7 +173,7 @@ def check_citations(loop: dict, number: int, verdict: str, body: str) -> str:
                 "against it; nothing was written, resubmit")
     ranges = diff_ranges(files)
     for fid, rest in new:
-        if not _cited(rest, ranges):
+        if not _cited(rest, ranges, failing):
             return (f"blocking finding {fid} does not cite this PR's diff: {CITATION_HINT}; "
                     "nothing was written, resubmit")
     return ""

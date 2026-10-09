@@ -126,6 +126,28 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
         self.assertTrue(self.send(server, "REQUEST_CHANGES", CITED)["ok"])
         self.assertEqual([p["event"] for p in self.posts], ["REQUEST_CHANGES"])
 
+    def test_red_ci_is_blocked_by_naming_the_failed_check(self):
+        # #348 refuses the APPROVE on red CI and tells the reviewer to request changes naming the
+        # failed checks; the failure may live in a file this PR never touched, so the check's
+        # name is the citation. Without it the reviewer could neither approve nor block.
+        from diaktoros import ci
+        server = self.start(broker_ipc.RunScope(REPO, 7, HEAD, "reviewer", "fix-7"))
+        with mock.patch.object(ci, "read", return_value=ci.CIState(failed=["tests (3.11)"])):
+            uncited = self.send(server, "REQUEST_CHANGES", "F1: it is wrong\nNot verified: nothing")
+            self.assertFalse(uncited["ok"])
+            named = self.send(server, "REQUEST_CHANGES",
+                              "F1: required check tests (3.11) fails in tests/test_other.py\n"
+                              "Not verified: nothing")
+        self.assertTrue(named["ok"], named)
+
+    def test_unreadable_ci_does_not_hold_a_block_to_the_diff(self):
+        from diaktoros import ci
+        server = self.start(broker_ipc.RunScope(REPO, 7, HEAD, "reviewer", "fix-7"))
+        with mock.patch.object(ci, "read", return_value=None):
+            response = self.send(server, "REQUEST_CHANGES",
+                                 "F1: CI could not be read at this head\nNot verified: CI")
+        self.assertTrue(response["ok"], response)
+
     def test_receipted_run_comment_refused_before_claim_then_verdict_confirms(self):
         sup, scope = self.receipt_scope()
         server = self.start(scope)

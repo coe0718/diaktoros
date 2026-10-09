@@ -515,8 +515,17 @@ class RunBroker:
                 raise ProtocolError(reason)
             # A block must point at what this PR changed (#476).
             # A seat that was not shown the whole change must still be able to block and say so.
-            reason = ("" if self._partial_view() else
-                      findings.check_citations(self._loop, self.scope.number, verdict, body))
+            # Red CI (#348 refuses the APPROVE and asks for REQUEST_CHANGES naming the checks) is
+            # citable by the check's name; unreadable CI, like a partial view, is not held to it.
+            reason = ""
+            if verdict == "REQUEST_CHANGES" and not self._partial_view():
+                from . import ci
+                gating = ci.gating(ci.read(self._loop, self.scope.head),
+                                   config.required_checks(self._loop))
+                if gating is not None:
+                    reason = findings.check_citations(
+                        self._loop, self.scope.number, verdict, body,
+                        failing=[*gating.failed, *gating.missing])
             if reason:
                 raise ProtocolError(reason)
             # Requirements of the issue(s) the PR closes (#511); a PR closing none is unaffected.

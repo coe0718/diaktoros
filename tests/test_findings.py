@@ -152,5 +152,25 @@ class Citations(unittest.TestCase):
         self.assertIn("could not read", reason)
 
 
+class CitationTokens(unittest.TestCase):
+    """#476 on #534's path-token rule: a cited line belongs to the whole path, not a suffix."""
+
+    def test_a_path_inside_another_name_is_not_a_citation(self):
+        ranges = {"a.py": [(10, 14)]}
+        self.assertFalse(findings._cited("data.py:12: wrong", ranges))
+        self.assertFalse(findings._cited("lib/data.py#L12 wrong", ranges))
+        self.assertTrue(findings._cited("a.py:12: wrong", ranges))
+        self.assertTrue(findings._cited("see src/a.py:12 and a.py:12", ranges))
+        # An absence names the changed file itself, not one whose name ends the same way.
+        self.assertFalse(findings._cited("data.py: missing test", {"a.py": None}))
+        self.assertTrue(findings._cited("a.py: missing test", {"a.py": None}))
+        # Naming the file is not citing its line: the line must follow the whole path.
+        self.assertFalse(findings._cited("a.py, compare data.py:12", ranges))
+
+    def test_a_failed_check_name_is_a_citation(self):
+        self.assertTrue(findings._cited("check tests (3.11) fails", {}, ["tests (3.11)"]))
+        self.assertFalse(findings._cited("check tests (3.11) fails", {}, ["verticals"]))
+
+
 if __name__ == "__main__":
     unittest.main()
