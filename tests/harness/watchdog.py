@@ -220,6 +220,14 @@ def group_watchdog() -> None:
     run("watchdog.py", None, "--loop", "widgets")
     check("  once per head: the next sweep delivers nothing again",
           len([r for r in RECEIVED[before:] if r["event"] == "pull_request"]), 0)
+    reset(prs={"7": pr(7, head=HEAD_A, requested=SEAT)})
+    state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
+    state_file("stack-transitions.json").write_text(json.dumps({"7": {
+        "head": HEAD_A, "old_review_ids": [], "at": time.time() - 3600, "from_base": "parent"}}))
+    before = len(RECEIVED)
+    run("watchdog.py", None, "--loop", "widgets")
+    check("  a head under a transition hold is left to the transition's own review",
+          len([r for r in RECEIVED[before:] if r["event"] == "pull_request"]), 0)
     reset(prs={"7": {**pr(7, head=HEAD_A, requested=SEAT), "reviews": [review(REVIEWER)]}})
     state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
     before = len(RECEIVED)
