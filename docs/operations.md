@@ -234,6 +234,10 @@ turn per PR head. The host rechecks CI before launch and gives the fixer up to t
 failing job logs, including the failing step and bounded log tails, as untrusted data.
 GitHub serves each log through a redirect to its log storage; the host follows it over HTTPS
 only, and never sends the reader's token to the storage host.
+The fixer then asks for the next review. If the reviewer is still requested from before (no
+verdict yet), GitHub sends no event for that, so the host delivers the request to the
+reviewer gate itself. The watchdog backs this up: a head with a pending review request, no
+verdict and no review started gets that delivery once, after one sweep interval.
 The fixer may propose a scoped patch through the normal broker; the loop does not rerun
 GitHub Actions, modify `.github/` workflow files or merge the PR. A green result on a later
 head ends the repair path naturally.
