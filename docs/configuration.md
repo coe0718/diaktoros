@@ -298,7 +298,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `observer.route` | None | Required for a hand-written active feed. CLI `init`/`set` can generate `<id>-observe` when only a profile is named. |
 | `observer.profile` | `default` | Hermes profile supplying the delivery destination. |
 | `observer.deliver` | `telegram` | Gateway-supported real delivery target, such as `telegram` or `discord`. `init`/`set` refuse `log`: a delivery-only file/log destination cannot provide the feed. |
-| `observer.events` | All sixteen events | List or comma/whitespace-separated string. Missing or empty means **all**, not none. Normalization lowercases, deduplicates, and sorts strings. Unknown names remain stored without a misconfiguration warning; unknown-only input silently matches no transitions. Use the event names below. |
+| `observer.events` | All eighteen events | List or comma/whitespace-separated string. Missing or empty means **all**, not none. Normalization lowercases, deduplicates, and sorts strings. Unknown names remain stored without a misconfiguration warning; unknown-only input silently matches no transitions. Use the event names below. |
 | `observer.urgent_route` | unset | Second delivery-only route for urgent notices (`failed`, `held`, `escalation`, `ruling`, `stall`, `conflict`, uncertain); must differ from `observer.route`. Unset: one feed. `urgent_profile` and `urgent_deliver` default to the feed's. |
 | `observer.digest_min` | `0` | Positive integer minutes batch routine notices (urgent ones are never batched) for a watchdog flush. Unparseable/non-positive values silently normalize to immediate mode, not a misconfigured feed. CLI flags require integers. No explicit upper bound. |
 | `observer.mute` | `false` | Stop delivery while retaining configuration. Use a JSON boolean: this lenient loader uses truthiness, so the string `"false"` is truthy and would mute it. |
@@ -319,6 +319,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `failed` | Any isolated run's first failed attempt and its terminal failed/uncertain state. Links the issue for triage and issue-fix runs. |
 | `held` | A run waiting on its seat's daily cap or its provider's usage window: when it resumes, and how to run it sooner. Once per hold. |
 | `main_red` | A required check is red at the head of the base branch: once per main head, naming the failed check(s) and the PRs merged since main's last green head. Urgent tier. |
+| `stale_approval` | A loop PR is approved at head H, and a required check at H is then red, cancelled, or never reported within 30 minutes of the approval: once per PR and head. Urgent tier. |
 
 ```bash
 hermes dk set --loop "<loop-id>" --observer-profile "<observer-profile>"

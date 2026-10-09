@@ -52,7 +52,7 @@ from .util import log, now_iso
 # happened; the same strings are what `--observer-events` accepts and what the ledger stores.
 EVENTS = ("opened", "handoff", "verdict", "approved", "escalation", "ruling", "stall", "closed",
           "triaged", "fixing", "fixed", "failed", "held", "conflict", "ci_failed", "updated",
-          "main_red")
+          "main_red", "stale_approval")
 # The issue-side events (#231) name an issue, not a PR: their link is /issues/N and they carry no
 # head. ``failed`` (any isolated run's first failed attempt, and its final state) names whichever
 # the run was about.
@@ -63,7 +63,8 @@ ISSUE_EVENTS = frozenset({"triaged", "fixing", "fixed"})
 # progress and is batched when ``digest_min`` is set. The tier is fixed per event, here; an
 # ``uncertain`` outcome is urgent whatever its event. ``stall`` and ``conflict`` ask the
 # operator to act ("next: you"), so they are urgent too.
-URGENT_EVENTS = frozenset({"failed", "held", "escalation", "ruling", "stall", "conflict", "main_red"})
+URGENT_EVENTS = frozenset({"failed", "held", "escalation", "ruling", "stall", "conflict", "main_red",
+                         "stale_approval"})
 ROUTINE_EVENTS = frozenset(EVENTS) - URGENT_EVENTS
 
 
@@ -80,7 +81,8 @@ DIGEST_EVENT = "digest"
 EMOJI = {"opened": "📬", "handoff": "🔧", "verdict": "🔍", "approved": "✅",
          "escalation": "⚠️", "ruling": "⚖️", "stall": "⏳", "closed": "🧹", "digest": "🗂",
          "triaged": "🏷", "fixing": "🛠", "fixed": "📦", "failed": "❌", "held": "⏸",
-         "conflict": "🔀", "ci_failed": "🔴", "updated": "🔁", "main_red": "🚨"}
+         "conflict": "🔀", "ci_failed": "🔴", "updated": "🔁", "main_red": "🚨",
+         "stale_approval": "🕸"}
 LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review requested",
          "verdict": "review posted", "approved": "approved",
          "escalation": "loop stopped — cap spent", "ruling": "adjudicator ruled",
@@ -89,7 +91,8 @@ LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review req
          "triaged": "issue triaged", "fixing": "issue handed to the fixer",
          "fixed": "issue fix", "failed": "run failed", "held": "run held",
          "conflict": "conflicts with its base", "ci_failed": "CI failed",
-         "updated": "base merged in", "main_red": "main is red"}
+         "updated": "base merged in", "main_red": "main is red",
+         "stale_approval": "approval is stale"}
 
 # A stale claim may have reached the gateway before its sender died. Never replay it:
 # without a receiver-side idempotency guarantee, a replay can ping twice.
