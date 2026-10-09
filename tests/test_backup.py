@@ -105,6 +105,13 @@ class Create(Base):
         self.assertEqual(code, 2)
         self.assertEqual(out.read_text(), "keep")
 
+    def test_default_out_does_not_collide_within_one_second(self):
+        with mock.patch.object(backup.time, "strftime", return_value="20261009-000000"):
+            first = backup.create()
+            second = backup.create()
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.is_file() and second.is_file())
+
     def test_ledger_snapshot_is_consistent_while_a_writer_is_open(self):
         writer = sqlite3.connect(self.db, isolation_level=None)
         writer.execute("BEGIN IMMEDIATE")

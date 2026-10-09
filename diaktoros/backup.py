@@ -39,7 +39,13 @@ class BackupError(RuntimeError):
 
 def default_out() -> pathlib.Path:
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    return config.home() / "backups" / f"diaktoros-backup-{stamp}.tar.gz"
+    base = config.home() / "backups"
+    path = base / f"diaktoros-backup-{stamp}.tar.gz"
+    n = 1
+    while path.exists() or path.is_symlink():   # two runs in one second must not collide
+        n += 1
+        path = base / f"diaktoros-backup-{stamp}-{n}.tar.gz"
+    return path
 
 
 def _regular_files(root: pathlib.Path) -> list[pathlib.Path]:
