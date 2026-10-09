@@ -386,6 +386,9 @@ DOCTOR_FIXTURE_CHECKS = frozenset({
     "watchdog:run",
     # #526: whether a failed required check on a fixer's PR becomes a fixer turn (off by default).
     "fix-ci",
+    # #474: per login with a token file, expiry and scopes.
+    "token-expiry:rev-coach", "token-expiry:dev-fixer", "token-expiry:read-acct",
+    "token-scopes:rev-coach", "token-scopes:dev-fixer", "token-scopes:read-acct",
     "runtime:runtime", "runtime:rust", "runtime:source", "runtime:venv",
 })
 
@@ -1211,8 +1214,9 @@ def group_doctor() -> None:
     install_watchdog_state(load_loop())
     added = doctor_runtime_fixture()
     rc, out = run_doctor("--loop", "widgets", "--offline")
-    check("--offline leaves two checks undecided", rc, 0)
-    check("  and counts them", "0 failed, 2 unknown" in out, True)
+    check("--offline leaves five checks undecided", rc, 0)
+    # gateway, hooks, and (#474) the three token-expiry reads
+    check("  and counts them", "0 failed, 5 unknown" in out, True)
     check("  the gateway is not probed", "⚠️ gateway" in out and "not probed" in out, True)
     check("  nor the hooks", "⚠️ hooks" in out, True)
     check("  and it says what to do about it", "verify the ⚠️ lines by hand" in out, True)

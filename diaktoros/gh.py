@@ -61,6 +61,16 @@ TOKEN_EXPIRY_HEADER = "github-authentication-token-expiration"
 STUB_ENVELOPE = "__gh_stub_response__"
 
 
+def parse_token_expiry(value) -> float | None:
+    """GitHub's expiry header (``2026-10-01 12:00:00 UTC``, or a numeric offset) as epoch."""
+    from datetime import datetime, timezone
+    text = str(value or "").strip().replace(" UTC", " +0000")
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S %z").astimezone(timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
 class GateBudgetExceeded(BaseException):
     """A gate (or the watchdog's sweep) ran out of its time budget (issue #75). A
     ``BaseException`` on purpose: the ``except Exception`` fallbacks that turn a failed read into
