@@ -90,6 +90,38 @@ class TriageVerb(unittest.TestCase):
         self.assertEqual(LOOP_FILE.read_bytes(), before)
         self.assertIsNone(routes.route(ROUTE))
 
+    def test_change_flag_without_enable_applies_when_on_and_refuses_when_off(self):
+        # Off: refused, names --enable, writes nothing (#527).
+        before = LOOP_FILE.read_bytes()
+        rc, out = self.cli("triage", "--loop", LOOP_ID, "--auto-fix-label", "P3")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("--enable", out)
+        self.assertEqual(LOOP_FILE.read_bytes(), before)
+        # On: applied like --enable; the route and its secret are kept.
+        self.assertEqual(self.enable("--fix-label", "agent-fix", "--maintainer", "owner")[0], 0)
+        secret = routes.route(ROUTE)["secret"]
+        rc, out = self.cli("triage", "--loop", LOOP_ID, "--auto-fix-label", "bug",
+                           "--auto-fix-label", "docs", "--auto-fix-daily", "7")
+        self.assertEqual(rc, 0, out)
+        triage = config.load_id(LOOP_ID)["triage"]
+        self.assertEqual(triage["auto_fix_labels"], ["bug", "docs"])
+        self.assertEqual(triage["auto_fix_daily"], 7)
+        self.assertEqual(routes.route(ROUTE)["secret"], secret)
+        self.assertIn("auto-offer: bug, docs · at most 7 a day", out)
+        # The plain summary shows it too, and shows "off" once cleared.
+        self.assertIn("auto-offer: bug, docs", self.cli("triage", "--loop", LOOP_ID)[1])
+        rc, out = self.cli("triage", "--loop", LOOP_ID, "--auto-fix-label", "")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("auto-offer: off", out)
+
+    def test_auto_fix_flag_without_a_fix_label_is_refused(self):
+        self.assertEqual(self.enable()[0], 0)
+        before = LOOP_FILE.read_bytes()
+        rc, out = self.cli("triage", "--loop", LOOP_ID, "--auto-fix-label", "P3")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("fix label", out)
+        self.assertEqual(LOOP_FILE.read_bytes(), before)
+
     def test_disable_removes_the_route_and_shim_and_keeps_the_seats(self):
         self.assertEqual(self.enable()[0], 0)
         rc, out = self.cli("triage", "--loop", LOOP_ID, "--disable")

@@ -4330,7 +4330,28 @@ def _triage_lines(loop: dict) -> list[str]:
              + ("" if config.unattended_fixer_push_enabled(loop) else
                 f" — OFF until unattended fixer pushes are on: "
                 f"{config.fixer_push_enable_command(loop)}")) if triage.get("fix_label")
-            else "  issue fixes: off (--fix-label LABEL --maintainer LOGIN turns them on)"]
+            else "  issue fixes: off (--fix-label LABEL --maintainer LOGIN turns them on)",
+            _auto_offer_line(triage)]
+
+
+def _auto_offer_line(triage: dict) -> str:
+    """The #232 auto-offer setting, so an operator can see what a save changed (#527)."""
+    labels = triage.get("auto_fix_labels") or []
+    if not labels:
+        return "  auto-offer: off"
+    return (f"  auto-offer: {', '.join(labels)} · at most "
+            f"{triage.get('auto_fix_daily') or 25} a day")
+
+
+_TRIAGE_CHANGE_FLAGS = ("profile", "author", "labels", "max_labels", "comment", "login", "token",
+                        "fix_label", "maintainer", "daily_turns", "fix_daily_turns",
+                        "auto_fix_label", "auto_fix_daily", "admin_token")
+
+
+def _triage_change_flags(args) -> list[str]:
+    """Option names given on the command line that change triage (not --loop/--dry-run)."""
+    return ["--" + name.replace("_", "-") for name in _TRIAGE_CHANGE_FLAGS
+            if getattr(args, name, None) not in (None, "", [])]
 
 
 def cmd_triage(args) -> int:
@@ -4347,9 +4368,17 @@ def cmd_triage(args) -> int:
         print(f"no such loop: {exc}")
         return 2
     if not (args.enable or args.disable):
-        for line in _triage_lines(loop):
-            print(line)
-        return 0
+        given = _triage_change_flags(args)
+        if not given:
+            for line in _triage_lines(loop):
+                print(line)
+            return 0
+        if not (loop.get("triage") or {}).get("route"):
+            print(f"refused: issue triage is off on {loop['id']}, so {', '.join(given)} would "
+                  "change nothing; add --enable (with --triage-profile, --author, --labels) "
+                  "to turn it on")
+            return 2
+        args.enable = True      # triage is on: apply the flags as --enable would (#527)
     admin = args.admin_token or None
     if admin and gh.token_path(loop, admin) is None and admin.lower() not in {
             str(pair.split("=", 1)[0]).lower() for pair in args.token or []}:
@@ -4428,6 +4457,10 @@ def cmd_triage(args) -> int:
                         else args.auto_fix_daily or None)
             if auto_cap:
                 block["auto_fix_daily"] = auto_cap
+    elif [x for x in args.auto_fix_label or [] if x] or args.auto_fix_daily:
+        print("refused: --auto-fix-label/--auto-fix-daily need a fix label "
+              "(--fix-label LABEL --maintainer LOGIN); nothing changed")
+        return 2
     tokens = dict(loop.get("tokens") or {})
     for pair in args.token or []:
         if "=" not in pair:
