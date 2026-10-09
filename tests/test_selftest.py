@@ -397,7 +397,7 @@ class BuildCheckTests(SelftestBase):
 
 class LiveTurnTests(SelftestBase):
     def agent(self, verdict="REQUEST_CHANGES", body=None, extra=None):
-        body = body if body is not None else f"Needs a test.\nNot verified: nothing\nleaked? {SECRETS['fixer']}"
+        body = body if body is not None else f"F1: src/lib.rs:1: needs a test.\nNot verified: nothing\nleaked? {SECRETS['fixer']}"
 
         def run(**kwargs):
             if "broker_socket_dir" not in kwargs:        # step 2's probe
@@ -431,7 +431,7 @@ class LiveTurnTests(SelftestBase):
         self.assertEqual(rc, 0, text)
         self.assertEqual(self.answer, {"ok": True, "result": {"accepted": True}})
         self.assertIn("the agent would submit REQUEST_CHANGES (authorized); NOT posted", text)
-        self.assertIn("│ Needs a test.", text)
+        self.assertIn("│ F1: src/lib.rs:1: needs a test.", text)
         self.assertIn("✅ turn:reviewer", text)
         # The live turn stages the same bounded diff the production worker does (#50).
         self.assertIn("+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new", self.staged_diff)

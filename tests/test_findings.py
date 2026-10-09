@@ -73,5 +73,46 @@ class Findings(unittest.TestCase):
         self.assertEqual(findings.missed_count(self.loop), 1)
 
 
+class Citations(unittest.TestCase):
+    """A REQUEST_CHANGES must cite the diff (#476)."""
+    FILES = [{"filename": "src/a.py", "patch": "@@ -1,3 +10,4 @@\n x\n+y\n z"},
+             {"filename": "docs/ops.md", "patch": "@@ -0,0 +1 @@\n+new"}]
+
+    def check(self, body, verdict="REQUEST_CHANGES", files=FILES):
+        with mock.patch("diaktoros.gh.pr_files_read", return_value=(files, "")):
+            return findings.check_citations({"repo": "a/b"}, 7, verdict, body)
+
+    def test_no_numbered_finding_is_refused(self):
+        self.assertIn("no numbered blocking finding", self.check("this is bad\n"))
+
+    def test_finding_with_no_citation_is_refused(self):
+        self.assertIn("F1 does not cite", self.check("F1: it leaks\n"))
+
+    def test_line_outside_the_diff_is_refused(self):
+        self.assertIn("F1 does not cite", self.check("F1: src/a.py:200: it leaks\n"))
+        self.assertIn("F1 does not cite", self.check("F1: src/other.py:11: it leaks\n"))
+
+    def test_changed_line_or_range_passes(self):
+        self.assertEqual(self.check("F1: src/a.py:11: it leaks\n"), "")
+        self.assertEqual(self.check("F1: src/a.py:5-12: it leaks\n"), "")
+        self.assertEqual(self.check("F1: src/a.py#L13: it leaks\n"), "")
+
+    def test_absence_may_cite_a_changed_file(self):
+        self.assertEqual(self.check("F1: src/a.py: missing test for the new branch\n"), "")
+        self.assertEqual(self.check("F1: docs/ops.md: docs not updated\n"), "")
+        self.assertIn("does not cite", self.check("F1: src/zzz.py: missing test\n"))
+        self.assertIn("does not cite", self.check("F1: src/a.py: it leaks\n"))
+
+    def test_approve_and_state_only_blocks_are_untouched(self):
+        self.assertEqual(self.check("looks fine\n", verdict="APPROVE"), "")
+        self.assertEqual(self.check("F1: open\n"), "")
+
+    def test_unreadable_diff_is_refused(self):
+        with mock.patch("diaktoros.gh.pr_files_read", return_value=(None, "HTTP 500")):
+            reason = findings.check_citations({"repo": "a/b"}, 7, "REQUEST_CHANGES",
+                                              "F1: src/a.py:11: x\n")
+        self.assertIn("could not read", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

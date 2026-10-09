@@ -512,6 +512,12 @@ class RunBroker:
             reason = findings.check(self._loop, entry, self.scope.number, self.scope.head, body)
             if reason:
                 raise ProtocolError(reason)
+            # A block must point at what this PR changed (#476).
+            # A seat that was not shown the whole change must still be able to block and say so.
+            reason = ("" if self._partial_view() else
+                      findings.check_citations(self._loop, self.scope.number, verdict, body))
+            if reason:
+                raise ProtocolError(reason)
             # Requirements of the issue(s) the PR closes (#511); a PR closing none is unaffected.
             from . import issue_facts
             reason = issue_facts.check(self._loop, self.scope.number, verdict, body)

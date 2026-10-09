@@ -90,6 +90,65 @@ def check(loop: dict, entry: dict, number: int, head: str, body: str) -> str:
     return ""
 
 
+# A blocking finding's citation (#476): ``path:12``, ``path:12-20`` or ``path#L12``; an absence
+# (a missing test or docs update) may name the changed file alone.
+_ABSENCE = re.compile(r"\b(missing|absent|absence|no (?:tests?|docs?|documentation)|untested|"
+                      r"undocumented|not (?:updated|tested|covered|documented))\b", re.IGNORECASE)
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+CITATION_HINT = ("cite a file and line inside this PR's diff (e.g. 'F1: src/a.py:12: ...'), or "
+                 "for a missing test/docs update name a changed file and say 'missing'; anything "
+                 "outside the diff is an issue to file, not a block")
+
+
+def diff_ranges(files: list) -> dict:
+    """``{path: [(first, last), ...]}`` of new-side lines per changed file; None = no patch text."""
+    out = {}
+    for f in files:
+        if isinstance(f, dict) and isinstance(f.get("filename"), str):
+            patch = f.get("patch")
+            out[f["filename"]] = None if not isinstance(patch, str) else [
+                (int(m.group(1)), int(m.group(1)) + max(int(m.group(2) or 1), 1) - 1)
+                for m in _HUNK.finditer(patch)]
+    return out
+
+
+def _cited(rest: str, ranges: dict) -> bool:
+    for name, spans in ranges.items():
+        if name not in rest:
+            continue
+        for m in re.finditer(re.escape(name) + r"(?::|#L)(\d+)(?:-L?(\d+))?", rest):
+            first, last = int(m.group(1)), int(m.group(2) or m.group(1))
+            if spans is None or any(first <= b and last >= a for a, b in spans):
+                return True
+        if _ABSENCE.search(rest):
+            return True
+    return False
+
+
+def check_citations(loop: dict, number: int, verdict: str, body: str) -> str:
+    """The reason a REQUEST_CHANGES must be refused for an uncited blocking finding, or ''."""
+    if verdict != "REQUEST_CHANGES":
+        return ""
+    parsed = parse(body)
+    new = [(fid, rest) for fid, kind, rest in parsed if kind == "new"]
+    if not new and not any(kind == "open" for _, kind, _ in parsed):
+        return ("REQUEST_CHANGES has no numbered blocking finding: " + CITATION_HINT
+                + "; nothing was written, resubmit")
+    if not new:
+        return ""
+    from . import gh
+    files, _ = gh.pr_files_read(loop, number)
+    if not isinstance(files, list):
+        return ("the host could not read the PR's diff, so a blocking finding cannot be checked "
+                "against it; nothing was written, resubmit")
+    ranges = diff_ranges(files)
+    for fid, rest in new:
+        if not _cited(rest, ranges):
+            return (f"blocking finding {fid} does not cite this PR's diff: {CITATION_HINT}; "
+                    "nothing was written, resubmit")
+    return ""
+
+
 def apply(entry: dict, head: str, body: str) -> dict:
     """The entry after this review: new findings open, states updated, ``last_head`` moved."""
     entry = {**entry, "findings": {k: dict(v) for k, v in (entry.get("findings") or {}).items()}}
