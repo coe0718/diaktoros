@@ -392,6 +392,38 @@ def bounded_request(body: bytes, model: str, contract: Contract,
     return json.dumps(payload).encode('utf-8')
 
 
+def thinking_level(body: bytes, contract: Contract) -> str | None:
+    """The thinking level a (clamped) request runs at (#513): ``budget:<tokens>``,
+    ``effort:<level>``, or ``off`` when it asks for none. None when it cannot be told."""
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if contract.mode == 'anthropic_messages':
+        thinking = payload.get('thinking')
+        if thinking is None or (isinstance(thinking, dict) and thinking.get('type') == 'disabled'):
+            return 'off'
+        if isinstance(thinking, dict) and thinking.get('type') == 'enabled':
+            budget = thinking.get('budget_tokens')
+            if type(budget) is int and budget > 0:
+                return f'budget:{budget}'
+        return None    # e.g. adaptive: a level the request does not state
+    if contract.mode == 'codex_responses':
+        reasoning = payload.get('reasoning')
+        effort = reasoning.get('effort') if isinstance(reasoning, dict) else None
+        if reasoning is None or (isinstance(reasoning, dict) and effort is None):
+            return 'off'
+    else:
+        effort = payload.get('reasoning_effort')
+        if effort is None:
+            return 'off'
+    if isinstance(effort, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,32}', effort):
+        return f'effort:{effort}'
+    return None
+
+
 def _bounded_request(body: bytes, model: str) -> bytes:
     """Chat-completions policy (kept for callers of the pre-``api_mode`` API)."""
     return bounded_request(body, model, CONTRACTS['chat_completions'])
@@ -550,6 +582,10 @@ class InferenceCapability:
         # redacted body), host-side: the agent sees only a generic error, and an operator needs
         # to know whether it was a context-length limit, a bad parameter or an outage.
         self.last_error = ''
+        # The thinking level of the turn's first model request, after the clamp (#513). None
+        # until a request is seen (or when its level cannot be told): unknown, never "off".
+        self.thinking: str | None = None
+        self._thinking_seen = False
         self.model = model
         self.quota = quota
         self.used = 0
@@ -644,6 +680,10 @@ class InferenceCapability:
                     self.refuse(str(exc))
                     return
                 capability.last_activity = last_activity(body)
+                with capability.lock:
+                    if not capability._thinking_seen:
+                        capability._thinking_seen = True
+                        capability.thinking = thinking_level(body, capability.contract)
                 # Reserve quota before contacting provider, including failed requests. A
                 # refresh-and-retry after a 401 is part of the same call.
                 with capability.lock:

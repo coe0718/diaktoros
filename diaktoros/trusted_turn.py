@@ -702,6 +702,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                     # without them a budget kill says only that the clock ran out.
                     if observed is not None:
                         doing = getattr(inference, 'last_activity', '')
+                        observed['thinking'] = getattr(inference, 'thinking', None)
                         observed.update(
                             stdout=_decoded(exc.output)[-4000:]
                             + (f"\n[last agent activity before the kill] {doing}" if doing else "")
@@ -709,6 +710,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                             stderr=_decoded(exc.stderr)[-4000:])
                     raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None
                 if observed is not None:
+                    observed['thinking'] = getattr(inference, 'thinking', None)
                     observed.update(returncode=result.returncode,
                                     # A failed turn names the provider's own error (#281: Hermes
                                     # reported only "HTTP 400 — Error response").

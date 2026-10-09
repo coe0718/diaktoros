@@ -163,6 +163,31 @@ class ModeContracts(Tmp):
         self.assertTrue(inference_proxy.is_codex_backend("https://chatgpt.com/backend-api/codex/responses"))
         self.assertFalse(inference_proxy.is_codex_backend("https://api.x.ai/v1/responses"))
 
+    def test_the_thinking_level_is_read_from_the_first_request_after_the_clamp(self):
+        """#513: Anthropic budget (clamped), Responses effort, none -> off, unseen -> unknown."""
+        cap_limit = CONTRACTS["anthropic_messages"].cap
+        cases = (("anthropic_messages", "/v1/messages",
+                  {"max_tokens": 64000, "thinking": {"type": "enabled", "budget_tokens": 20000}},
+                  f"budget:{cap_limit - 1}"),
+                 ("anthropic_messages", "/v1/messages",
+                  {"max_tokens": 64000, "thinking": {"type": "enabled", "budget_tokens": 4000}},
+                  "budget:4000"),
+                 ("anthropic_messages", "/v1/messages", {"max_tokens": 64000}, "off"),
+                 ("codex_responses", "/v1/responses", {"reasoning": {"effort": "high"}},
+                  "effort:high"),
+                 ("codex_responses", "/v1/responses", {"input": []}, "off"))
+        for mode, path, body, want in cases:
+            with self.subTest(mode=mode, want=want):
+                with Upstream(lambda h, r: send_json(h)) as up, \
+                        InferenceCapability(self.socket_dir(), up.url(path), "KEY", model="m",
+                                            quota=3, api_mode=mode) as cap:
+                    self.assertIsNone(cap.thinking)          # unseen: unknown, not off
+                    self.assertEqual(post(cap, body)[0], 200)
+                    self.assertEqual(post(cap, {"thinking": {"type": "enabled",
+                                                             "budget_tokens": 1500},
+                                                "reasoning": {"effort": "low"}})[0], 200)
+                    self.assertEqual(cap.thinking, want)     # only the first request counts
+
     def test_anthropic_messages_contract_api_key_and_oauth(self):
         cap_limit = CONTRACTS["anthropic_messages"].cap
         for scheme, token in (("x-api-key", "sk-ant-api-HOST-KEY"), ("bearer", "sk-ant-oat-HOST-TOKEN")):
