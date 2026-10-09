@@ -199,6 +199,42 @@ def group_watchdog() -> None:
     out, _, _ = run("watchdog.py", None, "--loop", "widgets")
     check("stall: no verdict at a quiet head", "reviewer never posted a verdict" in out, True)
 
+    # #532: GitHub sends no event for a request to a reviewer who is already requested (a CI-fix
+    # push before the first verdict). The sweep delivers that pending request to the reviewer's
+    # own gate itself, once per head; the gate decides as for any delivery.
+    reset(prs={"7": pr(7, head=HEAD_A, requested=SEAT)})
+    state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
+    DATA["world"]["commit_dates"] = {HEAD_A: "2020-01-01T00:00:00Z"}
+    save_world()
+    before = len(RECEIVED)
+    run("watchdog.py", None, "--loop", "widgets")
+    kicked = [r for r in RECEIVED[before:] if r["event"] == "pull_request"]
+    check("#532: a pending request with no review is delivered to the reviewer gate",
+          len(kicked), 1)
+    sent = json.loads(kicked[0]["body"]) if kicked else {}
+    check("  as review_requested from the PR's author, at its head",
+          (sent.get("action"), (sent.get("sender") or {}).get("login"),
+           ((sent.get("pull_request") or {}).get("head") or {}).get("sha")),
+          ("review_requested", FIXER, HEAD_A))
+    before = len(RECEIVED)
+    run("watchdog.py", None, "--loop", "widgets")
+    check("  once per head: the next sweep delivers nothing again",
+          len([r for r in RECEIVED[before:] if r["event"] == "pull_request"]), 0)
+    reset(prs={"7": pr(7, head=HEAD_A, requested=SEAT)})
+    state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
+    state_file("stack-transitions.json").write_text(json.dumps({"7": {
+        "head": HEAD_A, "old_review_ids": [], "at": time.time() - 3600, "from_base": "parent"}}))
+    before = len(RECEIVED)
+    run("watchdog.py", None, "--loop", "widgets")
+    check("  a head under a transition hold is left to the transition's own review",
+          len([r for r in RECEIVED[before:] if r["event"] == "pull_request"]), 0)
+    reset(prs={"7": {**pr(7, head=HEAD_A, requested=SEAT), "reviews": [review(REVIEWER)]}})
+    state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
+    before = len(RECEIVED)
+    run("watchdog.py", None, "--loop", "widgets")
+    check("  a head with a verdict is never re-delivered",
+          len([r for r in RECEIVED[before:] if r["event"] == "pull_request"]), 0)
+
     # shape 2: the fixer never pushed after a verdict
     reset(prs={"7": {**pr(7), "reviews": [review(REVIEWER)]}})
     state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))

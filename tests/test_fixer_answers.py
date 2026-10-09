@@ -21,7 +21,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import ledger  # noqa: E402
+from diaktoros import ledger, review_kick  # noqa: E402
 from diaktoros import broker, broker_client, broker_ipc, config, gh, run_supervisor, safe_push  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -49,6 +49,7 @@ class FakeGitHub:
         self.pr_author = "fix"
         self.comments = []
         self.comment_post = "ok"  # or "lost": GitHub may have taken it, the answer never came
+        self.requested = []       # GitHub's requested_reviewers: still pending from an earlier ask
         self.reviews = [{"id": 41, "state": "CHANGES_REQUESTED", "commit_id": HEAD,
                          "body": "finding 1 at src/fix.py:3; finding 2 at src/fix.py:9",
                          "submitted_at": "2026-01-01T00:00:00Z", "user": {"login": "review"}}]
@@ -65,7 +66,8 @@ class FakeGitHub:
             return {"number": 7, "state": "open", "draft": False,
                     "user": {"login": self.pr_author},
                     "head": {"sha": self.pr_head, "ref": "fix-7", "repo": {"full_name": REPO}},
-                    "base": {"ref": "main", "repo": {"full_name": REPO}}}
+                    "base": {"ref": "main", "repo": {"full_name": REPO}},
+                    "requested_reviewers": [{"login": name} for name in self.requested]}
         if path == f"{prefix}/issues/7/comments" and method == "POST":
             self.comments.append({"id": 900 + len(self.comments), "user": {"login": login},
                                   "created_at": "2026-01-01T00:10:00Z", "body": body["body"]})
@@ -176,6 +178,25 @@ class Publish(Base):
         self.assertEqual([p.rsplit("/", 1)[1] for p, _, _ in self.fake.posts()],
                          ["requested_reviewers"])
         self.assertEqual(self.ledger(), [])
+
+    def test_a_request_github_will_not_announce_is_delivered_to_the_reviewer_gate(self):
+        # #532: the reviewer is still requested (a CI-fix push before its first verdict), so the
+        # request makes GitHub send no event; the host delivers it, at the pushed head.
+        self.fake.requested = ["review"]
+        with mock.patch.object(review_kick, "kick", return_value=True) as kick:
+            with self.serving() as server:
+                self.send(server, {"operation": "push", "manifest": manifest()})
+                self.assertTrue(self.send(server, {"operation": "request_review"})["ok"])
+        kick.assert_called_once()
+        _loop, pr, head, sender, _tag = kick.call_args.args
+        self.assertEqual((pr["number"], head, sender), (7, NEW_HEAD, "fix"))
+
+    def test_a_request_github_announces_is_left_to_github(self):
+        with mock.patch.object(review_kick, "kick") as kick:
+            with self.serving() as server:
+                self.send(server, {"operation": "push", "manifest": manifest()})
+                self.assertTrue(self.send(server, {"operation": "request_review"})["ok"])
+        kick.assert_not_called()
 
     def test_refusals_happen_before_the_request_is_spent(self):
         with self.serving() as server:
