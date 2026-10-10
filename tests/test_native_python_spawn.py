@@ -11,6 +11,12 @@ from diaktoros import native_python_spawn
 
 
 class OwnedPythonSpawn(unittest.TestCase):
+    def test_install_accepts_python_without_private_vfork_flag(self):
+        with mock.patch.dict(subprocess.__dict__):
+            subprocess.__dict__.pop('_USE_VFORK', None)
+            native_python_spawn.install()
+            self.assertFalse(hasattr(subprocess, '_USE_VFORK'))
+
     def test_bootstrap_ignores_checkout_module_shadows_and_preserves_arguments(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -37,7 +43,8 @@ class OwnedPythonSpawn(unittest.TestCase):
     def test_requested_session_stays_in_owned_group_and_preserves_output(self):
         with mock.patch.object(subprocess, 'Popen', subprocess.Popen), \
                 mock.patch.object(subprocess, '_USE_POSIX_SPAWN', subprocess._USE_POSIX_SPAWN), \
-                mock.patch.object(subprocess, '_USE_VFORK', subprocess._USE_VFORK):
+                mock.patch.object(subprocess, '_USE_VFORK',
+                                  getattr(subprocess, '_USE_VFORK', False), create=True):
             native_python_spawn.install()
             result = subprocess.run([sys.executable, '-c',
                                      'import os; print(os.getpgrp()); raise SystemExit(7)'],
@@ -48,7 +55,8 @@ class OwnedPythonSpawn(unittest.TestCase):
     def test_explicit_group_change_is_rejected_before_launch(self):
         with mock.patch.object(subprocess, 'Popen', subprocess.Popen), \
                 mock.patch.object(subprocess, '_USE_POSIX_SPAWN', subprocess._USE_POSIX_SPAWN), \
-                mock.patch.object(subprocess, '_USE_VFORK', subprocess._USE_VFORK):
+                mock.patch.object(subprocess, '_USE_VFORK',
+                                  getattr(subprocess, '_USE_VFORK', False), create=True):
             native_python_spawn.install()
             with self.assertRaisesRegex(ValueError, 'owned process group'):
                 subprocess.Popen([sys.executable, '-c', 'raise SystemExit(99)'], process_group=0)

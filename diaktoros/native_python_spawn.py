@@ -29,5 +29,6 @@ def install():
             super().__init__(*args, **kwargs)
 
     subprocess._USE_POSIX_SPAWN = False
-    subprocess._USE_VFORK = False
+    if hasattr(subprocess, '_USE_VFORK'):
+        subprocess._USE_VFORK = False
     subprocess.Popen = OwnedPopen
