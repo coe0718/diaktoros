@@ -146,5 +146,19 @@ class ObserverTierTests(unittest.TestCase):
         self.assertEqual(config.seat_profile({"observer": obs}, "observer_urgent"), "default")
 
 
+class PruneJunkAtTests(unittest.TestCase):
+    def test_non_numeric_at_does_not_raise_and_rest_is_pruned(self):
+        now = 10_000_000.0
+        old = now - observer.RETENTION_S - 1
+        entries = {f"junk{i}": {"status": "delivered", "at": v}
+                   for i, v in enumerate([True, "2026-01-01", [1], float("inf"), None])}
+        entries["pending"] = {"status": "pending", "at": "bad"}
+        entries["old"] = {"status": "failed", "at": old}
+        entries["fresh"] = {"status": "delivered", "at": now}
+        data = {"entries": entries}
+        observer._prune(data, now)
+        self.assertEqual(set(data["entries"]), {"pending", "fresh"})
+
+
 if __name__ == "__main__":
     unittest.main()

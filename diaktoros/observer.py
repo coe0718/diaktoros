@@ -45,7 +45,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
-from . import config, gh, hostdirs, prompts, route_intent, routes
+from . import config, gh, hostdirs, prompts, route_intent, routes, state
 from .util import log, now_iso
 
 # The transitions an observer may subscribe to. These names are the loop's vocabulary for what
@@ -319,8 +319,11 @@ def _prune(data: dict, now: float) -> None:
         if not isinstance(entry, dict):
             data["entries"].pop(key, None)
             continue
-        if entry.get("status") in ("delivered", "failed") and now - float(entry.get("at") or 0) > RETENTION_S:
-            data["entries"].pop(key, None)
+        if entry.get("status") in ("delivered", "failed"):
+            at = state.mark_at(entry)  # the one reading rule for ``at`` (#80)
+            # A finished entry whose age cannot be read is junk: drop it rather than raise.
+            if at is None or now - at > RETENTION_S:
+                data["entries"].pop(key, None)
 
 
 def owed(st) -> dict:
