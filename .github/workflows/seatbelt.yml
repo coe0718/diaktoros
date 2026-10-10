@@ -8,6 +8,7 @@ on:
       - diaktoros/seatbelt.py
       - diaktoros/native_macos.py
       - diaktoros/native_storage.py
+      - diaktoros/native_lifecycle.py
       - diaktoros/seatbelt_wire.py
       - diaktoros/broker_client.py
       - diaktoros/contained.py
@@ -55,7 +56,7 @@ jobs:
         run: python tests/leakguard.py discover -v -s tests -p 'test_seatbelt.py'
       - name: Exercise fixed-capacity APFS storage and cleanup
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_storage.py'
-      - name: Characterize unresolved lifecycle gaps (not production acceptance)
+      - name: Test watchdog cleanup and characterize remaining detached-child gap
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_lifecycle.py'
       - name: Startup diagnostics on failure
         if: failure()

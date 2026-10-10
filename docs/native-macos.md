@@ -59,9 +59,10 @@ in force. `broker_client.py` accepts portable path settings from the rebuilt
 child environment; these do not change broker authority.
 
 `native_macos.run` remains experimental and is not selected by production code.
-It uses the shared bounded output/time capture and requires a host-created
-fixed-capacity workspace. It provides no supervisor-death guarantee or
-detached-child cleanup. The vertical's source
+It uses shared bounded output/time capture through an independent native
+watchdog and requires a host-created fixed-capacity workspace. The watchdog
+cleans up the original process group after supervisor death, timeout, output
+limit or normal leader exit. Detached descendants remain outside that guarantee. The vertical's source
 export is a trusted fixture, not the portable production snapshot implementation.
 The Rust fixture covers a small pure-Rust vendored dependency and Apple's
 linker/SDK, not arbitrary workspaces, C/C++ dependencies or durable production
@@ -102,10 +103,35 @@ these limitations; it is **not** production lifecycle acceptance.
 The fixtures are cooperative and time-bounded. Before triggering failure, the
 host registers `kqueue` process-exit notifications and waits for actual exit
 before disposing of fixture paths. No general process-tree polling/killing
-mechanism is introduced. Production needs an enforceable descendant ownership
+mechanism is introduced. The unmanaged probes remain as a baseline; guarded
+probes now verify cleanup after supervisor SIGKILL and normal leader exit,
+watchdog signal denial, private-descriptor noninheritance and bounded capture. Production needs an enforceable descendant ownership
 mechanism and independent host-death recovery, including capability revocation
 and safe handling of attached storage. Apple launchd's process-group cleanup
 alone does not establish ownership of a descendant that changes its group.
+
+## Independent native watchdog
+
+`native_lifecycle.capture` launches a trusted helper outside the child's Seatbelt
+profile, in a separate session with a scrubbed environment. An anonymous pipe
+has exactly one writer in the supervisor and one reader in the watchdog; its
+EOF notifies the watchdog of supervisor death. Configuration and result pipes
+are also host-only. None of these descriptors reach the sandboxed executable.
+
+The watchdog uses kernel notifications for its known direct child, kills the
+original process group before reaping its leader, and reports completion over a
+private result pipe. Keeping the leader unreaped until cleanup reserves its PID;
+the helper does not signal a cached group ID after reaping and possible PID reuse.
+The shared capture implementation delegates abort to this lifeline rather than
+killing the independent watchdog. Missing/invalid completion or a watchdog that
+cannot finish cleanup raises `CleanupIncomplete`; the native launcher retains
+its workspace without attempting detach or deletion.
+
+This closes only the original-group supervisor-death gap. A child that changes
+its process group can still survive. Watchdog death, machine death, capability
+revocation and startup recovery remain unresolved. Production still requires an
+enforceable ownership mechanism for every descendant; a polling tree scan or
+`kqueue` monitoring of selected PIDs is not equivalent.
 
 ## Remaining work before production support
 

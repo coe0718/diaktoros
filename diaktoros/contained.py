@@ -350,6 +350,17 @@ def capture(argv: list[str], *, env: dict[str, str], timeout: int,
     process = subprocess.Popen(argv, env=env, cwd=cwd,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=True)
+    return capture_process(process, argv=argv, timeout=timeout)
+
+
+def capture_process(process: subprocess.Popen, *, argv: list[str], timeout: int,
+                    abort=None) -> subprocess.CompletedProcess:
+    """Bound output/time on an already-started trusted launcher.
+
+    A native watchdog supplies abort to request cleanup over its private pipe;
+    killing that watchdog's group would destroy the independent cleanup owner.
+    The default retains the existing Linux process-group cleanup behavior.
+    """
     output = {"stdout": bytearray(), "stderr": bytearray()}
     deadline = time.monotonic() + timeout
     try:
@@ -381,6 +392,9 @@ def capture(argv: list[str], *, env: dict[str, str], timeout: int,
                                            output["stdout"].decode(errors="replace"),
                                            output["stderr"].decode(errors="replace"))
     except BaseException:
+        if abort is not None:
+            abort()
+            raise
         # The parent may have exited while descendants still hold the pipes.
         # Kill the isolated process group even when the direct child is gone.
         try:

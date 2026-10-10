@@ -40,6 +40,19 @@ class StorageValidation(unittest.TestCase):
             self.assertTrue(workspace.image.is_file())
             self.assertFalse(workspace.active)
 
+    def test_unverified_execution_cleanup_preserves_mount_and_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = native_storage.Workspace()
+            workspace.root = Path(directory)
+            workspace.image = workspace.root / 'turn.dmg'
+            workspace.image.touch()
+            workspace.retain('watchdog completion unknown')
+            with mock.patch.object(workspace, '_devices') as devices:
+                with self.assertRaisesRegex(native_storage.StorageError, 'watchdog completion unknown'):
+                    workspace._cleanup()
+                devices.assert_not_called()
+            self.assertTrue(workspace.image.exists())
+
     def test_false_successful_detach_still_retains_image(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = native_storage.Workspace()

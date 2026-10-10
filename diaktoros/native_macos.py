@@ -12,7 +12,7 @@ from pathlib import Path
 import shutil
 import tempfile
 
-from . import contained, native_storage, seatbelt
+from . import contained, native_lifecycle, native_storage, seatbelt
 
 PROVIDER = 'diaktoros-seatbelt-wire'
 
@@ -102,5 +102,9 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         policy = Path(directory) / 'profile.sb'
         policy.write_text(profile.text)
         policy.chmod(0o400)
-        return contained.capture(profile.command(policy, entry), env=env,
-                                 cwd=work, timeout=timeout + 30)
+        try:
+            return native_lifecycle.capture(profile.command(policy, entry), env=env,
+                                            cwd=work, timeout=timeout + 30)
+        except native_lifecycle.CleanupIncomplete:
+            workspace.retain('native watchdog completion could not be verified')
+            raise

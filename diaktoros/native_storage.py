@@ -47,6 +47,12 @@ class Workspace:
         self.size_mib = size_mib
         self.root: Path | None = None
         self.active = False
+        self.retained_reason = ''
+
+    def retain(self, reason: str):
+        """Preserve an owned image when its execution owner cannot confirm cleanup."""
+        self.active = False
+        self.retained_reason = reason or 'execution cleanup could not be verified'
 
     def __enter__(self):
         if self.root is not None:
@@ -133,6 +139,8 @@ class Workspace:
         self.active = False
         if self.root is None:
             return
+        if self.retained_reason:
+            raise StorageError(f'workspace retained at {self.root}: {self.retained_reason}')
         try:
             for device in self._devices():
                 try:
