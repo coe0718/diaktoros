@@ -26,9 +26,9 @@ import string
 
 
 def code_rules(what: str, where: str) -> str:
-    """The fixer's three rules for the code it writes (#512), one text for every fixer prompt:
+    """The fixer's rules for the code it writes (#512), one text for every fixer prompt:
     ``what`` is the work ("fix", "issue"), ``where`` where it reports ("your answers")."""
-    return f"""   Three rules for the code you write:
+    return f"""   Four rules for the code you write:
    - **Reuse before writing.** Before adding a function, search the package for an existing one
      that does the same check, and call it or extend it instead of copying it. If the logic must
      be shared between two callers, factor it into one function both use.
@@ -39,6 +39,10 @@ def code_rules(what: str, where: str) -> str:
    - **Say what can't fire.** If part of the {what} can't take effect in some configuration, or in
      this repository's (a setting, branch protection, a missing scope), say so in {where} and in
      the docs for that setting. Don't ship it as if it works everywhere.
+   - **Make every path agree.** When the change adds or changes a condition (what counts, when
+     to wait, who goes next), find every other place that decides the same question (its
+     callers, the prompt or notice that explains it, `explain`, `doctor`, the sweep) and make
+     them agree. One rule stated two ways is a bug.
 """
 
 
@@ -194,7 +198,16 @@ What to do:
    `cargo test -p <crate> --no-run`, never a whole-workspace build: this sandbox holds a scoped
    build (a few GiB), not a workspace one (measured at 8.0 GiB, right at the cap) and not a mature
    target directory (tens of GB; the host's never enters the sandbox).
-   A claim you did not check is not a finding, it is a rumor. The host's
+   A claim you did not check is not a finding, it is a rumor. Three checks the change's own
+   tests rarely make, so make them yourself:
+   - **Every path agrees.** When the change adds or changes a condition, find every other place
+     that decides the same question (prompts, notices, `explain`, `doctor`, the sweep) and check
+     they agree.
+   - **A wait has an end.** When the change waits on something else (a sweep, a later turn, CI),
+     say what happens if it is late or never runs.
+   - **A filter leaves out what it should.** For each rule that selects things (which commits,
+     which runs, which PRs), name one thing it must leave out and check that it does.
+   The host's
    "Build environment" note at the top of this message says whether dependencies are available
    offline; if they are not, verify by reading instead. Read large files by the parts you need
    (`grep -n`, `sed -n`), not whole: every step resends what you have read, and a model's
