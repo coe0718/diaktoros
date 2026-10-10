@@ -32,6 +32,15 @@ class Findings(unittest.TestCase):
     def test_first_round_needs_nothing_and_is_recorded_open(self):
         self.assertEqual([f for f in findings.open_ids(self.st.findings_get(7))], ["F1", "F2"])
 
+    def test_non_numeric_finding_key_is_skipped_not_a_crash(self):
+        entry = self.st.findings_get(7)
+        entry["findings"]["F"] = {"state": "open"}
+        entry["findings"]["Fx"] = {"state": "open"}
+        self.assertEqual(findings.open_ids(entry), ["F1", "F2"])
+        with mock.patch.object(findings, "changed_files", return_value={"src/a.py"}):
+            reason = findings.check(self.loop, entry, 7, H2, "F1: fixed\nF2: fixed\n")
+        self.assertEqual(reason, "")
+
     def test_round_that_omits_an_open_finding_is_refused(self):
         reason = self.check("F1: fixed\n")
         self.assertIn("F2", reason)
