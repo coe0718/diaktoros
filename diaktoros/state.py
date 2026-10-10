@@ -537,6 +537,24 @@ class LoopState:
                 markers.pop(key)
                 self._breach_save(markers)
 
+    # -- human_paths holds (#478) --------------------------------------------
+
+    def _human_holds(self) -> dict:
+        raw = self._load(self.dir / "human-holds.json", {})
+        return raw if isinstance(raw, dict) else {}
+
+    def human_hold_set(self, number: int, head: str, why: str) -> None:
+        """Record that ``head`` waits for a person's approval (one entry per PR, newest head)."""
+        with self.locked():
+            data = self._human_holds()
+            data[str(number)] = {"head": head, "why": str(why)[:300], "at": time.time()}
+            self._save(self.dir / "human-holds.json", data)
+
+    def human_hold(self, number: int, head: str) -> dict | None:
+        """The hold at this exact head, or None; a new head is reviewed afresh."""
+        entry = self._human_holds().get(str(number))
+        return entry if isinstance(entry, dict) and entry.get("head") == head else None
+
     # -- breach markers -----------------------------------------------------
 
     @contextlib.contextmanager

@@ -985,6 +985,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         review_only = author in config.review_only(loop)
         if parked is not None:
             kind = parked
+        elif not at_head and isinstance(st.human_hold(number, head), dict):
+            pass                                  # human_paths: a person's approval (#478)
         elif review_only and at_head:
             pass                                  # the author's move, not a stall
         elif (review_only and len(changes) >= config.review_only_cap(loop)
