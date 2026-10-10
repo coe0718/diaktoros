@@ -29,6 +29,8 @@ jobs:
       DIAKTOROS_REQUIRE_SEATBELT: '1'
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
@@ -40,3 +42,14 @@ jobs:
           python -c 'import sys; print(sys.executable); print(sys.base_prefix)'
       - name: Exercise real Seatbelt boundary (no credentials or live services)
         run: python tests/leakguard.py discover -v -s tests -p 'test_seatbelt.py'
+      - name: Startup diagnostics on failure
+        if: failure()
+        run: |
+          /usr/bin/log show --last 2m --style compact --predicate 'eventMessage CONTAINS "deny" OR process == "sandboxd"' 2>&1 | tail -n 100
+          python - <<'PY'
+          from pathlib import Path
+          for root in (Path.home() / 'Library/Logs/DiagnosticReports', Path('/Library/Logs/DiagnosticReports')):
+              for path in sorted(root.glob('*Python*'), key=lambda p: p.stat().st_mtime)[-3:]:
+                  print(path.name)
+                  print(path.read_text(errors='replace')[:14000])
+          PY
