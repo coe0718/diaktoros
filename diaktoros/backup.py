@@ -20,6 +20,7 @@ import io
 import json
 import os
 import pathlib
+import shlex
 import sqlite3
 import tarfile
 import tempfile
@@ -172,7 +173,7 @@ def outside_state_dirs(manifest: dict) -> list[str]:
     return sorted(set(out))
 
 
-def unsafe(manifest: dict, *, allow_state_dirs: bool = False) -> list[str]:
+def unsafe(manifest: dict, *, allowed_state_dirs=()) -> list[str]:
     """Why this archive must not be restored here, or [] (#496 hardening).
 
     An archive is input from outside: a tampered one must not write outside what this plugin
@@ -181,26 +182,29 @@ def unsafe(manifest: dict, *, allow_state_dirs: bool = False) -> list[str]:
     with no symlink in its path; every route must be one of this plugin's gates; a live route of
     the same name that is not this plugin's is never overwritten, even with --force.
 
-    A loop's ``state_dir`` may lie elsewhere. Its files are written only with
-    ``allow_state_dirs`` (the operator's explicit ``--allow-state-dirs``, after the dry run named
-    the directories), and only inside a state directory the archive declares.
+    A loop's ``state_dir`` may lie elsewhere. The archive declares it, and the archive is not
+    trusted (#587): such a directory is written only when the operator named that exact directory
+    (``--allow-state-dir DIR``, after the dry run listed it). Naming a parent does not cover it,
+    and a named directory the archive does not declare allows nothing.
     """
     roots = [pathlib.Path(os.path.realpath(r)) for r in (config.home(), config.config_dir())]
     outside = [pathlib.Path(d) for d in outside_state_dirs(manifest)]
+    named = {pathlib.Path(os.path.abspath(os.path.expanduser(str(d)))) for d in allowed_state_dirs}
     problems = []
     for entry in manifest["files"]:
         target = pathlib.Path(entry["path"])
         parent = pathlib.Path(os.path.realpath(target.parent))
         linked = os.path.islink(target) or parent != pathlib.Path(os.path.abspath(target.parent))
         inside = any(parent == root or root in parent.parents for root in roots)
-        declared = any(parent == d or d in parent.parents for d in outside)
-        if linked or not (inside or declared):
+        home_dir = next((d for d in outside if parent == d or d in parent.parents), None)
+        if linked or not (inside or home_dir):
             problems.append(f"{target}: outside this plugin's places (the Hermes home, the "
                             "loop files' directory and the archive's state directories) or "
                             "behind a symlink")
-        elif not inside and not allow_state_dirs:
-            problems.append(f"{target}: in a loop state directory outside the Hermes home — "
-                            "re-run with --allow-state-dirs to write it")
+        elif not inside and home_dir not in named:
+            problems.append(f"{target}: in a loop state directory outside the Hermes home, "
+                            f"named by the archive — check it, then re-run with "
+                            f"--allow-state-dir {shlex.quote(str(home_dir))} to write it")
     live = routes.all_routes()
     for name, entry in (manifest.get("routes") or {}).items():
         if not isinstance(entry, dict) or not route_intent.owned(entry):

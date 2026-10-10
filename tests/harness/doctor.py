@@ -573,7 +573,7 @@ def group_doctor() -> None:
     rc, refused = run_doctor_cli("restore", str(archive))
     check("  a state dir outside the home is refused without consent", rc, 2)
     check("  and named", f"outside the Hermes home: {STATE_DIR}" in refused, True)
-    rc, restored = run_doctor_cli("restore", str(archive), "--allow-state-dirs")
+    rc, restored = run_doctor_cli("restore", str(archive), "--allow-state-dir", str(STATE_DIR))
     check("  restore exits 0", rc, 0)
     check("  and its doctor step says every check verified",
           "doctor: every check verified" in restored, True)

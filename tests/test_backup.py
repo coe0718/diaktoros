@@ -153,22 +153,39 @@ class Tampered(Base):
              "kind": "file"}), {"files/evil": b"y"})
         self.refused(inner, want="behind a symlink")
 
-    def test_a_state_dir_outside_the_home_needs_consent_and_stays_inside_it(self):
+    def test_a_state_dir_outside_the_home_is_written_only_when_named_exactly(self):
+        # #587: the archive declares its state dirs and is not trusted, so consent names the
+        # directory: the archive cannot add one, and naming a parent covers nothing.
         away = self.root / "elsewhere"
         declared = away / "state"
         good = self.tamper(lambda m: (m["state_dirs"].append(str(declared)), m["files"].append(
             {"member": "files/st", "path": str(declared / "watchdog.json"), "kind": "file"})),
             {"files/st": b"{}"})
-        self.refused(good, want="re-run with --allow-state-dirs")
+        self.refused(good, want=f"--allow-state-dir {declared}")
         self.assertFalse(declared.exists())
         manifest = backup.read_manifest(good)
         self.assertEqual(backup.outside_state_dirs(manifest), [str(declared)])
-        self.assertEqual(backup.unsafe(manifest, allow_state_dirs=True), [])
-        # Consent covers the declared directory only: a sibling is still outside.
+        self.assertEqual(backup.unsafe(manifest, allowed_state_dirs=[str(declared)]), [])
+        for wrong in ([str(away)], [str(self.root)], ["/"], [str(away / "other")]):
+            with self.subTest(named=wrong):
+                [problem] = backup.unsafe(manifest, allowed_state_dirs=wrong)
+                self.assertIn(f"--allow-state-dir {declared}", problem)
+        # A sibling of the declared directory is outside, named or not.
         manifest["files"].append({"member": "files/st", "path": str(away / "x.json"),
                                   "kind": "file"})
-        [problem] = backup.unsafe(manifest, allow_state_dirs=True)
+        [problem] = backup.unsafe(manifest, allowed_state_dirs=[str(declared), str(away)])
         self.assertIn("outside this plugin's places", problem)
+
+    def test_the_named_directory_restores_through_the_command(self):
+        away = self.root / "elsewhere" / "state"
+        good = self.tamper(lambda m: (m["state_dirs"].append(str(away)), m["files"].append(
+            {"member": "files/st", "path": str(away / "watchdog.json"), "kind": "file"})),
+            {"files/st": b"{}"})
+        with mock.patch.object(migrate, "doctor_step", return_value=[]):
+            code, text = self.run_cmd(cli.cmd_restore, file=str(good), dry_run=False, force=True,
+                                      allow_state_dir=[str(away)])
+        self.assertNotIn("REFUSED", text)
+        self.assertEqual((away / "watchdog.json").read_text(), "{}")
 
     def test_a_route_that_is_not_this_plugins_gate_is_refused(self):
         bad = self.tamper(lambda m: m["routes"].update(

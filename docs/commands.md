@@ -761,9 +761,11 @@ listed a check that is not verified.
 An archive is treated as outside input. `restore` refuses it (exit `2`, nothing written) when:
 - a file would land outside this plugin's places (the Hermes home, the loop files'
   directory and the state directories the archive declares) or behind a symlink;
-- a loop's state directory lies outside the Hermes home (a custom `state_dir`) and
-  `--allow-state-dirs` was not passed: the dry run and the refusal name each such directory, so
-  you can check it before allowing it;
+- a loop's state directory lies outside the Hermes home (a custom `state_dir`) and you did not
+  name it with `--allow-state-dir DIR`. **The directory comes from the archive**, not from this
+  machine, so check it in the dry run (which lists each one) before you allow it. Only the exact
+  directory you name is written: naming a parent allows nothing, and repeat the flag for each
+  directory;
 - a route in it is not one of this plugin's gates;
 - a live route of the same name belongs to something else (even with `--force`);
 - a run is in flight or uncertain.
@@ -778,7 +780,7 @@ hermes dk restore "<archive-file>"
 | --- | --- | --- | --- |
 | `--dry-run` |  |  | report what would be restored and overwritten; write nothing |
 | `--force` |  |  | overwrite existing state (refused without it) |
-| `--allow-state-dirs` |  |  | also write the loop state directories the archive declares outside the Hermes home (the dry run names them) |
+| `--allow-state-dir` | `DIR` (repeatable) |  | write this loop state directory, which the archive declares outside the Hermes home (the dry run lists them; repeat per directory) |
 <!-- /flags -->
 
 ### selftest
