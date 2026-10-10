@@ -751,6 +751,13 @@ are missing; the tokens themselves are not in the archive. `--dry-run` lists wha
 restore and overwrite and writes nothing. Exit `1` means a step is not finished or `doctor`
 listed a check that is not verified.
 
+An archive is treated as outside input. `restore` refuses it (exit `2`, nothing written) when:
+- a file would land outside this plugin's places (the Hermes home and the loop files'
+  directory) or behind a symlink;
+- a route in it is not one of this plugin's gates;
+- a live route of the same name belongs to something else (even with `--force`);
+- a run is in flight or uncertain.
+
 ```bash
 hermes dk restore "<archive-file>" --dry-run
 hermes dk restore "<archive-file>"

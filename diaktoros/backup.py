@@ -160,6 +160,34 @@ def read_manifest(archive: pathlib.Path) -> dict:
     return manifest
 
 
+def unsafe(manifest: dict) -> list[str]:
+    """Why this archive must not be restored here, or [] (#496 hardening).
+
+    An archive is input from outside: a tampered one must not write outside what this plugin
+    owns, install a route that runs anything but this plugin's gates, or replace a route that is
+    someone else's. Every file must land inside the Hermes home or the loop files' directory,
+    with no symlink in its path; every route must be one of this plugin's gates; a live route of
+    the same name that is not this plugin's is never overwritten, even with --force.
+    """
+    roots = [pathlib.Path(os.path.realpath(r)) for r in (config.home(), config.config_dir())]
+    problems = []
+    for entry in manifest["files"]:
+        target = pathlib.Path(entry["path"])
+        parent = pathlib.Path(os.path.realpath(target.parent))
+        inside = any(parent == root or root in parent.parents for root in roots)
+        if not inside or os.path.islink(target) or parent != pathlib.Path(
+                os.path.abspath(target.parent)):
+            problems.append(f"{target}: outside this plugin's places (the Hermes home and the "
+                            "loop files' directory) or behind a symlink")
+    live = routes.all_routes()
+    for name, entry in (manifest.get("routes") or {}).items():
+        if not isinstance(entry, dict) or not route_intent.owned(entry):
+            problems.append(f"route {name}: not one of this plugin's gates")
+        elif name in live and isinstance(live[name], dict) and not route_intent.owned(live[name]):
+            problems.append(f"route {name}: a live route of that name belongs to something else")
+    return problems
+
+
 def existing(manifest: dict) -> list[str]:
     """What a restore would overwrite: files, route entries and the watchdog job."""
     found = [e["path"] for e in manifest["files"] if os.path.lexists(e["path"])]

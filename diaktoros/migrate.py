@@ -443,21 +443,27 @@ def _move_ledger_file(old: pathlib.Path, new: pathlib.Path, *, dry_run: bool) ->
     return lines
 
 
+def runs_in_flight() -> int:
+    """Runs that are in flight or uncertain in the host ledger (0 without one). Moving or
+    overwriting host files under such a run could tear its state: migrate and restore refuse."""
+    ledger = config.host_path("ledger")
+    if not ledger.exists():
+        return 0
+    from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when needed
+    con = sqlite3.connect(ledger, timeout=30)
+    try:
+        return con.execute(f"SELECT COUNT(*) FROM runs WHERE state IN "
+                           f"({','.join('?' * len(ACTIVE))})", ACTIVE).fetchone()[0]
+    except sqlite3.Error:
+        return 0                            # no runs table yet: nothing can be in flight
+    finally:
+        con.close()
+
+
 def files_step(write_loop, *, dry_run: bool) -> list[str]:
     """Move each host file from its old name to its new one; rewrite the loops' state paths."""
     lines: list[str] = []
-    ledger = config.host_path("ledger")
-    busy = 0
-    if ledger.exists():
-        from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when migrating
-        con = sqlite3.connect(ledger, timeout=30)
-        try:
-            busy = con.execute(f"SELECT COUNT(*) FROM runs WHERE state IN "
-                               f"({','.join('?' * len(ACTIVE))})", ACTIVE).fetchone()[0]
-        except sqlite3.Error:
-            busy = 0                        # no runs table yet: nothing can be in flight
-        finally:
-            con.close()
+    busy = runs_in_flight()
     if busy:
         return [f"files: REFUSED — {busy} run(s) are in flight or uncertain; wait for them (or "
                 "reconcile them), then run migrate again"]

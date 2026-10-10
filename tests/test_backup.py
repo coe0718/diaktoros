@@ -45,12 +45,25 @@ class Base(fg.Base):
                         [("owner/one",)] * 298)
         con.commit()
         con.close()
-        (self.root / "state").mkdir(exist_ok=True)
-        (self.root / "state" / "queue.json").write_text('{"owner/one#7": {"head": "abc"}}')
+        # The loop's state where a real install keeps it, inside the Hermes home: restore writes
+        # only inside this plugin's places (the Hermes home and the loop files' directory).
+        self.state = home / "state" / "diaktoros" / "one"
+        self.state.mkdir(parents=True, exist_ok=True)
+        path = config.config_dir() / "one.json"
+        path.write_text(json.dumps({**json.loads(path.read_text()), "state_dir": str(self.state),
+                                    "host": "https://127.0.0.1:9"}))
+        (self.state / "queue.json").write_text('{"owner/one#7": {"head": "abc"}}')
         (home / "diaktoros-runtime.json").write_text('{"runtime": 1}')
         routes.subs_path().write_text(json.dumps({
             "one-review": {"secret": SECRET, "script": "gate_reviewer.py"},
             "foreign": {"secret": "other", "script": "somebody_elses.py"}}))
+        # The loop's routes as the plugin itself writes them (profile, events, script) — keeping
+        # one-review's secret — so the starting install is healthy on what restore owns, and a
+        # round trip is checked against correctly bound routes, not a broken registry.
+        cli._install_routes(config.all_loops()[0])
+        for profile in ("reviewer", "fixer"):          # the seats' Hermes profiles exist
+            (home / "profiles" / profile).mkdir(parents=True, exist_ok=True)
+        cli.gate_shims.install(config.all_loops()[0], dry_run=False, report=False)
         self.jobs = [dict(JOB)]
         for patcher in (mock.patch.object(cli, "_cron_jobs", side_effect=lambda loop: (self.jobs, "")),
                         mock.patch.object(cli, "_hermes_bin", return_value="hermes")):
@@ -78,11 +91,90 @@ class Base(fg.Base):
 
     def wipe(self):
         self.db.unlink()
-        (self.root / "state" / "queue.json").unlink()
+        (self.state / "queue.json").unlink()
         (self.root / "home" / "diaktoros-runtime.json").unlink()
         routes.subs_path().unlink()
         (config.config_dir() / "one.json").unlink()
         self.jobs.clear()
+
+
+class Tampered(Base):
+    """An archive is outside input: restore refuses one that would write outside this plugin's
+    places, install a route that is not this plugin's gate, replace someone else's route, or run
+    while a turn is in flight. Nothing is written in any of these cases."""
+
+    def tamper(self, change, extra=None):
+        good = self.root / "good.tar.gz"
+        self.run_cmd(cli.cmd_backup, out=str(good))
+        manifest = backup.read_manifest(good)
+        change(manifest)
+        bad = self.root / "bad.tar.gz"
+        with tarfile.open(good, "r:gz") as src, tarfile.open(bad, "w:gz") as dst:
+            for member in src.getmembers():
+                if member.name != backup.MANIFEST:
+                    dst.addfile(member, src.extractfile(member))
+            for name, data in (extra or {}).items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                dst.addfile(info, io.BytesIO(data))
+            raw = json.dumps(manifest).encode()
+            info = tarfile.TarInfo(backup.MANIFEST)
+            info.size = len(raw)
+            dst.addfile(info, io.BytesIO(raw))
+        return bad
+
+    def refused(self, archive, force=True, want=""):
+        code, text = self.run_cmd(cli.cmd_restore, file=str(archive), dry_run=False, force=force)
+        self.assertEqual(code, 2, text)
+        self.assertIn(want, text)
+        return text
+
+    def test_a_file_outside_this_plugins_places_is_refused(self):
+        outside = self.root / "outside.txt"
+        bad = self.tamper(lambda m: m["files"].append(
+            {"member": "files/evil", "path": str(outside), "kind": "file"}),
+            {"files/evil": b"owned"})
+        self.refused(bad, want="outside this plugin's places")
+        self.assertFalse(outside.exists())
+
+    def test_a_symlinked_directory_inside_the_home_is_refused(self):
+        away = self.root / "away"
+        away.mkdir()
+        (self.root / "home" / "link").symlink_to(away, target_is_directory=True)
+        target = self.root / "home" / "link" / "x.json"
+        bad = self.tamper(lambda m: m["files"].append(
+            {"member": "files/evil", "path": str(target), "kind": "file"}), {"files/evil": b"x"})
+        self.refused(bad, want="behind a symlink")
+        self.assertEqual(list(away.iterdir()), [])
+        # Even a link that stays inside the home is not followed: a path is restored as named.
+        (self.root / "home" / "inner").symlink_to(self.state, target_is_directory=True)
+        inner = self.tamper(lambda m: m["files"].append(
+            {"member": "files/evil", "path": str(self.root / "home" / "inner" / "y.json"),
+             "kind": "file"}), {"files/evil": b"y"})
+        self.refused(inner, want="behind a symlink")
+
+    def test_a_route_that_is_not_this_plugins_gate_is_refused(self):
+        bad = self.tamper(lambda m: m["routes"].update(
+            {"one-review": {"secret": "x", "script": "run_anything.py"}}))
+        self.refused(bad, want="not one of this plugin's gates")
+        self.assertEqual(routes.all_routes()["one-review"]["script"], "gate_reviewer.py")
+
+    def test_someone_elses_live_route_is_never_replaced_even_with_force(self):
+        bad = self.tamper(lambda m: m["routes"].update(
+            {"foreign": {"secret": "x", "script": "gate_reviewer.py"}}))
+        self.refused(bad, force=True, want="belongs to something else")
+        self.assertEqual(routes.all_routes()["foreign"]["script"], "somebody_elses.py")
+
+    def test_a_run_in_flight_refuses_before_anything_is_written(self):
+        good = self.root / "good.tar.gz"
+        self.run_cmd(cli.cmd_backup, out=str(good))
+        con = sqlite3.connect(self.db)
+        con.execute("INSERT INTO runs (repo, state) VALUES ('owner/one', 'running')")
+        con.commit()
+        con.close()
+        (self.state / "queue.json").write_text("{}")
+        self.refused(good, force=True, want="in flight")
+        self.assertEqual((self.state / "queue.json").read_text(), "{}")
 
 
 class Create(Base):
@@ -94,7 +186,7 @@ class Create(Base):
         self.assertNotIn(SECRET, text)
         self.assertIn("secrets", text)
         manifest = backup.read_manifest(out)
-        self.assertEqual(list(manifest["routes"]), ["one-review"])      # only this plugin's
+        self.assertEqual(sorted(manifest["routes"]), ["one-fix", "one-review"])   # only ours
         self.assertEqual(manifest["cron"], {"name": "diaktoros watchdog", "schedule": "5m",
                                             "deliver": "telegram"})
 
@@ -140,7 +232,7 @@ class Restore(Base):
         code, text = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
         self.assertEqual(code, 0, text)
         self.assertEqual(self.ledger_count(), 298)
-        self.assertEqual(json.loads((self.root / "state" / "queue.json").read_text()),
+        self.assertEqual(json.loads((self.state / "queue.json").read_text()),
                          {"owner/one#7": {"head": "abc"}})
         self.assertEqual(routes.all_routes()["one-review"]["secret"], SECRET)
         self.assertNotIn("foreign", routes.all_routes())
@@ -176,7 +268,14 @@ class Restore(Base):
             return {n: v for n, v in d.items() if not n.startswith("cron:")}
         self.assertTrue(before)
         self.assertEqual(unowned(after), unowned(before))
-        self.assertEqual(readout()["state_dir"], doctor.VERIFIED)
+        # What restore owns is healthy before the wipe and verified after it, not merely
+        # unchanged (adjudication on #537: equal-to-original was checked against broken routes).
+        owned = [n for n in before if n == "config" or n == "state_dir"
+                 or n.startswith(("route:one-", "gateway-script:one-"))]
+        self.assertGreaterEqual(len(owned), 6, owned)
+        for name in owned:
+            self.assertEqual((name, before[name]), (name, doctor.VERIFIED))
+            self.assertEqual((name, after[name]), (name, doctor.VERIFIED))
         self.assertIn("doctor: one:", buf.getvalue())      # the real step ran and reported
         self.assertNotIn("doctor: every check verified", buf.getvalue())
         self.assertEqual(code, 1)                          # unverified checks => exit 1

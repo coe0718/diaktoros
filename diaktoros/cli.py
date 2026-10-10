@@ -4162,6 +4162,11 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
     lines += [f"restore: NOT FINISHED — token file missing: {line}"
               for line in backup.missing_tokens(manifest)]
     lines += [f"restore: will overwrite {name}" for name in backup.existing(manifest)]
+    problems = backup.unsafe(manifest)
+    if problems:
+        print("\n".join(lines + [f"restore: REFUSED — {p}" for p in problems[:20]]
+                         + ["nothing was written"]))
+        return 2
     if args.dry_run:
         print("\n".join(lines + ["dry run: nothing was written"]))
         return 0
@@ -4194,6 +4199,11 @@ def cmd_restore(args) -> int:
         if args.dry_run:
             return _restore(args, manifest, archive)
         with migrate.hold():
+            busy = migrate.runs_in_flight()
+            if busy:
+                print(f"cannot restore: {busy} run(s) are in flight or uncertain; wait for them "
+                      "(or reconcile them), then run restore again")
+                return 2
             clash = backup.existing(manifest)
             if clash and not args.force:
                 print("cannot restore: existing state would be overwritten (use --force):\n  "
