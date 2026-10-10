@@ -185,7 +185,13 @@ class NativeLifecycleGaps(unittest.TestCase):
                                   '(deny syscall-unix (syscall-number 82 147 244))\n')
             policy = root / 'policy.sb'
             policy.write_text(profile.text)
-            argv = profile.command(policy, [str(Path(sys.executable).resolve()), '-I', '-B',
+            interpreter = Path(sys.executable).resolve()
+            framework = Path(sys.base_prefix) / 'Resources/Python.app/Contents/MacOS/Python'
+            if strict_double and framework.is_file():
+                # Framework bin/python is a native-spawn launcher. Exercise the
+                # interpreter directly without requiring the compatibility shim.
+                interpreter = framework.resolve()
+            argv = profile.command(policy, [str(interpreter), '-I', '-B',
                                             str(script), str(work), str(control), str(secret),
                                             'output' if output_limit else
                                             ('strict-double' if strict_double else

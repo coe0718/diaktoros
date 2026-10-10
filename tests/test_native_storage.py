@@ -232,6 +232,12 @@ print('ENOSPC_ALL_ROOTS')
         # to catch the intermittent busy eject without reinstalling Hermes.
         with tempfile.TemporaryDirectory(prefix='dk-eject-probe-', dir='/tmp') as directory:
             policy = Path(directory).resolve() / 'policy.sb'
+            interpreter = Path(sys.executable).resolve()
+            framework = Path(sys.base_prefix) / 'Resources/Python.app/Contents/MacOS/Python'
+            if framework.is_file():
+                # Bypass framework bin/python's native-spawn launcher, keeping
+                # this kernel-only probe independent of the compatibility shim.
+                interpreter = framework.resolve()
             for cycle in range(6):
                 with self.subTest(cycle=cycle):
                     with native_storage.Workspace(64) as workspace:
@@ -251,7 +257,7 @@ os.fsync(fd)
 print('TURN_COMPLETE')
 """
                         result = native_lifecycle.capture(
-                            profile.command(policy, [str(Path(sys.executable).resolve()),
+                            profile.command(policy, [str(interpreter),
                                                      '-I', '-B', '-c', script]),
                             env={'PATH': '/usr/bin:/bin'}, cwd=workspace.work, timeout=10)
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
