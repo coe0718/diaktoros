@@ -148,11 +148,23 @@ def main() -> None:
                      and first_base.get("ref") == final_base.get("ref")
                      and first_base.get("sha") == final_base.get("sha")
                      and not transition.baseline_missing(boundary))
+        # #595: the base branch moved on since the PR's recorded base. The review still holds
+        # (the diff against the merge base is unchanged), but the PR's CI ran against the older
+        # base, so this is not a merge hand-off: say what is known instead of "unverified".
+        pr_base = observer.base_identity(loop, pr)
+        tip = observer.base_tip(loop) if live_open and not base_matches else ""
+        base_moved = bool(pr_base and tip and tip != pr_base
+                          and observer.base_identity(loop, current) == pr_base)
         if live_open and current_head and approved_head and approved_head != current_head:
             outcome, next_turn = "on an older head — the PR moved since", "the reviewer, on this head"
         elif (live_open and current_head and approved_head == current_head
               and snapshot_matches and base_matches and live_approval and same_base):
             outcome, next_turn = "", "you merge"
+        elif (live_open and current_head and approved_head == current_head
+              and snapshot_matches and base_moved and live_approval and same_base):
+            outcome = (f"{loop['base']} moved since this PR's base ({pr_base[:7]} → {tip[:7]}): "
+                       f"its CI ran against the older {loop['base']}")
+            next_turn = (f"you — update the branch for CI on current {loop['base']}, then merge")
         else:
             outcome, next_turn = "current approval/head/base unverified — no merge handoff", "check current PR state"
         # The claim for the approved head was freed above; a verified handoff also ends any other.
