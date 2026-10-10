@@ -870,6 +870,9 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
             # a test.
             from . import ci_fix
             text += ci_fix.fix_history(loop, row['pr'])
+            # A red head reaches the reviewer only once the fixer is done with it: say why, with
+            # the failing jobs' logs (#539).
+            text += ci_fix.still_red(loop, state, row['pr'])
         if seat == 'fixer':
             # #569: a fix round on a red head gets the failing jobs, their failing step and log
             # tails, exactly as a CI-fix turn does: a verdict that says "required check X failed"

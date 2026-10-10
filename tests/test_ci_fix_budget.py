@@ -8,16 +8,19 @@ from __future__ import annotations
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+import test_fixer_gating as fg  # noqa: E402
 import test_review_after_ci as rac  # noqa: E402
 import test_seat_models as sm  # noqa: E402
-from diaktoros import ci, ci_fix, cli, config, gh, observer  # noqa: E402
+from diaktoros import ci, ci_fix, cli, config, gate, gh, observer  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD  # noqa: E402
+from scripts import watchdog  # noqa: E402
 
 RED = ci.CIState(failed=["tests (3.11)"], passed=["lint"])
 LOOP = {"repo": "acme/widgets", "cap": 3, "read_token": "reader", "base": "main",
@@ -150,6 +153,83 @@ class PromptHook(unittest.TestCase):
     def test_the_reviewer_is_shown_the_ci_fix_history_and_the_fixer_is_not(self):
         self.assertIn("HISTORY-SECTION", self.prompt("reviewer"))
         self.assertNotIn("HISTORY-SECTION", self.prompt("fixer"))
+
+
+class StillRed(unittest.TestCase):
+    """The reviewer of a head still red after CI-fix turns is told why it is reviewing it, with
+    the failing jobs' logs (#539; the idea came from the fixer's own #574)."""
+
+    def note(self, state, rows):
+        loop = {**LOOP, "fix_ci": True}
+        with mock.patch.object(ci_fix, "rows", return_value=rows), \
+                mock.patch.object(ci_fix, "section", return_value="\n\nLOGS-SECTION"):
+            return ci_fix.still_red(loop, state, 7)
+
+    def test_red_after_fixes_says_why_and_carries_the_logs(self):
+        text = self.note(RED, [{"head": f"o{i}", "state": "succeeded"} for i in range(3)])
+        self.assertIn("CI is still red after 3 CI-fix turn(s)", text)
+        self.assertIn("This review counts as a verdict", text)
+        self.assertIn("LOGS-SECTION", text)
+
+    def test_green_or_no_fix_turns_says_nothing(self):
+        self.assertEqual(self.note(ci.CIState(passed=["t"]), [{"head": "o", "state": "x"}]), "")
+        self.assertEqual(self.note(RED, []), "")
+        self.assertEqual(self.note(None, [{"head": "o", "state": "x"}]), "")
+
+    def test_the_reviewer_prompt_carries_it(self):
+        from diaktoros import issue_facts, run_supervisor
+        row = {"seat": "reviewer", "repo": "acme/w", "pr": 7, "head": "a" * 40}
+        loop = {**LOOP, "repo": "acme/w", "id": "w", "seats": {}, "reviewers": ["rev"],
+                "reviewer_seat": "rev"}
+        with mock.patch.object(ci, "read", return_value=RED), \
+                mock.patch.object(ci_fix, "fix_history", return_value=""), \
+                mock.patch.object(ci_fix, "still_red", return_value="\n\nSTILL-RED"), \
+                mock.patch.object(issue_facts, "section", return_value=""), \
+                mock.patch.object(gh, "pr_url", return_value="https://github.com/acme/w/pull/7"), \
+                mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
+                mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None):
+            text = run_supervisor.isolated_prompt(loop, row, [],
+                                                  change=run_supervisor.PRChange("R", "D"))
+        self.assertIn("STILL-RED", text)
+
+
+class Stall(fg.Base):
+    """While the fixer takes a red head first, the reviewer's silence there is not a stall
+    (#539). Adapted from the fixer's #574."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_push(True)
+        self.loop = {**self.loop, "fix_ci": True}
+
+    def sweep(self, rows):
+        with mock.patch.object(watchdog, "TEST", True), \
+                mock.patch.object(gate, "hooks_armed", return_value=True), \
+                mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
+                mock.patch.object(gh, "open_prs", return_value=[fg.LIVE]), \
+                mock.patch.object(gh, "reviews", return_value=[]), \
+                mock.patch.object(ci_fix, "rows", return_value=rows), \
+                mock.patch.object(watchdog, "retry_pending_breaches"), \
+                mock.patch.object(watchdog.routes, "fire"), \
+                mock.patch.object(watchdog.observer, "notify"), \
+                mock.patch.object(watchdog.observer, "retry", return_value=0), \
+                mock.patch.object(watchdog.observer, "flush"):
+            return "\n".join(watchdog.sweep_loop(self.loop, self.st))
+
+    def test_a_live_ci_fix_at_the_head_is_not_a_reviewer_stall(self):
+        self.sweep([])                                    # arms and observes the head
+        watch = self.st.watch()
+        watch["heads"]["7"]["observed_at"] = time.time() - 36000
+        self.st.watch_save(watch)
+        self.assertIn("reviewer never posted a verdict", self.sweep([]))
+        for live in ("pending", "running"):
+            self.assertNotIn("reviewer never posted a verdict",
+                             self.sweep([{"head": fg.HEAD, "state": live}]), live)
+        # A CI-fix turn that ended does not excuse the silence, nor does one at another head.
+        self.assertIn("reviewer never posted a verdict",
+                      self.sweep([{"head": fg.HEAD, "state": "failed"}]))
+        self.assertIn("reviewer never posted a verdict",
+                      self.sweep([{"head": "b" * 40, "state": "running"}]))
 
 
 class Setting(rac.Cli):

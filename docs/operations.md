@@ -247,7 +247,8 @@ heads), outside the reviewer's verdict cap (#539). A red head goes to the fixer 
 whether or not `review_after_ci` is on (#579): the reviewer's turn is held and its CI-fix turn queued at once, so no
 review verdict is spent on code that does not build. Once the budget is spent, or the head's
 CI-fix turn ended without a new head, the reviewer reviews the red head (that review counts
-as a verdict) to find why the fixes did not take. The first review after any CI-fix commits
+as a verdict) to find why the fixes did not take; it is told so and given the failing jobs'
+logs. While the fixer has a red head, the watchdog does not call the reviewer's silence a stall. The first review after any CI-fix commits
 is shown them, with the test files each changed, and blocks one that weakened, skipped or
 removed a test. `explain` shows `CI fixes N/CAP`. Normal fixer capacity, pacing, checks and
 push safety still apply. See [configuration](configuration.md#write-policy-and-attribution)

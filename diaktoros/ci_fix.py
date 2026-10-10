@@ -151,6 +151,22 @@ TEST_PATH = re.compile(r"(^|/)(tests?|spec)/|(^|/)test_[^/]+$|_test\.[A-Za-z]+$|
 HISTORY_MAX = 10
 
 
+def still_red(loop: dict, state: ci.CIState | None, number: int, db=None) -> str:
+    """For the reviewer of a head still red after CI-fix turns (#539): why it is reviewing a red
+    head, and the failing jobs' logs, so its one verdict can say why the fixes did not take.
+    '' when the head is not red or no CI-fix turn ran on the PR."""
+    names = failing(state, config.required_checks(loop))
+    used = len(rows(loop["repo"], number, db))
+    if not names or not used:
+        return ""
+    return (f"\n\n## CI is still red after {used} CI-fix turn(s) (host fact)\n\n"
+            f"The fixer has had {used} of its {config.ci_fix_cap(loop)} CI-fix turns on this PR "
+            "and the required checks below still fail at this head (the budget is spent, or this "
+            "head's turn found nothing to push). This review counts as a verdict: find out why "
+            "the fixes did not take, and say it in your findings."
+            + section(loop, state, names))
+
+
 def fix_history(loop: dict, number: int, db=None) -> str:
     """The commits CI-fix turns pushed on this PR, for the reviewer (#539): no reviewer saw them,
     so the first review after them checks that none weakened a test. '' when there are none."""
