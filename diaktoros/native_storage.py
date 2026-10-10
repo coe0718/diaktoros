@@ -59,9 +59,12 @@ class Workspace:
         self.mount.mkdir(mode=0o700)
         try:
             _run([HDIUTIL, 'create', '-size', f'{self.size_mib}m', '-fs', 'APFSX',
-                  '-format', 'UDRW', '-layout', 'GPTSPUD', '-volname', 'Diaktoros',
+                  '-type', 'UDIF', '-layout', 'GPTSPUD', '-volname', 'Diaktoros',
                   str(self.image)])
             self.image.chmod(0o600)
+            image_info = plistlib.loads(_run([HDIUTIL, 'imageinfo', '-plist', str(self.image)]))
+            if image_info.get('Format') != 'UDRW':
+                raise StorageError('blank image is not fixed-size UDRW')
             _run([HDIUTIL, 'attach', '-plist', '-nobrowse', '-noautoopen',
                   '-owners', 'on', '-mountpoint', str(self.mount), str(self.image)])
             self._verify_mount()
