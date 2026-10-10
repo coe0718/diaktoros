@@ -487,6 +487,12 @@ def files_step(write_loop, *, dry_run: bool) -> list[str]:
             rest = state.relative_to(old_root)
         except ValueError:
             continue
+        if os.path.lexists(state):
+            # #541: the move of its root was refused (or not reached), so the state is still
+            # here. Repointing the loop would start it from empty state at the new root.
+            lines.append(f"files: {loop['id']}: state_dir kept at {state} — its state was not "
+                         "moved; move it by hand, then run migrate again")
+            continue
         write_loop({**loop, "state_dir": str(new_root / rest)})
         lines.append(f"files: {loop['id']}: state_dir now {new_root / rest}")
     return lines or ["files: every host file already has its new name"]

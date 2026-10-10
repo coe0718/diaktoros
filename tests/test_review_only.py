@@ -322,6 +322,28 @@ class Gates(fg.Base):
             report = self.explain(0)
         self.assertIn("CI fixes 1/4", report["budget"])
 
+    # #478 human_paths: a head whose approval was left to a person is not reviewed again, is
+    # explained as the operator's move, and is not a stall. A new head is reviewed afresh.
+    def test_human_paths_hold_stops_the_gate_at_that_head_only(self):
+        self.st.human_hold_set(7, HEAD, "it touches .github/ci.yml")
+        block, _ = self.reviewer_gate(OWNER)
+        block.assert_not_called()
+        self.st.human_hold_set(7, "d" * 40, "an older head")
+        block, _ = self.reviewer_gate(OWNER)
+        block.assert_called_once()
+
+    def test_human_paths_hold_is_explained_as_a_persons_move(self):
+        self.st.human_hold_set(7, HEAD, "it touches .github/ci.yml")
+        report = self.explain(0)
+        self.assertEqual(report["next"]["kind"], "operator")
+        self.assertIn("a person must review and approve", report["next"]["action"])
+        self.assertIn(".github/ci.yml", report["next"]["action"])
+
+    def test_human_paths_hold_is_not_a_reviewer_stall(self):
+        self.st.human_hold_set(7, HEAD, "it touches .github/ci.yml")
+        text, _ = self.aged_sweep([])
+        self.assertNotIn("reviewer never posted a verdict", text)
+
     def test_a_conflict_goes_to_the_author_and_queues_no_fixer_turn(self):
         self.live = {**self.live, "mergeable_state": "dirty", "base": {"ref": "main", "sha": "b" * 40}}
         with mock.patch.object(gate, "enqueue_isolated") as enqueue, \

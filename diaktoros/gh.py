@@ -43,6 +43,8 @@ MAX_PR_PAGES = 100
 # GitHub's pulls/N/files listing stops at 3,000 files (30 full pages); the 31st page is what
 # proves the listing ended, so a PR at GitHub's cap still reads as complete-as-GitHub-lists-it.
 MAX_PR_FILE_PAGES = 31
+# GitHub's pulls/N/files stops listing here; a list this long may be a prefix.
+PR_FILES_LISTING_LIMIT = 3000
 
 
 class GitHubError(Exception):
@@ -59,6 +61,16 @@ class Response(NamedTuple):
 # The header GitHub sets on answers to fine-grained and expiring classic tokens.
 TOKEN_EXPIRY_HEADER = "github-authentication-token-expiration"
 STUB_ENVELOPE = "__gh_stub_response__"
+
+
+def parse_token_expiry(value) -> float | None:
+    """GitHub's expiry header (``2026-10-01 12:00:00 UTC``, or a numeric offset) as epoch."""
+    from datetime import datetime, timezone
+    text = str(value or "").strip().replace(" UTC", " +0000")
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S %z").astimezone(timezone.utc).timestamp()
+    except ValueError:
+        return None
 
 
 class GateBudgetExceeded(BaseException):

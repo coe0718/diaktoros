@@ -52,7 +52,7 @@ from .util import log, now_iso
 # happened; the same strings are what `--observer-events` accepts and what the ledger stores.
 EVENTS = ("opened", "handoff", "verdict", "approved", "escalation", "ruling", "stall", "closed",
           "triaged", "fixing", "fixed", "failed", "held", "conflict", "ci_failed", "updated",
-          "main_red", "stale_approval")
+          "main_red", "stale_approval", "human_paths")
 # The issue-side events (#231) name an issue, not a PR: their link is /issues/N and they carry no
 # head. ``failed`` (any isolated run's first failed attempt, and its final state) names whichever
 # the run was about.
@@ -64,7 +64,7 @@ ISSUE_EVENTS = frozenset({"triaged", "fixing", "fixed"})
 # ``uncertain`` outcome is urgent whatever its event. ``stall`` and ``conflict`` ask the
 # operator to act ("next: you"), so they are urgent too.
 URGENT_EVENTS = frozenset({"failed", "held", "escalation", "ruling", "stall", "conflict", "main_red",
-                         "stale_approval"})
+                         "stale_approval", "human_paths"})
 ROUTINE_EVENTS = frozenset(EVENTS) - URGENT_EVENTS
 
 
@@ -82,7 +82,7 @@ EMOJI = {"opened": "📬", "handoff": "🔧", "verdict": "🔍", "approved": "�
          "escalation": "⚠️", "ruling": "⚖️", "stall": "⏳", "closed": "🧹", "digest": "🗂",
          "triaged": "🏷", "fixing": "🛠", "fixed": "📦", "failed": "❌", "held": "⏸",
          "conflict": "🔀", "ci_failed": "🔴", "updated": "🔁", "main_red": "🚨",
-         "stale_approval": "🕸"}
+         "stale_approval": "🕸", "human_paths": "🧑"}
 LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review requested",
          "verdict": "review posted", "approved": "approved",
          "escalation": "loop stopped — cap spent", "ruling": "adjudicator ruled",
@@ -92,7 +92,7 @@ LABEL = {"opened": "opened — first look", "handoff": "fix pushed · review req
          "fixed": "issue fix", "failed": "run failed", "held": "run held",
          "conflict": "conflicts with its base", "ci_failed": "CI failed",
          "updated": "base merged in", "main_red": "main is red",
-         "stale_approval": "approval is stale"}
+         "stale_approval": "approval is stale", "human_paths": "needs a human approval"}
 
 # A stale claim may have reached the gateway before its sender died. Never replay it:
 # without a receiver-side idempotency guarantee, a replay can ping twice.

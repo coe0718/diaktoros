@@ -1756,6 +1756,10 @@ def cmd_init(args) -> int:
         "required_checks": (config.split_check_names(d["required_checks"])
                             if getattr(args, "required_check", None) is None
                             else [name for name in args.required_check if name.strip()]),
+        # Paths only a human may approve (#478).
+        "human_paths": (config.split_human_paths(d["human_paths"])
+                        if getattr(args, "human_path", None) is None
+                        else [name for name in args.human_path if name.strip()]),
         # Authors reviewed but never fixed (#191).
         "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
                         if getattr(args, "review_only", None) is None
@@ -2162,6 +2166,11 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                     "the CI checks that must pass before an approval, comma-separated, exactly as "
                     "GitHub names them (blank: every check)", d["required_checks"], interactive)))
     argv += [f"--required-check={name}" for name in required]
+    humans = (args.human_path if getattr(args, "human_path", None) is not None else
+              config.split_human_paths(_ask(
+                  "glob patterns for paths only a human may approve, comma-separated "
+                  "(blank: none)", d["human_paths"], interactive)))
+    argv += [f"--human-path={name}" for name in humans]
     reviewed = (args.review_only if getattr(args, "review_only", None) is not None else
                 [name for name in _ask("GitHub logins whose PRs the reviewer reviews but the fixer "
                                        "never touches, comma-separated (blank: none)",
@@ -2446,6 +2455,15 @@ def cmd_set(args) -> int:
             return 2
         if names != (loop.get("required_checks") or []):
             changes["required_checks"] = names
+    if getattr(args, "human_path", None) is not None or getattr(args, "no_human_paths", False):
+        try:
+            names = config.check_human_paths(
+                [] if args.no_human_paths else args.human_path, "--human-path")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if names != (loop.get("human_paths") or []):
+            changes["human_paths"] = names
     if getattr(args, "review_only", None) is not None or getattr(args, "no_review_only", False):
         try:
             names = config.check_review_only([] if args.no_review_only else args.review_only,
@@ -2908,7 +2926,8 @@ def _apply(args) -> int:
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
-                "fix_ci", "review_only_update", "required_checks", "review_only", "review_only_cap", "review_only_daily", "ci_fix_cap"):
+                "fix_ci", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
+                "review_only", "review_only_cap", "review_only_daily"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -5146,7 +5165,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--observer-events", default="",
                           help="comma-separated transitions to send, from "
                                "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                               "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval "
+                               "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths "
                                "(default: all)")
         init.add_argument("--observer-digest-min", type=int, default=0,
                           help="batch the feed into one message per this many minutes "
@@ -5197,6 +5216,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting)")
         init.add_argument("--required-check", action="append", default=None,
                           help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
+        init.add_argument("--human-path", action="append", default=None,
+                          help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
         init.add_argument("--fixer-check", default=None,
                           help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
         init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
@@ -5270,6 +5291,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting)")
         first.add_argument("--required-check", action="append", default=None,
                            help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
+        first.add_argument("--human-path", action="append", default=None,
+                           help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
         first.add_argument("--fixer-check", default=None,
                            help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
         first.add_argument("--review-only-update", choices=("on", "off"), default=None,
@@ -5481,6 +5504,11 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                               help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates); replaces the list")
         required.add_argument("--no-required-checks", action="store_true",
                               help="clear the list: every check gates again")
+        humans = change.add_mutually_exclusive_group()
+        humans.add_argument("--human-path", action="append", default=None,
+                            help="a glob pattern for paths only a human may approve (repeat it); replaces the list")
+        humans.add_argument("--no-human-paths", action="store_true",
+                            help="clear the list: no path is reserved for a human")
         change.add_argument("--fixer-check", default=None, help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none)")
         change.add_argument("--reviewer-turn-budget", type=int, default=None,
                             help="the reviewer seat's own turn budget in seconds")
@@ -5522,7 +5550,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--observer-events", default=None,
                             help="comma-separated transitions to send, from "
                                  "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
-                                 "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval "
+                                 "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths "
                                  "(blank = all)")
         change.add_argument("--observer-digest-min", type=int, default=None,
                             help="batch the feed into one message per N minutes (0 = per "

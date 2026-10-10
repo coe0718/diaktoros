@@ -520,6 +520,52 @@ def render_isolated(role: str, **facts) -> str:
     return text
 
 
+# #577: the registries a change must also update. Most of the fixer's red CI was a list test
+# (every command, event, doctor check or setting) failing on one new entry not added everywhere.
+# One row per kind: what to update, and the test that checks it. Matched from the diff's added
+# lines; with no diff yet (an issue fix, a CI fix) every row is shown.
+REGISTRY_ROWS = {
+    "command": (r"^\+.*\b(add_parser|add_argument)\(",
+                "a CLI command or flag: regenerate `docs/commands.md` (`python3 tests/commands_doc.py "
+                "--write`); a command with a required argument also needs an entry in "
+                "`tests/test_reader_identity.py`'s `extra`. Check: `test_commands_doc`, "
+                "`test_reader_identity`."),
+    "event": (r"^\+\+\+ b/diaktoros/observer\.py",
+              "an observer event: `observer.EVENTS`, `EMOJI` and `LABEL`, and the event tables in "
+              "both `docs/observer.md` and `docs/configuration.md`. Check: `python3 "
+              "tests/run_tests.py observer`."),
+    "doctor_check": (r'^\+.*\bCheck\("',
+                     "a doctor check: the doctor harness roster (`tests/harness/doctor.py`). "
+                     "Check: `python3 tests/run_tests.py doctor`."),
+    "setting": (r'^\+\s+"[a-z_]+": \{"label"|^\+  [a-z_]+:$',
+                "a setting: `config.SETTINGS_SCHEMA` and `plugin.yaml` (the same description), "
+                "`DEFAULTS`, `normalize`, `init`, the `setup` argv, `set`, `apply`'s key list, "
+                "`docs/settings.md` and `docs/configuration.md`, from every path."),
+    "broker_refusal": (r"^\+.*raise ProtocolError\(",
+                       "a broker refusal: other tests' review and push bodies the new rule now "
+                       "refuses (for example a required line or section). Check: the broker test "
+                       "files (`test_broker_ipc`, `test_reviewer_verdict_only`, "
+                       "`test_partial_view_no_approve`)."),
+}
+
+
+def registry_section(diff: str | None) -> str:
+    """The registry checklist for this change (#577): the rows its diff matches, or every row
+    when there is no diff to read yet. '' when a diff matches none."""
+    import re as _re
+    if diff is None:
+        rows = list(REGISTRY_ROWS.values())
+        lead = "If your change adds any of these, also update its registry, or CI goes red:"
+    else:
+        rows = [row for row in REGISTRY_ROWS.values()
+                if _re.search(row[0], diff, _re.MULTILINE)]
+        lead = "This change adds the following; also update each registry, or CI goes red:"
+    if not rows:
+        return ""
+    return ("\n\n## Registries (host-written checklist)\n\n" + lead + "\n"
+            + "\n".join(f"- {text}" for _, text in rows))
+
+
 def fixer_check_section(loop: dict) -> str:
     """The loop's always-run check, as an instruction from the operator (#338 follow-up): the
     repository checks CI runs on every change, which a fixer running only its touched tests would

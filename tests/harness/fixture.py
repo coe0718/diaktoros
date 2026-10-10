@@ -202,6 +202,10 @@ elif re.search(r"/commits/([0-9a-f]+)/status$", path):
 elif "/commits/" in path:
     sha = path.rsplit("/", 1)[1]
     print(json.dumps({"commit": {"committer": {"date": world.get("commit_dates", {}).get(sha, "2026-01-01T00:00:00Z")}}}))
+elif path == "/user":
+    print(json.dumps({"__gh_stub_response__": {"status": 200, "body": {"login": os.environ.get("GH_LOGIN", "")},
+          "headers": {"github-authentication-token-expiration": "2099-01-01 00:00:00 UTC",
+                      "x-oauth-scopes": "repo"}}}))
 elif path.endswith("/git/ref/heads/main"):
     print(json.dumps({"ref": "refs/heads/main", "object": {"type": "commit", "sha": "c" * 40}}))
 elif "/pulls?" in path:

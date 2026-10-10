@@ -200,6 +200,14 @@ SETTINGS_SCHEMA: dict = {
                                        "lint'. Others are shown to the reviewer as optional and "
                                        "never block. Blank = not set here (an unset list means "
                                        "every check gates)"},
+    "human_paths": {"label": "Human-only paths (comma-separated globs)", "type": "str",
+                    "default": "",
+                    "description": "Glob patterns, e.g. '.github/**, scripts/release*'. If a "
+                                   "reviewed diff touches one, the loop never approves it: when "
+                                   "the reviewer would approve, the approval is left to a person "
+                                   "(the head is held, one notice per head); REQUEST_CHANGES "
+                                   "still works. '*' also matches '/'. Blank = not set here (an "
+                                   "unset list means no path is reserved)"},
     "fixer_check": {"label": "Fixer's always-run check (command)", "type": "str", "default": "",
                     "description": "One command the fixer runs in the checkout before every "
                                    "push or issue-fix PR, besides the tests it touched: the "
@@ -387,6 +395,9 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     if _form_value(settings, "required_checks") is not None:
         overlaid["required_checks"] = check_required_checks(
             split_check_names(d["required_checks"]), "settings")
+    if _form_value(settings, "human_paths") is not None:
+        overlaid["human_paths"] = check_human_paths(
+            split_human_paths(d["human_paths"]), "settings")
     if _form_value(settings, "fixer_check") is not None:
         overlaid["fixer_check"] = check_fixer_check(d["fixer_check"], "settings")
     # Turn knobs (#309): validated like the CLI/loop file, and only when the form names them.
@@ -681,6 +692,7 @@ DEFAULTS: dict = {
     "fix_ci": False,          # hand a red required check on a fixer's PR to the fixer (#306)
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
+    "human_paths": [],        # globs whose changes only a human may approve (#478)
     "review_only": [],        # authors reviewed but never fixed (#191); [] = fixers only
     "review_only_update": False,  # push a clean merge of the base into a review-only PR (opt-in)
     "review_only_cap": None,   # verdicts per review-only PR; None = the loop's `cap`
@@ -899,6 +911,50 @@ def check_required_checks(value, where: str) -> list[str]:
                           f"unique names, each one printable line of 1-{REQUIRED_CHECK_NAME_MAX} "
                           "characters")
     return names
+
+
+HUMAN_PATHS_MAX = 50
+HUMAN_PATH_MAX = 200
+
+
+def check_human_paths(value, where: str) -> list[str]:
+    """Glob patterns (#478) for paths only a human may approve: unique, printable, one line each.
+    [] reserves nothing. Host-owned: never read from a PR."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
+        raise ConfigError(f"{where}: 'human_paths' must be a list of glob patterns")
+    names = [name.strip() for name in value]
+    if (len(names) > HUMAN_PATHS_MAX or len(set(names)) != len(names)
+            or not all(0 < len(name) <= HUMAN_PATH_MAX and name.isprintable() for name in names)):
+        raise ConfigError(f"{where}: 'human_paths' must be at most {HUMAN_PATHS_MAX} unique "
+                          f"patterns, each one printable line of 1-{HUMAN_PATH_MAX} characters")
+    return names
+
+
+def split_human_paths(text) -> list[str]:
+    """A one-line list of glob patterns, comma-separated."""
+    return [name.strip() for name in str(text or "").split(",") if name.strip()]
+
+
+def human_paths(loop: dict) -> list[str]:
+    """The globs whose changes the loop may not approve; [] = none."""
+    names = loop.get("human_paths")
+    return list(names) if isinstance(names, list) else []
+
+
+def human_path_hits(loop: dict, paths) -> list[str]:
+    """The ``paths`` that match a ``human_paths`` glob, in order, without repeats.
+
+    ``fnmatch`` semantics, case-sensitive: ``*`` also crosses ``/``, so ``.github/*`` and
+    ``.github/**`` both cover everything below ``.github``."""
+    import fnmatch
+    patterns = human_paths(loop)
+    hits: list[str] = []
+    for path in paths:
+        if path not in hits and any(fnmatch.fnmatchcase(path, pat) for pat in patterns):
+            hits.append(path)
+    return hits
 
 
 def split_check_names(text) -> list[str]:
@@ -1915,6 +1971,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
                           "only explicit true authorizes unattended fixer pushes")
     loop["fixer_check"] = check_fixer_check(loop["fixer_check"], where)
     loop["required_checks"] = check_required_checks(loop["required_checks"], where)
+    loop["human_paths"] = check_human_paths(loop["human_paths"], where)
     if type(loop["review_after_ci"]) is not bool:
         raise ConfigError(f"{where}: 'review_after_ci' must be a JSON boolean (true holds a "
                           "review until the head's checks finish)")

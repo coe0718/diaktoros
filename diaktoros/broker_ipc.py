@@ -324,6 +324,10 @@ class RunBroker:
                     response = {"ok": True, "result": {"accepted": True}}
                     if isinstance(outcome, dict) and type(outcome.get("issue")) is int:
                         response["result"]["issue"] = outcome["issue"]
+                    if isinstance(outcome, dict) and outcome.get("held") == "human_paths":
+                        # Host-written (#478): the seat must not read a withheld approval as done.
+                        response["result"] = {"accepted": False, "held": "human_paths",
+                                              "reason": str(outcome.get("reason") or "")[:500]}
                     if self.answers_outcome:
                         response["result"]["answers"] = self.answers_outcome
                 except (ProtocolError, broker.BrokerDenied, ValueError, UnicodeError, TimeoutError) as exc:
@@ -547,6 +551,16 @@ class RunBroker:
                                                     config.required_checks(self._loop)))
             if refusal:
                 raise ProtocolError(refusal)
+            # Paths only a human may approve (#478): also before the capability is consumed, so
+            # the seat's REQUEST_CHANGES in the same turn still goes through.
+            refusal, held = self._human_paths_check()
+            if refusal:
+                raise ProtocolError(refusal)
+            if held:
+                # A clean head on a reserved path is a person's to approve: the turn ends here,
+                # done, with no GitHub write. Refusing instead would leave a reviewer with nothing
+                # to request changes for and no way to finish, so the turn would fail and retry.
+                return self._hold_for_person(held)
         # Consume BEFORE an external write: a lost response cannot lead to a replay.
         self._used = True
         after_push = operation == "request_review" and bool(self._pushed_head)
@@ -629,6 +643,56 @@ class RunBroker:
                 pass  # the review is already written; state is best effort
         self.completed = True
         return result
+
+    def _human_paths_check(self) -> tuple[str, str]:
+        """``(refusal, held)`` for an APPROVE under ``human_paths`` (#478).
+
+        ``refusal``: the file list could not be read, so nothing can be judged; the seat may
+        retry. ``held``: the approval is a person's, naming why: the diff touches a reserved
+        path, or it is too large for GitHub to list in full. Both empty: the APPROVE proceeds.
+        The diff is read live from GitHub, never from the seat or the PR.
+        """
+        if not config.human_paths(self._loop):
+            return "", ""
+        from . import gh
+        files, error = gh.pr_files_read(self._loop, self.scope.number)
+        if files is None:
+            return (f"the PR's file list could not be read ({error[:200]}), so the loop cannot "
+                    "check it against human_paths; nothing was written, retry"), ""
+        if len(files) >= gh.PR_FILES_LISTING_LIMIT:
+            return "", (f"GitHub lists at most {gh.PR_FILES_LISTING_LIMIT} changed files and "
+                        "this PR reaches that limit, so it cannot be checked in full")
+        paths = []
+        for item in files:
+            for key in ("filename", "previous_filename"):
+                if isinstance(item.get(key), str):
+                    paths.append(item[key])
+        hits = config.human_path_hits(self._loop, paths)
+        if not hits:
+            return "", ""
+        names = ", ".join(hits[:10]) + (f" and {len(hits) - 10} more" if len(hits) > 10 else "")
+        return "", f"it touches {names}"
+
+    def _hold_for_person(self, why: str) -> dict:
+        """End this reviewer turn without approving: the head waits for a person (#478).
+
+        The hold is recorded for this head (the gate starts no further review there, and the
+        watchdog does not call it a stall); the operator gets one notice. The capability is spent
+        and the turn is complete, so it is neither retried nor reported as a failure.
+        """
+        from . import observer, state as state_mod
+        st = state_mod.state_for(self._loop)
+        st.human_hold_set(self.scope.number, self.scope.head, why)
+        try:
+            observer.notify(self._loop, st, "human_paths", self.scope.number, self.scope.head,
+                            outcome=f"{why}: the loop would approve, a person must review and "
+                                    "approve")
+        except Exception:
+            pass                 # a notice never changes the hold
+        self._used = True
+        self.completed = True
+        return {"accepted": False, "held": "human_paths",
+                "reason": f"approval left to a person: {why}. Your turn is done; do not retry."}
 
     def _partial_view(self) -> str:
         """Why this run's seat could not see the whole change, or '' — from host records only.

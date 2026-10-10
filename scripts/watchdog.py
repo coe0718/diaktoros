@@ -157,12 +157,7 @@ def alert_due(watch: dict, key: str, now: float, cooldown: float) -> bool:
 
 def parse_expiry(value: str) -> float | None:
     """GitHub's expiry header (``2026-10-01 12:00:00 UTC``, or a numeric offset) as epoch."""
-    from datetime import datetime, timezone
-    text = str(value or "").strip().replace(" UTC", " +0000")
-    try:
-        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S %z").astimezone(timezone.utc).timestamp()
-    except ValueError:
-        return None
+    return gh.parse_token_expiry(value)
 
 
 READ_ALERT = "cannot read GitHub as {who}"   # the health alert's opening words
@@ -990,6 +985,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         review_only = author in config.review_only(loop)
         if parked is not None:
             kind = parked
+        elif not at_head and isinstance(st.human_hold(number, head), dict):
+            pass                                  # human_paths: a person's approval (#478)
         elif review_only and at_head:
             pass                                  # the author's move, not a stall
         elif (review_only and len(changes) >= config.review_only_cap(loop)
@@ -1000,15 +997,15 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                     f"the cap may not have fired")
         elif at_head and not config.unattended_fixer_push_enabled(loop):
             mins = age_min(at_head[-1].get("submitted_at"))
-            if mins > grace["fixer"]:
+            if past(mins, grace["fixer"]):
                 # Not a stall the fixer can end: no fixer turn starts until the loop opts in.
-                kind = (f"{PUSH_OFF_KIND} — changes requested {mins / 60:.1f}h ago at head "
+                kind = (f"{PUSH_OFF_KIND} — changes requested {ago(mins)} at head "
                         f"{head[:7]} waits for you: run "
                         f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
         elif at_head:
             mins = age_min(at_head[-1].get("submitted_at"))
-            if mins > grace["fixer"]:
-                kind = (f"fixer never pushed — changes requested {mins / 60:.1f}h ago at head "
+            if past(mins, grace["fixer"]):
+                kind = (f"fixer never pushed — changes requested {ago(mins)} at head "
                         f"{head[:7]} by {gate.reviewer_login(at_head[-1])}")
         elif config.fix_ci(loop) and ci_fix.pending_at(loop["repo"], number, head):
             pass                                  # #539: the fixer takes this red head first
@@ -1213,8 +1210,8 @@ def parked_kind(loop: dict, marker: dict, number: int, head: str,
         return None
     if marker.get("status") != "adjudicating":
         mins = age_min(marker.get("at"))
-        if mins > marker_grace:
-            return (f"parked awaiting adjudication for {mins / 60:.1f}h "
+        if past(mins, marker_grace):
+            return (f"parked awaiting adjudication {lasting(mins)} "
                     f"(marker {marker.get('at') or 'unknown'})")
         return ""
     from diaktoros.run_supervisor import turn_state
@@ -1224,11 +1221,25 @@ def parked_kind(loop: dict, marker: dict, number: int, head: str,
         return ""
     since = marker.get("adjudicating_at") or marker.get("at")
     mins = age_min(since)
-    if mins > (0.0 if TEST else config.adjudicating_stall_s(loop) / 60):
-        return (f"adjudicating for {mins / 60:.1f}h (since {since or 'unknown'}) but no "
+    if past(mins, 0.0 if TEST else config.adjudicating_stall_s(loop) / 60):
+        return (f"adjudicating {lasting(mins)} (since {since or 'unknown'}) but no "
                 f"adjudicator run is live ({run or 'no run on record'}) — the ruling is not "
                 "coming by itself")
     return ""
+
+
+def past(mins: float | None, grace: float) -> bool:
+    """Whether an age is past ``grace``. An unreadable time (None) is past every grace (#563):
+    a bad clock must raise the stall, never hide it as "just now"."""
+    return mins is None or mins > grace
+
+
+def ago(mins: float | None) -> str:
+    return "at an unreadable time" if mins is None else f"{mins / 60:.1f}h ago"
+
+
+def lasting(mins: float | None) -> str:
+    return "since an unreadable time" if mins is None else f"for {mins / 60:.1f}h"
 
 
 def died_locks(loop: dict, locks: dict, now: float) -> list[tuple[str, str]]:

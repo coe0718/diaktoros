@@ -152,6 +152,11 @@ def main() -> None:
         silence("host review receipts unreadable — not guessing which reviews count")
     if gate.reviewed_at_head(reviews, loop, head):
         silence(f"head {head[:7]} already has a reviewer's verdict")
+    held = st.human_hold(number, head)
+    if isinstance(held, dict):
+        # #478: the loop's review of this head ended with its approval left to a person.
+        silence(f"head {head[:7]} waits for a person's approval (human_paths: "
+                f"{held.get('why') or 'reserved paths'})")
     dismissed = [int(r['id']) for r in gate.reviews_at_head(reviews, loop, head)
                  if gh.review_state(r) == 'DISMISSED' and type(r.get('id')) is int and r['id'] > 0]
     turn_key = f'dismissed:{max(dismissed)}' if dismissed else fresh_key
