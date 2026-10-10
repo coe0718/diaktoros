@@ -148,6 +148,8 @@ attachments and whether the private mount is still a separate filesystem. The
 Hermes fixture separately records source-export and execution duration so a slow
 turn is not automatically attributed to APFS. Diagnostic failures never turn a
 failed eject into successful cleanup.
+When an eject fails while the exact owned volume is still mounted, a five-second
+`lsof` probe records its open users before a forced eject can remove the mount.
 If detach/verification fails,
 it retains the private image directory and raises an error for host recovery.
 This is not cleanup after host death: startup reconciliation, detached descendant
@@ -204,12 +206,19 @@ enforceable ownership mechanism for every descendant; a polling tree scan or
 
 The native detach probe also compares direct libc/raw `setsid` and `setpgid`
 calls with `posix_spawn` session/group flags. XNU implements those spawn flags
-internally; denying only syscall numbers 82/147 may leave a spawn escape.
+internally. Both Intel and Apple Silicon probes confirmed that denying only
+syscall numbers 82/147 leaves both spawn-attribute escapes open.
 A separate candidate denies syscall 244 too, measuring the cost to ordinary
-spawn while verifying fork/exec still works. Both candidates are test-only and
-must be checked on real Macs; neither is installed by the native launcher.
+spawn while verifying fork/exec still works. On both Macs it blocks all tested
+detach routes and ordinary spawn, while fork/exec remains usable. Both candidates
+are test-only; neither is installed by the native launcher.
 Blocking ordinary spawn can break Rust and Hermes subprocess execution. These
 probes establish the constraint before choosing a production ownership design.
+The next unprivileged candidate is a kernel-enforced syscall mask plus a tested
+fork/exec compatibility path for required tool launches. A userspace spawn shim
+alone would not enforce ownership. Spawn attributes, file actions, inherited
+descriptors, multithreaded callers and tool timeout behavior all need validation
+before such a compatibility layer can replace native spawn.
 
 1. Integrate backend selection and the shared turn layout with full production
    orchestration, role-specific write roots, prompts, review context and receipts.

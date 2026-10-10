@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 from diaktoros import native_storage, seatbelt
 
@@ -128,6 +129,32 @@ class StorageValidation(unittest.TestCase):
                 with self.assertRaisesRegex(native_storage.StorageError, 'retained at'):
                     workspace._cleanup()
             self.assertTrue(workspace.image.exists())
+
+    def test_busy_mounted_eject_captures_volume_users_before_force(self):
+        workspace = native_storage.Workspace()
+        workspace.root = Path('/private/tmp/dk-eject-fixture')
+        workspace.mount = workspace.root / 'mount'
+        workspace.image = workspace.root / 'turn.dmg'
+        attachment = {'system-entities': [{'dev-entry': '/dev/disk99s1',
+                                          'mount-point': str(workspace.mount)}]}
+        with mock.patch.object(workspace, '_attachments', return_value=[attachment]), \
+                mock.patch.object(Path, 'stat', autospec=True, side_effect=lambda path:
+                                  SimpleNamespace(st_dev=2 if path == workspace.mount else 1)), \
+                mock.patch.object(native_storage, '_run', side_effect=
+                                  native_storage.StorageError('Resource busy')), \
+                mock.patch.object(subprocess, 'run', side_effect=[SimpleNamespace(
+                                  stdout=b'bash fixture cwd on volume', stderr=b''),
+                                  subprocess.TimeoutExpired('lsof fixture', 5)]) as users:
+            with self.assertRaisesRegex(native_storage.StorageError, 'Resource busy'):
+                workspace._eject('/dev/disk99', force=False)
+            with self.assertRaisesRegex(native_storage.StorageError, 'Resource busy'):
+                workspace._eject('/dev/disk99', force=True)
+        self.assertIn('bash fixture cwd', workspace.cleanup_events[0]['volume_users'])
+        self.assertIn('timed out', workspace.cleanup_events[1]['diagnostic_error'])
+        self.assertEqual(workspace.cleanup_events[1]['error'], 'Resource busy')
+        self.assertEqual(users.call_args.args[0],
+                         ['/usr/sbin/lsof', '-nP', '+f', '--', str(workspace.mount)])
+        self.assertEqual(users.call_args.kwargs['timeout'], 5)
 
 
 class NativeStorageBoundary(unittest.TestCase):

@@ -197,6 +197,14 @@ class Workspace:
                     for attachment in self._attachments()] if self.root is not None else []
                 event['mounted'] = (self.mount.stat().st_dev != self.root.stat().st_dev
                                     if self.root is not None else None)
+                if event.get('error') and event['mounted'] and any(
+                        e.get('mount-point') == str(self.mount)
+                        for attachment in event['attachments'] for e in attachment['entities']):
+                    users = subprocess.run(['/usr/sbin/lsof', '-nP', '+f', '--', str(self.mount)],
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           timeout=5, check=False)
+                    event['volume_users'] = (users.stdout + users.stderr).decode(
+                        errors='replace')[-6000:]
             except Exception as exc:
                 event['diagnostic_error'] = str(exc)[-2000:]
             self.cleanup_events.append(event)
