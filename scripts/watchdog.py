@@ -1013,19 +1013,19 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                 kind = (f"{len(changes)} verdicts, no approval and NO escalation marker — "
                         f"the cap may not have fired")
         elif at_head and not config.unattended_fixer_push_enabled(loop):
-            mins = age_min(at_head[-1].get("submitted_at"))
+            mins = age_min(latest.get("submitted_at"))
             if past(mins, grace["fixer"]):
                 # Not a stall the fixer can end: no fixer turn starts until the loop opts in.
                 kind = (f"{PUSH_OFF_KIND} — changes requested {ago(mins)} at head "
                         f"{head[:7]} waits for you: run "
                         f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
         elif at_head:
-            mins = age_min(at_head[-1].get("submitted_at"))
+            mins = age_min(latest.get("submitted_at"))
             # A fix turn queued or running at this head is not a stall: the grace covers a turn's
             # run, not its wait in the queue (behind another PR, paced, held).
             if past(mins, grace["fixer"]) and not live_turn(loop, number, head, "fixer"):
                 kind = (f"fixer never pushed — changes requested {ago(mins)} at head "
-                        f"{head[:7]} by {gate.reviewer_login(at_head[-1])}")
+                        f"{head[:7]} by {gate.reviewer_login(latest)}")
         elif config.fix_ci(loop) and ci_fix.pending_at(loop["repo"], number, head):
             pass                                  # #539: the fixer takes this red head first
         else:

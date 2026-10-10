@@ -28,11 +28,13 @@ class LiveTurnIsNotAStall(fg.Base):
         super().setUp()
         self.set_push(True)
 
-    def sweep(self, reviews, live=None):
+    def sweep(self, reviews, live=None, grace_s=None):
         """One sweep; ``live`` is (seat, state) for the ledger's turn at the head."""
         def turn_state(_db, _repo, _pr, head, seat):
             return live[1] if live and seat == live[0] and head == fg.HEAD else None
-        with mock.patch.object(watchdog, "TEST", True), \
+        with mock.patch.object(watchdog, "TEST", grace_s is None), \
+                mock.patch.object(watchdog.config, "stall_grace_s",
+                                  return_value=grace_s or 0), \
                 mock.patch.object(gate, "hooks_armed", return_value=True), \
                 mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
                 mock.patch.object(gh, "open_prs", return_value=[fg.LIVE]), \
@@ -72,6 +74,20 @@ class LiveTurnIsNotAStall(fg.Base):
         self.assertIn("fixer never pushed", self.sweep(verdict, live=("fixer", "failed")))
         # The other seat's live turn does not excuse it.
         self.assertIn("fixer never pushed", self.sweep(verdict, live=("reviewer", "running")))
+
+    def test_stall_ages_the_newest_changes_request_not_the_last_in_rest_order(self):
+        self.arm_long_ago()
+        recent = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        who = {"login": "reviewer", "id": 2}
+        newer = {"id": 2, "state": "CHANGES_REQUESTED", "commit_id": fg.HEAD,
+                 "submitted_at": recent, "user": who}
+        older = {"id": 1, "state": "CHANGES_REQUESTED", "commit_id": fg.HEAD,
+                 "submitted_at": LONG_AGO, "user": who}
+        # One-hour grace: only the newest request (seconds old) decides, wherever it sits.
+        for order in ([newer, older], [older, newer]):
+            self.assertNotIn("fixer never pushed", self.sweep(order, grace_s=3600))
+        both_old = [newer | {"submitted_at": LONG_AGO}, older]
+        self.assertIn("fixer never pushed", self.sweep(both_old, grace_s=3600))
 
 
 if __name__ == "__main__":
