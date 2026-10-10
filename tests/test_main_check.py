@@ -64,6 +64,21 @@ class MainCheck(unittest.TestCase):
         for text in ("tests", "#11", "#12", "up to date"):
             self.assertIn(text, kw["outcome"])
 
+    def test_save_keeps_the_key_another_writer_recorded_meanwhile(self):
+        path = self.st.dir / main_check.FILE
+
+        def other_writer(*_a, **_k):                  # lands between the sweep's load and save
+            self.st._save(path, {"green": "g" * 40})
+            return RED
+
+        def api(_loop, p, **_kw):
+            return {"sha": "b" * 40} if "/commits/" in p else COMPARE
+        with mock.patch.object(gh, "api", side_effect=api), \
+             mock.patch.object(ci, "read", side_effect=other_writer), \
+             mock.patch.object(observer, "notify"):
+            self.assertTrue(main_check.sweep(LOOP, self.st))
+        self.assertEqual(self.st._load(path, {}), {"green": "g" * 40, "notified": "b" * 40})
+
     def test_green_main_sends_nothing(self):
         self.assertFalse(self.run_sweep("a" * 40, GREEN))
         self.assertEqual(self.notices, [])
