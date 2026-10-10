@@ -1,8 +1,9 @@
 """Experimental staged Hermes launcher, deliberately not a production backend.
 
 Used by native vertical fixtures. The trusted caller stages credentialless code,
-an export/working copy and live host capabilities. Production adoption remains
-blocked on hard storage bounds and reliable parent/detached-child lifecycle.
+an export/working copy and live host capabilities. Writable roots must belong to
+an active fixed-capacity workspace. Production adoption still requires reliable
+parent/detached-child lifecycle and hardened production staging.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from pathlib import Path
 import shutil
 import tempfile
 
-from . import contained, seatbelt
+from . import contained, native_storage, seatbelt
 
 PROVIDER = 'diaktoros-seatbelt-wire'
 
@@ -19,6 +20,7 @@ PROVIDER = 'diaktoros-seatbelt-wire'
 def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         work: Path, export: Path, client: Path, scratch: Path, query: Path,
         inference_socket: Path, broker_socket: Path, model: str,
+        workspace: native_storage.Workspace,
         sdk: Path | None = None, developer_tools: Path | None = None,
         dependencies: Path | None = None,
         timeout: int = 180, max_steps: int = 10):
@@ -42,6 +44,7 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         raise ValueError('invalid native turn limits/model')
     if code not in query.parents or not query.is_file():
         raise ValueError('query must be in the staged read-only code tree')
+    workspace.validate(home=home, work=work, scratch=scratch)
     build_roots = ()
     if any(p is not None for p in (sdk, developer_tools, dependencies)):
         if any(p is None for p in (sdk, developer_tools, dependencies)):

@@ -59,12 +59,36 @@ in force. `broker_client.py` accepts portable path settings from the rebuilt
 child environment; these do not change broker authority.
 
 `native_macos.run` remains experimental and is not selected by production code.
-It uses the shared bounded output/time capture, but provides no hard disk quota,
-supervisor-death guarantee or detached-child cleanup. The vertical's source
+It uses the shared bounded output/time capture and requires a host-created
+fixed-capacity workspace. It provides no supervisor-death guarantee or
+detached-child cleanup. The vertical's source
 export is a trusted fixture, not the portable production snapshot implementation.
 The Rust fixture covers a small pure-Rust vendored dependency and Apple's
 linker/SDK, not arbitrary workspaces, C/C++ dependencies or durable production
 review receipts. Do not interpret this as completed native support.
+
+## Bounded native storage
+
+`native_storage.Workspace` creates a fixed-size UDRW image containing a
+case-sensitive APFS filesystem. The host attaches it at a private mountpoint and
+verifies image identity, mounted filesystem identity, capacity and case-sensitive
+names before launch. All three writable roots (`home`, `work`, `scratch`) share
+that filesystem allocation budget. A missing/incorrect mount fails closed.
+The backing image, disk devices and capability sockets are outside the child's
+filesystem authority; the child cannot resize the image through file access.
+
+The dedicated storage probes fill a small volume until the kernel returns
+`ENOSPC`, verify the shared limit across all writable roots, denied image/symlink
+writes and unchanged backing-image size, and exercise cleanup after an exception.
+The real Hermes/Rust fixture uses a separate 512 MiB volume. The bound covers
+allocated filesystem blocks, not sparse-file logical lengths or total process
+memory. Production storage sizing still needs representative workspace tests.
+
+Cleanup rediscovers attached devices by the exact private image, detaches, and
+verifies removal before deleting the backing files. If detach/verification fails,
+it retains the private image directory and raises an error for host recovery.
+This is not cleanup after host death: startup reconciliation, detached descendant
+termination and lifecycle-safe disposal remain production gates.
 
 ## Remaining work before production support
 
@@ -78,9 +102,9 @@ review receipts. Do not interpret this as completed native support.
 3. Extend native Rust/SDK/offline dependency coverage to representative workspaces
    and native build dependencies against local model and broker fixtures. Do not allow all of Homebrew,
    the user's home or `/Library` to solve missing-runtime failures.
-4. Design and test hard scratch/build storage bounds. Seatbelt filesystem rules
-   do not provide sized tmpfs or disk quotas; a directory-size watcher is not an
-   equivalent bound.
+4. Validate bounded-volume sizing with representative workspaces and integrate
+   crash recovery/reconciliation. Seatbelt alone supplies no sized tmpfs or disk
+   quota; a directory-size watcher is not an equivalent bound.
 5. Design and test supervisor death and detached descendant cleanup. Process
    groups and profile inheritance alone do not reproduce bubblewrap's PID
    namespace and parent-death semantics.

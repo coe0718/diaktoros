@@ -16,7 +16,7 @@ import threading
 import unittest
 from unittest import mock
 
-from diaktoros import broker_ipc, gh, inference_proxy, native_macos, seatbelt
+from diaktoros import broker_ipc, gh, inference_proxy, native_macos, native_storage, seatbelt
 import native_rust_fixture
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
@@ -40,9 +40,10 @@ class NativeHermesTurn(unittest.TestCase):
     def test_real_hermes_runs_tool_and_posts_only_scoped_fake_review(self):
         with ExitStack() as stack:
             root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='dk-n-', dir='/tmp'))).resolve()
-            code, home, work, export, client, scratch = (root / n for n in
-                                                        ('code', 'home', 'work', 'export', 'client', 'scratch'))
-            for directory in (code, home, work, export, client, scratch):
+            workspace = stack.enter_context(native_storage.Workspace(512))
+            home, work, scratch = workspace.home, workspace.work, workspace.scratch
+            code, export, client = (root / n for n in ('code', 'export', 'client'))
+            for directory in (code, export, client):
                 directory.mkdir(mode=0o700)
             # Fixture export of the pinned trusted Hermes checkout, not a production snapshot
             # implementation. Never run mutable host source or grant the checkout/venv parent.
@@ -177,6 +178,7 @@ Path('review.txt').write_text('native Python and offline Rust fixture verified\\
                                       client=client, scratch=scratch, query=query,
                                       inference_socket=capability.socket_path,
                                       broker_socket=broker.socket_path, model='fixture-model',
+                                      workspace=workspace,
                                       sdk=Path(os.environ['DIAKTOROS_NATIVE_SDK']),
                                       developer_tools=Path(os.environ['DIAKTOROS_NATIVE_DEVELOPER_TOOLS']),
                                       dependencies=dependencies)
