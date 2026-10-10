@@ -51,7 +51,7 @@ class Corpus(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             d = pathlib.Path(tmp)
             path = d / corpus.SCORES_FILE
-            corpus.record(path, "rev1", "m1", corpus.replay([CASE], lambda c: "race condition"), now=1)
+            corpus.record(path, "rev1", "m1", corpus.replay([CASE], lambda c: RC("F1: race condition")), now=1)
             with open(path, "a") as f:
                 f.write('{"at": 2, "prompt_rev": "re\n')
             bad = []
@@ -72,7 +72,7 @@ class Corpus(unittest.TestCase):
     def test_invalid_utf8_score_line_keeps_valid_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / corpus.SCORES_FILE
-            corpus.record(path, "rev1", "m1", corpus.replay([CASE], lambda c: "race condition"), now=1)
+            corpus.record(path, "rev1", "m1", corpus.replay([CASE], lambda c: RC("F1: race condition")), now=1)
             with open(path, "ab") as f:
                 f.write(b'{"prompt_rev": "\xff"}\n')
             bad = []
