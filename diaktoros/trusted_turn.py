@@ -294,6 +294,14 @@ def _export_committed_source(source_fd: int, destination: Path) -> None:
            'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_NO_REPLACE_OBJECTS': '1',
            'GIT_OPTIONAL_LOCKS': '0'}
     command = ['/usr/bin/git', '-C', f'/proc/self/fd/{source_fd}']
+    if sys.platform == 'darwin':
+        # macOS has no /proc directory pin. Only an isolated helper changes cwd;
+        # the multithreaded host never chdirs or uses preexec_fn. fchdir keeps Git
+        # on the opened directory even if its pathname is replaced before exec.
+        command = [str(Path(sys.executable).resolve()), '-I', '-B', '-c',
+                   'import os,sys; fd=int(sys.argv[1]); os.fchdir(fd); os.close(fd); '
+                   'os.execve("/usr/bin/git", ["/usr/bin/git", *sys.argv[2:]], os.environ)',
+                   str(source_fd)]
 
     def git(*args: str, limit: int) -> bytes:
         process = None

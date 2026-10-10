@@ -62,11 +62,30 @@ child environment; these do not change broker authority.
 It uses shared bounded output/time capture through an independent native
 watchdog and requires a host-created fixed-capacity workspace. The watchdog
 cleans up the original process group after supervisor death, timeout, output
-limit or normal leader exit. Detached descendants remain outside that guarantee. The vertical's source
-export is a trusted fixture, not the portable production snapshot implementation.
+limit or normal leader exit. Detached descendants remain outside that guarantee.
+The vertical uses the existing committed source exporter: it reads a pinned
+commit, filters credential-shaped data, bounds the export and checks each blob's
+hash. Native turn layout and production integration are still experimental.
 The Rust fixture covers a small pure-Rust vendored dependency and Apple's
 linker/SDK, not arbitrary workspaces, C/C++ dependencies or durable production
 review receipts. Do not interpret this as completed native support.
+
+## Pinned source export on macOS
+
+The host opens the repository directory without following a final symlink.
+Linux Git continues to use its existing `/proc/self/fd` directory pin. On macOS,
+an isolated Python helper inherits only the repository descriptor, calls
+`fchdir`, closes that descriptor and replaces itself with `/usr/bin/git`.
+The host never changes its working directory or uses a `preexec_fn` in a
+multithreaded process. Renaming the repository and replacing its original path
+with another repository cannot redirect this export.
+
+The committed-tree parser, export limits, credential filters, blob hash checks
+and descriptor-relative destination writes are shared unchanged. A failed
+directory pin has no pathname fallback. The native Hermes fixture and Mac CI
+exercise this path; the focused helper tests also run on Linux. The source must
+still be a trusted credential-free checkout: code and templates are exported
+byte for byte, so this filter cannot identify every committed secret.
 
 ## Bounded native storage
 
@@ -142,8 +161,9 @@ enforceable ownership mechanism for every descendant; a polling tree scan or
 
 1. Add a portable per-turn layout and backend selection. Generate entry points,
    Hermes configuration, prompts and broker-client paths from that layout; remove
-   Linux `/opt`, `/work` and `/proc/self/fd` assumptions without weakening pinned
-   source-snapshot race protections.
+   remaining Linux `/opt` and `/work` assumptions. Source export already has a
+   native directory pin; production runtime/source generation ownership still
+   needs integration with the per-turn layout.
 2. Replace the fixed localhost inference bridge. Prefer direct Unix-socket HTTP
    transports where Hermes provider clients permit them. Any TCP alternative
    needs exclusive per-turn ports, authentication and exact endpoint permissions.

@@ -12,10 +12,14 @@ on:
       - diaktoros/seatbelt_wire.py
       - diaktoros/broker_client.py
       - diaktoros/contained.py
+      - diaktoros/trusted_turn.py
       - tests/test_seatbelt.py
       - tests/test_native_macos.py
       - tests/test_native_storage.py
       - tests/test_native_lifecycle.py
+      - tests/test_native_snapshot.py
+      - tests/test_snapshot_secrets.py
+      - tests/test_trusted_fetch.py
       - tests/native_rust_fixture.py
       - .github/workflows/seatbelt.yml
   workflow_dispatch:
@@ -56,6 +60,11 @@ jobs:
         run: python tests/leakguard.py discover -v -s tests -p 'test_seatbelt.py'
       - name: Exercise fixed-capacity APFS storage and cleanup
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_storage.py'
+      - name: Exercise pinned committed source export and path replacement
+        run: |
+          python tests/leakguard.py discover -v -s tests -p 'test_native_snapshot.py'
+          python tests/leakguard.py discover -v -s tests -p 'test_trusted_fetch.py'
+          python tests/leakguard.py -v test_snapshot_secrets.SnapshotSecretTests test_snapshot_secrets.EvalsAreNotExported test_snapshot_secrets.ExportedSnapshotProbeTests
       - name: Test watchdog cleanup and characterize remaining detached-child gap
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_lifecycle.py'
       - name: Startup diagnostics on failure

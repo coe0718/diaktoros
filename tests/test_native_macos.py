@@ -3,20 +3,18 @@ import _home_guard  # noqa: F401
 import _ci_green  # noqa: F401
 from contextlib import ExitStack
 import http.server
-import io
 import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
-import tarfile
 import tempfile
 import threading
 import unittest
 from unittest import mock
 
-from diaktoros import broker_ipc, gh, inference_proxy, native_macos, native_storage, seatbelt
+from diaktoros import (broker_ipc, gh, inference_proxy, native_macos, native_storage,
+                      seatbelt, trusted_turn)
 import native_rust_fixture
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
@@ -43,23 +41,11 @@ class NativeHermesTurn(unittest.TestCase):
             workspace = stack.enter_context(native_storage.Workspace(512))
             home, work, scratch = workspace.home, workspace.work, workspace.scratch
             code, export, client = (root / n for n in ('code', 'export', 'client'))
-            for directory in (code, export, client):
+            for directory in (export, client):
                 directory.mkdir(mode=0o700)
-            # Fixture export of the pinned trusted Hermes checkout, not a production snapshot
-            # implementation. Never run mutable host source or grant the checkout/venv parent.
-            archive = subprocess.check_output(['git', '-C', str(SOURCE), 'archive', 'HEAD'])
-            with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
-                for member in tar:
-                    parts = Path(member.name).parts
-                    if (not member.isfile() or any(p.startswith('.') for p in parts) or
-                            parts[0] in ('tests', 'docs', 'website', 'evals') or
-                            Path(member.name).suffix not in ('.py', '.json', '.yaml', '.yml',
-                                                           '.toml', '.txt', '.md', '.jinja2', '.j2')):
-                        continue
-                    target = code / member.name
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with tar.extractfile(member) as source:
-                        target.write_bytes(source.read())
+            # Exercise the same committed, filtered and hash-checked exporter as
+            # trusted turns, including its native directory-descriptor pin.
+            trusted_turn._safe_code_snapshot(SOURCE, code)
             (client / 'diaktoros').mkdir()
             (client / 'diaktoros/__init__.py').touch()
             for filename in ('broker_client.py', 'wire.py'):
