@@ -150,6 +150,10 @@ turn is not automatically attributed to APFS. Diagnostic failures never turn a
 failed eject into successful cleanup.
 When an eject fails while the exact owned volume is still mounted, a five-second
 `lsof` probe records its open users before a forced eject can remove the mount.
+The short storage fixture repeats six guarded turns with an open file and cwd
+on APFS, immediately ejecting each owned image after watchdog completion. This
+increases reproduction opportunities; passing cycles do not explain prior busy
+ejects.
 If detach/verification fails,
 it retains the private image directory and raises an error for host recovery.
 This is not cleanup after host death: startup reconciliation, detached descendant
@@ -168,6 +172,12 @@ The fixtures are cooperative and time-bounded. Before triggering failure, the
 host registers `kqueue` process-exit notifications and waits for actual exit
 before disposing of fixture paths. No general process-tree polling/killing
 mechanism is introduced. The unmanaged probes remain as a baseline; guarded
+kernel-mask probes also exercise a double-forked, reparented descendant after
+timeout, supervisor SIGKILL and normal leader exit. They require direct session
+and group changes to fail, register the known fixture processes before failure,
+and require kernel exit notifications before disposing of fixture paths.
+These probes do not establish recovery after watchdog or machine death.
+Guarded
 probes now verify cleanup after supervisor SIGKILL and normal leader exit,
 watchdog signal denial, private-descriptor noninheritance and bounded capture. Production needs an enforceable descendant ownership
 mechanism and independent host-death recovery, including capability revocation

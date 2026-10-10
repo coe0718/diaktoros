@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 from types import SimpleNamespace
 
-from diaktoros import native_storage, seatbelt
+from diaktoros import native_lifecycle, native_storage, seatbelt
 
 
 class StorageValidation(unittest.TestCase):
@@ -226,6 +226,38 @@ print('ENOSPC_ALL_ROOTS')
                 root = workspace.root
                 raise RuntimeError('fixture failure')
         self.assertFalse(root.exists())
+
+    def test_repeated_eject_after_guarded_turn_with_open_workspace_file(self):
+        # A short repeated fixture gives first-error diagnostics several chances
+        # to catch the intermittent busy eject without reinstalling Hermes.
+        with tempfile.TemporaryDirectory(prefix='dk-eject-probe-', dir='/tmp') as directory:
+            policy = Path(directory).resolve() / 'policy.sb'
+            for cycle in range(6):
+                with self.subTest(cycle=cycle):
+                    with native_storage.Workspace(64) as workspace:
+                        root = workspace.root
+                        profile = seatbelt.profile(read_roots=(Path(sys.base_prefix),),
+                                                   write_roots=(workspace.home, workspace.work,
+                                                                workspace.scratch))
+                        policy.write_text(profile.text + '(allow syscall-unix)\n'
+                                          '(deny syscall-unix (syscall-number 82 147 244))\n')
+                        script = """
+import os
+# Leave cwd and a real open file on APFS until process exit. The host watchdog
+# must finish before eject; neither the file nor cwd is held by the test host.
+fd = os.open('held-open', os.O_CREAT | os.O_WRONLY, 0o600)
+os.write(fd, b'x' * (1024 * 1024))
+os.fsync(fd)
+print('TURN_COMPLETE')
+"""
+                        result = native_lifecycle.capture(
+                            profile.command(policy, [str(Path(sys.executable).resolve()),
+                                                     '-I', '-B', '-c', script]),
+                            env={'PATH': '/usr/bin:/bin'}, cwd=workspace.work, timeout=10)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn('TURN_COMPLETE', result.stdout)
+                        print(f'NATIVE_EJECT_CYCLE cycle={cycle}', flush=True)
+                    self.assertFalse(root.exists())
 
 
 if __name__ == '__main__':

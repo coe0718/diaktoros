@@ -7,6 +7,7 @@ before removing fixture paths. No polling process-tree killer is proposed here.
 import _home_guard  # noqa: F401
 from pathlib import Path
 from contextlib import closing
+from dataclasses import replace
 import json
 import os
 import select
@@ -26,19 +27,34 @@ import json, os, sys, time
 from pathlib import Path
 work, control, secret = map(Path, sys.argv[1:4])
 owner = os.getppid()
-if sys.argv[4] in ('detach', 'group'):
+leader = os.getpid()
+if sys.argv[4] in ('detach', 'group', 'strict-double'):
     pid = os.fork()
     if pid:
         # The host's timeout will kill this original process group.
         deadline = time.monotonic() + 15
-        trigger = 'finish' if sys.argv[4] == 'group' else 'release'
+        if sys.argv[4] == 'strict-double':
+            os.waitpid(pid, 0)
+        trigger = 'finish' if sys.argv[4] in ('group', 'strict-double') else 'release'
         while time.monotonic() < deadline and not (control / trigger).exists():
             time.sleep(0.02)
-        if sys.argv[4] != 'group':
+        if sys.argv[4] == 'detach':
             os.waitpid(pid, 0)
         raise SystemExit(0)
     if sys.argv[4] == 'detach':
         os.setsid()
+    if sys.argv[4] == 'strict-double':
+        if os.fork():
+            os._exit(0)
+        # Reparenting alone must not escape ownership. The kernel, rather than
+        # a cooperative runtime or injected library, must reject both routes.
+        for detach in (os.setsid, lambda: os.setpgid(0, 0)):
+            try:
+                detach()
+            except PermissionError:
+                pass
+            else:
+                raise AssertionError('kernel allowed a group/session escape')
 # Close capture pipes: surviving because a pipe is open is a different case.
 if sys.argv[4] != 'output':
     fd = os.open('/dev/null', os.O_RDWR)
@@ -47,7 +63,8 @@ if sys.argv[4] != 'output':
     if fd > 2:
         os.close(fd)
 (work / 'ready-tmp').write_text(json.dumps({'pid': os.getpid(), 'pgrp': os.getpgrp(),
-                                             'parent': os.getppid(), 'owner': owner}))
+                                             'parent': os.getppid(), 'owner': owner,
+                                             'leader': leader}))
 (work / 'ready-tmp').replace(work / 'ready')
 deadline = time.monotonic() + 15
 try:
@@ -151,7 +168,7 @@ class NativeLifecycleGaps(unittest.TestCase):
         self.fail(f'fixture did not write {path.name}')
 
     def probe_gap(self, *, detached, guarded=False, normal=False, extra_writer=False,
-                  output_limit=False):
+                  output_limit=False, strict_double=False, timed_out=False):
         with tempfile.TemporaryDirectory(prefix='dk-life-', dir='/tmp') as directory:
             root = Path(directory).resolve()
             work, control = root / 'work', root / 'control'
@@ -163,17 +180,21 @@ class NativeLifecycleGaps(unittest.TestCase):
             script.write_text(CHILD)
             profile = seatbelt.profile(read_roots=(Path(sys.base_prefix), control),
                                        write_roots=(work,))
+            if strict_double:
+                profile = replace(profile, text=profile.text + '(allow syscall-unix)\n'
+                                  '(deny syscall-unix (syscall-number 82 147 244))\n')
             policy = root / 'policy.sb'
             policy.write_text(profile.text)
             argv = profile.command(policy, [str(Path(sys.executable).resolve()), '-I', '-B',
                                             str(script), str(work), str(control), str(secret),
                                             'output' if output_limit else
-                                            ('group' if normal else ('detach' if detached else 'stay'))])
+                                            ('strict-double' if strict_double else
+                                             ('group' if normal else ('detach' if detached else 'stay')))])
             env = {'PATH': '/usr/bin:/bin', 'HOME': str(work), 'TMPDIR': str(work)}
             with closing(select.kqueue()) as exits, closing(select.kqueue()) as extra_exits:
                 supervisor = subprocess.Popen(
                     [sys.executable, '-c', SUPERVISOR, json.dumps(argv), json.dumps(env),
-                     '3' if detached else '30', str(root / 'timeout'),
+                     '3' if detached or timed_out else '30', str(root / 'timeout'),
                      'guarded' if guarded else 'legacy',
                      'output' if output_limit else ('normal' if normal else 'timeout'),
                      'extra-writer' if extra_writer else 'ordinary', str(control)],
@@ -184,8 +205,15 @@ class NativeLifecycleGaps(unittest.TestCase):
                 extra_registered = False
                 try:
                     ready = json.loads(self.wait_file(work / 'ready'))
-                    watched = list({ready['pid'], ready['parent'], ready['owner']} if guarded else
-                                   ({ready['pid'], ready['parent']} if detached else {ready['pid']}))
+                    if strict_double:
+                        watched = {ready['pid'], ready['leader'], ready['owner']}
+                    elif guarded:
+                        watched = {ready['pid'], ready['parent'], ready['owner']}
+                    else:
+                        watched = {ready['pid'], ready['parent']} if detached else {ready['pid']}
+                    if strict_double:
+                        self.assertNotEqual(ready['pid'], ready['pgrp'])
+                        self.assertEqual(ready['pgrp'], ready['leader'])
                     remaining = set(watched)
                     exits.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
                                                  flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
@@ -207,8 +235,9 @@ class NativeLifecycleGaps(unittest.TestCase):
                         _, errors = supervisor.communicate(timeout=8)
                         self.assertEqual(supervisor.returncode, 0, errors.decode(errors='replace'))
                         self.assertEqual(self.wait_file(root / 'timeout'), 'output limit observed')
-                    elif detached:
-                        self.assertEqual(ready['pid'], ready['pgrp'])
+                    elif detached or timed_out:
+                        if detached:
+                            self.assertEqual(ready['pid'], ready['pgrp'])
                         _, errors = supervisor.communicate(timeout=8)
                         self.assertEqual(supervisor.returncode, 0, errors.decode(errors='replace'))
                         self.assertEqual(self.wait_file(root / 'timeout'), 'timeout observed')
@@ -276,6 +305,15 @@ class NativeLifecycleGaps(unittest.TestCase):
 
     def test_watchdog_still_does_not_own_detached_descendants(self):
         self.probe_gap(detached=True, guarded=True)
+
+    def test_kernel_owned_double_fork_is_killed_after_timeout(self):
+        self.probe_gap(detached=False, guarded=True, strict_double=True, timed_out=True)
+
+    def test_kernel_owned_double_fork_is_killed_after_supervisor_sigkill(self):
+        self.probe_gap(detached=False, guarded=True, strict_double=True)
+
+    def test_kernel_owned_double_fork_is_killed_after_normal_leader_exit(self):
+        self.probe_gap(detached=False, guarded=True, strict_double=True, normal=True)
 
     def test_seat_cannot_kill_watchdog_or_inherit_its_private_descriptors(self):
         with tempfile.TemporaryDirectory(prefix='dk-wd-', dir='/tmp') as directory:
