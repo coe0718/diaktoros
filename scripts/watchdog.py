@@ -46,7 +46,25 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import review_only_conflict  # noqa: E402
 from diaktoros import review_kick  # noqa: E402
-from diaktoros import ci_fix, config, main_check, envnames, fix_hold, hostdirs, gate, gate_failures, gate_shims, gh, observer, route_intent, routes, situation, stale_approval, transition, state as state_mod  # noqa: E402
+from diaktoros import (  # noqa: E402
+    ci_fix,
+    config,
+    envnames,
+    fix_hold,
+    gate,
+    gate_failures,
+    gate_shims,
+    gh,
+    hostdirs,
+    main_check,
+    observer,
+    route_intent,
+    routes,
+    situation,
+    stale_approval,
+    state as state_mod,
+    transition,
+)
 from diaktoros.util import age_min, epoch, log, now_iso  # noqa: E402
 
 TEST = bool(envnames.get("TEST"))
