@@ -1960,12 +1960,43 @@ def dangerous_root(value: str) -> str:
     return ""
 
 
+# Keys a loop file may hold besides DEFAULTS' (identity and the state ``disable`` keeps).
+LOOP_EXTRA_KEYS = frozenset({"id", "repo", "state_dir", "observer_disabled"})
+# Keys of a reviewer/fixer seat.
+SEAT_FILE_KEYS = frozenset({"route", "profile", "login", "agent", "concurrency", "turn_budget_s",
+                            "daily_turns", "max_steps"})
+
+
+def _unknown_keys(keys, known, prefix: str = "") -> list:
+    import difflib
+    out = []
+    for key in keys:
+        if key not in known:
+            near = difflib.get_close_matches(str(key).strip().replace("-", "_"), sorted(known), 1)
+            out.append(f"{prefix}{key!r}" + (f" (did you mean {near[0]!r}?)" if near else ""))
+    return out
+
+
+def check_known_keys(raw: dict, where: str) -> None:
+    """Refuse a loop file key nothing reads: a typo'd setting would load and never apply."""
+    problems = _unknown_keys(raw, set(DEFAULTS) | LOOP_EXTRA_KEYS)
+    seats = raw.get("seats")
+    if isinstance(seats, dict):
+        for seat in SEAT_KEYS:
+            if isinstance(seats.get(seat), dict):
+                problems += _unknown_keys(seats[seat], SEAT_FILE_KEYS, f"seats.{seat}.")
+    if problems:
+        raise ConfigError(f"{where}: unknown loop file key(s), which would load and never take "
+                          f"effect: {', '.join(problems)}")
+
+
 def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     """Fill defaults, expand paths, and refuse anything that would make a run ambiguous."""
     if not isinstance(raw, dict):
         raise ConfigError(f"{source or 'config'}: expected a JSON object")
     loop = {**DEFAULTS, **raw}
     where = f"{source or loop.get('id', '<inline>')}"
+    check_known_keys(raw, where)
     if type(loop["unattended_fixer_push"]) is not bool:
         raise ConfigError(f"{where}: 'unattended_fixer_push' must be a JSON boolean; "
                           "only explicit true authorizes unattended fixer pushes")
