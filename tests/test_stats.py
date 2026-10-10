@@ -6,6 +6,7 @@ is a fake ``gh.api``. The outputs are checked for what they must never carry: a 
 from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import contextlib
 import json
 import os
 import pathlib
@@ -246,6 +247,16 @@ class GitHub(unittest.TestCase):
             return reviews.get(int(path.split("/pulls/")[1].split("/")[0]), [])
         return api
 
+    def patched(self, api):
+        """Route both the PR listing (gh.api) and the paged review read (gh.fetch) to ``api``."""
+        def fetch(loop, path, method="GET", body=None, login=None):
+            data = api(loop, path, method, body, login)
+            return data, ("" if data is not None else "failed")
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(gh, "api", side_effect=api))
+        stack.enter_context(mock.patch.object(gh, "fetch", side_effect=fetch))
+        return stack
+
     def pr(self, number, author, created, merged=None, state="closed"):
         return {"number": number, "user": {"login": author}, "created_at": iso(created),
                 "merged_at": iso(merged) if merged else None, "state": state}
@@ -266,7 +277,7 @@ class GitHub(unittest.TestCase):
                    1: [self.review("critic", "APPROVED", NOW - 8940),
                        self.review("arbiter", "CHANGES_REQUESTED", NOW - 8900)],
                    3: []}
-        with mock.patch.object(gh, "api", side_effect=self.fake(prs, reviews)):
+        with self.patched(self.fake(prs, reviews)):
             got = stats.github(self.LOOP, since)
         self.assertEqual((got["opened"], got["merged"], got["open"], got["partial"]),
                          (3, 2, 1, False))
@@ -285,14 +296,41 @@ class GitHub(unittest.TestCase):
         self.assertIn("PRs opened 3 · merged 2 · open 1", text)
         self.assertIn("change-request rounds per reviewed PR: 0: 1, 1: 1", text)
 
+    def paged_reviews(self, many, fail_page=None):
+        prs = [self.pr(1, "coder", NOW - 5000)]
+        base = self.fake(prs, {})
+
+        def api(loop, path, method="GET", body=None, login=None):
+            if "/reviews" in path:
+                self.assertEqual(login, "reader")
+                page = int(path.rsplit("&page=", 1)[1]) if "&page=" in path else 1
+                return None if page == fail_page else many[(page - 1) * 100:page * 100]
+            return base(loop, path, method, body, login)
+        with self.patched(api):
+            return stats.github(self.LOOP, NOW - DAY)
+
+    def test_reviews_beyond_the_first_page_are_counted(self):
+        many = [self.review("arbiter", "COMMENTED", NOW - 4000 + n) for n in range(100)]
+        many += [self.review("critic", "APPROVED", NOW - 100)]
+        got = self.paged_reviews(many)
+        self.assertFalse(got["partial"])
+        self.assertEqual(got["reviewers"]["arbiter"]["reviews"], 100)
+        self.assertEqual(got["reviewers"]["critic"]["reviews"], 1)
+
+    def test_a_failed_second_review_page_is_partial_not_truncated(self):
+        many = [self.review("arbiter", "COMMENTED", NOW - 4000 + n) for n in range(100)]
+        got = self.paged_reviews(many, fail_page=2)
+        self.assertTrue(got["partial"])
+        self.assertNotIn("arbiter", got["reviewers"])
+
     def test_a_failed_read_is_a_lower_bound(self):
         prs = [self.pr(1, "coder", NOW - 100)]
         failing = {f"/repos/{REPO}/pulls/1/reviews?per_page=100"}
-        with mock.patch.object(gh, "api", side_effect=self.fake(prs, {}, failing)):
+        with self.patched(self.fake(prs, {}, failing)):
             got = stats.github(self.LOOP, NOW - DAY)
         self.assertTrue(got["partial"])
         self.assertIn("lower bounds", "\n".join(stats._github_parts(got)[0]))
-        with mock.patch.object(gh, "api", return_value=None):
+        with self.patched(lambda *a, **k: None):
             self.assertTrue(stats.github(self.LOOP, NOW - DAY)["partial"])
 
     def test_a_page_that_crosses_the_window_start_is_the_last_one_read(self):
@@ -303,13 +341,13 @@ class GitHub(unittest.TestCase):
         def api(loop, path, *args, **kwargs):
             self.assertNotIn("page=2", path)
             return fake(loop, path, *args, **kwargs)
-        with mock.patch.object(gh, "api", side_effect=api):
+        with self.patched(api):
             self.assertEqual(stats.github(self.LOOP, since)["opened"], 50)
 
     def test_html_escapes_what_github_says(self):
         prs = [self.pr(1, "<script>x</script>", NOW - 100)]
         reviews = {1: [self.review("<script>y</script>", "APPROVED", NOW - 50)]}
-        with mock.patch.object(gh, "api", side_effect=self.fake(prs, reviews)):
+        with self.patched(self.fake(prs, reviews)):
             got = stats.github(self.LOOP, NOW - DAY)
         page = stats.as_html({"repo": REPO, "loop": "w", "since": NOW - DAY, "until": NOW,
                               "turns": {}, "github": got})
