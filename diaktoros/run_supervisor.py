@@ -350,6 +350,21 @@ def _file_tail(handle, limit: int) -> bytes:
     return handle.read()
 
 
+def hold_remedy(seat: str, error: str) -> str:
+    """The setting that lifts a daily-cap hold, or '' for a hold no cap explains (a usage
+    window). The review-only cap is its own setting: on the reviewer seat it used to be given the
+    reviewer's general cap, which does not lift it (live on #605, 2026-10-10)."""
+    if "daily turn cap" not in error:
+        return ""
+    if "review-only daily turn cap" in error:
+        return "set --review-only-daily N (0 = no cap)"
+    return {"issue_fixer": "triage --fix-daily-turns N",
+            "triage": "triage --daily-turns N",
+            "reviewer": "set --reviewer-daily-turns N",
+            "fixer": "set --fixer-daily-turns N"}.get(
+        seat, "seats.adjudicator.daily_turns in the loop file")
+
+
 def retryable(exc: BaseException) -> bool:
     """Whether a pre-write exception is plausibly transient. Unknown kinds are not retried
     automatically; they still fail *pre-write*, so a redelivery or ``retry`` re-arms them."""
@@ -3255,12 +3270,8 @@ class Supervisor:
                 # A pacing hold (#219, #247): the run waits without spending a retry.
                 event, kind = "held", f"held:{int(row['retry_at'] or 0)}"
                 outcome = f"{row['seat']} {row['error']}"
-                if "daily turn cap" in str(row["error"]):
-                    flag = {"issue_fixer": "triage --fix-daily-turns N",
-                            "triage": "triage --daily-turns N",
-                            "reviewer": "set --reviewer-daily-turns N",
-                            "fixer": "set --fixer-daily-turns N"}.get(
-                        row["seat"], "seats.adjudicator.daily_turns in the loop file")
+                flag = hold_remedy(row["seat"], str(row["error"] or ""))
+                if flag:
                     outcome += (f" · to run it sooner, raise the cap (`{flag}`), then `retry "
                                 f"--pr {row['pr']} --seat {row['seat']}`")
             elif state == "waiting":
