@@ -95,16 +95,16 @@ def history(path: Path, skipped: list | None = None) -> list[dict]:
     """Recorded runs. A torn or malformed line is skipped (unlike ``load``, a bad score has no
     integrity argument); each skipped line number is appended to ``skipped`` when given."""
     try:
-        lines = Path(path).read_text().splitlines()
-    except (OSError, UnicodeDecodeError):
+        lines = Path(path).read_bytes().splitlines()
+    except OSError:
         return []
     rows = []
-    for number, line in enumerate(lines, 1):
-        if not line.strip():
+    for number, raw in enumerate(lines, 1):
+        if not raw.strip():
             continue
         try:
-            entry = json.loads(line)
-        except ValueError:
+            entry = json.loads(raw.decode("utf-8"))
+        except ValueError:  # JSONDecodeError and UnicodeDecodeError are both ValueErrors
             entry = None
         if not (isinstance(entry, dict)
                 and all(k in entry for k in ("prompt_rev", "model", "caught", "missed"))):

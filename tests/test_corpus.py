@@ -63,6 +63,17 @@ class Corpus(unittest.TestCase):
         self.assertIn("rev1  m1  caught 1  missed 1", out.getvalue())
         self.assertIn("skipped 1 unreadable", out.getvalue())
 
+    def test_invalid_utf8_score_line_keeps_valid_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / corpus.SCORES_FILE
+            corpus.record(path, "rev1", "m1", corpus.replay([CASE], lambda c: "race condition"), now=1)
+            with open(path, "ab") as f:
+                f.write(b'{"prompt_rev": "\xff"}\n')
+            bad = []
+            rows = corpus.history(path, bad)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(bad, [2])
+
     def test_malformed_case_is_refused_not_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = pathlib.Path(tmp)
