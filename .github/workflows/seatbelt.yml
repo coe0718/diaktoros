@@ -131,3 +131,21 @@ jobs:
       - name: Native runtime denials on failure
         if: failure()
         run: /usr/bin/log show --last 2m --style compact --predicate 'eventMessage CONTAINS "deny" AND (eventMessage CONTAINS "python" OR eventMessage CONTAINS "Python" OR eventMessage CONTAINS "cargo" OR eventMessage CONTAINS "rustc" OR eventMessage CONTAINS "clang" OR eventMessage CONTAINS "ld(")' 2>&1 | tail -n 100
+      - name: Identify users of retained workspace volumes
+        if: failure()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          for root in sorted(Path('/private/tmp').glob('dk-volume-*'))[-3:]:
+              mount = root / 'mount'
+              if not mount.is_dir():
+                  continue
+              print('RETAINED WORKSPACE:', root, flush=True)
+              try:
+                  result = subprocess.run(['/usr/sbin/lsof', '-nP', '+f', '--', str(mount)],
+                                          capture_output=True, timeout=10)
+                  print((result.stdout + result.stderr).decode(errors='replace')[-12000:])
+              except subprocess.TimeoutExpired:
+                  print('volume lsof exceeded diagnostic deadline')
+          PY

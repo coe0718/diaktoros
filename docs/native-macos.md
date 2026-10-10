@@ -114,8 +114,11 @@ alone does not establish ownership of a descendant that changes its group.
 
 `native_lifecycle.capture` launches a trusted helper outside the child's Seatbelt
 profile, in a separate session with a scrubbed environment. An anonymous pipe
-has exactly one writer in the supervisor and one reader in the watchdog; its
-EOF notifies the watchdog of supervisor death. Configuration and result pipes
+has a writer in the supervisor and a reader in the watchdog; its EOF requests
+cleanup. The watchdog also registers a kernel exit notification for its actual
+supervisor, so a forked host child retaining a writer cannot delay cleanup after
+supervisor death. Parent identity is checked around registration, before any
+sandboxed work starts. Configuration and result pipes
 are also host-only. None of these descriptors reach the sandboxed executable.
 
 The watchdog uses kernel notifications for its known direct child, kills the

@@ -65,11 +65,31 @@ finally:
 '''
 
 SUPERVISOR = '''
-import json, subprocess, sys
+import json, os, subprocess, sys, time
 from pathlib import Path
 from diaktoros import contained, native_lifecycle
 launcher = native_lifecycle if sys.argv[5] == "guarded" else contained
 argv, env = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+if sys.argv[7] == 'extra-writer':
+    original_popen = subprocess.Popen
+    def spawn(*args, **kwargs):
+        result = original_popen(*args, **kwargs)
+        if os.fork() == 0:
+            # Deliberately retain the host's lifeline writer after fork.
+            fd = os.open('/dev/null', os.O_RDWR)
+            for target in (0, 1, 2):
+                os.dup2(fd, target)
+            if fd > 2:
+                os.close(fd)
+            control = Path(sys.argv[8])
+            (control / 'extra-tmp').write_text(str(os.getpid()))
+            (control / 'extra-tmp').replace(control / 'extra-ready')
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and not (control / 'release').exists():
+                time.sleep(0.02)
+            os._exit(0)
+        return result
+    subprocess.Popen = spawn
 try:
     result = launcher.capture(argv, env=env, timeout=int(sys.argv[3]))
 except subprocess.TimeoutExpired:
@@ -98,7 +118,7 @@ class NativeLifecycleGaps(unittest.TestCase):
             time.sleep(0.02)
         self.fail(f'fixture did not write {path.name}')
 
-    def probe_gap(self, *, detached, guarded=False, normal=False):
+    def probe_gap(self, *, detached, guarded=False, normal=False, extra_writer=False):
         with tempfile.TemporaryDirectory(prefix='dk-life-', dir='/tmp') as directory:
             root = Path(directory).resolve()
             work, control = root / 'work', root / 'control'
@@ -116,15 +136,17 @@ class NativeLifecycleGaps(unittest.TestCase):
                                             str(script), str(work), str(control), str(secret),
                                             'group' if normal else ('detach' if detached else 'stay')])
             env = {'PATH': '/usr/bin:/bin', 'HOME': str(work), 'TMPDIR': str(work)}
-            with closing(select.kqueue()) as exits:
+            with closing(select.kqueue()) as exits, closing(select.kqueue()) as extra_exits:
                 supervisor = subprocess.Popen(
                     [sys.executable, '-c', SUPERVISOR, json.dumps(argv), json.dumps(env),
                      '3' if detached else '30', str(root / 'timeout'),
-                     'guarded' if guarded else 'legacy', 'normal' if normal else 'timeout'],
+                     'guarded' if guarded else 'legacy', 'normal' if normal else 'timeout',
+                     'extra-writer' if extra_writer else 'ordinary', str(control)],
                     cwd=Path(__file__).resolve().parents[1],
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                     start_new_session=True)
                 registered = False
+                extra_registered = False
                 try:
                     ready = json.loads(self.wait_file(work / 'ready'))
                     watched = list({ready['pid'], ready['parent'], ready['owner']} if guarded else
@@ -134,6 +156,12 @@ class NativeLifecycleGaps(unittest.TestCase):
                                                  flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
                                                  fflags=select.KQ_NOTE_EXIT) for pid in watched], 0, 0)
                     registered = True
+                    if extra_writer:
+                        extra_pid = int(self.wait_file(control / 'extra-ready'))
+                        extra_exits.control([select.kevent(extra_pid, filter=select.KQ_FILTER_PROC,
+                            flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                            fflags=select.KQ_NOTE_EXIT)], 0, 0)
+                        extra_registered = True
                     if normal:
                         (control / 'finish').touch()
                         _, errors = supervisor.communicate(timeout=8)
@@ -157,6 +185,9 @@ class NativeLifecycleGaps(unittest.TestCase):
                                 remaining.discard(event.ident)
                         self.assertFalse(remaining, 'watchdog did not terminate its group and exit')
                         self.assertFalse((work / 'done').exists(), 'fixture exited cooperatively')
+                        if extra_writer:
+                            self.assertFalse(extra_exits.control(None, 1, 0),
+                                             'inherited writer exited before watchdog cleanup')
                     else:
                         # Require fresh activity after failure, not an earlier heartbeat.
                         (control / 'probe').touch()
@@ -176,6 +207,10 @@ class NativeLifecycleGaps(unittest.TestCase):
                                 self.assertTrue(event.fflags & select.KQ_NOTE_EXIT)
                                 remaining.discard(event.ident)
                         self.assertFalse(remaining, 'fixture processes did not actually exit')
+                        if extra_registered:
+                            extra_events = extra_exits.control(None, 1, 17)
+                            self.assertTrue(extra_events, 'inherited writer did not exit')
+                            self.assertTrue(extra_events[0].fflags & select.KQ_NOTE_EXIT)
                     else:
                         # Startup failure may occur after fork but before ready. A bounded
                         # fixture observes release or its own deadline; preserve its paths.
@@ -189,6 +224,9 @@ class NativeLifecycleGaps(unittest.TestCase):
 
     def test_watchdog_kills_original_group_after_supervisor_sigkill(self):
         self.probe_gap(detached=False, guarded=True)
+
+    def test_owner_exit_watch_works_with_an_inherited_lifeline_writer(self):
+        self.probe_gap(detached=False, guarded=True, extra_writer=True)
 
     def test_watchdog_kills_group_descendants_after_normal_leader_exit(self):
         self.probe_gap(detached=False, guarded=True, normal=True)

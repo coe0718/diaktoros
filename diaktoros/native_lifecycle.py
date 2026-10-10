@@ -56,7 +56,7 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
     # Configuration comes from a trusted anonymous file, not child arguments or state.
     with os.fdopen(config_fd, 'rb') as source:
         config = json.loads(source.read(MAX_CONFIG + 1))
-    argv, env, timeout, cwd = (config[k] for k in ('argv', 'env', 'timeout', 'cwd'))
+    argv, env, timeout, cwd, owner = (config[k] for k in ('argv', 'env', 'timeout', 'cwd', 'owner'))
     process = None
     timed_out = False
     parent_lost = False
@@ -65,8 +65,24 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
         with closing(select.kqueue()) as events:
             events.control([select.kevent(lifeline_fd, filter=select.KQ_FILTER_READ,
                                           flags=select.KQ_EV_ADD)], 0, 0)
+            # A fork-only host child can retain a copy of the lifeline writer.
+            # Also watch our actual parent, checking PPID around registration so
+            # startup after reparenting/PID reuse cannot target an unrelated PID.
+            if owner <= 1 or os.getppid() != owner:
+                parent_lost = True
+            else:
+                try:
+                    events.control([select.kevent(owner, filter=select.KQ_FILTER_PROC,
+                                                  flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                                  fflags=select.KQ_NOTE_EXIT)], 0, 0)
+                except OSError as error:
+                    if error.errno != errno.ESRCH:
+                        raise
+                    parent_lost = True
+                if os.getppid() != owner:
+                    parent_lost = True
             # Do not launch new work if the owner died during watchdog startup.
-            if events.control(None, 1, 0):
+            if parent_lost or events.control(None, 2, 0):
                 parent_lost = True
             else:
                 process = subprocess.Popen(argv, env=env, cwd=cwd, close_fds=True,
@@ -90,15 +106,18 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
                         if remaining <= 0:
                             timed_out = True
                             break
-                        ready = events.control(None, 2, remaining)
+                        ready = events.control(None, 3, remaining)
                         if not ready:
                             timed_out = True
                             break
-                        if any(event.filter == select.KQ_FILTER_READ for event in ready):
+                        leader_exited = any(event.filter == select.KQ_FILTER_PROC and
+                                            event.ident == process.pid for event in ready)
+                        if any(event.filter == select.KQ_FILTER_READ or
+                               (event.filter == select.KQ_FILTER_PROC and event.ident == owner)
+                               for event in ready):
                             parent_lost = True
                             break
-                        if any(event.filter == select.KQ_FILTER_PROC for event in ready):
-                            leader_exited = True
+                        if leader_exited:
                             break
     finally:
         if process is not None:
@@ -138,7 +157,8 @@ def capture(argv: list[str], *, env: dict[str, str], timeout: int,
     if type(timeout) is not int or timeout < 1:
         raise ValueError('watchdog timeout must be positive')
     config = json.dumps({'argv': argv, 'env': env, 'timeout': timeout,
-                         'cwd': str(cwd) if cwd is not None else None}).encode()
+                         'cwd': str(cwd) if cwd is not None else None,
+                         'owner': os.getpid()}).encode()
     if len(config) > MAX_CONFIG:
         raise ValueError('native watchdog configuration exceeds limit')
     with tempfile.TemporaryFile() as source:
