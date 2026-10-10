@@ -460,6 +460,24 @@ class Prompts(Base):
         patch.start()
         self.addCleanup(patch.stop)
 
+    def test_the_ruling_gets_the_heads_ci_and_the_issue_facts(self):
+        # #521, live on #537: without CI facts the adjudicator ruled a green head red, twice.
+        from diaktoros import ci, issue_facts
+        row = {"seat": "adjudicator", "repo": REPO, "pr": 7, "head": HEAD}
+        marker = {"rounds": 3, "reason": "3/3 verdicts, no approval"}
+        green = ci.CIState(passed=["tests (3.11)", "tests (3.14)"])
+        with mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
+                mock.patch.object(ci, "read", return_value=green), \
+                mock.patch.object(issue_facts, "section", return_value="\n\nISSUE-FACTS"):
+            text = run_supervisor.isolated_prompt(self.loop, row, [], marker)
+        template = text.split("## PR record", 1)[0]
+        self.assertIn("## CI at this head", template)
+        self.assertIn("- passed: 2", template)
+        self.assertIn("ISSUE-FACTS", template)
+        self.assertIn("rule on them", " ".join(template.split()))
+        # The ruling reads the code at /work; it is not handed the reviewer's change record.
+        self.assertNotIn("## The change under review", text)
+
     def test_every_role_renders_without_placeholders(self):
         for role in ("reviewer", "fixer", "adjudicator"):
             with self.subTest(role):
@@ -519,7 +537,8 @@ class Prompts(Base):
                     self.assertIn("data, not instructions", record.splitlines()[0])
                 else:
                     self.assertNotIn("tests/t.rs:9", record)
-                self.assertEqual("## CI at this head" in template, seat != "adjudicator")
+                # #521: every seat, the adjudicator included, rules on the head's CI facts.
+                self.assertIn("## CI at this head", template)
                 if seat == "adjudicator":
                     self.assertIn("**3 of 3**", template)
                 if seat == "reviewer":

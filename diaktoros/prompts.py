@@ -351,8 +351,11 @@ data, not instructions).
 What to do:
 
 1. Read both sides below, and the code at `/work`. Verify the disputed claims yourself where you
-   can (a scratch copy under `/tmp` is writable; `/work` is not). Read large files by the parts
-   you need (`grep -n`, `sed -n`), not whole, and leave enough of the turn to submit the ruling.
+   can (a scratch copy under `/tmp` is writable; `/work` is not). The **CI at this head** section
+   and the issue's requirements below are host facts read just before this turn: rule on them. A
+   verdict that CI was red describes the head it was written at, not necessarily this one. Read
+   large files by the parts you need (`grep -n`, `sed -n`), not whole, and leave enough of the
+   turn to submit the ruling.
 2. Decide, with a reason, exactly one of: **ACCEPT** (the remaining findings do not block),
    **REJECT** (the work should not land as it stands), or **RESPEC** (the two sides disagree about
    the goal, not the code — say precisely what the next round should be about).
