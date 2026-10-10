@@ -176,9 +176,8 @@ def github(loop: dict, since: float) -> dict:
                 merge_times["all"].append(done - opened)
         elif pr.get("state") == "open":
             still_open += 1
-        reviews = gh.api(loop, f"/repos/{repo}/pulls/{pr.get('number')}/reviews?per_page=100",
-                         login=reader)
-        if not isinstance(reviews, list):
+        reviews, _error = gh.reviews_read(loop, pr.get("number"), login=reader)
+        if reviews is None:
             partial = True
             continue
         seen, changes = set(), 0

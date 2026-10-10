@@ -447,13 +447,15 @@ def issue_url(loop: dict, number: int) -> str:
     return f"https://github.com/{loop['repo']}/issues/{number}"
 
 
-def reviews_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
+def reviews_read(loop: dict, number: int,
+                 login: str | None = None) -> tuple[list[dict] | None, str]:
     """Read the entire review history, or return unknown without partial results.
 
     A full page does not prove it is the last page. The first path remains unchanged for
     existing API stubs; subsequent pages use GitHub's ordinary page query parameter.
     """
-    return _read_pages(loop, reviews_path(loop, number), "review", MAX_REVIEW_PAGES)
+    return _read_pages(loop, reviews_path(loop, number), "review", MAX_REVIEW_PAGES,
+                       login=login)
 
 
 def _read_pages(loop: dict, path: str, what: str, max_pages: int,
