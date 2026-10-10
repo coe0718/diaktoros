@@ -2909,8 +2909,8 @@ class Supervisor:
             if row['seat'] == 'reviewer' and time.time() - row['created'] < CI_WAIT_MAX_S:
                 # A cancelled check (#363) holds every review: the broker would refuse its
                 # APPROVE, so the turn could only spend tokens. Running checks hold it only with
-                # review_after_ci (#241), even beside a failed one. A failed check never holds
-                # by itself: the review says why.
+                # review_after_ci (#241), even beside a failed one. A failed check holds only
+                # while the fixer takes it first (#539); otherwise the review says why.
                 from . import ci
                 # A PR that conflicts with its base gets no pull_request CI from GitHub, so the
                 # required checks could never report: hold, nothing spent. The merge push makes
@@ -2932,13 +2932,13 @@ class Supervisor:
                 after_ci = config.review_after_ci(loop)
                 # Only the required checks hold it, when the loop names them (#368).
                 checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
-                # #306/#539: with review-after-CI, a red head goes to the fixer first while its
-                # CI-fix budget lasts (queued right here, not left to the next sweep): no review
-                # verdict is spent on code that does not build. Budget spent, or this head's turn
+                # #306/#539/#579: a red head goes to the fixer first while its CI-fix budget
+                # lasts, whatever review_after_ci says (queued right here, not left to the next
+                # sweep): no review verdict is spent on code that does not build. Budget spent, or this head's turn
                 # done without a new head: the reviewer reviews it.
                 author = (str(((queued.get("user") or {}).get("login")) or "")
                           if isinstance(queued, dict) else "")
-                fixing = bool(checks is not None and checks.failed and after_ci
+                fixing = bool(checks is not None and checks.failed
                               and ci_fix.fixer_first(loop, number=row['pr'], head=row['head'],
                                                      author=author, failed=checks.failed,
                                                      db=self.db, log=util.log))

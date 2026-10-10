@@ -243,8 +243,8 @@ GitHub Actions, modify `.github/` workflow files or merge the PR. A green result
 head ends the repair path naturally.
 
 CI fixes have their own budget, `ci_fix_cap` CI-fix turns per PR (default 3, across its
-heads), outside the reviewer's verdict cap (#539). With `review_after_ci` on, a red head goes
-to the fixer first: the reviewer's turn is held and its CI-fix turn queued at once, so no
+heads), outside the reviewer's verdict cap (#539). A red head goes to the fixer first,
+whether or not `review_after_ci` is on (#579): the reviewer's turn is held and its CI-fix turn queued at once, so no
 review verdict is spent on code that does not build. Once the budget is spent, or the head's
 CI-fix turn ended without a new head, the reviewer reviews the red head (that review counts
 as a verdict) to find why the fixes did not take. The first review after any CI-fix commits

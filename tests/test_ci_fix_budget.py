@@ -62,8 +62,8 @@ class FixerFirst(unittest.TestCase):
 class ReviewerHold(sm.Worker):
     """The production worker: a reviewer turn on a red fixer's head is held, not launched."""
 
-    def review_turn(self, rows=()):
-        loop = {**self.loop, "review_after_ci": True, "fix_ci": True,
+    def review_turn(self, rows=(), after_ci=True):
+        loop = {**self.loop, "review_after_ci": after_ci, "fix_ci": True,
                 "unattended_fixer_push": True, "fixers": ["fix"]}
         pr = {"number": 7, "head": {"sha": sm.HEAD, "ref": "fix-7"}, "user": {"login": "fix"},
               "state": "open", "draft": False}
@@ -83,6 +83,18 @@ class ReviewerHold(sm.Worker):
         self.assertIn("the fixer is taking them first", row[1])
         self.assertTrue(row[1].startswith(CI_HOLD))
         self.assertEqual(queued, [{"turn_key": ci_fix.KEY}])
+
+    def test_red_ci_goes_to_the_fixer_without_review_after_ci_too(self):
+        # #579: review_after_ci is off by default; the fixer-first order must not need it.
+        seen, row, queued = self.review_turn(after_ci=False)
+        self.assertEqual(seen, {}, "no review turn launched")
+        self.assertIn("the fixer is taking them first", row[1])
+        self.assertEqual(queued, [{"turn_key": ci_fix.KEY}])
+
+    def test_without_review_after_ci_a_spent_budget_still_gets_its_review(self):
+        seen, row, queued = self.review_turn(rows=[{"head": f"o{i}", "state": "succeeded"}
+                                                   for i in range(3)], after_ci=False)
+        self.assertEqual((seen.get("role"), row[0], queued), ("reviewer", "succeeded", []))
 
     def test_once_the_budget_is_spent_the_reviewer_reviews_the_red_head(self):
         seen, row, queued = self.review_turn(rows=[{"head": f"o{i}", "state": "succeeded"}
