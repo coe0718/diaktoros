@@ -8,6 +8,7 @@ general descendant tracker, nor recovery after watchdog/host-machine death.
 from __future__ import annotations
 
 from contextlib import closing
+import ctypes
 import errno
 import json
 import os
@@ -21,10 +22,34 @@ import time
 
 MAX_CONFIG = 1024 * 1024
 MAX_STATUS = 1024
+MAX_GROUP_MEMBERS = 65536
 
 
 class CleanupIncomplete(RuntimeError):
     """Watchdog completion cannot be verified; storage must be retained."""
+
+
+def _only_unreaped_leader(pid: int) -> bool:
+    """Verify the EPERM zombie-only case, never suppress a live-group denial.
+
+    This is one group-membership check while the known leader's PID is reserved,
+    not a descendant tracker or a source of PIDs to signal individually.
+    proc_listpgrppids returns a PID count (not bytes); full buffers are retried.
+    """
+    library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    query = library.proc_listpgrppids
+    query.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
+    query.restype = ctypes.c_int
+    capacity = 256
+    while capacity <= MAX_GROUP_MEMBERS:
+        members = (ctypes.c_int * capacity)()
+        count = query(pid, members, ctypes.sizeof(members))
+        if count < 0:
+            raise OSError(ctypes.get_errno(), 'cannot verify native process group')
+        if count < capacity:
+            return set(members[:count]) == {pid}
+        capacity *= 2
+    return False
 
 
 def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
@@ -35,6 +60,7 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
     process = None
     timed_out = False
     parent_lost = False
+    leader_exited = False
     try:
         with closing(select.kqueue()) as events:
             events.control([select.kevent(lifeline_fd, filter=select.KQ_FILTER_READ,
@@ -54,6 +80,7 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
                 except OSError as error:
                     if error.errno != errno.ESRCH:
                         raise
+                    leader_exited = True
                     # A very short-lived child can exit before registration.
                     # It has not been reaped; cleanup still precedes wait().
                 else:
@@ -71,6 +98,7 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
                             parent_lost = True
                             break
                         if any(event.filter == select.KQ_FILTER_PROC for event in ready):
+                            leader_exited = True
                             break
     finally:
         if process is not None:
@@ -78,6 +106,12 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # Darwin excludes zombies from group signalling and returns
+                # EPERM if no signalable member remains. Require both a known
+                # leader exit and a group containing only that unreaped PID.
+                if not leader_exited or not _only_unreaped_leader(process.pid):
+                    raise
             process.wait()
     result = {'returncode': process.returncode if process is not None else None,
               'timeout': timed_out, 'parent_lost': parent_lost}
@@ -149,7 +183,9 @@ def capture(argv: list[str], *, env: dict[str, str], timeout: int,
             except (ValueError, KeyError, TypeError):
                 valid = False
             if not valid:
-                raise CleanupIncomplete('native watchdog completion could not be verified')
+                raise CleanupIncomplete('native watchdog completion could not be verified; '
+                                        f'helper={process.returncode}, status={status!r}; '
+                                        + result.stderr[-3000:])
             if record['timeout']:
                 raise subprocess.TimeoutExpired(argv, timeout, result.stdout.encode(),
                                                 result.stderr.encode())
