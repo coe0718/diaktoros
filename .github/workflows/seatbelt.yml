@@ -17,6 +17,8 @@ on:
       - tests/test_native_storage.py
       - tests/test_native_lifecycle.py
       - tests/test_native_detach.py
+      - tests/native_spawn_fixture.c
+      - diaktoros/native_spawn.c
       - tests/test_native_snapshot.py
       - tests/test_snapshot_secrets.py
       - tests/test_trusted_fetch.py

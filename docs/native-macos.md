@@ -220,6 +220,24 @@ alone would not enforce ownership. Spawn attributes, file actions, inherited
 descriptors, multithreaded callers and tool timeout behavior all need validation
 before such a compatibility layer can replace native spawn.
 
+`native_spawn.c` is the first test-only Darwin compatibility prototype. With
+native spawn/session/group syscalls denied separately by the kernel, it replaces
+public spawn calls with fork/exec and a close-on-exec error pipe. It records
+close/dup2/open/chdir/fchdir/inherit file actions, applies signal masks/defaults,
+supports CLOEXEC_DEFAULT and PATH lookup, and returns exec errors after reaping
+failed children. Session/group changes and unsupported flag bits return errors.
+File-action snapshots and PATH expansion happen before fork; the child uses
+async-signal-safe operations. Atfork hooks protect the action registry across
+multithreaded forks.
+
+The prototype is not enabled in the native Hermes launcher. Private spawn
+attributes, newer action extensions, dyld interposition on Apple platform
+binaries, inherited descriptor races and complete tool timeout semantics remain
+integration gates. Kernel denial is essential: removing or bypassing the
+adapter must never restore native spawn or detach. Real Mac probes compare
+ordinary-spawn compatibility with direct/raw/attribute escape denial, and test
+file actions, cwd, signals, descriptors, exec errors and concurrent callers.
+
 1. Integrate backend selection and the shared turn layout with full production
    orchestration, role-specific write roots, prompts, review context and receipts.
    Source export already has a native directory pin; production runtime/source

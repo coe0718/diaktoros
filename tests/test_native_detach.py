@@ -92,8 +92,23 @@ class NativeDetachRoutes(unittest.TestCase):
                                   capture_output=True, text=True, timeout=30)
         if compiled.returncode:
             raise AssertionError(compiled.stdout + compiled.stderr)
+        cls.consumer = cls.root / 'consumer'
+        compiled = subprocess.run(['/usr/bin/clang', '-Wall', '-Wextra', '-Werror',
+                                   '-Wno-deprecated-declarations',
+                                   str(Path(__file__).with_name('native_spawn_fixture.c')),
+                                   '-o', str(cls.consumer)],
+                                  capture_output=True, text=True, timeout=30)
+        if compiled.returncode:
+            raise AssertionError(compiled.stdout + compiled.stderr)
+        cls.adapter = cls.root / 'spawn.dylib'
+        source = Path(__file__).resolve().parents[1] / 'diaktoros/native_spawn.c'
+        compiled = subprocess.run(['/usr/bin/clang', '-dynamiclib', '-Wall', '-Wextra', '-Werror',
+                                   '-Wno-deprecated-declarations', str(source), '-o', str(cls.adapter)],
+                                  capture_output=True, text=True, timeout=30)
+        if compiled.returncode:
+            raise AssertionError(compiled.stdout + compiled.stderr)
 
-    def matrix(self, *, blocked_syscalls, blocked_modes):
+    def matrix(self, *, blocked_syscalls, blocked_modes, adapter=False):
         profile = seatbelt.profile(read_roots=(self.root,), write_roots=())
         if blocked_syscalls:
             # Numeric IDs come from XNU syscalls.master: setpgid=82, setsid=147,
@@ -107,7 +122,9 @@ class NativeDetachRoutes(unittest.TestCase):
                      'spawn_session', 'spawn_group', 'spawn_plain', 'fork_exec'):
             with self.subTest(mode=mode):
                 result = subprocess.run(profile.command(policy, [str(self.program), mode]),
-                                        env={'PATH': '/usr/bin:/bin'}, cwd=self.root,
+                                        env={'PATH': '/usr/bin:/bin', **(
+                                            {'DYLD_INSERT_LIBRARIES': str(self.adapter)} if adapter else {})},
+                                        cwd=self.root,
                                         capture_output=True, text=True, timeout=10)
                 detail = result.stdout + result.stderr
                 self.assertEqual(result.returncode, 0, detail)
@@ -128,6 +145,27 @@ class NativeDetachRoutes(unittest.TestCase):
         self.matrix(blocked_syscalls=(82, 147, 244), blocked_modes=(
             'setsid', 'setpgid', 'raw_setsid', 'raw_setpgid',
             'spawn_session', 'spawn_group', 'spawn_plain'))
+
+    def test_adapter_restores_spawn_without_restoring_detach(self):
+        self.matrix(blocked_syscalls=(82, 147, 244), adapter=True, blocked_modes=(
+            'setsid', 'setpgid', 'raw_setsid', 'raw_setpgid', 'spawn_session', 'spawn_group'))
+
+    def test_adapter_file_actions_signals_descriptors_and_threads(self):
+        work = self.root / 'work'
+        work.mkdir()
+        profile = seatbelt.profile(read_roots=(self.root,), write_roots=(work,))
+        policy = self.root / 'consumer.sb'
+        policy.write_text(profile.text + '(allow syscall-unix)\n'
+                          '(deny syscall-unix (syscall-number 82 147 244))\n')
+        for mode in ('actions', 'fchdir', 'errors', 'threads'):
+            with self.subTest(mode=mode):
+                result = subprocess.run(profile.command(policy,[str(self.consumer),mode,str(work)]),
+                    env={'PATH':'/usr/bin:/bin', 'FIXTURE_ENV':'ok',
+                         'DYLD_INSERT_LIBRARIES':str(self.adapter)},
+                    cwd=self.root, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertIn('_OK',result.stdout)
+                print(f'SPAWN_COMPAT mode={mode} {result.stdout.strip()}',flush=True)
 
 
 if __name__ == '__main__':
