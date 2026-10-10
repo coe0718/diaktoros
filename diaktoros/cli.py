@@ -14,6 +14,7 @@ import os
 import pathlib
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -4085,12 +4086,23 @@ def cmd_migrate(args) -> int:
 
 
 def _migrate(args) -> int:
-    from . import migrate, run_supervisor
+    from . import backup, migrate, run_supervisor
     try:
         loops = config.all_loops()
     except config.ConfigError as exc:
         print(f"cannot migrate: {exc}")
         return 2
+    if args.dry_run:
+        print(f"backup: would write {backup.default_out()} before anything moves")
+    else:
+        # Before the first move (#496): migrate has no undo, the archive is the undo.
+        try:
+            archive = backup.create()
+        except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
+            print(f"cannot migrate: the backup before it failed ({exc}); nothing was moved")
+            return 2
+        print(f"backup: {archive} (restore with `hermes dk restore {shlex.quote(str(archive))}`)")
+        print(f"backup: {backup.WARNING}")
     lines = migrate.settings_step(_CTX, dry_run=args.dry_run)
     watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
     if not args.dry_run:
@@ -4123,6 +4135,109 @@ def _migrate(args) -> int:
         print("dry run: nothing was written")
     return 1 if any(word in line for line in lines
                     for word in ("REFUSED", "NOT rewritten", "NOT FINISHED")) else 0
+
+
+def cmd_backup(args) -> int:
+    """``backup`` (#496): one 0600 archive of everything the plugin owns; see ``backup``."""
+    from . import backup
+    try:
+        archive = backup.create(pathlib.Path(args.out) if args.out else None)
+    except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
+        print(f"cannot back up: {exc}")
+        return 2
+    print(f"backup written: {archive}")
+    print(f"warning: {backup.WARNING}")
+    return 0
+
+
+def _restore_cron(job: dict | None) -> list[str]:
+    """Recreate the watchdog job through ``hermes cron`` and read it back, as migrate does."""
+    if not job:
+        return ["cron: the backup holds no watchdog job"]
+    jobs, error = _cron_jobs({"id": ""})
+    if jobs is None:
+        return [f"cron: NOT FINISHED — {error}"]
+    if any(str(j.get("name") or "").strip() in SHARED_JOB_NAMES for j in jobs):
+        return ["cron: the watchdog job exists — kept"]
+    cmd = [_hermes_bin() or "hermes", "cron", "create", job["schedule"], "--name", job["name"],
+           "--no-agent", "--script", config.watchdog_shim().name, "--deliver", job["deliver"]]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        failed = proc.returncode != 0 and (proc.stderr or proc.stdout).strip()[:200]
+    except Exception as exc:
+        failed = str(exc)
+    after, _ = _cron_jobs({"id": ""})
+    if failed or not any(str(j.get("name") or "").strip() == job["name"] for j in after or []):
+        return ["cron: NOT FINISHED — the job was not created"
+                + (f" ({failed})" if failed else "") + f"; run it yourself: {shlex.join(cmd)}"]
+    return [f"cron: job {job['name']!r} created ({job['schedule']}, deliver {job['deliver']})"]
+
+
+def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
+    from . import backup, migrate
+    lines = [f"restore: {len(manifest['files'])} file(s), {len(manifest.get('routes') or {})} "
+             f"route(s), loops: {', '.join(manifest.get('loops') or []) or 'none'}"]
+    lines += [f"restore: NOT FINISHED — token file missing: {line}"
+              for line in backup.missing_tokens(manifest)]
+    lines += [f"restore: will overwrite {name}" for name in backup.existing(manifest)]
+    lines += [f"restore: writes a loop state directory outside the Hermes home: {path}"
+              for path in backup.outside_state_dirs(manifest)]
+    problems = backup.unsafe(manifest,
+                             allow_state_dirs=bool(getattr(args, "allow_state_dirs", False)))
+    if problems:
+        print("\n".join(lines + [f"restore: REFUSED — {p}" for p in problems[:20]]
+                         + ["nothing was written"]))
+        return 2
+    if args.dry_run:
+        print("\n".join(lines + ["dry run: nothing was written"]))
+        return 0
+    backup.put_files(archive, manifest)
+    lines.append(f"restore: {len(manifest['files'])} file(s) put back")
+    if manifest.get("routes"):
+        routes.restore_entries(manifest["routes"])
+        lines.append(f"restore: {len(manifest['routes'])} route entr(ies) put back")
+    loops = config.all_loops()
+    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    if not config.watchdog_shim().is_file():
+        _write_watchdog_shim()
+    lines += migrate.shim_step(loops, _write_watchdog_shim, config.watchdog_shim(),
+                               SHIM.format(watchdog=watchdog), dry_run=False)
+    lines += _restore_cron(manifest.get("cron"))
+    lines += migrate.doctor_step(loops)
+    print("\n".join(lines))
+    return 1 if any(word in line for line in lines
+                    for word in ("REFUSED", "NOT rewritten", "NOT FINISHED")) \
+        or any(line.startswith("doctor:") and line != "doctor: every check verified"
+               for line in lines) else 0
+
+
+def cmd_restore(args) -> int:
+    """``restore`` (#496): put a backup back, paused with migrate's marker; see ``backup``."""
+    from . import backup, migrate
+    archive = pathlib.Path(args.file).expanduser()
+    try:
+        manifest = backup.read_manifest(archive)
+        if args.dry_run:
+            return _restore(args, manifest, archive)
+        with migrate.hold():
+            busy = migrate.runs_in_flight()
+            if busy:
+                print(f"cannot restore: {busy} run(s) are in flight or uncertain; wait for them "
+                      "(or reconcile them), then run restore again")
+                return 2
+            clash = backup.existing(manifest)
+            if clash and not args.force:
+                print("cannot restore: existing state would be overwritten (use --force):\n  "
+                      + "\n  ".join(clash[:20])
+                      + (f"\n  … {len(clash) - 20} more" if len(clash) > 20 else ""))
+                return 2
+            return _restore(args, manifest, archive)
+    except migrate.MigrationBusy as exc:
+        print(f"cannot restore: {exc}")
+        return 2
+    except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
+        print(f"cannot restore: {exc}")
+        return 2
 
 
 def cmd_doctor(args) -> int:
@@ -5367,6 +5482,25 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         move.add_argument("--admin-token", default=None, metavar="LOGIN",
                           help="mapped login whose token may edit the repo hooks (--rename-loop)")
         move.set_defaults(func=cmd_migrate)
+
+        bak = sub.add_parser("backup", help="Write one 0600 archive of everything the plugin owns "
+                                            "(loops, ledger, state, routes, watchdog job) (#496)")
+        bak.add_argument("--out", metavar="FILE", default=None,
+                         help="where to write it (default: $HERMES_HOME/backups/…); never "
+                              "overwrites a file")
+        bak.set_defaults(func=cmd_backup)
+
+        rest = sub.add_parser("restore", help="Put a backup back: files, routes, shims, the "
+                                              "watchdog job; ends with doctor (#496)")
+        rest.add_argument("file", metavar="FILE", help="an archive `backup` wrote")
+        rest.add_argument("--dry-run", action="store_true",
+                          help="report what would be restored and overwritten; write nothing")
+        rest.add_argument("--force", action="store_true",
+                          help="overwrite existing state (refused without it)")
+        rest.add_argument("--allow-state-dirs", action="store_true",
+                          help="also write the loop state directories the archive declares "
+                               "outside the Hermes home (the dry run names them)")
+        rest.set_defaults(func=cmd_restore)
 
         preflight = sub.add_parser("doctor", help="Preflight a loop read-only: profiles, tokens, "
                                                   "routes, hooks, scripts, cron, clone")

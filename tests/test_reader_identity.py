@@ -323,6 +323,7 @@ class ReaderIdentityTests(_Loop):
                  "trace": ["--payload", "/nonexistent-payload.json"],
                  "models": ["--seat", "reviewer"], "retry": ["--pr", "1"],
                  "review": ["--pr", "1"], "escalate": ["--pr", "1"],
+                 "restore": ["/nonexistent-backup.tar.gz", "--dry-run"],
                  "init": ["--repo", "acme/other", "--dry-run"], "setup": ["--yes"]}
         self.assertIn("uninstall", verbs)
         self.assertIn("cleanup", verbs)

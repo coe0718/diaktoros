@@ -87,6 +87,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | install a loop | [`setup`](#setup) (guided), or [`init`](#init) (flag by flag) |
 | check an install before going live | [`doctor`](#doctor), [`selftest`](#selftest) |
 | move to a renamed plugin or repository | [`migrate`](#migrate) |
+| back up an install, or restore one | [`backup`](#backup), [`restore`](#restore) |
 | turn the loop on or off | [`arm`](#arm) |
 | change a setting | [`set`](#set), [`apply`](#apply), [`settings`](#settings) |
 | let the fixer push on its own | [`fixer-push`](#fixer-push) |
@@ -718,6 +719,63 @@ finishes what an interrupted run began.
 | `--dry-run` |  |  | report every step and write nothing |
 | `--rename-loop` | `OLD=NEW` |  | also give a loop a new id: its file, default state directory, routes and the URLs its repo hooks post to (each hook is pinged before the old route goes) |
 | `--admin-token` | `LOGIN` |  | mapped login whose token may edit the repo hooks (--rename-loop) |
+<!-- /flags -->
+
+### backup
+
+Writes one archive of everything the plugin owns: the loop files, the runtime file, pacing and
+the gate-failure ledger; the run ledger (through SQLite's online backup, so it is consistent
+while the loop is live); each loop's state directory; this plugin's route-registry entries; and
+the watchdog job's schedule and delivery target. `migrate` takes one automatically before it
+moves anything and prints the path.
+
+The archive holds the routes' HMAC secrets, so restored hooks keep working. It is created mode
+`0600`, the command warns about it, and the secrets are never printed. It leaves out GitHub
+tokens (PATs), Hermes profiles and model logins. It never overwrites a file. There is no
+output-directory or retention setting yet; when one is added it must be settable from the
+Desktop form, `init`, `setup`, `set` and the loop file.
+
+```bash
+hermes dk backup --out "<archive-file>"
+```
+
+<!-- flags:backup -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--out` | `FILE` |  | where to write it (default: $HERMES_HOME/backups/…); never overwrites a file |
+<!-- /flags -->
+
+### restore
+
+Puts a backup back. It holds `migrate`'s pause marker for its run (gates defer, the worker
+claims nothing), refuses to overwrite existing files, routes or the watchdog job without
+`--force`, rewrites the shims, recreates the watchdog job through `hermes cron` and reads it
+back, then runs `doctor`. It checks that the token files the loops name exist and lists any that
+are missing; the tokens themselves are not in the archive. `--dry-run` lists what it would
+restore and overwrite and writes nothing. Exit `1` means a step is not finished or `doctor`
+listed a check that is not verified.
+
+An archive is treated as outside input. `restore` refuses it (exit `2`, nothing written) when:
+- a file would land outside this plugin's places (the Hermes home, the loop files'
+  directory and the state directories the archive declares) or behind a symlink;
+- a loop's state directory lies outside the Hermes home (a custom `state_dir`) and
+  `--allow-state-dirs` was not passed: the dry run and the refusal name each such directory, so
+  you can check it before allowing it;
+- a route in it is not one of this plugin's gates;
+- a live route of the same name belongs to something else (even with `--force`);
+- a run is in flight or uncertain.
+
+```bash
+hermes dk restore "<archive-file>" --dry-run
+hermes dk restore "<archive-file>"
+```
+
+<!-- flags:restore -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--dry-run` |  |  | report what would be restored and overwritten; write nothing |
+| `--force` |  |  | overwrite existing state (refused without it) |
+| `--allow-state-dirs` |  |  | also write the loop state directories the archive declares outside the Hermes home (the dry run names them) |
 <!-- /flags -->
 
 ### selftest
