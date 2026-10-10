@@ -87,6 +87,24 @@ exercise this path; the focused helper tests also run on Linux. The source must
 still be a trusted credential-free checkout: code and templates are exported
 byte for byte, so this filter cannot identify every committed secret.
 
+## Turn-visible path layout
+
+`turn_layout.TurnLayout` describes the paths visible inside one turn. Both
+launchers generate the Hermes entry arguments from this layout. The Linux
+layout retains its existing mount names and command arguments; the native
+layout uses the validated host-created workspace and staged read roots.
+Native environment values for home, scratch, Cargo and broker-client files
+come from the same layout.
+
+Host-generated role instructions render broker command examples against the
+layout's work and scratch paths, with shell quoting for spaces and quotes.
+Only fixed host instruction text is rendered; PR and model text is not rewritten.
+Relative paths, control characters, backticks and path-list delimiters are
+refused. The layout describes paths and supplies no containment or authority.
+The native reviewer fixture includes these instructions and verifies that the
+real model request contains them. Other native role turns and automatic backend
+selection still require integration and acceptance testing.
+
 ## Bounded native storage
 
 `native_storage.Workspace` creates a fixed-size UDRW image containing a
@@ -159,11 +177,10 @@ enforceable ownership mechanism for every descendant; a polling tree scan or
 
 ## Remaining work before production support
 
-1. Add a portable per-turn layout and backend selection. Generate entry points,
-   Hermes configuration, prompts and broker-client paths from that layout; remove
-   remaining Linux `/opt` and `/work` assumptions. Source export already has a
-   native directory pin; production runtime/source generation ownership still
-   needs integration with the per-turn layout.
+1. Integrate backend selection and the shared turn layout with full production
+   orchestration, role-specific write roots, prompts, review context and receipts.
+   Source export already has a native directory pin; production runtime/source
+   generation ownership still needs integration with the per-turn layout.
 2. Replace the fixed localhost inference bridge. Prefer direct Unix-socket HTTP
    transports where Hermes provider clients permit them. Any TCP alternative
    needs exclusive per-turn ports, authentication and exact endpoint permissions.

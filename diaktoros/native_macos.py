@@ -12,7 +12,7 @@ from pathlib import Path
 import shutil
 import tempfile
 
-from . import contained, native_lifecycle, native_storage, seatbelt
+from . import contained, native_lifecycle, native_storage, seatbelt, turn_layout
 
 PROVIDER = 'diaktoros-seatbelt-wire'
 
@@ -45,6 +45,8 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
     if code not in query.parents or not query.is_file():
         raise ValueError('query must be in the staged read-only code tree')
     workspace.validate(home=home, work=work, scratch=scratch)
+    layout = turn_layout.TurnLayout(code=code, venv=venv, home=home, work=work,
+                                    export=export, client=client, scratch=scratch, query=query)
     build_roots = ()
     if any(p is not None for p in (sdk, developer_tools, dependencies)):
         if any(p is None for p in (sdk, developer_tools, dependencies)):
@@ -66,19 +68,14 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         f'model:\n  provider: {PROVIDER}\n  default: {json.dumps(model)}\n'
         '  base_url: http://localhost/v1\n  api_key: sandbox-dummy\n'
         f'plugins:\n  enabled: [{PROVIDER}]\nmemory:\n  memory_enabled: false\n')
-    env = {'HOME': str(home), 'HERMES_HOME': str(home),
-           'USER': 'agent', 'LOGNAME': 'agent',
+    env = {**layout.environment(), 'USER': 'agent', 'LOGNAME': 'agent',
            'PATH': f'{venv}/bin:{rust}/bin:/usr/bin:/bin',
-           'PYTHONPATH': f'{client}:{code}', 'PYTHONDONTWRITEBYTECODE': '1',
-           'TMPDIR': str(scratch), 'CARGO_HOME': str(scratch / 'cargo'),
-           'RUSTUP_HOME': str(scratch / 'rustup'), 'CARGO_TARGET_DIR': str(work / 'target'),
+           'PYTHONDONTWRITEBYTECODE': '1',
            'CARGO_NET_OFFLINE': 'true', 'GIT_CONFIG_GLOBAL': '/dev/null',
            'GIT_CONFIG_SYSTEM': '/dev/null', 'GIT_TERMINAL_PROMPT': '0',
            'OPENAI_API_KEY': 'sandbox-dummy',
            'DIAKTOROS_INFERENCE_SOCKET': str(inference_socket),
-           'DIAKTOROS_BROKER_SOCKET': str(broker_socket), 'DIAKTOROS_WORK': str(work),
-           'DIAKTOROS_EXPORT': str(export),
-           'DIAKTOROS_TURN_FILE': str(client / 'review-loop-turn.json')}
+           'DIAKTOROS_BROKER_SOCKET': str(broker_socket)}
     if build_roots:
         # Direct tools avoid rustup/xcrun proxies looking in the operator's profile.
         # Unit separators preserve SDK/compiler paths containing spaces.
@@ -93,10 +90,7 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         (cargo_home / 'config.toml').write_text(
             '[source.crates-io]\nreplace-with = "vendored"\n'
             f'[source.vendored]\ndirectory = {json.dumps(str(dependencies))}\n')
-    entry = [str(venv / 'bin/python'), str(venv / 'bin/hermes'), 'chat',
-             '--query-file', str(query), '--oneshot', '-Q', '--provider', PROVIDER,
-             '-m', model, '-t', 'terminal,file', '--ignore-rules',
-             '--max-turns', str(max_steps), '--run-budget', str(timeout)]
+    entry = layout.hermes_entry(provider=PROVIDER, model=model, max_steps=max_steps, timeout=timeout)
     # Profile file lives outside every writable root. A file avoids ARG_MAX limits.
     with tempfile.TemporaryDirectory(prefix='dk-policy-', dir='/tmp') as directory:
         policy = Path(directory) / 'profile.sb'

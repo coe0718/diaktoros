@@ -14,7 +14,7 @@ import unittest
 from unittest import mock
 
 from diaktoros import (broker_ipc, gh, inference_proxy, native_macos, native_storage,
-                      seatbelt, trusted_turn)
+                      seatbelt, trusted_turn, turn_layout)
 import native_rust_fixture
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
@@ -155,8 +155,12 @@ Path('review.txt').write_text('native Python and offline Rust fixture verified\\
                 self.assertFalse(server.is_alive())
             stack.callback(close_broker)
             query = code / 'native-query.txt'
-            query.write_text('Execute the requested terminal probe, submit the scoped review, then stop.')
             venv = SOURCE / 'venv'
+            layout = turn_layout.TurnLayout(code=code, venv=venv, home=home, work=work,
+                                            export=export, client=client, scratch=scratch, query=query)
+            instructions = trusted_turn.tool_instructions('reviewer', layout=layout)
+            query.write_text('Execute the requested terminal probe, submit the scoped review, then stop.\n'
+                             + instructions)
             runtime = Path((venv / 'bin/python').resolve()).parents[1]
             rust = Path(os.environ['DIAKTOROS_NATIVE_RUST_ROOT'])
             result = native_macos.run(code=code, venv=venv, runtime=runtime,
@@ -177,6 +181,11 @@ Path('review.txt').write_text('native Python and offline Rust fixture verified\\
             self.assertEqual(writes[0][1]['commit_id'], HEAD)
             self.assertEqual(writes[0][2], 'reviewer')
             self.assertGreaterEqual(len(requests), 2)
+            user_messages = '\n'.join(str(m.get('content')) for _, _, request in requests
+                                      for m in request.get('messages', []) if m.get('role') == 'user')
+            self.assertIn(instructions, user_messages)
+            self.assertIn('--body-file ' + shlex.quote(str(work / 'review.txt')), instructions)
+            self.assertNotIn('--body-file /work/review.txt', instructions)
             self.assertTrue(all(auth == 'Bearer ' + model_key for _, auth, _ in requests))
             self.assertIn('HOST_SECRET_BLOCKED', outputs)
             self.assertIn('HOST_NETWORK_BLOCKED', outputs)

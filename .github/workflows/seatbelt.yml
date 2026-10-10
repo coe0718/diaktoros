@@ -1,8 +1,6 @@
 name: Experimental native macOS boundary
 
 on:
-  push:
-    branches: [feat/native-macos-seatbelt]
   pull_request:
     paths:
       - diaktoros/seatbelt.py
@@ -13,6 +11,7 @@ on:
       - diaktoros/broker_client.py
       - diaktoros/contained.py
       - diaktoros/trusted_turn.py
+      - diaktoros/turn_layout.py
       - tests/test_seatbelt.py
       - tests/test_native_macos.py
       - tests/test_native_storage.py
@@ -20,6 +19,7 @@ on:
       - tests/test_native_snapshot.py
       - tests/test_snapshot_secrets.py
       - tests/test_trusted_fetch.py
+      - tests/test_turn_layout.py
       - tests/native_rust_fixture.py
       - .github/workflows/seatbelt.yml
   workflow_dispatch:
@@ -63,6 +63,7 @@ jobs:
       - name: Exercise pinned committed source export and path replacement
         run: |
           python tests/leakguard.py discover -v -s tests -p 'test_native_snapshot.py'
+          python tests/leakguard.py discover -v -s tests -p 'test_turn_layout.py'
           python tests/leakguard.py -v test_trusted_fetch.CommittedSourceSnapshotTests
           python tests/leakguard.py -v test_snapshot_secrets.SnapshotSecretTests test_snapshot_secrets.EvalsAreNotExported test_snapshot_secrets.ExportedSnapshotProbeTests
       - name: Test watchdog cleanup and characterize remaining detached-child gap

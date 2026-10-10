@@ -26,7 +26,7 @@ import tempfile
 import time
 
 from . import (broker, broker_client, broker_ipc, config, contained, deps, gh, hostdirs,
-               inference_proxy, safe_push, trusted_fetch)
+               inference_proxy, safe_push, trusted_fetch, turn_layout)
 
 
 def dependency_cache(loop: dict) -> Path | None:
@@ -476,10 +476,11 @@ TOOLS = {
 }
 
 
-def tool_instructions(role: str) -> str:
+def tool_instructions(role: str, *, layout: turn_layout.TurnLayout | None = None) -> str:
     if role not in TOOLS:
         raise TurnDenied('unsupported role')
-    return TOOLS[role] + _COMMON
+    text = TOOLS[role] + _COMMON
+    return (layout or turn_layout.TurnLayout.linux()).tool_paths(text)
 
 
 SANDBOX_KEY = 'sandbox-dummy-not-a-credential'
@@ -687,12 +688,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 require_receipt=scope.role == 'reviewer', no_write=no_write))
             server = broker_ipc.serve_in_thread(broker)
             try:
-                command = ['/opt/venv/bin/python', '-m', 'diaktoros.inference_proxy',
-                           'bridge', '--', '/opt/venv/bin/python', '/opt/venv/bin/hermes', 'chat',
-                           '--query-file', '/opt/query', '--oneshot', '-Q',
-                           '--provider', provider, '-m', model, '-t', 'terminal,file',
-                           '--ignore-rules', '--max-turns', str(steps),
-                           '--run-budget', str(timeout)]
+                layout = turn_layout.TurnLayout.linux()
+                command = [str(layout.venv / 'bin/python'), '-m', 'diaktoros.inference_proxy',
+                           'bridge', '--', *layout.hermes_entry(provider=provider, model=model,
+                                                              max_steps=steps, timeout=timeout)]
                 grace = KILL_GRACE_S
                 try:
                     result = contained.run(code=code, venv=venv, runtime=runtime,
