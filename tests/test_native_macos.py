@@ -164,15 +164,16 @@ Path('review.txt').write_text('native fixture verified')
                                       client=client, scratch=scratch, query=query,
                                       inference_socket=capability.socket_path,
                                       broker_socket=broker.socket_path, model='fixture-model')
-            self.assertEqual(result.returncode, 0, result.stdout[-6000:] + result.stderr[-6000:])
-            self.assertTrue(broker.completed, result.stdout[-6000:] + result.stderr[-6000:])
+            outputs = '\n'.join(str(m.get('content')) for _, _, request in requests
+                                for m in request.get('messages', []) if m.get('role') == 'tool')
+            detail = result.stdout[-6000:] + result.stderr[-6000:] + '\nTOOL OUTPUT:\n' + outputs[-8000:]
+            self.assertEqual(result.returncode, 0, detail)
+            self.assertTrue(broker.completed, detail)
             self.assertEqual(len(writes), 1)
             self.assertEqual(writes[0][1]['commit_id'], HEAD)
             self.assertEqual(writes[0][2], 'reviewer')
             self.assertGreaterEqual(len(requests), 2)
             self.assertTrue(all(auth == 'Bearer ' + model_key for _, auth, _ in requests))
-            outputs = '\n'.join(str(m.get('content')) for _, _, request in requests
-                                for m in request.get('messages', []) if m.get('role') == 'tool')
             self.assertIn('HOST_SECRET_BLOCKED', outputs)
             self.assertIn('HOST_NETWORK_BLOCKED', outputs)
             self.assertNotIn(secret.read_text(), outputs)

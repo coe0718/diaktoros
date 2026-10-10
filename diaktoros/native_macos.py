@@ -53,6 +53,7 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         '  base_url: http://localhost/v1\n  api_key: sandbox-dummy\n'
         f'plugins:\n  enabled: [{PROVIDER}]\nmemory:\n  memory_enabled: false\n')
     env = {'HOME': str(home), 'HERMES_HOME': str(home),
+           'USER': 'agent', 'LOGNAME': 'agent',
            'PATH': f'{venv}/bin:{rust}/bin:/usr/bin:/bin',
            'PYTHONPATH': f'{client}:{code}', 'PYTHONDONTWRITEBYTECODE': '1',
            'TMPDIR': str(scratch), 'CARGO_HOME': str(scratch / 'cargo'),
