@@ -14,6 +14,9 @@ category: automation
 requires_hermes: '>=0.21.5'
 docs_url: https://github.com/coe0718/diaktoros#readme
 version: "0.3.0"
+# 2:1 card image; the release step pins it to the same commit as `sha` (catalog rule: re-pin it
+# with every sha bump).
+image: "https://raw.githubusercontent.com/coe0718/diaktoros/0000000000000000000000000000000000000000/docs/banner.jpg"
 platforms:
   # Linux only: every seat turn runs in bubblewrap (user namespaces), which macOS lacks.
   - linux
