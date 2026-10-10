@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HDIUTIL = '/usr/bin/hdiutil'
 DISKUTIL = '/usr/sbin/diskutil'
@@ -142,16 +143,37 @@ class Workspace:
         if self.retained_reason:
             raise StorageError(f'workspace retained at {self.root}: {self.retained_reason}')
         try:
-            for device in self._devices():
-                try:
-                    _run([HDIUTIL, 'detach', device])
-                except StorageError:
-                    _run([HDIUTIL, 'detach', '-force', device])
+            self._detach_owned()
             if self._devices() or self.mount.stat().st_dev != self.root.stat().st_dev:
                 raise StorageError('workspace remains attached')
         except BaseException as exc:
             raise StorageError(f'workspace cleanup failed; retained at {self.root}') from exc
         shutil.rmtree(self.root)
+
+    def _detach_owned(self):
+        """Retry busy teardown briefly, rediscovering image ownership before each eject.
+
+        A failed eject may already have unmounted the filesystem. Never reuse its
+        disk id without checking the exact image again, including before force.
+        Retries do not establish that detached seat descendants have exited.
+        """
+        for attempt in range(3):
+            try:
+                for device in self._devices():
+                    if device not in self._devices():
+                        continue
+                    try:
+                        _run([HDIUTIL, 'detach', device])
+                    except StorageError:
+                        if device in self._devices():
+                            _run([HDIUTIL, 'detach', '-force', device])
+                if not self._devices():
+                    return
+                raise StorageError('workspace remains attached')
+            except StorageError as exc:
+                if 'Resource busy' not in str(exc) or attempt == 2:
+                    raise
+                time.sleep(0.25 * (attempt + 1))
 
     def __exit__(self, *_):
         self._cleanup()

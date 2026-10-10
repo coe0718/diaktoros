@@ -150,12 +150,19 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import plistlib
           import subprocess
+          info = subprocess.run(['/usr/bin/hdiutil', 'info', '-plist'],
+                                capture_output=True, timeout=10, check=True)
+          images = plistlib.loads(info.stdout).get('images', [])
           for root in sorted(Path('/private/tmp').glob('dk-volume-*'))[-3:]:
               mount = root / 'mount'
               if not mount.is_dir():
                   continue
               print('RETAINED WORKSPACE:', root, flush=True)
+              for image in images:
+                  if Path(image.get('image-path', '')).resolve() == root / 'turn.dmg':
+                      print('OWNED ATTACHMENT:', image, flush=True)
               try:
                   result = subprocess.run(['/usr/sbin/lsof', '-nP', '+f', '--', str(mount)],
                                           capture_output=True, timeout=10)

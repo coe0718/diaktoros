@@ -138,7 +138,12 @@ allocated filesystem blocks, not sparse-file logical lengths or total process
 memory. Production storage sizing still needs representative workspace tests.
 
 Cleanup rediscovers attached devices by the exact private image, detaches, and
-verifies removal before deleting the backing files. If detach/verification fails,
+verifies removal before deleting the backing files. Busy ejects receive at most
+three attempts with 0.25/0.5-second backoffs; image ownership is checked again
+before every normal or forced eject. A failed eject can already have unmounted
+the filesystem, so CI also records remaining exact-image attachments. This is
+a bounded retry, not proof that the intermittent busy-eject cause is resolved.
+If detach/verification fails,
 it retains the private image directory and raises an error for host recovery.
 This is not cleanup after host death: startup reconciliation, detached descendant
 termination and lifecycle-safe disposal remain production gates.

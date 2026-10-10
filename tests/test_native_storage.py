@@ -53,6 +53,48 @@ class StorageValidation(unittest.TestCase):
                 devices.assert_not_called()
             self.assertTrue(workspace.image.exists())
 
+    def test_busy_eject_rediscovers_owned_disk_before_retry(self):
+        workspace = native_storage.Workspace()
+        busy = native_storage.StorageError('hdiutil: Resource busy')
+        with mock.patch.object(workspace, '_devices', side_effect=[
+                ['/dev/disk99'], ['/dev/disk99'], ['/dev/disk99'],
+                ['/dev/disk100'], ['/dev/disk100'], []]), \
+                mock.patch.object(native_storage, '_run', side_effect=[busy, busy, b'']) as run, \
+                mock.patch.object(native_storage.time, 'sleep') as sleep:
+            workspace._detach_owned()
+        self.assertEqual(run.call_args_list, [
+            mock.call([native_storage.HDIUTIL, 'detach', '/dev/disk99']),
+            mock.call([native_storage.HDIUTIL, 'detach', '-force', '/dev/disk99']),
+            mock.call([native_storage.HDIUTIL, 'detach', '/dev/disk100'])])
+        sleep.assert_called_once_with(0.25)
+
+    def test_failed_eject_that_detached_does_not_force_stale_disk(self):
+        workspace = native_storage.Workspace()
+        with mock.patch.object(workspace, '_devices', side_effect=[
+                ['/dev/disk99'], ['/dev/disk99'], [], []]), \
+                mock.patch.object(native_storage, '_run', side_effect=
+                                  native_storage.StorageError('hdiutil: Resource busy')) as run:
+            workspace._detach_owned()
+        run.assert_called_once_with([native_storage.HDIUTIL, 'detach', '/dev/disk99'])
+
+    def test_persistent_busy_eject_is_bounded_and_retains_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = native_storage.Workspace()
+            workspace.root = Path(directory)
+            workspace.mount = workspace.root / 'mount'
+            workspace.mount.mkdir()
+            workspace.image = workspace.root / 'turn.dmg'
+            workspace.image.write_bytes(b'fixture')
+            with mock.patch.object(workspace, '_devices', return_value=['/dev/disk99']), \
+                    mock.patch.object(native_storage, '_run', side_effect=
+                                      native_storage.StorageError('hdiutil: Resource busy')) as run, \
+                    mock.patch.object(native_storage.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(native_storage.StorageError, 'retained at'):
+                    workspace._cleanup()
+            self.assertEqual(run.call_count, 6)
+            self.assertEqual(sleep.call_args_list, [mock.call(0.25), mock.call(0.5)])
+            self.assertEqual(workspace.image.read_bytes(), b'fixture')
+
     def test_false_successful_detach_still_retains_image(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = native_storage.Workspace()
