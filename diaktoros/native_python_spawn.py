@@ -7,6 +7,14 @@ recognizes a shared process group and avoids signalling its own group.
 import subprocess
 
 
+def entry(argv: list[str]) -> list[str]:
+    # -P excludes the writable cwd while preserving trusted PYTHONPATH roots.
+    return [argv[0], '-P', '-c',
+            'import runpy,sys; from diaktoros.native_python_spawn import install; '
+            'install(); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name="__main__")',
+            *argv[1:]]
+
+
 def install():
     parent = subprocess.Popen
 

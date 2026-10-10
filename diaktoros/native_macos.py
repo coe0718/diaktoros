@@ -13,7 +13,7 @@ from pathlib import Path
 import shutil
 import tempfile
 
-from . import contained, native_lifecycle, native_storage, seatbelt, turn_layout
+from . import contained, native_lifecycle, native_python_spawn, native_storage, seatbelt, turn_layout
 
 PROVIDER = 'diaktoros-seatbelt-wire'
 
@@ -117,10 +117,7 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         shutil.copyfile(Path(__file__).with_name('native_python_spawn.py'), helper)
         helper.chmod(0o444)
         env['DYLD_INSERT_LIBRARIES'] = str(adapter)
-        entry = [entry[0], '-c',
-                 'import runpy,sys; from diaktoros.native_python_spawn import install; '
-                 'install(); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name="__main__")',
-                 *entry[1:]]
+        entry = native_python_spawn.entry(entry)
     # Profile file lives outside every writable root. A file avoids ARG_MAX limits.
     with tempfile.TemporaryDirectory(prefix='dk-policy-', dir='/tmp') as directory:
         policy = Path(directory) / 'profile.sb'
