@@ -28,7 +28,7 @@ def _run(argv: list[str]) -> bytes:
                             timeout=120, check=False)
     if result.returncode:
         raise StorageError(f'{Path(argv[0]).name} failed: ' +
-                           result.stderr.decode(errors='replace')[-1000:])
+                           (result.stdout + result.stderr).decode(errors='replace')[-2000:])
     return result.stdout
 
 
@@ -58,7 +58,8 @@ class Workspace:
         self.mount = self.root / 'mount'
         self.mount.mkdir(mode=0o700)
         try:
-            _run([HDIUTIL, 'create', '-size', f'{self.size_mib}m', '-fs', 'APFSX',
+            _run([HDIUTIL, 'create', '-size', f'{self.size_mib}m', '-fs', 'APFS',
+                  '-fsargs', '-e',
                   '-type', 'UDIF', '-layout', 'GPTSPUD', '-volname', 'Diaktoros',
                   str(self.image)])
             self.image.chmod(0o600)
