@@ -1,8 +1,9 @@
 """A red required check on a fixer's PR becomes a fixer turn (#306).
 
-The watchdog notices the red head (no model) and, with ``fix_ci`` on, queues one fixer turn for
-it. The turn is keyed by the head, so a flaky job cannot loop it; every CI-fix turn counts toward
-the PR's verdict cap; and the same job failing again after a fix holds the PR for the operator.
+With ``fix_ci`` on, a red head goes to the fixer before the reviewer (#539): the reviewer's
+pre-launch hold queues its turn at once, and the watchdog's sweep is the backstop. The turn is
+keyed by the head, so a flaky job cannot loop it. CI-fix turns have their own budget,
+``ci_fix_cap`` per PR, outside the verdict cap; once it is spent the reviewer reviews the red head.
 The worker re-reads CI right before launch and hands the fixer the failing jobs' log tails as
 data. The edge it never crosses: re-running jobs, editing workflows (the broker refuses
 ``.github/``), merging.

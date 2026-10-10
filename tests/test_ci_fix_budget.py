@@ -155,6 +155,17 @@ class PromptHook(unittest.TestCase):
         self.assertNotIn("HISTORY-SECTION", self.prompt("fixer"))
 
 
+class CIFixPrompt(unittest.TestCase):
+    def test_the_ci_fix_turn_is_told_the_budget_not_the_old_hold(self):
+        # #539 replaced "the same job failing again calls a person" with the budget; the prompt
+        # must not promise the old behavior.
+        from diaktoros import prompts
+        text = " ".join(prompts.ISOLATED_CI_FIX.split())
+        self.assertNotIn("a person is called", text)
+        self.assertIn("a budget of CI-fix turns for the whole PR", text)
+        self.assertIn("the reviewer reviews the head", text)
+
+
 class StillRed(unittest.TestCase):
     """The reviewer of a head still red after CI-fix turns is told why it is reviewing it, with
     the failing jobs' logs (#539; the idea came from the fixer's own #574)."""
