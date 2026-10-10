@@ -14,6 +14,7 @@ and records it with ``record`` once it landed. State lives on the host (``LoopSt
 from __future__ import annotations
 
 import re
+import time
 
 STATES = ("fixed", "open", "withdrawn")
 MISSED = "missed earlier"
@@ -179,7 +180,7 @@ def check_citations(loop: dict, number: int, verdict: str, body: str, failing=()
     return ""
 
 
-def apply(entry: dict, head: str, body: str) -> dict:
+def apply(entry: dict, head: str, body: str, at: float | None = None) -> dict:
     """The entry after this review: new findings open, states updated, ``last_head`` moved."""
     entry = {**entry, "findings": {k: dict(v) for k, v in (entry.get("findings") or {}).items()}}
     later = bool(entry.get("last_head"))
@@ -187,7 +188,8 @@ def apply(entry: dict, head: str, body: str) -> dict:
         if kind == "new":
             entry["findings"][fid] = {
                 "state": "open", "text": rest[:300], "head": head,
-                "missed": later and MISSED in rest.lower()}
+                "missed": later and MISSED in rest.lower(),
+                "at": time.time() if at is None else at}
         elif fid in entry["findings"]:
             entry["findings"][fid]["state"] = kind
     entry["last_head"] = head
@@ -213,10 +215,21 @@ def lines(entry: dict) -> list[str]:
     return out
 
 
-def missed_count(loop: dict) -> int:
-    """Findings reviewers marked as missed earlier, across the loop's PRs."""
+def missed_count(loop: dict, since: float | None = None, until: float | None = None) -> int:
+    """Findings reviewers marked as missed earlier, across the loop's PRs.
+
+    With ``since``/``until`` only findings recorded in that window count; a finding stored before
+    the time was recorded (no ``at``) cannot be placed in a window, so it is left out."""
     from . import state as state_mod
     data = state_mod.state_for(loop).findings_all()
+
+    def inside(v: dict) -> bool:
+        if since is None and until is None:
+            return True
+        at = v.get("at")
+        if not isinstance(at, (int, float)):
+            return False
+        return (since is None or at >= since) and (until is None or at <= until)
     return sum(1 for e in data.values() if isinstance(e, dict)
                for v in (e.get("findings") or {}).values()
-               if isinstance(v, dict) and v.get("missed"))
+               if isinstance(v, dict) and v.get("missed") and inside(v))
