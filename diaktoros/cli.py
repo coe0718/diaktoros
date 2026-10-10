@@ -20,6 +20,7 @@ import sys
 import time
 import tempfile
 
+from .ledger import LOCK_WAIT_S
 from . import (attribution, config, doctor, envnames, gate, gate_shims, gh, observer, prompts,
                route_intent, routes, state as state_mod)
 from .util import logged
@@ -1805,10 +1806,13 @@ def cmd_init(args) -> int:
         cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
         if cap not in (0, ""):
             config._check_daily_turns(cap, "triage.fix_daily_turns", "init")
-            # A new loop has no triage block (so no fix_label) for the cap to live in.
-            print(f"note: issue-fix daily cap {cap} is not written: a new loop has no "
-                  "triage.fix_label yet — set it with `hermes dk triage "
-                  "--fix-daily-turns N` once issue fixes are on")
+            # A new loop has no triage block (so no fix_label) for the cap to live in, and
+            # `apply` refuses it for the same reason: refuse rather than accept and drop it.
+            print(f"refused: the issue-fix daily cap {cap} cannot be set by init: a new loop "
+                  "has no triage.fix_label for it to live in. Leave --fix-daily-turns (and the "
+                  "fix_daily_turns setting) blank, then set it with `hermes dk triage "
+                  "--fix-label LABEL --maintainer LOGIN --fix-daily-turns N`; nothing written")
+            return 2
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
@@ -3611,7 +3615,7 @@ def _reviewer_runs(repo: str, number: int, head: str) -> int:
     db = run_supervisor.production_ledger()
     if not db.exists():
         return 0
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
     try:
         return con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND head=? AND "
                            "seat='reviewer'", (repo, number, head)).fetchone()[0]
@@ -3690,7 +3694,7 @@ def cmd_escalate(args) -> int:
         # A queued review or fix is retired by the escalation itself (the worker's claim); only
         # a turn already running must finish first, since it may still write at this head.
         busy = run_supervisor.ACTIVE
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
         try:
             out = con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND state IN "
                               f"({','.join('?' * len(busy))})", (loop["repo"], number, *busy)).fetchone()[0]
@@ -4331,9 +4335,13 @@ def cmd_corpus(args) -> int:
         print(f"cannot run corpus: {doctor._safe_report_text(str(exc))}")
         return 2
     if args.history:
-        for entry in corpus.history(scores):
+        bad: list = []
+        for entry in corpus.history(scores, bad):
             print(f"{entry['prompt_rev']}  {entry['model']}  caught {entry['caught']}  "
                   f"missed {entry['missed']}")
+        if bad:
+            print(f"skipped {len(bad)} unreadable line(s) in {scores} "
+                  f"(line {', '.join(map(str, bad))})")
         return 0
     if not cases:
         print(f"no cases in {directory}")
@@ -4349,8 +4357,13 @@ def cmd_corpus(args) -> int:
     except Exception as exc:
         print(f"cannot run corpus: {doctor._safe_report_text(str(exc))}")
         return 2
-    with selftest.github_read_only(), selftest.worker_tempdir():
-        results = corpus.replay(cases, review)
+    try:
+        with selftest.github_read_only(), selftest.worker_tempdir():
+            corpus.check_heads(loop, cases)
+            results = corpus.replay(cases, review)
+    except corpus.CorpusError as exc:
+        print(f"cannot run corpus: {doctor._safe_report_text(str(exc))}")
+        return 2
     for r in results:
         print(f"{r['case']}: caught {len(r['caught'])} missed {len(r['missed'])}"
               + (f" ({', '.join(r['missed'])})" if r["missed"] else "")
@@ -5349,8 +5362,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="agent steps one fixer or issue-fix turn may take, 8-200 "
                                "(0 = default 80) (default: the plugin setting)")
         init.add_argument("--fix-daily-turns", type=int, default=None,
-                          help="issue-fix turns per day, 1-1000 (0 = default); only lands once "
-                               "triage has a fix label (default: the plugin setting)")
+                          help="issue-fix turns per day: refused here, a new loop has no fix "
+                               "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
         init.add_argument("--hooks", action="store_true",
                           help="create the GitHub hooks too, paused until `arm`")
         init.add_argument("--arm", action="store_true",
@@ -5432,8 +5445,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="agent steps one fixer or issue-fix turn may take, 8-200 "
                                 "(0 = default 80) (default: the plugin setting)")
         first.add_argument("--fix-daily-turns", type=int, default=None,
-                           help="issue-fix turns per day, 1-1000 (0 = default); only lands once "
-                                "triage has a fix label (default: the plugin setting)")
+                           help="issue-fix turns per day: refused here, a new loop has no fix "
+                                "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
         for key in ("source", "venv", "runtime", "rust"):
             first.add_argument(f"--{key}", default="",
                                help=f"runtime file's {key} path (default: detected)")

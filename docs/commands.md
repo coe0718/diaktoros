@@ -276,7 +276,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
-| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day, 1-1000 (0 = default); only lands once triage has a fix label (default: the plugin setting) |
+| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no fix label; set it with `triage --fix-daily-turns N` (0 = ignore) |
 | `--source` | `SOURCE` |  | runtime file's source path (default: detected) |
 | `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
 | `--runtime` | `RUNTIME` |  | runtime file's runtime path (default: detected) |
@@ -388,7 +388,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds (overrides --turn-budget) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
-| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day, 1-1000 (0 = default); only lands once triage has a fix label (default: the plugin setting) |
+| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no fix label; set it with `triage --fix-daily-turns N` (0 = ignore) |
 | `--hooks` |  |  | create the GitHub hooks too, paused until `arm` |
 | `--arm` |  |  | with --hooks: create them armed (live at once) instead of paused |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can create hooks |
@@ -834,7 +834,13 @@ Golden corpus (#491): replays historical PRs with known P1s through the reviewer
 per case, which findings were caught and which missed. On demand only (it costs model tokens)
 and no-write, like `selftest --live-turn`. Cases are JSON files in `<state dir>/corpus/`:
 `{"id": "...", "pr": 12, "head": "<sha>", "findings": [{"id": "...", "pattern": "<regex>"}]}`;
-a finding is caught when its regex matches the review body the turn would submit. Each run is
+`head` is optional and, when given, must be the PR's current head: a case at an earlier head is
+refused with "only the PR's final head is supported yet" (exit 2), never scored as missed. The
+replay is a first look (round 1: no earlier review or fixer answer reaches the prompt). A finding
+is caught only when the review the turn would submit is REQUEST_CHANGES **and** its regex
+(case-insensitive) matches inside a numbered finding line (`F1: ...`, #475); a mention in an
+APPROVE, or outside a finding line, is a miss. Seed cases (PRs #460, #497, #503, #506; their
+patterns are starting points to tune) are in `docs/corpus/`. Each run is
 appended to `<state dir>/corpus_scores.jsonl` with the prompt revision and model. Exit 1 when
 anything was missed; a malformed case file stops the run (exit 2).
 

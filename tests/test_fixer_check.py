@@ -51,6 +51,15 @@ class Prompts(unittest.TestCase):
         self.assertEqual(prompts.fixer_check_section({}), "")
         self.assertEqual(prompts.fixer_check_section({"fixer_check": "  "}), "")
 
+    def test_a_failing_or_cut_off_check_is_published_with_its_gaps_not_dropped(self):
+        # #542: the check was cut off under load, reported a failure the fixer had already fixed,
+        # and the fixer ended the turn without publishing: the work was lost.
+        text = " ".join(prompts.fixer_check_section({"fixer_check": CHECK}).split())
+        self.assertIn("If it fails, fix what it found and run it again", text)
+        self.assertIn("**publish anyway**", text)
+        self.assertIn("exactly what did not pass or did not run", text)
+        self.assertIn("Never end the turn unpublished because the check did not pass", text)
+
     def test_fixer_and_issue_fix_prompts_carry_it_braces_and_all(self):
         loop = {"id": "w", "repo": "acme/widgets", "base": "main", "cap": 3,
                 "fixer_check": CHECK, "seats": {}}

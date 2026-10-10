@@ -1,8 +1,11 @@
 """Golden corpus (#491): replay historical PRs through the reviewer and score what it catches.
 
 A case is a JSON file ``{"id", "pr", "head", "findings": [{"id", "pattern"}]}``: a historical PR,
-the head commit it was reviewed at, and the P1 findings a review of it must raise. A finding is
-caught when its regex (case-insensitive) matches the body of the review the turn would submit.
+the head commit it was reviewed at (optional: default the PR's current head), and the P1 findings a
+review of it must raise. A finding is caught only when the review the turn would submit is
+REQUEST_CHANGES **and** the finding's regex (case-insensitive) matches inside a numbered finding
+line (``F<n>: ...``, #475): a mention in an APPROVE, or in prose, is not a catch. The replay is a
+first look: it is shown no earlier review or answer. Only a PR's final head can be replayed yet.
 Replay is on demand (``hermes dk corpus``) and runs no-write, like ``selftest --live-turn``.
 Scores are appended to ``<state>/corpus_scores.jsonl`` per prompt revision and model.
 """
@@ -18,6 +21,13 @@ SCORES_FILE = "corpus_scores.jsonl"
 
 class CorpusError(ValueError):
     pass
+
+
+class UnsupportedCase(CorpusError):
+    """A case that cannot run; refused, never scored as missed."""
+
+
+VERDICT = "REQUEST_CHANGES"
 
 
 def corpus_dir(loop: dict, override: str | None = None) -> Path:
@@ -41,6 +51,8 @@ def load(directory: Path) -> list[dict]:
         seen.add(case["id"])
         if not isinstance(case.get("pr"), int) or isinstance(case.get("pr"), bool):
             raise CorpusError(f"{path.name}: needs an integer pr")
+        if "head" in case and (not isinstance(case["head"], str) or not case["head"]):
+            raise CorpusError(f"{path.name}: head must be a commit sha string")
         findings = case.get("findings")
         if not isinstance(findings, list) or not findings:
             raise CorpusError(f"{path.name}: needs at least one finding")
@@ -57,23 +69,33 @@ def load(directory: Path) -> list[dict]:
     return cases
 
 
-def score(case: dict, body: str | None) -> dict:
-    """Which of the case's findings the review body caught and which it missed."""
-    text = body or ""
-    caught = [f["id"] for f in case["findings"] if re.search(f["pattern"], text, re.I)]
-    return {"case": case["id"], "caught": caught,
+def score(case: dict, review) -> dict:
+    """Which of the case's findings the review caught and which it missed.
+
+    ``review`` is ``{"verdict", "body"}`` (None has no verdict and catches nothing). A catch
+    needs the verdict REQUEST_CHANGES and the pattern inside a numbered finding line."""
+    from . import findings
+    review = review if isinstance(review, dict) else {}
+    verdict, text = review.get("verdict"), review.get("body") or ""
+    lines = [rest for _, _, rest in findings.parse(text)] if verdict == VERDICT else []
+    caught = [f["id"] for f in case["findings"]
+              if any(re.search(f["pattern"], line, re.I) for line in lines)]
+    return {"case": case["id"], "verdict": verdict, "caught": caught,
             "missed": [f["id"] for f in case["findings"] if f["id"] not in caught]}
 
 
 def replay(cases: list[dict], review) -> list[dict]:
-    """Score each case. ``review(case)`` returns the review body, or raises: a turn that gave no
-    review misses everything and says why."""
+    """Score each case. ``review(case)`` returns ``{"verdict", "body"}``, or raises: a turn that
+    gave no review misses everything and says why. An ``UnsupportedCase`` is not a miss: it
+    propagates."""
     results = []
     for case in cases:
         try:
             result = score(case, review(case))
+        except UnsupportedCase:
+            raise
         except Exception as exc:
-            result = score(case, "")
+            result = score(case, None)
             result["error"] = f"{type(exc).__name__}: {exc}"
         results.append(result)
     return results
@@ -91,18 +113,34 @@ def record(path: Path, prompt_rev: str, model: str, results: list[dict], now=Non
     return entry
 
 
-def history(path: Path) -> list[dict]:
+def history(path: Path, skipped: list | None = None) -> list[dict]:
+    """Recorded runs. A torn or malformed line is skipped (unlike ``load``, a bad score has no
+    integrity argument); each skipped line number is appended to ``skipped`` when given."""
     try:
-        lines = Path(path).read_text().splitlines()
+        lines = Path(path).read_bytes().splitlines()
     except OSError:
         return []
-    return [json.loads(line) for line in lines if line.strip()]
+    rows = []
+    for number, raw in enumerate(lines, 1):
+        if not raw.strip():
+            continue
+        try:
+            entry = json.loads(raw.decode("utf-8"))
+        except ValueError:  # JSONDecodeError and UnicodeDecodeError are both ValueErrors
+            entry = None
+        if not (isinstance(entry, dict)
+                and all(k in entry for k in ("prompt_rev", "model", "caught", "missed"))):
+            if skipped is not None:
+                skipped.append(number)
+            continue
+        rows.append(entry)
+    return rows
 
 
 def live_review(loop: dict, settings: dict, reviewer, timeout: int):
     """A ``review(case)`` that runs one isolated no-write reviewer turn on the case's PR."""
     from . import broker_ipc, gh as gh_mod, selftest, trusted_turn
-    from .run_supervisor import effective_reviews, isolated_prompt, pr_change
+    from .run_supervisor import isolated_prompt, pr_change
 
     def review(case: dict) -> str:
         number = case["pr"]
@@ -111,11 +149,15 @@ def live_review(loop: dict, settings: dict, reviewer, timeout: int):
         if error or not isinstance(pr, dict):
             raise CorpusError(f"PR #{number} unreadable ({error or 'no answer'})")
         head = case.get("head") or pr["head"]["sha"]
+        if head != pr["head"]["sha"]:
+            raise UnsupportedCase(f"{case['id']}: head {head[:12]} is not PR #{number}'s current "
+                                  f"head {pr['head']['sha'][:12]}; only the PR's final head is "
+                                  "supported yet")
         row = {"seat": "reviewer", "repo": loop["repo"], "pr": number, "head": head}
-        reviews = effective_reviews(loop, row, gh_mod.reviews(loop, number),
-                                    str(selftest.ledger_path()))
         change = pr_change(loop, row)
-        prompt = isolated_prompt(loop, row, reviews, change=change)
+        # A first look: no earlier verdict or answer, so the prompt says round 1 and the replay
+        # cannot "catch" a finding by repeating it.
+        prompt = isolated_prompt(loop, row, [], change=change)
         scope = broker_ipc.RunScope(loop["repo"], number, head, "reviewer", pr["head"]["ref"])
         observed: dict = {}
         trusted_turn.run_turn(loop, scope, source=Path(settings["source"]),
@@ -131,5 +173,22 @@ def live_review(loop: dict, settings: dict, reviewer, timeout: int):
         submissions = observed.get("submissions") or []
         if not submissions:
             raise CorpusError("the turn submitted no review")
-        return submissions[-1].get("body") or ""
+        last = submissions[-1]
+        return {"verdict": last.get("verdict"), "body": last.get("body") or ""}
     return review
+
+
+def check_heads(loop: dict, cases: list[dict]) -> None:
+    """Refuse, before any replay, a case whose head is not its PR's current head."""
+    from . import gh as gh_mod
+    for case in cases:
+        if not case.get("head"):
+            continue
+        pr, error = gh_mod.fetch(loop, f"/repos/{loop['repo']}/pulls/{case['pr']}",
+                                 login=loop.get("read_token"))
+        if error or not isinstance(pr, dict):
+            raise CorpusError(f"PR #{case['pr']} unreadable ({error or 'no answer'})")
+        if case["head"] != pr["head"]["sha"]:
+            raise UnsupportedCase(f"{case['id']}: head {case['head'][:12]} is not PR "
+                                  f"#{case['pr']}'s current head; only the PR's final head is "
+                                  "supported yet")

@@ -24,6 +24,7 @@ import sys
 import tempfile
 import textwrap
 
+from .ledger import LOCK_WAIT_S
 from . import config, gh, route_intent, routes, util
 from . import envnames
 from .util import logged
@@ -92,7 +93,7 @@ class TraceError(Exception):
 def _rows(db: pathlib.Path) -> list[tuple]:
     if not db.exists():
         return []
-    with contextlib.closing(sqlite3.connect(db)) as con:
+    with contextlib.closing(sqlite3.connect(db, timeout=LOCK_WAIT_S)) as con:
         try:
             return con.execute("SELECT id, seat, pr, head, state FROM runs").fetchall()
         except sqlite3.Error:
@@ -121,8 +122,9 @@ def _copy_home(loop: dict, dst: pathlib.Path) -> tuple[pathlib.Path, dict[str, s
     ledger = dst / source.relative_to(root)
     if source.is_file():
         ledger.parent.mkdir(parents=True, exist_ok=True)
-        with contextlib.closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as src, \
-                contextlib.closing(sqlite3.connect(ledger)) as out:
+        with contextlib.closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True,
+                                                   timeout=LOCK_WAIT_S)) as src, \
+                contextlib.closing(sqlite3.connect(ledger)) as out:  # private new file
             src.backup(out)
     configs = dst / config.host_path("config_dir", root).relative_to(root)
     configs.mkdir()

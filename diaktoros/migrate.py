@@ -33,6 +33,7 @@ import re
 import sqlite3
 import time
 
+from .ledger import LOCK_WAIT_S
 from . import config, gh, gate_shims, state as state_mod
 from . import envnames
 
@@ -231,7 +232,7 @@ def busy_runs(db: pathlib.Path, repo: str) -> int:
     from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when migrating
     if not db.exists():
         return 0
-    con = sqlite3.connect(db, timeout=30)
+    con = sqlite3.connect(db, timeout=LOCK_WAIT_S)
     try:
         return con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND state IN "
                            f"({','.join('?' * len(ACTIVE))})", (repo, *ACTIVE)).fetchone()[0]
@@ -244,7 +245,7 @@ def _move_ledger(db: pathlib.Path, old: str, new: str, *, dry_run: bool) -> tupl
     from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when migrating
     if not db.exists():
         return 0, ""
-    con = sqlite3.connect(db, timeout=30, isolation_level=None)
+    con = sqlite3.connect(db, timeout=LOCK_WAIT_S, isolation_level=None)
     try:
         con.execute("BEGIN IMMEDIATE")
         try:
@@ -403,7 +404,7 @@ def _old_new(key: str) -> tuple[pathlib.Path, pathlib.Path]:
 
 def _quiet_ledger(path: pathlib.Path) -> None:
     """Fold the ledger's WAL into the file, so the move carries everything in one file."""
-    con = sqlite3.connect(path, timeout=30)
+    con = sqlite3.connect(path, timeout=LOCK_WAIT_S)
     try:
         con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     finally:
@@ -450,7 +451,7 @@ def runs_in_flight() -> int:
     if not ledger.exists():
         return 0
     from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when needed
-    con = sqlite3.connect(ledger, timeout=30)
+    con = sqlite3.connect(ledger, timeout=LOCK_WAIT_S)
     try:
         return con.execute(f"SELECT COUNT(*) FROM runs WHERE state IN "
                            f"({','.join('?' * len(ACTIVE))})", ACTIVE).fetchone()[0]

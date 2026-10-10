@@ -358,6 +358,8 @@ def retryable(exc: BaseException) -> bool:
     if isinstance(exc, (RetryableError, subprocess.TimeoutExpired, TimeoutError,
                         ConnectionError, urllib.error.URLError)):
         return True
+    if ledger.locked(exc):          # another connection held the ledger past the wait (#601)
+        return True
     if isinstance(exc, trusted_fetch.FetchDenied):
         text = str(exc)
         return text in ('GitHub response unavailable', 'exclusive sandbox publish unavailable') \
@@ -1111,7 +1113,7 @@ def _read_only(db: str | Path):
     from urllib.parse import quote
     live = Path(f'{path}-wal').exists()
     con = sqlite3.connect(f"file:{quote(str(path))}?{'mode=ro' if live else 'immutable=1'}",
-                          uri=True, timeout=5)
+                          uri=True, timeout=ledger.LOCK_WAIT_S)
     con.row_factory = sqlite3.Row
     return con
 
@@ -1486,9 +1488,9 @@ class Supervisor:
                         (value, run_id, owner))
 
     def _connect(self):
-        pragmas = ("busy_timeout=10000", "journal_mode=WAL", "synchronous=FULL")
+        pragmas = (ledger.BUSY_TIMEOUT, "journal_mode=WAL", "synchronous=FULL")
         if self.create:
-            return ledger.connect(self.db, timeout=10, isolation_level=None,
+            return ledger.connect(self.db, timeout=ledger.LOCK_WAIT_S, isolation_level=None,
                                   row_factory=sqlite3.Row, pragmas=pragmas)
         # A worker opens and vets the host's ledger itself; it closes what it refuses.
         return ledger.connect(self.db, opener=self._worker_connect, row_factory=sqlite3.Row,
@@ -1506,7 +1508,7 @@ class Supervisor:
         # mode=rw: a ledger removed after the check above is an error, never a new file.
         uri = "file:" + urllib.request.pathname2url(str(self.db.resolve())) + "?mode=rw"
         try:
-            con = sqlite3.connect(uri, uri=True, timeout=10, isolation_level=None)
+            con = sqlite3.connect(uri, uri=True, timeout=ledger.LOCK_WAIT_S, isolation_level=None)
         except sqlite3.DatabaseError as exc:
             raise LedgerMissing(f"run ledger {self.db} cannot be opened: {exc}") from exc
         try:
@@ -3192,7 +3194,8 @@ class Supervisor:
         except Exception as exc:
             # The real reason, not just its type (#53). Messages here are host-generated
             # (no credential is ever formatted into one), and bounded.
-            error = f"isolated turn failed: {type(exc).__name__}: {exc}"[:600]
+            error = (f"isolated turn failed: {type(exc).__name__}: {exc}"
+                     f"{ledger.where(exc)}")[:600]
             retry = retryable(exc)
             if isinstance(exc, trusted_turn.TurnUnpublished):
                 # The agent never called the broker (#144): nothing was refused or written, so

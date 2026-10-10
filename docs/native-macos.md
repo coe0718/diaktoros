@@ -90,6 +90,23 @@ it retains the private image directory and raises an error for host recovery.
 This is not cleanup after host death: startup reconciliation, detached descendant
 termination and lifecycle-safe disposal remain production gates.
 
+## Lifecycle characterization
+
+`tests/test_native_lifecycle.py` deliberately measures two unresolved gaps in
+`contained.capture`: a child that calls `setsid()` can survive process-group
+cleanup after timeout, and a child can survive `SIGKILL` of its host supervisor.
+The probes demand fresh filesystem activity after failure and verify that the
+survivor still cannot read a host secret. A green characterization test confirms
+these limitations; it is **not** production lifecycle acceptance.
+
+The fixtures are cooperative and time-bounded. Before triggering failure, the
+host registers `kqueue` process-exit notifications and waits for actual exit
+before disposing of fixture paths. No general process-tree polling/killing
+mechanism is introduced. Production needs an enforceable descendant ownership
+mechanism and independent host-death recovery, including capability revocation
+and safe handling of attached storage. Apple launchd's process-group cleanup
+alone does not establish ownership of a descendant that changes its group.
+
 ## Remaining work before production support
 
 1. Add a portable per-turn layout and backend selection. Generate entry points,

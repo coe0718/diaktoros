@@ -121,5 +121,31 @@ class ExplainKinds(unittest.TestCase):
         self.assertEqual(sorted(used - set(gate.EXPLAIN_KINDS)), [])
 
 
+class WatchdogLog(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        self.addCleanup(temp.cleanup)
+        loop = {"id": "log", "repo": "acme/widgets", "base": "main", "cap": 3,
+                "inflight_ttl_min": 10, "ttl_min": 45, "turn_budget_s": 900,
+                "state_dir": str(Path(temp.name) / "state"), "fixers": ["f"], "reviewers": ["r"],
+                "seats": {"reviewer": {}, "fixer": {}}}
+        self.st = state.LoopState(loop)
+
+    def test_watchdog_log_is_bounded(self):
+        # #549: note() prunes watchdog.log to its last LOG_KEEP lines once it is large.
+        total = state.LOG_KEEP * 2
+        for i in range(total):
+            self.st.note(f"sweep {i} " + "x" * 300)
+        lines = self.st.log.read_text().splitlines()
+        self.assertLess(len(lines), total)
+        self.assertIn(f"sweep {total - 1} ", lines[-1])
+        self.assertLessEqual(len(lines), state.LOG_KEEP + 1)
+
+    def test_small_watchdog_log_is_kept_whole(self):
+        for i in range(5):
+            self.st.note(f"m{i}")
+        self.assertEqual(len(self.st.log.read_text().splitlines()), 5)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .ledger import LOCK_WAIT_S
+
 SEATS = ("reviewer", "fixer", "issue_fixer", "triage", "adjudicator")
 STATES = ("succeeded", "failed", "waiting", "cancelled", "uncertain")
 GITHUB_PAGES_MAX = 10
@@ -55,7 +57,7 @@ def ledger(db: Path, repo: str, since: float) -> dict | None:
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
     try:
         con.row_factory = sqlite3.Row
         columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
@@ -99,7 +101,7 @@ def revisions(db: Path, repo: str, since: float) -> dict | None:
     db = Path(db)
     if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
     try:
         con.row_factory = sqlite3.Row
         columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}

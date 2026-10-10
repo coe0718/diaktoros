@@ -497,22 +497,26 @@ def base_identity(loop: dict, pr: object) -> str:
         return ""
     return sha
 
-def verified_base_sha(loop: dict, pr: object) -> str:
-    """Read the exact configured base ref; PR metadata alone is not ref authority."""
-    sha = base_identity(loop, pr)
-    if not sha:
-        return ""
+def base_tip(loop: dict) -> str:
+    """The configured base branch's current commit, read from the ref itself, or unknown."""
     branch = loop["base"]
     path = f"/repos/{loop['repo']}/git/ref/heads/{quote(branch, safe='/')}"
     try:
         ref = gh.api(loop, path)
         obj = ref.get("object") if isinstance(ref, dict) else None
         if (ref.get("ref") == f"refs/heads/{branch}" and isinstance(obj, dict)
-                and obj.get("type") == "commit" and obj.get("sha") == sha):
-            return sha
+                and obj.get("type") == "commit" and isinstance(obj.get("sha"), str)
+                and re.fullmatch(r"[0-9a-f]{40}", obj["sha"])):
+            return obj["sha"]
     except Exception:
         pass
     return ""
+
+
+def verified_base_sha(loop: dict, pr: object) -> str:
+    """Read the exact configured base ref; PR metadata alone is not ref authority."""
+    sha = base_identity(loop, pr)
+    return sha if sha and base_tip(loop) == sha else ""
 
 
 def link(loop: dict, number, issue: bool = False) -> str:

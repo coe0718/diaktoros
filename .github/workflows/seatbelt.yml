@@ -14,6 +14,7 @@ on:
       - tests/test_seatbelt.py
       - tests/test_native_macos.py
       - tests/test_native_storage.py
+      - tests/test_native_lifecycle.py
       - tests/native_rust_fixture.py
       - .github/workflows/seatbelt.yml
   workflow_dispatch:
@@ -36,6 +37,7 @@ jobs:
     env:
       DIAKTOROS_REQUIRE_SEATBELT: '1'
       DIAKTOROS_REQUIRE_NATIVE_STORAGE: '1'
+      DIAKTOROS_REQUIRE_NATIVE_LIFECYCLE: '1'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -53,6 +55,8 @@ jobs:
         run: python tests/leakguard.py discover -v -s tests -p 'test_seatbelt.py'
       - name: Exercise fixed-capacity APFS storage and cleanup
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_storage.py'
+      - name: Characterize unresolved lifecycle gaps (not production acceptance)
+        run: python tests/leakguard.py discover -v -s tests -p 'test_native_lifecycle.py'
       - name: Startup diagnostics on failure
         if: failure()
         run: |

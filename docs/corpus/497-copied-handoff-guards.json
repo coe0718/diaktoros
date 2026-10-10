@@ -1,0 +1,14 @@
+{
+  "id": "497-copied-handoff-guards",
+  "pr": 497,
+  "findings": [
+    {
+      "id": "copied-guards",
+      "pattern": "cop(y|ied)|duplicat"
+    },
+    {
+      "id": "open-pr-not-held",
+      "pattern": "open PR|not held|names? an open"
+    }
+  ]
+}

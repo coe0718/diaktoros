@@ -30,11 +30,22 @@ class FixerRules(unittest.TestCase):
                 self.assertIn("**Make every path agree.**", text)
                 self.assertIn("One rule stated two ways is a bug", text)
 
+    def test_every_fixer_prompt_says_how_to_prove_a_test_fails_without_git(self):
+        # #542: the fixer tried `git stash` in /work (no git), could not prove its test, and lost
+        # the turn. One text, in the fix-round, issue-fix and CI-fix prompts.
+        proof = flat(prompts.no_git_proof(""))
+        self.assertIn("copy it aside", proof)
+        for name in ("ISOLATED_FIXER", "ISOLATED_ISSUE_FIX", "ISOLATED_CI_FIX"):
+            with self.subTest(prompt=name):
+                self.assertIn(proof, flat(getattr(prompts, name)))
+        source = (Path(prompts.__file__)).read_text()
+        self.assertEqual(source.count("has no git (no `stash`"), 1)
+
     def test_the_rules_are_written_once(self):
         # Rule 1 applied to the rules themselves: one text both prompts are built from, so the
         # issue-fix and fix-round copies cannot drift apart.
         source = (Path(prompts.__file__)).read_text()
-        self.assertEqual(source.count("Four rules for the code you write"), 1)
+        self.assertEqual(source.count("Five rules for the code you write"), 1)
         self.assertIn(prompts.code_rules("fix", "your answers"), prompts.ISOLATED_FIXER)
         self.assertIn(prompts.code_rules("issue", "the PR description"), prompts.ISOLATED_ISSUE_FIX)
 
