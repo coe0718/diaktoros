@@ -85,6 +85,7 @@ def profile(*, read_roots: tuple[Path, ...], write_roots: tuple[Path, ...],
              ' (sysctl-name "hw.pagesize") (sysctl-name "hw.machine")'
              ' (sysctl-name "kern.osrelease") (sysctl-name "kern.ostype")'
              ' (sysctl-name "kern.osversion") (sysctl-name "kern.version")'
+             ' (sysctl-name "kern.hostname")'
              ' (sysctl-name "kern.bootargs")'
              ' (sysctl-name "security.mac.lockdown_mode_state"))']
     for prefix, roots, operation in (('READ', reads, 'file-read*'),
