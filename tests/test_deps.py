@@ -400,6 +400,19 @@ class ByteCapTests(FakeCargo):
         self.assertEqual(deps.human_bytes(2 * 1024 * MiB), "2 GiB")
         self.assertEqual(deps.human_bytes(4 * MiB), "4 MiB")
 
+    def test_cap_reads_old_review_loop_spelling(self):
+        old = "REVIEW_LOOP_CRATE_CACHE_GIB"
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(deps.CAP_ENV, None)
+            os.environ[old] = "8"
+            self.assertEqual(deps.cache_cap(), 8 * 1024 * MiB)
+            os.environ[deps.CAP_ENV] = "3"  # the new spelling wins
+            self.assertEqual(deps.cache_cap(), 3 * 1024 * MiB)
+            os.environ.pop(deps.CAP_ENV)
+            os.environ[old] = "abc"
+            self.assertEqual(deps.cache_cap(), 2 * 1024 * MiB)
+            self.assertIn("abc", deps.refused_cap_override())
+
     def test_human_bytes_reads_right_at_every_size(self):
         for value, text in ((0, "0 bytes"), (1, "1 byte"), (512, "512 bytes"),
                             (16 * 1024, "16 KiB"), (1536, "1.5 KiB"), (1023 * 1024, "1023 KiB"),
