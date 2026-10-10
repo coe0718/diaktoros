@@ -160,7 +160,19 @@ def read_manifest(archive: pathlib.Path) -> dict:
     return manifest
 
 
-def unsafe(manifest: dict) -> list[str]:
+def outside_state_dirs(manifest: dict) -> list[str]:
+    """The archive's declared loop state directories that lie outside the Hermes home and the
+    loop files' directory (a loop's ``state_dir`` is configurable)."""
+    roots = [pathlib.Path(os.path.realpath(r)) for r in (config.home(), config.config_dir())]
+    out = []
+    for raw in manifest.get("state_dirs") or []:
+        path = pathlib.Path(os.path.abspath(str(raw)))
+        if not any(path == root or root in path.parents for root in roots):
+            out.append(str(path))
+    return sorted(set(out))
+
+
+def unsafe(manifest: dict, *, allow_state_dirs: bool = False) -> list[str]:
     """Why this archive must not be restored here, or [] (#496 hardening).
 
     An archive is input from outside: a tampered one must not write outside what this plugin
@@ -168,17 +180,27 @@ def unsafe(manifest: dict) -> list[str]:
     someone else's. Every file must land inside the Hermes home or the loop files' directory,
     with no symlink in its path; every route must be one of this plugin's gates; a live route of
     the same name that is not this plugin's is never overwritten, even with --force.
+
+    A loop's ``state_dir`` may lie elsewhere. Its files are written only with
+    ``allow_state_dirs`` (the operator's explicit ``--allow-state-dirs``, after the dry run named
+    the directories), and only inside a state directory the archive declares.
     """
     roots = [pathlib.Path(os.path.realpath(r)) for r in (config.home(), config.config_dir())]
+    outside = [pathlib.Path(d) for d in outside_state_dirs(manifest)]
     problems = []
     for entry in manifest["files"]:
         target = pathlib.Path(entry["path"])
         parent = pathlib.Path(os.path.realpath(target.parent))
+        linked = os.path.islink(target) or parent != pathlib.Path(os.path.abspath(target.parent))
         inside = any(parent == root or root in parent.parents for root in roots)
-        if not inside or os.path.islink(target) or parent != pathlib.Path(
-                os.path.abspath(target.parent)):
-            problems.append(f"{target}: outside this plugin's places (the Hermes home and the "
-                            "loop files' directory) or behind a symlink")
+        declared = any(parent == d or d in parent.parents for d in outside)
+        if linked or not (inside or declared):
+            problems.append(f"{target}: outside this plugin's places (the Hermes home, the "
+                            "loop files' directory and the archive's state directories) or "
+                            "behind a symlink")
+        elif not inside and not allow_state_dirs:
+            problems.append(f"{target}: in a loop state directory outside the Hermes home — "
+                            "re-run with --allow-state-dirs to write it")
     live = routes.all_routes()
     for name, entry in (manifest.get("routes") or {}).items():
         if not isinstance(entry, dict) or not route_intent.owned(entry):

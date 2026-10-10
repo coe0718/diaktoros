@@ -153,6 +153,23 @@ class Tampered(Base):
              "kind": "file"}), {"files/evil": b"y"})
         self.refused(inner, want="behind a symlink")
 
+    def test_a_state_dir_outside_the_home_needs_consent_and_stays_inside_it(self):
+        away = self.root / "elsewhere"
+        declared = away / "state"
+        good = self.tamper(lambda m: (m["state_dirs"].append(str(declared)), m["files"].append(
+            {"member": "files/st", "path": str(declared / "watchdog.json"), "kind": "file"})),
+            {"files/st": b"{}"})
+        self.refused(good, want="re-run with --allow-state-dirs")
+        self.assertFalse(declared.exists())
+        manifest = backup.read_manifest(good)
+        self.assertEqual(backup.outside_state_dirs(manifest), [str(declared)])
+        self.assertEqual(backup.unsafe(manifest, allow_state_dirs=True), [])
+        # Consent covers the declared directory only: a sibling is still outside.
+        manifest["files"].append({"member": "files/st", "path": str(away / "x.json"),
+                                  "kind": "file"})
+        [problem] = backup.unsafe(manifest, allow_state_dirs=True)
+        self.assertIn("outside this plugin's places", problem)
+
     def test_a_route_that_is_not_this_plugins_gate_is_refused(self):
         bad = self.tamper(lambda m: m["routes"].update(
             {"one-review": {"secret": "x", "script": "run_anything.py"}}))

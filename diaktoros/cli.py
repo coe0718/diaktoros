@@ -4162,7 +4162,10 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
     lines += [f"restore: NOT FINISHED — token file missing: {line}"
               for line in backup.missing_tokens(manifest)]
     lines += [f"restore: will overwrite {name}" for name in backup.existing(manifest)]
-    problems = backup.unsafe(manifest)
+    lines += [f"restore: writes a loop state directory outside the Hermes home: {path}"
+              for path in backup.outside_state_dirs(manifest)]
+    problems = backup.unsafe(manifest,
+                             allow_state_dirs=bool(getattr(args, "allow_state_dirs", False)))
     if problems:
         print("\n".join(lines + [f"restore: REFUSED — {p}" for p in problems[:20]]
                          + ["nothing was written"]))
@@ -5472,6 +5475,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="report what would be restored and overwritten; write nothing")
         rest.add_argument("--force", action="store_true",
                           help="overwrite existing state (refused without it)")
+        rest.add_argument("--allow-state-dirs", action="store_true",
+                          help="also write the loop state directories the archive declares "
+                               "outside the Hermes home (the dry run names them)")
         rest.set_defaults(func=cmd_restore)
 
         preflight = sub.add_parser("doctor", help="Preflight a loop read-only: profiles, tokens, "

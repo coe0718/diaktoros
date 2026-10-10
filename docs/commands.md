@@ -752,8 +752,11 @@ restore and overwrite and writes nothing. Exit `1` means a step is not finished 
 listed a check that is not verified.
 
 An archive is treated as outside input. `restore` refuses it (exit `2`, nothing written) when:
-- a file would land outside this plugin's places (the Hermes home and the loop files'
-  directory) or behind a symlink;
+- a file would land outside this plugin's places (the Hermes home, the loop files'
+  directory and the state directories the archive declares) or behind a symlink;
+- a loop's state directory lies outside the Hermes home (a custom `state_dir`) and
+  `--allow-state-dirs` was not passed: the dry run and the refusal name each such directory, so
+  you can check it before allowing it;
 - a route in it is not one of this plugin's gates;
 - a live route of the same name belongs to something else (even with `--force`);
 - a run is in flight or uncertain.
@@ -768,6 +771,7 @@ hermes dk restore "<archive-file>"
 | --- | --- | --- | --- |
 | `--dry-run` |  |  | report what would be restored and overwritten; write nothing |
 | `--force` |  |  | overwrite existing state (refused without it) |
+| `--allow-state-dirs` |  |  | also write the loop state directories the archive declares outside the Hermes home (the dry run names them) |
 <!-- /flags -->
 
 ### selftest

@@ -18,6 +18,15 @@ def doctor_parser():
     return parser
 
 
+def run_doctor_cli(*argv) -> tuple[int, str]:
+    """Any `hermes dk` command, in-process, with its output."""
+    parsed = doctor_parser().parse_args(list(argv))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = parsed.func(parsed)
+    return rc, buf.getvalue()
+
+
 def run_doctor(*argv) -> tuple[int, str]:
     parsed = doctor_parser().parse_args(["doctor", *argv])
     buf = io.StringIO()
@@ -536,6 +545,41 @@ def group_doctor() -> None:
     check("  and every one is verified",
           [name for mark, name in emitted or () if mark != doctor.MARKS[doctor.VERIFIED]], [])
     check("  it writes nothing", tree_digest(TMP), before_files)
+
+    # #496 (adjudication on #537): the round trip on a correct install. Backup, remove everything
+    # the archive says restore owns (its files, its routes, the watchdog job), restore: it exits 0,
+    # its own doctor step says every check verified, and doctor afterwards is all green again.
+    from diaktoros import backup, routes
+    archive = TMP / "round-trip.tar.gz"
+    rc, out = run_doctor_cli("backup", "--out", str(archive))
+    check("round trip: backup of a correct install", rc, 0)
+    manifest = backup.read_manifest(archive)
+    for entry in manifest["files"]:
+        pathlib.Path(entry["path"]).unlink(missing_ok=True)
+    live = routes.all_routes()
+    routes.subs_path().write_text(json.dumps(
+        {name: entry for name, entry in live.items() if name not in manifest["routes"]}))
+    jobs = TMP / "hermes-home" / "cron" / "jobs.json"
+    stored = json.loads(jobs.read_text())
+    stored["jobs"] = [job for job in stored["jobs"]
+                      if str(job.get("name") or "").strip() not in cli.SHARED_JOB_NAMES]
+    jobs.write_text(json.dumps(stored))
+    rc, _ = run_doctor("--loop", "widgets")
+    check("  the wiped install is not green", rc != 0, True)
+    # This install's state dir is outside the Hermes home: restore names it and asks first.
+    rc, refused = run_doctor_cli("restore", str(archive))
+    check("  a state dir outside the home is refused without consent", rc, 2)
+    check("  and named", f"outside the Hermes home: {STATE_DIR}" in refused, True)
+    rc, restored = run_doctor_cli("restore", str(archive), "--allow-state-dirs")
+    check("  restore exits 0", rc, 0)
+    check("  and its doctor step says every check verified",
+          "doctor: every check verified" in restored, True)
+    rc, out = run_doctor("--loop", "widgets")
+    summary = doctor_summary(out, "widgets")
+    check("  doctor after restore: every check verified",
+          (rc, summary is not None and summary["verified"] == summary["total"]), (0, True))
+    check("  no route secret appears in what restore printed",
+          hashlib.sha256(b"widgets-review").hexdigest() in restored, False)
 
     # #118: nous on an anthropic/* model with nous.anthropic_wire unset (Hermes's "chat") never
     # reaches the Messages wire, so a venv without the anthropic package is healthy — even --strict.
