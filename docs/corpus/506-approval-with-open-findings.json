@@ -1,0 +1,18 @@
+{
+  "id": "506-approval-with-open-findings",
+  "pr": 506,
+  "findings": [
+    {
+      "id": "open-findings",
+      "pattern": "open finding"
+    },
+    {
+      "id": "lost-findings",
+      "pattern": "lost|dropped"
+    },
+    {
+      "id": "broker-untested",
+      "pattern": "untested|no test|not tested"
+    }
+  ]
+}

@@ -834,7 +834,13 @@ Golden corpus (#491): replays historical PRs with known P1s through the reviewer
 per case, which findings were caught and which missed. On demand only (it costs model tokens)
 and no-write, like `selftest --live-turn`. Cases are JSON files in `<state dir>/corpus/`:
 `{"id": "...", "pr": 12, "head": "<sha>", "findings": [{"id": "...", "pattern": "<regex>"}]}`;
-a finding is caught when its regex matches the review body the turn would submit. Each run is
+`head` is optional and, when given, must be the PR's current head: a case at an earlier head is
+refused with "only the PR's final head is supported yet" (exit 2), never scored as missed. The
+replay is a first look (round 1: no earlier review or fixer answer reaches the prompt). A finding
+is caught only when the review the turn would submit is REQUEST_CHANGES **and** its regex
+(case-insensitive) matches inside a numbered finding line (`F1: ...`, #475); a mention in an
+APPROVE, or outside a finding line, is a miss. Seed cases (PRs #460, #497, #503, #506; their
+patterns are starting points to tune) are in `docs/corpus/`. Each run is
 appended to `<state dir>/corpus_scores.jsonl` with the prompt revision and model. Exit 1 when
 anything was missed; a malformed case file stops the run (exit 2).
 

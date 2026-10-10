@@ -1,0 +1,10 @@
+{
+  "id": "460-grant-on-reviewed-head",
+  "pr": 460,
+  "findings": [
+    {
+      "id": "grant-reviewed-head",
+      "pattern": "already[- ]reviewed|reviewed head|grant"
+    }
+  ]
+}
