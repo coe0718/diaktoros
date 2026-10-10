@@ -66,6 +66,8 @@ def connect(path, *, row_factory=None, pragmas: tuple[str, ...] = (),
     # ``opener`` opens (and vets) the connection in place of ``sqlite3.connect(path, **kwargs)``.
     # From the moment it returns, the connection is this function's to close; until then it is
     # the opener's, which must close anything it opened before raising.
+    # A caller that names no wait still gets the ledger's (#601), never SQLite's 5 s default.
+    kwargs.setdefault("timeout", LOCK_WAIT_S)
     con = opener() if opener is not None else sqlite3.connect(path, **kwargs)
     try:
         if row_factory is not None:

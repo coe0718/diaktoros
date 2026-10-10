@@ -6,7 +6,7 @@ host ran heavy test suites; every connection gave up after 10 s, and the log cou
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 from pathlib import Path
-import re
+import ast
 import sqlite3
 import sys
 import tempfile
@@ -35,6 +35,10 @@ class Waits(unittest.TestCase):
     def test_the_wait_is_a_minute(self):
         self.assertEqual(ledger.LOCK_WAIT_S, 60)
 
+    def test_ledger_connect_waits_the_full_time_when_the_caller_names_no_wait(self):
+        with ledger.connect(self.db) as con:
+            self.assertEqual(con.execute("PRAGMA busy_timeout").fetchone()[0], WAIT_MS)
+
     def test_host_worker_and_receipt_connections_wait_the_full_time(self):
         worker = Supervisor(self.db, create=False)
         receipt = review_receipt.ReceiptLedger(str(self.db), "run", "gen")
@@ -43,14 +47,36 @@ class Waits(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(self.busy_ms(cm), WAIT_MS)
 
-    def test_no_ledger_module_keeps_its_own_shorter_wait(self):
-        # One constant, not a number per module (the old 5, 10 and 30 s waits).
+    def test_every_ledger_connection_uses_the_shared_wait(self):
+        # One constant, not a number per module (the old 5, 10 and 30 s waits), and no
+        # connection left on SQLite's default 5 s (#605 review: trace._rows had no timeout).
+        # The only exceptions are SQLite files no other connection can hold: :memory: and a new
+        # private file, marked so on its line.
         modules = ("run_supervisor", "ci_fix", "review_receipt", "stats", "cli", "migrate",
                    "backup", "trace", "ledger")
-        stale = re.compile(r"busy_timeout=\d|(?:sqlite3|ledger)\.connect\([^)]*timeout=\d")
         for name in modules:
-            with self.subTest(name):
-                self.assertIsNone(stale.search((ROOT / "diaktoros" / f"{name}.py").read_text()))
+            path = ROOT / "diaktoros" / f"{name}.py"
+            source = path.read_text()
+            lines = source.splitlines()
+            self.assertNotRegex(source, r"busy_timeout=\d", name)
+            for node in ast.walk(ast.parse(source)):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "connect"
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id in ("sqlite3", "ledger")):
+                    continue
+                keywords = {k.arg: ast.unparse(k.value) for k in node.keywords}
+                first = ast.unparse(node.args[0]) if node.args else ""
+                where = f"{name}.py:{node.lineno}"
+                with self.subTest(where):
+                    if first in ("':memory:'", '":memory:"') or "private new file" in \
+                            lines[node.end_lineno - 1]:
+                        continue
+                    if node.func.value.id == "ledger" and "opener" in keywords:
+                        continue                    # the opener sets the wait itself
+                    if None in keywords:
+                        continue                    # ledger.connect's pass-through (**kwargs)
+                    self.assertIn("LOCK_WAIT_S", keywords.get("timeout", ""), where)
 
 
 class LockTimeouts(unittest.TestCase):

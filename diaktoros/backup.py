@@ -62,7 +62,7 @@ def _snapshot_ledger(src: pathlib.Path, dest: pathlib.Path) -> None:
     """SQLite's online backup: a consistent copy while other connections write."""
     source = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
     try:
-        target = sqlite3.connect(dest)
+        target = sqlite3.connect(dest)  # private new file
         try:
             source.backup(target)
         finally:
