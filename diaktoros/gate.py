@@ -450,6 +450,9 @@ def hooks_armed(loop: dict) -> bool | None:
 
 # The vocabulary of ``next.kind``. The suite asserts every conclusion is one of these, so a new
 # branch cannot quietly invent a kind nobody is checking for.
+# Ledger states of an isolated turn that is still coming (queued, held, running, or in doubt).
+LIVE_TURN = ("pending", "claimed", "launching", "running", "waiting", "uncertain")
+
 EXPLAIN_KINDS = ("review-verdict", "review-request", "fixer-retry", "fixer-push", "author-push", "release",
                  "adjudication", "rearm", "ready", "retry", "wait", "none")
 
@@ -841,6 +844,17 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     pending_delivery = (local["delivery_status"] == "delivery-pending"
                         and ((spent is not None and spent >= cap) or escalated(marker, head)))
     stale_held = {seat for seat, entry in held.items() if entry.get("head") != head}
+    # An isolated turn already in the ledger at this head (queued, held for CI, running) is
+    # the gate's answer, not a missing one (#509): the run itself is reported as the blocker.
+    ledgered = set()
+    if head:
+        from .run_supervisor import turn_state
+        for seat in ("reviewer", "fixer"):
+            if turn_state(config.host_path("ledger"), repo, number, head, seat) in LIVE_TURN:
+                ledgered.add(seat)
+    # Parked for a ruling (or its delivery pending), both gates stop on purpose: no "gate did not
+    # start one" line, which would read as something stuck while the ruling is the next event.
+    ruling = parked or pending_delivery
     # A review-only author's PR (#191) never needs the fixer and has no cap: a verdict at the
     # head is the author's to answer.
     review_only = author in config.review_only(loop)
@@ -928,15 +942,18 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                 blockers.append(f"non-verdict review at head {short} ({'/'.join(head_states)}) "
                                 "does not suppress a fresh reviewer request")
             if (at_head and "fixer" not in held and not inflight_fix and not queued_seat
-                    and not push_off and not review_only):
+                    and not push_off and not review_only and not ruling
+                    and "fixer" not in ledgered):
                 blockers.append(f"the changes-requested verdict at head {short} has no fix run out "
                                 f"— the fixer gate did not start one for that delivery")
-            if request_pending and not held and not inflight_review and not at_head and not approved:
+            if (request_pending and not held and not inflight_review and not at_head
+                    and not approved and not ruling and "reviewer" not in ledgered):
                 blockers.append(f"a review request for {loop['reviewer_seat']} is pending at head "
                                 f"{short}, but no review run is out — the reviewer gate did not "
                                 f"start one")
             if (spent and head and not reviewed and not approved and not request_pending and not held
-                    and not inflight_review and not queued_seat):
+                    and not inflight_review and not queued_seat and not ruling
+                    and "reviewer" not in ledgered):
                 blockers.append(f"no review request exists for head {short} — GitHub clears a request "
                                 f"when a verdict lands, so the reviewer gate stays silent until the "
                                 f"fixer asks again")

@@ -209,7 +209,7 @@ def lines(entry: dict) -> list[str]:
         if isinstance(item, dict):
             out.append(f"{fid} {item.get('state', '?')}"
                        f"{' (missed earlier)' if item.get('missed') else ''}: "
-                       f"{str(item.get('text') or '')[:120]}")
+                       f"{str(item.get('text') or '').lstrip(' :')[:120]}")
     return out
 
 
