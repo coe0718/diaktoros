@@ -1,0 +1,42 @@
+name: Experimental native macOS boundary
+
+on:
+  push:
+    branches: [feat/native-macos-seatbelt]
+  pull_request:
+    paths:
+      - diaktoros/seatbelt.py
+      - tests/test_seatbelt.py
+      - .github/workflows/seatbelt.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seatbelt-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boundary:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    env:
+      DIAKTOROS_REQUIRE_SEATBELT: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Record native runtime
+        run: |
+          sw_vers
+          uname -m
+          test -x /usr/bin/sandbox-exec
+          python -c 'import sys; print(sys.executable); print(sys.base_prefix)'
+      - name: Exercise real Seatbelt boundary (no credentials or live services)
+        run: python tests/leakguard.py discover -v -s tests -p 'test_seatbelt.py'
