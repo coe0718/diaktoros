@@ -79,6 +79,9 @@ def profile(*, read_roots: tuple[Path, ...], write_roots: tuple[Path, ...],
              '(allow file-read* (literal "/dev/null") (literal "/dev/urandom")'
              ' (literal "/dev/random"))',
              '(allow file-write-data (literal "/dev/null"))',
+             # macOS LibreSSL initializes this public system config even for offline Cargo.
+             # Its library ignores OPENSSL_CONF; grant one file, never /etc or credential stores.
+             '(allow file-read* (literal "/private/etc/ssl/openssl.cnf"))',
              '(allow sysctl-read (sysctl-name "hw.ncpu")'
              ' (sysctl-name "hw.activecpu") (sysctl-name "hw.logicalcpu")'
              ' (sysctl-name "hw.physicalcpu") (sysctl-name "hw.memsize")'
