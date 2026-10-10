@@ -4357,8 +4357,13 @@ def cmd_corpus(args) -> int:
     except Exception as exc:
         print(f"cannot run corpus: {doctor._safe_report_text(str(exc))}")
         return 2
-    with selftest.github_read_only(), selftest.worker_tempdir():
-        results = corpus.replay(cases, review)
+    try:
+        with selftest.github_read_only(), selftest.worker_tempdir():
+            corpus.check_heads(loop, cases)
+            results = corpus.replay(cases, review)
+    except corpus.CorpusError as exc:
+        print(f"cannot run corpus: {doctor._safe_report_text(str(exc))}")
+        return 2
     for r in results:
         print(f"{r['case']}: caught {len(r['caught'])} missed {len(r['missed'])}"
               + (f" ({', '.join(r['missed'])})" if r["missed"] else "")

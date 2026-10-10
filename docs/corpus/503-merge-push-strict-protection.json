@@ -1,0 +1,10 @@
+{
+  "id": "503-merge-push-strict-protection",
+  "pr": 503,
+  "findings": [
+    {
+      "id": "strict-protection",
+      "pattern": "strict|protection|merge push"
+    }
+  ]
+}

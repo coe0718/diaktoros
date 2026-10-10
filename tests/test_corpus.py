@@ -14,10 +14,16 @@ CASE = {"id": "c1", "pr": 7, "findings": [{"id": "sql", "pattern": "sql injectio
                                           {"id": "race", "pattern": r"race\s+condition"}]}
 
 
+def RC(body):
+    return {"verdict": "REQUEST_CHANGES", "body": body}
+
+
 class Corpus(unittest.TestCase):
     def test_reports_caught_and_missed_per_case(self):
-        out = corpus.replay([CASE], lambda c: "P1: SQL injection in query builder")
-        self.assertEqual(out, [{"case": "c1", "caught": ["sql"], "missed": ["race"]}])
+        out = corpus.replay([CASE], lambda c: {"verdict": "REQUEST_CHANGES",
+                                               "body": "F1: SQL injection in query builder"})
+        self.assertEqual(out, [{"case": "c1", "verdict": "REQUEST_CHANGES", "caught": ["sql"],
+                                "missed": ["race"]}])
 
     def test_a_turn_that_fails_misses_everything(self):
         def boom(case):
@@ -29,9 +35,9 @@ class Corpus(unittest.TestCase):
     def test_scores_recorded_per_revision_and_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "scores.jsonl"
-            results = corpus.replay([CASE], lambda c: "race condition")
+            results = corpus.replay([CASE], lambda c: RC("F1: race condition"))
             corpus.record(path, "rev1", "m1", results, now=1)
-            corpus.record(path, "rev2", "m1", corpus.replay([CASE], lambda c: "sql injection race condition"), now=2)
+            corpus.record(path, "rev2", "m1", corpus.replay([CASE], lambda c: RC("F1: sql injection\nF2: race condition")), now=2)
             rows = corpus.history(path)
         self.assertEqual([(r["prompt_rev"], r["model"], r["caught"], r["missed"]) for r in rows],
                          [("rev1", "m1", 1, 1), ("rev2", "m1", 2, 0)])
@@ -91,11 +97,46 @@ class Corpus(unittest.TestCase):
                 corpus.load(d)
 
 
+class Scoring(unittest.TestCase):
+    def test_a_mention_in_an_approve_is_a_miss(self):
+        body = "F1: I looked at the SQL injection and it is fine\nAPPROVE"
+        out = corpus.score(CASE, {"verdict": "APPROVE", "body": body})
+        self.assertEqual(out["caught"], [])
+
+    def test_prose_outside_a_numbered_finding_is_a_miss(self):
+        out = corpus.score(CASE, {"verdict": "REQUEST_CHANGES",
+                                  "body": "I looked at the sql injection (fine)."})
+        self.assertEqual(out["caught"], [])
+
+    def test_request_changes_with_the_pattern_in_a_finding_line_is_a_catch(self):
+        out = corpus.score(CASE, {"verdict": "REQUEST_CHANGES",
+                                  "body": "F1: db.py: SQL injection in the builder"})
+        self.assertEqual(out["caught"], ["sql"])
+        self.assertEqual(out["verdict"], "REQUEST_CHANGES")
+
+    def test_head_must_be_a_string(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            (d / "a.json").write_text(json.dumps({**CASE, "head": 5}))
+            with self.assertRaises(corpus.CorpusError):
+                corpus.load(d)
+
+    def test_seed_cases_load(self):
+        cases = corpus.load(ROOT / "docs" / "corpus")
+        self.assertEqual(sorted(c["pr"] for c in cases), [460, 497, 503, 506])
+
+
+LOOP = {"repo": "o/r", "id": "l", "read_token": "t", "cap": 3, "seats": {}, "reviewers": ["rev"],
+        "reviewer_seat": "rev"}
+LEAK = "EARLIER-VERDICT-SECRET-FINDING"
+
+
 class LiveReview(unittest.TestCase):
+    """Real ``pr_change`` and ``isolated_prompt``; only GitHub reads and the turn are mocked."""
+
     def _run(self, case, submissions):
         from unittest import mock
-        from diaktoros import gh, run_supervisor, selftest, trusted_turn
-        change = mock.Mock(diff="THE DIFF")
+        from diaktoros import ci, ci_fix, gh, issue_facts, selftest, trusted_turn
         seen = {}
 
         def fake_turn(loop, scope, **kw):
@@ -105,35 +146,54 @@ class LiveReview(unittest.TestCase):
                              proxy_model="pm", client_identity="ci")
         reviewer.credential_provider.return_value = "cred"
         settings = {"source": "/s", "venv": "/v", "runtime": "/r", "rust": "/x"}
-        loop = {"repo": "o/r"}
-        with mock.patch.object(gh, "fetch", return_value=({"head": {"sha": "TIP", "ref": "br"}}, None)), \
-                mock.patch.object(gh, "reviews", return_value=[]), \
-                mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
-                mock.patch.object(run_supervisor, "pr_change", return_value=change) as pc, \
-                mock.patch.object(run_supervisor, "isolated_prompt", return_value="PROMPT"), \
-                mock.patch.object(selftest, "ledger_path", return_value="/l"), \
+        pr = {"number": 7, "changed_files": 0, "head": {"sha": "TIP", "ref": "br"},
+              "base": {"ref": "main", "sha": "b" * 40}, "title": "t", "body": "b",
+              "user": {"login": "u"}}
+        earlier = [{"user": {"login": "rev"}, "state": "CHANGES_REQUESTED", "body": LEAK,
+                    "commit_id": "TIP", "submitted_at": "2026-10-01T00:00:00Z"}]
+        with mock.patch.object(gh, "fetch", return_value=(pr, None)), \
+                mock.patch.object(gh, "api", return_value=pr), \
+                mock.patch.object(gh, "pr_files_read", return_value=([], "")), \
+                mock.patch.object(gh, "reviews", return_value=earlier), \
+                mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
+                mock.patch.object(gh, "pr_url", return_value="https://github.com/o/r/pull/7"), \
+                mock.patch.object(ci, "read", return_value=ci.CIState(passed=["t"])), \
+                mock.patch.object(ci_fix, "fix_history", return_value=""), \
+                mock.patch.object(ci_fix, "still_red", return_value=""), \
+                mock.patch.object(issue_facts, "section", return_value=""), \
                 mock.patch.object(selftest, "_work_root", return_value="/w"), \
                 mock.patch.object(trusted_turn, "run_turn", side_effect=fake_turn):
-            review = corpus.live_review(loop, settings, reviewer, 60)
-            try:
-                body = review(case)
-            finally:
-                seen["row"] = pc.call_args[0][1] if pc.call_args else None
-        return body, seen
+            review = corpus.live_review(LOOP, settings, reviewer, 60)
+            return review(case), seen
 
-    def test_turn_runs_no_write_at_the_case_head_and_returns_last_body(self):
-        body, seen = self._run({"id": "c", "pr": 7, "head": "OLD", "findings": []},
-                               [{"body": "first"}, {"body": "SQL injection"}])
-        self.assertEqual(body, "SQL injection")
+    def test_turn_runs_no_write_and_returns_the_last_review(self):
+        body, seen = self._run({"id": "c", "pr": 7, "head": "TIP", "findings": []},
+                               [{"verdict": "APPROVE", "body": "first"},
+                                {"verdict": "REQUEST_CHANGES", "body": "F1: SQL injection"}])
+        self.assertEqual(body, {"verdict": "REQUEST_CHANGES", "body": "F1: SQL injection"})
         self.assertIs(seen["kw"]["no_write"], True)
-        self.assertEqual(seen["scope"].head, "OLD")
-        self.assertEqual(seen["row"]["head"], "OLD")
-        self.assertEqual(seen["kw"]["review_diff"], "THE DIFF")
-        self.assertEqual(seen["kw"]["prompt"], "PROMPT")
-
-    def test_head_defaults_to_the_prs_current_head(self):
-        _, seen = self._run({"id": "c", "pr": 7, "findings": []}, [{"body": "x"}])
         self.assertEqual(seen["scope"].head, "TIP")
+
+    def test_prompt_carries_no_earlier_review(self):
+        _, seen = self._run({"id": "c", "pr": 7, "findings": []}, [{"body": "x"}])
+        self.assertNotIn(LEAK, seen["kw"]["prompt"])
+        self.assertIn("round", seen["kw"]["prompt"])
+
+    def test_a_case_at_an_earlier_head_is_refused_not_missed(self):
+        # replay() must not turn it into an all-missed result.
+        case = {"id": "c", "pr": 7, "head": "OLD", "findings": [{"id": "x", "pattern": "x"}]}
+        with self.assertRaises(corpus.UnsupportedCase) as ctx:
+            corpus.replay([case], lambda c: self._run(c, [{"body": "x"}])[0])
+        self.assertIn("final head", str(ctx.exception))
+
+    def test_check_heads_refuses_an_earlier_head_before_any_replay(self):
+        from unittest import mock
+        from diaktoros import gh
+        case = {"id": "c", "pr": 7, "head": "OLD", "findings": []}
+        with mock.patch.object(gh, "fetch", return_value=({"head": {"sha": "TIP"}}, None)):
+            with self.assertRaises(corpus.UnsupportedCase):
+                corpus.check_heads(LOOP, [case])
+            corpus.check_heads(LOOP, [{**case, "head": "TIP"}])
 
     def test_no_submission_raises(self):
         with self.assertRaises(corpus.CorpusError):
