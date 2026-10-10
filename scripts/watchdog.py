@@ -994,14 +994,16 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             # #575: a spent cap with no marker at this head (the head moved after the cap fired,
             # or no gate event ever reached it) is handed to adjudication here, exactly as the
             # reviewer gate would: no model, no GitHub write. Only a failed hand-off is a stall.
-            try:
-                handed = gate.breach(loop, st, number, head, len(changes),
-                                     f"review cap reached — {loop['cap']} verdicts, no approval "
-                                     "(raised by the watchdog at this head)")
-            except Exception as exc:
-                handed = ""
-                log(f"#{number} @ {head[:7]}: cap spent, hand-off failed: "
-                    f"{type(exc).__name__}: {exc}")
+            # Without an adjudicator there is no one to hand it to: the alert is the operator's.
+            handed = ""
+            if (loop.get("adjudicator") or {}).get("route"):
+                try:
+                    handed = gate.breach(loop, st, number, head, len(changes),
+                                         f"review cap reached — {loop['cap']} verdicts, no "
+                                         "approval (raised by the watchdog at this head)")
+                except Exception as exc:
+                    log(f"#{number} @ {head[:7]}: cap spent, hand-off failed: "
+                        f"{type(exc).__name__}: {exc}")
             if handed == "new":
                 log(f"#{number} @ {head[:7]}: cap spent with no marker here — handed to "
                     "adjudication")

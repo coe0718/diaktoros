@@ -267,6 +267,30 @@ def group_watchdog() -> None:
     check("  a second sweep leaves the marker alone",
           (load_state("breach.json").get(f"{REPO}#7") or {}).get("at"), marker.get("at"))
 
+    # #575: the same spent cap with no adjudicator, and on a review-only PR: never breached.
+    # reset() rewrites the loop file, so each edit comes after it; the next reset restores it.
+    cap_three = [review(REVIEWER, head="c" * 40, rid=1), review(REVIEWER, head="d" * 40, rid=2),
+                 review(REVIEWER, head="e" * 40, rid=3)]
+    loop_file = LOOPS_DIR / "widgets.json"
+    reset(prs={"7": {**pr(7, head=HEAD_B), "reviews": cap_three}})
+    cfg = json.loads(loop_file.read_text())
+    cfg.pop("adjudicator", None)
+    loop_file.write_text(json.dumps(cfg))
+    state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
+    out, _, _ = run("watchdog.py", None, "--loop", "widgets")
+    check("no adjudicator: the spent cap is not breached",
+          load_state("breach.json").get(f"{REPO}#7"), None)
+    check("  the alert is unchanged", "the cap may not have fired" in out, True)
+
+    reset(prs={"7": {**pr(7, head=HEAD_B, author="outsider"), "reviews": cap_three}})
+    cfg = json.loads(loop_file.read_text())
+    loop_file.write_text(json.dumps({**cfg, "review_only": ["outsider"]}))
+    state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
+    out, _, _ = run("watchdog.py", None, "--loop", "widgets")
+    check("a review-only PR with the cap spent is never breached",
+          load_state("breach.json").get(f"{REPO}#7"), None)
+    reset(prs={"7": pr(7)})
+
     # Real grace/baseline mode (not DIAKTOROS_TEST's zero-grace bypass).
     normal = {"DIAKTOROS_TEST": ""}
     reset(prs={"7": pr(7)})
