@@ -120,4 +120,4 @@ jobs:
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_macos.py'
       - name: Native runtime denials on failure
         if: failure()
-        run: /usr/bin/log show --last 2m --style compact --predicate 'eventMessage CONTAINS "deny" AND (eventMessage CONTAINS "python" OR eventMessage CONTAINS "Python")' 2>&1 | tail -n 100
+        run: /usr/bin/log show --last 2m --style compact --predicate 'eventMessage CONTAINS "deny" AND (eventMessage CONTAINS "python" OR eventMessage CONTAINS "Python" OR eventMessage CONTAINS "cargo" OR eventMessage CONTAINS "rustc" OR eventMessage CONTAINS "clang" OR eventMessage CONTAINS "ld(")' 2>&1 | tail -n 100

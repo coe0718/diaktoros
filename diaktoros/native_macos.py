@@ -70,6 +70,8 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
            'TMPDIR': str(scratch), 'CARGO_HOME': str(scratch / 'cargo'),
            'RUSTUP_HOME': str(scratch / 'rustup'), 'CARGO_TARGET_DIR': str(work / 'target'),
            'CARGO_NET_OFFLINE': 'true', 'GIT_CONFIG_GLOBAL': '/dev/null',
+           # Cargo initializes LibreSSL even offline; never load host TLS configuration.
+           'OPENSSL_CONF': '/dev/null',
            'GIT_CONFIG_SYSTEM': '/dev/null', 'GIT_TERMINAL_PROMPT': '0',
            'OPENAI_API_KEY': 'sandbox-dummy',
            'DIAKTOROS_INFERENCE_SOCKET': str(inference_socket),
