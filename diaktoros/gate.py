@@ -397,7 +397,7 @@ def hooks_read(loop: dict) -> tuple[bool | None, str]:
     The watchdog reads that as silence, and ``explain`` labels it unknown rather than guessing in
     the other direction — "the loop is paused" is a claim, and it needs the hooks to prove it.
     """
-    hooks, error = gh.fetch(loop, gh.hooks_path(loop))
+    hooks, error = gh.hooks_read(loop)      # every page: a full first page is not the whole list
     if error or not isinstance(hooks, list):
         return None, error or "GitHub returned no hook list"
     from . import doctor          # its matchers are arm's and apply's too; imported late (it is big)
