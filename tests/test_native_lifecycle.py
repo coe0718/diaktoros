@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from diaktoros import contained, native_lifecycle, seatbelt
 
@@ -108,6 +109,29 @@ else:
     else:
         raise AssertionError('fixture unexpectedly completed')
 '''
+
+
+class NativeLifecycleValidation(unittest.TestCase):
+    def test_failed_watchdog_during_output_abort_reports_unverified_cleanup(self):
+        # No sandbox/turn is launched: this fake helper fails after excessive
+        # output, exercising the parent's abort-completion validation on Linux too.
+        with tempfile.TemporaryDirectory() as directory:
+            helper = Path(directory) / 'failed-watchdog.py'
+            helper.write_text("import sys; print('fixture', flush=True); sys.exit(7)")
+            with mock.patch.object(native_lifecycle, '__file__', str(helper)), \
+                    mock.patch.object(sys, 'platform', 'darwin'), \
+                    mock.patch.object(contained, 'MAX_CAPTURE', 0):
+                with self.assertRaises(native_lifecycle.CleanupIncomplete):
+                    native_lifecycle.capture(['unused'], env={}, timeout=5)
+
+    def test_missing_status_does_not_wait_for_an_inherited_writer(self):
+        reader, writer = os.pipe()
+        try:
+            with self.assertRaises(native_lifecycle.CleanupIncomplete):
+                native_lifecycle._completion(subprocess.CompletedProcess([], 0), reader)
+        finally:
+            os.close(reader)
+            os.close(writer)
 
 
 class NativeLifecycleGaps(unittest.TestCase):

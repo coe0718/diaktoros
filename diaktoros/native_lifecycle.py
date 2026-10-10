@@ -143,6 +143,28 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
         os.close(lifeline_fd)
 
 
+def _completion(process, descriptor, *, allow_owner_loss=False):
+    # The helper has exited. A host fork may still hold a status writer, so
+    # missing completion must fail closed rather than block waiting for EOF.
+    os.set_blocking(descriptor, False)
+    try:
+        status = os.read(descriptor, MAX_STATUS + 1)
+    except BlockingIOError:
+        status = b''
+    try:
+        record = json.loads(status)
+        valid = (process.returncode == 0 and len(status) <= MAX_STATUS and
+                 type(record['returncode']) is int and
+                 type(record['timeout']) is bool and type(record['parent_lost']) is bool and
+                 (allow_owner_loss or record['parent_lost'] is False))
+    except (ValueError, KeyError, TypeError):
+        valid = False
+    if not valid:
+        raise CleanupIncomplete('native watchdog completion could not be verified; '
+                                f'helper={process.returncode}, status={status!r}')
+    return record
+
+
 def capture(argv: list[str], *, env: dict[str, str], timeout: int,
             cwd: Path | None = None) -> subprocess.CompletedProcess:
     """Capture through a trusted watchdog; no sandbox is provided by this function.
@@ -197,21 +219,14 @@ def capture(argv: list[str], *, env: dict[str, str], timeout: int,
                     # Do not kill the independent cleanup owner or pretend it
                     # finished. Caller must preserve storage for recovery.
                     raise CleanupIncomplete('native watchdog cleanup did not complete') from error
+                _completion(process, status_read, allow_owner_loss=True)
 
             result = contained.capture_process(process, argv=argv, timeout=timeout + 10,
                                                abort=abort)
-            status = os.read(status_read, MAX_STATUS + 1)
             try:
-                record = json.loads(status)
-                valid = (process.returncode == 0 and len(status) <= MAX_STATUS and
-                         type(record['returncode']) is int and
-                         type(record['timeout']) is bool and record['parent_lost'] is False)
-            except (ValueError, KeyError, TypeError):
-                valid = False
-            if not valid:
-                raise CleanupIncomplete('native watchdog completion could not be verified; '
-                                        f'helper={process.returncode}, status={status!r}; '
-                                        + result.stderr[-3000:])
+                record = _completion(process, status_read)
+            except CleanupIncomplete as error:
+                raise CleanupIncomplete(str(error) + '; ' + result.stderr[-3000:]) from error
             if record['timeout']:
                 raise subprocess.TimeoutExpired(argv, timeout, result.stdout.encode(),
                                                 result.stderr.encode())
