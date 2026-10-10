@@ -135,6 +135,49 @@ def revisions(db: Path, repo: str, since: float) -> dict | None:
     return out
 
 
+LIVE_STATES = ("pending", "claimed", "launching", "running", "waiting", "uncertain")
+RECENT_FAILED_S = 24 * 3600
+WHY_MAX = 160
+
+
+def _why(state: str, error) -> str:
+    """A short, host-written reason: a hold's own line, else the state's meaning. A failed or
+    uncertain run's error is not repeated here (``explain`` shows it); never a turn's output."""
+    text = str(error or "")
+    if state == "waiting" and text.startswith("held:"):
+        return text[:WHY_MAX]
+    return {"waiting": "waiting to retry", "uncertain": "needs an operator: may have written",
+            "failed": "failed: see explain", "pending": "queued", "claimed": "starting",
+            "launching": "starting", "running": "running"}.get(state, state)
+
+
+def now(db: Path, repo: str, at: float | None = None) -> dict | None:
+    """What the loop is doing right now, for the Desktop page: every live run (queued, running,
+    held, uncertain) and the last day's failures, newest first. None when there is no ledger.
+    Opened read-only."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    at = time.time() if at is None else at
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        con.row_factory = sqlite3.Row
+        marks = ",".join("?" * len(LIVE_STATES))
+        rows = con.execute(f"SELECT pr, seat, head, state, error, updated FROM runs WHERE repo=? "
+                           f"AND (state IN ({marks}) OR (state='failed' AND updated>=?)) "
+                           "ORDER BY updated DESC LIMIT 100",
+                           (repo, *LIVE_STATES, at - RECENT_FAILED_S)).fetchall()
+    finally:
+        con.close()
+    runs = [{"pr": row["pr"], "seat": row["seat"], "head": str(row["head"] or "")[:7],
+             "state": row["state"], "why": _why(row["state"], row["error"]),
+             "since": row["updated"]} for row in rows]
+    counts = Counter("held" if run["state"] == "waiting" and run["why"].startswith("held:")
+                     else "running" if run["state"] in ("claimed", "launching", "running")
+                     else run["state"] for run in runs)
+    return {"repo": repo, "at": at, "runs": runs, "counts": dict(counts)}
+
+
 def _iso(text) -> float | None:
     try:
         return datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()

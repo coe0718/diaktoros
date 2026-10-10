@@ -1,0 +1,9 @@
+{
+  "name": "diaktoros",
+  "label": "Diaktoros",
+  "description": "Read-only loop activity for the Hermes Desktop page: seat turns, timings and live runs.",
+  "icon": "Activity",
+  "tab": {"hidden": true},
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
