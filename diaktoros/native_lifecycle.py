@@ -183,6 +183,12 @@ def capture(argv: list[str], *, env: dict[str, str], timeout: int,
             def abort():
                 nonlocal life_write
                 if life_write is not None:
+                    # An explicit request also works if a forked host process
+                    # retains another writer while this supervisor stays alive.
+                    try:
+                        os.write(life_write, b'x')
+                    except BrokenPipeError:
+                        pass
                     os.close(life_write)
                     life_write = None
                 try:

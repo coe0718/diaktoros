@@ -114,8 +114,10 @@ alone does not establish ownership of a descendant that changes its group.
 
 `native_lifecycle.capture` launches a trusted helper outside the child's Seatbelt
 profile, in a separate session with a scrubbed environment. An anonymous pipe
-has a writer in the supervisor and a reader in the watchdog; its EOF requests
-cleanup. The watchdog also registers a kernel exit notification for its actual
+has a writer in the supervisor and a reader in the watchdog; either EOF or an
+explicit abort byte requests cleanup. The abort byte works even if a forked host
+child retains a writer while the supervisor stays alive. The watchdog also
+registers a kernel exit notification for its actual
 supervisor, so a forked host child retaining a writer cannot delay cleanup after
 supervisor death. Parent identity is checked around registration, before any
 sandboxed work starts. Configuration and result pipes

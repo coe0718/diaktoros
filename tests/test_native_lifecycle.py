@@ -39,11 +39,12 @@ if sys.argv[4] in ('detach', 'group'):
     if sys.argv[4] == 'detach':
         os.setsid()
 # Close capture pipes: surviving because a pipe is open is a different case.
-fd = os.open('/dev/null', os.O_RDWR)
-for target in (0, 1, 2):
-    os.dup2(fd, target)
-if fd > 2:
-    os.close(fd)
+if sys.argv[4] != 'output':
+    fd = os.open('/dev/null', os.O_RDWR)
+    for target in (0, 1, 2):
+        os.dup2(fd, target)
+    if fd > 2:
+        os.close(fd)
 (work / 'ready-tmp').write_text(json.dumps({'pid': os.getpid(), 'pgrp': os.getpgrp(),
                                              'parent': os.getppid(), 'owner': owner}))
 (work / 'ready-tmp').replace(work / 'ready')
@@ -51,6 +52,9 @@ deadline = time.monotonic() + 15
 try:
     while time.monotonic() < deadline and not (control / 'release').exists():
         if (control / 'probe').exists():
+            if sys.argv[4] == 'output':
+                sys.stdout.write('x' * 1000000)
+                sys.stdout.flush()
             try:
                 secret.read_text()
             except PermissionError:
@@ -94,6 +98,10 @@ try:
     result = launcher.capture(argv, env=env, timeout=int(sys.argv[3]))
 except subprocess.TimeoutExpired:
     Path(sys.argv[4]).write_text('timeout observed')
+except contained.OutputLimitExceeded:
+    if sys.argv[6] != 'output':
+        raise
+    Path(sys.argv[4]).write_text('output limit observed')
 else:
     if sys.argv[6] == 'normal' and result.returncode == 0:
         Path(sys.argv[4]).write_text('normal exit observed')
@@ -118,7 +126,8 @@ class NativeLifecycleGaps(unittest.TestCase):
             time.sleep(0.02)
         self.fail(f'fixture did not write {path.name}')
 
-    def probe_gap(self, *, detached, guarded=False, normal=False, extra_writer=False):
+    def probe_gap(self, *, detached, guarded=False, normal=False, extra_writer=False,
+                  output_limit=False):
         with tempfile.TemporaryDirectory(prefix='dk-life-', dir='/tmp') as directory:
             root = Path(directory).resolve()
             work, control = root / 'work', root / 'control'
@@ -134,13 +143,15 @@ class NativeLifecycleGaps(unittest.TestCase):
             policy.write_text(profile.text)
             argv = profile.command(policy, [str(Path(sys.executable).resolve()), '-I', '-B',
                                             str(script), str(work), str(control), str(secret),
-                                            'group' if normal else ('detach' if detached else 'stay')])
+                                            'output' if output_limit else
+                                            ('group' if normal else ('detach' if detached else 'stay'))])
             env = {'PATH': '/usr/bin:/bin', 'HOME': str(work), 'TMPDIR': str(work)}
             with closing(select.kqueue()) as exits, closing(select.kqueue()) as extra_exits:
                 supervisor = subprocess.Popen(
                     [sys.executable, '-c', SUPERVISOR, json.dumps(argv), json.dumps(env),
                      '3' if detached else '30', str(root / 'timeout'),
-                     'guarded' if guarded else 'legacy', 'normal' if normal else 'timeout',
+                     'guarded' if guarded else 'legacy',
+                     'output' if output_limit else ('normal' if normal else 'timeout'),
                      'extra-writer' if extra_writer else 'ordinary', str(control)],
                     cwd=Path(__file__).resolve().parents[1],
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
@@ -167,6 +178,11 @@ class NativeLifecycleGaps(unittest.TestCase):
                         _, errors = supervisor.communicate(timeout=8)
                         self.assertEqual(supervisor.returncode, 0, errors.decode(errors='replace'))
                         self.assertEqual(self.wait_file(root / 'timeout'), 'normal exit observed')
+                    elif output_limit:
+                        (control / 'probe').touch()
+                        _, errors = supervisor.communicate(timeout=8)
+                        self.assertEqual(supervisor.returncode, 0, errors.decode(errors='replace'))
+                        self.assertEqual(self.wait_file(root / 'timeout'), 'output limit observed')
                     elif detached:
                         self.assertEqual(ready['pid'], ready['pgrp'])
                         _, errors = supervisor.communicate(timeout=8)
@@ -227,6 +243,9 @@ class NativeLifecycleGaps(unittest.TestCase):
 
     def test_owner_exit_watch_works_with_an_inherited_lifeline_writer(self):
         self.probe_gap(detached=False, guarded=True, extra_writer=True)
+
+    def test_output_abort_works_with_an_inherited_lifeline_writer(self):
+        self.probe_gap(detached=False, guarded=True, extra_writer=True, output_limit=True)
 
     def test_watchdog_kills_group_descendants_after_normal_leader_exit(self):
         self.probe_gap(detached=False, guarded=True, normal=True)
