@@ -21,8 +21,20 @@ import time
 import tempfile
 
 from .ledger import LOCK_WAIT_S
-from . import (attribution, config, doctor, envnames, gate, gate_shims, gh, observer, prompts,
-               route_intent, routes, state as state_mod)
+from . import (
+    attribution,
+    config,
+    doctor,
+    envnames,
+    gate,
+    gate_shims,
+    gh,
+    observer,
+    prompts,
+    route_intent,
+    routes,
+    state as state_mod,
+)
 from .util import logged
 
 # The shim and job names a fresh install gets; an install not yet migrated keeps the old pair
@@ -3983,7 +3995,12 @@ def _rename_loop(spec: str, *, dry_run: bool, admin: str | None) -> tuple[list[s
     route intent record move; the old loop file goes; and an old route is removed only once every
     hook that pointed at it was answered on the new one. A refused ping puts its hook back.
     """
-    from . import hook_ping, migrate, pacing, run_supervisor
+    from . import (
+        hook_ping,
+        migrate,
+        pacing,
+        run_supervisor,
+    )
     old_id, sep, new_id = spec.partition("=")
     tag = f"rename-loop: {old_id or '?'} → {new_id or '?'}"
     if not sep or old_id == new_id or not all(migrate.LOOP_ID.match(x or "") for x in (old_id, new_id)):
@@ -4325,7 +4342,12 @@ def cmd_selftest(args) -> int:
 
 def cmd_corpus(args) -> int:
     """Replay the golden corpus through the reviewer (no-write) and record the scores (#491)."""
-    from . import corpus, prompts, seat_model, selftest
+    from . import (
+        corpus,
+        prompts,
+        seat_model,
+        selftest,
+    )
     try:
         loop = config.load_id(args.loop)
         directory = corpus.corpus_dir(loop, args.dir)
