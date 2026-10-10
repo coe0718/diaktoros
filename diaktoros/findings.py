@@ -45,7 +45,10 @@ def parse(body: str, known=()) -> list[tuple[str, str, str]]:
 def open_ids(entry: dict) -> list[str]:
     found = entry.get("findings") if isinstance(entry, dict) else None
     found = found if isinstance(found, dict) else {}
-    return sorted((k for k, v in found.items() if isinstance(v, dict) and v.get("state") == "open"),
+    # Host state may hold a key the parser never makes (hand edit, partial write): skip it.
+    return sorted((k for k, v in found.items()
+                   if isinstance(k, str) and re.fullmatch(r"F\d+", k)
+                   and isinstance(v, dict) and v.get("state") == "open"),
                   key=lambda k: int(k[1:]))
 
 
