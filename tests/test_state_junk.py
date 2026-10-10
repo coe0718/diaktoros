@@ -141,6 +141,15 @@ class WatchdogLog(unittest.TestCase):
         self.assertIn(f"sweep {total - 1} ", lines[-1])
         self.assertLessEqual(len(lines), state.LOG_KEEP + 1)
 
+    def test_oversized_lines_are_bounded(self):
+        # #604: a few huge lines (under LOG_KEEP) must not leave the log above its bound.
+        self.st.note("x" * 300000)
+        self.assertLessEqual(self.st.log.stat().st_size, state.LOG_PRUNE_BYTES)
+        for _ in range(100):
+            self.st.note("y" * state.LOG_LINE_MAX)
+        self.assertLessEqual(self.st.log.stat().st_size,
+                             state.LOG_PRUNE_BYTES + state.LOG_LINE_MAX + 100)
+
     def test_small_watchdog_log_is_kept_whole(self):
         for i in range(5):
             self.st.note(f"m{i}")
