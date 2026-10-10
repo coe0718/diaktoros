@@ -55,6 +55,14 @@ def _outcome(failed: list[str], merges: list[int] | None, url: str) -> str:
     return f"{text} — {url}" if url else text
 
 
+def _remember(st, path, key: str, head: str) -> None:
+    """Record ``key`` = head, re-reading the file under the lock so the other key survives."""
+    with st.locked():
+        current = st._load(path, {})
+        current = current if isinstance(current, dict) else {}
+        st._save(path, {**current, key: head})
+
+
 def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
     """One watchdog pass over main (no model, no write). True when a notice was sent now."""
     from . import observer
@@ -73,13 +81,11 @@ def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
         return False                                  # unreadable CI is no notice
     if not view.failed:
         if view.green:
-            with st.locked():
-                st._save(path, {**memory, "green": head})
+            _remember(st, path, "green", head)
         return False                                  # green or still running: nothing yet
     merges = merged_since(loop, memory.get("green") or "", head)
     outcome = _outcome(view.failed, merges, view.urls.get(view.failed[0], ""))
-    with st.locked():                                 # remember first: one notice per head
-        st._save(path, {**memory, "notified": head})
+    _remember(st, path, "notified", head)             # remember first: one notice per head
     observer.notify(loop, st, "main_red", merges[-1] if merges else 0, head,
                     identity="main_red", outcome=outcome[:600], next_turn="you")
     log(f"main @ {head[:7]} is red: {ci._names(view.failed)}")
