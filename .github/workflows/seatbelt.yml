@@ -19,6 +19,8 @@ on:
       - tests/test_native_detach.py
       - tests/native_spawn_fixture.c
       - diaktoros/native_spawn.c
+      - diaktoros/native_python_spawn.py
+      - tests/test_native_python_spawn.py
       - tests/test_native_snapshot.py
       - tests/test_snapshot_secrets.py
       - tests/test_trusted_fetch.py
@@ -76,7 +78,9 @@ jobs:
       - name: Verify role-specific checkout mutation permissions
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_roles.py'
       - name: Measure direct syscall and spawn-attribute detach routes
-        run: python tests/leakguard.py discover -v -s tests -p 'test_native_detach.py'
+        run: |
+          python tests/leakguard.py discover -v -s tests -p 'test_native_detach.py'
+          python tests/leakguard.py discover -v -s tests -p 'test_native_python_spawn.py'
       - name: Startup diagnostics on failure
         if: failure()
         run: |
@@ -145,6 +149,16 @@ jobs:
           cd hermes
           UV_PROJECT_ENVIRONMENT="$HERMES_AGENT_SOURCE/venv" uv sync --frozen --no-dev --extra anthropic
           test -x "$HERMES_AGENT_SOURCE/venv/bin/hermes"
+      - name: Build experimental fork-exec adapter
+        run: |
+          generation="$RUNNER_TEMP/native-spawn"
+          mkdir -m 700 "$generation"
+          arch_flags=(-arch x86_64)
+          if [[ $(uname -m) == arm64 ]]; then
+            arch_flags=(-arch arm64 -arch arm64e)
+          fi
+          /usr/bin/clang -dynamiclib -Wall -Wextra -Werror -Wno-deprecated-declarations "${arch_flags[@]}" diaktoros/native_spawn.c -o "$generation/spawn.dylib"
+          echo "DIAKTOROS_NATIVE_SPAWN_ADAPTER=$generation/spawn.dylib" >> "$GITHUB_ENV"
       - name: Real Hermes tool turn over Unix model and broker sockets
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_macos.py'
       - name: Native runtime denials on failure

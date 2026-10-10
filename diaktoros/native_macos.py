@@ -8,6 +8,7 @@ parent/detached-child lifecycle and hardened production staging.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 import shutil
 import tempfile
@@ -32,6 +33,7 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         workspace: native_storage.Workspace,
         sdk: Path | None = None, developer_tools: Path | None = None,
         dependencies: Path | None = None,
+        spawn_adapter: Path | None = None,
         timeout: int = 180, max_steps: int = 10):
     """Run native Hermes over Unix sockets; no automatic selection or real credentials.
 
@@ -68,8 +70,12 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         if not (developer_tools / 'bin/clang').is_file():
             raise ValueError('developer tools must name the selected compiler directory')
         build_roots = (sdk, developer_tools, dependencies)
+    adapter = Path(spawn_adapter).resolve(strict=True) if spawn_adapter is not None else None
+    if adapter is not None and not adapter.is_file():
+        raise ValueError('spawn adapter must be a trusted compiled file')
+    adapter_roots = (adapter.parent,) if adapter is not None else ()
     profile = seatbelt.profile(read_roots=(code, venv, runtime, rust, client, export,
-                                          *build_roots, *read_work),
+                                          *build_roots, *read_work, *adapter_roots),
                                write_roots=writes,
                                sockets=(inference_socket, broker_socket))
     plugin = home / 'plugins' / PROVIDER
@@ -104,6 +110,17 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
             '[source.crates-io]\nreplace-with = "vendored"\n'
             f'[source.vendored]\ndirectory = {json.dumps(str(dependencies))}\n')
     entry = layout.hermes_entry(provider=PROVIDER, model=model, max_steps=max_steps, timeout=timeout)
+    if adapter is not None:
+        profile = replace(profile, text=profile.text + '(allow syscall-unix)\n'
+                          '(deny syscall-unix (syscall-number 82 147 244))\n')
+        helper = client / 'diaktoros' / 'native_python_spawn.py'
+        shutil.copyfile(Path(__file__).with_name('native_python_spawn.py'), helper)
+        helper.chmod(0o444)
+        env['DYLD_INSERT_LIBRARIES'] = str(adapter)
+        entry = [entry[0], '-c',
+                 'import runpy,sys; from diaktoros.native_python_spawn import install; '
+                 'install(); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name="__main__")',
+                 *entry[1:]]
     # Profile file lives outside every writable root. A file avoids ARG_MAX limits.
     with tempfile.TemporaryDirectory(prefix='dk-policy-', dir='/tmp') as directory:
         policy = Path(directory) / 'profile.sb'

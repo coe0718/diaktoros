@@ -230,7 +230,12 @@ File-action snapshots and PATH expansion happen before fork; the child uses
 async-signal-safe operations. Atfork hooks protect the action registry across
 multithreaded forks.
 
-The prototype is not enabled in the native Hermes launcher. Private spawn
+The experimental launcher accepts a trusted `spawn_adapter` opt-in; the real
+Hermes/Rust CI fixture enables it with kernel denial of session/group changes
+and native spawn. Its trusted Python bootstrap uses fork/exec and keeps Hermes
+terminal tools in the owned group. This is not production backend selection.
+ARM builds include arm64 and arm64e slices for private tools and Apple launchers.
+Private spawn
 attributes, newer action extensions, dyld interposition on Apple platform
 binaries, inherited descriptor races and complete tool timeout semantics remain
 integration gates. Kernel denial is essential: removing or bypassing the

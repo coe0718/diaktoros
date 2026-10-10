@@ -5,6 +5,7 @@ All probe children are immediately waited for. No detached fixture survives.
 import _home_guard  # noqa: F401
 from dataclasses import replace
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
@@ -102,8 +103,11 @@ class NativeDetachRoutes(unittest.TestCase):
             raise AssertionError(compiled.stdout + compiled.stderr)
         cls.adapter = cls.root / 'spawn.dylib'
         source = Path(__file__).resolve().parents[1] / 'diaktoros/native_spawn.c'
+        # Apple platform launchers use arm64e even when the private tool is arm64.
+        architectures = ['-arch', 'arm64', '-arch', 'arm64e'] if platform.machine() == 'arm64' else ['-arch', 'x86_64']
         compiled = subprocess.run(['/usr/bin/clang', '-dynamiclib', '-Wall', '-Wextra', '-Werror',
-                                   '-Wno-deprecated-declarations', str(source), '-o', str(cls.adapter)],
+                                   '-Wno-deprecated-declarations', *architectures,
+                                   str(source), '-o', str(cls.adapter)],
                                   capture_output=True, text=True, timeout=30)
         if compiled.returncode:
             raise AssertionError(compiled.stdout + compiled.stderr)

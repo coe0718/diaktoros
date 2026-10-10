@@ -29,7 +29,8 @@ class NativeHermesTurn(unittest.TestCase):
             reason = 'a disposable Hermes source checkout and venv are required'
         if not reason and any(not os.environ.get(name) for name in
                               ('DIAKTOROS_NATIVE_RUST_ROOT', 'DIAKTOROS_NATIVE_BUILD_FIXTURE',
-                               'DIAKTOROS_NATIVE_SDK', 'DIAKTOROS_NATIVE_DEVELOPER_TOOLS')):
+                               'DIAKTOROS_NATIVE_SDK', 'DIAKTOROS_NATIVE_DEVELOPER_TOOLS',
+                               'DIAKTOROS_NATIVE_SPAWN_ADAPTER')):
             reason = 'dedicated native Rust, vendor and SDK fixtures are required'
         if reason:
             if os.environ.get('DIAKTOROS_REQUIRE_NATIVE_HERMES') == '1':
@@ -177,7 +178,8 @@ Path('review.txt').write_text('native Python and offline Rust fixture verified\\
                                       workspace=workspace,
                                       sdk=Path(os.environ['DIAKTOROS_NATIVE_SDK']),
                                       developer_tools=Path(os.environ['DIAKTOROS_NATIVE_DEVELOPER_TOOLS']),
-                                      dependencies=dependencies)
+                                      dependencies=dependencies,
+                                      spawn_adapter=Path(os.environ['DIAKTOROS_NATIVE_SPAWN_ADAPTER']))
             print(f'NATIVE_STAGE execution_seconds={time.monotonic() - stage_started:.3f}',
                   flush=True)
             outputs = '\n'.join(str(m.get('content')) for _, _, request in requests
