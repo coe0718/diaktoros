@@ -630,6 +630,46 @@ def group_explain() -> None:
     check("  the missing request is called out", "no review request exists for head bbbbbbb" in out, True)
     check("  the spent verdict still counts", "1/3 verdicts spent" in out, True)
 
+    # #509: a reviewer run already in the ledger at this head (here held for CI) is the gate's
+    # answer, so explain names the run, not a gate that "did not start one".
+    from unittest import mock as _mock
+    from diaktoros.run_supervisor import Supervisor as _Sup
+    db = TMP / "hermes-home" / "state" / "diaktoros-runs.sqlite"
+    reset(prs={"7": pr(7, requested=SEAT)})
+    sup = _Sup(db)
+    with _mock.patch.object(sup, "_spawn"):
+        sup.enqueue("d-509", REPO, 7, HEAD_A, "reviewer")
+    with ledger.connect(db) as con:
+        con.execute("UPDATE runs SET state='waiting', error='held: waiting for CI' "
+                    "WHERE delivery='d-509'")
+    rc, out = explain()
+    check("a reviewer run waiting at the head: no 'reviewer gate did not start one'",
+          "did not start one" in out, False)
+    check("  the waiting run is the blocker", "isolated reviewer turn waiting at this head" in out,
+          True)
+    with ledger.connect(db) as con:
+        con.execute("DELETE FROM runs WHERE delivery='d-509'")
+
+    # Parked for a ruling: both gates stop on purpose, so nothing reads as stuck.
+    _now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    reset(prs={"7": {**pr(7, head=HEAD_B), "reviews": [review(REVIEWER, head="c" * 40, rid=1),
+                                                       review(REVIEWER, head="d" * 40, rid=2),
+                                                       review(REVIEWER, head="e" * 40, rid=3)]}})
+    state_file("breach.json").write_text(json.dumps(
+        {f"{REPO}#7": {"pr": 7, "head": HEAD_B, "rounds": 3, "cap": 3, "reason": "cap",
+                       "at": _now, "status": "adjudicating", "adjudicating_at": _now}}))
+    rc, out = explain()
+    check("adjudicating: parked is the blocker", "parked awaiting adjudication" in out, True)
+    check("  no 'no review request exists' while the ruling is next",
+          "no review request exists" in out, False)
+    check("  no 'gate did not start one' either", "did not start one" in out, False)
+
+    # A stored finding's text keeps its separator; explain shows it once (no ': :').
+    state_file("findings.json").write_text(json.dumps({"7": {"last_head": HEAD_B, "findings": {
+        "F1": {"state": "open", "text": ": tests/x.py:3: bad", "head": HEAD_B}}}}))
+    rc, out = explain()
+    check("a finding line has one separator", "F1 open: tests/x.py:3: bad" in out, True)
+
     # #303 stage 1: a conflicted PR says so on its state line.
     reset(prs={"7": {**pr(7), "mergeable_state": "dirty"}})
     rc, out = explain()
