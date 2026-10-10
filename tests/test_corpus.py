@@ -36,6 +36,33 @@ class Corpus(unittest.TestCase):
         self.assertEqual([(r["prompt_rev"], r["model"], r["caught"], r["missed"]) for r in rows],
                          [("rev1", "m1", 1, 1), ("rev2", "m1", 2, 0)])
 
+    def test_corrupt_score_line_is_skipped_and_reported(self):
+        import io
+        from contextlib import redirect_stdout
+        from types import SimpleNamespace
+        from unittest import mock
+        from diaktoros import cli
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            path = d / corpus.SCORES_FILE
+            corpus.record(path, "rev1", "m1", corpus.replay([CASE], lambda c: "race condition"), now=1)
+            with open(path, "a") as f:
+                f.write('{"at": 2, "prompt_rev": "re\n')
+            bad = []
+            self.assertEqual(len(corpus.history(path, bad)), 1)
+            self.assertEqual(bad, [2])
+            out = io.StringIO()
+            args = SimpleNamespace(loop="x", dir=None, history=True)
+            with mock.patch.object(cli.config, "load_id", return_value={}), \
+                    mock.patch.object(corpus, "corpus_dir", return_value=d), \
+                    mock.patch.object(corpus, "load", return_value=[]), \
+                    mock.patch.object(cli.config, "state_dir", return_value=d), \
+                    redirect_stdout(out):
+                rc = cli.cmd_corpus(args)
+        self.assertEqual(rc, 0)
+        self.assertIn("rev1  m1  caught 1  missed 1", out.getvalue())
+        self.assertIn("skipped 1 unreadable", out.getvalue())
+
     def test_malformed_case_is_refused_not_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = pathlib.Path(tmp)

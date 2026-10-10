@@ -91,12 +91,28 @@ def record(path: Path, prompt_rev: str, model: str, results: list[dict], now=Non
     return entry
 
 
-def history(path: Path) -> list[dict]:
+def history(path: Path, skipped: list | None = None) -> list[dict]:
+    """Recorded runs. A torn or malformed line is skipped (unlike ``load``, a bad score has no
+    integrity argument); each skipped line number is appended to ``skipped`` when given."""
     try:
         lines = Path(path).read_text().splitlines()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
-    return [json.loads(line) for line in lines if line.strip()]
+    rows = []
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            entry = None
+        if not (isinstance(entry, dict)
+                and all(k in entry for k in ("prompt_rev", "model", "caught", "missed"))):
+            if skipped is not None:
+                skipped.append(number)
+            continue
+        rows.append(entry)
+    return rows
 
 
 def live_review(loop: dict, settings: dict, reviewer, timeout: int):
