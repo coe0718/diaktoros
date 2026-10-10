@@ -189,6 +189,26 @@ class Parked(Base):
         self.assertNotEqual(row["state"], "claimed")
         self.assertIn("escalated to adjudication", str(row["error"] or ""))
 
+    def explain_parked(self, ruled=None):
+        local = {"held": {}, "queued_seat": "", "queued_reason": "", "inflight_review": False,
+                 "inflight_fix": False, "marker": self.st.breach_get(7), "parked": True,
+                 "delivery_status": "adjudicating",
+                 "capacity": {"reviewer": (0, 1), "fixer": (0, 1)}, "stale_queues": [],
+                 "seat": "", "queue": "", "inflight": "", "escalation": "", "sweep": ""}
+        with mock.patch.object(gate, "_explain_state", return_value=local), \
+                mock.patch.object(gate, "_ruled", return_value=ruled):
+            return gate.explain(self.loop, self.st, 7, {"pr": fg.LIVE, "reviews": self.reviews,
+                                                        "armed": True, "read_at": time.time()})
+
+    def test_explain_after_the_ruling_says_the_decision_is_yours(self):
+        # Live on #537: explain still said the adjudicator rules next after its ruling posted.
+        report = self.explain_parked(ruled="REJECT")
+        self.assertEqual(report["next"]["kind"], "operator")
+        self.assertIn("the adjudicator ruled REJECT", report["next"]["action"])
+        self.assertTrue(any("ruled: the adjudicator ruled REJECT" in b for b in report["blockers"]))
+        self.assertFalse(any("parked awaiting adjudication" in b for b in report["blockers"]))
+        self.assertEqual(self.explain_parked()["next"]["kind"], "adjudication")
+
     def test_explain_shows_it_parked(self):
         local = {"held": {}, "queued_seat": "", "queued_reason": "", "inflight_review": False,
                  "inflight_fix": False, "marker": self.st.breach_get(7), "parked": True,

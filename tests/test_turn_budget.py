@@ -343,15 +343,15 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
         self.watchdog = _watchdog()
         self.watchdog.TEST = False                   # the real grace clocks
 
-    def sweep(self, budget, status, age_s, run_state=None):
+    def sweep(self, budget, status, age_s, run_state=None, ruled=None):
         # Each sweep gets its own loop state and run ledger (a marker keeps its first "at").
         self.calls = getattr(self, "calls", 0) + 1
         home = self.home / f"call-{self.calls}"
         home.mkdir()
         with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
-            return self._sweep(home, budget, status, age_s, run_state)
+            return self._sweep(home, budget, status, age_s, run_state, ruled)
 
-    def _sweep(self, home, budget, status, age_s, run_state):
+    def _sweep(self, home, budget, status, age_s, run_state, ruled=None):
         wd, now = self.watchdog, time.time()
         raw = _loop(state_dir=str(home / "loop-state"),
                     read_token="reviewer", cap=3,
@@ -373,6 +373,13 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
             with closing(sqlite3.connect(ledger.db)) as con, con:
                 con.execute("UPDATE runs SET state=? WHERE delivery=?",
                             (run_state, f"adj-{budget}-{status}-{run_state}"))
+                if ruled:
+                    run_id = con.execute("SELECT id FROM runs WHERE delivery=?",
+                                         (f"adj-{budget}-{status}-{run_state}",)).fetchone()[0]
+                    con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,"
+                                "created,updated) VALUES (?,?,?,?,?,?,?,?,?)",
+                                (run_id, loop["repo"], 7, ruled[1], "breach:3", ruled[0],
+                                 "RULING", now, now))
         pr = {"number": 7, "state": "open", "draft": False, "title": "t",
               "user": {"login": "fixer"}, "created_at": "2026-01-01T00:00:00Z",
               "base": {"ref": "main", "sha": "b" * 40}, "head": {"sha": HEAD}}
@@ -411,6 +418,16 @@ class MarkerGraceFollowsTheRuling(unittest.TestCase):
                 self.assertEqual(self.sweep(budget, "adjudicating", 61 * 60), [])
                 [line] = self.sweep(budget, "adjudicating", budget + extra + 120, "uncertain")
                 self.assertIn("no adjudicator run is live (uncertain)", line)
+
+    def test_a_ruled_marker_is_the_operators_not_a_stall(self):
+        # Live on #537: the ruling posted, the run succeeded, and an hour later the sweep called
+        # the marker a stall ("no adjudicator run is live (succeeded)").
+        late = 14400 + 3600
+        self.assertEqual(self.sweep(900, "adjudicating", late, "succeeded",
+                                    ruled=("REJECT", HEAD)), [])
+        # A ruling at another head does not excuse this one.
+        [line] = self.sweep(900, "adjudicating", late, "succeeded", ruled=("REJECT", "c" * 40))
+        self.assertIn("no adjudicator run is live (succeeded)", line)
 
     def test_a_marker_awaiting_its_run_keeps_marker_grace(self):
         for budget in (900, 7200, 14400):

@@ -1138,6 +1138,27 @@ def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str 
         return None
 
 
+def ruling_at(db: str | Path, repo: str, pr: int, head: str) -> str | None:
+    """The newest recorded ruling's verdict on this PR head, read-only, or None.
+
+    A ruling ends adjudication: the marker stays ``adjudicating`` at its head (the decision is a
+    person's now), so the watchdog and ``explain`` read this to tell "ruled, waiting for you" from
+    a ruling that never came.
+    """
+    try:
+        con = _read_only(db)
+        if con is None:
+            return None
+        try:
+            row = con.execute("SELECT verdict FROM rulings WHERE repo=? AND pr=? AND head=? "
+                              "ORDER BY created DESC LIMIT 1", (repo, pr, head)).fetchone()
+            return str(row[0]) if row else None
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
 INFLIGHT_LABEL = {'reviewer': 'review', 'fixer': 'fix'}
 
 
