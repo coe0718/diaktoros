@@ -143,6 +143,19 @@ class Move(Home):
         self.assertTrue((self.home / "review-loops.d").exists())
         self.assertTrue((self.home / "state" / "review-loop-runs.sqlite").exists())
 
+    def test_a_refused_state_root_keeps_the_loop_on_its_state(self):
+        # #541: both state roots exist, so the root move is refused; the loop file must still
+        # point at the old root, where its state actually is.
+        self.old_install()
+        (self.home / "state" / "diaktoros").mkdir(parents=True)
+        lines = self.step()
+        self.assertTrue(any("REFUSED — both" in line and "review-loops" in line for line in lines),
+                        lines)
+        loop = config.load_id("one")
+        self.assertEqual(loop["state_dir"], str(self.home / "state" / "review-loops" / "one"))
+        self.assertTrue(any("state_dir kept" in line for line in lines), lines)
+        self.assertTrue((self.home / "state" / "review-loops" / "one" / "pending.json").exists())
+
     def test_both_names_present_is_left_for_a_person(self):
         self.old_install()
         (self.home / "diaktoros-runtime.json").write_text("{}")
