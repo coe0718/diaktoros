@@ -39,6 +39,17 @@ fixture and starts the real Hermes CLI under Seatbelt. A model fixture requests
 a terminal command that verifies host-secret/network denial and submits a review
 to a real scoped broker backed by fake GitHub responses. The test verifies model
 authentication stays host-side and exactly one scoped fake review is posted.
+The Python-only Hermes fixture passed on both architectures in
+[run 38068669256](https://github.com/coe0718/diaktoros/actions/runs/38068669256).
+
+The next fixture also runs `cargo test --offline --locked --lib` using Rust
+1.85.1 and a dedicated read-only vendor snapshot of memchr 2.7.4. A generated
+Cargo build script verifies host-secret/network denial and vendor-write denial;
+the test verifies an actual dependency rlib and a passing Rust unit test. The
+host resolves the selected Apple SDK and compiler toolchain before launch.
+Only those SDK/toolchain roots are granted, not all of Xcode, `/Applications`,
+Homebrew or the operator's Cargo profile. Cargo gets a fresh scratch home and
+direct compiler/linker paths; dependency downloads happen before containment.
 
 `seatbelt_wire.py` supplies an OpenAI client with an httpx Unix-domain transport
 through Hermes's provider hook. There is no localhost listener or TCP allowance;
@@ -51,8 +62,9 @@ child environment; these do not change broker authority.
 It uses the shared bounded output/time capture, but provides no hard disk quota,
 supervisor-death guarantee or detached-child cleanup. The vertical's source
 export is a trusted fixture, not the portable production snapshot implementation.
-It tests a terminal/Python turn, not Rust/SDK/offline dependency builds or durable
-production review receipts. Do not interpret this as completed native support.
+The Rust fixture covers a small pure-Rust vendored dependency and Apple's
+linker/SDK, not arbitrary workspaces, C/C++ dependencies or durable production
+review receipts. Do not interpret this as completed native support.
 
 ## Remaining work before production support
 
@@ -63,8 +75,8 @@ production review receipts. Do not interpret this as completed native support.
 2. Replace the fixed localhost inference bridge. Prefer direct Unix-socket HTTP
    transports where Hermes provider clients permit them. Any TCP alternative
    needs exclusive per-turn ports, authentication and exact endpoint permissions.
-3. Verify native Python/venv, Rust, SDK and offline cache access with actual Hermes
-   turns against local model and broker fixtures. Do not allow all of Homebrew,
+3. Extend native Rust/SDK/offline dependency coverage to representative workspaces
+   and native build dependencies against local model and broker fixtures. Do not allow all of Homebrew,
    the user's home or `/Library` to solve missing-runtime failures.
 4. Design and test hard scratch/build storage bounds. Seatbelt filesystem rules
    do not provide sized tmpfs or disk quotas; a directory-size watcher is not an

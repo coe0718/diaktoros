@@ -19,6 +19,8 @@ PROVIDER = 'diaktoros-seatbelt-wire'
 def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         work: Path, export: Path, client: Path, scratch: Path, query: Path,
         inference_socket: Path, broker_socket: Path, model: str,
+        sdk: Path | None = None, developer_tools: Path | None = None,
+        dependencies: Path | None = None,
         timeout: int = 180, max_steps: int = 10):
     """Run native Hermes over Unix sockets; no automatic selection or real credentials.
 
@@ -40,7 +42,16 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         raise ValueError('invalid native turn limits/model')
     if code not in query.parents or not query.is_file():
         raise ValueError('query must be in the staged read-only code tree')
-    profile = seatbelt.profile(read_roots=(code, venv, runtime, rust, client, export),
+    build_roots = ()
+    if any(p is not None for p in (sdk, developer_tools, dependencies)):
+        if any(p is None for p in (sdk, developer_tools, dependencies)):
+            raise ValueError('native builds require SDK, developer tools and vendored dependencies')
+        sdk, developer_tools, dependencies = (Path(p).resolve(strict=True) for p in
+                                               (sdk, developer_tools, dependencies))
+        if not (developer_tools / 'bin/clang').is_file():
+            raise ValueError('developer tools must name the selected compiler directory')
+        build_roots = (sdk, developer_tools, dependencies)
+    profile = seatbelt.profile(read_roots=(code, venv, runtime, rust, client, export, *build_roots),
                                write_roots=(home, work, scratch),
                                sockets=(inference_socket, broker_socket))
     plugin = home / 'plugins' / PROVIDER
@@ -65,6 +76,20 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
            'DIAKTOROS_BROKER_SOCKET': str(broker_socket), 'DIAKTOROS_WORK': str(work),
            'DIAKTOROS_EXPORT': str(export),
            'DIAKTOROS_TURN_FILE': str(client / 'review-loop-turn.json')}
+    if build_roots:
+        # Direct tools avoid rustup/xcrun proxies looking in the operator's profile.
+        # Unit separators preserve SDK/compiler paths containing spaces.
+        compiler = developer_tools / 'bin/clang'
+        env.update(SDKROOT=str(sdk), CC=str(compiler),
+                   AR=str(developer_tools / 'bin/ar'),
+                   CARGO_ENCODED_RUSTFLAGS='\x1f'.join(
+                       ('-C', f'linker={compiler}', '-C', 'link-arg=-isysroot',
+                        '-C', f'link-arg={sdk}')))
+        cargo_home = scratch / 'cargo'
+        cargo_home.mkdir(mode=0o700)
+        (cargo_home / 'config.toml').write_text(
+            '[source.crates-io]\nreplace-with = "vendored"\n'
+            f'[source.vendored]\ndirectory = {json.dumps(str(dependencies))}\n')
     entry = [str(venv / 'bin/python'), str(venv / 'bin/hermes'), 'chat',
              '--query-file', str(query), '--oneshot', '-Q', '--provider', PROVIDER,
              '-m', model, '-t', 'terminal,file', '--ignore-rules',

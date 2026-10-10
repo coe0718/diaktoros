@@ -17,6 +17,7 @@ import unittest
 from unittest import mock
 
 from diaktoros import broker_ipc, gh, inference_proxy, native_macos, seatbelt
+import native_rust_fixture
 
 SOURCE = _home_guard.HERMES_AGENT_SOURCE
 HEAD = 'a' * 40
@@ -27,6 +28,10 @@ class NativeHermesTurn(unittest.TestCase):
         reason = seatbelt.unavailable()
         if not reason and (SOURCE is None or not (SOURCE / 'venv/bin/hermes').is_file()):
             reason = 'a disposable Hermes source checkout and venv are required'
+        if not reason and any(not os.environ.get(name) for name in
+                              ('DIAKTOROS_NATIVE_RUST_ROOT', 'DIAKTOROS_NATIVE_BUILD_FIXTURE',
+                               'DIAKTOROS_NATIVE_SDK', 'DIAKTOROS_NATIVE_DEVELOPER_TOOLS')):
+            reason = 'dedicated native Rust, vendor and SDK fixtures are required'
         if reason:
             if os.environ.get('DIAKTOROS_REQUIRE_NATIVE_HERMES') == '1':
                 self.fail(reason)
@@ -72,6 +77,10 @@ class NativeHermesTurn(unittest.TestCase):
                   'base': {'ref': 'main', 'repo': {'full_name': loop['repo']}},
                   'head': {'sha': HEAD, 'ref': 'fix-7', 'repo': {'full_name': loop['repo']}}}
             writes, requests = [], []
+            build_fixture = Path(os.environ['DIAKTOROS_NATIVE_BUILD_FIXTURE'])
+            dependencies = build_fixture / 'vendor'
+            native_rust_fixture.stage(work, secret=secret, vendor=dependencies)
+            shutil.copyfile(build_fixture / 'Cargo.lock', work / 'Cargo.lock')
 
             def api(_loop, path, method='GET', body=None, login=None):
                 if path == '/user':
@@ -98,7 +107,7 @@ with socket.socket() as connection:
     else:
         raise AssertionError('host network reachable')
 assert 'GITHUB_TOKEN' not in os.environ
-Path('review.txt').write_text('native fixture verified\\nNot verified: Rust builds and live services')
+Path('review.txt').write_text('native Python and offline Rust fixture verified\\nNot verified: live services')
 """
             import shlex
             # A host-staged immutable fixture script is an ordinary tool command;
@@ -106,7 +115,8 @@ Path('review.txt').write_text('native fixture verified\\nNot verified: Rust buil
             probe_file = code / 'native-probe.py'
             probe_file.write_text(probe)
             command = ('python ' + shlex.quote(str(probe_file)) +
-                       ' && python -m diaktoros.broker_client review --verdict APPROVE --body-file review.txt')
+                       ' && cargo test --offline --locked --lib && '
+                       'python -m diaktoros.broker_client review --verdict APPROVE --body-file review.txt')
 
             class Model(http.server.BaseHTTPRequestHandler):
                 def log_message(self, *_):
@@ -161,13 +171,15 @@ Path('review.txt').write_text('native fixture verified\\nNot verified: Rust buil
             query.write_text('Execute the requested terminal probe, submit the scoped review, then stop.')
             venv = SOURCE / 'venv'
             runtime = Path((venv / 'bin/python').resolve()).parents[1]
-            rust = root / 'rust-placeholder'
-            rust.mkdir()
+            rust = Path(os.environ['DIAKTOROS_NATIVE_RUST_ROOT'])
             result = native_macos.run(code=code, venv=venv, runtime=runtime,
                                       rust=rust, home=home, work=work, export=export,
                                       client=client, scratch=scratch, query=query,
                                       inference_socket=capability.socket_path,
-                                      broker_socket=broker.socket_path, model='fixture-model')
+                                      broker_socket=broker.socket_path, model='fixture-model',
+                                      sdk=Path(os.environ['DIAKTOROS_NATIVE_SDK']),
+                                      developer_tools=Path(os.environ['DIAKTOROS_NATIVE_DEVELOPER_TOOLS']),
+                                      dependencies=dependencies)
             outputs = '\n'.join(str(m.get('content')) for _, _, request in requests
                                 for m in request.get('messages', []) if m.get('role') == 'tool')
             detail = result.stdout[-6000:] + result.stderr[-6000:] + '\nTOOL OUTPUT:\n' + outputs[-8000:]
@@ -180,6 +192,11 @@ Path('review.txt').write_text('native fixture verified\\nNot verified: Rust buil
             self.assertTrue(all(auth == 'Bearer ' + model_key for _, auth, _ in requests))
             self.assertIn('HOST_SECRET_BLOCKED', outputs)
             self.assertIn('HOST_NETWORK_BLOCKED', outputs)
+            self.assertIn('RUST_HOST_SECRET_BLOCKED', outputs)
+            self.assertIn('RUST_NETWORK_BLOCKED', outputs)
+            self.assertIn('RUST_VENDOR_WRITE_BLOCKED', outputs)
+            self.assertIn('1 passed; 0 failed', outputs)
+            self.assertTrue(any((work / 'target/debug/deps').glob('libmemchr-*.rlib')))
             self.assertNotIn(secret.read_text(), outputs)
             self.assertNotIn(model_key, outputs)
 

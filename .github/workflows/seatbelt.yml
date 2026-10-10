@@ -12,6 +12,7 @@ on:
       - diaktoros/contained.py
       - tests/test_seatbelt.py
       - tests/test_native_macos.py
+      - tests/native_rust_fixture.py
       - .github/workflows/seatbelt.yml
   workflow_dispatch:
 
@@ -87,6 +88,27 @@ jobs:
         with:
           version: '0.12.19'
           enable-cache: false
+      - name: Stage dedicated Rust toolchain, vendored crate and selected Apple SDK
+        run: |
+          rustup_bin=$(command -v rustup)
+          export RUSTUP_HOME="$RUNNER_TEMP/native-rustup"
+          export CARGO_HOME="$RUNNER_TEMP/native-cargo"
+          "$rustup_bin" toolchain install 1.85.1 --profile minimal --no-self-update
+          rust_root=$("$rustup_bin" run 1.85.1 rustc --print sysroot)
+          export PATH="$rust_root/bin:$PATH"
+          fixture="$RUNNER_TEMP/native-build-fixture"
+          python tests/native_rust_fixture.py "$fixture"
+          cargo generate-lockfile --manifest-path "$fixture/Cargo.toml"
+          cargo vendor --locked --manifest-path "$fixture/Cargo.toml" "$fixture/vendor"
+          sdk=$(xcrun --sdk macosx --show-sdk-path)
+          clang=$(xcrun --sdk macosx --find clang)
+          developer_tools=$(dirname "$(dirname "$clang")")
+          test -x "$developer_tools/bin/clang"
+          test -d "$sdk"
+          echo "DIAKTOROS_NATIVE_RUST_ROOT=$rust_root" >> "$GITHUB_ENV"
+          echo "DIAKTOROS_NATIVE_BUILD_FIXTURE=$fixture" >> "$GITHUB_ENV"
+          echo "DIAKTOROS_NATIVE_SDK=$sdk" >> "$GITHUB_ENV"
+          echo "DIAKTOROS_NATIVE_DEVELOPER_TOOLS=$developer_tools" >> "$GITHUB_ENV"
       - name: Install pinned native Hermes into a disposable venv
         run: |
           py=$(python -c 'import json; print(json.load(open("hermes/pm/lock.json"))["packages"]["python"]["version"].split("+")[0])')
