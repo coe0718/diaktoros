@@ -1024,6 +1024,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
             if past(mins, grace["fixer"]):
                 kind = (f"fixer never pushed — changes requested {ago(mins)} at head "
                         f"{head[:7]} by {gate.reviewer_login(at_head[-1])}")
+        elif config.fix_ci(loop) and ci_fix.pending_at(loop["repo"], number, head):
+            pass                                  # #539: the fixer takes this red head first
         else:
             mins = (now - observed_at) / 60 if observed_at is not None else 0.0
             # #532: a request GitHub never announced (the reviewer was already requested when the

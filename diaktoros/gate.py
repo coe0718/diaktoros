@@ -813,6 +813,11 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     else:
         budget = (f"{spent if spent is not None else 'unknown'}/{cap} verdicts spent · "
                   f"head unknown")
+    # #539: CI fixes have their own budget per PR, outside the verdict cap.
+    if config.fix_ci(loop):
+        from . import ci_fix
+        used = len(ci_fix.rows(loop["repo"], number))
+        budget += f" · CI fixes {used}/{config.ci_fix_cap(loop)}"
 
     # -- local state: who holds it, what waits, what is marked -------------------------------
     local = _explain_state(loop, st, key, number, head, now)

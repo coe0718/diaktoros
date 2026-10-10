@@ -314,6 +314,14 @@ class Gates(fg.Base):
         self.assertNotIn("reviewer never posted a verdict", text)
         fire.assert_not_called()
 
+    def test_explain_counts_ci_fixes_against_their_own_budget(self):
+        # #539: CI fixes are shown next to the verdict count, against ci_fix_cap.
+        from diaktoros import ci_fix
+        self.loop = {**self.loop, "fix_ci": True, "unattended_fixer_push": True, "ci_fix_cap": 4}
+        with mock.patch.object(ci_fix, "rows", return_value=[{"head": "x", "state": "succeeded"}]):
+            report = self.explain(0)
+        self.assertIn("CI fixes 1/4", report["budget"])
+
     # #478 human_paths: a head whose approval was left to a person is not reviewed again, is
     # explained as the operator's move, and is not a stall. A new head is reviewed afresh.
     def test_human_paths_hold_stops_the_gate_at_that_head_only(self):

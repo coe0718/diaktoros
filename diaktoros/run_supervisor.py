@@ -868,6 +868,14 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
         state = ci.read(loop, row['head'])
         required = config_mod.required_checks(loop)
         text += ci.section(state, required)
+        if seat == 'reviewer':
+            # #539: commits CI-fix turns pushed unreviewed, so this review checks none weakened
+            # a test.
+            from . import ci_fix
+            text += ci_fix.fix_history(loop, row['pr'])
+            # A red head reaches the reviewer only once the fixer is done with it: say why, with
+            # the failing jobs' logs (#539).
+            text += ci_fix.still_red(loop, state, row['pr'])
         if seat == 'fixer':
             # #569: a fix round on a red head gets the failing jobs, their failing step and log
             # tails, exactly as a CI-fix turn does: a verdict that says "required check X failed"
@@ -2907,8 +2915,8 @@ class Supervisor:
             if row['seat'] == 'reviewer' and time.time() - row['created'] < CI_WAIT_MAX_S:
                 # A cancelled check (#363) holds every review: the broker would refuse its
                 # APPROVE, so the turn could only spend tokens. Running checks hold it only with
-                # review_after_ci (#241), even beside a failed one. A failed check never holds
-                # by itself: the review says why.
+                # review_after_ci (#241), even beside a failed one. A failed check holds only
+                # while the fixer takes it first (#539); otherwise the review says why.
                 from . import ci
                 # A PR that conflicts with its base gets no pull_request CI from GitHub, so the
                 # required checks could never report: hold, nothing spent. The merge push makes
@@ -2930,11 +2938,16 @@ class Supervisor:
                 after_ci = config.review_after_ci(loop)
                 # Only the required checks hold it, when the loop names them (#368).
                 checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
-                # #306: with review-after-CI, a red head whose CI-fix turn is still to run goes
-                # to the fixer first: no review is spent on code that does not build.
-                fixing = bool(checks is not None and checks.failed and after_ci
-                              and config.fix_ci(loop)
-                              and ci_fix.pending_at(row['repo'], row['pr'], row['head'], self.db))
+                # #306/#539/#579: a red head goes to the fixer first while its CI-fix budget
+                # lasts, whatever review_after_ci says (queued right here, not left to the next
+                # sweep): no review verdict is spent on code that does not build. Budget spent, or this head's turn
+                # done without a new head: the reviewer reviews it.
+                author = (str(((queued.get("user") or {}).get("login")) or "")
+                          if isinstance(queued, dict) else "")
+                fixing = bool(checks is not None and checks.failed
+                              and ci_fix.fixer_first(loop, number=row['pr'], head=row['head'],
+                                                     author=author, failed=checks.failed,
+                                                     db=self.db, log=util.log))
                 # #374: a failure releases the cancelled/missing holds only (the review would
                 # otherwise go unreported); the pending wait survives it, so one review names
                 # every failure once CI finishes.

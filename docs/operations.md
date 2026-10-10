@@ -242,10 +242,16 @@ The fixer may propose a scoped patch through the normal broker; the loop does no
 GitHub Actions, modify `.github/` workflow files or merge the PR. A green result on a later
 head ends the repair path naturally.
 
-CI-fix turns count against the same verdict cap. If the cap is spent, or a job from the
-previous CI-fix fails again after the fixer changes the head, the watchdog holds the PR
-for operator action rather than repeating the repair. Normal fixer capacity, pacing,
-checks and push safety still apply. See [configuration](configuration.md#write-policy-and-attribution)
+CI fixes have their own budget, `ci_fix_cap` CI-fix turns per PR (default 3, across its
+heads), outside the reviewer's verdict cap (#539). A red head goes to the fixer first,
+whether or not `review_after_ci` is on (#579): the reviewer's turn is held and its CI-fix turn queued at once, so no
+review verdict is spent on code that does not build. Once the budget is spent, or the head's
+CI-fix turn ended without a new head, the reviewer reviews the red head (that review counts
+as a verdict) to find why the fixes did not take; it is told so and given the failing jobs'
+logs. While the fixer has a red head, the watchdog does not call the reviewer's silence a stall. The first review after any CI-fix commits
+is shown them, with the test files each changed, and blocks one that weakened, skipped or
+removed a test. `explain` shows `CI fixes N/CAP`. Normal fixer capacity, pacing, checks and
+push safety still apply. See [configuration](configuration.md#write-policy-and-attribution)
 for `fix_ci` and [observer](observer.md#events-and-meaning) for the `ci_failed` notice.
 
 Fixer answers

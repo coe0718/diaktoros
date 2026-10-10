@@ -29,27 +29,18 @@ LOOP = {"repo": "acme/widgets", "cap": 3, "read_token": "reader", "base": "main"
 
 
 class Decide(unittest.TestCase):
-    def decide(self, **kw):
-        base = dict(number=7, head="h2", failed=["tests"], verdicts=0, previous=None, used=0)
-        return ci_fix.decide(LOOP, **{**base, **kw})
+    """#539: CI fixes have their own per-PR budget, outside the verdict cap."""
 
-    def test_a_first_red_head_is_queued(self):
-        self.assertEqual(self.decide(), ("queue", ""))
+    def test_queued_until_the_budget_is_spent_then_the_reviewer_reviews(self):
+        self.assertEqual(ci_fix.decide(LOOP, used=0), ("queue", "CI fix 1 of 3"))
+        self.assertEqual(ci_fix.decide(LOOP, used=2), ("queue", "CI fix 3 of 3"))
+        action, why = ci_fix.decide(LOOP, used=3)
+        self.assertEqual(action, "review")
+        self.assertIn("budget spent (3 of 3)", why)
 
-    def test_ci_fixes_count_toward_the_verdict_cap(self):
-        self.assertEqual(self.decide(verdicts=1, used=1)[0], "queue")
-        action, why = self.decide(verdicts=2, used=1)
-        self.assertEqual(action, "hold")
-        self.assertIn("cap spent", why)
-
-    def test_the_same_job_failing_again_after_a_fix_holds_the_pr(self):
-        action, why = self.decide(previous={"head": "h1", "jobs": ["tests", "lint"]})
-        self.assertEqual(action, "hold")
-        self.assertIn("failed again after a fix", why)
-        self.assertIn('"tests"', why)
-
-    def test_a_different_job_failing_is_not_the_same_job(self):
-        self.assertEqual(self.decide(previous={"head": "h1", "jobs": ["lint"]})[0], "queue")
+    def test_the_budget_is_the_loops_ci_fix_cap(self):
+        self.assertEqual(ci_fix.decide({**LOOP, "ci_fix_cap": 1}, used=1)[0], "review")
+        self.assertEqual(ci_fix.decide({**LOOP, "ci_fix_cap": 5}, used=4)[0], "queue")
 
 
 class Config(unittest.TestCase):
@@ -221,15 +212,20 @@ class Sweep(unittest.TestCase):
         self.assertEqual(queued, [])
         self.assertEqual(len(notices), 1)
 
-    def test_a_repeat_failure_holds_and_says_so(self):
+    def test_a_repeat_failure_on_a_new_head_is_fixed_again_within_the_budget(self):
         notices, queued = self.run_sweep(rows=[{"head": "old", "state": "succeeded"}])
-        self.assertEqual(queued, [])
-        self.assertIn("failed again after a fix", notices[0][1]["next_turn"])
+        self.assertEqual(len(queued), 1)
+        self.assertIn("CI fix 2 of 3", notices[0][1]["next_turn"])
 
-    def test_the_verdict_cap_holds(self):
+    def test_reviewer_verdicts_do_not_spend_the_ci_budget(self):
         notices, queued = self.run_sweep(verdicts=3)
+        self.assertEqual(len(queued), 1)
+
+    def test_a_spent_budget_hands_the_red_head_to_the_reviewer(self):
+        notices, queued = self.run_sweep(rows=[{"head": f"o{i}", "state": "succeeded"}
+                                               for i in range(3)])
         self.assertEqual(queued, [])
-        self.assertIn("cap spent", notices[0][1]["next_turn"])
+        self.assertIn("the reviewer: CI-fix budget spent (3 of 3)", notices[0][1]["next_turn"])
 
 
 class Hold(unittest.TestCase):
