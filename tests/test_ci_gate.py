@@ -222,6 +222,29 @@ class Broker(pv.Broker):
                 (self.root / "runs.sqlite").unlink()
 
 
+class LongNamesTest(unittest.TestCase):
+    """#565: names sharing their first 100 characters stay distinct keys."""
+
+    def read(self, runs):
+        with mock.patch.object(gh, "api", Fake(runs=runs)):
+            return ci.read(LOOP, HEAD)
+
+    def test_prefix_collision_keeps_both_runs(self):
+        a, b = "x" * 100 + "-a", "x" * 100 + "-b"
+        state = self.read([run(a, id=1), run(b, conclusion="failure", id=2)])
+        self.assertEqual(state.passed, [a])
+        self.assertEqual(state.failed, [b])
+        view = ci.gating(state, [b])
+        self.assertEqual(view.failed, [b])
+        self.assertIn("APPROVE refused", ci.approval_refusal(view))
+
+    def test_long_name_is_shortened_only_for_display(self):
+        a = "y" * 150
+        state = self.read([run(a, conclusion="failure")])
+        self.assertEqual(state.failed, [a])
+        self.assertNotIn(a, ci.approval_refusal(state))
+        self.assertIn("y" * 100 + "...", ci.approval_refusal(state))
+
 
 if __name__ == "__main__":
     unittest.main()

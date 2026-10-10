@@ -44,7 +44,10 @@ class CIState:
 
 
 def _name(raw) -> str:
-    return str(raw or "(unnamed)")[:NAME_MAX]
+    """The check's full name: it is the key runs are deduplicated and required names matched by,
+    so it is never cut (two names sharing a 100-character prefix would collapse into one, #565).
+    Only what is shown is shortened, by `_shown`."""
+    return str(raw or "(unnamed)")
 
 
 def _runner_shutdown(loop: dict, run_id) -> bool:
@@ -145,8 +148,12 @@ def optional(state: CIState | None, required) -> CIState | None:
                    passed=drop(state.passed), cancelled=drop(state.cancelled))
 
 
+def _shown(name: str) -> str:
+    return name if len(name) <= NAME_MAX else name[:NAME_MAX] + "..."
+
+
 def _names(names: list[str]) -> str:
-    shown = ", ".join(json.dumps(name) for name in names[:LISTED_MAX])
+    shown = ", ".join(json.dumps(_shown(name)) for name in names[:LISTED_MAX])
     return shown + (f" and {len(names) - LISTED_MAX} more" if len(names) > LISTED_MAX else "")
 
 
