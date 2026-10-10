@@ -101,7 +101,11 @@ assert 'GITHUB_TOKEN' not in os.environ
 Path('review.txt').write_text('native fixture verified')
 """
             import shlex
-            command = ('python -c ' + shlex.quote(probe) +
+            # A host-staged immutable fixture script is an ordinary tool command;
+            # do not disable Hermes's unattended command-approval policy for -c.
+            probe_file = code / 'native-probe.py'
+            probe_file.write_text(probe)
+            command = ('python ' + shlex.quote(str(probe_file)) +
                        ' && python -m diaktoros.broker_client review --verdict APPROVE --body-file review.txt')
 
             class Model(http.server.BaseHTTPRequestHandler):
