@@ -143,6 +143,11 @@ three attempts with 0.25/0.5-second backoffs; image ownership is checked again
 before every normal or forced eject. A failed eject can already have unmounted
 the filesystem, so CI also records remaining exact-image attachments. This is
 a bounded retry, not proof that the intermittent busy-eject cause is resolved.
+Every eject now logs elapsed time, normal/forced mode, immediate exact-image
+attachments and whether the private mount is still a separate filesystem. The
+Hermes fixture separately records source-export and execution duration so a slow
+turn is not automatically attributed to APFS. Diagnostic failures never turn a
+failed eject into successful cleanup.
 If detach/verification fails,
 it retains the private image directory and raises an error for host recovery.
 This is not cleanup after host death: startup reconciliation, detached descendant
@@ -196,6 +201,15 @@ enforceable ownership mechanism for every descendant; a polling tree scan or
 `kqueue` monitoring of selected PIDs is not equivalent.
 
 ## Remaining work before production support
+
+The native detach probe also compares direct libc/raw `setsid` and `setpgid`
+calls with `posix_spawn` session/group flags. XNU implements those spawn flags
+internally; denying only syscall numbers 82/147 may leave a spawn escape.
+A separate candidate denies syscall 244 too, measuring the cost to ordinary
+spawn while verifying fork/exec still works. Both candidates are test-only and
+must be checked on real Macs; neither is installed by the native launcher.
+Blocking ordinary spawn can break Rust and Hermes subprocess execution. These
+probes establish the constraint before choosing a production ownership design.
 
 1. Integrate backend selection and the shared turn layout with full production
    orchestration, role-specific write roots, prompts, review context and receipts.

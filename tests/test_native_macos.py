@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -45,7 +46,10 @@ class NativeHermesTurn(unittest.TestCase):
                 directory.mkdir(mode=0o700)
             # Exercise the same committed, filtered and hash-checked exporter as
             # trusted turns, including its native directory-descriptor pin.
+            stage_started = time.monotonic()
             trusted_turn._safe_code_snapshot(SOURCE, code)
+            print(f'NATIVE_STAGE source_export_seconds={time.monotonic() - stage_started:.3f}',
+                  flush=True)
             (client / 'diaktoros').mkdir()
             (client / 'diaktoros/__init__.py').touch()
             for filename in ('broker_client.py', 'wire.py'):
@@ -163,6 +167,7 @@ Path('review.txt').write_text('native Python and offline Rust fixture verified\\
                              + instructions)
             runtime = Path((venv / 'bin/python').resolve()).parents[1]
             rust = Path(os.environ['DIAKTOROS_NATIVE_RUST_ROOT'])
+            stage_started = time.monotonic()
             result = native_macos.run(code=code, venv=venv, runtime=runtime,
                                       rust=rust, home=home, work=work, export=export,
                                       client=client, scratch=scratch, query=query,
@@ -173,6 +178,8 @@ Path('review.txt').write_text('native Python and offline Rust fixture verified\\
                                       sdk=Path(os.environ['DIAKTOROS_NATIVE_SDK']),
                                       developer_tools=Path(os.environ['DIAKTOROS_NATIVE_DEVELOPER_TOOLS']),
                                       dependencies=dependencies)
+            print(f'NATIVE_STAGE execution_seconds={time.monotonic() - stage_started:.3f}',
+                  flush=True)
             outputs = '\n'.join(str(m.get('content')) for _, _, request in requests
                                 for m in request.get('messages', []) if m.get('role') == 'tool')
             detail = result.stdout[-6000:] + result.stderr[-6000:] + '\nTOOL OUTPUT:\n' + outputs[-8000:]

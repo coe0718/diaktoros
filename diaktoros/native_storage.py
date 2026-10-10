@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import json
 import plistlib
 import re
 import shutil
@@ -49,6 +50,7 @@ class Workspace:
         self.root: Path | None = None
         self.active = False
         self.retained_reason = ''
+        self.cleanup_events = []
 
     def retain(self, reason: str):
         """Preserve an owned image when its execution owner cannot confirm cleanup."""
@@ -163,10 +165,10 @@ class Workspace:
                     if device not in self._devices():
                         continue
                     try:
-                        _run([HDIUTIL, 'detach', device])
+                        self._eject(device, force=False)
                     except StorageError:
                         if device in self._devices():
-                            _run([HDIUTIL, 'detach', '-force', device])
+                            self._eject(device, force=True)
                 if not self._devices():
                     return
                 raise StorageError('workspace remains attached')
@@ -174,6 +176,31 @@ class Workspace:
                 if 'Resource busy' not in str(exc) or attempt == 2:
                     raise
                 time.sleep(0.25 * (attempt + 1))
+
+    def _eject(self, device: str, *, force: bool):
+        started = time.monotonic()
+        event = {'device': device, 'force': force}
+        try:
+            return _run([HDIUTIL, 'detach', *(['-force'] if force else []), device])
+        except BaseException as exc:
+            event['error'] = str(exc)[-2000:]
+            raise
+        finally:
+            event['elapsed_seconds'] = round(time.monotonic() - started, 3)
+            # Gather evidence immediately: a later workflow step can observe a
+            # different mount state after Disk Arbitration has continued cleanup.
+            try:
+                event['attachments'] = [
+                    {'image': str(self.image), 'entities': [
+                        {k: e[k] for k in ('dev-entry', 'mount-point') if k in e}
+                        for e in attachment.get('system-entities', [])]}
+                    for attachment in self._attachments()] if self.root is not None else []
+                event['mounted'] = (self.mount.stat().st_dev != self.root.stat().st_dev
+                                    if self.root is not None else None)
+            except Exception as exc:
+                event['diagnostic_error'] = str(exc)[-2000:]
+            self.cleanup_events.append(event)
+            print('NATIVE_EJECT ' + json.dumps(event, default=str), file=sys.stderr, flush=True)
 
     def __exit__(self, *_):
         self._cleanup()

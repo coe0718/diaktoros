@@ -86,6 +86,7 @@ class StorageValidation(unittest.TestCase):
             workspace.image = workspace.root / 'turn.dmg'
             workspace.image.write_bytes(b'fixture')
             with mock.patch.object(workspace, '_devices', return_value=['/dev/disk99']), \
+                    mock.patch.object(workspace, '_attachments', return_value=[]), \
                     mock.patch.object(native_storage, '_run', side_effect=
                                       native_storage.StorageError('hdiutil: Resource busy')) as run, \
                     mock.patch.object(native_storage.time, 'sleep') as sleep:
@@ -94,6 +95,25 @@ class StorageValidation(unittest.TestCase):
             self.assertEqual(run.call_count, 6)
             self.assertEqual(sleep.call_args_list, [mock.call(0.25), mock.call(0.5)])
             self.assertEqual(workspace.image.read_bytes(), b'fixture')
+
+    def test_eject_records_partial_unmount_without_hiding_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = native_storage.Workspace()
+            workspace.root = Path(directory)
+            workspace.mount = workspace.root / 'mount'
+            workspace.mount.mkdir()
+            workspace.image = workspace.root / 'turn.dmg'
+            attachment = {'system-entities': [{'dev-entry': '/dev/disk99'}]}
+            with mock.patch.object(workspace, '_attachments', return_value=[attachment]), \
+                    mock.patch.object(native_storage, '_run', side_effect=
+                                      native_storage.StorageError('Resource busy')):
+                with self.assertRaisesRegex(native_storage.StorageError, 'Resource busy'):
+                    workspace._eject('/dev/disk99', force=False)
+            event, = workspace.cleanup_events
+            self.assertFalse(event['mounted'])
+            self.assertEqual(event['attachments'][0]['entities'], attachment['system-entities'])
+            self.assertEqual(event['error'], 'Resource busy')
+            self.assertGreaterEqual(event['elapsed_seconds'], 0)
 
     def test_false_successful_detach_still_retains_image(self):
         with tempfile.TemporaryDirectory() as directory:
