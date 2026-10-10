@@ -110,6 +110,21 @@ class Findings(unittest.TestCase):
         self.assertTrue(out[2].startswith("F3 open (missed earlier)"))
         self.assertEqual(findings.missed_count(self.loop), 1)
 
+    def test_missed_count_and_stats_collect_honour_the_window(self):
+        from diaktoros import stats
+        first = findings.apply({}, H1, "F1: src/a.py: broken\n", at=1000.0)
+        old = findings.apply(first, H2, "F2: src/c.py: missed earlier: old\n", at=1000.0)
+        new = findings.apply(old, H2, "F3: src/c.py: missed earlier: new\n", at=5000.0)
+        self.assertTrue(new["findings"]["F2"]["missed"] and new["findings"]["F3"]["missed"])
+        self.st.findings_put(8, new)
+        self.assertEqual(findings.missed_count(self.loop, 2000.0, 6000.0), 1)
+        with mock.patch.object(stats, "ledger", return_value={}), \
+                mock.patch.object(stats, "revisions", return_value={}):
+            self.assertEqual(stats.collect(self.loop, None, 2000.0, False, now=6000.0)
+                             ["findings_missed"], 1)
+            self.assertEqual(stats.collect(self.loop, None, 6001.0, False, now=7000.0)
+                             ["findings_missed"], 0)
+
 
 class Citations(unittest.TestCase):
     """A REQUEST_CHANGES must cite the diff (#476)."""
