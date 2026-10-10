@@ -92,6 +92,10 @@ PR ruling comment carry it.
 Approval's `next: you merge` hint is revalidated immediately before sending against
 current review identity, head/base and post-write holds. If verification fails, the
 hint is omitted. A later state change remains possible: inspect GitHub before merging.
+An approval is not a merge hand-off when the base branch has moved on since the PR's base
+(another PR merged): the review still holds, but the PR's CI ran against the older base, so the
+notice names both commits and says to update the branch for CI on the current base first (#595).
+"Unverified" is kept for a failed read or a retarget.
 Retries and digests omit next-turn hints because the recorded transition may be stale.
 Closed notices fire only for PRs this loop worked on (the author is a reviewed author, or the loop holds breach, transition, queue or observer-ledger state for the PR). Other repository PR closures are cleaned up silently.
 

@@ -75,6 +75,21 @@ class ExactBaseHandoffTests(unittest.TestCase):
             with self.subTest(snapshot=snapshot, current=current, ref=ref):
                 self.assertNotEqual(self.gate(snapshot, current, ref)['next_turn'], 'you merge')
 
+    def test_main_moving_on_is_said_plainly_not_called_unverified(self):
+        # #595: live, every approval after a merge to main read "current approval/head/base
+        # unverified". Still no merge hand-off (CI ran against the older main), but say why.
+        moved = self.gate(pr(), pr(), git_ref(OTHER))
+        self.assertNotEqual(moved['next_turn'], 'you merge')
+        self.assertIn("main moved since this PR's base (bbbbbbb → ccccccc)", moved['outcome'])
+        self.assertIn('update the branch', moved['next_turn'])
+        self.assertEqual(moved['base_sha'], '')
+        # An unreadable ref or a retarget is still unverified, not "main moved".
+        for snapshot, current, ref in ((pr(), pr(), None), (pr(), pr('main', OTHER), git_ref(OTHER)),
+                                       (pr(), pr('other', OTHER), git_ref(OTHER))):
+            with self.subTest(current=current, ref=ref):
+                got = self.gate(snapshot, current, ref)
+                self.assertIn('unverified', got['outcome'])
+
     def test_delivery_drops_merge_if_base_retargets_or_ref_moves(self):
         for current, ref in ((pr(), git_ref()), (pr('other', OTHER), git_ref()),
                              (pr('main', OTHER), git_ref(OTHER)), (pr(), None)):
