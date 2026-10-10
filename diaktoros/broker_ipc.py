@@ -506,6 +506,23 @@ class RunBroker:
             # verdict in the same turn. A COMMENT would neither wake the fixer nor cue a merge.
             raise ProtocolError("review verdict must be APPROVE or REQUEST_CHANGES with a non-empty "
                                 "body (COMMENT is not a verdict); nothing was written, resubmit")
+        if operation == "review" and verdict == "APPROVE":
+            # Refusals no review body can cure come before every format check on the body
+            # (Not verified, findings, Requirements): the seat is never sent to fix the format
+            # of an approval that could not go through (#520).
+            reason = self._partial_view()
+            if reason:
+                # Before the capability is consumed and before any GitHub read or write: the seat
+                # was not shown the whole change, so it cannot approve it (#93, #110).
+                raise ProtocolError(PARTIAL_VIEW_REFUSAL.format(reason=reason[:300]))
+            # A live read of the head's CI: an approval of a head whose checks failed is a false
+            # green, so the seat must request changes.
+            from . import ci
+            # Only the operator's required checks gate it, when the loop names them (#368).
+            refusal = ci.approval_refusal(ci.gating(ci.read(self._loop, self.scope.head),
+                                                    config.required_checks(self._loop)))
+            if refusal:
+                raise ProtocolError(refusal)
         if operation == "review" and not broker.has_not_verified(body):
             raise ProtocolError(broker.NOT_VERIFIED_REFUSAL)
         if operation == "review":
@@ -538,19 +555,6 @@ class RunBroker:
             if reason:
                 raise ProtocolError(reason)
         if operation == "review" and verdict == "APPROVE":
-            reason = self._partial_view()
-            if reason:
-                # Before the capability is consumed and before any GitHub read or write: the seat
-                # was not shown the whole change, so it cannot approve it (#93, #110).
-                raise ProtocolError(PARTIAL_VIEW_REFUSAL.format(reason=reason[:300]))
-            # A live read of the head's CI, also before the capability is consumed: an approval
-            # of a head whose checks failed is a false green, so the seat must request changes.
-            from . import ci
-            # Only the operator's required checks gate it, when the loop names them (#368).
-            refusal = ci.approval_refusal(ci.gating(ci.read(self._loop, self.scope.head),
-                                                    config.required_checks(self._loop)))
-            if refusal:
-                raise ProtocolError(refusal)
             # Paths only a human may approve (#478): also before the capability is consumed, so
             # the seat's REQUEST_CHANGES in the same turn still goes through.
             refusal, held = self._human_paths_check()
