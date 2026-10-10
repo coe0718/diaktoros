@@ -4335,9 +4335,13 @@ def cmd_corpus(args) -> int:
         print(f"cannot run corpus: {doctor._safe_report_text(str(exc))}")
         return 2
     if args.history:
-        for entry in corpus.history(scores):
+        bad: list = []
+        for entry in corpus.history(scores, bad):
             print(f"{entry['prompt_rev']}  {entry['model']}  caught {entry['caught']}  "
                   f"missed {entry['missed']}")
+        if bad:
+            print(f"skipped {len(bad)} unreadable line(s) in {scores} "
+                  f"(line {', '.join(map(str, bad))})")
         return 0
     if not cases:
         print(f"no cases in {directory}")
