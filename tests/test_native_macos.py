@@ -1,0 +1,183 @@
+"""Real native Hermes -> AF_UNIX inference -> scoped broker; local fakes only."""
+import _home_guard  # noqa: F401
+import _ci_green  # noqa: F401
+from contextlib import ExitStack
+import http.server
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import threading
+import unittest
+from unittest import mock
+
+from diaktoros import broker_ipc, gh, inference_proxy, native_macos, seatbelt
+
+SOURCE = _home_guard.HERMES_AGENT_SOURCE
+HEAD = 'a' * 40
+
+
+class NativeHermesTurn(unittest.TestCase):
+    def setUp(self):
+        reason = seatbelt.unavailable()
+        if not reason and (SOURCE is None or not (SOURCE / 'venv/bin/hermes').is_file()):
+            reason = 'a disposable Hermes source checkout and venv are required'
+        if reason:
+            if os.environ.get('DIAKTOROS_REQUIRE_NATIVE_HERMES') == '1':
+                self.fail(reason)
+            self.skipTest(reason)
+
+    def test_real_hermes_runs_tool_and_posts_only_scoped_fake_review(self):
+        with ExitStack() as stack:
+            root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='dk-n-', dir='/tmp'))).resolve()
+            code, home, work, export, client, scratch = (root / n for n in
+                                                        ('code', 'home', 'work', 'export', 'client', 'scratch'))
+            for directory in (code, home, work, export, client, scratch):
+                directory.mkdir(mode=0o700)
+            # Fixture export of the pinned trusted Hermes checkout, not a production snapshot
+            # implementation. Never run mutable host source or grant the checkout/venv parent.
+            archive = subprocess.check_output(['git', '-C', str(SOURCE), 'archive', 'HEAD'])
+            with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+                for member in tar:
+                    parts = Path(member.name).parts
+                    if (not member.isfile() or any(p.startswith('.') for p in parts) or
+                            parts[0] in ('tests', 'docs', 'website', 'evals') or
+                            Path(member.name).suffix not in ('.py', '.json', '.yaml', '.yml',
+                                                           '.toml', '.txt', '.md', '.jinja2', '.j2')):
+                        continue
+                    target = code / member.name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with tar.extractfile(member) as source:
+                        target.write_bytes(source.read())
+            (client / 'diaktoros').mkdir()
+            (client / 'diaktoros/__init__.py').touch()
+            for filename in ('broker_client.py', 'wire.py'):
+                shutil.copyfile(Path(native_macos.__file__).with_name(filename), client / 'diaktoros' / filename)
+            secret = root / 'host-secret'
+            secret.write_text('HOST_SECRET_MUST_NOT_REACH_MODEL')
+            model_key = 'HOST_MODEL_KEY_FIXTURE'
+            (root / 'model-key').write_text(model_key)
+            for login in ('reader', 'reviewer', 'fixer'):
+                (root / f'{login}.pat').write_text('fixture-' + login)
+            loop = {'repo': 'acme/widgets', 'base': 'main', 'state_dir': str(root),
+                    'read_token': 'reader', 'tokens': {n: str(root / f'{n}.pat') for n in
+                                                       ('reader', 'reviewer', 'fixer')},
+                    'seats': {'reviewer': {'login': 'reviewer'}, 'fixer': {'login': 'fixer'}}}
+            pr = {'number': 7, 'state': 'open', 'draft': False,
+                  'base': {'ref': 'main', 'repo': {'full_name': loop['repo']}},
+                  'head': {'sha': HEAD, 'ref': 'fix-7', 'repo': {'full_name': loop['repo']}}}
+            writes, requests = [], []
+
+            def api(_loop, path, method='GET', body=None, login=None):
+                if path == '/user':
+                    return {'login': login, 'id': {'reader': 1, 'reviewer': 2, 'fixer': 3}[login]}
+                if method == 'POST':
+                    writes.append((path, body, login))
+                    return {'id': 42}
+                return pr
+
+            probe = f"""
+import os,socket
+from pathlib import Path
+try:
+    Path({str(secret)!r}).read_text()
+except PermissionError:
+    print('HOST_SECRET_BLOCKED')
+else:
+    raise AssertionError('secret readable')
+with socket.socket() as connection:
+    try:
+        connection.connect(('127.0.0.1', 9))
+    except PermissionError:
+        print('HOST_NETWORK_BLOCKED')
+    else:
+        raise AssertionError('host network reachable')
+assert 'GITHUB_TOKEN' not in os.environ
+Path('review.txt').write_text('native fixture verified')
+"""
+            import shlex
+            command = ('python -c ' + shlex.quote(probe) +
+                       ' && python -m diaktoros.broker_client review --verdict APPROVE --body-file review.txt')
+
+            class Model(http.server.BaseHTTPRequestHandler):
+                def log_message(self, *_):
+                    pass
+
+                def do_POST(self):
+                    request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                    requests.append((self.path, self.headers.get('Authorization'), request))
+                    done = any(m.get('role') == 'tool' for m in request.get('messages', []))
+                    delta = ({'role': 'assistant', 'content': 'NATIVE_TURN_DONE'} if done else
+                             {'role': 'assistant', 'content': None, 'tool_calls': [{
+                                 'index': 0, 'id': 'native_probe', 'type': 'function',
+                                 'function': {'name': 'terminal',
+                                              'arguments': json.dumps({'command': command})}}]})
+                    chunk = {'id': 'fixture', 'object': 'chat.completion.chunk', 'created': 1,
+                             'model': 'fixture-model', 'choices': [{'index': 0, 'delta': delta,
+                                                                    'finish_reason': None}]}
+                    end = {**chunk, 'choices': [{'index': 0, 'delta': {},
+                                                'finish_reason': 'stop' if done else 'tool_calls'}]}
+                    data = (''.join('data: ' + json.dumps(c) + '\n\n' for c in (chunk, end))
+                            + 'data: [DONE]\n\n').encode()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/event-stream')
+                    self.send_header('Content-Length', str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+
+            upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+            thread = threading.Thread(target=upstream.serve_forever)
+            thread.start()
+            def close_upstream():
+                upstream.shutdown()
+                upstream.server_close()
+                thread.join()
+            stack.callback(close_upstream)
+            stack.enter_context(mock.patch.object(gh, 'api', side_effect=_ci_green.green(api)))
+            scope = broker_ipc.RunScope(loop['repo'], 7, HEAD, 'reviewer', 'fix-7')
+            # Short socket paths are separate from all writable/read-root generations.
+            capability = stack.enter_context(inference_proxy.InferenceCapability(
+                root / 'i', f'http://127.0.0.1:{upstream.server_port}{inference_proxy.PATH}',
+                model_key, model='fixture-model', quota=5))
+            broker_dir = root / 'b'
+            broker_dir.mkdir(mode=0o700)
+            broker = stack.enter_context(broker_ipc.RunBroker(loop, scope, broker_dir))
+            server = broker_ipc.serve_in_thread(broker)
+            def close_broker():
+                broker.close()
+                server.join(timeout=5)
+                self.assertFalse(server.is_alive())
+            stack.callback(close_broker)
+            query = code / 'native-query.txt'
+            query.write_text('Execute the requested terminal probe, submit the scoped review, then stop.')
+            venv = SOURCE / 'venv'
+            runtime = Path((venv / 'bin/python').resolve()).parents[1]
+            rust = root / 'rust-placeholder'
+            rust.mkdir()
+            result = native_macos.run(code=code, venv=venv, runtime=runtime,
+                                      rust=rust, home=home, work=work, export=export,
+                                      client=client, scratch=scratch, query=query,
+                                      inference_socket=capability.socket_path,
+                                      broker_socket=broker.socket_path, model='fixture-model')
+            self.assertEqual(result.returncode, 0, result.stdout[-6000:] + result.stderr[-6000:])
+            self.assertTrue(broker.completed, result.stdout[-6000:] + result.stderr[-6000:])
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(writes[0][1]['commit_id'], HEAD)
+            self.assertEqual(writes[0][2], 'reviewer')
+            self.assertGreaterEqual(len(requests), 2)
+            self.assertTrue(all(auth == 'Bearer ' + model_key for _, auth, _ in requests))
+            outputs = '\n'.join(str(m.get('content')) for _, _, request in requests
+                                for m in request.get('messages', []) if m.get('role') == 'tool')
+            self.assertIn('HOST_SECRET_BLOCKED', outputs)
+            self.assertIn('HOST_NETWORK_BLOCKED', outputs)
+            self.assertNotIn(secret.read_text(), outputs)
+            self.assertNotIn(model_key, outputs)
+
+
+if __name__ == '__main__':
+    unittest.main()

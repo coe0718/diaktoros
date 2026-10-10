@@ -336,9 +336,18 @@ def _run(*, timeout: int, **kwargs) -> subprocess.CompletedProcess:
     # Parent environment is discarded, not merely filtered by a fragile denylist.
     home = str(Path(kwargs["home"]).resolve(strict=True))
     argv = command(**kwargs)
-    process = subprocess.Popen(argv,
-                               env={"PATH": LAUNCH_PATH, "HOME": home,
-                                    "HERMES_HOME": home},
+    return capture(argv, env={"PATH": LAUNCH_PATH, "HOME": home,
+                              "HERMES_HOME": home}, timeout=timeout)
+
+
+def capture(argv: list[str], *, env: dict[str, str], timeout: int,
+            cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """Common bounded capture for an already-contained command; no sandbox by itself.
+
+    Process-group cleanup is retained. It does not contain detached descendants
+    or provide parent-death behavior; native production needs a stronger lifecycle.
+    """
+    process = subprocess.Popen(argv, env=env, cwd=cwd,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=True)
     output = {"stdout": bytearray(), "stderr": bytearray()}

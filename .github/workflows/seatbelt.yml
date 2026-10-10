@@ -6,7 +6,12 @@ on:
   pull_request:
     paths:
       - diaktoros/seatbelt.py
+      - diaktoros/native_macos.py
+      - diaktoros/seatbelt_wire.py
+      - diaktoros/broker_client.py
+      - diaktoros/contained.py
       - tests/test_seatbelt.py
+      - tests/test_native_macos.py
       - .github/workflows/seatbelt.yml
   workflow_dispatch:
 
@@ -53,3 +58,44 @@ jobs:
                   print(path.name)
                   print(path.read_text(errors='replace')[:14000])
           PY
+
+  hermes-turn:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      HERMES_AGENT_SOURCE: ${{ github.workspace }}/hermes
+      DIAKTOROS_REQUIRE_NATIVE_HERMES: '1'
+      UV_PYTHON_PREFERENCE: only-managed
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: NousResearch/hermes-agent
+          ref: be5e9f72c6681af9dfb75bf480f08844f1499949
+          path: hermes
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: '0.12.19'
+          enable-cache: false
+      - name: Install pinned native Hermes into a disposable venv
+        run: |
+          py=$(python -c 'import json; print(json.load(open("hermes/pm/lock.json"))["packages"]["python"]["version"].split("+")[0])')
+          uv venv --python "$py" hermes/venv
+          cd hermes
+          UV_PROJECT_ENVIRONMENT="$HERMES_AGENT_SOURCE/venv" uv sync --frozen --no-dev --extra anthropic
+          test -x "$HERMES_AGENT_SOURCE/venv/bin/hermes"
+      - name: Real Hermes tool turn over Unix model and broker sockets
+        run: python tests/leakguard.py discover -v -s tests -p 'test_native_macos.py'
+      - name: Native runtime denials on failure
+        if: failure()
+        run: /usr/bin/log show --last 2m --style compact --predicate 'eventMessage CONTAINS "deny" AND (eventMessage CONTAINS "python" OR eventMessage CONTAINS "Python")' 2>&1 | tail -n 100
