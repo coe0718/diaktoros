@@ -6,6 +6,7 @@ before removing fixture paths. No polling process-tree killer is proposed here.
 """
 import _home_guard  # noqa: F401
 from pathlib import Path
+from contextlib import closing
 import json
 import os
 import select
@@ -107,7 +108,7 @@ class NativeLifecycleGaps(unittest.TestCase):
                                             str(script), str(work), str(control), str(secret),
                                             'detach' if detached else 'stay'])
             env = {'PATH': '/usr/bin:/bin', 'HOME': str(work), 'TMPDIR': str(work)}
-            with select.kqueue() as exits:
+            with closing(select.kqueue()) as exits:
                 supervisor = subprocess.Popen(
                     [sys.executable, '-c', SUPERVISOR, json.dumps(argv), json.dumps(env),
                      '3' if detached else '30', str(root / 'timeout')],
