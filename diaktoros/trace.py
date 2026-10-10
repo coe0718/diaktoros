@@ -24,6 +24,7 @@ import sys
 import tempfile
 import textwrap
 
+from .ledger import LOCK_WAIT_S
 from . import config, gh, route_intent, routes, util
 from . import envnames
 from .util import logged
@@ -121,7 +122,8 @@ def _copy_home(loop: dict, dst: pathlib.Path) -> tuple[pathlib.Path, dict[str, s
     ledger = dst / source.relative_to(root)
     if source.is_file():
         ledger.parent.mkdir(parents=True, exist_ok=True)
-        with contextlib.closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as src, \
+        with contextlib.closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True,
+                                                   timeout=LOCK_WAIT_S)) as src, \
                 contextlib.closing(sqlite3.connect(ledger)) as out:
             src.backup(out)
     configs = dst / config.host_path("config_dir", root).relative_to(root)

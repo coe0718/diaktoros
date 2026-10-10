@@ -41,7 +41,7 @@ def rows(repo: str, pr: int, db=None) -> list:
     if not path.exists():
         return []
     try:
-        with ledger.connect(path, timeout=10, row_factory=sqlite3.Row) as con:
+        with ledger.connect(path, timeout=ledger.LOCK_WAIT_S, row_factory=sqlite3.Row) as con:
             return list(con.execute(
                 "SELECT head, state, push_confirmed FROM runs WHERE repo=? AND pr=? "
                 "AND seat='fixer' "

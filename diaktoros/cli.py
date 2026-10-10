@@ -20,6 +20,7 @@ import sys
 import time
 import tempfile
 
+from .ledger import LOCK_WAIT_S
 from . import (attribution, config, doctor, envnames, gate, gate_shims, gh, observer, prompts,
                route_intent, routes, state as state_mod)
 from .util import logged
@@ -3611,7 +3612,7 @@ def _reviewer_runs(repo: str, number: int, head: str) -> int:
     db = run_supervisor.production_ledger()
     if not db.exists():
         return 0
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
     try:
         return con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND head=? AND "
                            "seat='reviewer'", (repo, number, head)).fetchone()[0]
@@ -3690,7 +3691,7 @@ def cmd_escalate(args) -> int:
         # A queued review or fix is retired by the escalation itself (the worker's claim); only
         # a turn already running must finish first, since it may still write at this head.
         busy = run_supervisor.ACTIVE
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
         try:
             out = con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND state IN "
                               f"({','.join('?' * len(busy))})", (loop["repo"], number, *busy)).fetchone()[0]
