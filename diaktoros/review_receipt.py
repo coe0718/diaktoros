@@ -74,7 +74,7 @@ def _partial_view(con, run_id):
 
 def partial_view(db, run_id):
     """Read-only: why the host could not show this run the whole change, or ''."""
-    con = sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=10)
+    con = sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=ledger.LOCK_WAIT_S)
     try:
         return _partial_view(con, run_id)
     finally:
@@ -89,8 +89,8 @@ class ReceiptLedger:
             raise ReceiptDenied('unclaimed generation')
 
     def _connect(self):
-        return ledger.connect(self.db, timeout=10, isolation_level=None,
-                              pragmas=('busy_timeout=10000', 'synchronous=FULL'))
+        return ledger.connect(self.db, timeout=ledger.LOCK_WAIT_S, isolation_level=None,
+                              pragmas=(ledger.BUSY_TIMEOUT, 'synchronous=FULL'))
 
     def claim(self, principal_id, verdict=None):
         if type(principal_id) is not int or principal_id <= 0:
@@ -205,7 +205,7 @@ def confirmed_receipts(db, repo, number, head, base):
         return {}
     if not db or not os.path.exists(db):
         return {}
-    con = sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=10)
+    con = sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=ledger.LOCK_WAIT_S)
     try:
         rows = con.execute(
             "SELECT r.review_id, r.verdict, r.principal_id, r.generation FROM review_receipts r "
