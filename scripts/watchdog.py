@@ -991,8 +991,23 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
               and not st.review_cap_granted(number, head, len(changes))):
             pass                                  # review cap reached: a maintainer's move
         elif len(changes) >= loop["cap"] and head_postdates_arming and not review_only:
-            kind = (f"{len(changes)} verdicts, no approval and NO escalation marker — "
-                    f"the cap may not have fired")
+            # #575: a spent cap with no marker at this head (the head moved after the cap fired,
+            # or no gate event ever reached it) is handed to adjudication here, exactly as the
+            # reviewer gate would: no model, no GitHub write. Only a failed hand-off is a stall.
+            try:
+                handed = gate.breach(loop, st, number, head, len(changes),
+                                     f"review cap reached — {loop['cap']} verdicts, no approval "
+                                     "(raised by the watchdog at this head)")
+            except Exception as exc:
+                handed = ""
+                log(f"#{number} @ {head[:7]}: cap spent, hand-off failed: "
+                    f"{type(exc).__name__}: {exc}")
+            if handed == "new":
+                log(f"#{number} @ {head[:7]}: cap spent with no marker here — handed to "
+                    "adjudication")
+            elif handed != "stale":
+                kind = (f"{len(changes)} verdicts, no approval and NO escalation marker — "
+                        f"the cap may not have fired")
         elif at_head and not config.unattended_fixer_push_enabled(loop):
             mins = age_min(at_head[-1].get("submitted_at"))
             if mins > grace["fixer"]:

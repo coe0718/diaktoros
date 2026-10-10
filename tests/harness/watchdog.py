@@ -258,7 +258,14 @@ def group_watchdog() -> None:
                                                        review(REVIEWER, head="e" * 40, rid=3)]}})
     state_file("watchdog.json").write_text(json.dumps({"armed_since": time.time() - 86400}))
     out, _, _ = run("watchdog.py", None, "--loop", "widgets")
-    check("stall: cap spent, no escalation marker", "NO escalation marker" in out, True)
+    # #575: the sweep hands it to adjudication itself, as the reviewer gate would.
+    marker = load_state("breach.json").get(f"{REPO}#7") or {}
+    check("cap spent, no marker: the sweep breaches at the head",
+          (marker.get("head"), marker.get("rounds")), (HEAD_B, 3))
+    check("  and does not report it as a stall", "NO escalation marker" in out, False)
+    run("watchdog.py", None, "--loop", "widgets")
+    check("  a second sweep leaves the marker alone",
+          (load_state("breach.json").get(f"{REPO}#7") or {}).get("at"), marker.get("at"))
 
     # Real grace/baseline mode (not DIAKTOROS_TEST's zero-grace bypass).
     normal = {"DIAKTOROS_TEST": ""}
@@ -294,9 +301,13 @@ def group_watchdog() -> None:
     set_prs({"7": {**pr(7), "reviews": cap_reviews}})
     out, _, _ = run("watchdog.py", None, "--loop", "widgets", extra_env=normal)
     check("old unchanged PR does not signal missing cap marker", "NO escalation marker" in out, False)
+    check("  nor is it breached (it predates arming)",
+          load_state("breach.json").get(f"{REPO}#7"), None)
     set_prs({"7": {**pr(7, head=HEAD_B), "reviews": cap_reviews}})
     out, _, _ = run("watchdog.py", None, "--loop", "widgets", extra_env=normal)
-    check("new old-dated head signals missing cap marker", "NO escalation marker" in out, True)
+    # #575: a new head with the cap spent is handed to adjudication, not just reported.
+    check("new old-dated head with the cap spent is breached at that head",
+          (load_state("breach.json").get(f"{REPO}#7") or {}).get("head"), HEAD_B)
 
     # Review API failure leaves the observation persisted but does not guess verdicts.
     reset(prs={"7": pr(7)})
