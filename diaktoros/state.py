@@ -41,6 +41,11 @@ from .util import log, now_iso
 # against itself; nested sections (``take_seat`` queueing under its own claim) reuse the outer one.
 _HELD = threading.local()
 
+# watchdog.log is bounded like the other append-only files (#549): once it passes
+# LOG_PRUNE_BYTES, a write rewrites it to its last LOG_KEEP lines.
+LOG_KEEP = 1000
+LOG_PRUNE_BYTES = 256 * 1024
+
 # Seat claims this process made, as ``(state, seat, key, at)``. A gate that crashes or runs out
 # of time after claiming a seat releases exactly these on its way out (#75, ``gate_failures``),
 # so a failed delivery never holds the seat until ``ttl_min`` expires.
@@ -210,8 +215,20 @@ class LoopState:
             hostdirs.ensure(self.dir)
             with self.log.open("a") as fh:
                 fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {message}\n")
+            self._prune_log()
         except Exception:
             pass
+
+    def _prune_log(self) -> None:
+        """Keep only the last ``LOG_KEEP`` lines once the log is over ``LOG_PRUNE_BYTES``."""
+        if self.log.stat().st_size <= LOG_PRUNE_BYTES:
+            return
+        lines = self.log.read_text(errors="replace").splitlines(keepends=True)
+        if len(lines) <= LOG_KEEP:
+            return
+        tmp = self.log.with_name(self.log.name + ".tmp")
+        tmp.write_text("".join(lines[-LOG_KEEP:]))
+        os.replace(tmp, self.log)
 
     # -- active runs per seat (the concurrency ledger) ----------------------
 

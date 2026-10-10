@@ -594,7 +594,7 @@ State is operational data, not additional user configuration. Do not hand-edit l
 | `inflight.json` | Same-head reviewer/fixer marks written/cleared by workers and subject to in-flight TTL. |
 | `breach.json` | Durable cap marker: `delivery-pending`, `awaiting-adjudication`, or `adjudicating`; current-head checks protect re-arming. |
 | `route-intent.json` | Private mode-0600 record of owned installed routes, **including signing secrets**. Watchdog/doctor repair uses it; never share it as a diagnostic attachment. |
-| `watchdog.json`, `watchdog.log` | Arming/head-observation clocks, alerts, sweep history and diagnostics. Invalid arming clocks re-baseline on a successful listing rather than pretending old heads are newly stalled. |
+| `watchdog.json`, `watchdog.log` | Arming/head-observation clocks, alerts, sweep history and diagnostics. `watchdog.log` is bounded: past 256 KiB it is rewritten to its last 1000 lines. Invalid arming clocks re-baseline on a successful listing rather than pretending old heads are newly stalled. |
 | `gate-failures.json`, `gate-failures/` | Failed gate events, bounded errors/tracebacks, and saved payloads for reporting/re-drive. |
 | `github-reads.json` | Failed GitHub-read evidence used by diagnostics. |
 | `stack-transitions.json` | Same-head base-retarget holds/fresh-review boundaries; old approvals and verdicts cannot authorize the new situation. |
