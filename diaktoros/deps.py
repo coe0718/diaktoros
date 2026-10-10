@@ -117,7 +117,7 @@ class _Hold:
 
 
 def _cap_setting() -> tuple[int, str | None]:
-    raw = os.environ.get(CAP_ENV, "").strip()
+    raw = (envnames.get("CRATE_CACHE_GIB") or "").strip()
     if not raw:
         return DEFAULT_CAP_GIB, None
     try:
