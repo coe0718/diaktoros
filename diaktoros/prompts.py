@@ -25,10 +25,20 @@ import re
 import string
 
 
+def no_git_proof(indent: str) -> str:
+    """How to show a test fails without the fix in `/work`, which has no git (#542: a fixer tried
+    `git stash`, could not prove it, and lost the turn). One text for every fixer prompt."""
+    import textwrap
+    text = ("`/work` has no git (no `stash`, no `diff`), so prove it by hand: before you edit a "
+            "file, copy it aside (`cp path/x.py /tmp/x.py.orig`). To check, copy the original "
+            "back, run the test and see it fail, then put your change back.")
+    return textwrap.fill(text, width=99, initial_indent=indent, subsequent_indent=indent) + "\n"
+
+
 def code_rules(what: str, where: str) -> str:
     """The fixer's rules for the code it writes (#512), one text for every fixer prompt:
     ``what`` is the work ("fix", "issue"), ``where`` where it reports ("your answers")."""
-    return f"""   Four rules for the code you write:
+    return f"""   Five rules for the code you write:
    - **Reuse before writing.** Before adding a function, search the package for an existing one
      that does the same check, and call it or extend it instead of copying it. If the logic must
      be shared between two callers, factor it into one function both use.
@@ -43,7 +53,8 @@ def code_rules(what: str, where: str) -> str:
      to wait, who goes next), find every other place that decides the same question (its
      callers, the prompt or notice that explains it, `explain`, `doctor`, the sweep) and make
      them agree. One rule stated two ways is a bug.
-"""
+   - **Prove the test fails without the fix.**
+""" + no_git_proof("     ")
 
 
 REVIEWER = """A pull request in {_loop.repo} needs its review.
@@ -488,7 +499,7 @@ What to do:
    the touched tests, never the whole suite: CI reruns everything on the new head. If the failing
    check caught a real defect only indirectly, add a test that fails without your fix and name
    it in your summary.
-4. Publish through the broker's push (command below), naming every file you changed, with a short
+""" + no_git_proof("   ") + """4. Publish through the broker's push (command below), naming every file you changed, with a short
    commit message. The host pushes it only if the branch is still at {head}. If the broker refuses
    a write, that refusal is final: do not retry, and say plainly that the fix was **not
    published**. A reply saying the outcome is **uncertain** or **unknown** means it may have been
@@ -596,6 +607,11 @@ def fixer_check_section(loop: dict) -> str:
             "added or deleted, space-separated and relative to `/work` (the same list you will "
             "publish), so the check can pick the tests that depend on them (#362):\n\n"
             "```sh\nCHANGED=\"path/one.py path/two.py\" sh -c '<the check below>'\n```\n\n"
+            "If it fails, fix what it found and run it again. If it still fails, or it is cut "
+            "off before it finishes, **publish anyway** and say in your answers or PR "
+            "description exactly what did not pass or did not run: work you do not publish is "
+            "lost, and a PR that states its gaps is still reviewed. Never end the turn "
+            "unpublished because the check did not pass (#542). "
             "If it cannot run in this sandbox, say so in your answers or PR description. If it "
             "passes but its output reports modules it did not run (for example `not run (past "
             "the ... budget; CI runs them): ...`), the zero exit code does not mean those tests "
