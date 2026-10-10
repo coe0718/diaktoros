@@ -13,7 +13,7 @@ tier: community
 category: automation
 requires_hermes: '>=0.21.5'
 docs_url: https://github.com/coe0718/diaktoros#readme
-version: "0.2.0"
+version: "0.3.0"
 platforms:
   # Linux only: every seat turn runs in bubblewrap (user namespaces), which macOS lacks.
   - linux
