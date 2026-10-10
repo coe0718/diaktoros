@@ -1021,7 +1021,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                         f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
         elif at_head:
             mins = age_min(at_head[-1].get("submitted_at"))
-            if past(mins, grace["fixer"]):
+            # A fix turn queued or running at this head is not a stall: the grace covers a turn's
+            # run, not its wait in the queue (behind another PR, paced, held).
+            if past(mins, grace["fixer"]) and not live_turn(loop, number, head, "fixer"):
                 kind = (f"fixer never pushed — changes requested {ago(mins)} at head "
                         f"{head[:7]} by {gate.reviewer_login(at_head[-1])}")
         elif config.fix_ci(loop) and ci_fix.pending_at(loop["repo"], number, head):
@@ -1047,7 +1049,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                     kicks[str(number)] = head
                     log(f"#{number} @ {head[:7]}: a pending review request had started no "
                         "review — delivered it to the reviewer gate")
-            if (TEST or mins > grace["reviewer"]) and head_postdates_arming:
+            if ((TEST or mins > grace["reviewer"]) and head_postdates_arming
+                    and not live_turn(loop, number, head, "reviewer")):
                 kind = (f"reviewer never posted a verdict — head {head[:7]} observed "
                         f"{mins / 60:.1f}h ago, 0 verdicts at this head (`hermes dk "
                         f"review --loop {loop['id']} --pr {number}` asks for one)")
@@ -1205,6 +1208,12 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
 LIVE_TURN = ("pending", "claimed", "launching", "running", "waiting")
 
 
+def live_turn(loop: dict, number: int, head: str, seat: str) -> bool:
+    """Whether ``seat``'s turn on this PR head is queued or running in the run ledger."""
+    from diaktoros.run_supervisor import turn_state
+    return turn_state(config.host_path("ledger"), loop["repo"], number, head, seat) in LIVE_TURN
+
+
 def stall_key(number: int, head: str, kind: str) -> str:
     """The cooldown key for one stall: the PR, its head and what the stall is — with the ages
     and counts its wording carries masked, so "adjudicating for 1.2h" and "... 1.3h" on the next
@@ -1225,13 +1234,15 @@ def parked_kind(loop: dict, marker: dict, number: int, head: str,
     """
     if not isinstance(marker, dict) or marker.get("head") != head:
         return None
+    from diaktoros.run_supervisor import ruling_at, turn_state
+    if ruling_at(config.host_path("ledger"), loop["repo"], number, head):
+        return ""             # ruled: the decision is the operator's, and the ruling said so
     if marker.get("status") != "adjudicating":
         mins = age_min(marker.get("at"))
         if past(mins, marker_grace):
             return (f"parked awaiting adjudication {lasting(mins)} "
                     f"(marker {marker.get('at') or 'unknown'})")
         return ""
-    from diaktoros.run_supervisor import turn_state
     run = turn_state(config.host_path("ledger"), loop["repo"],
                      number, head, "adjudicator")
     if run in LIVE_TURN:

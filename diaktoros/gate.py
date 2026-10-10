@@ -479,6 +479,12 @@ def _adjudication_next(loop: dict, head: str) -> str:
     return (f"human adjudication: the adjudicator rules at head {short} and reports; nothing else "
             f"fires for this PR (both gates stop at the cap)")
 
+def _ruled(loop: dict, number: int, head: str) -> str | None:
+    """The adjudicator's verdict at this head, if it has ruled (the watchdog reads the same)."""
+    from .run_supervisor import ruling_at
+    return ruling_at(config.host_path("ledger"), loop["repo"], number, head)
+
+
 def seat_capacity(loop: dict, st: state_mod.LoopState, seat: str) -> tuple[int, int]:
     """The gate's capacity predicate, with a read-only ledger view for explain."""
     return len(st.live_locks(seat)), config.seat_concurrency(loop, seat)
@@ -844,6 +850,8 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     # review even when the marker still says awaiting-adjudication/adjudicating.
     parked = local["parked"] and ((spent is not None and spent >= cap)
                                   or escalated(marker, head))
+    # A ruling at this head ends adjudication: the marker stays, and the decision is a person's.
+    ruled = _ruled(loop, number, head) if parked else None
     # A dismissed verdict can lower the live count after a failed POST. The
     # watchdog only retries a pending marker while the cap remains spent.
     pending_delivery = (local["delivery_status"] == "delivery-pending"
@@ -916,7 +924,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             if author and author not in config.reviewed_authors(loop):
                 blockers.append(f"the author {author} is not one of this loop's fixers "
                                 f"({', '.join(loop['fixers'])}) or review-only authors")
-            if parked:
+            if ruled:
+                blockers.append(f"ruled: the adjudicator ruled {ruled} at head {short}; the "
+                                "decision is yours")
+            elif parked:
                 blockers.append(f"escalated: the PR is parked awaiting adjudication at head "
                                 f"{str(marker.get('head') or '?')[:7]} since "
                                 f"{marker.get('at') or 'an unrecorded time'}")
@@ -1048,6 +1059,10 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         kind = "retry"
         action = (f"retry adjudicator delivery for head {short} on the next armed watchdog sweep "
                   "after checking the current head and review cap — no ruling is underway yet")
+    elif ruled:
+        kind = "operator"
+        action = (f"your decision: the adjudicator ruled {ruled} at head {short} (its comment is "
+                  "on the PR) — merge, close, or push a new head, which starts a fresh review")
     elif parked:
         kind = "adjudication"
         action = _adjudication_next(loop, head)
