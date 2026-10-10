@@ -1805,10 +1805,13 @@ def cmd_init(args) -> int:
         cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
         if cap not in (0, ""):
             config._check_daily_turns(cap, "triage.fix_daily_turns", "init")
-            # A new loop has no triage block (so no fix_label) for the cap to live in.
-            print(f"note: issue-fix daily cap {cap} is not written: a new loop has no "
-                  "triage.fix_label yet — set it with `hermes dk triage "
-                  "--fix-daily-turns N` once issue fixes are on")
+            # A new loop has no triage block (so no fix_label) for the cap to live in, and
+            # `apply` refuses it for the same reason: refuse rather than accept and drop it.
+            print(f"refused: the issue-fix daily cap {cap} cannot be set by init: a new loop "
+                  "has no triage.fix_label for it to live in. Leave --fix-daily-turns (and the "
+                  "fix_daily_turns setting) blank, then set it with `hermes dk triage "
+                  "--fix-label LABEL --maintainer LOGIN --fix-daily-turns N`; nothing written")
+            return 2
     except config.ConfigError as exc:
         print(f"refused: {exc}")
         return 2
@@ -5349,8 +5352,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="agent steps one fixer or issue-fix turn may take, 8-200 "
                                "(0 = default 80) (default: the plugin setting)")
         init.add_argument("--fix-daily-turns", type=int, default=None,
-                          help="issue-fix turns per day, 1-1000 (0 = default); only lands once "
-                               "triage has a fix label (default: the plugin setting)")
+                          help="issue-fix turns per day: refused here, a new loop has no fix "
+                               "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
         init.add_argument("--hooks", action="store_true",
                           help="create the GitHub hooks too, paused until `arm`")
         init.add_argument("--arm", action="store_true",
@@ -5432,8 +5435,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="agent steps one fixer or issue-fix turn may take, 8-200 "
                                 "(0 = default 80) (default: the plugin setting)")
         first.add_argument("--fix-daily-turns", type=int, default=None,
-                           help="issue-fix turns per day, 1-1000 (0 = default); only lands once "
-                                "triage has a fix label (default: the plugin setting)")
+                           help="issue-fix turns per day: refused here, a new loop has no fix "
+                                "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
         for key in ("source", "venv", "runtime", "rust"):
             first.add_argument(f"--{key}", default="",
                                help=f"runtime file's {key} path (default: detected)")

@@ -276,7 +276,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
-| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day, 1-1000 (0 = default); only lands once triage has a fix label (default: the plugin setting) |
+| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no fix label; set it with `triage --fix-daily-turns N` (0 = ignore) |
 | `--source` | `SOURCE` |  | runtime file's source path (default: detected) |
 | `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
 | `--runtime` | `RUNTIME` |  | runtime file's runtime path (default: detected) |
@@ -388,7 +388,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds (overrides --turn-budget) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
-| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day, 1-1000 (0 = default); only lands once triage has a fix label (default: the plugin setting) |
+| `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no fix label; set it with `triage --fix-daily-turns N` (0 = ignore) |
 | `--hooks` |  |  | create the GitHub hooks too, paused until `arm` |
 | `--arm` |  |  | with --hooks: create them armed (live at once) instead of paused |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can create hooks |

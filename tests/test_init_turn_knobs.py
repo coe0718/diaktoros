@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from test_init_concurrency import Base, LOOP_FILE  # noqa: E402
 
-FORM = {"reviewer_max_steps": "120", "fixer_max_steps": "150", "fix_daily_turns": "7"}
+FORM = {"reviewer_max_steps": "120", "fixer_max_steps": "150", "fix_daily_turns": ""}
 
 
 class InitTurnKnobsTest(Base):
@@ -20,8 +20,6 @@ class InitTurnKnobsTest(Base):
         seats = self.written()["seats"]
         self.assertEqual(seats["reviewer"]["max_steps"], 120)
         self.assertEqual(seats["fixer"]["max_steps"], 150)
-        # A new loop has no triage.fix_label to hold the cap; init says so instead of dropping it.
-        self.assertIn("issue-fix daily cap 7 is not written", out)
 
     def test_flags_override_the_form(self):
         rc, out = self.init("--reviewer-max-steps", "30", "--fixer-max-steps", "0",
@@ -31,6 +29,13 @@ class InitTurnKnobsTest(Base):
         self.assertEqual(seats["reviewer"]["max_steps"], 30)
         self.assertNotIn("max_steps", seats["fixer"])
         self.assertNotIn("issue-fix daily cap", out)
+
+    def test_fix_daily_turns_is_refused_not_dropped(self):
+        for args, form in ((("--fix-daily-turns", "7"), None), ((), {"fix_daily_turns": "7"})):
+            rc, out = self.init(*args, settings=form)
+            self.assertEqual(rc, 2, out)
+            self.assertIn("cannot be set by init", out)
+            self.assertFalse(LOOP_FILE.exists())
 
     def test_blank_form_leaves_the_defaults(self):
         rc, out = self.init(settings={"reviewer_max_steps": "", "fixer_max_steps": "",
