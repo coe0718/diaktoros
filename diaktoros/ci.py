@@ -51,15 +51,18 @@ def _runner_shutdown(loop: dict, run_id) -> bool:
     """True only when the run's annotations were read and show a runner shutdown (fails closed)."""
     if type(run_id) is not int:
         return False
-    notes = gh.api(loop, f"/repos/{loop['repo']}/check-runs/{run_id}/annotations?per_page=100",
-                   login=loop.get("read_token"))
-    if not isinstance(notes, list):
-        return False
-    for note in notes:
-        if isinstance(note, dict) and isinstance(note.get("message"), str):
-            text = note["message"].lower()
-            if any(marker in text for marker in SHUTDOWN_MARKERS):
-                return True
+    for page in range(1, MAX_PAGES + 1):
+        notes = gh.api(loop, f"/repos/{loop['repo']}/check-runs/{run_id}/annotations"
+                             f"?per_page=100&page={page}", login=loop.get("read_token"))
+        if not isinstance(notes, list):
+            return False   # a failed page is not "no marker", and not proof of one
+        for note in notes:
+            if isinstance(note, dict) and isinstance(note.get("message"), str):
+                text = note["message"].lower()
+                if any(marker in text for marker in SHUTDOWN_MARKERS):
+                    return True
+        if len(notes) < 100:
+            break   # a short page is the last one
     return False
 
 

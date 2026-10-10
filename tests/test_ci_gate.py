@@ -35,7 +35,11 @@ class Fake:
     def __call__(self, loop, path, method="GET", body=None, login=None):
         self.paths.append((path, login))
         if "/annotations" in path:
-            return self.notes.get(int(path.split("/check-runs/")[1].split("/")[0]))
+            rid = int(path.split("/check-runs/")[1].split("/")[0])
+            page = int(path.split("&page=")[1]) if "&page=" in path else 1
+            if (rid, page) in self.notes:   # per-page annotations
+                return self.notes[(rid, page)]
+            return self.notes.get(rid) if page == 1 else None
         if "/check-runs" in path:
             if self.runs is None:
                 return None
@@ -96,6 +100,16 @@ class Read(unittest.TestCase):
         state, _ = read(runs=[run("a", conclusion="failure", id=1)],
                         notes={1: [{"message": "The runner has received a shutdown signal"}]})
         self.assertEqual((state.cancelled, state.failed), (["a"], []))
+
+    def test_a_shutdown_marker_on_a_later_annotation_page_is_found(self):
+        full = [{"message": "lint warning"}] * 100
+        state, fake = read(runs=[run("a", conclusion="failure", id=1)],
+                           notes={(1, 1): full, (1, 2): [{"message": "The operation was canceled."}]})
+        self.assertEqual((state.cancelled, state.failed), (["a"], []))
+        self.assertTrue(any("page=2" in p for p, _ in fake.paths))
+        # a failed later page is not "no marker": the run stays failed
+        state, _ = read(runs=[run("a", conclusion="failure", id=1)], notes={(1, 1): full})
+        self.assertEqual((state.cancelled, state.failed), ([], ["a"]))
 
     def test_unreadable_or_malformed_or_too_many_is_none(self):
         self.assertIsNone(read(runs=None)[0])
