@@ -84,6 +84,15 @@ class Findings(unittest.TestCase):
             self.assertEqual(findings.check(self.loop, entry, 7, H2,
                                             "F1: fixed\nF2: open\n", "REQUEST_CHANGES"), "")
 
+    def test_state_for_unknown_finding_is_refused_as_no_such_finding(self):
+        entry = self.st.findings_get(7)
+        with mock.patch.object(findings, "changed_files", return_value={"src/a.py"}):
+            for verdict in ("APPROVE", "REQUEST_CHANGES"):
+                reason = findings.check(self.loop, entry, 7, H2,
+                                        "F1: fixed\nF2: fixed\nF9: fixed\n", verdict)
+                self.assertIn("no such finding F9", reason)
+                self.assertNotIn("open finding", reason)
+
     def test_new_finding_starting_with_a_state_word_is_recorded(self):
         findings.record(self.loop, 7, H2,
                         "F1: fixed\nF2: open\nF3: open file handle leaks in x.py\n"
