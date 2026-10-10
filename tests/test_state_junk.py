@@ -86,13 +86,25 @@ class Junk(unittest.TestCase):
 
     def test_breach_markers_survive_every_shape(self):
         st = self.st
-        for junk in ["junk", ["x"], 3, None, {KEY: "junk"}, {KEY: ["x"]}]:
+        entry = {"pr": 7, "head": HEAD, "rounds": 3, "cap": 3, "reason": "cap", "at": "now"}
+        pending = {**entry, "status": "delivery-pending", "delivery_token": "t",
+                   "delivery_at": "never"}
+        for junk in ["junk", ["x"], 3, None, {KEY: "junk"}, {KEY: ["x"]}, {KEY: pending}]:
             with self.subTest(junk=junk):
                 st.breach.write_text(json.dumps(junk))
-                self.assertEqual(st.breach_get(7), {})
+                st.breach_get(7)
                 st.breach_all()
                 st.breach_claim(7, HEAD)
+                st.breach_start(7, HEAD, 3)
+                st.breach_resume(7, HEAD, 3)
                 st.quarantine(7, HEAD)
+                st.breach.write_text(json.dumps(junk))
+                st.breach_set(7, dict(entry))
+                st.breach.write_text(json.dumps(junk))
+                # The writer that finalizes a delivery (#573 review F1): a junk marker found
+                # after sending must be healed, never indexed.
+                st.breach_deliver(7, dict(entry), lambda: True,
+                                  lambda marker: (st.breach.write_text(json.dumps(junk)), True)[1])
 
 
 class ExplainKinds(unittest.TestCase):

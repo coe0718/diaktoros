@@ -591,7 +591,7 @@ class LoopState:
             new = prior.get("head") != head
             if not new and (prior.get("status") != "delivery-pending"
                             or (prior.get("delivery_token")
-                                and time.time() - prior.get("delivery_at", 0) < 60)):
+                                and time.time() - (_clock(prior.get("delivery_at")) or 0) < 60)):
                 return "already"
             # Keep the original reason/rounds when retrying a pending marker.
             marker = {**(entry if new else prior), "status": "delivery-pending",
@@ -610,7 +610,7 @@ class LoopState:
             delivered = False
         with self._breach_lock():
             data = _mapping(self._load(self.breach, {}))
-            latest = data.get(key) or {}
+            latest = _mapping(data.get(key))
             if (latest.get("head") == head
                     and latest.get("delivery_token") == marker["delivery_token"]):
                 latest = {k: v for k, v in latest.items()
