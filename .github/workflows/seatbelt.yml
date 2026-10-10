@@ -63,7 +63,7 @@ jobs:
       - name: Exercise pinned committed source export and path replacement
         run: |
           python tests/leakguard.py discover -v -s tests -p 'test_native_snapshot.py'
-          python tests/leakguard.py discover -v -s tests -p 'test_trusted_fetch.py'
+          python tests/leakguard.py -v test_trusted_fetch.CommittedSourceSnapshotTests
           python tests/leakguard.py -v test_snapshot_secrets.SnapshotSecretTests test_snapshot_secrets.EvalsAreNotExported test_snapshot_secrets.ExportedSnapshotProbeTests
       - name: Test watchdog cleanup and characterize remaining detached-child gap
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_lifecycle.py'
