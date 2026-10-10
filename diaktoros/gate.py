@@ -451,7 +451,7 @@ def hooks_armed(loop: dict) -> bool | None:
 # The vocabulary of ``next.kind``. The suite asserts every conclusion is one of these, so a new
 # branch cannot quietly invent a kind nobody is checking for.
 EXPLAIN_KINDS = ("review-verdict", "review-request", "fixer-retry", "fixer-push", "author-push", "release",
-                 "adjudication", "rearm", "ready", "retry", "wait", "none")
+                 "adjudication", "rearm", "ready", "retry", "wait", "operator", "none")
 
 
 def _mark_time(entry: dict | None, fallback: float) -> float:
