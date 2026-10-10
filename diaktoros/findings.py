@@ -80,6 +80,10 @@ def check(loop: dict, entry: dict, number: int, head: str, body: str, verdict: s
     for fid, kind, rest in lines:
         if kind != "new" and fid in known:
             stated[fid] = kind
+        elif kind != "new":
+            return (f"no such finding {fid}: '{fid}: {kind}' states a finding that was never "
+                    "recorded; check the id (a new finding needs a description, not just a "
+                    "state); nothing was written, resubmit")
         elif fid in known:
             return (f"finding {fid} already exists: give it a state ({'/'.join(STATES)}) rather "
                     "than restating it; nothing was written, resubmit")
