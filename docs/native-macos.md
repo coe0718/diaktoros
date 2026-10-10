@@ -199,12 +199,22 @@ are also host-only. None of these descriptors reach the sandboxed executable.
 
 The watchdog uses kernel notifications for its known direct child, kills the
 original process group before reaping its leader, and reports completion over a
-private result pipe. Keeping the leader unreaped until cleanup reserves its PID;
+private result pipe only after verifying group quiescence. After SIGKILL, a
+bounded five-second libproc check requires the group to contain only its exited,
+unreaped leader; snapshots include live processes and zombies. The watchdog
+repeats group signalling while waiting, never signals individual discovered PIDs,
+and restores the default SIGCHLD disposition before launching the leader so an
+inherited ignore disposition cannot auto-reap it. Signal denial or delivery alone
+does not prove completion. Missing leader reservation, query failure, excessive
+membership or a drain deadline fails closed. Keeping the leader unreaped until cleanup reserves its PID;
 the helper does not signal a cached group ID after reaping and possible PID reuse.
 The shared capture implementation delegates abort to this lifeline rather than
 killing the independent watchdog. Missing/invalid completion or a watchdog that
 cannot finish cleanup raises `CleanupIncomplete`; the native launcher retains
-its workspace without attempting detach or deletion.
+its workspace without attempting detach or deletion. A successful completion
+record must explicitly report that the original group was drained. The repeated
+APFS eject probe includes eight reparented grandchildren holding the turn's file
+and cwd during normal leader exit; Mac CI must validate this stronger check.
 
 This closes only the original-group supervisor-death gap. A child that changes
 its process group can still survive. Watchdog death, machine death, capability

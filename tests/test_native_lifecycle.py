@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -129,6 +130,63 @@ else:
 
 
 class NativeLifecycleValidation(unittest.TestCase):
+    def drain(self, snapshots, *, exited=True, events=(), clock=None, signal_error=None):
+        queue = mock.Mock()
+        queue.control.return_value = events
+        api = SimpleNamespace(kqueue=mock.Mock(return_value=queue), kevent=mock.Mock(),
+                              KQ_FILTER_PROC=1, KQ_EV_ADD=2, KQ_EV_ONESHOT=4,
+                              KQ_NOTE_EXIT=8)
+        with mock.patch.object(native_lifecycle, 'select', api), \
+                mock.patch.object(native_lifecycle, '_group_members', side_effect=snapshots), \
+                mock.patch.object(native_lifecycle.os, 'killpg', side_effect=signal_error) as kill, \
+                mock.patch.object(native_lifecycle.time, 'monotonic',
+                                  side_effect=clock, return_value=0):
+            native_lifecycle._drain_group(123, exited)
+        return kill, queue
+
+    def test_drain_rechecks_late_members_before_completion(self):
+        kill, queue = self.drain([{123, 124}, {123, 125}, {123}])
+        self.assertEqual(kill.call_args_list, [mock.call(123, signal.SIGKILL)] * 3)
+        self.assertEqual(queue.control.call_count, 2)
+
+    def test_signal_denial_requires_exit_and_group_proof(self):
+        event = SimpleNamespace(filter=1, ident=123)
+        kill, queue = self.drain([{123}, {123}], exited=False, events=[event],
+                                 signal_error=PermissionError())
+        self.assertEqual(kill.call_count, 2)
+        self.assertEqual(queue.control.call_count, 2)
+
+    def test_drain_rejects_lost_reservation(self):
+        with self.assertRaisesRegex(native_lifecycle.CleanupIncomplete, 'reservation'):
+            self.drain([{124}])
+
+    def test_drain_rejects_unverifiable_membership(self):
+        with self.assertRaisesRegex(native_lifecycle.CleanupIncomplete, 'cannot verify'):
+            self.drain([OSError('query failed')])
+
+    def test_drain_deadline_includes_zombies_and_permission_denials(self):
+        with self.assertRaisesRegex(native_lifecycle.CleanupIncomplete, 'deadline'):
+            self.drain([{123, 124}], clock=[0, 6], signal_error=PermissionError())
+
+    def test_completion_requires_explicit_group_drain(self):
+        for proof in (None, False, 1, True):
+            with self.subTest(proof=proof):
+                reader, writer = os.pipe()
+                try:
+                    record = {'returncode': 0, 'timeout': False, 'parent_lost': False}
+                    if proof is not None:
+                        record['group_drained'] = proof
+                    os.write(writer, json.dumps(record).encode())
+                    if proof is True:
+                        self.assertEqual(native_lifecycle._completion(
+                            subprocess.CompletedProcess([], 0), reader), record)
+                    else:
+                        with self.assertRaises(native_lifecycle.CleanupIncomplete):
+                            native_lifecycle._completion(subprocess.CompletedProcess([], 0), reader)
+                finally:
+                    os.close(reader)
+                    os.close(writer)
+
     def test_failed_watchdog_during_output_abort_reports_unverified_cleanup(self):
         # No sandbox/turn is launched: this fake helper fails after excessive
         # output, exercising the parent's abort-completion validation on Linux too.
@@ -158,6 +216,30 @@ class NativeLifecycleGaps(unittest.TestCase):
             if os.environ.get('DIAKTOROS_REQUIRE_NATIVE_LIFECYCLE') == '1':
                 self.fail(reason)
             self.skipTest(reason)
+
+    def test_watchdog_restores_waitable_children_after_inherited_sigchld_ignore(self):
+        with tempfile.TemporaryFile() as source:
+            source.write(json.dumps({'argv': [sys.executable, '-c', 'raise SystemExit(7)'],
+                                     'env': {'PATH': '/usr/bin:/bin'}, 'timeout': 5,
+                                     'cwd': None, 'owner': os.getpid()}).encode())
+            source.seek(0)
+            reader, writer = os.pipe()
+            status_read, status_write = os.pipe()
+            try:
+                helper = subprocess.Popen(
+                    [sys.executable, '-I', '-B', str(Path(native_lifecycle.__file__).resolve()),
+                     str(source.fileno()), str(reader), str(status_write)],
+                    pass_fds=(source.fileno(), reader, status_write),
+                    preexec_fn=lambda: signal.signal(signal.SIGCHLD, signal.SIG_IGN),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, stderr = helper.communicate(timeout=10)
+                self.assertEqual(helper.returncode, 0, (stdout, stderr))
+                record = native_lifecycle._completion(helper, status_read)
+                self.assertEqual(record['returncode'], 7)
+                self.assertIs(record['group_drained'], True)
+            finally:
+                for descriptor in (reader, writer, status_read, status_write):
+                    os.close(descriptor)
 
     def wait_file(self, path, timeout=5):
         deadline = time.monotonic() + timeout

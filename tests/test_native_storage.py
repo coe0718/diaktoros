@@ -248,12 +248,32 @@ print('ENOSPC_ALL_ROOTS')
                         policy.write_text(profile.text + '(allow syscall-unix)\n'
                                           '(deny syscall-unix (syscall-number 82 147 244))\n')
                         script = """
-import os
+import os, time
 # Leave cwd and a real open file on APFS until process exit. The host watchdog
 # must finish before eject; neither the file nor cwd is held by the test host.
 fd = os.open('held-open', os.O_CREAT | os.O_WRONLY, 0o600)
 os.write(fd, b'x' * (1024 * 1024))
 os.fsync(fd)
+# Each reparented grandchild retains this open file and cwd. Bound the fixture
+# even if the watchdog fails; the kernel profile prevents session/group escape.
+for _ in range(8):
+    reader, writer = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(reader)
+        if os.fork():
+            os._exit(0)
+        null = os.open('/dev/null', os.O_RDWR)
+        for target in (0, 1, 2):
+            os.dup2(null, target)
+        os.write(writer, b'r')
+        os.close(writer)
+        time.sleep(15)
+        os._exit(0)
+    os.close(writer)
+    assert os.read(reader, 1) == b'r'
+    os.close(reader)
+    os.waitpid(child, 0)
 print('TURN_COMPLETE')
 """
                         result = native_lifecycle.capture(

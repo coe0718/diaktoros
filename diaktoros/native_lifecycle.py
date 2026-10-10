@@ -23,14 +23,15 @@ import time
 MAX_CONFIG = 1024 * 1024
 MAX_STATUS = 1024
 MAX_GROUP_MEMBERS = 65536
+GROUP_DRAIN_TIMEOUT = 5
 
 
 class CleanupIncomplete(RuntimeError):
     """Watchdog completion cannot be verified; storage must be retained."""
 
 
-def _only_unreaped_leader(pid: int) -> bool:
-    """Verify the EPERM zombie-only case, never suppress a live-group denial.
+def _group_members(pid: int) -> set[int]:
+    """Snapshot live and zombie members of the reserved original group.
 
     This is one group-membership check while the known leader's PID is reserved,
     not a descendant tracker or a source of PIDs to signal individually.
@@ -47,9 +48,53 @@ def _only_unreaped_leader(pid: int) -> bool:
         if count < 0:
             raise OSError(ctypes.get_errno(), 'cannot verify native process group')
         if count < capacity:
-            return set(members[:count]) == {pid}
+            return set(members[:count])
         capacity *= 2
-    return False
+    raise CleanupIncomplete('native process group exceeds verification limit')
+
+
+def _drain_group(pid: int, leader_exited: bool) -> None:
+    """Kill only the reserved group and verify quiescence before reaping.
+
+    Exit notification proves the leader stopped; libproc also includes zombies,
+    so membership is rechecked until orphan reaping leaves only our waitable
+    child. Neither signal delivery nor an exited-PID cache proves completion.
+    """
+    deadline = time.monotonic() + GROUP_DRAIN_TIMEOUT
+    with closing(select.kqueue()) as events:
+        if not leader_exited:
+            try:
+                events.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                                              flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                              fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            except OSError as error:
+                if error.errno != errno.ESRCH:
+                    raise CleanupIncomplete('cannot observe native leader exit') from error
+                leader_exited = True
+        while True:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                # Darwin can reject signalling zombie-only groups. An error
+                # never proves cleanup: the exit and membership checks do.
+                pass
+            try:
+                members = _group_members(pid)
+            except OSError as error:
+                raise CleanupIncomplete('cannot verify native group cleanup') from error
+            if pid not in members:
+                raise CleanupIncomplete('native leader reservation was lost')
+            if leader_exited and members == {pid}:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CleanupIncomplete('native group cleanup deadline exceeded; '
+                                        f'remaining members={len(members)}')
+            # Group snapshots include zombies whose eventual reaping produces
+            # no NOTE_EXIT. Bound this check; never signal discovered PIDs.
+            ready = events.control(None, 1, min(0.025, remaining))
+            leader_exited = leader_exited or any(
+                event.filter == select.KQ_FILTER_PROC and event.ident == pid for event in ready)
 
 
 def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
@@ -61,6 +106,9 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
     timed_out = False
     parent_lost = False
     leader_exited = False
+    # SIG_IGN can survive exec and auto-reap children, invalidating the reserved
+    # group ID. This trusted helper must own a waitable leader until cleanup.
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     try:
         with closing(select.kqueue()) as events:
             events.control([select.kevent(lifeline_fd, filter=select.KQ_FILTER_READ,
@@ -121,19 +169,10 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
                             break
     finally:
         if process is not None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except PermissionError:
-                # Darwin excludes zombies from group signalling and returns
-                # EPERM if no signalable member remains. Require both a known
-                # leader exit and a group containing only that unreaped PID.
-                if not leader_exited or not _only_unreaped_leader(process.pid):
-                    raise
+            _drain_group(process.pid, leader_exited)
             process.wait()
     result = {'returncode': process.returncode if process is not None else None,
-              'timeout': timed_out, 'parent_lost': parent_lost}
+              'timeout': timed_out, 'parent_lost': parent_lost, 'group_drained': True}
     try:
         os.write(status_fd, json.dumps(result).encode())
     except BrokenPipeError:
@@ -156,6 +195,7 @@ def _completion(process, descriptor, *, allow_owner_loss=False):
         valid = (process.returncode == 0 and len(status) <= MAX_STATUS and
                  type(record['returncode']) is int and
                  type(record['timeout']) is bool and type(record['parent_lost']) is bool and
+                 record['group_drained'] is True and
                  (allow_owner_loss or record['parent_lost'] is False))
     except (ValueError, KeyError, TypeError):
         valid = False
