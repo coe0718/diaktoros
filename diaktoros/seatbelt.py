@@ -74,6 +74,8 @@ def profile(*, read_roots: tuple[Path, ...], write_roots: tuple[Path, ...],
              ' (subpath "/usr/share") (subpath "/usr/bin") (subpath "/bin"))',
              '(allow file-read-metadata (literal "/") (literal "/private")'
              ' (literal "/private/tmp") (literal "/dev"))',
+             # dyld reads the root directory during startup; literal is not recursive.
+             '(allow file-read-data (literal "/"))',
              '(allow file-read* (literal "/dev/null") (literal "/dev/urandom")'
              ' (literal "/dev/random"))',
              '(allow file-write-data (literal "/dev/null"))',
@@ -82,7 +84,9 @@ def profile(*, read_roots: tuple[Path, ...], write_roots: tuple[Path, ...],
              ' (sysctl-name "hw.physicalcpu") (sysctl-name "hw.memsize")'
              ' (sysctl-name "hw.pagesize") (sysctl-name "hw.machine")'
              ' (sysctl-name "kern.osrelease") (sysctl-name "kern.ostype")'
-             ' (sysctl-name "kern.osversion"))']
+             ' (sysctl-name "kern.osversion") (sysctl-name "kern.version")'
+             ' (sysctl-name "kern.bootargs")'
+             ' (sysctl-name "security.mac.lockdown_mode_state"))']
     for prefix, roots, operation in (('READ', reads, 'file-read*'),
                                       ('WRITE', writes, 'file-read* file-write*')):
         for index, path in enumerate(roots):
