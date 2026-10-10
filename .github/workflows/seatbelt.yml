@@ -20,6 +20,7 @@ on:
       - tests/test_snapshot_secrets.py
       - tests/test_trusted_fetch.py
       - tests/test_turn_layout.py
+      - tests/test_native_roles.py
       - tests/native_rust_fixture.py
       - .github/workflows/seatbelt.yml
   workflow_dispatch:
@@ -43,6 +44,7 @@ jobs:
       DIAKTOROS_REQUIRE_SEATBELT: '1'
       DIAKTOROS_REQUIRE_NATIVE_STORAGE: '1'
       DIAKTOROS_REQUIRE_NATIVE_LIFECYCLE: '1'
+      DIAKTOROS_REQUIRE_NATIVE_ROLES: '1'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -68,6 +70,8 @@ jobs:
           python tests/leakguard.py -v test_snapshot_secrets.SnapshotSecretTests test_snapshot_secrets.EvalsAreNotExported test_snapshot_secrets.ExportedSnapshotProbeTests
       - name: Test watchdog cleanup and characterize remaining detached-child gap
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_lifecycle.py'
+      - name: Verify role-specific checkout mutation permissions
+        run: python tests/leakguard.py discover -v -s tests -p 'test_native_roles.py'
       - name: Startup diagnostics on failure
         if: failure()
         run: |

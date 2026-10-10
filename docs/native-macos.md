@@ -102,8 +102,23 @@ Only fixed host instruction text is rendered; PR and model text is not rewritten
 Relative paths, control characters, backticks and path-list delimiters are
 refused. The layout describes paths and supplies no containment or authority.
 The native reviewer fixture includes these instructions and verifies that the
-real model request contains them. Other native role turns and automatic backend
-selection still require integration and acceptance testing.
+real model request contains them. Automatic backend selection still requires
+integration and acceptance testing.
+
+## Role-specific native checkout permissions
+
+The native launcher requires an explicit host-selected role from the broker
+scope. Adjudicator and triage turns receive read-only work roots; only home and
+scratch are writable. Reviewer, fixer and issue-fixer turns retain writable
+work roots. Unknown roles fail closed without a writable fallback. The broker
+continues to authorize each operation independently of filesystem permissions.
+
+Mac probes verify read access, denied create/overwrite/chmod/rename/unlink for
+judging roles, writable home/scratch, descendant write denial and denied access
+to host files through a staged symlink. Writing roles must perform the same
+checkout mutations successfully while still denying the symlink escape.
+These are filesystem-policy probes; full adjudicator/triage/fixer/issue-fixer
+Hermes turns, durable receipts and full supervisor integration remain gates.
 
 ## Bounded native storage
 

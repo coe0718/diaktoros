@@ -168,6 +168,7 @@ Path('review.txt').write_text('native Python and offline Rust fixture verified\\
                                       client=client, scratch=scratch, query=query,
                                       inference_socket=capability.socket_path,
                                       broker_socket=broker.socket_path, model='fixture-model',
+                                      role=scope.role,
                                       workspace=workspace,
                                       sdk=Path(os.environ['DIAKTOROS_NATIVE_SDK']),
                                       developer_tools=Path(os.environ['DIAKTOROS_NATIVE_DEVELOPER_TOOLS']),

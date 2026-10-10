@@ -17,9 +17,18 @@ from . import contained, native_lifecycle, native_storage, seatbelt, turn_layout
 PROVIDER = 'diaktoros-seatbelt-wire'
 
 
+def _work_roots(layout: turn_layout.TurnLayout, *, role: str):
+    """Host-selected role policy; the broker independently authorizes every write."""
+    if type(role) is not str or role not in ('reviewer', 'fixer', 'adjudicator', 'triage', 'issue_fixer'):
+        raise ValueError('unsupported native role')
+    if role in ('adjudicator', 'triage'):
+        return (layout.work,), (layout.home, layout.scratch)
+    return (), (layout.home, layout.work, layout.scratch)
+
+
 def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         work: Path, export: Path, client: Path, scratch: Path, query: Path,
-        inference_socket: Path, broker_socket: Path, model: str,
+        inference_socket: Path, broker_socket: Path, model: str, role: str,
         workspace: native_storage.Workspace,
         sdk: Path | None = None, developer_tools: Path | None = None,
         dependencies: Path | None = None,
@@ -29,6 +38,8 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
     Read roots must be dedicated trusted runtime generations/snapshots. This is
     not a general API for mounting arbitrary operator directories or executing a
     live Hermes profile. Host socket directories remain outside writable roots.
+    The trusted caller passes the role from its broker scope; filesystem policy
+    does not replace the broker's independent operation authorization.
     """
     reason = seatbelt.unavailable()
     if reason:
@@ -47,6 +58,7 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
     workspace.validate(home=home, work=work, scratch=scratch)
     layout = turn_layout.TurnLayout(code=code, venv=venv, home=home, work=work,
                                     export=export, client=client, scratch=scratch, query=query)
+    read_work, writes = _work_roots(layout, role=role)
     build_roots = ()
     if any(p is not None for p in (sdk, developer_tools, dependencies)):
         if any(p is None for p in (sdk, developer_tools, dependencies)):
@@ -56,8 +68,9 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         if not (developer_tools / 'bin/clang').is_file():
             raise ValueError('developer tools must name the selected compiler directory')
         build_roots = (sdk, developer_tools, dependencies)
-    profile = seatbelt.profile(read_roots=(code, venv, runtime, rust, client, export, *build_roots),
-                               write_roots=(home, work, scratch),
+    profile = seatbelt.profile(read_roots=(code, venv, runtime, rust, client, export,
+                                          *build_roots, *read_work),
+                               write_roots=writes,
                                sockets=(inference_socket, broker_socket))
     plugin = home / 'plugins' / PROVIDER
     plugin.mkdir(parents=True, mode=0o700)
