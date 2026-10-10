@@ -16,7 +16,7 @@ def flat(text: str) -> str:
 
 
 class FixerRules(unittest.TestCase):
-    def test_issue_fix_and_fix_round_carry_rules_1_to_3(self):
+    def test_issue_fix_and_fix_round_carry_rules_1_to_4(self):
         for name in ("ISOLATED_ISSUE_FIX", "ISOLATED_FIXER"):
             text = flat(getattr(prompts, name))
             with self.subTest(prompt=name):
@@ -26,17 +26,30 @@ class FixerRules(unittest.TestCase):
                 self.assertIn("Removing the call at the entry point must turn a test red", text)
                 self.assertIn("**Say what can't fire.**", text)
                 self.assertIn("Don't ship it as if it works everywhere", text)
+                # Rule 4, from #574: a hold that released a head in two cases explained only one.
+                self.assertIn("**Make every path agree.**", text)
+                self.assertIn("One rule stated two ways is a bug", text)
 
     def test_the_rules_are_written_once(self):
         # Rule 1 applied to the rules themselves: one text both prompts are built from, so the
         # issue-fix and fix-round copies cannot drift apart.
         source = (Path(prompts.__file__)).read_text()
-        self.assertEqual(source.count("Three rules for the code you write"), 1)
+        self.assertEqual(source.count("Four rules for the code you write"), 1)
         self.assertIn(prompts.code_rules("fix", "your answers"), prompts.ISOLATED_FIXER)
         self.assertIn(prompts.code_rules("issue", "the PR description"), prompts.ISOLATED_ISSUE_FIX)
 
 
 class ReviewerRule(unittest.TestCase):
+    def test_reviewer_makes_the_three_checks_tests_rarely_make(self):
+        # From #574: two paths that disagreed, a wait on a sweep that might not run, and a commit
+        # filter that took in commits it should have left out. None was caught by its own tests.
+        text = flat(prompts.ISOLATED_REVIEWER)
+        self.assertIn("**Every path agrees.**", text)
+        self.assertIn("**A wait has an end.**", text)
+        self.assertIn("say what happens if it is late or never runs", text)
+        self.assertIn("**A filter leaves out what it should.**", text)
+        self.assertIn("name one thing it must leave out and check that it does", text)
+
     def test_reviewer_prompt_demands_the_line(self):
         text = flat(prompts.ISOLATED_REVIEWER)
         self.assertIn("`Not verified:` line", text)
