@@ -98,7 +98,7 @@ with socket.socket() as connection:
     else:
         raise AssertionError('host network reachable')
 assert 'GITHUB_TOKEN' not in os.environ
-Path('review.txt').write_text('native fixture verified')
+Path('review.txt').write_text('native fixture verified\\nNot verified: Rust builds and live services')
 """
             import shlex
             # A host-staged immutable fixture script is an ordinary tool command;
