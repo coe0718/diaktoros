@@ -510,6 +510,17 @@ registry media state and read-only stacks of disk-image helpers found by lsof.
 A holder name or stack is an observation, not process ownership or proof of
 causality; no discovered holder receives a termination signal.
 
+For each image that encounters busy eject, both lanes record helper cumulative
+CPU time, process state, command and start time at first failure and at successful
+cleanup or give-up. This small lsof/ps observation adds timing overhead even in
+the standard lane. Deltas require matching diagnostic identity fields and a
+nondecreasing counter; disappearance, changed identity and decreasing counters
+yield an unknown delta, not zero. BSD ps start time has only second precision,
+so these fields cannot exclude PID reuse or authorize cleanup. Zero displayed CPU
+growth can mean an ordinary wait or sub-resolution work and does not prove a
+hang. CPU growth does not prove that the work advances detach. No visible device
+holder likewise does not establish kernel-only causality.
+
 After persistent failure, the collector issues no additional eject or force.
 It retains the image and records passive snapshots immediately and after
 5/15/30 seconds of additional waiting, measured between snapshot commands (the
@@ -549,3 +560,21 @@ kernel eject rejection. The narrowed filter, retained stream tail and short
 snapshot queries address that evidence gap. The persistent Intel case also
 means neither an ARM-only explanation nor twenty seconds of backoff is sufficient
 to close the blocker.
+
+[Follow-up run 38142229822](https://github.com/coe0718/diaktoros/actions/runs/38142229822)
+preserved an untruncated Intel verbose stream with genuine busy ejects. Cycle 8
+records three approved eject-approval responses at 13:14:07.255–.258 UTC,
+followed by eject ongoing, failure, and status `0x00000010` (`EBUSY`) at
+13:14:07.259. This distinguishes that failure from a client approval veto.
+The whole physical disk also reports `Open = Yes` in the registry snapshot
+taken before diskutil metadata queries. Cycle 8 and three later busy cycles
+eventually recovered under the existing cleanup policy.
+
+These messages match the device-eject callback in Apple's published
+[Disk Arbitration source](https://github.com/apple-oss-distributions/DiskArbitration/blob/main/diskarbitrationd/DARequest.c).
+That worker opens the raw device and calls `DKIOCEJECT`, returning errno on
+failure. The source mapping is an inference, not a syscall trace of the runner:
+it narrows the observed route to device eject but does not establish whether
+the error originated in open or ioctl, identify the physical-device opener, or
+prove that the earlier persistent failure has exactly the same cause. The
+collector also retains open-failure messages to discriminate those paths.

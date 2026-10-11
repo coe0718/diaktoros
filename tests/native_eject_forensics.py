@@ -21,7 +21,7 @@ from diaktoros import native_storage, seatbelt
 # captured failure. Keep lifecycle/rejection messages and driver diagnostics.
 LIFECYCLE = ('eventMessage CONTAINS[c] "eject" OR eventMessage CONTAINS[c] "unmount" '
              'OR eventMessage CONTAINS[c] "busy" OR eventMessage CONTAINS[c] "dissent" '
-             'OR eventMessage CONTAINS[c] "unable"')
+             'OR eventMessage CONTAINS[c] "unable" OR eventMessage CONTAINS[c] "open failed"')
 PREDICATE = ('process BEGINSWITH "diskimage" OR ((process == "diskarbitrationd" '
              'OR process == "fseventsd" OR process BEGINSWITH "mdworker" '
              'OR process == "mds" OR subsystem CONTAINS[c] "apfs") AND (' + LIFECYCLE + '))')
@@ -40,6 +40,24 @@ def holders(raw):
     return result
 
 
+def process_rows(raw):
+    """Parse BSD ps cumulative CPU time; identity fields are diagnostic only."""
+    result = {}
+    for line in raw.splitlines():
+        fields = line.split(None, 8)
+        if len(fields) != 9 or not fields[0].isdigit():
+            continue
+        cpu = re.fullmatch(r'(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)', fields[6])
+        if cpu is None:
+            continue
+        days, hours, minutes, seconds = cpu.groups()
+        result[int(fields[0])] = {
+            'started': ' '.join(fields[1:6]), 'state': fields[7], 'command': fields[8],
+            'cpu_seconds': int(days or 0) * 86400 + int(hours or 0) * 3600
+                           + int(minutes) * 60 + float(seconds)}
+    return result
+
+
 class Recorder:
     def __init__(self, output, *, verbose=False):
         self.output = Path(output)
@@ -47,6 +65,7 @@ class Recorder:
         self.verbose = verbose
         self.sequence = 0
         self.first_busy = False
+        self.helper_baselines = {}
         self.original_run = native_storage._run
 
     def emit(self, event):
@@ -88,6 +107,38 @@ class Recorder:
             raise native_storage.StorageError('hdiutil failed: ' +
                                              (stdout + stderr).decode(errors='replace')[-2000:])
         return stdout
+
+    def helper_progress(self, workspace, phase):
+        image = str(workspace.image)
+        baseline = self.helper_baselines.get(image, {})
+        # Include baseline PIDs when the image has detached or a helper vanished.
+        # These IDs are queried only, never used as signal/ownership authority.
+        _, raw, _ = self.command(phase + '-helper-holders',
+                                ['/usr/sbin/lsof', '-nP', '+c', '0', '-Fpcfn', '--', image])
+        current = {pid for pid, name in holders(raw.decode(errors='replace')).items()
+                   if name.startswith('diskimage')}
+        pids = sorted(current | set(baseline))[:4]
+        rows = {}
+        if pids:
+            _, raw, _ = self.command(phase + '-helper-cpu',
+                                    ['/bin/ps', '-p', ','.join(map(str, pids)), '-o', 'pid=',
+                                     '-o', 'lstart=', '-o', 'time=', '-o', 'state=', '-o', 'comm='])
+            rows = process_rows(raw.decode(errors='replace'))
+        observations = []
+        for pid in pids:
+            row, previous = rows.get(pid), baseline.get(pid)
+            same = bool(row and previous and row['started'] == previous['started']
+                        and row['command'] == previous['command'])
+            delta = round(row['cpu_seconds'] - previous['cpu_seconds'], 3) if same else None
+            observations.append({'pid': pid, 'holds_image': pid in current, 'process': row,
+                                 'identity_fields_match': same,
+                                 'cpu_delta_seconds': delta if delta is not None and delta >= 0 else None})
+        if phase == 'first-failure':
+            self.helper_baselines[image] = rows
+        self.emit({'tag': 'helper-progress', 'phase': phase, 'image': image,
+                   'observations': observations,
+                   'identity_precision': 'ps lstart seconds; PID reuse remains possible',
+                   'cpu_precision': 'ps display precision; zero delta does not prove a hang'})
 
     def snapshot(self, workspace, tag):
         self.emit({'tag': tag, 'root': str(workspace.root), 'image': str(workspace.image)})
@@ -177,11 +228,15 @@ class ObservedWorkspace(native_storage.Workspace):
     def __init__(self, recorder):
         super().__init__(64)
         self.recorder = recorder
+        self.had_busy = False
 
     def _eject(self, device, *, force):
         try:
             return super()._eject(device, force=force)
         except native_storage.StorageError as error:
+            if 'Resource busy' in str(error) and not self.had_busy:
+                self.had_busy = True
+                self.recorder.helper_progress(self, 'first-failure')
             if 'Resource busy' in str(error) and not self.recorder.first_busy:
                 self.recorder.first_busy = True
                 self.recorder.emit({'tag': 'first-busy', 'image': str(self.image), 'force': force})
@@ -222,9 +277,13 @@ def probe(recorder, cycles):
                             target.write(b'x' * (8 * 1024 * 1024))
                             target.flush()
                             os.fsync(target.fileno())
+                if workspace.had_busy:
+                    recorder.helper_progress(workspace, 'cleanup-success')
             except Exception as error:
                 failures += 1
                 event['error'] = str(error)
+                if workspace.had_busy:
+                    recorder.helper_progress(workspace, 'give-up')
                 # No extra detach or force: preserve the failure's attachment
                 # and observe whether it settles without another mutation.
                 if workspace.root is not None:

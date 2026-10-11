@@ -14,6 +14,36 @@ from diaktoros import native_storage
 
 
 class ForensicsValidation(unittest.TestCase):
+    def test_cpu_parser_preserves_fractional_time_and_rejects_malformed_rows(self):
+        rows = forensics.process_rows(
+            '123 Sun Oct 11 13:00:01 2026 1:02.34 S /path/diskimages-helper\n'
+            '456 Sun Oct 11 13:00:01 2026 2-03:04:05.67 S helper\n'
+            '789 invalid\n')
+        self.assertAlmostEqual(rows[123]['cpu_seconds'], 62.34)
+        self.assertAlmostEqual(rows[456]['cpu_seconds'], 183845.67)
+        self.assertNotIn(789, rows)
+
+    def test_cpu_comparison_does_not_call_replacement_or_missing_process_zero_progress(self):
+        for started, cpu, expected in [('13:00:01', '0:00.19', 0.07),
+                                       ('13:00:02', '0:00.19', None),
+                                       ('13:00:01', '0:00.01', None),
+                                       (None, None, None)]:
+            with self.subTest(started=started, cpu=cpu), tempfile.TemporaryDirectory() as directory:
+                recorder = forensics.Recorder(Path(directory) / 'evidence')
+                workspace = SimpleNamespace(image=Path('/private/fixture/turn.dmg'))
+                first = b'123 Sun Oct 11 13:00:01 2026 0:00.12 S /path/diskimages-helper\n'
+                last = (f'123 Sun Oct 11 {started} 2026 {cpu} S /path/diskimages-helper\n'.encode()
+                        if started else b'')
+                holder = b'p123\ncdiskimages-helper\nf4\nn/private/fixture/turn.dmg\n'
+                with mock.patch.object(recorder, 'command', side_effect=[
+                        ({}, holder, b''), ({}, first, b''),
+                        ({}, holder if started else b'', b''), ({}, last, b'')]):
+                    recorder.helper_progress(workspace, 'first-failure')
+                    recorder.helper_progress(workspace, 'give-up')
+                event = json.loads((recorder.output / 'events.jsonl').read_text().splitlines()[-1])
+                self.assertEqual(event['observations'][0]['cpu_delta_seconds'], expected)
+                self.assertEqual(event['observations'][0]['holds_image'], bool(started))
+
     def test_stream_keeps_bounded_start_and_end_when_failure_is_late(self):
         raw = b'early messages\n' + b'x' * 80 + b'late eject rejection\n'
         process = SimpleNamespace(stdout=io.BytesIO(raw), returncode=0,
