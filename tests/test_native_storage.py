@@ -6,6 +6,7 @@ from dataclasses import replace
 import json
 import os
 import select
+import socket
 import subprocess
 import sys
 import tempfile
@@ -307,7 +308,9 @@ class NativeStorageBoundary(unittest.TestCase):
         # Exercise the real launcher's retention path, substituting only the
         # Hermes entry with a bounded fixture. No discovered PID is signalled.
         with tempfile.TemporaryDirectory(prefix='dk-watch-death-', dir='/tmp') as directory, \
-                closing(select.kqueue()) as exits:
+                closing(select.kqueue()) as exits, \
+                closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as inference, \
+                closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as broker:
             outer = Path(directory).resolve()
             paths = {name: outer / name for name in
                      ('code', 'venv', 'rust', 'export', 'client')}
@@ -316,8 +319,9 @@ class NativeStorageBoundary(unittest.TestCase):
             query = paths['code'] / 'query'
             query.touch()
             sockets = (outer / 'inference', outer / 'broker')
-            for path in sockets:
-                path.touch()
+            for endpoint, path in zip((inference, broker), sockets):
+                endpoint.bind(str(path))
+                endpoint.listen(1)
             interpreter = Path(sys.executable).resolve()
             framework = Path(sys.base_prefix) / 'Resources/Python.app/Contents/MacOS/Python'
             if framework.is_file():
@@ -325,6 +329,7 @@ class NativeStorageBoundary(unittest.TestCase):
             workspace = native_storage.Workspace(64).__enter__()
             ready, stop = workspace.work / 'ready', workspace.work / 'stop'
             child = None
+            launched = False
             observed = False
             original_capture = contained.capture_process
             original_profile = seatbelt.profile
@@ -350,7 +355,8 @@ with (work / 'held-open').open('wb') as held:
                                '(deny syscall-unix (syscall-number 82 147 244))\n')
 
             def kill_watchdog(helper, **kwargs):
-                nonlocal child
+                nonlocal child, launched
+                launched = True
                 deadline = time.monotonic() + 5
                 while not ready.exists() and time.monotonic() < deadline:
                     time.sleep(0.02)
@@ -397,7 +403,9 @@ with (work / 'held-open').open('wb') as held:
             finally:
                 # Only the cooperative fixture can release itself. Wait on the
                 # registered kernel identity before touching retained storage.
-                if child is not None:
+                if not launched:
+                    observed = True
+                elif child is not None:
                     stop.touch()
                     observed = any(event.ident == child for event in exits.control(None, 1, 25))
                     if observed:
