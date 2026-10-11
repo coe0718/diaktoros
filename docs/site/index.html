@@ -752,15 +752,43 @@ hermes dk setup --repo "owner/repository"</code></pre>
 <script>document.getElementById("diaktoros-poster").src=window.DIAKTOROS_POSTER;</script>
 <script>
   (function () {
-    fetch('data.json', { cache: 'no-store' }).then(function (r) {
-      if (!r.ok) throw new Error('no data');
-      return r.json();
-    }).then(function (d) {
-      document.querySelectorAll('[data-site]').forEach(function (el) {
-        var key = el.getAttribute('data-site');
-        if (d[key] !== null && d[key] !== undefined) el.textContent = d[key];
+    // Live numbers straight from the repository API on every page load:
+    // self-updating with no build step and no deploy wiring. Falls back to
+    // the checked-in data.json snapshot, then to the hardcoded values.
+    var OWNER = 'coe0718', REPO = 'diaktoros';
+    var API = 'https://api.github.com';
+    function set(key, val) {
+      if (val === null || val === undefined) return;
+      document.querySelectorAll('[data-site="' + key + '"]').forEach(function (el) {
+        el.textContent = val;
       });
-    }).catch(function () { /* snapshot values in the HTML stand in */ });
+    }
+    function get(path) {
+      return fetch(API + path, { headers: { 'Accept': 'application/vnd.github+json' } })
+        .then(function (r) { if (!r.ok) throw new Error('api ' + r.status); return r.json(); });
+    }
+    function live() {
+      var q = encodeURIComponent;
+      return Promise.all([
+        get('/repos/' + OWNER + '/' + REPO + '/releases/latest'),
+        get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:pr is:merged author:drey-coe1') + '&per_page=1'),
+        get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:issue is:closed') + '&per_page=1')
+      ]).then(function (res) {
+        set('version', res[0].tag_name);
+        set('loop_prs_merged', res[1].total_count);
+        set('issues_closed', res[2].total_count);
+        set('generated', new Date().toISOString().slice(0, 10));
+      });
+    }
+    function snapshot() {
+      return fetch('data.json', { cache: 'no-store' }).then(function (r) {
+        if (!r.ok) throw new Error('no data');
+        return r.json();
+      }).then(function (d) {
+        ['version', 'loop_prs_merged', 'issues_closed', 'generated'].forEach(function (k) { set(k, d[k]); });
+      });
+    }
+    live().catch(snapshot).catch(function () { /* hardcoded values stand in */ });
   }());
 </script>
 </body>
