@@ -176,6 +176,14 @@ The short storage fixture repeats six guarded turns with an open file and cwd
 on APFS, immediately ejecting each owned image after watchdog completion. This
 increases reproduction opportunities; passing cycles do not explain prior busy
 ejects.
+The opt-in `test_native_eject_stress.py` adds 24 fresh 64 MiB volumes per
+architecture, alternating idle, metadata create/rename/delete and 8 MiB fsynced
+writes. These host-only cycles launch no turn process and close host files before
+eject. `NATIVE_EJECT_STRESS` records the architecture, workload, exact image,
+all immediate eject diagnostics and recovery outcome in CI logs, including busy
+attempts that eventually succeed. A persistent failure still retains storage
+and fails the job. A run with zero busy events is explicitly reported as such;
+it cannot confirm the original race's cause.
 If detach/verification fails,
 it retains the private image directory and raises an error for host recovery.
 This is not cleanup after host death: startup reconciliation, detached descendant
@@ -237,6 +245,14 @@ its workspace without attempting detach or deletion. A successful completion
 record must explicitly report that the original group was drained. The repeated
 APFS eject probe includes eight reparented grandchildren holding the turn's file
 and cwd during normal leader exit; Mac CI must validate this stronger check.
+Six additional kernel-restricted fork-churn cycles alternate normal leader exit
+and timeout while a factory creates short-lived workers (at most eight live
+workers and 128 forks, with its own three-second limit). Normal exit requires
+the factory to still be alive after at least 24 births; timeout requires observed
+fork activity. The host requires an empty original group after capture completes
+and retains fixture paths if bounded fixture cleanup cannot be confirmed. This
+exercises cleanup during active fork churn; it does not prove every possible
+kernel fork/signal interleaving or recovery after watchdog death.
 
 This closes only the original-group supervisor-death gap. A child that changes
 its process group can still survive. Watchdog death, machine death, capability

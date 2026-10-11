@@ -12,6 +12,7 @@ import json
 import os
 import select
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,61 @@ import unittest
 from unittest import mock
 
 from diaktoros import contained, native_lifecycle, seatbelt
+
+
+FORK_CHURN = '''
+import json, os, sys, time
+from pathlib import Path
+work, mode = Path(sys.argv[1]), sys.argv[2]
+leader = os.getpid()
+(work / 'leader').write_text(str(leader))
+factory = os.fork()
+if factory == 0:
+    # A reparented factory must still belong to the original owned group.
+    for escape in (os.setsid, lambda: os.setpgid(0, 0)):
+        try:
+            escape()
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError('factory escaped ownership')
+    null = os.open('/dev/null', os.O_RDWR)
+    for target in (0, 1, 2):
+        os.dup2(null, target)
+    fd = os.open(work / 'births', os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+    live = set()
+    deadline = time.monotonic() + 3
+    births = 0
+    while births < 128 and time.monotonic() < deadline:
+        for pid in list(live):
+            if os.waitpid(pid, os.WNOHANG)[0]:
+                live.remove(pid)
+        if len(live) >= 8:
+            time.sleep(0.002)
+            continue
+        pid = os.fork()
+        if pid == 0:
+            os.close(fd)
+            time.sleep(0.15)
+            os._exit(0)
+        live.add(pid)
+        births += 1
+        os.write(fd, (json.dumps({'pid': pid, 'group': os.getpgrp()}) + '\\n').encode())
+    for pid in live:
+        os.waitpid(pid, 0)
+    os.close(fd)
+    os._exit(0)
+print(json.dumps({'leader': leader, 'factory': factory}), flush=True)
+deadline = time.monotonic() + 4
+while time.monotonic() < deadline:
+    if mode == 'normal' and (work / 'births').exists():
+        if len((work / 'births').read_text().splitlines()) >= 24:
+            # Exit while the reparented factory is still creating workers.
+            assert os.waitpid(factory, os.WNOHANG)[0] == 0, 'factory already stopped'
+            raise SystemExit(0)
+    time.sleep(0.002)
+raise SystemExit('bounded fixture exhausted before watchdog timeout')
+'''
 
 
 CHILD = '''
@@ -216,6 +272,53 @@ class NativeLifecycleGaps(unittest.TestCase):
             if os.environ.get('DIAKTOROS_REQUIRE_NATIVE_LIFECYCLE') == '1':
                 self.fail(reason)
             self.skipTest(reason)
+
+    def test_kernel_owned_fork_churn_is_drained_on_leader_exit_and_timeout(self):
+        interpreter = Path(sys.executable).resolve()
+        framework = Path(sys.base_prefix) / 'Resources/Python.app/Contents/MacOS/Python'
+        if framework.is_file():
+            interpreter = framework.resolve()
+        for cycle in range(6):
+            mode = 'normal' if cycle % 2 == 0 else 'timeout'
+            with self.subTest(cycle=cycle, mode=mode):
+                root = Path(tempfile.mkdtemp(prefix='dk-fork-race-', dir='/tmp')).resolve()
+                work = root / 'work'
+                work.mkdir()
+                profile = seatbelt.profile(read_roots=(Path(sys.base_prefix),), write_roots=(work,))
+                policy = root / 'profile.sb'
+                policy.write_text(profile.text + '(allow syscall-unix)\n'
+                                  '(deny syscall-unix (syscall-number 82 147 244))\n')
+                argv = profile.command(policy, [str(interpreter), '-I', '-B', '-c',
+                                                FORK_CHURN, str(work), mode])
+                try:
+                    if mode == 'timeout':
+                        with self.assertRaises(subprocess.TimeoutExpired) as failure:
+                            native_lifecycle.capture(argv, env={'PATH': '/usr/bin:/bin'}, timeout=2)
+                        output = failure.exception.output.decode()
+                    else:
+                        result = native_lifecycle.capture(argv, env={'PATH': '/usr/bin:/bin'}, timeout=5)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        output = result.stdout
+                    ready = json.loads(output.splitlines()[0])
+                    births = [json.loads(line) for line in (work / 'births').read_text().splitlines()]
+                    self.assertGreaterEqual(len(births), 24 if mode == 'normal' else 16)
+                    self.assertTrue(all(record['group'] == ready['leader'] for record in births))
+                    self.assertEqual(native_lifecycle._group_members(ready['leader']), set())
+                    print(f'NATIVE_FORK_CHURN cycle={cycle} mode={mode} births={len(births)} '
+                          'remaining_group_members=0', flush=True)
+                finally:
+                    # A broken watchdog must not cause fixture paths to be
+                    # removed beneath survivors. The factory is time-bounded;
+                    # query this known group only, and never signal listed PIDs.
+                    leader_file = work / 'leader'
+                    if leader_file.exists():
+                        leader = int(leader_file.read_text())
+                        deadline = time.monotonic() + 6
+                        while native_lifecycle._group_members(leader) and time.monotonic() < deadline:
+                            time.sleep(0.02)
+                        if native_lifecycle._group_members(leader):
+                            self.fail(f'fork fixture group survived; paths retained at {root}')
+                    shutil.rmtree(root)
 
     def test_watchdog_restores_waitable_children_after_inherited_sigchld_ignore(self):
         with tempfile.TemporaryFile() as source:
