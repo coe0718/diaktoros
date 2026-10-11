@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         runner: [macos-15, macos-15-intel]
-        instrumentation: [standard, verbose, sync-delay]
+        instrumentation: [standard, verbose, sync-delay, sync-unmount]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
@@ -38,6 +38,7 @@ jobs:
           flags=()
           if [ "$INSTRUMENTATION" = verbose ]; then flags+=(--verbose); fi
           if [ "$INSTRUMENTATION" = sync-delay ]; then flags+=(--sync-delay); fi
+          if [ "$INSTRUMENTATION" = sync-unmount ]; then flags+=(--sync-unmount); fi
           python tests/native_eject_forensics.py --cycles 64 --output "$RUNNER_TEMP/eject-evidence" "${flags[@]}"
       - uses: actions/upload-artifact@v7
         if: always()

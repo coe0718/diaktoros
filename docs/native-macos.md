@@ -494,8 +494,8 @@ failure; it does not change eject retries or disposal authorization.
 
 ## Dedicated eject forensics
 
-`native-eject-forensics.yml` runs six independent Mac lanes: ARM and Intel,
-each with standard, verbose or sync-plus-delay instrumentation. The test-only collector streams
+`native-eject-forensics.yml` runs eight independent Mac lanes: ARM and Intel,
+each with standard, verbose, sync-plus-delay or sync-plus-forced-unmount instrumentation. The test-only collector streams
 Disk Arbitration, disk-image, APFS, Spotlight and filesystem-event logs before
 running the recovery precondition and up to 64 fresh idle/metadata/fsync images.
 It preserves complete create/attach/detach stdout and stderr (bounded to 2 MiB
@@ -529,6 +529,24 @@ busy images and persistent failures per completed cycle and architecture, not
 individual retry counts. A difference supports a settling hypothesis but cannot
 separate flushing from extra elapsed time or prove a specific APFS mechanism;
 the system-wide flush can also affect other volumes on that runner.
+
+The `--sync-unmount` lane adds `diskutil unmountDisk force` after that same sync
+and two-second wait, before the existing normal-detach retries and final force.
+Each target must still be rediscovered under the exact private image immediately
+before unmount; disappeared targets are skipped. Failed experimental unmounts
+are reported as failed interventions while normal workspace cleanup still runs.
+This is a host-only experiment, not authority to force unmount a live turn.
+Alternate eject commands and non-APFS formats remain separate future comparisons;
+combining them here would obscure the effect of the pre-unmount step.
+
+[Completed run 38143441748](https://github.com/coe0718/diaktoros/actions/runs/38143441748)
+finished all six original lanes, 64 cycles each, with no persistent failures.
+ARM standard/sync-delay had 0/3 busy images respectively; Intel standard/sync-delay
+had 1/1. Each verbose lane had one busy image. This sample provides no evidence
+that sync-plus-delay reduces failures and is too small to establish harm.
+Both verbose registry extractions failed because the archive root was a dictionary,
+not an array. The parser now accepts a single registry root as well as an array;
+the failed extractions are not evidence that user clients were absent.
 
 Forensic workflow updates no longer cancel active captures. Earlier CPU run
 38142871655 was interrupted by a PR update and its Intel artifacts lacked final

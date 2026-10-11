@@ -15,6 +15,28 @@ from diaktoros import native_storage
 
 
 class ForensicsValidation(unittest.TestCase):
+    def test_forced_unmount_rechecks_ownership_and_reports_failed_intervention(self):
+        for still_owned, outcome in ((True, {'returncode': 0}), (False, {'returncode': 0}),
+                                     (True, {'returncode': 1})):
+            with tempfile.TemporaryDirectory() as directory:
+                recorder = forensics.Recorder(Path(directory) / 'evidence', pre_unmount=True)
+                workspace = SimpleNamespace(image=Path('/private/fixture/turn.dmg'),
+                                            _devices=mock.Mock(side_effect=[['/dev/disk99'],
+                                                ['/dev/disk99'] if still_owned else []]))
+                with mock.patch.object(recorder, 'command', side_effect=[
+                        ({'returncode': 0}, b'', b''), (outcome, b'', b'')]) as command, \
+                        mock.patch.object(forensics.time, 'sleep'):
+                    if outcome['returncode']:
+                        with self.assertRaisesRegex(RuntimeError, 'unmount failed'):
+                            recorder.before_detach(workspace)
+                    else:
+                        recorder.before_detach(workspace)
+                self.assertEqual(workspace._devices.call_count, 2)
+                self.assertEqual(command.call_count, 2 if still_owned else 1)
+                if still_owned:
+                    self.assertEqual(command.call_args.args[1],
+                                     [native_storage.DISKUTIL, 'unmountDisk', 'force', '/dev/disk99'])
+
     def test_sync_delay_is_opt_in_and_failed_sync_does_not_claim_a_completed_wait(self):
         workspace = SimpleNamespace(image=Path('/private/fixture/turn.dmg'))
         for enabled, outcome in ((False, {'returncode': 0}), (True, {'returncode': 0}),
@@ -47,6 +69,7 @@ class ForensicsValidation(unittest.TestCase):
                  {'IOObjectClass': 'ImageUserClient', 'IOUserClientCreator': 'pid 123, helper'}]},
             {'IORegistryEntryName': 'other', 'BSD Name': 'disk0'}]}]
         result = forensics.registry_connections(plistlib.dumps(tree), ['/dev/disk99'])
+        self.assertEqual(result, forensics.registry_connections(plistlib.dumps(tree[0]), ['/dev/disk99']))
         self.assertEqual(len(result['media']), 1)
         self.assertEqual(result['media'][0]['path'][-1]['BSD Name'], 'disk99')
         self.assertTrue(result['media'][0]['path'][-1]['Open'])

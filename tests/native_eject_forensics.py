@@ -64,6 +64,8 @@ def registry_connections(raw, devices):
     if len(raw) > 16 * 1024 * 1024:
         raise ValueError('registry archive exceeds analysis limit')
     roots = plistlib.loads(raw)
+    if isinstance(roots, dict) and ('IORegistryEntryName' in roots or 'IOObjectClass' in roots):
+        roots = [roots]
     if not isinstance(roots, list):
         raise ValueError('registry archive root is not an array')
     fields = ('IORegistryEntryID', 'IORegistryEntryName', 'IOObjectClass',
@@ -89,11 +91,12 @@ def registry_connections(raw, devices):
 
 
 class Recorder:
-    def __init__(self, output, *, verbose=False, sync_delay=False):
+    def __init__(self, output, *, verbose=False, sync_delay=False, pre_unmount=False):
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=False)
         self.verbose = verbose
-        self.sync_delay = sync_delay
+        self.sync_delay = sync_delay or pre_unmount
+        self.pre_unmount = pre_unmount
         self.sequence = 0
         self.first_busy = False
         self.helper_baselines = {}
@@ -148,6 +151,16 @@ class Recorder:
             raise RuntimeError('pre-detach sync failed')
         time.sleep(2)
         self.emit({'tag': 'pre-detach-wait', 'seconds': 2, 'image': str(workspace.image)})
+        if self.pre_unmount:
+            for device in workspace._devices():
+                # Resolve exact-image ownership again immediately before mutation.
+                if device not in workspace._devices():
+                    continue
+                outcome, _, _ = self.command('pre-detach-unmount',
+                                             [native_storage.DISKUTIL, 'unmountDisk', 'force', device],
+                                             timeout=30)
+                if outcome.get('error') or outcome['returncode']:
+                    raise RuntimeError('experimental pre-detach unmount failed')
 
     def helper_progress(self, workspace, phase):
         image = str(workspace.image)
@@ -315,6 +328,7 @@ def probe(recorder, cycles):
             event = {'tag': 'cycle', 'cycle': cycle, 'workload': workload,
                      'architecture': platform.machine(), 'verbose': recorder.verbose,
                      'sync_delay': recorder.sync_delay,
+                     'pre_unmount': recorder.pre_unmount,
                      'turn_processes_launched': False}
             started = time.monotonic()
             try:
@@ -366,8 +380,11 @@ if __name__ == '__main__':
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--sync-delay', action='store_true',
                         help='test-only system-wide sync plus two seconds before first detach')
+    parser.add_argument('--sync-unmount', action='store_true',
+                        help='sync-delay plus forced unmount of freshly verified owned whole disks')
     args = parser.parse_args()
     if reason := seatbelt.unavailable():
         parser.error(reason)
     raise SystemExit(bool(probe(Recorder(args.output, verbose=args.verbose,
-                                       sync_delay=args.sync_delay), args.cycles)))
+                                       sync_delay=args.sync_delay,
+                                       pre_unmount=args.sync_unmount), args.cycles)))
