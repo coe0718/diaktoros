@@ -111,10 +111,15 @@ class NativeLaunchdOwnership(unittest.TestCase):
             plist.write_bytes(plistlib.dumps({
                 'Label': label, 'ProgramArguments': [str(interpreter), '-I', '-B', str(script), str(root)],
                 'RunAtLoad': True, 'KeepAlive': False, 'AbandonProcessGroup': abandon,
+                'LimitLoadToSessionType': 'Background',
                 'StandardOutPath': str(root / 'stdout'), 'StandardErrorPath': str(root / 'stderr')}))
             record = None
             try:
-                self.launchctl('bootstrap', domain, str(plist))
+                result = self.launchctl('bootstrap', domain, str(plist), check=False)
+                if result.returncode:
+                    print('NATIVE_LAUNCHD bootstrap diagnostics:', result.stderr,
+                          self.launchctl('print', domain, check=False).stdout, flush=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 deadline = time.monotonic() + 12
                 while not (root / 'job-ready.json').exists() and time.monotonic() < deadline:
                     time.sleep(0.02)
