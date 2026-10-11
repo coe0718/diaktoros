@@ -19,6 +19,7 @@ import time
 
 HDIUTIL = '/usr/bin/hdiutil'
 DISKUTIL = '/usr/sbin/diskutil'
+EJECT_BACKOFF = (2, 4, 6, 8)  # Five normal attempts, twenty seconds of settling time.
 
 
 class StorageError(RuntimeError):
@@ -78,6 +79,12 @@ class Workspace:
             _run([HDIUTIL, 'attach', '-plist', '-nobrowse', '-noautoopen',
                   '-owners', 'on', '-mountpoint', str(self.mount), str(self.image)])
             self._verify_mount()
+            # This is disposable turn storage, not an indexed or event-backed
+            # user volume. Install opt-out markers before creating turn files.
+            (self.mount / '.metadata_never_index').touch(mode=0o600)
+            event_log = self.mount / '.fseventsd'
+            event_log.mkdir(mode=0o700, exist_ok=True)
+            (event_log / 'no_log').touch(mode=0o600)
             # Git trees require distinct case-sensitive names, even on a default Mac host.
             case_paths = (self.mount / 'CaseProbe', self.mount / 'caseprobe')
             for path in case_paths:
@@ -153,29 +160,37 @@ class Workspace:
         shutil.rmtree(self.root)
 
     def _detach_owned(self):
-        """Retry busy teardown briefly, rediscovering image ownership before each eject.
+        """Allow busy image machinery to settle before a single final forced attempt.
 
         A failed eject may already have unmounted the filesystem. Never reuse its
         disk id without checking the exact image again, including before force.
         Retries do not establish that detached seat descendants have exited.
         """
-        for attempt in range(3):
+        for attempt in range(len(EJECT_BACKOFF) + 1):
             try:
                 for device in self._devices():
                     if device not in self._devices():
                         continue
-                    try:
-                        self._eject(device, force=False)
-                    except StorageError:
-                        if device in self._devices():
-                            self._eject(device, force=True)
+                    self._eject(device, force=False)
                 if not self._devices():
                     return
                 raise StorageError('workspace remains attached')
             except StorageError as exc:
-                if 'Resource busy' not in str(exc) or attempt == 2:
+                if 'Resource busy' not in str(exc):
                     raise
-                time.sleep(0.25 * (attempt + 1))
+                # A failed command may nevertheless have completed detachment.
+                # Do not wait or force a device that no longer belongs to us.
+                if not self._devices():
+                    return
+                if attempt < len(EJECT_BACKOFF):
+                    time.sleep(EJECT_BACKOFF[attempt])
+                else:
+                    for device in self._devices():
+                        if device in self._devices():
+                            self._eject(device, force=True)
+                    if self._devices():
+                        raise StorageError('workspace remains attached after final eject')
+                    return
 
     def _eject(self, device: str, *, force: bool):
         started = time.monotonic()
@@ -205,6 +220,8 @@ class Workspace:
                                            timeout=5, check=False)
                     event['volume_users'] = (users.stdout + users.stderr).decode(
                         errors='replace')[-6000:]
+                    event['volume_users_returncode'] = users.returncode
+                    event['volume_users_stderr'] = users.stderr.decode(errors='replace')[-2000:]
             except Exception as exc:
                 event['diagnostic_error'] = str(exc)[-2000:]
             self.cleanup_events.append(event)

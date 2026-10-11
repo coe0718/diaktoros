@@ -139,7 +139,8 @@ memory. Production storage sizing still needs representative workspace tests.
 
 Cleanup rediscovers attached devices by the exact private image, detaches, and
 verifies removal before deleting the backing files. Busy ejects receive at most
-three attempts with 0.25/0.5-second backoffs; image ownership is checked again
+five normal attempts with 2/4/6/8-second backoffs (twenty seconds of sleep), then
+one final forced attempt; image ownership is checked again
 before every normal or forced eject. A failed eject can already have unmounted
 the filesystem, so CI also records remaining exact-image attachments. This is
 a bounded retry, not proof that the intermittent busy-eject cause is resolved.
@@ -150,6 +151,18 @@ turn is not automatically attributed to APFS. Diagnostic failures never turn a
 failed eject into successful cleanup.
 When an eject fails while the exact owned volume is still mounted, a five-second
 `lsof` probe records its open users before a forced eject can remove the mount.
+Its return code and stderr are recorded separately: an empty holder snapshot
+supports a settling race but does not prove the absence of processes, kernel
+references or earlier transient holders. `.metadata_never_index` and
+`.fseventsd/no_log` are installed after mount verification, before turn files,
+to request that this disposable volume not be indexed or event-logged. These
+markers do not guarantee that no system daemon touched it during attachment.
+The longer normal backoff is informed by
+[riftri #458](https://github.com/assistant-ui/riftri/commit/2e4bbad5822b3a5bb87d401d1f0b3f7f883a1e30);
+its [#484 device fix](https://github.com/assistant-ui/riftri/commit/52bab66d74b71e1d604df71a1390205bc876a585)
+also illustrates why every retry rediscovers the exact image's device after a
+partial unmount. This is evidence from another project, not a confirmed cause
+for Diaktoros or proof that the race is specific to Apple Silicon.
 The short storage fixture repeats six guarded turns with an open file and cwd
 on APFS, immediately ejecting each owned image after watchdog completion. This
 increases reproduction opportunities; passing cycles do not explain prior busy

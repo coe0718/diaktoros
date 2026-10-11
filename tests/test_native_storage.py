@@ -60,14 +60,13 @@ class StorageValidation(unittest.TestCase):
         with mock.patch.object(workspace, '_devices', side_effect=[
                 ['/dev/disk99'], ['/dev/disk99'], ['/dev/disk99'],
                 ['/dev/disk100'], ['/dev/disk100'], []]), \
-                mock.patch.object(native_storage, '_run', side_effect=[busy, busy, b'']) as run, \
+                mock.patch.object(native_storage, '_run', side_effect=[busy, b'']) as run, \
                 mock.patch.object(native_storage.time, 'sleep') as sleep:
             workspace._detach_owned()
         self.assertEqual(run.call_args_list, [
             mock.call([native_storage.HDIUTIL, 'detach', '/dev/disk99']),
-            mock.call([native_storage.HDIUTIL, 'detach', '-force', '/dev/disk99']),
             mock.call([native_storage.HDIUTIL, 'detach', '/dev/disk100'])])
-        sleep.assert_called_once_with(0.25)
+        sleep.assert_called_once_with(2)
 
     def test_failed_eject_that_detached_does_not_force_stale_disk(self):
         workspace = native_storage.Workspace()
@@ -77,6 +76,38 @@ class StorageValidation(unittest.TestCase):
                                   native_storage.StorageError('hdiutil: Resource busy')) as run:
             workspace._detach_owned()
         run.assert_called_once_with([native_storage.HDIUTIL, 'detach', '/dev/disk99'])
+
+    def test_settling_image_succeeds_on_last_normal_attempt_without_force(self):
+        workspace = native_storage.Workspace()
+        busy = native_storage.StorageError('Resource busy')
+        attached = True
+
+        def eject(argv):
+            nonlocal attached
+            if run.call_count < 5:
+                raise busy
+            attached = False
+            return b''
+
+        with mock.patch.object(workspace, '_devices', side_effect=lambda:
+                               ['/dev/disk99'] if attached else []), \
+                mock.patch.object(native_storage, '_run', side_effect=eject) as run, \
+                mock.patch.object(native_storage.time, 'sleep') as sleep:
+            workspace._detach_owned()
+        self.assertEqual(run.call_args_list, [
+            mock.call([native_storage.HDIUTIL, 'detach', '/dev/disk99'])] * 5)
+        self.assertEqual(sleep.call_args_list, [mock.call(n) for n in (2, 4, 6, 8)])
+
+    def test_nonbusy_failure_is_not_retried_or_forced(self):
+        workspace = native_storage.Workspace()
+        with mock.patch.object(workspace, '_devices', return_value=['/dev/disk99']), \
+                mock.patch.object(native_storage, '_run', side_effect=
+                                  native_storage.StorageError('permission denied')) as run, \
+                mock.patch.object(native_storage.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(native_storage.StorageError, 'permission denied'):
+                workspace._detach_owned()
+        run.assert_called_once_with([native_storage.HDIUTIL, 'detach', '/dev/disk99'])
+        sleep.assert_not_called()
 
     def test_persistent_busy_eject_is_bounded_and_retains_image(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -94,7 +125,10 @@ class StorageValidation(unittest.TestCase):
                 with self.assertRaisesRegex(native_storage.StorageError, 'retained at'):
                     workspace._cleanup()
             self.assertEqual(run.call_count, 6)
-            self.assertEqual(sleep.call_args_list, [mock.call(0.25), mock.call(0.5)])
+            self.assertEqual(run.call_args_list, [
+                mock.call([native_storage.HDIUTIL, 'detach', '/dev/disk99'])] * 5 + [
+                mock.call([native_storage.HDIUTIL, 'detach', '-force', '/dev/disk99'])])
+            self.assertEqual(sleep.call_args_list, [mock.call(n) for n in (2, 4, 6, 8)])
             self.assertEqual(workspace.image.read_bytes(), b'fixture')
 
     def test_eject_records_partial_unmount_without_hiding_failure(self):
@@ -143,13 +177,14 @@ class StorageValidation(unittest.TestCase):
                 mock.patch.object(native_storage, '_run', side_effect=
                                   native_storage.StorageError('Resource busy')), \
                 mock.patch.object(subprocess, 'run', side_effect=[SimpleNamespace(
-                                  stdout=b'bash fixture cwd on volume', stderr=b''),
+                                  stdout=b'bash fixture cwd on volume', stderr=b'', returncode=0),
                                   subprocess.TimeoutExpired('lsof fixture', 5)]) as users:
             with self.assertRaisesRegex(native_storage.StorageError, 'Resource busy'):
                 workspace._eject('/dev/disk99', force=False)
             with self.assertRaisesRegex(native_storage.StorageError, 'Resource busy'):
                 workspace._eject('/dev/disk99', force=True)
         self.assertIn('bash fixture cwd', workspace.cleanup_events[0]['volume_users'])
+        self.assertEqual(workspace.cleanup_events[0]['volume_users_returncode'], 0)
         self.assertIn('timed out', workspace.cleanup_events[1]['diagnostic_error'])
         self.assertEqual(workspace.cleanup_events[1]['error'], 'Resource busy')
         self.assertEqual(users.call_args.args[0],
@@ -172,6 +207,8 @@ class NativeStorageBoundary(unittest.TestCase):
             outside.write_text('HOST_FILE')
             policy_file = outer / 'policy.sb'
             with native_storage.Workspace(128) as workspace:
+                self.assertTrue((workspace.mount / '.metadata_never_index').is_file())
+                self.assertTrue((workspace.mount / '.fseventsd/no_log').is_file())
                 image, image_size, root = workspace.image, workspace.image.stat().st_size, workspace.root
                 workspace.validate(home=workspace.home, work=workspace.work, scratch=workspace.scratch)
                 with self.assertRaises(native_storage.StorageError):
