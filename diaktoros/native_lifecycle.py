@@ -198,6 +198,8 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
             receipt.close()
             raise
     process = None
+    anchor_result = None
+    turn_returncode = None
     timed_out = False
     parent_lost = False
     leader_exited = False
@@ -233,20 +235,25 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
                                                start_new_session=True)
                 else:
                     from diaktoros import native_anchor
+                    anchor_result, result_writer = os.pipe()
                     anchor_config = json.dumps({'argv': argv, 'env': env, 'cwd': cwd,
                                                 'owner': os.getpid(), 'timeout': timeout,
-                                                'turn_id': receipt.read()['turn_id']}).encode()
-                    with tempfile.TemporaryFile() as source:
-                        source.write(anchor_config)
-                        source.seek(0)
-                        handshake = config['anchor_handshake']
-                        process = subprocess.Popen(
-                            [str(Path(sys.executable).resolve()), '-I', '-B',
-                             str(Path(native_anchor.__file__).resolve()),
-                             str(source.fileno()), str(handshake)],
-                            pass_fds=(source.fileno(), handshake), close_fds=True,
-                            start_new_session=True,
-                            env={'PATH': '/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1'})
+                                                'turn_id': receipt.read()['turn_id'],
+                                                'result_fd': result_writer}).encode()
+                    try:
+                        with tempfile.TemporaryFile() as source:
+                            source.write(anchor_config)
+                            source.seek(0)
+                            handshake = config['anchor_handshake']
+                            process = subprocess.Popen(
+                                [str(Path(sys.executable).resolve()), '-I', '-B',
+                                 str(Path(native_anchor.__file__).resolve()),
+                                 str(source.fileno()), str(handshake)],
+                                pass_fds=(source.fileno(), handshake, result_writer), close_fds=True,
+                                start_new_session=True,
+                                env={'PATH': '/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1'})
+                    finally:
+                        os.close(result_writer)
                     os.close(handshake)
                 if receipt is not None:
                     watchdog = subprocess.Popen(
@@ -324,6 +331,18 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
                                                     'owner_lost' if parent_lost else
                                                     'timeout' if timed_out else 'leader_exit'))
                 process.wait()
+                turn_returncode = process.returncode
+                if anchor_result is not None:
+                    os.set_blocking(anchor_result, False)
+                    try:
+                        raw = os.read(anchor_result, MAX_STATUS + 1)
+                    except BlockingIOError:
+                        raw = b''
+                    if raw:
+                        value = json.loads(raw)
+                        if len(raw) > MAX_STATUS or type(value['returncode']) is not int:
+                            raise CleanupIncomplete('invalid anchor command completion')
+                        turn_returncode = value['returncode']
             elif receipt is not None:
                 receipt.update('drained', cause='owner_lost_before_launch')
             if receipt is not None and (parent_lost or watchdog_lost):
@@ -332,7 +351,9 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
         finally:
             if receipt is not None:
                 receipt.close()
-    result = {'returncode': process.returncode if process is not None else None,
+            if anchor_result is not None:
+                os.close(anchor_result)
+    result = {'returncode': turn_returncode,
               'timeout': timed_out, 'parent_lost': parent_lost, 'group_drained': True}
     if config.get('recovery_root') is not None:
         result.update(watchdog_lost=watchdog_lost, storage_cleaned=storage_cleaned)

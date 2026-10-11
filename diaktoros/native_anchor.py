@@ -24,7 +24,6 @@ def run(config_fd, handshake_fd):
     if os.getpid() != os.getpgrp():
         raise RuntimeError('native anchor must own its process group')
     signal.signal(signal.SIGCHLD, signal.SIG_DFL)
-    finished = False
     try:
         with closing(select.kqueue()) as events, socket.socket(fileno=handshake_fd) as channel:
             if owner <= 1 or os.getppid() != owner:
@@ -64,13 +63,13 @@ def run(config_fd, handshake_fd):
                     if any(e.ident == process.pid for e in ready):
                         break
             code = process.wait()
-            finished = True
-            if code < 0:
-                os.kill(os.getpid(), -code)
+            os.write(config['result_fd'], json.dumps({'returncode': code}).encode())
+            os.close(config['result_fd'])
             return code
     finally:
-        if not finished:
-            os.killpg(os.getpgrp(), signal.SIGKILL)
+        # Also close the leader-exit/guardian-death race: never voluntarily
+        # leave the group with descendants alive. Exit code travels separately.
+        os.killpg(os.getpgrp(), signal.SIGKILL)
 
 
 if __name__ == '__main__':
