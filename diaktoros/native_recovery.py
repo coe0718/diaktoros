@@ -7,14 +7,17 @@ write access to either, the journal, lease, or backing image.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import shutil
 import stat
 import subprocess
 import sys
+import time
 import uuid
 
 JOURNAL = 'ownership.json'
@@ -62,6 +65,24 @@ def _private(info, *, directory=False):
         raise RecoveryError('ownership path is not private host storage')
     if not directory and info.st_nlink != 1:
         raise RecoveryError('ownership file has multiple links')
+
+
+@contextmanager
+def disposal_lease(root):
+    """A live host may still be recording writes after the seat has exited."""
+    path = Path(root) / 'disposal.lock'
+    try:
+        _private(path.lstat())
+    except FileNotFoundError:
+        yield
+        return
+    descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        _private(os.fstat(descriptor))
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(descriptor)
 
 
 class Record:
@@ -113,6 +134,20 @@ class Record:
                     not 64 <= record['size_mib'] <= 16384 or
                     record['state'] not in (*PREPARATION_STATES, 'armed', 'running', 'drained', 'disposed')):
                 raise ValueError('invalid ownership record')
+            for field in ('created_at', 'pending_since', 'last_cleanup_at'):
+                if field in record and (type(record[field]) not in (int, float) or
+                                        not math.isfinite(record[field]) or record[field] < 0):
+                    raise ValueError('invalid cleanup timestamp')
+            if 'cleanup_pending' in record and type(record['cleanup_pending']) is not bool:
+                raise ValueError('invalid pending cleanup flag')
+            if 'eventual_cleanup' in record and type(record['eventual_cleanup']) is not bool:
+                raise ValueError('invalid eventual cleanup flag')
+            if 'cleanup_attempts' in record and (type(record['cleanup_attempts']) is not int or record['cleanup_attempts'] < 0):
+                raise ValueError('invalid cleanup attempt count')
+            if 'last_cleanup_error' in record and type(record['last_cleanup_error']) is not str:
+                raise ValueError('invalid cleanup error')
+            if record.get('eventual_cleanup') is True and record['state'] != 'disposed':
+                _private(os.stat('disposal.lock', dir_fd=self.directory, follow_symlinks=False))
             if 'boot_id' in record and record['boot_id'] is not None and not _valid_boot_id(record['boot_id']):
                 raise ValueError('invalid recorded boot identity')
             if record['state'] in PREPARATION_STATES and (
@@ -179,7 +214,35 @@ class Record:
         record.update(details, state=state)
         self.write(record)
 
+    def defer_cleanup(self, error):
+        """Persist pending disposal only after independently verified completion."""
+        record = self.read()
+        if record['state'] not in ('drained', 'disposed'):
+            raise RecoveryError('process completion unverified; cannot defer disposal')
+        now = time.time()
+        record.update(cleanup_pending=True, pending_since=record.get('pending_since', now),
+                      cleanup_attempts=record.get('cleanup_attempts', 0) + 1,
+                      last_cleanup_at=now, last_cleanup_error=str(error)[-2000:])
+        self.write(record)
+        return {'root': str(self.root), 'status': 'pending',
+                'reason': record['last_cleanup_error'], 'pending_since': record['pending_since']}
+
+    def cleanup_or_defer(self):
+        try:
+            self.cleanup()
+            return True
+        except (RecoveryError, OSError, RuntimeError, subprocess.SubprocessError) as error:
+            # Read again: a replaced/corrupt receipt never grants queue authority.
+            if self.read().get('eventual_cleanup') is not True:
+                raise
+            self.defer_cleanup(error)
+            return False
+
     def cleanup(self):
+        with disposal_lease(self.root):
+            self._cleanup_bound()
+
+    def _cleanup_bound(self):
         record = self.read()
         if record['state'] in ('created', 'attached', 'armed', 'running') and record.get('boot_id'):
             current_boot = boot_identity()
@@ -252,7 +315,8 @@ def register(workspace):
                        'image_path': str(workspace.image), 'owner_uid': os.getuid(),
                        'reserved_bytes': workspace.size_mib * 1024 * 1024,
                        'size_mib': workspace.size_mib, 'turn_id': uuid.uuid4().hex,
-                       'state': 'registered', 'boot_id': boot_identity()})
+                       'state': 'registered', 'boot_id': boot_identity(), 'created_at': time.time(),
+                       'eventual_cleanup': getattr(workspace, 'cleanup_manager', None) is not None})
         parent = os.open(workspace.root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(parent)
@@ -289,11 +353,18 @@ def arm(workspace):
                        'turn_id': uuid.uuid4().hex, 'state': 'armed', 'boot_id': boot_identity()})
 
 
-def recover(root: Path):
+def recover(root: Path, *, defer=False):
     """Reconcile one explicit owned root; never signal recorded processes."""
     try:
         with Record(root) as receipt:
-            receipt.cleanup()
+            if defer:
+                cleaned = receipt.cleanup_or_defer()
+                if not cleaned:
+                    record = receipt.read()
+                    return {'root': str(root), 'status': 'pending',
+                            'reason': record['last_cleanup_error'], 'pending_since': record['pending_since']}
+            else:
+                receipt.cleanup()
         return {'root': str(root), 'status': 'removed'}
     except BlockingIOError:
         return {'root': str(root), 'status': 'active'}
@@ -301,7 +372,7 @@ def recover(root: Path):
         return {'root': str(root), 'status': ('absent' if not Path(root).exists() and
                                             not Path(root).is_symlink() else 'retained'),
                 'reason': str(error)}
-    except (RecoveryError, OSError, RuntimeError) as error:
+    except (RecoveryError, OSError, RuntimeError, subprocess.SubprocessError) as error:
         return {'root': str(root), 'status': 'retained', 'reason': str(error)}
 
 
@@ -331,7 +402,6 @@ def startup(parent: Path | None = None):
 
 
 if __name__ == '__main__':
-    import sys
     results = startup() if sys.argv[1:] == ['--discover'] else reconcile(sys.argv[1:])
     print(json.dumps(results, sort_keys=True))
     raise SystemExit(1 if any(result['status'] == 'retained' for result in results) else 0)

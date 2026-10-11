@@ -59,7 +59,7 @@ class Workspace:
     directory for recovery; it must not be interpreted as completed lifecycle
     containment or reliable cleanup after supervisor death.
     """
-    def __init__(self, size_mib: int = 512, *, durable_ownership: bool = False):
+    def __init__(self, size_mib: int = 512, *, durable_ownership: bool = False, cleanup_manager=None):
         if type(size_mib) is not int or not 64 <= size_mib <= 16384:
             raise ValueError('workspace size must be 64..16384 MiB')
         self.size_bytes = size_mib * 1024 * 1024
@@ -69,8 +69,11 @@ class Workspace:
         self.retained_reason = ''
         self.cleanup_events = []
         self.creation_events = []
-        self.durable_ownership = durable_ownership
+        self.cleanup_manager = cleanup_manager
+        self.pending_cleanup = None
+        self.durable_ownership = durable_ownership or cleanup_manager is not None
         self._preparation = None
+        self._disposal_lease = None
 
     def retain(self, reason: str):
         """Preserve an owned image when its execution owner cannot confirm cleanup."""
@@ -82,12 +85,16 @@ class Workspace:
             raise StorageError('workspace objects cannot be reused')
         if sys.platform != 'darwin' or not all(Path(p).is_file() for p in (HDIUTIL, DISKUTIL)):
             raise StorageError('native bounded storage requires macOS disk-image tools')
-        self.root = Path(tempfile.mkdtemp(prefix='dk-volume-', dir='/tmp')).resolve()
-        self.image = self.root / 'turn.dmg'
-        self.mount = self.root / 'mount'
         try:
             if self.durable_ownership:
                 from . import native_recovery
+            if self.cleanup_manager is not None:
+                self._preparation = self.cleanup_manager.prepare(self)
+            else:
+                self.root = Path(tempfile.mkdtemp(prefix='dk-volume-', dir='/tmp')).resolve()
+                self.image = self.root / 'turn.dmg'
+                self.mount = self.root / 'mount'
+            if self.durable_ownership and self._preparation is None:
                 self._preparation = native_recovery.register(self)
             self.mount.mkdir(mode=0o700)
             self._create_image()
@@ -207,7 +214,18 @@ class Workspace:
             raise StorageError('all writable turn roots must belong to the bounded workspace')
 
     def _cleanup(self):
+        if self.root is not None and self.cleanup_manager is not None:
+            from . import native_recovery
+            with native_recovery.Record(self.cleanup_manager.root):
+                self._cleanup_bound()
+        else:
+            self._cleanup_bound()
+
+    def _cleanup_bound(self):
         self.active = False
+        if self._disposal_lease is not None:
+            os.close(self._disposal_lease)
+            self._disposal_lease = None
         if self._preparation is not None:
             self._preparation.close()
             self._preparation = None
@@ -217,7 +235,18 @@ class Workspace:
             raise StorageError(f'workspace retained at {self.root}: {self.retained_reason}')
         if (self.root / 'ownership.json').exists():
             from . import native_recovery
-            result = native_recovery.recover(self.root)
+            if self.cleanup_manager is not None:
+                with native_recovery.Record(self.root) as receipt:
+                    record = receipt.read()
+                    if record.get('cleanup_pending') is True and record['state'] in ('drained', 'disposed'):
+                        self.pending_cleanup = {'root': str(self.root), 'status': 'pending',
+                                                'reason': record['last_cleanup_error']}
+                        return
+            result = native_recovery.recover(self.root, defer=self.cleanup_manager is not None)
+            if result['status'] == 'pending':
+                self.pending_cleanup = result
+                _diagnostic('NATIVE_CLEANUP_PENDING', result)
+                return
             if result['status'] != 'removed':
                 raise StorageError(f'workspace retained at {self.root}: {result}')
             return

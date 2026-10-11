@@ -538,6 +538,64 @@ runners check the real kernel identity across fresh Python processes and its
 registration receipt. This is not a physical reboot acceptance test: that gate
 still requires a reboot-capable Mac runner with storage retained across reboot.
 
+## Eventual disposal pool (experimental)
+
+`native_cleanup.Manager(<private-host-root>)` supplies serialized admission and
+an opt-in `Workspace(..., cleanup_manager=manager)`. The root must have a
+canonical, private host-owned parent and must survive the intended recovery
+window. Put it beside the install ledger as `native-cleanup` to use the
+supervisor/watchdog integration; a custom root can be swept explicitly with
+`python -m diaktoros.native_cleanup <root> --sweep`. Without `--sweep`, the command
+only reads status. Production backend selection remains disabled.
+
+The ownership receipts inside `volumes` are the queue. Registration precedes
+image creation. Verified group drain precedes pending disposal; neither an
+unlocked lease nor a discovered process ID can supply completion proof. A busy
+eject after verified completion persists `cleanup_pending`, first pending time,
+attempt count and last error before context exit can succeed. A failed queue
+write prevents that acknowledgement. Normal results survive deferred disposal;
+watchdog/guardian interruption raises `StoragePending` only after verified
+process completion and durable queuing, distinct from `CleanupIncomplete`.
+
+A separate disposal lease protects the host's result-recording window after the
+seat exits. Sweeps cannot delete a still-live host's workspace just because its
+group is drained. The lease closes at context cleanup and is not passed to the
+seat or helpers. Host death releases it; independent guardian cleanup can then
+complete or queue disposal. Exact-image detach verification remains mandatory.
+
+Admission defaults to one active turn, at most four pending images, a shared
+2 GiB reservation ceiling, 256 MiB host free-space headroom, and a five-minute
+oldest-pending threshold. All limits are adjustable through `Policy`; the
+policy survives restart. Admission, root reservation and registration share a
+private control lease. Unknown/corrupt ownership or unverified turn completion
+blocks new admission and is retained. A missing control file alongside existing
+workspaces is an error. Inventory is bounded at 128 entries. Unregistered
+images are reported rather than adopted into deletion authority.
+
+Each host supervisor recovery pass (including watchdog ledger sweeps) retries
+one owned workspace by default. A persisted rotating cursor prevents a busy
+image from starving others. Pool receipts can be discovered after restart even
+if no pending flag was written; verified state and released host disposal lease
+still decide eligibility. Pause/resume transitions are recorded in a bounded
+outbox and emitted once into the watchdog/operator output, with count, reserved
+bytes, oldest age and last error. Delivery is claimed before output: interrupted
+or failed delivery remains visible as uncertain and is not blindly replayed.
+The observer chat-route adapter is not wired by this slice.
+
+Doctor and explain read the ledger-adjacent pool without creating files,
+retrying detaches or acknowledging notices. Local validation covers deferred
+results, failed queue writes, count/byte/age/full-disk admission, orphan
+retention, result-recording leases, restart policy/notices, fair retries and
+supervisor integration. Both Mac lanes exercise real guarded turn completion
+with injected busy eject, plus actual watchdog SIGKILL with a double-forked
+seat descendant followed by pool disposal.
+
+This does not satisfy the production acceptance gate yet: 200-turn adversarial
+soaks on both chips, physical reboot, process escapes, observer-route delivery,
+and disposal within five sweeps/five minutes remain required. A sweep bounds
+its number of workspaces; existing disk-command timeouts and watchdog cadence
+still need a wall-clock budget suitable for the five-minute target.
+
 ## Dedicated eject forensics
 
 `native-eject-forensics.yml` runs eight independent Mac lanes: ARM and Intel,

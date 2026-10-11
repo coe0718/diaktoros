@@ -38,6 +38,10 @@ class WatchdogLost(RuntimeError):
     """The guardian proved group cleanup and storage disposal after watchdog death."""
 
 
+class StoragePending(WatchdogLost):
+    """Process exit was verified; disposal is durably queued for host recovery."""
+
+
 class GuardianLost(WatchdogLost):
     """Live anchor exit and empty-group proof authorized guardian-loss cleanup."""
 
@@ -92,7 +96,8 @@ class _AnchorProof:
                 raise CleanupIncomplete('guardian-loss receipt belongs to another turn')
             if record['state'] in ('armed', 'running'):
                 receipt.update('drained', cause='guardian_lost_anchor_exit')
-            receipt.cleanup()
+            if not receipt.cleanup_or_defer():
+                raise StoragePending('guardian lost; group exit verified, storage cleanup pending')
         raise GuardianLost('native guardian died; live anchor exit proved group cleanup and storage disposal')
 
 
@@ -346,8 +351,7 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
             elif receipt is not None:
                 receipt.update('drained', cause='owner_lost_before_launch')
             if receipt is not None and (parent_lost or watchdog_lost):
-                receipt.cleanup()
-                storage_cleaned = True
+                storage_cleaned = receipt.cleanup_or_defer()
         finally:
             if receipt is not None:
                 receipt.close()
@@ -356,7 +360,8 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
     result = {'returncode': turn_returncode,
               'timeout': timed_out, 'parent_lost': parent_lost, 'group_drained': True}
     if config.get('recovery_root') is not None:
-        result.update(watchdog_lost=watchdog_lost, storage_cleaned=storage_cleaned)
+        result.update(watchdog_lost=watchdog_lost, storage_cleaned=storage_cleaned,
+                      storage_pending=(not storage_cleaned and (parent_lost or watchdog_lost)))
     try:
         os.write(status_fd, json.dumps(result).encode())
     except BrokenPipeError:
@@ -388,6 +393,8 @@ def _completion(process, descriptor, *, allow_owner_loss=False):
                                 f'helper={process.returncode}, status={status!r}')
     if record.get('watchdog_lost') is True:
         if record.get('storage_cleaned') is not True:
+            if record.get('storage_pending') is True:
+                raise StoragePending('watchdog died; group drained, storage cleanup durably pending')
             raise CleanupIncomplete('guardian storage cleanup could not be verified')
         raise WatchdogLost('native watchdog died; guardian drained the group and disposed storage')
     return record
@@ -472,7 +479,7 @@ def capture(argv: list[str], *, env: dict[str, str], timeout: int,
                     if proof is not None:
                         try:
                             proof.recover(recovery_root, turn_id)
-                        except GuardianLost:
+                        except (GuardianLost, StoragePending):
                             raise
                         except (OSError, RuntimeError) as error:
                             raise CleanupIncomplete('guardian-loss cleanup remains unverified: '

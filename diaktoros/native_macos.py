@@ -135,6 +135,9 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
             return native_lifecycle.capture(profile.command(policy, entry), env=env,
                                             cwd=work, timeout=timeout + 30,
                                             **({'recovery_root': recovery} if recovery else {}))
+        except native_lifecycle.StoragePending:
+            workspace.active = False
+            raise
         except native_lifecycle.WatchdogLost:
             # Guardian completion or live anchor proof verified disposal of
             # this exact volume. Context exit must not touch absent paths.

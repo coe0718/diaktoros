@@ -21,6 +21,8 @@ on:
       - tests/test_native_eject_stress.py
       - tests/test_native_lifecycle.py
       - tests/test_native_recovery.py
+      - tests/test_native_cleanup.py
+      - diaktoros/native_cleanup.py
       - tests/test_native_detach.py
       - tests/native_spawn_fixture.c
       - diaktoros/native_spawn.c
@@ -73,7 +75,9 @@ jobs:
       - name: Exercise fixed-capacity APFS storage and cleanup
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_storage.py'
       - name: Recover guarded turns after watchdog death and supervisor restart
-        run: python tests/leakguard.py discover -v -s tests -p 'test_native_recovery.py'
+        run: |
+          python tests/leakguard.py discover -v -s tests -p 'test_native_recovery.py'
+          python tests/leakguard.py discover -v -s tests -p 'test_native_cleanup.py'
       - name: Capture busy APFS ejects during bounded host-only churn
         env:
           DIAKTOROS_REQUIRE_NATIVE_EJECT_STRESS: '1'
