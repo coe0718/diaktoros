@@ -184,6 +184,21 @@ all immediate eject diagnostics and recovery outcome in CI logs, including busy
 attempts that eventually succeed. A persistent failure still retains storage
 and fails the job. A run with zero busy events is explicitly reported as such;
 it cannot confirm the original race's cause.
+In [Intel job 114383096129](https://github.com/coe0718/diaktoros/actions/runs/38109877354/job/114383096129),
+`hdiutil create` itself reported busy before any turn launched. Cleanup recorded
+an already-unmounted image still attached through physical and synthesized APFS
+devices. Three normal ejects returned busy; the fourth succeeded after 2/4/6
+seconds of backoff, about 12 seconds after the first failure, without force.
+This captures transient image attachment teardown on Intel, independently of
+turn process ownership. It does not identify the exact OS holder or establish
+that every historical busy failure has this same cause.
+Creation now logs `NATIVE_STORAGE` stage/attempt/error and immediate attachment
+state. A busy creation can retry up to three times only after the partial image
+is detached, detachment/mount absence is verified, and its private backing file
+is removed. Each retry creates a fresh image; no partial creation is accepted.
+Persistent/non-busy failures still fail closed. Stress records include creation
+events as well as eject events, so setup failures cannot masquerade as teardown
+of a completed turn.
 If detach/verification fails,
 it retains the private image directory and raises an error for host recovery.
 This is not cleanup after host death: startup reconciliation, detached descendant

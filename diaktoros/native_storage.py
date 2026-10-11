@@ -52,6 +52,7 @@ class Workspace:
         self.active = False
         self.retained_reason = ''
         self.cleanup_events = []
+        self.creation_events = []
 
     def retain(self, reason: str):
         """Preserve an owned image when its execution owner cannot confirm cleanup."""
@@ -68,10 +69,7 @@ class Workspace:
         self.mount = self.root / 'mount'
         self.mount.mkdir(mode=0o700)
         try:
-            _run([HDIUTIL, 'create', '-size', f'{self.size_mib}m', '-fs', 'APFS',
-                  '-fsargs', '-e',
-                  '-type', 'UDIF', '-layout', 'GPTSPUD', '-volname', 'Diaktoros',
-                  str(self.image)])
+            self._create_image()
             self.image.chmod(0o600)
             image_info = plistlib.loads(_run([HDIUTIL, 'imageinfo', '-plist', str(self.image)]))
             if image_info.get('Format') != 'UDRW':
@@ -105,6 +103,45 @@ class Workspace:
         info = plistlib.loads(_run([HDIUTIL, 'info', '-plist']))
         return [image for image in info.get('images', [])
                 if Path(image.get('image-path', '')).resolve() == self.image]
+
+    def _create_image(self):
+        # Creating/formatting APFS itself uses an attached image. Its internal
+        # eject can report busy before any turn has launched. Never accept that
+        # partial result or overwrite an image that remains attached.
+        for attempt in range(3):
+            event = {'stage': 'create', 'attempt': attempt + 1, 'image': str(self.image)}
+            started = time.monotonic()
+            try:
+                try:
+                    _run([HDIUTIL, 'create', '-size', f'{self.size_mib}m', '-fs', 'APFS',
+                          '-fsargs', '-e', '-type', 'UDIF', '-layout', 'GPTSPUD',
+                          '-volname', 'Diaktoros', str(self.image)])
+                except BaseException as error:
+                    event['error'] = str(error)[-2000:]
+                    raise
+                finally:
+                    event['elapsed_seconds'] = round(time.monotonic() - started, 3)
+                    if 'error' in event:
+                        try:
+                            event['attachments'] = [
+                                {'image': str(self.image), 'entities': [
+                                    {k: entity[k] for k in ('dev-entry', 'mount-point') if k in entity}
+                                    for entity in attachment.get('system-entities', [])]}
+                                for attachment in self._attachments()]
+                        except Exception as error:
+                            event['diagnostic_error'] = str(error)[-2000:]
+                    self.creation_events.append(event)
+                    print('NATIVE_STORAGE ' + json.dumps(event, default=str),
+                          file=sys.stderr, flush=True)
+            except StorageError as error:
+                if 'Resource busy' not in str(error) or attempt == 2:
+                    raise
+                self._detach_owned()
+                self._verify_detached()
+                self.image.unlink(missing_ok=True)
+                time.sleep(2 * (attempt + 1))
+            else:
+                return
 
     def _devices(self) -> list[str]:
         """Discover current attachments by this exact private image, never a cached disk id."""
@@ -153,11 +190,14 @@ class Workspace:
             raise StorageError(f'workspace retained at {self.root}: {self.retained_reason}')
         try:
             self._detach_owned()
-            if self._devices() or self.mount.stat().st_dev != self.root.stat().st_dev:
-                raise StorageError('workspace remains attached')
+            self._verify_detached()
         except BaseException as exc:
             raise StorageError(f'workspace cleanup failed; retained at {self.root}') from exc
         shutil.rmtree(self.root)
+
+    def _verify_detached(self):
+        if self._devices() or self.mount.stat().st_dev != self.root.stat().st_dev:
+            raise StorageError('workspace remains attached')
 
     def _detach_owned(self):
         """Allow busy image machinery to settle before a single final forced attempt.

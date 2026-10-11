@@ -51,8 +51,9 @@ class NativeEjectStress(unittest.TestCase):
                 record['image'] = str(workspace.root / 'turn.dmg') if workspace.root else None
                 record['elapsed_seconds'] = round(time.monotonic() - started, 3)
                 record['ejects'] = workspace.cleanup_events
+                record['creation'] = workspace.creation_events
                 busy_events += sum('Resource busy' in event.get('error', '')
-                                   for event in workspace.cleanup_events)
+                                   for event in workspace.cleanup_events + workspace.creation_events)
                 # CI logs preserve the first failed attempt, its immediate
                 # mount/attachment/holder snapshot, and later recovery together.
                 print('NATIVE_EJECT_STRESS ' + json.dumps(record), flush=True)

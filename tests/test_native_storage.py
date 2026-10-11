@@ -13,6 +13,78 @@ from diaktoros import native_lifecycle, native_storage, seatbelt
 
 
 class StorageValidation(unittest.TestCase):
+    def test_busy_creation_retries_only_after_partial_image_is_detached_and_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = native_storage.Workspace(64)
+            workspace.root = Path(directory)
+            workspace.mount = workspace.root / 'mount'
+            workspace.mount.mkdir()
+            workspace.image = workspace.root / 'turn.dmg'
+            attached = True
+
+            def create(argv):
+                self.assertFalse(workspace.image.exists(), 'overwrote partial backing image')
+                workspace.image.write_bytes(b'partial' if run.call_count == 1 else b'complete')
+                if run.call_count == 1:
+                    raise native_storage.StorageError('hdiutil: create failed - Resource busy')
+
+            def detach():
+                nonlocal attached
+                self.assertEqual(workspace.image.read_bytes(), b'partial')
+                attached = False
+
+            with mock.patch.object(native_storage, '_run', side_effect=create) as run, \
+                    mock.patch.object(workspace, '_attachments', return_value=[]), \
+                    mock.patch.object(workspace, '_detach_owned', side_effect=detach) as drain, \
+                    mock.patch.object(workspace, '_devices', side_effect=lambda:
+                                      ['/dev/disk99'] if attached else []), \
+                    mock.patch.object(native_storage.time, 'sleep') as sleep:
+                workspace._create_image()
+            self.assertEqual(run.call_count, 2)
+            drain.assert_called_once()
+            sleep.assert_called_once_with(2)
+            self.assertEqual(workspace.image.read_bytes(), b'complete')
+            self.assertIn('Resource busy', workspace.creation_events[0]['error'])
+
+    def test_busy_creation_never_overwrites_a_still_attached_partial_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = native_storage.Workspace(64)
+            workspace.root = Path(directory)
+            workspace.mount = workspace.root / 'mount'
+            workspace.mount.mkdir()
+            workspace.image = workspace.root / 'turn.dmg'
+            workspace.image.write_bytes(b'partial')
+            with mock.patch.object(native_storage, '_run', side_effect=
+                                   native_storage.StorageError('Resource busy')) as run, \
+                    mock.patch.object(workspace, '_attachments', return_value=[]), \
+                    mock.patch.object(workspace, '_detach_owned'), \
+                    mock.patch.object(workspace, '_devices', return_value=['/dev/disk99']), \
+                    mock.patch.object(native_storage.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(native_storage.StorageError, 'remains attached'):
+                    workspace._create_image()
+            run.assert_called_once()
+            sleep.assert_not_called()
+            self.assertEqual(workspace.image.read_bytes(), b'partial')
+
+    def test_busy_creation_has_a_finite_retry_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = native_storage.Workspace(64)
+            workspace.root = Path(directory)
+            workspace.mount = workspace.root / 'mount'
+            workspace.mount.mkdir()
+            workspace.image = workspace.root / 'turn.dmg'
+            with mock.patch.object(native_storage, '_run', side_effect=
+                                   native_storage.StorageError('Resource busy')) as run, \
+                    mock.patch.object(workspace, '_attachments', return_value=[]), \
+                    mock.patch.object(workspace, '_detach_owned') as drain, \
+                    mock.patch.object(workspace, '_devices', return_value=[]), \
+                    mock.patch.object(native_storage.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(native_storage.StorageError, 'Resource busy'):
+                    workspace._create_image()
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(drain.call_count, 2)
+            self.assertEqual(sleep.call_args_list, [mock.call(2), mock.call(4)])
+
     def test_invalid_sizes_fail_before_creating_storage(self):
         for value in (True, 0, 63, 16385, '512', 1.5):
             with self.assertRaises(ValueError):
