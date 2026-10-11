@@ -461,3 +461,22 @@ This is characterization, not a launchd backend. It does not yet establish
 restart-safe job identity, durable drained receipts after loss of every helper,
 APFS disposal after observer death, capability revocation, or containment of a
 process that can escape the job's group. Production selection remains disabled.
+
+
+The first three launchd ownership probes passed on both architectures in
+[run 38136922582](https://github.com/coe0718/diaktoros/actions/runs/38136922582).
+The next probes connect OS-owned teardown to the existing durable receipt rules
+using a real private APFS workspace. A separate test-only witness receives live
+fixture identities through an anonymous host channel, registers kernel exits
+before acknowledging the failure trigger, and holds the private recovery lease.
+A fresh recovery process must report the workspace active while that lease is
+held. After job SIGKILL, the witness requires every registered exit and an empty
+live/zombie group, then durably records drained. Another fresh process must
+verify image detachment and remove the workspace using that receipt.
+
+The negative control kills the witness before job death. Even after launchd
+stops the group, fresh recovery must retain the running receipt and backing
+image: it has no durable exit proof. Only the still-live test harness's registered
+kernel exits can release that fixture afterward. These tests exercise the bridge
+between launchd teardown and APFS recovery; they do not establish recovery when
+all witnesses die before writing proof, and do not activate a production backend.
