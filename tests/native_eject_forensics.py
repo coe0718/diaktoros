@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import re
 import subprocess
 import sys
@@ -58,11 +59,41 @@ def process_rows(raw):
     return result
 
 
+def registry_connections(raw, devices):
+    """Retain registry-visible client/provider paths, not a complete open census."""
+    if len(raw) > 16 * 1024 * 1024:
+        raise ValueError('registry archive exceeds analysis limit')
+    roots = plistlib.loads(raw)
+    if not isinstance(roots, list):
+        raise ValueError('registry archive root is not an array')
+    fields = ('IORegistryEntryID', 'IORegistryEntryName', 'IOObjectClass',
+              'BSD Name', 'Open', 'IOUserClientCreator')
+    media, clients, count = [], [], 0
+    pending = [(root, []) for root in roots]
+    while pending:
+        node, ancestors = pending.pop()
+        if not isinstance(node, dict):
+            raise ValueError('invalid registry node')
+        count += 1
+        if count > 50000 or len(ancestors) > 128:
+            raise ValueError('registry inventory limit exceeded')
+        summary = {key: node[key] for key in fields if key in node}
+        path = [*ancestors, summary]
+        if '/dev/' + str(node.get('BSD Name', '')) in devices:
+            media.append({'path': path})
+        if 'IOUserClientCreator' in node or 'UserClient' in str(node.get('IOObjectClass', '')):
+            clients.append({'path': path})
+        pending.extend((child, path) for child in node.get('IORegistryEntryChildren', []))
+    return {'media': media, 'user_clients': clients, 'nodes_examined': count,
+            'scope': 'registry-visible objects only; absence does not exclude unregistered connections'}
+
+
 class Recorder:
-    def __init__(self, output, *, verbose=False):
+    def __init__(self, output, *, verbose=False, sync_delay=False):
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=False)
         self.verbose = verbose
+        self.sync_delay = sync_delay
         self.sequence = 0
         self.first_busy = False
         self.helper_baselines = {}
@@ -107,6 +138,16 @@ class Recorder:
             raise native_storage.StorageError('hdiutil failed: ' +
                                              (stdout + stderr).decode(errors='replace')[-2000:])
         return stdout
+
+    def before_detach(self, workspace):
+        if not self.sync_delay:
+            return
+        # macOS sync is system-wide, not a volume-specific flush.
+        flush, _, _ = self.command('pre-detach-sync', ['/bin/sync'], timeout=15)
+        if flush.get('error') or flush['returncode']:
+            raise RuntimeError('pre-detach sync failed')
+        time.sleep(2)
+        self.emit({'tag': 'pre-detach-wait', 'seconds': 2, 'image': str(workspace.image)})
 
     def helper_progress(self, workspace, phase):
         image = str(workspace.image)
@@ -159,6 +200,18 @@ class Recorder:
         # Observe media opens before diskutil queries or helper sampling can
         # change the timing. Compare with the second registry snapshot below.
         self.command(tag + '-ioreg-before', ['/usr/sbin/ioreg', '-r', '-c', 'IOMedia', '-l', '-w', '0'])
+        event, raw, _ = self.command(tag + '-registry-connections',
+                                    ['/usr/sbin/ioreg', '-a', '-l', '-p', 'IOService'], timeout=8)
+        try:
+            if event.get('error') or event.get('returncode') != 0:
+                raise ValueError('registry archive unavailable')
+            evidence = registry_connections(raw, devices)
+            encoded = json.dumps(evidence, default=str).encode()
+            if len(encoded) > MAX_OUTPUT:
+                raise ValueError('registry relationship output exceeds limit')
+            (self.output / f'{tag}-registry-connections.json').write_bytes(encoded)
+        except Exception as error:
+            self.emit({'tag': tag + '-registry-analysis', 'error': str(error)})
         _, raw, _ = self.command(tag + '-holders',
                                 ['/usr/sbin/lsof', '-nP', '+c', '0', '-Fpcfn', '--', *targets])
         for pid, command in list(holders(raw.decode(errors='replace')).items())[:4]:
@@ -261,6 +314,7 @@ def probe(recorder, cycles):
             workload = ('idle', 'metadata', 'fsync')[cycle % 3]
             event = {'tag': 'cycle', 'cycle': cycle, 'workload': workload,
                      'architecture': platform.machine(), 'verbose': recorder.verbose,
+                     'sync_delay': recorder.sync_delay,
                      'turn_processes_launched': False}
             started = time.monotonic()
             try:
@@ -277,6 +331,7 @@ def probe(recorder, cycles):
                             target.write(b'x' * (8 * 1024 * 1024))
                             target.flush()
                             os.fsync(target.fileno())
+                    recorder.before_detach(workspace)
                 if workspace.had_busy:
                     recorder.helper_progress(workspace, 'cleanup-success')
             except Exception as error:
@@ -309,7 +364,10 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cycles', type=int, default=64, choices=range(1, 129))
     parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--sync-delay', action='store_true',
+                        help='test-only system-wide sync plus two seconds before first detach')
     args = parser.parse_args()
     if reason := seatbelt.unavailable():
         parser.error(reason)
-    raise SystemExit(bool(probe(Recorder(args.output, verbose=args.verbose), args.cycles)))
+    raise SystemExit(bool(probe(Recorder(args.output, verbose=args.verbose,
+                                       sync_delay=args.sync_delay), args.cycles)))

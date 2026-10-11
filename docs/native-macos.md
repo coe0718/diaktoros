@@ -494,8 +494,8 @@ failure; it does not change eject retries or disposal authorization.
 
 ## Dedicated eject forensics
 
-`native-eject-forensics.yml` runs four independent Mac lanes: ARM and Intel,
-each with standard or verbose detach commands. The test-only collector streams
+`native-eject-forensics.yml` runs six independent Mac lanes: ARM and Intel,
+each with standard, verbose or sync-plus-delay instrumentation. The test-only collector streams
 Disk Arbitration, disk-image, APFS, Spotlight and filesystem-event logs before
 running the recovery precondition and up to 64 fresh idle/metadata/fsync images.
 It preserves complete create/attach/detach stdout and stderr (bounded to 2 MiB
@@ -509,6 +509,31 @@ timing. Snapshots include block/raw device holders, disk/APFS metadata, I/O
 registry media state and read-only stacks of disk-image helpers found by lsof.
 A holder name or stack is an observation, not process ownership or proof of
 causality; no discovered holder receives a termination signal.
+
+Snapshots also archive the IOService registry and extract owned media paths,
+their provider ancestors, and registry-visible user clients including creator
+properties when published. This retains sibling clients under a media provider,
+which a media-only descendant snapshot can miss. A complete parsed relationship
+file is saved separately from the capped raw archive. Missing, malformed or
+oversized archives are explicit diagnostic errors. These are read-only registry
+queries; the probe does not open user clients or signal their reported creators.
+Registry visibility is not a census of all IOKit connections. No lsof file
+descriptor match cannot exclude a user-client connection, and a shared provider
+path does not prove that a client holds the media open.
+
+The sync-plus-delay lane uses standard detach flags and executes system-wide
+`/bin/sync` followed by two seconds of waiting after workload writes and before
+the first detach. It repeats the same idle/metadata/fsync workloads and retry
+policy as the standard control. It does not alter production teardown. Compare
+busy images and persistent failures per completed cycle and architecture, not
+individual retry counts. A difference supports a settling hypothesis but cannot
+separate flushing from extra elapsed time or prove a specific APFS mechanism;
+the system-wide flush can also affect other volumes on that runner.
+
+Forensic workflow updates no longer cancel active captures. Earlier CPU run
+38142871655 was interrupted by a PR update and its Intel artifacts lacked final
+result events; those partial artifacts cannot supply complete failure-rate or
+give-up comparisons. A completed run requires final result events in each lane.
 
 For each image that encounters busy eject, both lanes record helper cumulative
 CPU time, process state, command and start time at first failure and at successful

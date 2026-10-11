@@ -1,6 +1,7 @@
 """The evidence collector must preserve failures and bound its observations."""
 import _home_guard  # noqa: F401
 import io
+import plistlib
 import json
 from pathlib import Path
 import subprocess
@@ -14,6 +15,47 @@ from diaktoros import native_storage
 
 
 class ForensicsValidation(unittest.TestCase):
+    def test_sync_delay_is_opt_in_and_failed_sync_does_not_claim_a_completed_wait(self):
+        workspace = SimpleNamespace(image=Path('/private/fixture/turn.dmg'))
+        for enabled, outcome in ((False, {'returncode': 0}), (True, {'returncode': 0}),
+                                 (True, {'error': 'timeout'})):
+            with tempfile.TemporaryDirectory() as directory:
+                recorder = forensics.Recorder(Path(directory) / 'evidence', sync_delay=enabled)
+                with mock.patch.object(recorder, 'command', return_value=(outcome, b'', b'')) as run, \
+                        mock.patch.object(forensics.time, 'sleep') as sleep, \
+                        mock.patch.object(recorder, 'emit') as emit:
+                    if outcome.get('error'):
+                        with self.assertRaisesRegex(RuntimeError, 'sync failed'):
+                            recorder.before_detach(workspace)
+                        sleep.assert_not_called()
+                        emit.assert_not_called()
+                    else:
+                        recorder.before_detach(workspace)
+                        self.assertEqual(run.call_count, int(enabled))
+                        if enabled:
+                            run.assert_called_once_with('pre-detach-sync', ['/bin/sync'], timeout=15)
+                            sleep.assert_called_once_with(2)
+                            emit.assert_called_once()
+                        else:
+                            sleep.assert_not_called()
+
+    def test_registry_preserves_provider_sibling_client_and_filters_owned_media(self):
+        tree = [{'IORegistryEntryName': 'root', 'IORegistryEntryChildren': [
+            {'IORegistryEntryName': 'image-driver', 'IORegistryEntryID': 42,
+             'IORegistryEntryChildren': [
+                 {'IORegistryEntryName': 'media', 'BSD Name': 'disk99', 'Open': True},
+                 {'IOObjectClass': 'ImageUserClient', 'IOUserClientCreator': 'pid 123, helper'}]},
+            {'IORegistryEntryName': 'other', 'BSD Name': 'disk0'}]}]
+        result = forensics.registry_connections(plistlib.dumps(tree), ['/dev/disk99'])
+        self.assertEqual(len(result['media']), 1)
+        self.assertEqual(result['media'][0]['path'][-1]['BSD Name'], 'disk99')
+        self.assertTrue(result['media'][0]['path'][-1]['Open'])
+        self.assertEqual(result['user_clients'][0]['path'][-2]['IORegistryEntryID'], 42)
+        self.assertEqual(result['user_clients'][0]['path'][-1]['IOUserClientCreator'],
+                         'pid 123, helper')
+        with self.assertRaises(ValueError):
+            forensics.registry_connections(plistlib.dumps({'unexpected': 'root'}), [])
+
     def test_cpu_parser_preserves_fractional_time_and_rejects_malformed_rows(self):
         rows = forensics.process_rows(
             '123 Sun Oct 11 13:00:01 2026 1:02.34 S /path/diskimages-helper\n'
@@ -106,7 +148,8 @@ class ForensicsValidation(unittest.TestCase):
                 recorder.snapshot(workspace, 'fixture')
             calls = [c.args[1] for c in command.call_args_list]
             self.assertEqual(calls[0][0], '/usr/sbin/ioreg')
-            self.assertEqual(calls[1], ['/usr/sbin/lsof', '-nP', '+c', '0', '-Fpcfn', '--',
+            self.assertEqual(next(c for c in calls if c[0] == '/usr/sbin/lsof'),
+                                     ['/usr/sbin/lsof', '-nP', '+c', '0', '-Fpcfn', '--',
                                        str(workspace.image), '/dev/disk99s1', '/dev/rdisk99s1'])
             self.assertTrue(all('detach' not in argv and '-force' not in argv for argv in calls))
             kill.assert_not_called()
