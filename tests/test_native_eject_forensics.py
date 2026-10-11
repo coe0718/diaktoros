@@ -1,5 +1,6 @@
 """The evidence collector must preserve failures and bound its observations."""
 import _home_guard  # noqa: F401
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -13,6 +14,22 @@ from diaktoros import native_storage
 
 
 class ForensicsValidation(unittest.TestCase):
+    def test_stream_keeps_bounded_start_and_end_when_failure_is_late(self):
+        raw = b'early messages\n' + b'x' * 80 + b'late eject rejection\n'
+        process = SimpleNamespace(stdout=io.BytesIO(raw), returncode=0,
+                                  poll=lambda: 0, wait=lambda **kwargs: 0)
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = forensics.Recorder(Path(directory) / 'evidence')
+            with mock.patch.object(subprocess, 'Popen', return_value=process), \
+                    mock.patch.object(forensics, 'MAX_STREAM', 32):
+                with recorder.log_stream():
+                    pass
+            self.assertEqual((recorder.output / 'system-stream.log').read_bytes(), raw[:32])
+            self.assertEqual((recorder.output / 'system-stream-tail.log').read_bytes(), raw[-32:])
+            event = json.loads((recorder.output / 'events.jsonl').read_text())
+            self.assertTrue(event['truncated'])
+            self.assertEqual(event['tail_bytes'], 32)
+
     def test_timeout_preserves_partial_evidence_and_does_not_report_empty_success(self):
         with tempfile.TemporaryDirectory() as directory:
             recorder = forensics.Recorder(Path(directory) / 'evidence')

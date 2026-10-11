@@ -1,6 +1,7 @@
 """Bounded, opt-in Mac eject forensics; never a production cleanup policy."""
 import _home_guard  # noqa: F401
 import argparse
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
@@ -16,9 +17,14 @@ from unittest import mock
 
 from diaktoros import native_storage, seatbelt
 
-PREDICATE = ('process == "diskarbitrationd" OR process BEGINSWITH "diskimage" '
+# Routine Disk Arbitration callbacks exhausted the original stream before a
+# captured failure. Keep lifecycle/rejection messages and driver diagnostics.
+LIFECYCLE = ('eventMessage CONTAINS[c] "eject" OR eventMessage CONTAINS[c] "unmount" '
+             'OR eventMessage CONTAINS[c] "busy" OR eventMessage CONTAINS[c] "dissent" '
+             'OR eventMessage CONTAINS[c] "unable"')
+PREDICATE = ('process BEGINSWITH "diskimage" OR ((process == "diskarbitrationd" '
              'OR process == "fseventsd" OR process BEGINSWITH "mdworker" '
-             'OR process == "mds" OR subsystem CONTAINS[c] "apfs"')
+             'OR process == "mds" OR subsystem CONTAINS[c] "apfs") AND (' + LIFECYCLE + '))')
 MAX_OUTPUT = 2 * 1024 * 1024
 MAX_STREAM = 16 * 1024 * 1024
 
@@ -111,6 +117,10 @@ class Recorder:
             self.command(tag + '-disk-info', [native_storage.DISKUTIL, 'info', '-plist', device])
         self.command(tag + '-apfs', [native_storage.DISKUTIL, 'apfs', 'list', '-plist'])
         self.command(tag + '-ioreg', ['/usr/sbin/ioreg', '-r', '-c', 'IOMedia', '-l', '-w', '0'])
+        # A short retrospective query reaches the actual failure even if the
+        # live stream has filled. Standard mode calls this only after exhaustion.
+        self.command(tag + '-history', ['/usr/bin/log', 'show', '--last', '2m', '--style',
+                     'compact', '--info', '--debug', '--predicate', PREDICATE], timeout=15)
 
     @contextmanager
     def log_stream(self):
@@ -118,13 +128,26 @@ class Recorder:
                                     '--predicate', PREDICATE], stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, close_fds=True)
         total = [0]
+        tail = deque()
+        tail_size = 0
 
         def drain():
+            nonlocal tail_size
             with (self.output / 'system-stream.log').open('wb') as target:
                 while raw := process.stdout.read(4096):
                     remaining = max(0, MAX_STREAM - total[0])
                     target.write(raw[:remaining])
                     total[0] += len(raw)
+                    tail.append(raw)
+                    tail_size += len(raw)
+                    while tail_size > MAX_STREAM:
+                        excess = tail_size - MAX_STREAM
+                        first = tail.popleft()
+                        removed = min(excess, len(first))
+                        if removed < len(first):
+                            tail.appendleft(first[removed:])
+                        tail_size -= removed
+            (self.output / 'system-stream-tail.log').write_bytes(b''.join(tail))
 
         thread = threading.Thread(target=drain)
         thread.start()
@@ -143,7 +166,8 @@ class Recorder:
             if thread.is_alive():
                 raise RuntimeError('log reader failed to stop')
             self.emit({'tag': 'system-stream', 'returncode': process.returncode,
-                       'bytes': total[0], 'truncated': total[0] > MAX_STREAM})
+                       'bytes': total[0], 'truncated': total[0] > MAX_STREAM,
+                       'tail_bytes': tail_size})
 
 
 class ObservedWorkspace(native_storage.Workspace):

@@ -513,7 +513,34 @@ causality; no discovered holder receives a termination signal.
 After persistent failure, the collector issues no additional eject or force.
 It retains the image and records passive snapshots immediately and after
 5/15/30 seconds of additional waiting, measured between snapshot commands (the
-commands themselves add elapsed time). A capped 16 MiB system log stream and
-retrospective log query cover the sequence. Diagnostic timeouts and truncation
+commands themselves add elapsed time). The system stream retains its first and
+last 16 MiB, and each snapshot queries the last two minutes of lifecycle and
+rejection logs. Routine callback traffic is filtered out. Diagnostic timeouts and truncation
 are explicit. CI uploads evidence even on failure; backing images and seat
 contents are excluded. These experiments do not change production storage policy.
+
+### Captured failures, 2026-10-11
+
+[Forensics run 38141334211](https://github.com/coe0718/diaktoros/actions/runs/38141334211)
+captured busy ejects on both architectures. ARM verbose cycle 24 was idle,
+unmounted successfully, failed its first eject and recovered on the next normal
+attempt about nine seconds later, including snapshot overhead. Intel standard
+cycle 57 was also idle: all five normal attempts and the final forced attempt
+failed. Its image remained attached and unmounted through the final passive
+snapshot. Neither cycle launched a turn process.
+
+Full-name lsof queries found only `diskimages-helper` holding the backing image,
+with no reported block/raw-device holders. Sampled helper threads waited in the
+run loop and `DI_kextDriveGetRequest`; this does not establish a helper deadlock.
+Media snapshots reported `Open = No` and I/O registry busy count zero after the
+failure. Verbose failures occurred even when `IOServiceWaitQuiet` returned in
+microseconds. Those later observations do not identify the state at the exact
+failed eject, nor exclude a transient holder.
+
+The first collector exhausted its stream cap before these failures, and its
+15-minute retrospective queries could time out before reaching the failure.
+Consequently these artifacts do not distinguish client approval rejection from
+kernel eject rejection. The narrowed filter, retained stream tail and short
+snapshot queries address that evidence gap. The persistent Intel case also
+means neither an ARM-only explanation nor twenty seconds of backoff is sufficient
+to close the blocker.
