@@ -1,0 +1,47 @@
+name: Native APFS eject forensics
+
+on:
+  pull_request:
+    paths:
+      - tests/native_eject_forensics.py
+      - tests/test_native_eject_forensics.py
+      - .github/workflows/native-eject-forensics.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-eject-forensics-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  forensics:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+        instrumentation: [standard, verbose]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Reproduce host-only eject race and preserve OS evidence
+        env:
+          INSTRUMENTATION: ${{ matrix.instrumentation }}
+        run: |
+          flags=()
+          if [ "$INSTRUMENTATION" = verbose ]; then flags+=(--verbose); fi
+          python tests/native_eject_forensics.py --cycles 64 --output "$RUNNER_TEMP/eject-evidence" "${flags[@]}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: eject-${{ matrix.runner }}-${{ matrix.instrumentation }}
+          path: ${{ runner.temp }}/eject-evidence
+          retention-days: 14
+          if-no-files-found: error

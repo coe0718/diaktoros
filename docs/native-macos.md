@@ -490,3 +490,30 @@ No discovered process is signalled. An open backing-image file may be normal
 for disk-image machinery and is evidence to correlate, not proof of the busy
 cause. This fills the observation gap in the captured idle, unmounted Intel
 failure; it does not change eject retries or disposal authorization.
+
+
+## Dedicated eject forensics
+
+`native-eject-forensics.yml` runs four independent Mac lanes: ARM and Intel,
+each with standard or verbose detach commands. The test-only collector streams
+Disk Arbitration, disk-image, APFS, Spotlight and filesystem-event logs before
+running the recovery precondition and up to 64 fresh idle/metadata/fsync images.
+It preserves complete create/attach/detach stdout and stderr (bounded to 2 MiB
+per file), timestamps, raw exact-image attachment metadata, and command outcomes.
+A failed recovery precondition is reported separately and keeps the job red.
+
+The standard lane preserves detach flags and snapshots disk state only after
+cleanup exhausts its normal retry/force policy. The verbose lane adds `-verbose`
+and takes a snapshot at its first busy eject, so its instrumentation can change
+timing. Snapshots include block/raw device holders, disk/APFS metadata, I/O
+registry media state and read-only stacks of disk-image helpers found by lsof.
+A holder name or stack is an observation, not process ownership or proof of
+causality; no discovered holder receives a termination signal.
+
+After persistent failure, the collector issues no additional eject or force.
+It retains the image and records passive snapshots immediately and after
+5/15/30 seconds of additional waiting, measured between snapshot commands (the
+commands themselves add elapsed time). A capped 16 MiB system log stream and
+retrospective log query cover the sequence. Diagnostic timeouts and truncation
+are explicit. CI uploads evidence even on failure; backing images and seat
+contents are excluded. These experiments do not change production storage policy.
