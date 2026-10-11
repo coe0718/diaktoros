@@ -578,3 +578,28 @@ it narrows the observed route to device eject but does not establish whether
 the error originated in open or ioctl, identify the physical-device opener, or
 prove that the earlier persistent failure has exactly the same cause. The
 collector also retains open-failure messages to discriminate those paths.
+
+### Investigation conclusion and operating policy
+
+The same follow-up run contains 16 failed detach commands across the Intel
+standard and verbose lanes. Timestamp-matched device-eject logs show three
+approved client responses followed by `EBUSY` for each failure. Neither complete
+stream contains an eject-approval dissent. Mount-approval dissents elsewhere in
+the stream are a different operation and do not explain these eject failures.
+
+Treat this as an observed macOS APFS/DiskImages device-eject quirk, consistent
+with a framework/kernel teardown race. No application cleanup defect or client
+veto was identified in the captured cases. The exact internal cause remains
+unconfirmed; the earlier persistent case lacks a complete failure-time system
+stream, so it cannot be assigned the same cause with certainty. Idle host-only
+reproduction establishes that turn descendants are not required for the failure,
+not that every possible userspace hold has been excluded.
+
+The operating response is the existing bounded patient retry policy, followed
+by one force attempt and retention if exact-image detachment cannot be verified.
+Never delete an attached backing image or kill a discovered helper to make eject
+appear successful. Keep diagnostics for retained storage and report cleanup
+failure. Further retry increases or turn-process hunting are not justified by
+these captures. Helper CPU and stack measurements remain corroborating evidence,
+not automatic hang detection. Persistent storage retention remains an operational
+limitation to account for before enabling the production backend.
