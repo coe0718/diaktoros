@@ -46,6 +46,8 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
     reason = seatbelt.unavailable()
     if reason:
         raise contained.ContainmentUnavailable(reason)
+    if spawn_adapter is not None and not workspace.durable_ownership:
+        raise contained.ContainmentUnavailable('strict native turns require ownership registered before image creation')
     supplied = dict(code=code, venv=venv, runtime=runtime, rust=rust, home=home,
                     work=work, export=export, client=client, scratch=scratch,
                     query=query, inference_socket=inference_socket, broker_socket=broker_socket)

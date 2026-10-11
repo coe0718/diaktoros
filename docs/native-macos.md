@@ -492,6 +492,28 @@ cause. This fills the observation gap in the captured idle, unmounted Intel
 failure; it does not change eject retries or disposal authorization.
 
 
+## Durable ownership preparation
+
+The first implementation slice of [#624](https://github.com/coe0718/diaktoros/issues/624)
+adds opt-in `Workspace(..., durable_ownership=True)` preparation receipts. Strict
+Hermes turns require this mode. Before image creation, registration persists the
+owner UID, canonical image path, root identity, turn ID and reserved byte count,
+fsyncs the receipt and private directory, and fsyncs the parent directory entry.
+The exclusive preparation lease remains held through image creation, inode
+binding (`created`) and verified mount (`attached`). Arming preserves the same
+turn ID and transfers to the existing guarded lifecycle protocol. Legacy
+storage-only experiments retain their previous behavior.
+
+Startup discovers these receipts, including interrupted creation before image
+binding. It reports and retains `registered`, `created` and `attached` records:
+an unlocked preparation lease cannot prove an orphaned hdiutil creator exited.
+No preparation state can transition directly to drained or disposed. This slice
+provides durable discovery, not automatic disposal of interrupted preparation,
+free-space admission, reboot proof or the eventual-cleanup scheduler. Recorded
+reserved bytes are accounting metadata; no capacity admission is claimed yet.
+Local subprocess-exit tests cover each preparation boundary, and the real Mac
+guarded recovery and Hermes fixtures now use early registration.
+
 ## Dedicated eject forensics
 
 `native-eject-forensics.yml` runs eight independent Mac lanes: ARM and Intel,

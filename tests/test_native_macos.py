@@ -40,7 +40,7 @@ class NativeHermesTurn(unittest.TestCase):
     def test_real_hermes_runs_tool_and_posts_only_scoped_fake_review(self):
         with ExitStack() as stack:
             root = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='dk-n-', dir='/tmp'))).resolve()
-            workspace = stack.enter_context(native_storage.Workspace(512))
+            workspace = stack.enter_context(native_storage.Workspace(512, durable_ownership=True))
             home, work, scratch = workspace.home, workspace.work, workspace.scratch
             code, export, client = (root / n for n in ('code', 'export', 'client'))
             for directory in (export, client):

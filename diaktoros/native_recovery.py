@@ -20,6 +20,7 @@ LEASE = 'ownership.lock'
 MAX_RECORD = 8192
 MAX_INVENTORY = 10000
 MAX_WORKSPACES = 128
+PREPARATION_STATES = ('registered', 'created', 'attached')
 
 
 class RecoveryError(RuntimeError):
@@ -85,23 +86,34 @@ class Record:
                     record['root_identity'] != _identity(os.fstat(self.directory)) or
                     type(record['size_mib']) is not int or
                     not 64 <= record['size_mib'] <= 16384 or
-                    record['state'] not in ('armed', 'running', 'drained', 'disposed')):
+                    record['state'] not in (*PREPARATION_STATES, 'armed', 'running', 'drained', 'disposed')):
                 raise ValueError('invalid ownership record')
+            if record['state'] in PREPARATION_STATES and (
+                    record.get('image_path') != str(self.root / 'turn.dmg') or
+                    record.get('owner_uid') != os.getuid() or
+                    record.get('reserved_bytes') != record['size_mib'] * 1024 * 1024):
+                raise ValueError('invalid preparation ownership')
         except (ValueError, KeyError, TypeError) as error:
             raise RecoveryError('invalid ownership record; retain storage') from error
         try:
             image = os.stat('turn.dmg', dir_fd=self.directory, follow_symlinks=False)
         except FileNotFoundError:
-            if record['state'] != 'disposed':
+            if record['state'] not in ('registered', 'disposed'):
                 raise
         else:
-            _private(image)
-            if record.get('image_identity') != _identity(image):
+            # Creation may leave a partial image before chmod/identity binding.
+            # Such a receipt is discovery evidence, never disposal authority.
+            if record['state'] == 'registered':
+                if not stat.S_ISREG(image.st_mode) or image.st_uid != os.getuid() or image.st_nlink != 1:
+                    raise RecoveryError('invalid partial image; retain storage')
+            else:
+                _private(image)
+            if record['state'] != 'registered' and record.get('image_identity') != _identity(image):
                 raise RecoveryError('backing image identity changed; retain storage')
         try:
             mount = os.stat('mount', dir_fd=self.directory, follow_symlinks=False)
         except FileNotFoundError:
-            if record['state'] != 'disposed':
+            if record['state'] not in ('registered', 'disposed'):
                 raise
         else:
             if not stat.S_ISDIR(mount.st_mode):
@@ -132,7 +144,8 @@ class Record:
 
     def update(self, state, **details):
         record = self.read()
-        allowed = {'armed': ('running', 'drained'), 'running': ('drained',),
+        allowed = {'registered': ('created',), 'created': ('attached',), 'attached': ('armed',),
+                   'armed': ('running', 'drained'), 'running': ('drained',),
                    'drained': ('disposed',), 'disposed': ()}
         if state not in allowed[record['state']]:
             raise RecoveryError('invalid ownership transition')
@@ -141,6 +154,9 @@ class Record:
 
     def cleanup(self):
         record = self.read()
+        if record['state'] in PREPARATION_STATES:
+            raise RecoveryError('workspace preparation interrupted at ' + record['state'] +
+                                '; creator completion is unverified; retain storage')
         if record['state'] not in ('drained', 'disposed'):
             raise RecoveryError('turn cleanup is unverified; retain storage')
         from . import native_storage
@@ -175,8 +191,45 @@ class Record:
         self.root.rmdir()
 
 
+def register(workspace):
+    """Write ownership before hdiutil runs; caller holds returned preparation lease.
+
+    The parent directory entry is fsynced before image creation is permitted.
+    An abandoned preparation receipt does not prove hdiutil or a turn exited.
+    """
+    receipt = Record(workspace.root, create=True)
+    try:
+        if (workspace.root / JOURNAL).exists() or (workspace.root / JOURNAL).is_symlink():
+            raise RecoveryError('workspace already has an ownership record')
+        if workspace.image != workspace.root / 'turn.dmg' or workspace.image.exists() or workspace.image.is_symlink():
+            raise RecoveryError('registration requires an absent exact image path')
+        receipt.write({'version': 1, 'root': str(workspace.root),
+                       'root_identity': _identity(os.fstat(receipt.directory)),
+                       'image_path': str(workspace.image), 'owner_uid': os.getuid(),
+                       'reserved_bytes': workspace.size_mib * 1024 * 1024,
+                       'size_mib': workspace.size_mib, 'turn_id': uuid.uuid4().hex,
+                       'state': 'registered'})
+        parent = os.open(workspace.root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+        return receipt
+    except BaseException:
+        receipt.close()
+        raise
+
+
 def arm(workspace):
     """Persist uncertainty before any guarded process can launch."""
+    preparation = getattr(workspace, '_preparation', None)
+    if preparation is not None:
+        try:
+            preparation.update('armed')
+        finally:
+            preparation.close()
+            workspace._preparation = None
+        return
     with Record(workspace.root, create=True) as receipt:
         try:
             os.stat(JOURNAL, dir_fd=receipt.directory, follow_symlinks=False)

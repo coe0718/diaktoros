@@ -59,7 +59,7 @@ class Workspace:
     directory for recovery; it must not be interpreted as completed lifecycle
     containment or reliable cleanup after supervisor death.
     """
-    def __init__(self, size_mib: int = 512):
+    def __init__(self, size_mib: int = 512, *, durable_ownership: bool = False):
         if type(size_mib) is not int or not 64 <= size_mib <= 16384:
             raise ValueError('workspace size must be 64..16384 MiB')
         self.size_bytes = size_mib * 1024 * 1024
@@ -69,6 +69,8 @@ class Workspace:
         self.retained_reason = ''
         self.cleanup_events = []
         self.creation_events = []
+        self.durable_ownership = durable_ownership
+        self._preparation = None
 
     def retain(self, reason: str):
         """Preserve an owned image when its execution owner cannot confirm cleanup."""
@@ -83,16 +85,23 @@ class Workspace:
         self.root = Path(tempfile.mkdtemp(prefix='dk-volume-', dir='/tmp')).resolve()
         self.image = self.root / 'turn.dmg'
         self.mount = self.root / 'mount'
-        self.mount.mkdir(mode=0o700)
         try:
+            if self.durable_ownership:
+                from . import native_recovery
+                self._preparation = native_recovery.register(self)
+            self.mount.mkdir(mode=0o700)
             self._create_image()
             self.image.chmod(0o600)
+            if self._preparation is not None:
+                self._preparation.update('created', image_identity=native_recovery._identity(self.image.lstat()))
             image_info = plistlib.loads(_run([HDIUTIL, 'imageinfo', '-plist', str(self.image)]))
             if image_info.get('Format') != 'UDRW':
                 raise StorageError('blank image is not fixed-size UDRW')
             _run([HDIUTIL, 'attach', '-plist', '-nobrowse', '-noautoopen',
                   '-owners', 'on', '-mountpoint', str(self.mount), str(self.image)])
             self._verify_mount()
+            if self._preparation is not None:
+                self._preparation.update('attached')
             # This is disposable turn storage, not an indexed or event-backed
             # user volume. Install opt-out markers before creating turn files.
             (self.mount / '.metadata_never_index').touch(mode=0o600)
@@ -199,6 +208,9 @@ class Workspace:
 
     def _cleanup(self):
         self.active = False
+        if self._preparation is not None:
+            self._preparation.close()
+            self._preparation = None
         if self.root is None:
             return
         if self.retained_reason:

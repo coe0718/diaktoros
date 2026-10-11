@@ -18,6 +18,104 @@ from diaktoros import contained, native_anchor, native_lifecycle, native_recover
 
 
 class RecoveryValidation(unittest.TestCase):
+    def test_registered_preparation_survives_process_death_at_each_boundary(self):
+        source = str(Path(native_recovery.__file__).resolve().parent.parent)
+        for phase in ('registered', 'partial-image', 'created', 'attached'):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve() / 'dk-volume-owned'
+                root.mkdir(mode=0o700)
+                code = '''
+import os,sys
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0, sys.argv[1])
+from diaktoros import native_recovery
+root, phase = Path(sys.argv[2]), sys.argv[3]
+w = SimpleNamespace(root=root, image=root/'turn.dmg', size_mib=64)
+r = native_recovery.register(w)
+if phase != 'registered':
+    (root/'mount').mkdir(mode=0o700)
+    w.image.write_bytes(b'partial or completed fixture image')
+    w.image.chmod(0o600)
+if phase in ('created','attached'):
+    r.update('created', image_identity=native_recovery._identity(w.image.lstat()))
+if phase == 'attached':
+    r.update('attached')
+os._exit(91)
+'''
+                child = subprocess.run([sys.executable, '-I', '-B', '-c', code, source, str(root), phase],
+                                       capture_output=True, text=True, timeout=10)
+                self.assertEqual(child.returncode, 91, child.stderr)
+                with native_recovery.Record(root) as receipt:
+                    record = receipt.read()
+                self.assertEqual(record['state'], 'registered' if phase == 'partial-image' else phase)
+                self.assertEqual(record['image_path'], str(root / 'turn.dmg'))
+                self.assertEqual(record['reserved_bytes'], 64 * 1024 * 1024)
+                with mock.patch.object(native_storage.Workspace, '_detach_owned') as detach:
+                    result = native_recovery.startup(root.parent)
+                self.assertEqual(result[0]['status'], 'retained')
+                self.assertIn('creator completion is unverified', result[0]['reason'])
+                detach.assert_not_called()
+
+    def test_durable_workspace_registers_before_create_and_holds_lease_until_arm(self):
+        workspace = native_storage.Workspace(64, durable_ownership=True)
+        turn_ids = []
+        def create():
+            self.assertFalse(workspace.image.exists())
+            record = workspace._preparation.read()
+            self.assertEqual(record['state'], 'registered')
+            turn_ids.append(record['turn_id'])
+            self.assertEqual(native_recovery.recover(workspace.root)['status'], 'active')
+            workspace.image.write_bytes(b'fixture')
+        with mock.patch.object(native_storage.sys, 'platform', 'darwin'), \
+                mock.patch.object(Path, 'is_file', return_value=True), \
+                mock.patch.object(workspace, '_create_image', side_effect=create), \
+                mock.patch.object(workspace, '_verify_mount'), \
+                mock.patch.object(native_storage, '_run', return_value=b'<?xml version="1.0"?>'
+                                  b'<plist version="1.0"><dict><key>Format</key><string>UDRW</string></dict></plist>'):
+            workspace.__enter__()
+        try:
+            self.assertEqual(workspace._preparation.read()['state'], 'attached')
+            self.assertEqual(native_recovery.recover(workspace.root)['status'], 'active')
+            native_recovery.arm(workspace)
+            with native_recovery.Record(workspace.root) as receipt:
+                record = receipt.read()
+                self.assertEqual(record['state'], 'armed')
+                self.assertEqual(record['turn_id'], turn_ids[0])
+                receipt.update('drained')
+            with mock.patch.object(native_storage.Workspace, '_detach_owned'), \
+                    mock.patch.object(native_storage.Workspace, '_verify_detached'):
+                workspace._cleanup()
+            self.assertFalse(workspace.root.exists())
+        finally:
+            if workspace._preparation is not None:
+                workspace._preparation.close()
+            if workspace.root.exists():
+                import shutil
+                shutil.rmtree(workspace.root)
+
+    def test_registration_write_failure_never_starts_image_creation(self):
+        workspace = native_storage.Workspace(64, durable_ownership=True)
+        with mock.patch.object(native_storage.sys, 'platform', 'darwin'), \
+                mock.patch.object(Path, 'is_file', return_value=True), \
+                mock.patch.object(native_recovery.Record, 'write', side_effect=OSError('disk full')), \
+                mock.patch.object(workspace, '_create_image') as create, \
+                mock.patch.object(workspace, '_detach_owned'), \
+                mock.patch.object(workspace, '_verify_detached'):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                workspace.__enter__()
+        create.assert_not_called()
+
+    def test_strict_launcher_rejects_late_registered_workspaces_before_staging(self):
+        from diaktoros import native_macos
+        paths = {name: Path('/unused') for name in
+                 ('code', 'venv', 'runtime', 'rust', 'home', 'work', 'export', 'client',
+                  'scratch', 'query', 'inference_socket', 'broker_socket')}
+        with mock.patch.object(seatbelt, 'unavailable', return_value=None):
+            with self.assertRaisesRegex(contained.ContainmentUnavailable, 'before image creation'):
+                native_macos.run(**paths, model='fixture', role='reviewer',
+                                 workspace=native_storage.Workspace(64), spawn_adapter=Path('/adapter'))
+
     def fixture(self, root):
         root.chmod(0o700)
         image = root / 'turn.dmg'
@@ -334,7 +432,7 @@ with Path('held-open').open('wb') as held:
                 with mock.patch.object(native_storage.tempfile, 'mkdtemp',
                                        side_effect=lambda **kwargs: original_mkdtemp(
                                            prefix=kwargs['prefix'], dir=inventory)):
-                    workspace = native_storage.Workspace(64).__enter__()
+                    workspace = native_storage.Workspace(64, durable_ownership=True).__enter__()
                 root = workspace.root
                 native_recovery.arm(workspace)
                 argv = self.command(workspace, outer)
@@ -394,7 +492,7 @@ with Path('held-open').open('wb') as held:
     def test_restart_reconciles_drained_receipt_without_old_python_objects(self):
         with tempfile.TemporaryDirectory(prefix='dk-restart-', dir='/tmp') as directory:
             outer = Path(directory).resolve()
-            workspace = native_storage.Workspace(64).__enter__()
+            workspace = native_storage.Workspace(64, durable_ownership=True).__enter__()
             root = workspace.root
             native_recovery.arm(workspace)
             try:
@@ -424,7 +522,7 @@ with Path('held-open').open('wb') as held:
         with tempfile.TemporaryDirectory(prefix='dk-guardian-', dir='/tmp') as directory, \
                 closing(select.kqueue()) as events:
             outer = Path(directory).resolve()
-            workspace = native_storage.Workspace(64).__enter__()
+            workspace = native_storage.Workspace(64, durable_ownership=True).__enter__()
             root = workspace.root
             native_recovery.arm(workspace)
             argv = self.command(workspace, outer, bounded=True)
@@ -473,7 +571,7 @@ with Path('held-open').open('wb') as held:
         with tempfile.TemporaryDirectory(prefix='dk-owner-death-', dir='/tmp') as directory, \
                 closing(select.kqueue()) as events:
             outer = Path(directory).resolve()
-            workspace = native_storage.Workspace(64).__enter__()
+            workspace = native_storage.Workspace(64, durable_ownership=True).__enter__()
             root = workspace.root
             native_recovery.arm(workspace)
             argv = self.command(workspace, outer, bounded=True)
@@ -509,7 +607,7 @@ with Path('held-open').open('wb') as held:
         with tempfile.TemporaryDirectory(prefix='dk-guard-loss-', dir='/tmp') as directory, \
                 closing(select.kqueue()) as events:
             outer = Path(directory).resolve()
-            workspace = native_storage.Workspace(64).__enter__()
+            workspace = native_storage.Workspace(64, durable_ownership=True).__enter__()
             root = workspace.root
             native_recovery.arm(workspace)
             argv = self.command(workspace, outer, bounded=True, descendants=True)
@@ -557,7 +655,7 @@ with Path('held-open').open('wb') as held:
         with tempfile.TemporaryDirectory(prefix='dk-double-loss-', dir='/tmp') as directory, \
                 closing(select.kqueue()) as events:
             outer = Path(directory).resolve()
-            workspace = native_storage.Workspace(64).__enter__()
+            workspace = native_storage.Workspace(64, durable_ownership=True).__enter__()
             root = workspace.root
             native_recovery.arm(workspace)
             trigger = outer / 'kill-anchor'
