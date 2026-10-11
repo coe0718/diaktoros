@@ -13,7 +13,7 @@ from pathlib import Path
 import shutil
 import tempfile
 
-from . import contained, native_lifecycle, native_python_spawn, native_storage, seatbelt, turn_layout
+from . import contained, native_lifecycle, native_python_spawn, native_recovery, native_storage, seatbelt, turn_layout
 
 PROVIDER = 'diaktoros-seatbelt-wire'
 
@@ -124,8 +124,21 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
         policy.write_text(profile.text)
         policy.chmod(0o400)
         try:
+            recovery = None
+            if adapter is not None:
+                # Arm durably before launch. Only the kernel-restricted mode
+                # permits a group-drained receipt to authorize storage disposal.
+                native_recovery.arm(workspace)
+                recovery = workspace.root
             return native_lifecycle.capture(profile.command(policy, entry), env=env,
-                                            cwd=work, timeout=timeout + 30)
+                                            cwd=work, timeout=timeout + 30,
+                                            **({'recovery_root': recovery} if recovery else {}))
+        except native_lifecycle.WatchdogLost:
+            # The private completion channel proves the guardian disposed this
+            # exact volume. Context exit must not touch its now-absent paths.
+            workspace.active = False
+            workspace.root = None
+            raise
         except native_lifecycle.CleanupIncomplete:
             workspace.retain('native watchdog completion could not be verified')
             raise

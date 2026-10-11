@@ -2,8 +2,10 @@
 
 The host-only lifeline never reaches the sandboxed executable. EOF, timeout,
 and normal leader exit all kill the original group before reaping its leader.
-Detached descendants remain an explicit production blocker. This is not a
-general descendant tracker, nor recovery after watchdog/host-machine death.
+The restricted recovery mode keeps this helper as the cleanup guardian and
+adds a disposable watchdog. Watchdog/supervisor death drains the reserved group
+and disposes its journaled image. Guardian or machine death without a drained
+receipt remains fail-closed; this is not a general descendant tracker.
 """
 from __future__ import annotations
 
@@ -28,6 +30,26 @@ GROUP_DRAIN_TIMEOUT = 5
 
 class CleanupIncomplete(RuntimeError):
     """Watchdog completion cannot be verified; storage must be retained."""
+
+
+class WatchdogLost(RuntimeError):
+    """The guardian proved group cleanup and storage disposal after watchdog death."""
+
+
+def _sentinel(owner, timeout):
+    """Disposable monitor; the guardian retains the waitable turn leader."""
+    if os.getppid() != owner:
+        return
+    with closing(select.kqueue()) as events:
+        try:
+            events.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                                          flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                          fflags=select.KQ_NOTE_EXIT)
+                            for pid in (owner,)], 0, 0)
+        except ProcessLookupError:
+            return
+        if os.getppid() == owner:
+            events.control(None, 1, timeout + 1)
 
 
 def _group_members(pid: int) -> set[int]:
@@ -102,6 +124,19 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
     with os.fdopen(config_fd, 'rb') as source:
         config = json.loads(source.read(MAX_CONFIG + 1))
     argv, env, timeout, cwd, owner = (config[k] for k in ('argv', 'env', 'timeout', 'cwd', 'owner'))
+    receipt = None
+    watchdog = None
+    watchdog_lost = False
+    storage_cleaned = False
+    if config.get('recovery_root') is not None:
+        from diaktoros import native_recovery
+        receipt = native_recovery.Record(Path(config['recovery_root']))
+        try:
+            if receipt.read()['state'] != 'armed':
+                raise CleanupIncomplete('guardian requires an armed ownership record')
+        except BaseException:
+            receipt.close()
+            raise
     process = None
     timed_out = False
     parent_lost = False
@@ -135,6 +170,22 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
             else:
                 process = subprocess.Popen(argv, env=env, cwd=cwd, close_fds=True,
                                            start_new_session=True)
+                if receipt is not None:
+                    watchdog = subprocess.Popen(
+                        [str(Path(sys.executable).resolve()), '-I', '-B',
+                         str(Path(__file__).resolve()), '--sentinel', str(os.getpid()),
+                         str(timeout)],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+                        env={'PATH': '/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1'})
+                    receipt.update('running', guardian=os.getpid(), leader=process.pid,
+                                   watchdog=watchdog.pid)
+                    try:
+                        events.control([select.kevent(watchdog.pid, filter=select.KQ_FILTER_PROC,
+                                                      flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                                      fflags=select.KQ_NOTE_EXIT)], 0, 0)
+                    except ProcessLookupError:
+                        watchdog_lost = True
                 # No wait/poll before group cleanup: the unreaped child reserves
                 # its PID, preventing a stale group ID from targeting a reused PID.
                 try:
@@ -149,12 +200,12 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
                     # It has not been reaped; cleanup still precedes wait().
                 else:
                     deadline = time.monotonic() + timeout
-                    while True:
+                    while not watchdog_lost:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
                             timed_out = True
                             break
-                        ready = events.control(None, 3, remaining)
+                        ready = events.control(None, 4, remaining)
                         if not ready:
                             timed_out = True
                             break
@@ -167,12 +218,46 @@ def _watch(config_fd: int, lifeline_fd: int, status_fd: int):
                             break
                         if leader_exited:
                             break
+                        if watchdog is not None and any(
+                                event.filter == select.KQ_FILTER_PROC and event.ident == watchdog.pid
+                                for event in ready):
+                            # The monitor can exit when its timer expires.
+                            # Neither requires a stale PID
+                            # signal: the guardian still owns the unreaped leader.
+                            if time.monotonic() >= deadline:
+                                timed_out = True
+                            else:
+                                watchdog_lost = True
+                            break
     finally:
-        if process is not None:
-            _drain_group(process.pid, leader_exited)
-            process.wait()
+        try:
+            if watchdog is not None:
+                # The monitor is our unreaped child, not a discovered process.
+                # Do not reap it before the signal, preserving its PID identity.
+                try:
+                    watchdog.terminate()
+                except ProcessLookupError:
+                    pass
+                watchdog.wait(timeout=5)
+            if process is not None:
+                _drain_group(process.pid, leader_exited)
+                if receipt is not None:
+                    receipt.update('drained', cause=('watchdog_lost' if watchdog_lost else
+                                                    'owner_lost' if parent_lost else
+                                                    'timeout' if timed_out else 'leader_exit'))
+                process.wait()
+            elif receipt is not None:
+                receipt.update('drained', cause='owner_lost_before_launch')
+            if receipt is not None and (parent_lost or watchdog_lost):
+                receipt.cleanup()
+                storage_cleaned = True
+        finally:
+            if receipt is not None:
+                receipt.close()
     result = {'returncode': process.returncode if process is not None else None,
               'timeout': timed_out, 'parent_lost': parent_lost, 'group_drained': True}
+    if config.get('recovery_root') is not None:
+        result.update(watchdog_lost=watchdog_lost, storage_cleaned=storage_cleaned)
     try:
         os.write(status_fd, json.dumps(result).encode())
     except BrokenPipeError:
@@ -202,11 +287,15 @@ def _completion(process, descriptor, *, allow_owner_loss=False):
     if not valid:
         raise CleanupIncomplete('native watchdog completion could not be verified; '
                                 f'helper={process.returncode}, status={status!r}')
+    if record.get('watchdog_lost') is True:
+        if record.get('storage_cleaned') is not True:
+            raise CleanupIncomplete('guardian storage cleanup could not be verified')
+        raise WatchdogLost('native watchdog died; guardian drained the group and disposed storage')
     return record
 
 
 def capture(argv: list[str], *, env: dict[str, str], timeout: int,
-            cwd: Path | None = None) -> subprocess.CompletedProcess:
+            cwd: Path | None = None, recovery_root: Path | None = None) -> subprocess.CompletedProcess:
     """Capture through a trusted watchdog; no sandbox is provided by this function.
 
     Caller must pass an already-contained command. No unsupervised fallback.
@@ -221,6 +310,8 @@ def capture(argv: list[str], *, env: dict[str, str], timeout: int,
     config = json.dumps({'argv': argv, 'env': env, 'timeout': timeout,
                          'cwd': str(cwd) if cwd is not None else None,
                          'owner': os.getpid()}).encode()
+    if recovery_root is not None:
+        config = json.dumps({**json.loads(config), 'recovery_root': str(recovery_root)}).encode()
     if len(config) > MAX_CONFIG:
         raise ValueError('native watchdog configuration exceeds limit')
     with tempfile.TemporaryFile() as source:
@@ -279,4 +370,10 @@ def capture(argv: list[str], *, env: dict[str, str], timeout: int,
 
 
 if __name__ == '__main__':
-    _watch(*(int(value) for value in sys.argv[1:]))
+    # Only the trusted host helper imports this repository. Isolated Python
+    # otherwise omits the script directory; no writable turn path is added.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    if sys.argv[1] == '--sentinel':
+        _sentinel(*(int(value) for value in sys.argv[2:]))
+    else:
+        _watch(*(int(value) for value in sys.argv[1:]))

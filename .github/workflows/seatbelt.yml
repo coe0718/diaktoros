@@ -7,6 +7,7 @@ on:
       - diaktoros/native_macos.py
       - diaktoros/native_storage.py
       - diaktoros/native_lifecycle.py
+      - diaktoros/native_recovery.py
       - diaktoros/seatbelt_wire.py
       - diaktoros/broker_client.py
       - diaktoros/contained.py
@@ -17,6 +18,7 @@ on:
       - tests/test_native_storage.py
       - tests/test_native_eject_stress.py
       - tests/test_native_lifecycle.py
+      - tests/test_native_recovery.py
       - tests/test_native_detach.py
       - tests/native_spawn_fixture.c
       - diaktoros/native_spawn.c
@@ -68,6 +70,8 @@ jobs:
         run: python tests/leakguard.py discover -v -s tests -p 'test_seatbelt.py'
       - name: Exercise fixed-capacity APFS storage and cleanup
         run: python tests/leakguard.py discover -v -s tests -p 'test_native_storage.py'
+      - name: Recover guarded turns after watchdog death and supervisor restart
+        run: python tests/leakguard.py discover -v -s tests -p 'test_native_recovery.py'
       - name: Capture busy APFS ejects during bounded host-only churn
         env:
           DIAKTOROS_REQUIRE_NATIVE_EJECT_STRESS: '1'

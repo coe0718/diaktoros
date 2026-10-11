@@ -188,6 +188,12 @@ class Workspace:
             return
         if self.retained_reason:
             raise StorageError(f'workspace retained at {self.root}: {self.retained_reason}')
+        if (self.root / 'ownership.json').exists():
+            from . import native_recovery
+            result = native_recovery.recover(self.root)
+            if result['status'] != 'removed':
+                raise StorageError(f'workspace retained at {self.root}: {result}')
+            return
         try:
             self._detach_owned()
             self._verify_detached()

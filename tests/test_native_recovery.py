@@ -1,0 +1,329 @@
+"""Durable receipts authorize disposal, never signals to recorded PIDs."""
+import _home_guard  # noqa: F401
+import json
+from contextlib import closing
+import os
+from pathlib import Path
+import select
+import subprocess
+import sys
+import tempfile
+import time
+from types import SimpleNamespace
+import unittest
+from unittest import mock
+
+from diaktoros import contained, native_lifecycle, native_recovery, native_storage, seatbelt
+
+
+class RecoveryValidation(unittest.TestCase):
+    def fixture(self, root):
+        root.chmod(0o700)
+        image = root / 'turn.dmg'
+        image.write_bytes(b'private image')
+        image.chmod(0o600)
+        (root / 'mount').mkdir()
+        workspace = SimpleNamespace(root=root, image=image, size_mib=64)
+        native_recovery.arm(workspace)
+        return workspace
+
+    def test_unlocked_running_record_never_authorizes_cleanup_or_pid_signals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.fixture(root)
+            with native_recovery.Record(root) as receipt:
+                receipt.update('running', leader=123, watchdog=456, guardian=789)
+            with mock.patch.object(native_storage.Workspace, '_detach_owned') as detach, \
+                    mock.patch('os.kill') as kill, mock.patch('os.killpg') as killpg:
+                result = native_recovery.recover(root)
+            self.assertEqual(result['status'], 'retained')
+            self.assertTrue(workspace.image.exists())
+            detach.assert_not_called()
+            kill.assert_not_called()
+            killpg.assert_not_called()
+
+    def test_active_guardian_lease_blocks_restart_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            with native_recovery.Record(root), \
+                    mock.patch.object(native_storage.Workspace, '_detach_owned') as detach:
+                self.assertEqual(native_recovery.recover(root)['status'], 'active')
+            detach.assert_not_called()
+
+    def test_restart_removes_drained_image_only_after_verified_detachment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'owned'
+            root.mkdir()
+            workspace = self.fixture(root)
+            with native_recovery.Record(root) as receipt:
+                receipt.update('running', leader=123)
+                receipt.update('drained', cause='watchdog_lost')
+            with mock.patch.object(native_storage.Workspace, '_detach_owned') as detach, \
+                    mock.patch.object(native_storage.Workspace, '_verify_detached') as verify:
+                self.assertEqual(native_recovery.reconcile([root])[0]['status'], 'removed')
+            detach.assert_called_once()
+            verify.assert_called_once()
+            self.assertFalse(workspace.image.exists())
+
+    def test_failed_detachment_retains_drained_receipt_for_later_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.fixture(root)
+            with native_recovery.Record(root) as receipt:
+                receipt.update('drained')
+            with mock.patch.object(native_storage.Workspace, '_detach_owned',
+                                   side_effect=native_storage.StorageError('busy')):
+                self.assertEqual(native_recovery.recover(root)['status'], 'retained')
+            with native_recovery.Record(root) as receipt:
+                self.assertEqual(receipt.read()['state'], 'drained')
+            self.assertTrue(workspace.image.exists())
+
+    def test_replaced_image_and_malformed_or_symlink_journal_are_retained(self):
+        for corruption in ('image', 'invalid', 'symlink'):
+            with self.subTest(corruption=corruption), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace = self.fixture(root)
+                with native_recovery.Record(root) as receipt:
+                    receipt.update('drained')
+                journal = root / native_recovery.JOURNAL
+                if corruption == 'image':
+                    workspace.image.rename(root / 'old-image')
+                    workspace.image.write_bytes(b'replacement')
+                    workspace.image.chmod(0o600)
+                elif corruption == 'invalid':
+                    journal.write_text('{}')
+                else:
+                    journal.rename(root / 'old-journal')
+                    journal.symlink_to(root / 'old-journal')
+                with mock.patch.object(native_storage.Workspace, '_detach_owned') as detach:
+                    self.assertEqual(native_recovery.recover(root)['status'], 'retained')
+                detach.assert_not_called()
+                self.assertTrue(workspace.image.exists())
+
+    def test_arming_is_durable_before_launch_and_cannot_be_repeated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(native_recovery.os, 'fsync') as sync:
+                workspace = self.fixture(root)
+            self.assertEqual(sync.call_count, 2)
+            self.assertEqual(json.loads((root / native_recovery.JOURNAL).read_text())['state'], 'armed')
+            with self.assertRaises(native_recovery.RecoveryError):
+                native_recovery.arm(workspace)
+
+    def test_receipt_cannot_regress_to_running_after_drain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            with native_recovery.Record(root) as receipt:
+                receipt.update('drained')
+                with self.assertRaises(native_recovery.RecoveryError):
+                    receipt.update('running', leader=999)
+
+    def test_unknown_private_root_is_retained_without_creating_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(native_recovery.recover(root)['status'], 'retained')
+            self.assertEqual(list(root.iterdir()), [])
+
+
+class NativeRecoveryBoundary(unittest.TestCase):
+    def setUp(self):
+        reason = seatbelt.unavailable()
+        if reason:
+            if os.environ.get('DIAKTOROS_REQUIRE_NATIVE_STORAGE') == '1':
+                self.fail(reason)
+            self.skipTest(reason)
+
+    def command(self, workspace, outer, *, bounded=False):
+        interpreter = Path(sys.executable).resolve()
+        framework = Path(sys.base_prefix) / 'Resources/Python.app/Contents/MacOS/Python'
+        if framework.is_file():
+            interpreter = framework.resolve()
+        profile = seatbelt.profile(read_roots=(Path(sys.base_prefix),),
+                                   write_roots=(workspace.work,))
+        policy = outer / 'profile.sb'
+        policy.write_text(profile.text + '(allow syscall-unix)\n'
+                          '(deny syscall-unix (syscall-number 82 147 244))\n')
+        script = '''
+import os, time
+from pathlib import Path
+with Path('held-open').open('wb') as held:
+    held.write(b'owned file'); held.flush()
+    for fd in (0, 1, 2): os.close(fd)
+    Path('ready.tmp').write_text(str(os.getpid()))
+    Path('ready.tmp').rename('ready')
+    deadline = time.monotonic() + 15
+    while not Path('stop').exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+''' if bounded else 'raise SystemExit(7)'
+        return profile.command(policy, [str(interpreter), '-I', '-B', '-c', script])
+
+    def ready(self, workspace):
+        path = workspace.work / 'ready'
+        deadline = time.monotonic() + 5
+        while not path.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(path.exists(), 'bounded turn did not become ready')
+        return int(path.read_text())
+
+    def observe(self, events, pid):
+        events.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                                      flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                      fflags=select.KQ_NOTE_EXIT)], 0, 0)
+
+    def test_restart_reconciles_drained_receipt_without_old_python_objects(self):
+        with tempfile.TemporaryDirectory(prefix='dk-restart-', dir='/tmp') as directory:
+            outer = Path(directory).resolve()
+            workspace = native_storage.Workspace(64).__enter__()
+            root = workspace.root
+            native_recovery.arm(workspace)
+            try:
+                result = native_lifecycle.capture(self.command(workspace, outer),
+                                                  env={'PATH': '/usr/bin:/bin'}, timeout=5,
+                                                  cwd=workspace.work, recovery_root=root)
+                self.assertEqual(result.returncode, 7)
+                with native_recovery.Record(root) as receipt:
+                    self.assertEqual(receipt.read()['state'], 'drained')
+                # A fresh process has only the retained path, not cached PIDs,
+                # disk IDs, locks or Workspace state from the original launcher.
+                code = ('import sys,json; from pathlib import Path; '
+                        'sys.path.insert(0,sys.argv[1]); from diaktoros import native_recovery; '
+                        'print(json.dumps(native_recovery.reconcile([Path(sys.argv[2])])))')
+                recovered = subprocess.run([sys.executable, '-I', '-B', '-c', code,
+                                            str(Path(native_recovery.__file__).resolve().parent.parent),
+                                            str(root)], capture_output=True, text=True, timeout=120)
+                self.assertEqual(recovered.returncode, 0, recovered.stderr)
+                self.assertEqual(json.loads(recovered.stdout)[0]['status'], 'removed')
+                self.assertFalse(root.exists())
+                print('NATIVE_RECOVERY fresh_process=removed drained_receipt=true', flush=True)
+            finally:
+                if root.exists():
+                    native_recovery.recover(root)
+
+    def test_guardian_automatically_cleans_after_watchdog_sigkill(self):
+        with tempfile.TemporaryDirectory(prefix='dk-guardian-', dir='/tmp') as directory, \
+                closing(select.kqueue()) as events:
+            outer = Path(directory).resolve()
+            workspace = native_storage.Workspace(64).__enter__()
+            root = workspace.root
+            native_recovery.arm(workspace)
+            argv = self.command(workspace, outer, bounded=True)
+            trigger = outer / 'kill-monitor'
+            # Inject failure in the actual monitor process: it signals itself,
+            # so a journal PID can never be mistaken for a new unrelated PID.
+            helper = outer / 'helper.py'
+            helper.write_text(
+                'import os,sys,time\nfrom pathlib import Path\n'
+                f'sys.path.insert(0, {str(Path(native_lifecycle.__file__).resolve().parent.parent)!r})\n'
+                'from diaktoros import native_lifecycle as life\n'
+                'life.__file__ = __file__\n'
+                'if sys.argv[1] == "--sentinel":\n'
+                '    deadline = time.monotonic() + 20\n'
+                f'    while not Path({str(trigger)!r}).exists() and time.monotonic() < deadline:\n'
+                '        time.sleep(0.02)\n'
+                '    os.kill(os.getpid(), 9)\n'
+                'else:\n    life._watch(*(int(value) for value in sys.argv[1:]))\n')
+            original = contained.capture_process
+            child = None
+
+            def fail_monitor(guardian, **kwargs):
+                nonlocal child
+                child = self.ready(workspace)
+                self.observe(events, child)
+                self.assertEqual(native_recovery.recover(root)['status'], 'active')
+                trigger.touch()
+                return original(guardian, **kwargs)
+
+            try:
+                with mock.patch.object(native_lifecycle, '__file__', str(helper)), \
+                        mock.patch.object(contained, 'capture_process', side_effect=fail_monitor):
+                    with self.assertRaises(native_lifecycle.WatchdogLost):
+                        native_lifecycle.capture(argv, env={'PATH': '/usr/bin:/bin'}, timeout=10,
+                                                 cwd=workspace.work, recovery_root=root)
+                self.assertTrue(any(event.ident == child for event in events.control(None, 1, 5)))
+                self.assertFalse(native_lifecycle._group_members(child))
+                self.assertFalse(root.exists())
+                print('NATIVE_RECOVERY watchdog_sigkill=cleaned group_survivors=0', flush=True)
+            finally:
+                if root.exists():
+                    native_recovery.recover(root)
+
+    def test_supervisor_sigkill_leaves_guardian_to_drain_and_dispose_image(self):
+        with tempfile.TemporaryDirectory(prefix='dk-owner-death-', dir='/tmp') as directory, \
+                closing(select.kqueue()) as events:
+            outer = Path(directory).resolve()
+            workspace = native_storage.Workspace(64).__enter__()
+            root = workspace.root
+            native_recovery.arm(workspace)
+            argv = self.command(workspace, outer, bounded=True)
+            script = ('import sys; from pathlib import Path; '
+                      f'sys.path.insert(0,{str(Path(native_lifecycle.__file__).resolve().parent.parent)!r}); '
+                      'from diaktoros import native_lifecycle; '
+                      f'native_lifecycle.capture({argv!r}, env={{"PATH":"/usr/bin:/bin"}}, '
+                      f'timeout=10, cwd=Path({str(workspace.work)!r}), recovery_root=Path({str(root)!r}))')
+            owner = subprocess.Popen([sys.executable, '-I', '-B', '-c', script],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     env={'PATH': '/usr/bin:/bin'})
+            try:
+                child = self.ready(workspace)
+                self.observe(events, child)
+                owner.kill()  # Actual unreaped child of this test, not a saved PID.
+                owner.wait(timeout=5)
+                self.assertTrue(any(event.ident == child for event in events.control(None, 1, 10)))
+                deadline = time.monotonic() + 45
+                while root.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertFalse(root.exists(), 'guardian retained storage after owner death')
+                self.assertFalse(native_lifecycle._group_members(child))
+                print('NATIVE_RECOVERY supervisor_sigkill=cleaned group_survivors=0', flush=True)
+            finally:
+                if owner.poll() is None:
+                    owner.kill()
+                owner.wait(timeout=5)
+                if root.exists():
+                    native_recovery.recover(root)
+
+    def test_guardian_death_retains_unknown_turn_and_restart_does_not_kill_saved_pid(self):
+        with tempfile.TemporaryDirectory(prefix='dk-guard-loss-', dir='/tmp') as directory, \
+                closing(select.kqueue()) as events:
+            outer = Path(directory).resolve()
+            workspace = native_storage.Workspace(64).__enter__()
+            root = workspace.root
+            native_recovery.arm(workspace)
+            argv = self.command(workspace, outer, bounded=True)
+            original = contained.capture_process
+            child = None
+
+            def fail_guardian(guardian, **kwargs):
+                nonlocal child
+                child = self.ready(workspace)
+                self.observe(events, child)
+                guardian.kill()  # This Popen owns the unreaped guardian PID.
+                return original(guardian, **kwargs)
+
+            try:
+                with mock.patch.object(contained, 'capture_process', side_effect=fail_guardian):
+                    with self.assertRaises(native_lifecycle.CleanupIncomplete):
+                        native_lifecycle.capture(argv, env={'PATH': '/usr/bin:/bin'}, timeout=10,
+                                                 cwd=workspace.work, recovery_root=root)
+                self.assertEqual(native_recovery.recover(root)['status'], 'retained')
+                self.assertIn(child, native_lifecycle._group_members(child))
+                self.assertTrue(workspace.image.exists())
+                print('NATIVE_RECOVERY guardian_sigkill=retained unknown_turn=true', flush=True)
+            finally:
+                # No production claim follows from losing the guardian. Only
+                # this bounded fixture's independently registered exit identity
+                # can authorize its explicit test cleanup.
+                if child is not None:
+                    (workspace.work / 'stop').touch()
+                    self.assertTrue(any(event.ident == child
+                                        for event in events.control(None, 1, 20)))
+                    deadline = time.monotonic() + 5
+                    while native_lifecycle._group_members(child) and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    self.assertFalse(native_lifecycle._group_members(child),
+                                     f'fixture still owns retained storage at {root}')
+                    with native_recovery.Record(root) as receipt:
+                        receipt.update('drained', cause='test_fixture_exit_proof')
+                    self.assertEqual(native_recovery.recover(root)['status'], 'removed')

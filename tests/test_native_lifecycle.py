@@ -264,6 +264,23 @@ class NativeLifecycleValidation(unittest.TestCase):
             os.close(reader)
             os.close(writer)
 
+    def test_watchdog_loss_requires_guardian_storage_disposal_proof(self):
+        for proof in (False, 1, True):
+            with self.subTest(proof=proof):
+                reader, writer = os.pipe()
+                try:
+                    record = {'returncode': -9, 'timeout': False, 'parent_lost': False,
+                              'group_drained': True, 'watchdog_lost': True,
+                              'storage_cleaned': proof}
+                    os.write(writer, json.dumps(record).encode())
+                    error = (native_lifecycle.WatchdogLost if proof is True else
+                             native_lifecycle.CleanupIncomplete)
+                    with self.assertRaises(error):
+                        native_lifecycle._completion(subprocess.CompletedProcess([], 0), reader)
+                finally:
+                    os.close(reader)
+                    os.close(writer)
+
 
 class NativeLifecycleGaps(unittest.TestCase):
     def setUp(self):

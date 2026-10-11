@@ -284,11 +284,46 @@ the still-running child leaves the image mounted and retained without any eject
 attempt. Test-only cleanup asks the cooperative fixture to stop, waits for its
 previously registered kernel exit notification and empty group, then releases
 the retained image. This test characterizes failure and retention; it does not
-provide automatic crash recovery. Mac CI must validate the new probe.
+provide automatic crash recovery. The retention probe passed on both Mac
+architectures in native run 38110741834.
+
+Strict adapter-selected turns now arm a host-only `ownership.json` before
+launch. The record identifies the private root and backing image by filesystem
+identity, records a random turn ID, and advances from armed to running to
+drained. Atomic replacement plus file/directory fsync preserves the receipt
+across process crashes. A private exclusive `ownership.lock` stays with the
+guardian while it owns execution or disposal. Neither file is in a writable
+Seatbelt root. Recorded guardian/leader/watchdog PIDs are diagnostic fields,
+never restart signal targets.
+
+In this mode, the trusted helper owns the unreaped leader as a cleanup guardian.
+It starts a separate disposable timeout watchdog and observes watchdog exit,
+the actual supervisor, the private lifeline and the turn leader with kqueue.
+If the watchdog dies, the guardian drains the original group before reaping,
+writes the durable receipt, then verifies exact-image detachment and removes
+storage. The caller receives `WatchdogLost`, marking an interrupted turn whose
+cleanup was verified. Supervisor death follows the same disposal path. Normal
+exit and timeout leave a drained receipt for host context cleanup.
+
+`native_recovery.reconcile(roots)` accepts an explicit inventory of retained
+private roots. A fresh supervisor process can dispose drained images without
+old Python objects or cached disk IDs. An active lease, an armed/running receipt,
+missing/malformed ownership data, changed filesystem identity or failed eject
+retains storage. The command `python -m diaktoros.native_recovery ROOT...` exposes
+the same operation and returns a nonzero status for retained failures. This API
+is not yet wired into production backend selection or its startup inventory.
+
+The new Mac probes cover watchdog self-SIGKILL, supervisor SIGKILL, recovery from
+a drained receipt in a fresh process, and guardian SIGKILL retaining unknown
+execution. Local journal tests cover lease exclusion, corrupt/replaced files,
+durable arming, transition checks and failed eject retry eligibility. Mac CI
+must validate the new guardian/recovery probes.
 
 This closes only the original-group supervisor-death gap. A child that changes
-its process group can still survive. Watchdog death, machine death, capability
-revocation and startup recovery remain unresolved. Production still requires an
+its process group can still survive. Restricted turns add watchdog-death cleanup
+and conservative receipt-based restart recovery; guardian/machine death without
+a drained receipt, capability revocation and production startup integration
+remain unresolved. Production still requires an
 enforceable ownership mechanism for every descendant; a polling tree scan or
 `kqueue` monitoring of selected PIDs is not equivalent.
 
