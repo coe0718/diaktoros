@@ -126,6 +126,24 @@ class RecoveryValidation(unittest.TestCase):
             self.assertEqual(native_recovery.recover(root)['status'], 'retained')
             self.assertEqual(list(root.iterdir()), [])
 
+    def test_discovery_rejects_special_ownership_files_before_opening_them(self):
+        for filename in (native_recovery.JOURNAL, native_recovery.LEASE):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                parent = Path(directory).resolve()
+                root = parent / 'dk-volume-fifo'
+                root.mkdir()
+                self.fixture(root)
+                (root / filename).unlink()
+                os.mkfifo(root / filename, 0o600)
+                original_open = native_recovery.os.open
+
+                def safe_open(path, *args, **kwargs):
+                    self.assertNotEqual(path, filename, 'opened a special ownership file')
+                    return original_open(path, *args, **kwargs)
+
+                with mock.patch.object(native_recovery.os, 'open', side_effect=safe_open):
+                    self.assertEqual(native_recovery.startup(parent)[0]['status'], 'retained')
+
     def test_discovery_recovers_only_verified_roots_and_repeated_restart_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory).resolve()

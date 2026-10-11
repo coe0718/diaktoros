@@ -48,6 +48,8 @@ class Record:
                 raise RecoveryError('ownership root must be canonical and not a symlink')
             self.directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             _private(os.fstat(self.directory), directory=True)
+            if not create:
+                _private(os.stat(LEASE, dir_fd=self.directory, follow_symlinks=False))
             self.lease = os.open(LEASE, os.O_RDWR | os.O_NOFOLLOW | (os.O_CREAT if create else 0),
                                  0o600, dir_fd=self.directory)
             _private(os.fstat(self.lease))
@@ -70,7 +72,9 @@ class Record:
         self.close()
 
     def read(self):
-        descriptor = os.open(JOURNAL, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.directory)
+        _private(os.stat(JOURNAL, dir_fd=self.directory, follow_symlinks=False))
+        descriptor = os.open(JOURNAL, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=self.directory)
         with os.fdopen(descriptor, 'rb') as source:
             _private(os.fstat(source.fileno()))
             raw = source.read(MAX_RECORD + 1)
