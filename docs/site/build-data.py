@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Refresh docs/site/data.json from the GitHub API.
 
+The page prefers live API data in the browser; this script refreshes the
+checked-in snapshot used as the offline/API-outage fallback.
+
 The Pages deploy workflow runs this before publishing so the launch page's
 statistics (release, merged PRs, closed issues) are read from the repository
 at build time instead of typed by hand. Safe to run locally; on API failure
