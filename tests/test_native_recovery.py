@@ -60,6 +60,17 @@ os._exit(91)
     def test_durable_workspace_registers_before_create_and_holds_lease_until_arm(self):
         workspace = native_storage.Workspace(64, durable_ownership=True)
         turn_ids = []
+        original_open, original_unlink = Path.open, Path.unlink
+        def fixture_path(path):
+            # This test has no mounted image. Simulate its distinct case names
+            # without depending on the host temporary filesystem's case mode.
+            if path.parent == workspace.mount and path.name in ('CaseProbe', 'caseprobe'):
+                return path.with_name('case-upper' if path.name == 'CaseProbe' else 'case-lower')
+            return path
+        def fixture_open(path, *args, **kwargs):
+            return original_open(fixture_path(path), *args, **kwargs)
+        def fixture_unlink(path, *args, **kwargs):
+            return original_unlink(fixture_path(path), *args, **kwargs)
         def create():
             self.assertFalse(workspace.image.exists())
             record = workspace._preparation.read()
@@ -71,6 +82,8 @@ os._exit(91)
                 mock.patch.object(Path, 'is_file', return_value=True), \
                 mock.patch.object(workspace, '_create_image', side_effect=create), \
                 mock.patch.object(workspace, '_verify_mount'), \
+                mock.patch.object(Path, 'open', autospec=True, side_effect=fixture_open), \
+                mock.patch.object(Path, 'unlink', autospec=True, side_effect=fixture_unlink), \
                 mock.patch.object(native_storage, '_run', return_value=b'<?xml version="1.0"?>'
                                   b'<plist version="1.0"><dict><key>Format</key><string>UDRW</string></dict></plist>'):
             workspace.__enter__()
