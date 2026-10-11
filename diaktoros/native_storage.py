@@ -187,7 +187,14 @@ class Workspace:
                 else:
                     for device in self._devices():
                         if device in self._devices():
-                            self._eject(device, force=True)
+                            try:
+                                self._eject(device, force=True)
+                            except StorageError as error:
+                                # The final command can also report busy after
+                                # completing detachment. Verify exact-image
+                                # absence; never accept an attached image.
+                                if 'Resource busy' not in str(error) or self._devices():
+                                    raise
                     if self._devices():
                         raise StorageError('workspace remains attached after final eject')
                     return

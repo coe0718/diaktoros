@@ -163,6 +163,15 @@ its [#484 device fix](https://github.com/assistant-ui/riftri/commit/52bab66d74b7
 also illustrates why every retry rediscovers the exact image's device after a
 partial unmount. This is evidence from another project, not a confirmed cause
 for Diaktoros or proof that the race is specific to Apple Silicon.
+Diaktoros's older ARM failure in
+[run 38089176853](https://github.com/coe0718/diaktoros/actions/runs/38089176853/job/114321889627)
+reported busy eject, then `lsof` reported that the mount was no longer a
+filesystem about three seconds later. That confirms a later unmounted state,
+not an empty-holder snapshot at the instant of failure. The real Mac regression
+now deliberately performs a volume-only unmount, requires the image to remain
+attached, then verifies cleanup by exact device rather than mount path. A final
+forced command reporting busy is also reconciled against exact-image absence;
+backing files are still deleted only after attachment and mount checks pass.
 The short storage fixture repeats six guarded turns with an open file and cwd
 on APFS, immediately ejecting each owned image after watchdog completion. This
 increases reproduction opportunities; passing cycles do not explain prior busy

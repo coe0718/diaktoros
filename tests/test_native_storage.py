@@ -109,6 +109,32 @@ class StorageValidation(unittest.TestCase):
         run.assert_called_once_with([native_storage.HDIUTIL, 'detach', '/dev/disk99'])
         sleep.assert_not_called()
 
+    def test_final_busy_force_that_detached_is_verified_before_deletion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = native_storage.Workspace()
+            workspace.root = Path(directory) / 'owned'
+            workspace.root.mkdir()
+            workspace.mount = workspace.root / 'mount'
+            workspace.mount.mkdir()
+            workspace.image = workspace.root / 'turn.dmg'
+            workspace.image.write_bytes(b'fixture')
+            attached = True
+
+            def eject(device, *, force):
+                nonlocal attached
+                self.assertEqual(device, '/dev/disk99')
+                if force:
+                    attached = False
+                raise native_storage.StorageError('Resource busy')
+
+            with mock.patch.object(workspace, '_devices', side_effect=lambda:
+                                   ['/dev/disk99'] if attached else []), \
+                    mock.patch.object(workspace, '_eject', side_effect=eject) as run, \
+                    mock.patch.object(native_storage.time, 'sleep'):
+                workspace._cleanup()
+            self.assertEqual(run.call_count, 6)
+            self.assertFalse(workspace.root.exists())
+
     def test_persistent_busy_eject_is_bounded_and_retains_image(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = native_storage.Workspace()
@@ -262,6 +288,24 @@ print('ENOSPC_ALL_ROOTS')
             with native_storage.Workspace(128) as workspace:
                 root = workspace.root
                 raise RuntimeError('fixture failure')
+        self.assertFalse(root.exists())
+
+    def test_unmounted_but_attached_image_is_ejected_by_exact_device(self):
+        # Reproduce the state left by a partial eject, not the intermittent
+        # kernel/subsystem race itself. The mount path is no longer a filesystem.
+        with native_storage.Workspace(64) as workspace:
+            root = workspace.root
+            before = workspace._devices()
+            self.assertTrue(before)
+            native_storage._run([native_storage.DISKUTIL, 'unmount', str(workspace.mount)])
+            self.assertEqual(workspace.mount.stat().st_dev, root.stat().st_dev)
+            self.assertTrue(workspace._devices(), 'volume-only unmount detached the image')
+            with mock.patch.object(workspace, '_eject', wraps=workspace._eject) as eject:
+                workspace._detach_owned()
+            self.assertTrue(eject.call_args_list)
+            self.assertTrue(all(call.args[0] in before for call in eject.call_args_list))
+            self.assertFalse(workspace._devices())
+            self.assertTrue(workspace.image.exists(), 'eject deleted backing files before verification')
         self.assertFalse(root.exists())
 
     def test_repeated_eject_after_guarded_turn_with_open_workspace_file(self):
