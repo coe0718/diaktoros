@@ -8,6 +8,7 @@ on:
       - diaktoros/native_storage.py
       - diaktoros/native_lifecycle.py
       - diaktoros/native_recovery.py
+      - diaktoros/run_supervisor.py
       - diaktoros/seatbelt_wire.py
       - diaktoros/broker_client.py
       - diaktoros/contained.py

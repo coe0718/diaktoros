@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from diaktoros import contained, native_lifecycle, native_recovery, native_storage, seatbelt
+from diaktoros import contained, native_lifecycle, native_recovery, native_storage, run_supervisor, seatbelt
 
 
 class RecoveryValidation(unittest.TestCase):
@@ -126,6 +126,76 @@ class RecoveryValidation(unittest.TestCase):
             self.assertEqual(native_recovery.recover(root)['status'], 'retained')
             self.assertEqual(list(root.iterdir()), [])
 
+    def test_discovery_recovers_only_verified_roots_and_repeated_restart_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            drained, unknown, active, unrelated = (parent / name for name in
+                ('dk-volume-drained', 'dk-volume-unknown', 'dk-volume-active', 'other-project'))
+            for root in (drained, unknown, active, unrelated):
+                root.mkdir()
+            self.fixture(drained)
+            self.fixture(active)
+            with native_recovery.Record(drained) as receipt:
+                receipt.update('drained')
+            symlink = parent / 'dk-volume-symlink'
+            symlink.symlink_to(drained, target_is_directory=True)
+            with native_recovery.Record(active), \
+                    mock.patch.object(native_storage.Workspace, '_detach_owned'), \
+                    mock.patch.object(native_storage.Workspace, '_verify_detached'):
+                results = {Path(r['root']).name: r['status'] for r in native_recovery.startup(parent)}
+                self.assertEqual(results, {'dk-volume-drained': 'removed', 'dk-volume-active': 'active',
+                                          'dk-volume-unknown': 'retained', 'dk-volume-symlink': 'retained'})
+                second = native_recovery.startup(parent)
+                self.assertNotIn(str(drained), [r['root'] for r in second])
+            self.assertEqual(list(unknown.iterdir()), [])
+            self.assertEqual(list(unrelated.iterdir()), [])
+            self.assertTrue(symlink.is_symlink())
+
+    def test_disposed_receipt_survives_partial_directory_removal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / 'dk-volume-partial'
+            root.mkdir()
+            workspace = self.fixture(root)
+            with native_recovery.Record(root) as receipt:
+                receipt.update('drained')
+                receipt.update('disposed')
+            workspace.image.unlink()
+            (root / 'mount').rmdir()
+            with mock.patch.object(native_storage.Workspace, '_devices', return_value=[]) as devices:
+                self.assertEqual(native_recovery.recover(root)['status'], 'removed')
+            devices.assert_called_once()
+            self.assertEqual(native_recovery.recover(root)['status'], 'absent')
+
+    def test_discovery_is_bounded_and_does_not_follow_candidate_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            for number in range(4):
+                (parent / f'dk-volume-{number}').mkdir()
+            with mock.patch.object(native_recovery, 'MAX_WORKSPACES', 2):
+                results = native_recovery.startup(parent)
+            self.assertEqual(len(results), 3)
+            self.assertIn('limit', results[0]['reason'])
+            self.assertTrue(all(r['status'] == 'retained' for r in results))
+
+    def test_supervisor_recovery_scans_on_mac_host_only_before_ledger_work(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            supervisor = run_supervisor.Supervisor(root / 'runs.db', native_workspace_parent=root)
+            with mock.patch.object(run_supervisor.sys, 'platform', 'darwin'), \
+                    mock.patch.object(native_recovery, 'startup', return_value=[]) as startup:
+                self.assertEqual(supervisor.recover(), run_supervisor.SILENT)
+            startup.assert_called_once_with(root)
+            worker = run_supervisor.Supervisor(root / 'runs.db', create=False,
+                                               native_workspace_parent=root)
+            with mock.patch.object(run_supervisor.sys, 'platform', 'darwin'), \
+                    mock.patch.object(native_recovery, 'startup') as startup:
+                worker.recover()
+            startup.assert_not_called()
+            with mock.patch.object(run_supervisor.sys, 'platform', 'linux'), \
+                    mock.patch.object(native_recovery, 'startup') as startup:
+                supervisor.recover()
+            startup.assert_not_called()
+
 
 class NativeRecoveryBoundary(unittest.TestCase):
     def setUp(self):
@@ -171,6 +241,75 @@ with Path('held-open').open('wb') as held:
         events.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
                                       flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
                                       fflags=select.KQ_NOTE_EXIT)], 0, 0)
+
+    def test_supervisor_restarts_recover_partial_unmount_and_interrupted_directory_removal(self):
+        source = str(Path(native_recovery.__file__).resolve().parent.parent)
+        for interruption in ('partial_unmount', 'partial_delete'):
+            with self.subTest(interruption=interruption), \
+                    tempfile.TemporaryDirectory(prefix='dk-startup-', dir='/tmp') as directory:
+                outer = Path(directory).resolve()
+                inventory = outer / 'inventory'
+                inventory.mkdir(mode=0o700)
+                original_mkdtemp = tempfile.mkdtemp
+                with mock.patch.object(native_storage.tempfile, 'mkdtemp',
+                                       side_effect=lambda **kwargs: original_mkdtemp(
+                                           prefix=kwargs['prefix'], dir=inventory)):
+                    workspace = native_storage.Workspace(64).__enter__()
+                root = workspace.root
+                native_recovery.arm(workspace)
+                argv = self.command(workspace, outer)
+                # A real owner finishes a guarded turn, then crashes before
+                # context cleanup. The partial-unmount variant crashes after
+                # diskutil removed the mount but left the image attached.
+                owner_code = ('import os,sys,subprocess; from pathlib import Path; '
+                              f'sys.path.insert(0,{source!r}); '
+                              'from diaktoros import native_lifecycle; '
+                              f'native_lifecycle.capture({argv!r}, env={{"PATH":"/usr/bin:/bin"}}, '
+                              f'timeout=5,cwd=Path({str(workspace.work)!r}),recovery_root=Path({str(root)!r})); ')
+                if interruption == 'partial_unmount':
+                    owner_code += (f'subprocess.run(["/usr/sbin/diskutil","unmount",'
+                                   f'{str(workspace.mount)!r}],check=True,stdout=subprocess.DEVNULL); ')
+                owner_code += 'os.kill(os.getpid(),9)'
+                try:
+                    owner = subprocess.run([sys.executable, '-I', '-B', '-c', owner_code],
+                                           capture_output=True, text=True, timeout=30)
+                    self.assertEqual(owner.returncode, -9, owner.stderr)
+                    self.assertTrue(workspace._devices())
+                    if interruption == 'partial_unmount':
+                        self.assertEqual(workspace.mount.stat().st_dev, root.stat().st_dev)
+                    prefix = ('import os,sys,json; from pathlib import Path; '
+                              f'sys.path.insert(0,{source!r}); '
+                              'from diaktoros import native_recovery,run_supervisor; ')
+                    restart = (f'sup=run_supervisor.Supervisor(Path({str(outer / "runs.db")!r}),'
+                               f'native_workspace_parent=Path({str(inventory)!r})); '
+                               'sup.recover(); print(json.dumps(sup.native_recovery_results))')
+                    if interruption == 'partial_delete':
+                        # Kill the real fresh supervisor after its disposed
+                        # receipt is durable, while owned directory deletion is
+                        # underway. The next restart must not need the image.
+                        injection = ('\ndef crash_remove(path):\n'
+                                     f'    Path({str(workspace.image)!r}).unlink(missing_ok=True)\n'
+                                     '    os.kill(os.getpid(),9)\n'
+                                     'native_recovery.shutil.rmtree=crash_remove\n')
+                        interrupted = subprocess.run([sys.executable, '-I', '-B', '-c',
+                                                      prefix + injection + restart],
+                                                     capture_output=True, text=True, timeout=120)
+                        self.assertEqual(interrupted.returncode, -9, interrupted.stderr)
+                        self.assertFalse(workspace.image.exists())
+                        with native_recovery.Record(root) as receipt:
+                            self.assertEqual(receipt.read()['state'], 'disposed')
+                    for attempt in range(2):
+                        restarted = subprocess.run([sys.executable, '-I', '-B', '-c', prefix + restart],
+                                                   capture_output=True, text=True, timeout=120)
+                        self.assertEqual(restarted.returncode, 0, restarted.stderr)
+                        results = json.loads(restarted.stdout)
+                        self.assertEqual(results, ([{'root': str(root), 'status': 'removed'}]
+                                                   if attempt == 0 else []))
+                    self.assertFalse(root.exists())
+                    print(f'NATIVE_STARTUP interruption={interruption} restarts=2 removed=true', flush=True)
+                finally:
+                    if root.exists():
+                        native_recovery.recover(root)
 
     def test_restart_reconciles_drained_receipt_without_old_python_objects(self):
         with tempfile.TemporaryDirectory(prefix='dk-restart-', dir='/tmp') as directory:

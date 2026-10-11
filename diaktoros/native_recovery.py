@@ -18,6 +18,8 @@ import uuid
 JOURNAL = 'ownership.json'
 LEASE = 'ownership.lock'
 MAX_RECORD = 8192
+MAX_INVENTORY = 10000
+MAX_WORKSPACES = 128
 
 
 class RecoveryError(RuntimeError):
@@ -79,17 +81,27 @@ class Record:
                     record['root_identity'] != _identity(os.fstat(self.directory)) or
                     type(record['size_mib']) is not int or
                     not 64 <= record['size_mib'] <= 16384 or
-                    record['state'] not in ('armed', 'running', 'drained')):
+                    record['state'] not in ('armed', 'running', 'drained', 'disposed')):
                 raise ValueError('invalid ownership record')
         except (ValueError, KeyError, TypeError) as error:
             raise RecoveryError('invalid ownership record; retain storage') from error
-        image = os.stat('turn.dmg', dir_fd=self.directory, follow_symlinks=False)
-        _private(image)
-        if record.get('image_identity') != _identity(image):
-            raise RecoveryError('backing image identity changed; retain storage')
-        mount = os.stat('mount', dir_fd=self.directory, follow_symlinks=False)
-        if not stat.S_ISDIR(mount.st_mode):
-            raise RecoveryError('mount path is not a directory')
+        try:
+            image = os.stat('turn.dmg', dir_fd=self.directory, follow_symlinks=False)
+        except FileNotFoundError:
+            if record['state'] != 'disposed':
+                raise
+        else:
+            _private(image)
+            if record.get('image_identity') != _identity(image):
+                raise RecoveryError('backing image identity changed; retain storage')
+        try:
+            mount = os.stat('mount', dir_fd=self.directory, follow_symlinks=False)
+        except FileNotFoundError:
+            if record['state'] != 'disposed':
+                raise
+        else:
+            if not stat.S_ISDIR(mount.st_mode):
+                raise RecoveryError('mount path is not a directory')
         if _identity(self.root.lstat()) != record['root_identity']:
             raise RecoveryError('ownership root was replaced')
         return record
@@ -116,7 +128,8 @@ class Record:
 
     def update(self, state, **details):
         record = self.read()
-        allowed = {'armed': ('running', 'drained'), 'running': ('drained',), 'drained': ()}
+        allowed = {'armed': ('running', 'drained'), 'running': ('drained',),
+                   'drained': ('disposed',), 'disposed': ()}
         if state not in allowed[record['state']]:
             raise RecoveryError('invalid ownership transition')
         record.update(details, state=state)
@@ -124,17 +137,38 @@ class Record:
 
     def cleanup(self):
         record = self.read()
-        if record['state'] != 'drained':
+        if record['state'] not in ('drained', 'disposed'):
             raise RecoveryError('turn cleanup is unverified; retain storage')
         from . import native_storage
         workspace = native_storage.Workspace(record['size_mib'])
         workspace.root = self.root
         workspace.image = self.root / 'turn.dmg'
         workspace.mount = self.root / 'mount'
-        workspace._detach_owned()
-        workspace._verify_detached()
+        if record['state'] == 'drained':
+            workspace._detach_owned()
+            workspace._verify_detached()
+            self.update('disposed')
+        else:
+            # A restart can find the image/mount removed after verified disposal.
+            # Recheck exact-image attachments; never interpret absence alone as
+            # process cleanup proof. The disposed receipt supplies that proof.
+            if workspace._devices():
+                raise RecoveryError('disposed image was reattached; retain storage')
+            if workspace.mount.exists() and workspace.mount.stat().st_dev != self.root.stat().st_dev:
+                raise RecoveryError('disposed mount is still mounted; retain storage')
         self.read()  # Revalidate the pinned image/root before removing anything.
-        shutil.rmtree(self.root)
+        # Preserve the lease and receipt until all other owned contents are gone.
+        # A crash halfway through traversal remains recoverable as disposed.
+        for path in self.root.iterdir():
+            if path.name in (JOURNAL, LEASE):
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        os.unlink(JOURNAL, dir_fd=self.directory)
+        os.unlink(LEASE, dir_fd=self.directory)
+        self.root.rmdir()
 
 
 def arm(workspace):
@@ -162,6 +196,10 @@ def recover(root: Path):
         return {'root': str(root), 'status': 'removed'}
     except BlockingIOError:
         return {'root': str(root), 'status': 'active'}
+    except FileNotFoundError as error:
+        return {'root': str(root), 'status': ('absent' if not Path(root).exists() and
+                                            not Path(root).is_symlink() else 'retained'),
+                'reason': str(error)}
     except (RecoveryError, OSError, RuntimeError) as error:
         return {'root': str(root), 'status': 'retained', 'reason': str(error)}
 
@@ -171,8 +209,28 @@ def reconcile(roots):
     return [recover(Path(root)) for root in roots]
 
 
+def startup(parent: Path | None = None):
+    """Discover a bounded host inventory; a directory name grants no authority."""
+    parent = Path('/tmp') if parent is None else Path(parent)
+    results, roots = [], []
+    try:
+        parent = parent.resolve(strict=True)
+        with os.scandir(parent) as entries:
+            for count, entry in enumerate(entries):
+                if count >= MAX_INVENTORY or len(roots) >= MAX_WORKSPACES:
+                    results.append({'root': str(parent), 'status': 'retained',
+                                    'reason': 'native workspace inventory limit exceeded'})
+                    break
+                if entry.name.startswith('dk-volume-'):
+                    roots.append(Path(entry.path))
+        results.extend(reconcile(sorted(roots)))
+    except OSError as error:
+        results.append({'root': str(parent), 'status': 'retained', 'reason': str(error)})
+    return results
+
+
 if __name__ == '__main__':
     import sys
-    results = reconcile(sys.argv[1:])
+    results = startup() if sys.argv[1:] == ['--discover'] else reconcile(sys.argv[1:])
     print(json.dumps(results, sort_keys=True))
     raise SystemExit(1 if any(result['status'] == 'retained' for result in results) else 0)

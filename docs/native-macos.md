@@ -290,7 +290,7 @@ architectures in native run 38110741834.
 Strict adapter-selected turns now arm a host-only `ownership.json` before
 launch. The record identifies the private root and backing image by filesystem
 identity, records a random turn ID, and advances from armed to running to
-drained. Atomic replacement plus file/directory fsync preserves the receipt
+drained, then disposed after verified detachment. Atomic replacement plus file/directory fsync preserves the receipt
 across process crashes. A private exclusive `ownership.lock` stays with the
 guardian while it owns execution or disposal. Neither file is in a writable
 Seatbelt root. Recorded guardian/leader/watchdog PIDs are diagnostic fields,
@@ -311,7 +311,33 @@ old Python objects or cached disk IDs. An active lease, an armed/running receipt
 missing/malformed ownership data, changed filesystem identity or failed eject
 retains storage. The command `python -m diaktoros.native_recovery ROOT...` exposes
 the same operation and returns a nonzero status for retained failures. This API
-is not yet wired into production backend selection or its startup inventory.
+does not select the production native backend.
+
+The host supervisor's macOS recovery pass now discovers `dk-volume-*` roots
+under the canonical host temporary directory before resuming ledger work. It
+does not run in detached worker mode or on Linux. Discovery is bounded to
+10,000 directory entries and 128 candidates per pass and reports an exhausted
+inventory limit. Names alone authorize nothing: every candidate still needs
+private ownership paths, a valid filesystem identity, a drained/disposed receipt
+and an available lease. Unknown, symlinked, corrupt and active roots remain
+untouched. `python -m diaktoros.native_recovery --discover` exposes the same pass.
+The supervisor accepts an explicit `native_workspace_parent` for a dedicated
+trusted inventory; the default remains the native workspace allocation parent.
+
+After detachment is verified, recovery durably records disposed before deleting
+owned contents. It keeps the receipt and lease until other contents are gone.
+A restart can therefore finish interrupted directory removal even if the image
+or mount directory has already disappeared. It still rechecks exact-image
+attachment absence, and never accepts missing files as proof of turn exit.
+A crash during the final receipt/lease removal can leave a tiny unknown root,
+which is retained; the backing image has already been disposed at that point.
+
+The new supervisor restart probe crashes a real owner after partial unmount,
+then recovers its still-attached image through a fresh supervisor's discovery.
+It also SIGKILLs a fresh supervisor after its disposed receipt is durable while
+directory removal is underway. Both cases run two subsequent fresh supervisors
+to require successful removal followed by an empty inventory. Mac CI must
+validate this new startup probe.
 
 The new Mac probes cover watchdog self-SIGKILL, supervisor SIGKILL, recovery from
 a drained receipt in a fresh process, and guardian SIGKILL retaining unknown
@@ -322,7 +348,7 @@ must validate the new guardian/recovery probes.
 This closes only the original-group supervisor-death gap. A child that changes
 its process group can still survive. Restricted turns add watchdog-death cleanup
 and conservative receipt-based restart recovery; guardian/machine death without
-a drained receipt, capability revocation and production startup integration
+a drained receipt, capability revocation and production backend integration
 remain unresolved. Production still requires an
 enforceable ownership mechanism for every descendant; a polling tree scan or
 `kqueue` monitoring of selected PIDs is not equivalent.
