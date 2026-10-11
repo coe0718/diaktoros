@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SITE = ROOT / "docs" / "site"
@@ -98,7 +98,11 @@ class SiteRefreshTests(unittest.TestCase):
         self.assertEqual(out["version"], "v9.9.9-test")
         self.assertEqual(out["loop_prs_merged"], "4242")
         self.assertEqual(out["issues_closed"], "4242")
-        self.assertEqual(out["generated"], datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        # The harness stamps the UTC date; allow yesterday too so the test
+        # cannot flake if the run straddles 00:00:00Z.
+        today = datetime.now(timezone.utc).date()
+        self.assertIn(out["generated"],
+                      {today.isoformat(), (today - timedelta(days=1)).isoformat()})
 
     @unittest.skipUnless(shutil.which("node"), "node unavailable")
     def test_api_failure_falls_back_to_snapshot(self):
