@@ -1,15 +1,20 @@
 """Actual disk-full boundary and failure-safe cleanup for native workspaces."""
 import _home_guard  # noqa: F401
 from pathlib import Path
+from contextlib import closing
+from dataclasses import replace
+import json
 import os
+import select
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 from types import SimpleNamespace
 
-from diaktoros import native_lifecycle, native_storage, seatbelt
+from diaktoros import contained, native_lifecycle, native_macos, native_storage, seatbelt, turn_layout
 
 
 class StorageValidation(unittest.TestCase):
@@ -297,6 +302,117 @@ class NativeStorageBoundary(unittest.TestCase):
             if os.environ.get('DIAKTOROS_REQUIRE_NATIVE_STORAGE') == '1':
                 self.fail(reason)
             self.skipTest(reason)
+
+    def test_watchdog_sigkill_retains_active_turn_volume_without_cleanup_proof(self):
+        # Exercise the real launcher's retention path, substituting only the
+        # Hermes entry with a bounded fixture. No discovered PID is signalled.
+        with tempfile.TemporaryDirectory(prefix='dk-watch-death-', dir='/tmp') as directory, \
+                closing(select.kqueue()) as exits:
+            outer = Path(directory).resolve()
+            paths = {name: outer / name for name in
+                     ('code', 'venv', 'rust', 'export', 'client')}
+            for path in paths.values():
+                path.mkdir()
+            query = paths['code'] / 'query'
+            query.touch()
+            sockets = (outer / 'inference', outer / 'broker')
+            for path in sockets:
+                path.touch()
+            interpreter = Path(sys.executable).resolve()
+            framework = Path(sys.base_prefix) / 'Resources/Python.app/Contents/MacOS/Python'
+            if framework.is_file():
+                interpreter = framework.resolve()
+            workspace = native_storage.Workspace(64).__enter__()
+            ready, stop = workspace.work / 'ready', workspace.work / 'stop'
+            child = None
+            observed = False
+            original_capture = contained.capture_process
+            original_profile = seatbelt.profile
+            script = '''
+import json, os, time
+from pathlib import Path
+work = Path.cwd()
+with (work / 'held-open').open('wb') as held:
+    held.write(b'owned turn file')
+    held.flush()
+    for fd in (0, 1, 2):
+        os.close(fd)
+    (work / 'ready.tmp').write_text(json.dumps({'pid': os.getpid(), 'group': os.getpgrp()}))
+    (work / 'ready.tmp').rename(work / 'ready')
+    deadline = time.monotonic() + 20
+    while not (work / 'stop').exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+'''
+
+            def strict_profile(**kwargs):
+                profile = original_profile(**kwargs)
+                return replace(profile, text=profile.text + '(allow syscall-unix)\n'
+                               '(deny syscall-unix (syscall-number 82 147 244))\n')
+
+            def kill_watchdog(helper, **kwargs):
+                nonlocal child
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(ready.exists(), 'bounded child did not start')
+                record = json.loads(ready.read_text())
+                child = record['pid']
+                self.assertEqual(record['group'], child)
+                exits.control([select.kevent(child, filter=select.KQ_FILTER_PROC,
+                                             flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                             fflags=select.KQ_NOTE_EXIT)], 0, 0)
+                # Popen still owns this unreaped helper, reserving its PID.
+                helper.kill()
+                result = original_capture(helper, **kwargs)
+                self.assertEqual(result.returncode, -9)
+                return result
+
+            try:
+                with mock.patch.object(turn_layout.TurnLayout, 'hermes_entry',
+                                       return_value=[str(interpreter), '-I', '-B', '-c', script]), \
+                        mock.patch.object(seatbelt, 'profile', side_effect=strict_profile), \
+                        mock.patch.object(contained, 'capture_process', side_effect=kill_watchdog):
+                    with self.assertRaisesRegex(native_lifecycle.CleanupIncomplete, 'completion'):
+                        native_macos.run(**paths, runtime=Path(sys.base_prefix),
+                                         home=workspace.home, work=workspace.work,
+                                         scratch=workspace.scratch, query=query,
+                                         inference_socket=sockets[0], broker_socket=sockets[1],
+                                         model='fixture', role='reviewer', workspace=workspace,
+                                         timeout=10)
+                self.assertTrue(workspace.retained_reason)
+                self.assertFalse(workspace.active)
+                self.assertEqual(exits.control(None, 1, 0), [], 'fixture already exited')
+                self.assertIn(child, native_lifecycle._group_members(child))
+                with mock.patch.object(workspace, '_detach_owned') as detach:
+                    with self.assertRaisesRegex(native_storage.StorageError, 'retained at'):
+                        workspace.__exit__(None, None, None)
+                    detach.assert_not_called()
+                self.assertTrue(workspace.image.is_file())
+                self.assertTrue(workspace._devices())
+                self.assertNotEqual(workspace.mount.stat().st_dev, workspace.root.stat().st_dev)
+                print('NATIVE_WATCHDOG_DEATH ' + json.dumps({
+                    'child': child, 'image': str(workspace.image), 'child_survived': True,
+                    'storage_retained': True, 'eject_attempts': len(workspace.cleanup_events)}),
+                      flush=True)
+            finally:
+                # Only the cooperative fixture can release itself. Wait on the
+                # registered kernel identity before touching retained storage.
+                if child is not None:
+                    stop.touch()
+                    observed = any(event.ident == child for event in exits.control(None, 1, 25))
+                    if observed:
+                        deadline = time.monotonic() + 5
+                        while native_lifecycle._group_members(child) and time.monotonic() < deadline:
+                            time.sleep(0.02)
+                        observed = not native_lifecycle._group_members(child)
+                if not observed:
+                    workspace.retain('watchdog-death fixture exit could not be verified')
+                    self.fail(f'fixture exit unverified; image retained at {workspace.root}')
+                # Test-only release after independent exit proof. This is not a
+                # restart recovery protocol or a production cleanup guarantee.
+                workspace.retained_reason = ''
+                workspace._cleanup()
+            self.assertFalse(workspace.root.exists())
 
     def test_all_writable_roots_share_a_hard_allocation_bound(self):
         with tempfile.TemporaryDirectory(prefix='dk-storage-probe-', dir='/tmp') as directory:

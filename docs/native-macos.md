@@ -184,6 +184,14 @@ all immediate eject diagnostics and recovery outcome in CI logs, including busy
 attempts that eventually succeed. A persistent failure still retains storage
 and fails the job. A run with zero busy events is explicitly reported as such;
 it cannot confirm the original race's cause.
+In [Intel job 114383683177](https://github.com/coe0718/diaktoros/actions/runs/38110077986/job/114383683177),
+idle stress cycle 6 captured four busy normal ejects with the image still
+attached but already unmounted. The fifth normal eject succeeded after the
+2/4/6/8-second backoff, without force, and workspace removal passed. No turn
+process ran in this cycle. This confirms a transient teardown case independent
+of turn leftovers and shows it is not exclusive to Apple Silicon. Because the
+filesystem was already unmounted, these diagnostics contain no filesystem
+holder snapshot; the exact OS holder remains unknown.
 In [Intel job 114383096129](https://github.com/coe0718/diaktoros/actions/runs/38109877354/job/114383096129),
 `hdiutil create` itself reported busy before any turn launched. Cleanup recorded
 an already-unmounted image still attached through physical and synthesized APFS
@@ -268,6 +276,15 @@ fork activity. The host requires an empty original group after capture completes
 and retains fixture paths if bounded fixture cleanup cannot be confirmed. This
 exercises cleanup during active fork churn; it does not prove every possible
 kernel fork/signal interleaving or recovery after watchdog death.
+
+The watchdog-death storage test kills the actual unreaped helper during a
+kernel-restricted turn holding an APFS file open. It exercises `native_macos.run`
+with a bounded fixture entry, requires `CleanupIncomplete`, and verifies that
+the still-running child leaves the image mounted and retained without any eject
+attempt. Test-only cleanup asks the cooperative fixture to stop, waits for its
+previously registered kernel exit notification and empty group, then releases
+the retained image. This test characterizes failure and retention; it does not
+provide automatic crash recovery. Mac CI must validate the new probe.
 
 This closes only the original-group supervisor-death gap. A child that changes
 its process group can still survive. Watchdog death, machine death, capability
