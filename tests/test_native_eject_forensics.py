@@ -75,7 +75,8 @@ class ForensicsValidation(unittest.TestCase):
                     mock.patch('os.kill') as kill, mock.patch('os.killpg') as killpg:
                 recorder.snapshot(workspace, 'fixture')
             calls = [c.args[1] for c in command.call_args_list]
-            self.assertEqual(calls[0], ['/usr/sbin/lsof', '-nP', '+c', '0', '-Fpcfn', '--',
+            self.assertEqual(calls[0][0], '/usr/sbin/ioreg')
+            self.assertEqual(calls[1], ['/usr/sbin/lsof', '-nP', '+c', '0', '-Fpcfn', '--',
                                        str(workspace.image), '/dev/disk99s1', '/dev/rdisk99s1'])
             self.assertTrue(all('detach' not in argv and '-force' not in argv for argv in calls))
             kill.assert_not_called()

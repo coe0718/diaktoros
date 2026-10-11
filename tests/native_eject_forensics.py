@@ -105,6 +105,9 @@ class Recorder:
             return
         raw_devices = [d.replace('/dev/disk', '/dev/rdisk', 1) for d in devices]
         targets = [str(workspace.image), *devices, *raw_devices]
+        # Observe media opens before diskutil queries or helper sampling can
+        # change the timing. Compare with the second registry snapshot below.
+        self.command(tag + '-ioreg-before', ['/usr/sbin/ioreg', '-r', '-c', 'IOMedia', '-l', '-w', '0'])
         _, raw, _ = self.command(tag + '-holders',
                                 ['/usr/sbin/lsof', '-nP', '+c', '0', '-Fpcfn', '--', *targets])
         for pid, command in list(holders(raw.decode(errors='replace')).items())[:4]:

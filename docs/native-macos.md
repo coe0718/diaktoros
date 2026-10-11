@@ -532,8 +532,13 @@ snapshot. Neither cycle launched a turn process.
 Full-name lsof queries found only `diskimages-helper` holding the backing image,
 with no reported block/raw-device holders. Sampled helper threads waited in the
 run loop and `DI_kextDriveGetRequest`; this does not establish a helper deadlock.
-Media snapshots reported `Open = No` and I/O registry busy count zero after the
-failure. Verbose failures occurred even when `IOServiceWaitQuiet` returned in
+ARM's sampled media reported `Open = No`. Intel's persistent case instead showed
+the whole physical disk `Open = Yes` in the first three snapshots while its
+partition and synthesized APFS media reported `Open = No`; the physical disk
+changed to `Open = No` by the last snapshot. I/O registry busy counts were zero.
+This suggests a physical-device open worth investigating, but snapshots followed
+diskutil metadata queries, which can themselves affect device state. Verbose
+failures occurred even when `IOServiceWaitQuiet` returned in
 microseconds. Those later observations do not identify the state at the exact
 failed eject, nor exclude a transient holder.
 
