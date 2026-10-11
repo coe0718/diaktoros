@@ -26,6 +26,22 @@ class StorageError(RuntimeError):
     pass
 
 
+def _diagnostic(tag, event):
+    # The independent guardian can outlive the supervisor that read its pipe.
+    # Diagnostics must not abort verified disposal when that reader disappears.
+    # Write directly so a failed buffered flush cannot also break helper exit.
+    raw = (tag + ' ' + json.dumps(event, default=str) + '\n').encode()
+    try:
+        descriptor = sys.stderr.fileno()
+        while raw:
+            written = os.write(descriptor, raw)
+            if written <= 0:
+                break
+            raw = raw[written:]
+    except (OSError, ValueError):
+        pass
+
+
 def _run(argv: list[str]) -> bytes:
     result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             timeout=120, check=False)
@@ -131,8 +147,7 @@ class Workspace:
                         except Exception as error:
                             event['diagnostic_error'] = str(error)[-2000:]
                     self.creation_events.append(event)
-                    print('NATIVE_STORAGE ' + json.dumps(event, default=str),
-                          file=sys.stderr, flush=True)
+                    _diagnostic('NATIVE_STORAGE', event)
             except StorageError as error:
                 if 'Resource busy' not in str(error) or attempt == 2:
                     raise
@@ -278,7 +293,7 @@ class Workspace:
             except Exception as exc:
                 event['diagnostic_error'] = str(exc)[-2000:]
             self.cleanup_events.append(event)
-            print('NATIVE_EJECT ' + json.dumps(event, default=str), file=sys.stderr, flush=True)
+            _diagnostic('NATIVE_EJECT', event)
 
     def __exit__(self, *_):
         self._cleanup()

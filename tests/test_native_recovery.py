@@ -29,7 +29,7 @@ class RecoveryValidation(unittest.TestCase):
 
     def test_unlocked_running_record_never_authorizes_cleanup_or_pid_signals(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             workspace = self.fixture(root)
             with native_recovery.Record(root) as receipt:
                 receipt.update('running', leader=123, watchdog=456, guardian=789)
@@ -44,7 +44,7 @@ class RecoveryValidation(unittest.TestCase):
 
     def test_active_guardian_lease_blocks_restart_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             self.fixture(root)
             with native_recovery.Record(root), \
                     mock.patch.object(native_storage.Workspace, '_detach_owned') as detach:
@@ -53,7 +53,7 @@ class RecoveryValidation(unittest.TestCase):
 
     def test_restart_removes_drained_image_only_after_verified_detachment(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / 'owned'
+            root = Path(directory).resolve() / 'owned'
             root.mkdir()
             workspace = self.fixture(root)
             with native_recovery.Record(root) as receipt:
@@ -68,7 +68,7 @@ class RecoveryValidation(unittest.TestCase):
 
     def test_failed_detachment_retains_drained_receipt_for_later_restart(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             workspace = self.fixture(root)
             with native_recovery.Record(root) as receipt:
                 receipt.update('drained')
@@ -82,7 +82,7 @@ class RecoveryValidation(unittest.TestCase):
     def test_replaced_image_and_malformed_or_symlink_journal_are_retained(self):
         for corruption in ('image', 'invalid', 'symlink'):
             with self.subTest(corruption=corruption), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
+                root = Path(directory).resolve()
                 workspace = self.fixture(root)
                 with native_recovery.Record(root) as receipt:
                     receipt.update('drained')
@@ -103,7 +103,7 @@ class RecoveryValidation(unittest.TestCase):
 
     def test_arming_is_durable_before_launch_and_cannot_be_repeated(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             with mock.patch.object(native_recovery.os, 'fsync') as sync:
                 workspace = self.fixture(root)
             self.assertEqual(sync.call_count, 2)
@@ -113,7 +113,7 @@ class RecoveryValidation(unittest.TestCase):
 
     def test_receipt_cannot_regress_to_running_after_drain(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             self.fixture(root)
             with native_recovery.Record(root) as receipt:
                 receipt.update('drained')
@@ -122,7 +122,7 @@ class RecoveryValidation(unittest.TestCase):
 
     def test_unknown_private_root_is_retained_without_creating_files(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             self.assertEqual(native_recovery.recover(root)['status'], 'retained')
             self.assertEqual(list(root.iterdir()), [])
 

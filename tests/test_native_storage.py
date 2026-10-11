@@ -19,6 +19,16 @@ from diaktoros import contained, native_lifecycle, native_macos, native_storage,
 
 
 class StorageValidation(unittest.TestCase):
+    def test_eject_diagnostics_cannot_interrupt_cleanup_after_reader_dies(self):
+        reader, writer = os.pipe()
+        os.close(reader)
+        try:
+            with mock.patch.object(native_storage.sys, 'stderr',
+                                   SimpleNamespace(fileno=lambda: writer)):
+                native_storage._diagnostic('NATIVE_EJECT', {'device': '/dev/disk99'})
+        finally:
+            os.close(writer)
+
     def test_busy_creation_retries_only_after_partial_image_is_detached_and_removed(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = native_storage.Workspace(64)
