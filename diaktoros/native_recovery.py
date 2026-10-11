@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import subprocess
+import sys
 import uuid
 
 JOURNAL = 'ownership.json'
@@ -25,6 +27,29 @@ PREPARATION_STATES = ('registered', 'created', 'attached')
 
 class RecoveryError(RuntimeError):
     pass
+
+
+def _valid_boot_id(value):
+    try:
+        return type(value) is str and str(uuid.UUID(value)) == value and uuid.UUID(value).int != 0
+    except (ValueError, AttributeError):
+        return False
+
+
+def boot_identity():
+    """Read a kernel boot session, never infer reboot from elapsed time or PIDs."""
+    if sys.platform != 'darwin':
+        return None
+    try:
+        result = subprocess.run(['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid'],
+                                stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=5, check=True, env={})
+        value = result.stdout.strip().lower()
+        if not _valid_boot_id(value):
+            raise ValueError('invalid kernel boot session UUID')
+        return value
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        raise RecoveryError('kernel boot identity unavailable; retain storage') from error
 
 
 def _identity(info):
@@ -88,6 +113,8 @@ class Record:
                     not 64 <= record['size_mib'] <= 16384 or
                     record['state'] not in (*PREPARATION_STATES, 'armed', 'running', 'drained', 'disposed')):
                 raise ValueError('invalid ownership record')
+            if 'boot_id' in record and record['boot_id'] is not None and not _valid_boot_id(record['boot_id']):
+                raise ValueError('invalid recorded boot identity')
             if record['state'] in PREPARATION_STATES and (
                     record.get('image_path') != str(self.root / 'turn.dmg') or
                     record.get('owner_uid') != os.getuid() or
@@ -154,6 +181,23 @@ class Record:
 
     def cleanup(self):
         record = self.read()
+        if record['state'] in ('created', 'attached', 'armed', 'running') and record.get('boot_id'):
+            current_boot = boot_identity()
+            if current_boot is not None and current_boot != record['boot_id']:
+                # A changed kernel boot proves old execution ended. It does not
+                # authorize detaching an image reattached in this boot. Verify
+                # absence first, then persist disposal proof before deletion.
+                from . import native_storage
+                workspace = native_storage.Workspace(record['size_mib'])
+                workspace.root, workspace.image = self.root, self.root / 'turn.dmg'
+                workspace.mount = self.root / 'mount'
+                if workspace._devices():
+                    raise RecoveryError('image attached after boot change; retain storage')
+                if workspace.mount.stat().st_dev != self.root.stat().st_dev:
+                    raise RecoveryError('mount remains mounted after boot change; retain storage')
+                record.update(state='disposed', recovery_boot_id=current_boot,
+                              recovery_reason='verified kernel boot change')
+                self.write(record)
         if record['state'] in PREPARATION_STATES:
             raise RecoveryError('workspace preparation interrupted at ' + record['state'] +
                                 '; creator completion is unverified; retain storage')
@@ -208,7 +252,7 @@ def register(workspace):
                        'image_path': str(workspace.image), 'owner_uid': os.getuid(),
                        'reserved_bytes': workspace.size_mib * 1024 * 1024,
                        'size_mib': workspace.size_mib, 'turn_id': uuid.uuid4().hex,
-                       'state': 'registered'})
+                       'state': 'registered', 'boot_id': boot_identity()})
         parent = os.open(workspace.root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(parent)
@@ -242,7 +286,7 @@ def arm(workspace):
         receipt.write({'version': 1, 'root': str(workspace.root),
                        'root_identity': _identity(os.fstat(receipt.directory)),
                        'image_identity': _identity(image), 'size_mib': workspace.size_mib,
-                       'turn_id': uuid.uuid4().hex, 'state': 'armed'})
+                       'turn_id': uuid.uuid4().hex, 'state': 'armed', 'boot_id': boot_identity()})
 
 
 def recover(root: Path):

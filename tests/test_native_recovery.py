@@ -12,6 +12,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 import unittest
+import uuid
 from unittest import mock
 
 from diaktoros import contained, native_anchor, native_lifecycle, native_recovery, native_storage, run_supervisor, seatbelt
@@ -80,6 +81,7 @@ os._exit(91)
             workspace.image.write_bytes(b'fixture')
         with mock.patch.object(native_storage.sys, 'platform', 'darwin'), \
                 mock.patch.object(Path, 'is_file', return_value=True), \
+                mock.patch.object(native_recovery, 'boot_identity', return_value=None), \
                 mock.patch.object(workspace, '_create_image', side_effect=create), \
                 mock.patch.object(workspace, '_verify_mount'), \
                 mock.patch.object(Path, 'open', autospec=True, side_effect=fixture_open), \
@@ -111,6 +113,7 @@ os._exit(91)
         workspace = native_storage.Workspace(64, durable_ownership=True)
         with mock.patch.object(native_storage.sys, 'platform', 'darwin'), \
                 mock.patch.object(Path, 'is_file', return_value=True), \
+                mock.patch.object(native_recovery, 'boot_identity', return_value=None), \
                 mock.patch.object(native_recovery.Record, 'write', side_effect=OSError('disk full')), \
                 mock.patch.object(workspace, '_create_image') as create, \
                 mock.patch.object(workspace, '_detach_owned'), \
@@ -138,6 +141,128 @@ os._exit(91)
         workspace = SimpleNamespace(root=root, image=image, size_mib=64)
         native_recovery.arm(workspace)
         return workspace
+
+    def test_boot_change_disposes_only_bound_unattached_images(self):
+        old_boot, new_boot = str(uuid.uuid4()), str(uuid.uuid4())
+        for state in ('created', 'attached', 'armed', 'running'):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve() / 'owned'
+                root.mkdir(mode=0o700)
+                w = SimpleNamespace(root=root, image=root/'turn.dmg', size_mib=64)
+                with mock.patch.object(native_recovery, 'boot_identity', return_value=old_boot):
+                    r = native_recovery.register(w)
+                w.image.write_bytes(b'fixture')
+                w.image.chmod(0o600)
+                (root/'mount').mkdir()
+                r.update('created', image_identity=native_recovery._identity(w.image.lstat()))
+                if state != 'created':
+                    r.update('attached')
+                if state in ('armed', 'running'):
+                    r.update('armed')
+                if state == 'running':
+                    r.update('running')
+                r.close()
+                with mock.patch.object(native_recovery, 'boot_identity', return_value=new_boot), \
+                        mock.patch.object(native_storage.Workspace, '_devices', return_value=[]), \
+                        mock.patch.object(native_storage.Workspace, '_detach_owned') as detach, \
+                        mock.patch('os.kill') as kill:
+                    self.assertEqual(native_recovery.recover(root)['status'], 'removed')
+                detach.assert_not_called()
+                kill.assert_not_called()
+
+    def test_restart_missing_boot_and_reattachment_never_supply_reboot_proof(self):
+        old_boot, new_boot = str(uuid.uuid4()), str(uuid.uuid4())
+        for current, devices in ((old_boot, []), (None, []), (new_boot, ['/dev/disk99'])):
+            with self.subTest(current=current, devices=devices), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                with mock.patch.object(native_recovery, 'boot_identity', return_value=old_boot):
+                    w = self.fixture(root)
+                with native_recovery.Record(root) as r:
+                    r.update('running')
+                with mock.patch.object(native_recovery, 'boot_identity', return_value=current), \
+                        mock.patch.object(native_storage.Workspace, '_devices', return_value=devices), \
+                        mock.patch.object(native_storage.Workspace, '_detach_owned') as detach:
+                    self.assertEqual(native_recovery.recover(root)['status'], 'retained')
+                self.assertTrue(w.image.exists())
+                detach.assert_not_called()
+
+    def test_kernel_boot_query_rejects_invalid_results_and_timeouts(self):
+        for output in ('', 'not-a-uuid', '00000000-0000-0000-0000-000000000000'):
+            with self.subTest(output=output), mock.patch.object(sys, 'platform', 'darwin'), \
+                    mock.patch.object(subprocess, 'run', return_value=SimpleNamespace(stdout=output)):
+                with self.assertRaises(native_recovery.RecoveryError):
+                    native_recovery.boot_identity()
+        with mock.patch.object(sys, 'platform', 'darwin'), \
+                mock.patch.object(subprocess, 'run', side_effect=subprocess.TimeoutExpired('sysctl', 5)):
+            with self.assertRaises(native_recovery.RecoveryError):
+                native_recovery.boot_identity()
+
+    def test_reboot_proof_write_failure_prevents_deletion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(native_recovery, 'boot_identity', return_value=str(uuid.uuid4())):
+                w = self.fixture(root)
+            with mock.patch.object(native_recovery, 'boot_identity', return_value=str(uuid.uuid4())), \
+                    mock.patch.object(native_storage.Workspace, '_devices', return_value=[]), \
+                    mock.patch.object(native_recovery.Record, 'write', side_effect=OSError('disk full')):
+                self.assertEqual(native_recovery.recover(root)['status'], 'retained')
+            self.assertTrue(w.image.exists())
+            with native_recovery.Record(root) as r:
+                self.assertEqual(r.read()['state'], 'armed')
+
+    def test_reboot_disposal_receipt_survives_interrupted_deletion(self):
+        old_boot, new_boot = str(uuid.uuid4()), str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / 'owned'
+            root.mkdir()
+            with mock.patch.object(native_recovery, 'boot_identity', return_value=old_boot):
+                self.fixture(root)
+            with mock.patch.object(native_recovery, 'boot_identity', return_value=new_boot), \
+                    mock.patch.object(native_storage.Workspace, '_devices', return_value=[]), \
+                    mock.patch.object(Path, 'iterdir', side_effect=OSError('interrupted deletion')):
+                self.assertEqual(native_recovery.recover(root)['status'], 'retained')
+            with native_recovery.Record(root) as r:
+                record = r.read()
+                self.assertEqual(record['state'], 'disposed')
+                self.assertEqual(record['recovery_boot_id'], new_boot)
+            with mock.patch.object(native_recovery, 'boot_identity', side_effect=AssertionError('proof already persisted')), \
+                    mock.patch.object(native_storage.Workspace, '_devices', return_value=[]):
+                self.assertEqual(native_recovery.recover(root)['status'], 'removed')
+
+    def test_legacy_or_malformed_boot_receipts_do_not_gain_reboot_authority(self):
+        for value in ('missing', 'not-a-uuid', '00000000-0000-0000-0000-000000000000'):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                self.fixture(root)
+                with native_recovery.Record(root) as r:
+                    record = r.read()
+                    record['state'] = 'running'
+                    if value == 'missing':
+                        record.pop('boot_id', None)
+                    else:
+                        record['boot_id'] = value
+                    r.write(record)
+                with mock.patch.object(native_recovery, 'boot_identity', return_value=str(uuid.uuid4())), \
+                        mock.patch.object(native_storage.Workspace, '_devices') as devices:
+                    self.assertEqual(native_recovery.recover(root)['status'], 'retained')
+                devices.assert_not_called()
+
+    def test_boot_identity_failure_blocks_registration_and_retains_running_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            w = SimpleNamespace(root=root, image=root/'turn.dmg', size_mib=64)
+            with mock.patch.object(native_recovery, 'boot_identity', side_effect=native_recovery.RecoveryError('unavailable')):
+                with self.assertRaises(native_recovery.RecoveryError):
+                    native_recovery.register(w)
+            self.assertFalse(w.image.exists())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(native_recovery, 'boot_identity', return_value=str(uuid.uuid4())):
+                self.fixture(root)
+            with native_recovery.Record(root) as r:
+                r.update('running')
+            with mock.patch.object(native_recovery, 'boot_identity', side_effect=native_recovery.RecoveryError('unavailable')):
+                self.assertEqual(native_recovery.recover(root)['status'], 'retained')
 
     def test_unlocked_running_record_never_authorizes_cleanup_or_pid_signals(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -383,6 +508,21 @@ class NativeRecoveryBoundary(unittest.TestCase):
             if os.environ.get('DIAKTOROS_REQUIRE_NATIVE_STORAGE') == '1':
                 self.fail(reason)
             self.skipTest(reason)
+
+    def test_kernel_boot_identity_is_stable_across_fresh_processes(self):
+        boot = native_recovery.boot_identity()
+        self.assertTrue(native_recovery._valid_boot_id(boot))
+        source = str(Path(native_recovery.__file__).resolve().parent.parent)
+        child = subprocess.run([sys.executable, '-I', '-B', '-c',
+                                'import sys; sys.path.insert(0,sys.argv[1]); '
+                                'from diaktoros.native_recovery import boot_identity; print(boot_identity())',
+                                source], capture_output=True, text=True, timeout=10, check=True)
+        self.assertEqual(child.stdout.strip(), boot)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            w = SimpleNamespace(root=root, image=root/'turn.dmg', size_mib=64)
+            with native_recovery.register(w) as r:
+                self.assertEqual(r.read()['boot_id'], boot)
 
     def command(self, workspace, outer, *, bounded=False, descendants=False):
         interpreter = Path(sys.executable).resolve()

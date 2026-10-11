@@ -509,10 +509,34 @@ binding. It reports and retains `registered`, `created` and `attached` records:
 an unlocked preparation lease cannot prove an orphaned hdiutil creator exited.
 No preparation state can transition directly to drained or disposed. This slice
 provides durable discovery, not automatic disposal of interrupted preparation,
-free-space admission, reboot proof or the eventual-cleanup scheduler. Recorded
+free-space admission or the eventual-cleanup scheduler. The boot recovery
+extension is described below. Recorded
 reserved bytes are accounting metadata; no capacity admission is claimed yet.
 Local subprocess-exit tests cover each preparation boundary, and the real Mac
 guarded recovery and Hermes fixtures now use early registration.
+
+## Kernel boot identity recovery
+
+New receipts record the kernel's `kern.bootsessionuuid`, read through a bounded,
+scrubbed `/usr/sbin/sysctl` invocation. Unknown or malformed identity blocks new
+Mac registration. A normal supervisor restart has the same boot identity and
+cannot replace missing process-exit proof. Legacy receipts without a boot
+identity retain their previous rules.
+
+For image-bound `created`, `attached`, `armed` or `running` receipts, a verified
+changed boot identity proves the old creator/turn cannot still run. Recovery
+also requires the exact image to have no current attachment and its mount
+path to be on the host filesystem. A reattached image is retained; recovery
+never signals saved PIDs or detaches it using reboot proof. Only after these
+checks does it persist a disposed receipt, including the new boot identity,
+then reuse verified deletion. Interrupted deletion remains recoverable.
+Unbound `registered` preparation is still retained, including partial images.
+
+Local tests simulate changed/unchanged/missing identities, reattachment,
+malformed and legacy receipts, and interruption after disposal proof. Both Mac
+runners check the real kernel identity across fresh Python processes and its
+registration receipt. This is not a physical reboot acceptance test: that gate
+still requires a reboot-capable Mac runner with storage retained across reboot.
 
 ## Dedicated eject forensics
 
