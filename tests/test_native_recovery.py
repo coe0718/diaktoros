@@ -5,6 +5,7 @@ from contextlib import closing
 import os
 from pathlib import Path
 import select
+import signal
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from diaktoros import contained, native_lifecycle, native_recovery, native_storage, run_supervisor, seatbelt
+from diaktoros import contained, native_anchor, native_lifecycle, native_recovery, native_storage, run_supervisor, seatbelt
 
 
 class RecoveryValidation(unittest.TestCase):
@@ -214,6 +215,55 @@ class RecoveryValidation(unittest.TestCase):
                 supervisor.recover()
             startup.assert_not_called()
 
+    def anchor_proof(self, events):
+        proof = object.__new__(native_lifecycle._AnchorProof)
+        proof.pid = 456
+        proof.events = mock.Mock()
+        proof.events.control.side_effect = events
+        return proof
+
+    def test_live_anchor_exit_and_empty_group_authorize_only_matching_turn_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / 'owned'
+            root.mkdir()
+            self.fixture(root)
+            with native_recovery.Record(root) as receipt:
+                turn = receipt.read()['turn_id']
+                receipt.update('running', leader=123)
+            event = SimpleNamespace(filter=1, ident=456)
+            proof = self.anchor_proof([[event], []])
+            with mock.patch.object(select, 'KQ_FILTER_PROC', 1, create=True), \
+                    mock.patch.object(native_lifecycle, '_group_members', side_effect=[{789}, set()]) as members, \
+                    mock.patch.object(native_storage.Workspace, '_detach_owned'), \
+                    mock.patch.object(native_storage.Workspace, '_verify_detached'), \
+                    mock.patch('os.kill') as kill, mock.patch('os.killpg') as killpg:
+                with self.assertRaises(native_lifecycle.GuardianLost):
+                    proof.recover(root, turn)
+            self.assertFalse(root.exists())
+            self.assertEqual(members.call_args_list, [mock.call(456)] * 2)
+            kill.assert_not_called()
+            killpg.assert_not_called()
+
+    def test_anchor_recovery_retains_missing_exit_live_members_and_changed_turn(self):
+        for failure in ('missing_exit', 'live_members', 'changed_turn'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                self.fixture(root)
+                with native_recovery.Record(root) as receipt:
+                    turn = receipt.read()['turn_id']
+                    receipt.update('running', leader=123)
+                event = SimpleNamespace(filter=1, ident=456)
+                proof = self.anchor_proof([[] if failure == 'missing_exit' else [event]])
+                with mock.patch.object(select, 'KQ_FILTER_PROC', 1, create=True), \
+                        mock.patch.object(native_lifecycle.time, 'monotonic', side_effect=[0, 6, 6]), \
+                        mock.patch.object(native_lifecycle, '_group_members',
+                                          return_value={789} if failure == 'live_members' else set()), \
+                        mock.patch.object(native_storage.Workspace, '_detach_owned') as detach:
+                    with self.assertRaises(native_lifecycle.CleanupIncomplete):
+                        proof.recover(root, 'other-turn' if failure == 'changed_turn' else turn)
+                detach.assert_not_called()
+                self.assertTrue(root.exists())
+
 
 class NativeRecoveryBoundary(unittest.TestCase):
     def setUp(self):
@@ -223,7 +273,7 @@ class NativeRecoveryBoundary(unittest.TestCase):
                 self.fail(reason)
             self.skipTest(reason)
 
-    def command(self, workspace, outer, *, bounded=False):
+    def command(self, workspace, outer, *, bounded=False, descendants=False):
         interpreter = Path(sys.executable).resolve()
         framework = Path(sys.base_prefix) / 'Resources/Python.app/Contents/MacOS/Python'
         if framework.is_file():
@@ -245,6 +295,18 @@ with Path('held-open').open('wb') as held:
     while not Path('stop').exists() and time.monotonic() < deadline:
         time.sleep(0.02)
 ''' if bounded else 'raise SystemExit(7)'
+        if descendants:
+            script = script.replace("    Path('ready.tmp').write_text(str(os.getpid()))", '''
+    factory = os.fork()
+    if factory == 0:
+        if os.fork() != 0: os._exit(0)
+        Path('descendant').write_text(str(os.getpid()))
+        deadline = time.monotonic() + 15
+        while not Path('stop').exists() and time.monotonic() < deadline: time.sleep(0.02)
+        os._exit(0)
+    os.waitpid(factory, 0)
+    while not Path('descendant').exists(): time.sleep(0.01)
+    Path('ready.tmp').write_text(str(os.getpid()))''')
         return profile.command(policy, [str(interpreter), '-I', '-B', '-c', script])
 
     def ready(self, workspace):
@@ -382,11 +444,12 @@ with Path('held-open').open('wb') as held:
                 '    os.kill(os.getpid(), 9)\n'
                 'else:\n    life._watch(*(int(value) for value in sys.argv[1:]))\n')
             original = contained.capture_process
-            child = None
+            child = group = None
 
             def fail_monitor(guardian, **kwargs):
-                nonlocal child
+                nonlocal child, group
                 child = self.ready(workspace)
+                group = os.getpgid(child)
                 self.observe(events, child)
                 self.assertEqual(native_recovery.recover(root)['status'], 'active')
                 trigger.touch()
@@ -399,7 +462,7 @@ with Path('held-open').open('wb') as held:
                         native_lifecycle.capture(argv, env={'PATH': '/usr/bin:/bin'}, timeout=10,
                                                  cwd=workspace.work, recovery_root=root)
                 self.assertTrue(any(event.ident == child for event in events.control(None, 1, 5)))
-                self.assertFalse(native_lifecycle._group_members(child))
+                self.assertFalse(native_lifecycle._group_members(group))
                 self.assertFalse(root.exists())
                 print('NATIVE_RECOVERY watchdog_sigkill=cleaned group_survivors=0', flush=True)
             finally:
@@ -424,6 +487,7 @@ with Path('held-open').open('wb') as held:
                                      env={'PATH': '/usr/bin:/bin'})
             try:
                 child = self.ready(workspace)
+                group = os.getpgid(child)
                 self.observe(events, child)
                 owner.kill()  # Actual unreaped child of this test, not a saved PID.
                 owner.wait(timeout=5)
@@ -432,7 +496,7 @@ with Path('held-open').open('wb') as held:
                 while root.exists() and time.monotonic() < deadline:
                     time.sleep(0.05)
                 self.assertFalse(root.exists(), 'guardian retained storage after owner death')
-                self.assertFalse(native_lifecycle._group_members(child))
+                self.assertFalse(native_lifecycle._group_members(group))
                 print('NATIVE_RECOVERY supervisor_sigkill=cleaned group_survivors=0', flush=True)
             finally:
                 if owner.poll() is None:
@@ -441,46 +505,118 @@ with Path('held-open').open('wb') as held:
                 if root.exists():
                     native_recovery.recover(root)
 
-    def test_guardian_death_retains_unknown_turn_and_restart_does_not_kill_saved_pid(self):
+    def test_guardian_sigkill_anchor_stops_turn_and_host_verifies_disposal(self):
         with tempfile.TemporaryDirectory(prefix='dk-guard-loss-', dir='/tmp') as directory, \
                 closing(select.kqueue()) as events:
             outer = Path(directory).resolve()
             workspace = native_storage.Workspace(64).__enter__()
             root = workspace.root
             native_recovery.arm(workspace)
-            argv = self.command(workspace, outer, bounded=True)
+            argv = self.command(workspace, outer, bounded=True, descendants=True)
             original = contained.capture_process
-            child = None
+            child = group = descendant = None
 
             def fail_guardian(guardian, **kwargs):
-                nonlocal child
+                nonlocal child, group, descendant
                 child = self.ready(workspace)
+                group = os.getpgid(child)
+                self.assertNotEqual(group, child, 'seat must inherit the trusted anchor group')
                 self.observe(events, child)
+                descendant = int((workspace.work / 'descendant').read_text())
+                self.observe(events, descendant)
+                self.assertIn(descendant, native_lifecycle._group_members(group))
                 guardian.kill()  # This Popen owns the unreaped guardian PID.
                 return original(guardian, **kwargs)
 
             try:
                 with mock.patch.object(contained, 'capture_process', side_effect=fail_guardian):
-                    with self.assertRaises(native_lifecycle.CleanupIncomplete):
+                    with self.assertRaises(native_lifecycle.GuardianLost):
                         native_lifecycle.capture(argv, env={'PATH': '/usr/bin:/bin'}, timeout=10,
                                                  cwd=workspace.work, recovery_root=root)
-                self.assertEqual(native_recovery.recover(root)['status'], 'retained')
-                self.assertIn(child, native_lifecycle._group_members(child))
-                self.assertTrue(workspace.image.exists())
-                print('NATIVE_RECOVERY guardian_sigkill=retained unknown_turn=true', flush=True)
+                exits = {event.ident for event in events.control(None, 2, 5)}
+                self.assertEqual(exits, {child, descendant})
+                self.assertFalse(native_lifecycle._group_members(group))
+                self.assertFalse(root.exists())
+                self.assertEqual(native_recovery.recover(root)['status'], 'absent')
+                print('NATIVE_RECOVERY guardian_sigkill=cleaned anchor_group_survivors=0', flush=True)
             finally:
-                # No production claim follows from losing the guardian. Only
-                # this bounded fixture's independently registered exit identity
-                # can authorize its explicit test cleanup.
-                if child is not None:
+                if root.exists() and child is not None:
                     (workspace.work / 'stop').touch()
                     self.assertTrue(any(event.ident == child
                                         for event in events.control(None, 1, 20)))
                     deadline = time.monotonic() + 5
-                    while native_lifecycle._group_members(child) and time.monotonic() < deadline:
+                    while native_lifecycle._group_members(group) and time.monotonic() < deadline:
                         time.sleep(0.02)
-                    self.assertFalse(native_lifecycle._group_members(child),
+                    self.assertFalse(native_lifecycle._group_members(group),
                                      f'fixture still owns retained storage at {root}')
+                    with native_recovery.Record(root) as receipt:
+                        receipt.update('drained', cause='test_fixture_exit_proof')
+                    self.assertEqual(native_recovery.recover(root)['status'], 'removed')
+
+    def test_guardian_and_anchor_death_retains_live_turn_without_saved_pid_signals(self):
+        with tempfile.TemporaryDirectory(prefix='dk-double-loss-', dir='/tmp') as directory, \
+                closing(select.kqueue()) as events:
+            outer = Path(directory).resolve()
+            workspace = native_storage.Workspace(64).__enter__()
+            root = workspace.root
+            native_recovery.arm(workspace)
+            trigger = outer / 'kill-anchor'
+            anchor = outer / 'anchor.py'
+            anchor.write_text(
+                'import os,sys,threading,time\n'
+                'from pathlib import Path\n'
+                f'sys.path.insert(0,{str(Path(native_lifecycle.__file__).resolve().parent.parent)!r})\n'
+                'from diaktoros import native_anchor\n'
+                'def fail():\n'
+                f'    while not Path({str(trigger)!r}).exists(): time.sleep(0.01)\n'
+                '    os.kill(os.getpid(),9)\n'
+                'threading.Thread(target=fail,daemon=True).start()\n'
+                'raise SystemExit(native_anchor.run(*(int(v) for v in sys.argv[1:])))\n')
+            helper = outer / 'helper.py'
+            helper.write_text(
+                'import sys\n'
+                f'sys.path.insert(0,{str(Path(native_lifecycle.__file__).resolve().parent.parent)!r})\n'
+                'from diaktoros import native_anchor,native_lifecycle as life\n'
+                f'native_anchor.__file__={str(anchor)!r}\n'
+                'if sys.argv[1]=="--sentinel": life._sentinel(*(int(v) for v in sys.argv[2:]))\n'
+                'else: life._watch(*(int(v) for v in sys.argv[1:]))\n')
+            original = contained.capture_process
+            child = group = None
+
+            def fail_both(guardian, **kwargs):
+                nonlocal child, group
+                child = self.ready(workspace)
+                group = os.getpgid(child)
+                self.observe(events, child)
+                # Freeze the actual unreaped guardian before the anchor kills
+                # itself, preventing its ordinary drain from winning this race.
+                with closing(select.kqueue()) as anchor_events:
+                    self.observe(anchor_events, group)
+                    guardian.send_signal(signal.SIGSTOP)
+                    trigger.touch()
+                    self.assertTrue(any(e.ident == group for e in anchor_events.control(None, 1, 5)))
+                    guardian.kill()
+                return original(guardian, **kwargs)
+
+            try:
+                with mock.patch.object(native_lifecycle, '__file__', str(helper)), \
+                        mock.patch.object(contained, 'capture_process', side_effect=fail_both):
+                    with self.assertRaises(native_lifecycle.CleanupIncomplete):
+                        native_lifecycle.capture(self.command(workspace, outer, bounded=True),
+                                                 env={'PATH': '/usr/bin:/bin'}, timeout=10,
+                                                 cwd=workspace.work, recovery_root=root)
+                self.assertEqual(native_recovery.recover(root)['status'], 'retained')
+                self.assertIn(child, native_lifecycle._group_members(group))
+                self.assertTrue(workspace.image.exists())
+                print('NATIVE_RECOVERY guardian_and_anchor_sigkill=retained unknown_turn=true', flush=True)
+            finally:
+                if root.exists() and child is not None:
+                    (workspace.work / 'stop').touch()
+                    self.assertTrue(any(e.ident == child for e in events.control(None, 1, 20)))
+                    deadline = time.monotonic() + 5
+                    while native_lifecycle._group_members(group) and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    self.assertFalse(native_lifecycle._group_members(group))
                     with native_recovery.Record(root) as receipt:
                         receipt.update('drained', cause='test_fixture_exit_proof')
                     self.assertEqual(native_recovery.recover(root)['status'], 'removed')

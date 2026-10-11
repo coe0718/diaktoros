@@ -296,7 +296,11 @@ guardian while it owns execution or disposal. Neither file is in a writable
 Seatbelt root. Recorded guardian/leader/watchdog PIDs are diagnostic fields,
 never restart signal targets.
 
-In this mode, the trusted helper owns the unreaped leader as a cleanup guardian.
+In this mode, the trusted helper owns an unreaped trusted group anchor as the
+cleanup guardian. The anchor starts the contained command in its existing group;
+restricted descendants cannot change groups through the tested syscall or spawn
+routes. The anchor remains outside Seatbelt, so the seat cannot signal it or
+inherit its private descriptors.
 It starts a separate disposable timeout watchdog and observes watchdog exit,
 the actual supervisor, the private lifeline and the turn leader with kqueue.
 If the watchdog dies, the guardian drains the original group before reaping,
@@ -339,16 +343,34 @@ directory removal is underway. Both cases run two subsequent fresh supervisors
 to require successful removal followed by an empty inventory. Mac CI must
 validate this new startup probe.
 
-The new Mac probes cover watchdog self-SIGKILL, supervisor SIGKILL, recovery from
-a drained receipt in a fresh process, and guardian SIGKILL retaining unknown
+A host-only anonymous socket handshake registers the anchor's kernel exit
+identity before acknowledging seat launch. The anchor watches its actual guardian
+parent with kqueue. Guardian death makes the anchor send SIGKILL to its own current
+process group, including itself; no saved PID is used as a signal target. A
+surviving host requires the registered NOTE_EXIT and an empty live/zombie group
+snapshot before recording drained and disposing the exact image. `GuardianLost`
+marks the interrupted turn after that verified disposal. Turn ID and filesystem
+identities must still match the armed receipt. Missing registration, live group
+members, failed verification or disposal keeps cleanup incomplete.
+
+This evidence is deliberately ephemeral. Fresh supervisors still cannot turn a
+running journal's saved PIDs into authority. If guardian and anchor both die while
+seat processes survive, the host retains storage. If the host also dies, the
+anchor can stop the group on guardian death, but no surviving observer can persist
+the drained proof; restart retains the running receipt. Machine death/reboot
+recovery still needs a separate policy.
+
+The Mac probes cover watchdog self-SIGKILL, supervisor SIGKILL, recovery from
+a drained receipt in a fresh process, guardian SIGKILL killing the seat and its
+double-forked descendant, and simultaneous guardian/anchor loss retaining live
 execution. Local journal tests cover lease exclusion, corrupt/replaced files,
 durable arming, transition checks and failed eject retry eligibility. Mac CI
 must validate the new guardian/recovery probes.
 
 This closes only the original-group supervisor-death gap. A child that changes
 its process group can still survive. Restricted turns add watchdog-death cleanup
-and conservative receipt-based restart recovery; guardian/machine death without
-a drained receipt, capability revocation and production backend integration
+and conservative receipt-based restart recovery; loss of all live cleanup
+observers without a drained receipt, capability revocation and production backend integration
 remain unresolved. Production still requires an
 enforceable ownership mechanism for every descendant; a polling tree scan or
 `kqueue` monitoring of selected PIDs is not equivalent.

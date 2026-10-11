@@ -134,8 +134,8 @@ def run(*, code: Path, venv: Path, runtime: Path, rust: Path, home: Path,
                                             cwd=work, timeout=timeout + 30,
                                             **({'recovery_root': recovery} if recovery else {}))
         except native_lifecycle.WatchdogLost:
-            # The private completion channel proves the guardian disposed this
-            # exact volume. Context exit must not touch its now-absent paths.
+            # Guardian completion or live anchor proof verified disposal of
+            # this exact volume. Context exit must not touch absent paths.
             workspace.active = False
             workspace.root = None
             raise
