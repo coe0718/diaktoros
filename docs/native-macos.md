@@ -441,3 +441,23 @@ experiment is not App Sandbox packaging or an Apple-supported stable SBPL API.
 
 References: [Codex's Seatbelt implementation](https://github.com/openai/codex/tree/main/codex-rs/sandboxing/src),
 [Anthropic's macOS sandbox implementation](https://github.com/anthropics/sandbox-runtime/blob/main/src/sandbox/macos-sandbox-utils.ts).
+
+
+## launchd ownership characterization
+
+`tests/test_native_launchd.py` and the dedicated native launchd workflow test a
+candidate for OS-owned teardown on both macOS 15 architectures. Apple's
+[launchd.plist manual](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5)
+states that launchd kills the remaining process group when a job dies unless
+`AbandonProcessGroup` is enabled. The probes exercise normal job exit and
+SIGKILL with a restricted seat and double-forked descendant, plus an explicit
+abandonment control that must leave both children alive until cooperative stop.
+They register kernel exit notifications before triggering job death and require
+an empty live/zombie group before removing fixtures. Each temporary user-domain
+service has a unique label and is removed after the probe. Startup failures with
+no trusted job identity receipt retain fixtures rather than infer exit.
+
+This is characterization, not a launchd backend. It does not yet establish
+restart-safe job identity, durable drained receipts after loss of every helper,
+APFS disposal after observer death, capability revocation, or containment of a
+process that can escape the job's group. Production selection remains disabled.

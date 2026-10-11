@@ -1,0 +1,41 @@
+name: Experimental native launchd ownership
+
+on:
+  pull_request:
+    paths:
+      - tests/test_native_launchd.py
+      - .github/workflows/native-launchd.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-launchd-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ownership:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    env:
+      DIAKTOROS_REQUIRE_NATIVE_LAUNCHD: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Record launchd runtime
+        run: |
+          sw_vers
+          uname -m
+          /bin/launchctl help bootstrap || true
+          /bin/launchctl help bootout || true
+      - name: Characterize OS-owned teardown after job death
+        run: python tests/leakguard.py discover -v -s tests -p 'test_native_launchd.py'
