@@ -252,8 +252,13 @@ class StorageValidation(unittest.TestCase):
             workspace.mount = workspace.root / 'mount'
             workspace.mount.mkdir()
             workspace.image = workspace.root / 'turn.dmg'
-            attachment = {'system-entities': [{'dev-entry': '/dev/disk99'}]}
+            attachment = {'system-entities': [{'dev-entry': '/dev/disk99'},
+                                             {'dev-entry': '/dev/disk100s1'},
+                                             {'dev-entry': '--untrusted-option'}]}
             with mock.patch.object(workspace, '_attachments', return_value=[attachment]), \
+                    mock.patch.object(subprocess, 'run', return_value=SimpleNamespace(
+                                      stdout=b'diskimages-helper holds backing image', stderr=b'',
+                                      returncode=0)) as users, \
                     mock.patch.object(native_storage, '_run', side_effect=
                                       native_storage.StorageError('Resource busy')):
                 with self.assertRaisesRegex(native_storage.StorageError, 'Resource busy'):
@@ -263,6 +268,32 @@ class StorageValidation(unittest.TestCase):
             self.assertEqual(event['attachments'][0]['entities'], attachment['system-entities'])
             self.assertEqual(event['error'], 'Resource busy')
             self.assertGreaterEqual(event['elapsed_seconds'], 0)
+            self.assertNotIn('volume_users', event)
+            self.assertIn('diskimages-helper', event['backing_users'])
+            self.assertEqual(event['backing_users_returncode'], 0)
+            targets = [str(workspace.image), '/dev/disk100s1', '/dev/disk99']
+            self.assertEqual(event['backing_users_targets'], targets)
+            self.assertEqual(users.call_args.args[0], ['/usr/sbin/lsof', '-nP', '--', *targets])
+            self.assertEqual(users.call_args.kwargs['timeout'], 5)
+
+    def test_unmounted_holder_timeout_preserves_original_eject_failure(self):
+        workspace = native_storage.Workspace()
+        workspace.root = Path('/private/tmp/dk-eject-fixture')
+        workspace.mount = workspace.root / 'mount'
+        workspace.image = workspace.root / 'turn.dmg'
+        attachment = {'system-entities': [{'dev-entry': '/dev/disk99'}]}
+        with mock.patch.object(workspace, '_attachments', return_value=[attachment]), \
+                mock.patch.object(Path, 'stat', return_value=SimpleNamespace(st_dev=1)), \
+                mock.patch.object(native_storage, '_run', side_effect=
+                                  native_storage.StorageError('Resource busy')), \
+                mock.patch.object(subprocess, 'run', side_effect=
+                                  subprocess.TimeoutExpired('lsof backing fixture', 5)):
+            with self.assertRaisesRegex(native_storage.StorageError, 'Resource busy'):
+                workspace._eject('/dev/disk99', force=False)
+        event, = workspace.cleanup_events
+        self.assertIn('timed out', event['diagnostic_error'])
+        self.assertNotIn('backing_users', event)
+        self.assertEqual(event['error'], 'Resource busy')
 
     def test_false_successful_detach_still_retains_image(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -495,6 +526,28 @@ print('ENOSPC_ALL_ROOTS')
                 root = workspace.root
                 raise RuntimeError('fixture failure')
         self.assertFalse(root.exists())
+
+    def test_partial_unmount_diagnostics_query_real_backing_image_and_disk_nodes(self):
+        with native_storage.Workspace(64) as workspace:
+            native_storage._run([native_storage.DISKUTIL, 'unmount', str(workspace.mount)])
+            run = native_storage._run
+
+            def fail_detach_only(argv):
+                if argv[:2] == [native_storage.HDIUTIL, 'detach']:
+                    raise native_storage.StorageError('Resource busy diagnostic fixture')
+                return run(argv)
+
+            with mock.patch.object(native_storage, '_run', side_effect=fail_detach_only):
+                with self.assertRaisesRegex(native_storage.StorageError, 'diagnostic fixture'):
+                    workspace._eject(workspace._devices()[0], force=False)
+            event, = workspace.cleanup_events
+            self.assertFalse(event['mounted'])
+            self.assertNotIn('volume_users', event)
+            self.assertNotIn('diagnostic_error', event)
+            self.assertEqual(event['backing_users_targets'][0], str(workspace.image))
+            self.assertGreater(len(event['backing_users_targets']), 1)
+            self.assertIn(event['backing_users_returncode'], (0, 1))
+            print('NATIVE_BACKING_DIAGNOSTIC ' + json.dumps(event), flush=True)
 
     def test_unmounted_but_attached_image_is_ejected_by_exact_device(self):
         # Reproduce the state left by a partial eject, not the intermittent

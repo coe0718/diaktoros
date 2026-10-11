@@ -480,3 +480,13 @@ image: it has no durable exit proof. Only the still-live test harness's register
 kernel exits can release that fixture afterward. These tests exercise the bridge
 between launchd teardown and APFS recovery; they do not establish recovery when
 all witnesses die before writing proof, and do not activate a production backend.
+
+
+Failed ejects after partial unmount also record a five-second-bounded `lsof`
+query against the exact backing image and the disk nodes rediscovered for that
+image. `backing_users`, its return code/stderr, and `backing_users_targets` are
+separate from mounted `volume_users`; timeout is an explicit diagnostic error.
+No discovered process is signalled. An open backing-image file may be normal
+for disk-image machinery and is evidence to correlate, not proof of the busy
+cause. This fills the observation gap in the captured idle, unmounted Intel
+failure; it does not change eject retries or disposal authorization.

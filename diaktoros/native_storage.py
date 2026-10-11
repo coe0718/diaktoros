@@ -290,6 +290,25 @@ class Workspace:
                         errors='replace')[-6000:]
                     event['volume_users_returncode'] = users.returncode
                     event['volume_users_stderr'] = users.stderr.decode(errors='replace')[-2000:]
+                elif event.get('error') and event['attachments'] and not event['mounted']:
+                    # Partial unmount removes the volume-holder query target.
+                    # Observe the exact backing image and freshly rediscovered
+                    # owned disk nodes; these opens do not by themselves prove
+                    # the cause (disk-image machinery normally holds the image).
+                    devices = sorted({e['dev-entry'] for attachment in event['attachments']
+                                      for e in attachment['entities']
+                                      if re.fullmatch(r'/dev/disk[0-9]+(?:s[0-9]+)*',
+                                                      e.get('dev-entry', ''))})
+                    if len(devices) > 32:
+                        raise StorageError('owned-device diagnostic limit exceeded')
+                    targets = [str(self.image), *devices]
+                    event['backing_users_targets'] = targets
+                    users = subprocess.run(['/usr/sbin/lsof', '-nP', '--', *targets],
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           timeout=5, check=False)
+                    event['backing_users'] = users.stdout.decode(errors='replace')[-6000:]
+                    event['backing_users_returncode'] = users.returncode
+                    event['backing_users_stderr'] = users.stderr.decode(errors='replace')[-2000:]
             except Exception as exc:
                 event['diagnostic_error'] = str(exc)[-2000:]
             self.cleanup_events.append(event)
