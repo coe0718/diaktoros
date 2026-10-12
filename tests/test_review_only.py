@@ -457,7 +457,12 @@ class Cli(unittest.TestCase):
         rc, out = self.cli("set", "--loop", LOOP_ID, "--review-only", f"{OWNER},other")
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.written(), [OWNER, "other"])
-        for argv, want in ((("--review-only", "a,a"), "listed twice: a"),
+        # A stray comma or a blank login is refused, not dropped (#637 review, F1).
+        for argv, want in ((("--review-only", "a,,b"), "an empty entry"),
+                           (("--review-only", ",a"), "an empty entry"),
+                           (("--review-only", "a,"), "an empty entry"),
+                           (("--review-only", " "), "an empty entry"),
+                           (("--review-only", "a,a"), "listed twice: a"),
                            (("--review-only", "ok,not a login"), "not a GitHub login: 'not a login'")):
             with self.subTest(argv=argv):
                 rc, out = self.cli("set", "--loop", LOOP_ID, *argv)

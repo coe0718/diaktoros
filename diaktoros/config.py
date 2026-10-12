@@ -987,11 +987,13 @@ def check_review_only(value, loop: dict, where: str) -> list[str]:
         raise ConfigError(f"{where}: 'review_only' must be a list of GitHub logins")
     # A login never contains a comma, so "a,b" is two logins on every path: the settings form
     # always split them, and `--review-only a,b` now does too (it used to fail as one login).
-    names = [part.strip().lower() for name in value for part in name.split(",") if part.strip()]
-    bad = [name for name in names if not _LOGIN.match(name)] + ["" for name in value
-                                                              if not name.strip()]
+    parts = [part.strip().lower() for name in value for part in name.split(",")]
+    names = [part for part in parts if part]
+    bad = [name for name in names if not _LOGIN.match(name)]
     twice = sorted({name for name in names if names.count(name) > 1})
-    problems = ([f"not a GitHub login: {', '.join(repr(n) for n in bad)}"] if bad else []) + \
+    problems = (["an empty entry (a blank login or a stray comma)"] if len(names) < len(parts)
+                else []) + \
+        ([f"not a GitHub login: {', '.join(repr(n) for n in bad)}"] if bad else []) + \
         ([f"listed twice: {', '.join(twice)}"] if twice else []) + \
         ([f"{len(names)} logins, more than {REVIEW_ONLY_MAX}"] if len(names) > REVIEW_ONLY_MAX
          else [])
