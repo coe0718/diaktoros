@@ -89,8 +89,11 @@ class Api(unittest.TestCase):
         with self.loops(self.LOOPS), self.assertRaises(desktop_api.NotFound):
             desktop_api.now_view("nope")
         with self.loops(self.LOOPS[:1]), \
-             mock.patch.object(stats, "now", return_value=None) as now:
-            self.assertEqual(desktop_api.now_view(None), {"repo": REPO, "runs": [], "counts": {}})
+             mock.patch.object(stats, "now", return_value=None) as now, \
+             mock.patch.object(desktop_api.pacing, "seats", return_value={"seats": {}, "holds": []}):
+            self.assertEqual(desktop_api.now_view(None),
+                             {"repo": REPO, "runs": [], "counts": {},
+                              "pacing": {"seats": {}, "holds": []}})
         self.assertEqual(now.call_args.args[1], REPO)
 
     def test_stats_reads_the_ledger_only(self):

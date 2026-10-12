@@ -101,6 +101,40 @@ function clock(seconds) {
   return seconds ? new Date(seconds * 1000).toLocaleString() : '—'
 }
 
+/** One seat's day: turns and tokens against their caps, as the loop counts them. */
+function seatLine(seat, entry) {
+  const cap = entry.turns_cap ? entry.turns_cap : 'no cap'
+  const parts = [entry.turns + '/' + cap + ' today']
+  if (entry.tokens || entry.tokens_cap) {
+    parts.push((entry.tokens || 0).toLocaleString() + ' tokens')
+  }
+  return seat.replace('_', '-') + ' ' + parts.join(' · ')
+}
+
+/** The live usage-window state. A run's own held line is a snapshot from the moment it was
+ *  held — it can name a reset that has already passed — so this is the answer that expires
+ *  with the window, and it comes from the same read hermes dk status prints. */
+function Pacing({ pacing }) {
+  if (!pacing) return null
+  const seats = Object.keys(pacing.seats || {})
+  const holds = pacing.holds || []
+  if (!seats.length && !holds.length) return null
+  return jsxs('div', {
+    className: 'flex flex-col gap-1',
+    children: [
+      holds.map(hold =>
+        jsx('div', {
+          className: 'text-xs text-(--ui-text-secondary)',
+          children: 'held: ' + hold.provider + ' as profile ' + hold.profile +
+            ' until ' + clock(hold.until) + ' (' + hold.reason + ')'
+        }, hold.provider + hold.profile + hold.until)),
+      seats.length
+        ? jsx(Muted, { text: seats.map(seat => seatLine(seat, pacing.seats[seat])).join(' · ') })
+        : null
+    ]
+  })
+}
+
 function summary(counts) {
   const parts = []
   if (counts.running) parts.push(counts.running + ' running')
@@ -272,6 +306,7 @@ function Drawer({ loop, pr, onClose }) {
           : jsxs('div', {
               className: 'flex flex-col gap-5 pt-4',
               children: [
+                jsx(Pacing, { pacing: d && d.pacing }),
                 jsx(Section, { title: 'Why it is not moving', children: why }),
                 d && d.breach
                   ? jsx(Muted, {
@@ -508,7 +543,9 @@ function Page() {
       jsx('div', { className: 'grid grid-cols-2 gap-2 sm:grid-cols-4', children: cards }),
       jsx(Section, {
         title: 'Right now',
-        children: runs.length
+        children: jsxs('div', {
+          className: 'flex flex-col gap-2',
+          children: [jsx(Pacing, { pacing: now.data && now.data.pacing }), runs.length
           ? jsxs('div', {
               className: 'flex flex-col',
               children: [
@@ -522,16 +559,23 @@ function Page() {
                 jsx(Muted, { text: 'Click a row for what would move it.' })
               ]
             })
-          : jsx(Muted, { text: now.isLoading ? 'Loading…' : 'Nothing running, held or waiting on you.' })
+            : jsx(Muted, { text: now.isLoading ? 'Loading…' : 'Nothing running, held or waiting on you.' })]
+        })
       }),
       jsx(Section, {
         title: 'Seat turns (' + since + ')',
-        children: seatRows.length
-          ? jsx(Table, {
-              head: ['seat', 'turns', 'ok', 'failed', 'waiting', 'other', 'retried', 'ran (median)', 'ran (max)', 'waited (median)'],
-              rows: seatRows
-            })
-          : jsx(Muted, { text: stats.isLoading ? 'Loading…' : 'No turns in this window.' })
+        children: jsxs('div', {
+          className: 'flex flex-col gap-2',
+          children: [seatRows.length
+            ? jsx(Table, {
+                head: ['seat', 'turns', 'ok', 'failed', 'waiting', 'other', 'retried', 'ran (median)', 'ran (max)', 'waited (median)'],
+                rows: seatRows
+              })
+            : jsx(Muted, { text: stats.isLoading ? 'Loading…' : 'No turns in this window.' }),
+            jsx(Muted, {
+              text: 'The table is the window above; today’s counts and any closed usage window are in Right now.'
+            })]
+        })
       }),
       jsx(Health, { loop }),
       jsx(Muted, { text: 'Read-only, from this machine\'s run ledger. For PRs and reviews from GitHub, run: hermes dk stats --github' })

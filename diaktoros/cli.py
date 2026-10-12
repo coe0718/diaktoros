@@ -3582,33 +3582,28 @@ def cmd_trace(args) -> int:
 
 
 def _pacing_lines(loop: dict) -> list[str]:
-    """Daily caps and today's counts per seat, and any seat account held for its reset (#219)."""
+    """Daily caps and today's counts per seat, and any seat account held for its reset (#219).
+
+    The data is ``pacing.seats`` — the same view the Desktop page reads — so a status line and
+    the page cannot disagree about whether a window is closed.
+    """
     from . import pacing
+    data = pacing.seats(loop)
+    seats = [(seat, data["seats"][seat]) for seat in ("reviewer", "fixer")]
+
+    def tokens_text(entry: dict) -> str:
+        cap = f"{entry['tokens_cap']:,}" if entry["tokens_cap"] else "no budget"
+        return f"{entry['tokens']:,}/{cap} tokens today"
+
     lines = []
-    caps = [(seat, config.seat_daily_turns(loop, seat)) for seat in ("reviewer", "fixer")]
-    if any(cap for _, cap in caps):
-        lines.append(" · ".join(f"{seat} {pacing.turns_today(loop['id'], seat)}/"
-                                f"{cap if cap else 'no cap'} today" for seat, cap in caps))
-    budgets = [(seat, config.seat_daily_tokens(loop, seat)) for seat in ("reviewer", "fixer")]
-    if any(budget for _, budget in budgets):
-        lines.append(" · ".join(f"{seat} {pacing.tokens_today(loop['id'], seat):,}/"
-                                f"{f'{budget:,}' if budget else 'no budget'} tokens today"
-                                for seat, budget in budgets))
-    try:
-        holds = (json.loads(pacing.path().read_text()).get("holds") or {})
-    except (OSError, ValueError, AttributeError):
-        holds = {}
-    now = time.time()
-    # Only this loop's seat profiles: an account key is provider|endpoint|profile (pacing).
-    profiles = {str(((loop.get("seats") or {}).get(seat) or {}).get("profile") or "")
-                for seat in ("reviewer", "fixer")} | {
-                str((loop.get("adjudicator") or {}).get("profile") or "")}
-    for key, entry in sorted(holds.items()):
-        until = entry.get("until") if isinstance(entry, dict) else None
-        provider, profile = key.split("|", 1)[0], key.rsplit("|", 1)[-1]
-        if isinstance(until, (int, float)) and until > now and profile in profiles - {""}:
-            lines.append(f"held: {provider} as profile {profile} until {pacing.when(until)} "
-                         f"({entry.get('reason') or 'usage window'})")
+    if any(entry["turns_cap"] for _, entry in seats):
+        lines.append(" · ".join(f"{seat} {entry['turns']}/{entry['turns_cap'] or 'no cap'} today"
+                                for seat, entry in seats))
+    if any(entry["tokens_cap"] for _, entry in seats):
+        lines.append(" · ".join(f"{seat} " + tokens_text(entry) for seat, entry in seats))
+    for hold in data["holds"]:
+        lines.append(f"held: {hold['provider']} as profile {hold['profile']} until "
+                     f"{pacing.when(hold['until'])} ({hold['reason']})")
     return lines
 
 
