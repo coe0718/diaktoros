@@ -2404,9 +2404,7 @@ class Supervisor:
             from . import native_cleanup, native_recovery, native_storage
             if self.native_cleanup_parent.exists() or self.native_cleanup_parent.is_symlink():
                 try:
-                    pool = native_cleanup.Manager(self.native_cleanup_parent, create=False)
-                    self.native_cleanup_results = pool.sweep(
-                        notify=lambda message: print(message, flush=True))
+                    self.native_cleanup_results = native_cleanup.bounded_sweep(self.native_cleanup_parent)
                     native_storage._diagnostic('NATIVE_CLEANUP', self.native_cleanup_results)
                 except (OSError, RuntimeError) as error:
                     native_storage._diagnostic('NATIVE_CLEANUP', {'status': 'unverified', 'reason': str(error)})

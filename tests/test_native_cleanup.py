@@ -5,6 +5,10 @@ import io
 from pathlib import Path
 import tempfile
 import subprocess
+import time
+import os
+import signal
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -13,6 +17,83 @@ from diaktoros import native_cleanup, native_lifecycle, native_recovery, native_
 
 
 class CleanupPoolTests(unittest.TestCase):
+    def test_worker_has_its_own_timeout_when_parent_no_longer_enforces_budget(self):
+        code = native_cleanup._SWEEP_WORKER_CODE.replace('value = Manager',
+                                                        'import time; time.sleep(60)\nvalue = Manager')
+        with tempfile.TemporaryFile() as result:
+            source = str(Path(native_cleanup.__file__).resolve().parent.parent)
+            worker = subprocess.Popen([sys.executable, '-I', '-B', '-c', code, source,
+                                       '/unused', str(result.fileno()), '0.1'],
+                                      pass_fds=(result.fileno(),), start_new_session=True)
+            try:
+                self.assertEqual(worker.wait(timeout=5), -signal.SIGKILL)
+            finally:
+                if worker.poll() is None:
+                    os.killpg(worker.pid, signal.SIGKILL)
+                    worker.wait(timeout=2)
+
+    def test_bounded_worker_completes_empty_inventory_in_a_fresh_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pool = self.pool(directory)
+            pool.sweep()  # Establish control state without any image.
+            result = native_cleanup.bounded_sweep(pool.root, seconds=5)
+            self.assertEqual(result['status'], 'completed')
+            self.assertEqual(result['results'], [])
+
+    def test_watchdog_continues_ledger_recovery_after_cleanup_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pool = self.pool(directory)
+            pool.sweep()
+            sup = run_supervisor.Supervisor(Path(directory) / 'ledger.sqlite')
+            timeout = {'status': 'timeout', 'results': [], 'reason': 'disposal unverified'}
+            with mock.patch.object(run_supervisor.sys, 'platform', 'darwin'), \
+                    mock.patch.object(native_cleanup, 'bounded_sweep', return_value=timeout) as sweep, \
+                    mock.patch.object(native_recovery, 'startup', return_value=[]) as startup, \
+                    redirect_stderr(io.StringIO()):
+                self.assertIsInstance(sup.recover(), str)
+            sweep.assert_called_once_with(sup.native_cleanup_parent)
+            startup.assert_called_once()
+            self.assertEqual(sup.native_cleanup_results, timeout)
+
+    def test_stalled_worker_returns_with_receipt_intact_and_next_worker_recovers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pool = self.pool(directory)
+            w = self.workspace(pool)
+            with self.fail_eject():
+                w._cleanup()
+            original = (w.root / native_recovery.JOURNAL).read_bytes()
+            code = native_cleanup._SWEEP_WORKER_CODE.replace('value = Manager',
+                'from diaktoros import native_storage\nimport time\n'
+                'native_storage.Workspace._detach_owned = lambda self: time.sleep(60)\n'
+                'value = Manager')
+            started = time.monotonic()
+            with mock.patch.object(native_cleanup, '_SWEEP_WORKER_CODE', code):
+                result = native_cleanup.bounded_sweep(pool.root, seconds=1)
+            self.assertLess(time.monotonic() - started, 3)
+            self.assertEqual(result['status'], 'timeout')
+            self.assertTrue(result['worker_reaped'])
+            self.assertEqual((w.root / native_recovery.JOURNAL).read_bytes(), original)
+            self.assertTrue(w.image.exists())
+            # A timed-out host lease must not prevent the next fresh sweep.
+            code = native_cleanup._SWEEP_WORKER_CODE.replace('value = Manager',
+                'from diaktoros import native_storage\n'
+                'native_storage.Workspace._detach_owned = lambda self: None\n'
+                'native_storage.Workspace._devices = lambda self: []\n'
+                'value = Manager')
+            with mock.patch.object(native_cleanup, '_SWEEP_WORKER_CODE', code):
+                result = native_cleanup.bounded_sweep(pool.root, seconds=5)
+            self.assertEqual(result['status'], 'completed')
+            self.assertEqual(result['results'][0]['status'], 'removed')
+            self.assertFalse(w.root.exists())
+
+    def test_bounded_worker_failure_and_malformed_result_cannot_claim_removal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for code in ('raise SystemExit(3)', 'import os,sys; os.write(int(sys.argv[3]), b"invalid")'):
+                with self.subTest(code=code), mock.patch.object(native_cleanup, '_SWEEP_WORKER_CODE', code):
+                    result = native_cleanup.bounded_sweep(Path(directory), seconds=5)
+                self.assertEqual(result['status'], 'unverified')
+                self.assertEqual(result['results'], [])
+
     def test_failed_creation_queues_partial_image_but_still_reports_setup_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             pool = self.pool(directory)
@@ -235,6 +316,8 @@ class CleanupPoolTests(unittest.TestCase):
                 w._cleanup()
             sup = run_supervisor.Supervisor(root / 'ledger.sqlite')
             with mock.patch.object(run_supervisor.sys, 'platform', 'darwin'), \
+                    mock.patch.object(native_cleanup, 'bounded_sweep',
+                                      side_effect=lambda root: native_cleanup.Manager(root, create=False).sweep()), \
                     mock.patch.object(native_storage.Workspace, '_detach_owned'), \
                     mock.patch.object(native_storage.Workspace, '_verify_detached'), \
                     mock.patch.object(native_recovery, 'startup', return_value=[]), redirect_stderr(io.StringIO()):

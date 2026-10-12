@@ -11,11 +11,81 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
+import subprocess
+import sys
 import tempfile
 import time
 import uuid
 
 from . import native_recovery as recovery
+
+SWEEP_SECONDS = 45
+_SWEEP_WORKER_CODE = '''
+import json, os, signal, sys
+from pathlib import Path
+# Parent timeout is primary; this backstop also stops an orphaned worker if
+# the watchdog itself dies. Signal only this worker's newly created group.
+signal.signal(signal.SIGALRM, lambda *_: os.killpg(os.getpgrp(), signal.SIGKILL))
+signal.setitimer(signal.ITIMER_REAL, float(sys.argv[4]) + 2)
+sys.path.insert(0, sys.argv[1])
+from diaktoros.native_cleanup import Manager
+value = Manager(Path(sys.argv[2]), create=False).sweep(notify=lambda message: print(message, flush=True))
+with os.fdopen(int(sys.argv[3]), 'w') as target:
+    json.dump(value, target)
+    target.flush()
+'''
+
+
+def bounded_sweep(root: Path, *, seconds=SWEEP_SECONDS):
+    """Bound the host's wait for inventory, disk retries and disposal together.
+
+    Only a new waitable worker's group is signalling authority. Timed-out
+    receipts remain discovery/retry evidence, never proof of image disposal.
+    Regular files avoid pipe waits on command descendants holding output open.
+    """
+    if type(seconds) not in (int, float) or not 0 < seconds <= 300:
+        raise ValueError('cleanup sweep budget must be positive and at most 300 seconds')
+    started = time.monotonic()
+    source = str(Path(__file__).resolve().parent.parent)
+    with tempfile.TemporaryFile() as result:
+        worker = subprocess.Popen(
+            [sys.executable, '-I', '-B', '-c', _SWEEP_WORKER_CODE, source,
+             str(Path(root).absolute()), str(result.fileno()), str(seconds)],
+            stdin=subprocess.DEVNULL, pass_fds=(result.fileno(),), start_new_session=True)
+        try:
+            worker.wait(timeout=max(0, seconds - (time.monotonic() - started)))
+        except BaseException as error:
+            # PID cannot be recycled while this waitable child is unreaped.
+            # Its new session keeps disk commands out of the supervisor group.
+            try:
+                if worker.returncode is None:
+                    os.killpg(worker.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                worker.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                # An uninterruptible kernel wait may postpone reaping. Keep
+                # every receipt; held leases continue to refuse admission.
+                pass
+            if not isinstance(error, subprocess.TimeoutExpired):
+                raise
+            return {'status': 'timeout', 'results': [], 'budget_seconds': seconds,
+                    'worker_reaped': worker.returncode is not None,
+                    'reason': 'native cleanup sweep exceeded wall-clock budget; disposal unverified'}
+        if worker.returncode != 0:
+            return {'status': 'unverified', 'results': [],
+                    'reason': f'native cleanup worker exited {worker.returncode}; receipts retained'}
+        result.seek(0)
+        try:
+            raw = result.read(recovery.MAX_RECORD + 1)
+            value = json.loads(raw)
+            if len(raw) > recovery.MAX_RECORD or not isinstance(value, dict) or not isinstance(value.get('results'), list):
+                raise ValueError('invalid worker result')
+        except (ValueError, TypeError) as error:
+            return {'status': 'unverified', 'results': [], 'reason': str(error)}
+        return {**value, 'status': 'completed', 'budget_seconds': seconds}
 
 
 class AdmissionRefused(RuntimeError):
@@ -242,6 +312,5 @@ if __name__ == '__main__':
     parser.add_argument('root', type=Path)
     parser.add_argument('--sweep', action='store_true')
     args = parser.parse_args()
-    manager = Manager(args.root, create=False)
-    result = manager.sweep(notify=print) if args.sweep else {'summary': manager.status()}
+    result = bounded_sweep(args.root) if args.sweep else {'summary': Manager(args.root, create=False).status()}
     print(json.dumps(result, sort_keys=True))

@@ -594,7 +594,7 @@ This does not satisfy the production acceptance gate yet: 200-turn adversarial
 soaks on both chips, physical reboot, process escapes, observer-route delivery,
 and disposal within five sweeps/five minutes remain required. A sweep bounds
 its number of workspaces; existing disk-command timeouts and watchdog cadence
-still need a wall-clock budget suitable for the five-minute target.
+now run inside the bounded watchdog worker described below; the overall five-minute disposal target still needs natural-busy acceptance evidence.
 
 The `.fseventsd/no_log` hint is best effort: macOS may create a protected,
 system-owned `.fseventsd` directory before the host reaches it. Permission
@@ -603,6 +603,27 @@ than aborting a verified mount. The host never changes system ownership or
 kills an indexing/event helper. This hint supplies no containment proof.
 
 ## 200-turn guarded cleanup soak
+
+Watchdog/startup pool cleanup and the cleanup CLI now use `bounded_sweep`.
+A fresh isolated worker covers pool loading, inventory, lease acquisition,
+disk commands, retry sleeps and disposal within one 45-second host wait budget.
+The host kills only its newly created waitable worker's process group on timeout,
+then allows up to one second for reaping. It returns `status: timeout`, an empty
+verified-removal list and whether the worker was reaped; existing ownership and
+pending receipts remain the recovery evidence. It never infers disposal from
+a killed worker. A worker-side timer at budget plus two seconds also stops that
+group if its parent dies. System disk-image helpers outside that group are not
+signalled. A kernel-uninterruptible worker may defer exit; held leases continue
+to block conflicting cleanup/admission while the watchdog can resume.
+
+Pause/resume notices still print from the worker and keep the existing durable
+delivery protocol. A malformed result or nonzero worker exit is reported as
+unverified. Direct `Manager.sweep()` remains synchronous for callers with their
+own external deadline (including forensic workers); doctor/explain stay read-only.
+Local real-subprocess tests cover timeout, receipt preservation, subsequent
+recovery, malformed/nonzero results and the orphan-worker timer. This bounds
+watchdog pool work, not the separate legacy workspace-discovery API, OS process
+creation latency or a physical reboot test.
 
 `native-cleanup-soak.yml` runs 200 real guarded command turns independently on
 Apple Silicon and Intel, after each lane passes the cleanup-pool preconditions.
