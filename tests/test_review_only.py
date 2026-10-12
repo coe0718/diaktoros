@@ -450,6 +450,21 @@ class Cli(unittest.TestCase):
         self.assertNotIn("already matches", out)
         self.assertEqual(self.written(), ["solo"])
 
+    def test_set_takes_a_comma_separated_list_and_names_what_is_wrong(self):
+        # Live, 2026-10-12: `set --review-only coe0718,tuck-coe` was one "login" and failed with
+        # "must be at most 50 unique GitHub logins"; the settings form already split commas.
+        self.assertEqual(self.init()[0], 0)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--review-only", f"{OWNER},other")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.written(), [OWNER, "other"])
+        for argv, want in ((("--review-only", "a,a"), "listed twice: a"),
+                           (("--review-only", "ok,not a login"), "not a GitHub login: 'not a login'")):
+            with self.subTest(argv=argv):
+                rc, out = self.cli("set", "--loop", LOOP_ID, *argv)
+                self.assertEqual(rc, 2, out)
+                self.assertIn(want, out)
+                self.assertEqual(self.written(), [OWNER, "other"])
+
     def limits(self) -> tuple:
         data = json.loads(LOOP_FILE.read_text())
         return data.get("review_only_cap"), data.get("review_only_daily")

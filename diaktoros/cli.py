@@ -5381,7 +5381,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                           help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
                                "plugin setting, else no cap)")
         init.add_argument("--review-only", action="append", default=None,
-                          help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting)")
+                          help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
         init.add_argument("--required-check", action="append", default=None,
                           help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         init.add_argument("--human-path", action="append", default=None,
@@ -5456,7 +5456,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                            help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
                                 "plugin setting, else no cap)")
         first.add_argument("--review-only", action="append", default=None,
-                           help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it) (default: the plugin setting)")
+                           help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
         first.add_argument("--required-check", action="append", default=None,
                            help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
         first.add_argument("--human-path", action="append", default=None,
@@ -5684,7 +5684,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                             help="reviewer turns a day on review-only PRs, 1-1000; 0 = no cap")
         reviewed = change.add_mutually_exclusive_group()
         reviewed.add_argument("--review-only", action="append", default=None,
-                              help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it); replaces the list")
+                              help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated); replaces the list")
         reviewed.add_argument("--no-review-only", action="store_true",
                               help="clear the review-only list")
         required = change.add_mutually_exclusive_group()
