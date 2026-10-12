@@ -638,9 +638,9 @@ The soak and boundary workflows preserve in-progress runs when the PR is updated
 
 ## Naturally busy images through the queue
 
-`native-eventual-eject.yml` runs standard and verbose host-only churn on ARM and
+`native-eventual-eject.yml` runs all four forensic modes of host-only churn on ARM and
 Intel, up to 128 images per lane. It uses `native_eject_forensics.py
---eventual-cleanup --require-natural-pending`. These runs inject no eject error.
+--eventual-cleanup --require-natural-pending --forensic-precondition`. These runs inject no eject error.
 They preserve the baseline forensic mode separately.
 
 Each image is registered under a private cleanup pool before creation. No seat
@@ -658,7 +658,7 @@ probe retains original failures, queue/control receipts, helper measurements,
 worker stdout/stderr and OS log evidence. Failure or worker timeout retains
 storage. A pass requires the exact image's verified disposal and an empty owned
 inventory. A lane with no qualifying natural case is marked inconclusive and
-exits 2; quiet churn cannot establish natural-busy recovery. Eighteen local collector checks pass, including deadline, durable receipt,
+exits 2; quiet churn cannot establish natural-busy recovery. Twenty local collector checks pass, including deadline, durable receipt,
 exhaustion, verified removal and inconclusive-result checks for the added rules.
 
 The next run completed 128 cycles in each of four lanes (512 total), with no
@@ -680,6 +680,18 @@ remain retained and block admission. This does not establish eventual recovery
 of a naturally exhausted normal turn eject.
 
 ## Dedicated eject forensics
+
+Queued recovery now also runs the baseline forensic matrix: standard, verbose,
+sync-delay and sync-unmount on both ARM and Intel. `--forensic-precondition`
+preserves the baseline hdiutil-help and recovery-test ordering before host-only
+image churn. The original read-only-after-failure forensic workflow remains a
+comparison lane; the queued variant necessarily uses private pool-owned paths
+and receipts. Initial detach keeps each lane's instrumentation. Subsequent
+sweeps use fresh processes and the ordinary cleanup implementation, without
+repeating the test-only sync/unmount preparation or verbose snapshots.
+Every result records its mode and precondition suite. No natural exhausted
+eject means inconclusive, a failed precondition prevents churn, and verified
+recovery must still meet five sweeps/five minutes from initial disposal eligibility.
 
 `native-eject-forensics.yml` runs eight independent Mac lanes: ARM and Intel,
 each with standard, verbose, sync-plus-delay or sync-plus-forced-unmount instrumentation. The test-only collector streams

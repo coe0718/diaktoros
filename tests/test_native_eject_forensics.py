@@ -259,6 +259,46 @@ class NaturalRecoveryValidation(unittest.TestCase):
             self.assertTrue(report['inconclusive'])
             self.assertFalse(report['natural_recovery_accepted'])
 
+    def test_eventual_forensic_lane_preserves_recovery_precondition_and_mode(self):
+        from contextlib import nullcontext
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            recorder = forensics.Recorder(root/'evidence', pre_unmount=True)
+            with mock.patch.object(forensics.tempfile, 'mkdtemp', return_value=str(root/'pool')), \
+                    mock.patch.object(recorder, 'log_stream', return_value=nullcontext()), \
+                    mock.patch.object(recorder, 'command', return_value=({'returncode':0},b'',b'')) as command:
+                result = forensics.probe_eventual(recorder, 0, require_natural=True,
+                                                 forensic_precondition=True)
+            self.assertEqual(result, 2)
+            calls = command.call_args_list
+            self.assertEqual(calls[1].args[0], 'hdiutil-help')
+            self.assertEqual(calls[2].args[1][-1], 'test_native_recovery.py')
+            report = json.loads((recorder.output/'eventual-result.json').read_text())
+            self.assertEqual(report['precondition_suite'], 'test_native_recovery.py')
+            self.assertTrue(report['pre_unmount'])
+            self.assertTrue(report['sync_delay'])
+            self.assertTrue(report['inconclusive'])
+
+    def test_failed_forensic_precondition_prevents_image_churn_and_acceptance(self):
+        from contextlib import nullcontext
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            recorder = forensics.Recorder(root/'evidence', verbose=True)
+            def command(tag, *args, **kwargs):
+                return {'returncode': 1 if tag == 'eventual-precondition' else 0}, b'', b''
+            with mock.patch.object(forensics.tempfile, 'mkdtemp', return_value=str(root/'pool')), \
+                    mock.patch.object(recorder, 'log_stream', return_value=nullcontext()), \
+                    mock.patch.object(recorder, 'command', side_effect=command), \
+                    mock.patch.object(forensics, 'ObservedWorkspace') as workspace:
+                result = forensics.probe_eventual(recorder, 128, require_natural=True,
+                                                 forensic_precondition=True)
+            workspace.assert_not_called()
+            self.assertEqual(result, 1)
+            report = json.loads((recorder.output/'eventual-result.json').read_text())
+            self.assertTrue(report['precondition_failed'])
+            self.assertFalse(report['inconclusive'])
+            self.assertFalse(report['natural_recovery_accepted'])
+
     def test_verified_natural_queue_success_records_disposal_latency(self):
         import shutil
         with tempfile.TemporaryDirectory() as directory:

@@ -442,7 +442,7 @@ def reconcile_natural(recorder, workspace, pool, started):
     return {'sweeps': deadline.sweeps, 'elapsed_seconds': round(elapsed, 3)}
 
 
-def probe_eventual(recorder, cycles, *, require_natural=False):
+def probe_eventual(recorder, cycles, *, require_natural=False, forensic_precondition=False):
     """Host-only image churn with explicit no-seat-launch completion proof.
 
     This fixture has no seat/process tree to drain. The host records completion
@@ -456,9 +456,12 @@ def probe_eventual(recorder, cycles, *, require_natural=False):
     completed_cycles = 0
     with recorder.log_stream(), mock.patch.object(native_storage, '_run', recorder.run):
         recorder.command('runtime', ['/usr/bin/sw_vers'])
+        if forensic_precondition:
+            recorder.command('hdiutil-help', [native_storage.HDIUTIL, 'help', 'detach'])
+        precondition_suite = 'test_native_recovery.py' if forensic_precondition else 'test_native_cleanup.py'
         precondition, _, _ = recorder.command(
             'eventual-precondition', [sys.executable, 'tests/leakguard.py', 'discover',
-                                     '-v', '-s', 'tests', '-p', 'test_native_cleanup.py'], timeout=240)
+                                     '-v', '-s', 'tests', '-p', precondition_suite], timeout=240)
         precondition_failed = bool(precondition.get('error') or precondition.get('returncode'))
         if not precondition_failed:
             for cycle in range(cycles):
@@ -466,6 +469,8 @@ def probe_eventual(recorder, cycles, *, require_natural=False):
                 workload = ('idle', 'metadata', 'fsync')[cycle % 3]
                 event = {'tag': 'eventual-cycle', 'cycle': cycle, 'workload': workload,
                          'architecture': platform.machine(), 'verbose': recorder.verbose,
+                         'sync_delay': recorder.sync_delay, 'pre_unmount': recorder.pre_unmount,
+                         'precondition_suite': precondition_suite,
                          'turn_processes_launched': False, 'injected': False}
                 started = time.monotonic()
                 try:
@@ -532,6 +537,8 @@ def probe_eventual(recorder, cycles, *, require_natural=False):
             (recorder.output / (root.name + '-receipt.json')).write_bytes(journal.read_bytes()[:native_recovery.MAX_RECORD+1])
     accepted = bool(natural_pending and not failures and not precondition_failed and not list(pool.volumes.iterdir()))
     result = {'tag': 'eventual-result', 'failures': failures, 'precondition_failed': precondition_failed,
+              'precondition_suite': precondition_suite, 'verbose': recorder.verbose,
+              'sync_delay': recorder.sync_delay, 'pre_unmount': recorder.pre_unmount,
               'natural_pending_images': natural_pending, 'completed_cycles': completed_cycles,
               'natural_recovery_accepted': accepted, 'inconclusive': not failures and not precondition_failed and not natural_pending,
               'worst_cleanup_sweeps': max((x['sweeps'] for x in completions), default=None),
@@ -553,6 +560,8 @@ if __name__ == '__main__':
                         help='route real busy ejects through the durable cleanup pool')
     parser.add_argument('--require-natural-pending', action='store_true',
                         help='exit inconclusive unless a real exhausted eject is queued and disposed')
+    parser.add_argument('--forensic-precondition', action='store_true',
+                        help='preserve baseline recovery-test ordering before eventual image churn')
     parser.add_argument('--sync-delay', action='store_true',
                         help='test-only system-wide sync plus two seconds before first detach')
     parser.add_argument('--sync-unmount', action='store_true',
@@ -562,8 +571,11 @@ if __name__ == '__main__':
         parser.error(reason)
     if args.require_natural_pending and not args.eventual_cleanup:
         parser.error('--require-natural-pending requires --eventual-cleanup')
+    if args.forensic_precondition and not args.eventual_cleanup:
+        parser.error('--forensic-precondition requires --eventual-cleanup')
     recorder = Recorder(args.output, verbose=args.verbose,
                         sync_delay=args.sync_delay, pre_unmount=args.sync_unmount)
     if args.eventual_cleanup:
-        raise SystemExit(probe_eventual(recorder, args.cycles, require_natural=args.require_natural_pending))
+        raise SystemExit(probe_eventual(recorder, args.cycles, require_natural=args.require_natural_pending,
+                                      forensic_precondition=args.forensic_precondition))
     raise SystemExit(bool(probe(recorder, args.cycles)))
