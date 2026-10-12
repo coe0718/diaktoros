@@ -123,5 +123,7 @@ def prepare(output):
         value.update(passed=False, error=str(error))
     finally:
         save()
-    print(json.dumps({'passed':value['passed'], 'manifest':str(output/'result.json')}), flush=True)
+    from native_tester_bundle import bundle
+    packaged = bundle(output)
+    print(json.dumps({'passed':value['passed'], 'manifest':str(output/'result.json'), 'bundle':str(packaged)}), flush=True)
     return 0 if value['passed'] else 1

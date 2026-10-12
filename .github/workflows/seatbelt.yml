@@ -34,6 +34,8 @@ on:
       - tests/test_turn_layout.py
       - tests/test_native_roles.py
       - tests/native_tester.py
+      - tests/native_tester_bundle.py
+      - tests/test_native_tester_bundle.py
       - tests/native_tester_hermes.py
       - tests/test_native_tester_hermes.py
       - tests/test_native_tester.py
@@ -168,6 +170,7 @@ jobs:
           name: native-tester-hermes-${{ matrix.runner }}
           path: |
             ${{ runner.temp }}/tester-hermes-preparation/result.json
+            ${{ runner.temp }}/tester-hermes-preparation/evidence.zip
             ${{ runner.temp }}/tester-hermes-preparation/*.log
             ${{ runner.temp }}/tester-hermes-evidence
           retention-days: 14

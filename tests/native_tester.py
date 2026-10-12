@@ -121,13 +121,15 @@ def run(mode, output, *, prepared=None):
     finally:
         report['finished'] = datetime.now(timezone.utc).isoformat()
         save()
-    print(json.dumps({'passed': report['passed'], 'evidence': str(output), 'mode': mode}), flush=True)
+    from native_tester_bundle import bundle
+    packaged = bundle(output)
+    print(json.dumps({'passed': report['passed'], 'evidence': str(output), 'bundle':str(packaged), 'mode': mode}), flush=True)
     return 0 if report['passed'] else 1
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('preflight', 'boundary', 'soak', 'prepare-hermes', 'hermes'))
+    parser.add_argument('mode', choices=('preflight', 'boundary', 'soak', 'prepare-hermes', 'hermes', 'bundle'))
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--prepared', type=Path)
     args = parser.parse_args()
@@ -135,6 +137,10 @@ if __name__ == '__main__':
         parser.error('hermes requires --prepared pointing at preparation/result.json')
     if args.prepared is not None and args.mode != 'hermes':
         parser.error('--prepared is only used by hermes')
+    if args.mode == 'bundle':
+        from native_tester_bundle import bundle
+        print(bundle(args.output), flush=True)
+        raise SystemExit(0)
     if args.mode == 'prepare-hermes':
         from native_tester_hermes import prepare
         raise SystemExit(prepare(args.output))

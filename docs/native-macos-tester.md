@@ -59,7 +59,26 @@ retains per-turn evidence under `soak/`. No physical reboot is performed.
 
 ## Report and recovery
 
-Send the `result.json`, `commit.log`, `working_tree.log` and failed suite's log,
+Every completed tester command, including failed preparation/tests, automatically
+creates `evidence.zip` in its output directory and prints the ZIP path. Send that
+ZIP back for review. It contains the result manifest, command logs and selected
+soak events/receipts, plus hashes in `bundle-manifest.json`. Downloaded Hermes
+source, toolchains, caches, venvs, adapters and disk images are excluded.
+Files over 8 MiB keep their tail; the archive manifest identifies truncations and
+anything omitted by the 64 MiB evidence limit. Logs can include local paths and
+host process arguments; review the bundle before sharing it.
+
+After an interrupted run, or to rebuild the archive:
+
+```sh
+python tests/native_tester.py bundle --output "$HOME/diaktoros-native-evidence/boundary-01"
+```
+
+Use the actual existing output directory. Packaging does not retry cleanup,
+change test results, or delete raw evidence. For a Hermes test, send both the
+preparation ZIP and the test ZIP so setup failures remain distinguishable.
+
+For individual files instead, send the `result.json`, `commit.log`, `working_tree.log` and failed suite's log,
 or the soak's result/events. Logs can include local paths; review them before
 sharing. Do not include API keys, a live Hermes configuration or image contents.
 Keep the evidence directory and retained images until the failure is understood.
