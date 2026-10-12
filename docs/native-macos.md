@@ -507,7 +507,7 @@ storage-only experiments retain their previous behavior.
 Startup discovers these receipts, including interrupted creation before image
 binding. It reports and retains `registered`, `created` and `attached` records:
 an unlocked preparation lease cannot prove an orphaned hdiutil creator exited.
-No preparation state can transition directly to drained or disposed. This slice
+Interrupted preparation cannot transition directly to drained or disposed. This slice
 provides durable discovery, not automatic disposal of interrupted preparation,
 free-space admission or the eventual-cleanup scheduler. The boot recovery
 extension is described below. Recorded
@@ -660,6 +660,24 @@ storage. A pass requires the exact image's verified disposal and an empty owned
 inventory. A lane with no qualifying natural case is marked inconclusive and
 exits 2; quiet churn cannot establish natural-busy recovery. Eighteen local collector checks pass, including deadline, durable receipt,
 exhaustion, verified removal and inconclusive-result checks for the added rules.
+
+The next run completed 128 cycles in each of four lanes (512 total), with no
+qualifying exhausted eject; all four lanes were inconclusive. The third guarded
+soak passed 200 turns on each chip, with 20 injected deferrals per chip, zero
+natural deferrals and zero remaining images. Worst queued disposal was one sweep,
+0.339 seconds on ARM and 0.616 seconds on Intel. These remain command fixtures,
+not a Hermes model-turn soak or a physical reboot test.
+
+An Intel forensic lane instead failed during image creation: `hdiutil create`
+returned busy with a partial attachment, which eventually detached. A live
+creator now records `preparation_completed_no_turn` when synchronous setup
+returns a StorageError before any seat is launched. It binds a surviving partial
+image's identity and permits verified cleanup or durable deferred disposal while
+preserving the setup failure for the caller. A missing backing file still
+requires exact-image attachment absence before deletion. Timeouts, interrupted
+creators and recovered preparation receipts cannot supply this proof; those
+remain retained and block admission. This does not establish eventual recovery
+of a naturally exhausted normal turn eject.
 
 ## Dedicated eject forensics
 

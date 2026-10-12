@@ -4,6 +4,7 @@ from contextlib import redirect_stderr
 import io
 from pathlib import Path
 import tempfile
+import subprocess
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -12,6 +13,66 @@ from diaktoros import native_cleanup, native_lifecycle, native_recovery, native_
 
 
 class CleanupPoolTests(unittest.TestCase):
+    def test_failed_creation_queues_partial_image_but_still_reports_setup_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pool = self.pool(directory)
+            w = native_storage.Workspace(64, cleanup_manager=pool)
+            def fail_create():
+                w.image.write_bytes(b'partial')
+                raise native_storage.StorageError('create failed - Resource busy')
+            with mock.patch.object(native_storage.sys, 'platform', 'darwin'), \
+                    mock.patch.object(native_recovery, 'boot_identity', return_value=None), \
+                    mock.patch.object(Path, 'is_file', return_value=True), \
+                    mock.patch.object(w, '_create_image', side_effect=fail_create), self.fail_eject():
+                with self.assertRaisesRegex(native_storage.StorageError, 'create failed'):
+                    w.__enter__()
+            self.assertTrue(w.image.exists())
+            self.assertEqual(w.pending_cleanup['status'], 'pending')
+            with native_recovery.Record(w.root) as receipt:
+                record = receipt.read()
+                self.assertTrue(record['preparation_completed_no_turn'])
+                self.assertEqual(record['state'], 'drained')
+            with mock.patch.object(native_storage.Workspace, '_detach_owned'), \
+                    mock.patch.object(native_storage.Workspace, '_verify_detached'):
+                self.assertEqual(native_cleanup.Manager(pool.root, create=False).sweep()['results'][0]['status'], 'removed')
+            self.assertFalse(w.root.exists())
+
+    def test_failed_creation_without_backing_file_can_be_disposed_after_exact_absence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pool = self.pool(directory)
+            w = native_storage.Workspace(64, cleanup_manager=pool)
+            receipt = pool.prepare(w)
+            w.mount.mkdir()
+            receipt.preparation_failed()
+            receipt.close()
+            with self.successful_eject():
+                w._cleanup()
+            self.assertFalse(w.root.exists())
+
+    def test_timed_out_creation_retains_unverified_preparation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pool = self.pool(directory)
+            w = native_storage.Workspace(64, cleanup_manager=pool)
+            with mock.patch.object(native_storage.sys, 'platform', 'darwin'), \
+                    mock.patch.object(native_recovery, 'boot_identity', return_value=None), \
+                    mock.patch.object(Path, 'is_file', return_value=True), \
+                    mock.patch.object(w, '_create_image', side_effect=subprocess.TimeoutExpired('hdiutil', 120)), \
+                    mock.patch.object(native_storage.Workspace, '_detach_owned') as detach:
+                with self.assertRaises(native_storage.StorageError):
+                    w.__enter__()
+            detach.assert_not_called()
+            with native_recovery.Record(w.root) as receipt:
+                self.assertEqual(receipt.read()['state'], 'registered')
+                self.assertNotIn('preparation_completed_no_turn', receipt.read())
+
+    def test_preparation_proof_cannot_replace_a_running_turns_exit_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            w = self.workspace(self.pool(directory), drained=False)
+            with native_recovery.Record(w.root) as receipt:
+                with self.assertRaises(native_recovery.RecoveryError):
+                    receipt.preparation_failed()
+                self.assertEqual(receipt.read()['state'], 'running')
+
     def pool(self, directory, **limits):
         return native_cleanup.Manager(Path(directory).resolve() / 'native-cleanup',
                                       policy=native_cleanup.Policy(**limits))

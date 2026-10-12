@@ -124,7 +124,12 @@ class Workspace:
                 path.mkdir(mode=0o700)
             self.active = True
             return self
-        except BaseException:
+        except BaseException as error:
+            # A normal synchronous tool failure happens before any seat launch.
+            # Persist that proof while holding the original creator lease. A
+            # timeout/interruption supplies no such proof and stays retained.
+            if isinstance(error, StorageError) and self._preparation is not None:
+                self._preparation.preparation_failed()
             self._cleanup()
             raise
 

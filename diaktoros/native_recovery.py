@@ -142,6 +142,10 @@ class Record:
                 raise ValueError('invalid pending cleanup flag')
             if 'eventual_cleanup' in record and type(record['eventual_cleanup']) is not bool:
                 raise ValueError('invalid eventual cleanup flag')
+            if 'preparation_completed_no_turn' in record and (
+                    record['preparation_completed_no_turn'] is not True or
+                    record['state'] not in ('drained', 'disposed')):
+                raise ValueError('invalid preparation completion proof')
             if 'cleanup_attempts' in record and (type(record['cleanup_attempts']) is not int or record['cleanup_attempts'] < 0):
                 raise ValueError('invalid cleanup attempt count')
             if 'last_cleanup_error' in record and type(record['last_cleanup_error']) is not str:
@@ -160,7 +164,7 @@ class Record:
         try:
             image = os.stat('turn.dmg', dir_fd=self.directory, follow_symlinks=False)
         except FileNotFoundError:
-            if record['state'] not in ('registered', 'disposed'):
+            if record['state'] not in ('registered', 'disposed') and not record.get('preparation_completed_no_turn'):
                 raise
         else:
             # Creation may leave a partial image before chmod/identity binding.
@@ -226,6 +230,27 @@ class Record:
         self.write(record)
         return {'root': str(self.root), 'status': 'pending',
                 'reason': record['last_cleanup_error'], 'pending_since': record['pending_since']}
+
+    def preparation_failed(self):
+        """Live creator proof: synchronous setup returned, and no seat was launched.
+
+        Never infer this from an unlocked lease or a recovered preparation record.
+        The caller must still own the original preparation lease.
+        """
+        record = self.read()
+        if record['state'] not in PREPARATION_STATES:
+            raise RecoveryError('preparation completion cannot replace turn drain proof')
+        image = self.root / 'turn.dmg'
+        try:
+            identity = _identity(image.lstat())
+        except FileNotFoundError:
+            identity = None
+        else:
+            # read() already validated a partial regular file before chmod.
+            image.chmod(0o600)
+        record.update(state='drained', preparation_completed_no_turn=True,
+                      image_identity=identity)
+        self.write(record)
 
     def cleanup_or_defer(self):
         try:
