@@ -2766,6 +2766,32 @@ class Supervisor:
 
     held_for_ci = False
 
+    def retire_stale_waiting(self, repo: str, open_heads: dict) -> int:
+        """Cancel the repo's waiting reviewer, fixer and adjudicator runs whose PR is no longer
+        open or whose head moved, given a COMPLETE open-PR listing (``{number: head sha}``).
+
+        The claim cancels such a run only when it is drained, which a hold can postpone for days
+        (a closed usage window); until then ``stats.now`` and the Desktop bar show it as held.
+        Uses the claim's own wording, so ``retry`` refuses it the same way. Returns the count."""
+        cancelled = 0
+        now = time.time()
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            rows = con.execute("SELECT id,pr,head FROM runs WHERE repo=? AND state='waiting' "
+                               "AND seat IN ('reviewer','fixer','adjudicator')", (repo,)).fetchall()
+            for row in rows:
+                if row['pr'] not in open_heads:
+                    why = 'PR closed before the review started'
+                elif open_heads[row['pr']] != row['head']:
+                    why = 'PR head moved before the review started'
+                else:
+                    continue
+                con.execute("UPDATE runs SET state='cancelled', error=?, retry_at=NULL, updated=? "
+                            "WHERE id=? AND state='waiting'", (why, now, row['id']))
+                cancelled += 1
+            con.execute("COMMIT")
+        return cancelled
+
     def linger_for_ci(self, sleep=time.sleep) -> None:
         """After holding a review for CI, stay (no seat, no turn) until its next CI read is due,
         then schedule it: GitHub sends this route no event when CI finishes (#241)."""

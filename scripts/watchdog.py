@@ -821,6 +821,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         lines.append(f"⚠️ Diaktoros [{loop['id']}] isolated retry scheduling failed: "
                      f"{type(exc).__name__}: {exc}")
 
+    if isinstance(prs, list):
+        retire_stale_runs(loop, prs, lines)
+
     if not isinstance(prs, list):
         # Without a complete listing, even individually readable PRs cannot establish
         # that the sweep's scheduling view is current. Explicit --drain still rechecks.
@@ -1312,6 +1315,22 @@ def died_locks(loop: dict, locks: dict, now: float) -> list[tuple[str, str]]:
                               f"  {seat} slot held {age / 60:.0f}m on {key} — that run died; the "
                               f"mark is pruned on the next sweep"))
     return lines
+
+
+def retire_stale_runs(loop: dict, prs: list, lines: list[str]) -> None:
+    """With a complete open-PR listing, cancel waiting runs of PRs that closed or whose head
+    moved, so a hold on them does not outlive the PR in status (#629)."""
+    from diaktoros.run_supervisor import Supervisor, presence_marker
+    ledger = config.host_path("ledger")
+    if not ledger.exists():
+        return
+    heads = {pr.get("number"): (pr.get("head") or {}).get("sha")
+             for pr in prs if isinstance(pr, dict)}
+    try:
+        Supervisor(ledger, presence=presence_marker()).retire_stale_waiting(loop["repo"], heads)
+    except Exception as exc:
+        lines.append(f"⚠️ Diaktoros [{loop['id']}] stale held runs not retired: "
+                     f"{type(exc).__name__}: {exc}")
 
 
 def sweep_ledger(ledger: pathlib.Path, presence: pathlib.Path | None = None) -> list[str]:
