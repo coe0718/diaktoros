@@ -94,6 +94,42 @@ def ledger(db: Path, repo: str, since: float) -> dict | None:
     return seats
 
 
+def usage(db: Path, repo: str, since: float) -> list[dict] | None:
+    """Tokens in and out (and provider-reported cost) summed per seat and model (#480). Turns
+    with no recorded tokens (rows from before, or never reached the proxy) are left out of the
+    sums; ``costed`` counts the turns whose provider reported a cost, so a cost of 0 with
+    ``costed`` 0 reads as unknown. None when there is no ledger or no token columns."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
+        if not {"tokens_in", "tokens_out", "cost"} <= columns:
+            return None
+        model = "model" if "model" in columns else "NULL"
+        rows = con.execute(
+            f"SELECT seat, COALESCE({model}, 'unknown'), COUNT(*), SUM(tokens_in), "
+            "SUM(tokens_out), SUM(cost), COUNT(cost) FROM runs WHERE repo=? AND created>=? "
+            "AND tokens_in IS NOT NULL GROUP BY seat, 2 ORDER BY seat, 2",
+            (repo, since)).fetchall()
+    finally:
+        con.close()
+    return [{"seat": seat, "model": model_name, "turns": turns, "tokens_in": t_in or 0,
+             "tokens_out": t_out or 0, "cost": cost or 0.0, "costed": costed}
+            for seat, model_name, turns, t_in, t_out, cost, costed in rows]
+
+
+def _usage_rows(report: dict) -> list[list[str]]:
+    return [[row["seat"], row["model"], str(row["turns"]), f"{row['tokens_in']:,}",
+             f"{row['tokens_out']:,}",
+             f"{row['cost']:.4f}" if row["costed"] else "unknown"]
+            for row in report.get("usage") or []]
+
+
+USAGE_HEAD = ["seat", "model", "turns", "tokens in", "tokens out", "cost (provider-reported)"]
+
+
 def revisions(db: Path, repo: str, since: float) -> dict | None:
     """Turns, verdicts and rounds grouped by prompt revision and by resolved model (#472). Rows
     from before the columns (or never launched) group as "unknown". A verdict is the review a
@@ -258,7 +294,8 @@ def collect(loop: dict, db: Path, since: float, with_github: bool,
     now = time.time() if now is None else now
     report = {"repo": loop["repo"], "loop": loop.get("id", ""), "since": since, "until": now,
               "turns": ledger(db, loop["repo"], since),
-              "revisions": revisions(db, loop["repo"], since)}
+              "revisions": revisions(db, loop["repo"], since),
+              "usage": usage(db, loop["repo"], since)}
     try:
         from . import findings
         report["findings_missed"] = findings.missed_count(loop, since, now)
@@ -352,6 +389,9 @@ def text(report: dict) -> str:
     else:
         out += ["Turns (run ledger: 'ran' is a succeeded turn's own time, 'waited' is queued "
                 "until it started)", *_table(TURN_HEAD, _turn_rows(report))]
+    if report.get("usage"):
+        out += ["", "Tokens per seat and model (counted by the inference proxy; cost only where "
+                "the provider reported it)", *_table(USAGE_HEAD, _usage_rows(report))]
     for kind, title in (("prompt_rev", "prompt revision"), ("model", "model"),
                         ("thinking", "thinking")):
         groups = (report.get("revisions") or {}).get(kind)
@@ -429,6 +469,9 @@ def as_html(report: dict) -> str:
         parts.append(_html_table(TURN_HEAD, _turn_rows(report)))
     else:
         parts.append('<p class="sub">No turns in this window.</p>')
+    if report.get("usage"):
+        parts.append("<h2>Tokens per seat and model</h2>")
+        parts.append(_html_table(USAGE_HEAD, _usage_rows(report)))
     if gh_report:
         notes, tables = _github_parts(gh_report)
         parts.append("<h2>Pull requests and reviews</h2>")

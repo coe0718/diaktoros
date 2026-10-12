@@ -295,6 +295,8 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
+| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens the reviewer may spend per day; once spent the next turn waits for midnight (0 = none) (default: the plugin setting) |
+| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day (0 = none) (default: the plugin setting) |
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no fix label; set it with `triage --fix-daily-turns N` (0 = ignore) |
 | `--source` | `SOURCE` |  | runtime file's source path (default: detected) |
 | `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
@@ -407,6 +409,8 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds (overrides --turn-budget) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
+| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens the reviewer may spend per day; once spent the next turn waits for midnight (0 = none) (default: the plugin setting) |
+| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day (0 = none) (default: the plugin setting) |
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no fix label; set it with `triage --fix-daily-turns N` (0 = ignore) |
 | `--hooks` |  |  | create the GitHub hooks too, paused until `arm` |
 | `--arm` |  |  | with --hooks: create them armed (live at once) instead of paused |
@@ -493,6 +497,8 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds |
 | `--reviewer-daily-turns` | `REVIEWER_DAILY_TURNS` |  | most reviewer turns per day on this loop; later ones wait for midnight (0 removes the cap) |
 | `--fixer-daily-turns` | `FIXER_DAILY_TURNS` |  | most fixer turns per day on this loop (0 removes the cap) |
+| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens (in + out) the reviewer may spend per day on this loop; once spent, the next turn waits for midnight (0 removes it) |
+| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day on this loop (0 removes it) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) |
 | `--host` | `HOST` |  | gateway webhook host |

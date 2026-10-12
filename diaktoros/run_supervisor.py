@@ -146,6 +146,12 @@ _MIGRATIONS = (
     # The thinking level the turn ran at (#513), as the proxy saw its first model request
     # after the clamp: budget:<tokens>, effort:<level> or off. NULL: unknown.
     ("thinking", "ALTER TABLE runs ADD COLUMN thinking TEXT", ()),
+    # What the turn's model calls used (#480), counted by the inference proxy: tokens in and out,
+    # and the cost when the provider reported one. NULL: not recorded (rows from before, or a
+    # turn that never reached the proxy); cost NULL: the provider reported none.
+    ("tokens_in", "ALTER TABLE runs ADD COLUMN tokens_in INTEGER", ()),
+    ("tokens_out", "ALTER TABLE runs ADD COLUMN tokens_out INTEGER", ()),
+    ("cost", "ALTER TABLE runs ADD COLUMN cost REAL", ()),
 )
 # Worker stderr (one diagnostic line, or a traceback) goes to <ledger>.workers.log, rotated
 # once to .1 by the host when it passes this size.
@@ -354,6 +360,8 @@ def hold_remedy(seat: str, error: str) -> str:
     """The setting that lifts a daily-cap hold, or '' for a hold no cap explains (a usage
     window). The review-only cap is its own setting: on the reviewer seat it used to be given the
     reviewer's general cap, which does not lift it (live on #605, 2026-10-10)."""
+    if "daily token budget" in error:
+        return "seats.<seat>.daily_tokens in the loop file or the settings form (blank = none)"
     if "daily turn cap" not in error:
         return ""
     if "review-only daily turn cap" in error:
@@ -1504,6 +1512,23 @@ class Supervisor:
         with self._connect() as con:
             con.execute("UPDATE runs SET thinking=? WHERE id=? AND owner=?",
                         (value, run_id, owner))
+
+    def record_usage(self, run_id: str, owner: str, observed: dict, loop_id: str = "",
+                     seat: str = "") -> None:
+        """The tokens and cost the turn's proxy counted (#480), into the run's ledger columns,
+        and the tokens into today's per-seat spend that ``daily_tokens`` is checked against.
+        A turn that never reached the proxy records nothing (NULL), not zero."""
+        t_in, t_out = observed.get('tokens_in'), observed.get('tokens_out')
+        if not isinstance(t_in, int) or not isinstance(t_out, int):
+            return
+        cost = observed.get('cost')
+        with self._connect() as con:
+            con.execute("UPDATE runs SET tokens_in=?, tokens_out=?, cost=? WHERE id=? AND owner=?",
+                        (t_in, t_out, cost if isinstance(cost, (int, float)) else None,
+                         run_id, owner))
+        if loop_id and seat and t_in + t_out > 0:
+            from . import pacing
+            pacing.count_tokens(loop_id, seat, t_in + t_out)
 
     def _connect(self):
         pragmas = (ledger.BUSY_TIMEOUT, "journal_mode=WAL", "synchronous=FULL")
@@ -2967,6 +2992,16 @@ class Supervisor:
                 error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
                          f"{pacing.when(paced_until)}")
                 return
+            # A seat's daily token budget (#480): once spent, the next turn waits for midnight.
+            # A turn in flight is never killed; this only gates a launch. The fixer's budget
+            # covers its issue fixes too (seat_daily_tokens, and record_usage's counter key).
+            budget_seat = 'fixer' if row['seat'] == 'issue_fixer' else row['seat']
+            token_cap = config.seat_daily_tokens(loop, row['seat'])
+            if token_cap is not None and pacing.tokens_today(loop['id'], budget_seat) >= token_cap:
+                paced_until = pacing.next_midnight()
+                error = (f"held: {row['seat']} daily token budget ({token_cap}) reached — resumes "
+                         f"{pacing.when(paced_until)}")
+                return
             # Review-only PRs may have their own daily cap on reviewer turns, so the operator's
             # PRs cannot use up the budget the fixer's PRs share. The fixer's PRs never read it.
             ro_cap = config.review_only_daily(loop) if row['seat'] == 'reviewer' else None
@@ -3252,6 +3287,11 @@ class Supervisor:
                 self.record_thinking(run_id, owner, observed.get('thinking'))
             except Exception:
                 pass    # a lost note must not change how the turn ends
+            try:
+                self.record_usage(run_id, owner, observed, loop['id'],
+                                  'fixer' if row['seat'] == 'issue_fixer' else row['seat'])
+            except Exception:
+                pass    # likewise: a lost count must not change how the turn ends
             state = self.complete_uncertain(
                 run_id, owner, rc, error, stopped=stopped, retry=retry,
                 detail=output_detail(observed.get('stdout'), observed.get('stderr')),

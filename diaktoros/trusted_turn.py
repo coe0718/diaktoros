@@ -59,6 +59,15 @@ def not_exported_section(paths: list[str], limit: int = 50) -> str:
             + '\n'.join(lines) + '\n\n')
 
 
+def usage_of(inference) -> dict:
+    """The tokens (and provider-reported cost, None when it reported none) the turn's proxy
+    counted (#480), for the supervisor to record in the ledger."""
+    return {'tokens_in': int(getattr(inference, 'tokens_in', 0) or 0),
+            'tokens_out': int(getattr(inference, 'tokens_out', 0) or 0),
+            'cost': (float(getattr(inference, 'cost', 0.0))
+                     if getattr(inference, 'cost_known', False) else None)}
+
+
 def _provider_note(inference) -> str:
     """The provider's last error during this turn, as a line for the run's output tail."""
     error = getattr(inference, 'last_error', '')
@@ -703,6 +712,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                     if observed is not None:
                         doing = getattr(inference, 'last_activity', '')
                         observed['thinking'] = getattr(inference, 'thinking', None)
+                        observed.update(usage_of(inference))
                         observed.update(
                             stdout=_decoded(exc.output)[-4000:]
                             + (f"\n[last agent activity before the kill] {doing}" if doing else "")
@@ -711,6 +721,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                     raise TurnBudgetExceeded(exc.cmd, timeout, grace) from None
                 if observed is not None:
                     observed['thinking'] = getattr(inference, 'thinking', None)
+                    observed.update(usage_of(inference))
                     observed.update(returncode=result.returncode,
                                     # A failed turn names the provider's own error (#281: Hermes
                                     # reported only "HTTP 400 — Error response").

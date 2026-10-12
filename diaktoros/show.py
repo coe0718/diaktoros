@@ -116,6 +116,9 @@ def _rows(loop: dict) -> list[_Row]:
                note="a path, never the token" if match else "")
     for role in config.SEAT_KEYS:
         schema(f"{role}_max_steps", ("seats", role, "max_steps"), config.max_steps(loop, role))
+    for role in config.SEAT_KEYS:
+        schema(f"{role}_daily_tokens", ("seats", role, "daily_tokens"),
+               config.seat_daily_tokens(loop, role) or "no budget")
     schema("auto_fix_labels", ("triage", "auto_fix_labels"),
            sorted(config.auto_fix_labels(loop) or [str(x) for x in triage.get("auto_fix_labels") or []]),
            off="no auto-offer: issues reach the fixer only when a maintainer applies the fix label",
@@ -195,6 +198,8 @@ def _rows(loop: dict) -> list[_Row]:
                 continue
             if key == "daily_turns":
                 value = config.seat_daily_turns(loop, seat) or "no cap"
+            if key == "daily_tokens":
+                value = config.seat_daily_tokens(loop, seat) or "no budget"
             plain(f"seats.{seat}.{key}", ("seats", seat, key),
                   value if value not in (None, "") else _UNSET, f"seat {seat}: {key}")
     plain("adjudicator.route", ("adjudicator", "route"), adj.get("route") or _UNSET,
