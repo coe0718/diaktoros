@@ -14,6 +14,7 @@ import contextlib
 import io
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -127,7 +128,28 @@ class Manifest(unittest.TestCase):
         text = (ROOT / "plugin.yaml").read_text()
         self.assertIn("\nname: diaktoros\n", "\n" + text)
         self.assertIn("homepage: https://github.com/coe0718/diaktoros\n", text)
-        self.assertIn("bounded, autonomous software maintenance for Hermes", text)
+        self.assertIn("bounded autonomous software maintenance for Hermes", text)
+
+    def test_the_manifest_and_the_catalog_open_with_the_same_tagline(self):
+        # The two copies drifted apart once (the catalog card kept the v0.1.0 wording); one
+        # sentence opens both, and each keeps its own disclosure after it.
+        # Read without PyYAML (not every CI interpreter has it): the manifest's folded block and
+        # the catalog's one quoted line.
+        lines = (ROOT / "plugin.yaml").read_text().splitlines()
+        start = lines.index("description: >-") + 1
+        block = []
+        for line in lines[start:]:
+            if not line.startswith("  "):
+                break
+            block.append(line.strip())
+        manifest = " ".join(" ".join(block).split())
+        catalog = re.search(r'^description: "(.*)"$', (ROOT / "catalog" / "diaktoros.yaml").read_text(),
+                            re.M).group(1)
+        tagline = catalog.split(" Disclosure —")[0]
+        self.assertTrue(tagline.startswith("Bounded autonomous software maintenance for Hermes"))
+        self.assertIn("triaged", tagline)
+        self.assertIn("the loop never merges.", tagline)
+        self.assertEqual(manifest.split(" Disclosure —")[0], "Diaktoros — " + tagline[0].lower() + tagline[1:])
 
 
 if __name__ == "__main__":
