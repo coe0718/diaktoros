@@ -285,6 +285,18 @@ class Package(unittest.TestCase):
         self.assertIn(f"const ID = '{plugin_name}'", source)
         self.assertIn("defaultEnabled: false", source)
 
+    def test_first_render_findings_641(self):
+        source = PLUGIN_JS.read_text()
+        code = re.sub(r"(?<![:\w])//[^\n]*", "", source)
+        # no markdown backticks in rendered strings (they print literally)
+        self.assertNotIn("`", code)
+        # seat rows show the states that have no column of their own
+        self.assertIn("otherStates(s)", source)
+        self.assertIn("'other'", source)
+        # a clean install gets one line and a collapsed list, not five arbitrary rows
+        self.assertNotIn("checks.slice(0, 5)", source)
+        self.assertIn("cleanLine(counts, checks.length)", source)
+
 
 # Hermes's catalog "desktop surface" rules (hermes_cli/plugin_validate_desktop.py), plus the
 # loader's import allowlist and the SDK's theming rule (theme variables, never a literal color).

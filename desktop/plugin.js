@@ -312,8 +312,8 @@ function Drawer({ loop, pr, onClose }) {
                 jsx(Muted, {
                   text:
                     'This view is the ledger and the loop’s own files. For the GitHub half — CI, ' +
-                    'reviews, rulesets — run `hermes dk explain --pr ' + pr +
-                    (loop ? ' --loop ' + loop : '') + '`.'
+                    'reviews, rulesets — run: hermes dk explain --pr ' + pr +
+                    (loop ? ' --loop ' + loop : '') + '.'
                 })
               ]
             })
@@ -348,6 +348,20 @@ function StatusChip() {
   })
 }
 
+/** The one line a clean install gets: nothing wrong, and how many checks could not be read offline. */
+function cleanLine(counts, total) {
+  const unknown = counts.unknown || 0
+  return 'No mismatch or absent check (' + total + ' checked' +
+    (unknown ? ', ' + unknown + ' unknown: the offline ones, see Show all' : '') + ').'
+}
+
+/** Turn states that have no column of their own, so the row still adds up to its turns. */
+function otherStates(states) {
+  const own = ['succeeded', 'failed', 'waiting']
+  const rest = Object.keys(states || {}).filter(k => !own.includes(k) && states[k] > 0).sort()
+  return rest.length ? rest.map(k => states[k] + ' ' + k).join(', ') : '—'
+}
+
 function Health({ loop }) {
   const [showAll, setShowAll] = useState(false)
   const health = useHealth(loop)
@@ -357,7 +371,7 @@ function Health({ loop }) {
   // The failures first: an install is read for what is wrong with it, not for its 40 verified
   // lines. "Show all" reaches the rest without hiding that they were checked.
   const attention = checks.filter(c => c.status === 'mismatch' || c.status === 'absent')
-  const shown = showAll ? checks : attention.length ? attention : checks.slice(0, 5)
+  const shown = showAll ? checks : attention.length ? attention : []
 
   return jsx(Section, {
     title: 'Health',
@@ -400,14 +414,14 @@ function Health({ loop }) {
                   ? shown.map(check => jsx(CheckRow, { check }, check.name + check.status))
                   : jsx('div', {
                       className: 'py-2',
-                      children: jsx(Muted, { text: 'Every local check passed.' })
+                      children: jsx(Muted, { text: cleanLine(counts, checks.length) })
                     })
             }),
         jsx(Muted, {
           text:
             'The installation’s own preflight, read offline: gateway, hooks, token expiry, labels ' +
             'and rulesets are left unprobed, so nothing here fires a route or a GitHub call. ' +
-            '`hermes dk doctor` includes them.'
+            'Run: hermes dk doctor — it includes them.'
         })
       ]
     })
@@ -446,7 +460,7 @@ function Page() {
   const seatRows = seats.map(seat => {
     const t = turns[seat], s = t.states || {}, r = t.ran, w = t.waited
     return [seat, String(t.turns), String(s.succeeded || 0), String(s.failed || 0),
-      String(s.waiting || 0), String(t.retried), duration(r && r.median), duration(r && r.max),
+      String(s.waiting || 0), otherStates(s), String(t.retried), duration(r && r.median), duration(r && r.max),
       duration(w && w.median)]
   })
   const runs = (now.data && now.data.runs) || []
@@ -479,7 +493,7 @@ function Page() {
 
   let body
   if (loops.isError) body = jsx(Muted, { text: 'The loop backend is not reachable. Enable the plugin\'s Python half (plugins.enabled in config.yaml) and restart the gateway.' })
-  else if (!loops.isLoading && !list.length) body = jsx(Muted, { text: 'No loops configured. Run `hermes dk setup` in a terminal.' })
+  else if (!loops.isLoading && !list.length) body = jsx(Muted, { text: 'No loops configured. Run: hermes dk setup, in a terminal.' })
   else body = jsxs('div', {
     className: 'flex flex-col gap-5',
     children: [
@@ -506,13 +520,13 @@ function Page() {
         title: 'Seat turns (' + since + ')',
         children: seatRows.length
           ? jsx(Table, {
-              head: ['seat', 'turns', 'ok', 'failed', 'waiting', 'retried', 'ran (median)', 'ran (max)', 'waited (median)'],
+              head: ['seat', 'turns', 'ok', 'failed', 'waiting', 'other', 'retried', 'ran (median)', 'ran (max)', 'waited (median)'],
               rows: seatRows
             })
           : jsx(Muted, { text: stats.isLoading ? 'Loading…' : 'No turns in this window.' })
       }),
       jsx(Health, { loop }),
-      jsx(Muted, { text: 'Read-only, from this machine\'s run ledger. For PRs and reviews from GitHub, run `hermes dk stats --github`.' })
+      jsx(Muted, { text: 'Read-only, from this machine\'s run ledger. For PRs and reviews from GitHub, run: hermes dk stats --github' })
     ]
   })
 
