@@ -636,6 +636,31 @@ ownership receipts, failure traceback, current image attachments and process
 snapshot. Backing images stay on the runner on failure and are not uploaded.
 The soak and boundary workflows preserve in-progress runs when the PR is updated.
 
+## Naturally busy images through the queue
+
+`native-eventual-eject.yml` runs standard and verbose host-only churn on ARM and
+Intel, up to 128 images per lane. It uses `native_eject_forensics.py
+--eventual-cleanup --require-natural-pending`. These runs inject no eject error.
+They preserve the baseline forensic mode separately.
+
+Each image is registered under a private cleanup pool before creation. No seat
+is launched in this workload. After synchronous create/attach and host writes
+return, the trusted fixture records its explicit no-seat-launch completion
+receipt. This test-only proof is never substituted for process drain in a real
+native turn. Normal bounded detach runs first. A qualifying natural case must
+have five failed normal busy ejects and a failed final forced busy eject,
+followed by a matching durable pending receipt inside the same pool.
+
+The first qualifying image is retried by up to five fresh worker processes,
+using the production pool recovery API. The five-minute deadline starts before
+initial detach, so the initial backoff and diagnostic overhead count. The
+probe retains original failures, queue/control receipts, helper measurements,
+worker stdout/stderr and OS log evidence. Failure or worker timeout retains
+storage. A pass requires the exact image's verified disposal and an empty owned
+inventory. A lane with no qualifying natural case is marked inconclusive and
+exits 2; quiet churn cannot establish natural-busy recovery. Eighteen local collector checks pass, including deadline, durable receipt,
+exhaustion, verified removal and inconclusive-result checks for the added rules.
+
 ## Dedicated eject forensics
 
 `native-eject-forensics.yml` runs eight independent Mac lanes: ARM and Intel,

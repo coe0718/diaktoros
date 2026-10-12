@@ -179,5 +179,124 @@ class ForensicsValidation(unittest.TestCase):
             killpg.assert_not_called()
 
 
-if __name__ == '__main__':
+class NaturalRecoveryValidation(unittest.TestCase):
+    def test_fifth_sweep_must_remove_image_and_late_success_fails(self):
+        deadline = forensics.DisposalDeadline(0)
+        for tick in range(4):
+            deadline.before(tick)
+            deadline.after(tick, removed=False)
+        deadline.before(4)
+        with self.assertRaises(RuntimeError):
+            deadline.after(4, removed=False)
+        self.assertEqual(deadline.after(4, removed=True), 4)
+        with self.assertRaises(RuntimeError):
+            deadline.before(5)
+        with self.assertRaises(RuntimeError):
+            forensics.DisposalDeadline(0).after(301, removed=True)
+
+    def test_no_natural_busy_is_not_eligible_for_acceptance(self):
+        recorder = mock.Mock()
+        workspace = SimpleNamespace(had_busy=False, pending_cleanup={'status': 'pending'})
+        with self.assertRaisesRegex(RuntimeError, 'not a captured natural busy'):
+            forensics.reconcile_natural(recorder, workspace, mock.Mock(), 0)
+        recorder.command.assert_not_called()
+
+    def fixture(self, directory, *, drained):
+        import os
+        from diaktoros import native_cleanup, native_recovery
+        pool = native_cleanup.Manager(Path(directory).resolve()/'pool')
+        w = native_storage.Workspace(64, cleanup_manager=pool)
+        r = pool.prepare(w)
+        w.had_busy = True
+        w.pending_cleanup = {'status': 'pending'}
+        w.cleanup_events = [{'error':'Resource busy','force':False} for _ in range(5)] + [{'error':'Resource busy','force':True}]
+        w.image.write_bytes(b'fixture')
+        w.image.chmod(0o600)
+        w.mount.mkdir()
+        r.update('created', image_identity=native_recovery._identity(w.image.lstat()))
+        r.update('attached')
+        r.update('armed')
+        if drained:
+            r.update('drained')
+            r.defer_cleanup('Resource busy')
+        r.close()
+        os.close(w._disposal_lease)
+        w._disposal_lease = None
+        return w
+
+    def test_uncertain_process_receipt_never_reaches_cleanup_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            w = self.fixture(directory, drained=False)
+            recorder = forensics.Recorder(Path(directory)/'evidence')
+            with mock.patch.object(recorder, 'command') as command:
+                with self.assertRaisesRegex(RuntimeError, 'durable completion'):
+                    forensics.reconcile_natural(recorder, w, w.cleanup_manager, 0)
+            command.assert_not_called()
+            self.assertTrue(w.image.exists())
+
+    def test_transient_busy_without_exhausted_force_does_not_qualify(self):
+        with tempfile.TemporaryDirectory() as directory:
+            w = self.fixture(directory, drained=True)
+            w.cleanup_events = [{'error':'Resource busy','force':False}]
+            recorder = forensics.Recorder(Path(directory)/'evidence')
+            with mock.patch.object(recorder, 'command') as command:
+                with self.assertRaisesRegex(RuntimeError, 'did not exhaust'):
+                    forensics.reconcile_natural(recorder, w, w.cleanup_manager, 0)
+            command.assert_not_called()
+            self.assertTrue(w.image.exists())
+
+    def test_quiet_churn_is_inconclusive_when_natural_capture_is_required(self):
+        from contextlib import nullcontext
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            recorder = forensics.Recorder(root/'evidence')
+            with mock.patch.object(forensics.tempfile, 'mkdtemp', return_value=str(root/'pool')), \
+                    mock.patch.object(recorder, 'log_stream', return_value=nullcontext()), \
+                    mock.patch.object(recorder, 'command', return_value=({'returncode':0},b'',b'')):
+                result = forensics.probe_eventual(recorder, 0, require_natural=True)
+            self.assertEqual(result, 2)
+            report = json.loads((recorder.output/'eventual-result.json').read_text())
+            self.assertTrue(report['inconclusive'])
+            self.assertFalse(report['natural_recovery_accepted'])
+
+    def test_verified_natural_queue_success_records_disposal_latency(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as directory:
+            w = self.fixture(directory, drained=True)
+            recorder = forensics.Recorder(Path(directory)/'evidence')
+            def command(*args, **kwargs):
+                shutil.rmtree(w.root)  # Simulate the fresh worker's verified disposal.
+                return {'returncode': 0}, json.dumps({'results':[{'root':str(w.root),'status':'removed'}]}).encode(), b''
+            with mock.patch.object(recorder, 'command', side_effect=command), \
+                    mock.patch.object(recorder, 'helper_progress'), \
+                    mock.patch.object(forensics.time, 'monotonic', side_effect=[1,2]):
+                result = forensics.reconcile_natural(recorder, w, w.cleanup_manager, 0)
+            self.assertEqual(result, {'sweeps':1, 'elapsed_seconds':2})
+            self.assertTrue((recorder.output/'natural-pending-receipt.json').exists())
+
+    def test_disappearance_without_verified_worker_result_cannot_pass(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as directory:
+            w = self.fixture(directory, drained=True)
+            recorder = forensics.Recorder(Path(directory)/'evidence')
+            def command(*args, **kwargs):
+                shutil.rmtree(w.root)
+                return {'returncode':0}, b'{"results":[{"status":"absent"}]}', b''
+            with mock.patch.object(recorder, 'command', side_effect=command), \
+                    mock.patch.object(forensics.time, 'monotonic', return_value=1):
+                with self.assertRaisesRegex(RuntimeError, 'without matching verified'):
+                    forensics.reconcile_natural(recorder, w, w.cleanup_manager, 0)
+
+    def test_failed_fresh_worker_retains_image_and_does_not_claim_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            w = self.fixture(directory, drained=True)
+            recorder = forensics.Recorder(Path(directory)/'evidence')
+            with mock.patch.object(recorder, 'command', return_value=({'error':'timeout'}, b'', b'')), \
+                    mock.patch.object(forensics.time, 'monotonic', return_value=1):
+                with self.assertRaisesRegex(RuntimeError, 'worker failed or timed out'):
+                    forensics.reconcile_natural(recorder, w, w.cleanup_manager, 0)
+            self.assertTrue(w.image.exists())
+
+
+if __name__ == "__main__":
     unittest.main()

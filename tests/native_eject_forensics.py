@@ -12,11 +12,12 @@ import plistlib
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from unittest import mock
 
-from diaktoros import native_storage, seatbelt
+from diaktoros import native_cleanup, native_recovery, native_storage, seatbelt
 
 # Routine Disk Arbitration callbacks exhausted the original stream before a
 # captured failure. Keep lifecycle/rejection messages and driver diagnostics.
@@ -291,8 +292,8 @@ class Recorder:
 
 
 class ObservedWorkspace(native_storage.Workspace):
-    def __init__(self, recorder):
-        super().__init__(64)
+    def __init__(self, recorder, *, cleanup_manager=None):
+        super().__init__(64, cleanup_manager=cleanup_manager)
         self.recorder = recorder
         self.had_busy = False
 
@@ -373,11 +374,185 @@ def probe(recorder, cycles):
     return bool(failures or precondition_failed)
 
 
+class DisposalDeadline:
+    def __init__(self, started):
+        self.started = started
+        self.sweeps = 0
+
+    def before(self, now):
+        if self.sweeps >= 5 or now - self.started >= 300:
+            raise RuntimeError('natural pending image exceeded five sweeps or five minutes')
+        self.sweeps += 1
+
+    def after(self, now, *, removed):
+        elapsed = now - self.started
+        if elapsed > 300 or (not removed and self.sweeps >= 5):
+            raise RuntimeError('natural pending image remained past disposal deadline')
+        return elapsed
+
+
+def reconcile_natural(recorder, workspace, pool, started):
+    """Keep the first failure, then measure production retries in fresh hosts."""
+    if not workspace.had_busy or workspace.pending_cleanup is None:
+        raise RuntimeError('pending disposal is not a captured natural busy eject')
+    busy = [e for e in workspace.cleanup_events if 'Resource busy' in e.get('error', '')]
+    if sum(not e['force'] for e in busy) < 5 or not any(e['force'] for e in busy):
+        raise RuntimeError('natural pending image did not exhaust normal and forced eject')
+    if workspace.root.parent != pool.volumes:
+        raise RuntimeError('natural pending receipt does not belong to this cleanup pool')
+    with native_recovery.Record(workspace.root) as receipt:
+        record = receipt.read()
+        if (record['state'] not in ('drained', 'disposed') or record.get('cleanup_pending') is not True
+                or record.get('eventual_cleanup') is not True):
+            raise RuntimeError('natural busy image lacks durable completion and queue proof')
+    (recorder.output / 'natural-pending-receipt.json').write_text(json.dumps(record, sort_keys=True))
+    recorder.emit({'tag': 'natural-pending', 'root': str(workspace.root),
+                   'turn_processes_launched': False, 'injected': False,
+                   'initial_ejects': workspace.cleanup_events, 'receipt_state': record['state']})
+    # Existing first-failure evidence is already archived; avoid an additional
+    # full snapshot changing the settling interval before the first retry.
+    deadline = DisposalDeadline(started)
+    source = str(Path(native_cleanup.__file__).resolve().parent.parent)
+    code = ('import sys,json; from pathlib import Path; sys.path.insert(0,sys.argv[1]); '
+            'from diaktoros.native_cleanup import Manager; notices=[]; '
+            'value=Manager(Path(sys.argv[2]),create=False).sweep(notify=notices.append); '
+            'value["notices"]=notices; print(json.dumps(value))')
+    while workspace.root.exists():
+        deadline.before(time.monotonic())
+        event, stdout, _ = recorder.command(
+            f'eventual-sweep-{deadline.sweeps}',
+            [sys.executable, '-I', '-B', '-c', code, source, str(pool.root)], timeout=90)
+        if event.get('error') or event.get('returncode') != 0:
+            raise RuntimeError('fresh natural-image cleanup worker failed or timed out; retain storage')
+        value = json.loads(stdout)
+        removed = not workspace.root.exists()
+        verified = any(r.get('root') == str(workspace.root) and r.get('status') == 'removed'
+                       for r in value.get('results', []))
+        if removed and not verified:
+            raise RuntimeError('image path vanished without matching verified cleanup result')
+        elapsed = deadline.after(time.monotonic(), removed=removed)
+        recorder.emit({'tag': 'eventual-sweep-result', 'sweep': deadline.sweeps,
+                       'elapsed_since_eligible': round(elapsed, 3), 'removed': removed,
+                       'result': value})
+        if not removed:
+            recorder.helper_progress(workspace, f'eventual-sweep-{deadline.sweeps}')
+    if deadline.sweeps == 0:
+        raise RuntimeError('pending image vanished before any verified sweep')
+    recorder.helper_progress(workspace, 'eventual-cleanup-success')
+    return {'sweeps': deadline.sweeps, 'elapsed_seconds': round(elapsed, 3)}
+
+
+def probe_eventual(recorder, cycles, *, require_natural=False):
+    """Host-only image churn with explicit no-seat-launch completion proof.
+
+    This fixture has no seat/process tree to drain. The host records completion
+    only after create/attach commands and its own filesystem work have returned.
+    It never adopts an unknown image or manufactures proof from an unlocked lease.
+    """
+    pool = native_cleanup.Manager(Path(tempfile.mkdtemp(prefix='dk-eventual-pool-', dir='/tmp')).resolve())
+    failures = 0
+    natural_pending = 0
+    completions = []
+    completed_cycles = 0
+    with recorder.log_stream(), mock.patch.object(native_storage, '_run', recorder.run):
+        recorder.command('runtime', ['/usr/bin/sw_vers'])
+        precondition, _, _ = recorder.command(
+            'eventual-precondition', [sys.executable, 'tests/leakguard.py', 'discover',
+                                     '-v', '-s', 'tests', '-p', 'test_native_cleanup.py'], timeout=240)
+        precondition_failed = bool(precondition.get('error') or precondition.get('returncode'))
+        if not precondition_failed:
+            for cycle in range(cycles):
+                workspace = ObservedWorkspace(recorder, cleanup_manager=pool)
+                workload = ('idle', 'metadata', 'fsync')[cycle % 3]
+                event = {'tag': 'eventual-cycle', 'cycle': cycle, 'workload': workload,
+                         'architecture': platform.machine(), 'verbose': recorder.verbose,
+                         'turn_processes_launched': False, 'injected': False}
+                started = time.monotonic()
+                try:
+                    with workspace:
+                        if workload == 'metadata':
+                            for index in range(192):
+                                path = workspace.work / f'file-{index}'
+                                path.write_bytes(b'x' * 4096)
+                                path.rename(workspace.work / f'renamed-{index}')
+                            for path in workspace.work.iterdir():
+                                path.unlink()
+                        elif workload == 'fsync':
+                            with (workspace.work / 'synced').open('wb') as target:
+                                target.write(b'x' * (8 * 1024 * 1024))
+                                target.flush()
+                                os.fsync(target.fileno())
+                        native_recovery.arm(workspace)
+                        with native_recovery.Record(workspace.root) as receipt:
+                            receipt.update('drained', cause='host_only_fixture_no_seat_launched')
+                        # This proof is test-only and never used by a native turn.
+                        eligible = time.monotonic()
+                        recorder.before_detach(workspace)
+                    if time.monotonic() - eligible > 300:
+                        raise RuntimeError('initial disposal exceeded five-minute eligibility deadline')
+                    if workspace.pending_cleanup is not None:
+                        if not workspace.had_busy:
+                            raise RuntimeError('unexpected non-busy disposal failure; retain storage')
+                        natural_pending += 1
+                        completion = reconcile_natural(recorder, workspace, pool, eligible)
+                        completions.append(completion)
+                        event['eventual_completion'] = completion
+                    elif workspace.had_busy:
+                        recorder.helper_progress(workspace, 'cleanup-success')
+                    completed_cycles += 1
+                except Exception as error:
+                    failures += 1
+                    event['error'] = str(error)
+                    if workspace.had_busy:
+                        recorder.helper_progress(workspace, 'eventual-give-up')
+                    if workspace.root is not None:
+                        recorder.snapshot(workspace, 'eventual-failed')
+                    break
+                finally:
+                    event.update(root=str(workspace.root), ejects=workspace.cleanup_events,
+                                 creation=workspace.creation_events,
+                                 elapsed_seconds=round(time.monotonic() - started, 3))
+                    recorder.emit(event)
+                # One real captured persistent-busy disposal answers this lane.
+                # Keep its evidence instead of replacing it with later images.
+                if natural_pending:
+                    break
+        recorder.command('system-history', ['/usr/bin/log', 'show', '--last', '15m', '--style',
+                         'compact', '--info', '--debug', '--predicate', PREDICATE], timeout=15)
+    try:
+        status = pool.status()
+    except Exception as error:
+        status = {'error': str(error)}
+    control = pool.root / native_recovery.JOURNAL
+    if control.is_file():
+        (recorder.output / 'eventual-control.json').write_bytes(control.read_bytes()[:native_recovery.MAX_RECORD+1])
+    for root in pool.volumes.iterdir():
+        journal = root / native_recovery.JOURNAL
+        if journal.is_file():
+            (recorder.output / (root.name + '-receipt.json')).write_bytes(journal.read_bytes()[:native_recovery.MAX_RECORD+1])
+    accepted = bool(natural_pending and not failures and not precondition_failed and not list(pool.volumes.iterdir()))
+    result = {'tag': 'eventual-result', 'failures': failures, 'precondition_failed': precondition_failed,
+              'natural_pending_images': natural_pending, 'completed_cycles': completed_cycles,
+              'natural_recovery_accepted': accepted, 'inconclusive': not failures and not precondition_failed and not natural_pending,
+              'worst_cleanup_sweeps': max((x['sweeps'] for x in completions), default=None),
+              'worst_cleanup_seconds': max((x['elapsed_seconds'] for x in completions), default=None),
+              'status': status, 'pool_root': str(pool.root), 'injected': False}
+    (recorder.output / 'eventual-result.json').write_text(json.dumps(result, sort_keys=True))
+    recorder.emit(result)
+    if failures or precondition_failed:
+        return 1
+    return 2 if require_natural and not accepted else 0
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cycles', type=int, default=64, choices=range(1, 129))
     parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--eventual-cleanup', action='store_true',
+                        help='route real busy ejects through the durable cleanup pool')
+    parser.add_argument('--require-natural-pending', action='store_true',
+                        help='exit inconclusive unless a real exhausted eject is queued and disposed')
     parser.add_argument('--sync-delay', action='store_true',
                         help='test-only system-wide sync plus two seconds before first detach')
     parser.add_argument('--sync-unmount', action='store_true',
@@ -385,6 +560,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if reason := seatbelt.unavailable():
         parser.error(reason)
-    raise SystemExit(bool(probe(Recorder(args.output, verbose=args.verbose,
-                                       sync_delay=args.sync_delay,
-                                       pre_unmount=args.sync_unmount), args.cycles)))
+    if args.require_natural_pending and not args.eventual_cleanup:
+        parser.error('--require-natural-pending requires --eventual-cleanup')
+    recorder = Recorder(args.output, verbose=args.verbose,
+                        sync_delay=args.sync_delay, pre_unmount=args.sync_unmount)
+    if args.eventual_cleanup:
+        raise SystemExit(probe_eventual(recorder, args.cycles, require_natural=args.require_natural_pending))
+    raise SystemExit(bool(probe(recorder, args.cycles)))
