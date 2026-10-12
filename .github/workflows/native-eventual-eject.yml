@@ -1,0 +1,54 @@
+name: Natural busy eject eventual recovery
+
+on:
+  pull_request:
+    paths:
+      - diaktoros/native_cleanup.py
+      - diaktoros/native_recovery.py
+      - diaktoros/native_storage.py
+      - tests/native_eject_forensics.py
+      - tests/test_native_eject_forensics.py
+      - .github/workflows/native-eventual-eject.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-eventual-eject-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  natural-recovery:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+        instrumentation: [standard, verbose, sync-delay, sync-unmount, stress-timing]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Capture real exhausted eject then require verified eventual disposal
+        env:
+          INSTRUMENTATION: ${{ matrix.instrumentation }}
+          DIAKTOROS_REQUIRE_NATIVE_STORAGE: '1'
+        run: |
+          flags=()
+          if [ "$INSTRUMENTATION" = verbose ]; then flags+=(--verbose); fi
+          if [ "$INSTRUMENTATION" = sync-delay ]; then flags+=(--sync-delay); fi
+          if [ "$INSTRUMENTATION" = sync-unmount ]; then flags+=(--sync-unmount); fi
+          if [ "$INSTRUMENTATION" = stress-timing ]; then flags+=(--stress-timing); fi
+          python tests/native_eject_forensics.py --cycles 128 --eventual-cleanup --require-natural-pending --forensic-precondition --output "$RUNNER_TEMP/eventual-eject-evidence" "${flags[@]}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: eventual-eject-${{ matrix.runner }}-${{ matrix.instrumentation }}
+          path: ${{ runner.temp }}/eventual-eject-evidence
+          retention-days: 14
+          if-no-files-found: error

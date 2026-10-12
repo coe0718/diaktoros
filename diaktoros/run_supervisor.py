@@ -1379,7 +1379,9 @@ class Supervisor:
                  lease_seconds: float = 60, child_timeout: float = DEFAULT_TURN_BUDGET_S,
                  production_config: str | Path | None = None,
                  hermes_home: str | Path | None = None, create: bool = True,
-                 presence: str | Path | None = None):
+                 presence: str | Path | None = None,
+                 native_workspace_parent: str | Path | None = None,
+                 native_cleanup_parent: str | Path | None = None):
         """``create=False`` is the detached worker's mode: it opens an existing ledger only.
 
         Hardening: a worker must never create host state. Only host-side callers (gate
@@ -1444,6 +1446,10 @@ class Supervisor:
         self.lease_seconds = lease_seconds
         self.child_timeout = child_timeout
         self.create = create
+        self.native_workspace_parent = (Path(native_workspace_parent)
+                                        if native_workspace_parent is not None else None)
+        self.native_cleanup_parent = (Path(native_cleanup_parent) if native_cleanup_parent is not None
+                                      else self.db.parent / 'native-cleanup')
         if not create:
             with self._connect():  # validates; a worker never schemas or migrates
                 pass
@@ -2394,6 +2400,20 @@ class Supervisor:
 
     def recover(self) -> str:
         """Sweep lost claims and ambiguous launches; schedule waiting work."""
+        # Native startup inventory is host-only, independent of run/worker PIDs
+        # and performed before acquiring the ledger's transaction lock. It does
+        # not select a production native backend or launch a retained turn.
+        if sys.platform == 'darwin' and self.create:
+            from . import native_cleanup, native_recovery, native_storage
+            if self.native_cleanup_parent.exists() or self.native_cleanup_parent.is_symlink():
+                try:
+                    self.native_cleanup_results = native_cleanup.bounded_sweep(self.native_cleanup_parent)
+                    native_storage._diagnostic('NATIVE_CLEANUP', self.native_cleanup_results)
+                except (OSError, RuntimeError) as error:
+                    native_storage._diagnostic('NATIVE_CLEANUP', {'status': 'unverified', 'reason': str(error)})
+            self.native_recovery_results = native_recovery.startup(self.native_workspace_parent)
+            for result in self.native_recovery_results:
+                native_storage._diagnostic('NATIVE_RECOVERY', result)
         now = time.time()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")

@@ -2235,10 +2235,25 @@ def check_environment(loop: dict, offline: bool) -> list[Check]:
     return checks
 
 
+def check_native_cleanup() -> Check | None:
+    from . import native_cleanup, run_supervisor
+    status = native_cleanup.ledger_status(run_supervisor.production_ledger())
+    if status is None:
+        return None
+    detail = status['detail']
+    if status['uncertain_notices']:
+        detail += f"; {status['uncertain_notices']} notification deliveries uncertain"
+    return Check('native-cleanup', MISMATCH if status['paused'] else VERIFIED, detail,
+                 'Inspect the host cleanup pool; do not delete an attached or unverified image.')
+
+
 def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     """Every check, in the order an operator reads an install: what it is, who runs it, what
     wakes it, what schedules it, and where it works."""
     checks = [check_config(loop), check_turn_budget(loop), check_host_names()]
+    native = check_native_cleanup()
+    if native is not None:
+        checks.append(native)
     duplicate = check_duplicate_repo(loop)
     if duplicate:
         checks.append(duplicate)

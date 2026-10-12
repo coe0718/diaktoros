@@ -3905,6 +3905,10 @@ def cmd_explain(args) -> int:
                   f"parents {report['chain']['parents']} · {report['chain']['reason']}")
         print(f"  {'budget:':<12}{report['budget']}")
         print(f"  {'seat:':<12}{report['seat']}")
+        from . import native_cleanup, run_supervisor
+        native = native_cleanup.ledger_status(run_supervisor.production_ledger())
+        if native is not None:
+            print(f"  {'native:':<12}{native['detail']}")
         print(f"  {'queue:':<12}{report['queue']}")
         print(f"  {'in-flight:':<12}{report['inflight']}")
         for line in _dependency_lines(loop, args.pr, limit=3):
