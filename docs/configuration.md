@@ -326,6 +326,7 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `main_red` | A required check is red at the head of the base branch: once per main head, naming the failed check(s) and the PRs merged since main's last green head. Urgent tier. |
 | `stale_approval` | A loop PR is approved at head H, and a required check at H is then red, cancelled, or never reported within 30 minutes of the approval: once per PR and head. Urgent tier. |
 | `human_paths` | The reviewer would approve, but the diff touches a `human_paths` glob (or is too large to list), so the approval is left to a person: once per PR and head. Urgent tier. |
+| `ready_set` | The set `hermes dk ready` lists changed (including becoming empty): once per change, found by the watchdog sweep; the first sweep records it silently. Routine tier. |
 
 ```bash
 hermes dk set --loop "<loop-id>" --observer-profile "<observer-profile>"
