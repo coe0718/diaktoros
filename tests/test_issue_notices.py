@@ -169,6 +169,24 @@ class FailureNotice(fixture.Base):
         self.assertIn("held", observer.EVENTS)
         self.assertEqual(observer.EMOJI["held"], "⏸")
 
+    def test_each_daily_cap_hold_names_the_setting_that_lifts_it(self):
+        # Live on #605: a review-only cap hold told the operator to raise the reviewer's general
+        # cap, which does not lift it.
+        cases = {
+            ("reviewer", "held: review-only daily turn cap (10) reached — resumes 00:00"):
+                "set --review-only-daily N (0 = no cap)",
+            ("reviewer", "held: reviewer daily turn cap (10) reached — resumes 00:00"):
+                "set --reviewer-daily-turns N",
+            ("fixer", "held: fixer daily turn cap (10) reached — resumes 00:00"):
+                "set --fixer-daily-turns N",
+            ("issue_fixer", "held: issue_fixer daily turn cap (10) reached — resumes 00:00"):
+                "triage --fix-daily-turns N",
+            ("reviewer", "held: reviewer usage window (anthropic) — resumes 18:40"): "",
+        }
+        for (seat, error), want in cases.items():
+            with self.subTest(seat=seat, error=error):
+                self.assertEqual(run_supervisor.hold_remedy(seat, error), want)
+
     def test_the_operator_notice_links_an_issue_as_an_issue(self):
         sup, run_id = self.fix_row()
         row = {"repo": REPO, "pr": 12, "head": BASE, "seat": "issue_fixer", "id": run_id}

@@ -43,8 +43,11 @@ _HELD = threading.local()
 
 # watchdog.log is bounded like the other append-only files (#549): once it passes
 # LOG_PRUNE_BYTES, a write rewrites it to its last LOG_KEEP lines.
+# A line is cut at LOG_LINE_MAX characters and a prune also drops the oldest lines until the
+# log fits LOG_PRUNE_BYTES, so a few oversized lines cannot hold it above the bound.
 LOG_KEEP = 1000
 LOG_PRUNE_BYTES = 256 * 1024
+LOG_LINE_MAX = 4096
 
 # Seat claims this process made, as ``(state, seat, key, at)``. A gate that crashes or runs out
 # of time after claiming a seat releases exactly these on its way out (#75, ``gate_failures``),
@@ -213,6 +216,8 @@ class LoopState:
     def note(self, message: str) -> None:
         try:
             hostdirs.ensure(self.dir)
+            if len(message) > LOG_LINE_MAX:
+                message = message[:LOG_LINE_MAX] + "...[truncated]"
             with self.log.open("a") as fh:
                 fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {message}\n")
             self._prune_log()
@@ -220,14 +225,16 @@ class LoopState:
             pass
 
     def _prune_log(self) -> None:
-        """Keep only the last ``LOG_KEEP`` lines once the log is over ``LOG_PRUNE_BYTES``."""
+        """Past ``LOG_PRUNE_BYTES``, keep the last ``LOG_KEEP`` lines that fit in that many bytes."""
         if self.log.stat().st_size <= LOG_PRUNE_BYTES:
             return
         lines = self.log.read_text(errors="replace").splitlines(keepends=True)
-        if len(lines) <= LOG_KEEP:
-            return
+        lines = lines[-LOG_KEEP:]
+        size = sum(len(l.encode()) for l in lines)
+        while len(lines) > 1 and size > LOG_PRUNE_BYTES:
+            size -= len(lines.pop(0).encode())
         tmp = self.log.with_name(self.log.name + ".tmp")
-        tmp.write_text("".join(lines[-LOG_KEEP:]))
+        tmp.write_text("".join(lines))
         os.replace(tmp, self.log)
 
     # -- active runs per seat (the concurrency ledger) ----------------------

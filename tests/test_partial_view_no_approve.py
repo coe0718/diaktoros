@@ -488,8 +488,9 @@ class LaunchPathRefuses(pc.Base):
                 sock = str(Path(kw["broker_socket_dir"]) / "broker.sock")
                 seat["query"] = Path(kw["query"]).read_text()
                 seat["approve"] = broker_client.call("review", verdict="APPROVE",
-                                                     body="looks fine\n\n## Requirements\n"
-                                                          "- item: met (test_x)\n\nNot verified: nothing\n",
+                                                     # No Requirements section, no Not verified
+                                                     # line: the partial view is refused first (#520).
+                                                     body="looks fine\n",
                                                      socket_path=sock)
                 seat["changes"] = broker_client.call("review", verdict="REQUEST_CHANGES",
                                                      body="the file list was unavailable\n\n"

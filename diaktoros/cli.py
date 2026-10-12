@@ -21,8 +21,20 @@ import time
 import tempfile
 
 from .ledger import LOCK_WAIT_S
-from . import (attribution, config, doctor, envnames, gate, gate_shims, gh, observer, prompts,
-               route_intent, routes, state as state_mod)
+from . import (
+    attribution,
+    config,
+    doctor,
+    envnames,
+    gate,
+    gate_shims,
+    gh,
+    observer,
+    prompts,
+    route_intent,
+    routes,
+    state as state_mod,
+)
 from .util import logged
 
 # The shim and job names a fresh install gets; an install not yet migrated keeps the old pair
@@ -3131,6 +3143,24 @@ def _apply(args) -> int:
     return 1 if _diverged(updated) or redundant_hooks or leftover_hooks else 0
 
 
+def cmd_show(args) -> int:
+    """Every setting one loop has, its effective value and where it came from (#555). Read-only."""
+    from . import show
+
+    try:
+        loop = config.load_id(args.loop)
+        raw = json.loads((config.config_dir() / f"{args.loop}.json").read_text())
+    except (config.ConfigError, OSError, ValueError) as exc:
+        print(f"cannot show loop: {exc}")
+        return 2
+    rows = show.collect(loop, raw if isinstance(raw, dict) else {}, _SETTINGS)
+    if args.json:
+        print(json.dumps({"loop": loop["id"], "settings": rows}, indent=2, sort_keys=True))
+    else:
+        print(show.render(loop["id"], rows))
+    return 0
+
+
 def cmd_settings(args) -> int:
     """Show the plugin-level defaults — what a new loop starts from, and what ``apply`` pushes."""
     d = config.settings_defaults(_SETTINGS)
@@ -3987,7 +4017,12 @@ def _rename_loop(spec: str, *, dry_run: bool, admin: str | None) -> tuple[list[s
     route intent record move; the old loop file goes; and an old route is removed only once every
     hook that pointed at it was answered on the new one. A refused ping puts its hook back.
     """
-    from . import hook_ping, migrate, pacing, run_supervisor
+    from . import (
+        hook_ping,
+        migrate,
+        pacing,
+        run_supervisor,
+    )
     old_id, sep, new_id = spec.partition("=")
     tag = f"rename-loop: {old_id or '?'} → {new_id or '?'}"
     if not sep or old_id == new_id or not all(migrate.LOOP_ID.match(x or "") for x in (old_id, new_id)):
@@ -4329,7 +4364,12 @@ def cmd_selftest(args) -> int:
 
 def cmd_corpus(args) -> int:
     """Replay the golden corpus through the reviewer (no-write) and record the scores (#491)."""
-    from . import corpus, prompts, seat_model, selftest
+    from . import (
+        corpus,
+        prompts,
+        seat_model,
+        selftest,
+    )
     try:
         loop = config.load_id(args.loop)
         directory = corpus.corpus_dir(loop, args.dir)
@@ -5748,6 +5788,13 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         settings_cmd = sub.add_parser("settings",
                                       help="Show the plugin-level defaults a loop starts from")
         settings_cmd.set_defaults(func=cmd_settings)
+
+        show_cmd = sub.add_parser("show",
+                                  help="Every setting of one loop: value, source, meaning")
+        show_cmd.add_argument("--loop", required=True,
+                              help="loop id (its config file name; `list` shows them)")
+        show_cmd.add_argument("--json", action="store_true", help="machine-readable output")
+        show_cmd.set_defaults(func=cmd_show)
 
         arm = sub.add_parser("arm", help="Activate the loop's GitHub hooks")
         arm.add_argument("--loop", help="loop id (default: every configured loop)")

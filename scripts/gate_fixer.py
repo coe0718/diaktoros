@@ -25,7 +25,13 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from diaktoros import config, gate, gh, observer, transition  # noqa: E402
+from diaktoros import (  # noqa: E402
+    config,
+    gate,
+    gh,
+    observer,
+    transition,
+)
 from diaktoros.util import log, silence  # noqa: E402
 
 
