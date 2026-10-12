@@ -84,6 +84,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | --- | --- |
 | see my loops | [`list`](#list), [`status`](#status) |
 | see what a loop did this week, and how long turns took | [`stats`](#stats) |
+| get the digest across all loops (reviews, rounds, trends, stuck PR) | [`report`](#report) |
 | install a loop | [`setup`](#setup) (guided), or [`init`](#init) (flag by flag) |
 | check an install before going live | [`doctor`](#doctor), [`selftest`](#selftest) |
 | move to a renamed plugin or repository | [`migrate`](#migrate) |
@@ -211,6 +212,30 @@ content, so they are safe to publish: see [Publishing stats](operations.md#publi
 | `--github` |  |  | also read the window's PRs and reviews from GitHub, as the reader (one request per PR) |
 | `--json` |  |  | print the data as JSON |
 | `--html` | `FILE` |  | also write one self-contained HTML page to FILE |
+<!-- /flags -->
+
+### report
+
+The digest on demand, across every configured loop (or one with `--loop`), from the run ledger
+alone: PRs reviewed, approvals vs changes requested, review rounds per PR, median
+request → verdict time, adjudicator rulings, turns and failures per seat and per resolved model,
+the change against the window just before (week over week for the default `7d`), and the most
+stuck PR with its host-written reason (a hold, a wait or an uncertain run).
+
+```bash
+hermes dk report --since 7d
+```
+
+Not in this command yet: the weekly Telegram message (scheduling it through the observer), review
+quality (finding false-positive rate, "approved, then broke") and shadow-review/override feeds
+(#218, #220). Request → verdict is measured from the review run's creation to its receipt.
+
+<!-- flags:report -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` |  | one loop id (default: every configured loop) |
+| `--since` | `SINCE` | `7d` | window start: 7d, 24h or a date like 2026-09-28 (default 7d) |
+| `--json` |  |  | print the data as JSON |
 <!-- /flags -->
 
 ---

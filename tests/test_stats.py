@@ -95,6 +95,40 @@ class Ledger(unittest.TestCase):
             self.assertNotIn(".hermes", out)
         self.assertIn("2.0 min", stats.text(report))
 
+    def receipt(self, delivery, verdict, at):
+        with ledger.connect(self.db) as con:
+            run_id = con.execute("SELECT id FROM runs WHERE delivery=?", (delivery,)).fetchone()[0]
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,verdict,"
+                        "created,confirmed) VALUES(?,?,?,?,?,?,?)",
+                        (run_id, "confirmed", "{}", 1, verdict, at, at))
+
+    def test_report_window_trends_models_and_stuck(self):
+        since, loop = NOW - 7 * DAY, {"repo": REPO, "id": "w"}
+        self.row("reviewer", "succeeded", NOW - 1000, NOW - 990, NOW - 900, error=SECRET)  # d1
+        self.receipt("d1", "REQUEST_CHANGES", NOW - 700)
+        self.row("reviewer", "succeeded", NOW - 500, NOW - 490, NOW - 400)                 # d2
+        self.receipt("d2", "APPROVE", NOW - 440)
+        self.row("reviewer", "failed", NOW - 300, NOW - 290, NOW - 280)
+        self.row("reviewer", "succeeded", since - DAY, since - DAY, since - DAY + 9)       # d4
+        self.receipt("d4", "APPROVE", since - DAY + 10)
+        self.row("fixer", "waiting", NOW - 200, error="held: waiting for CI on aaaaaaa")   # d5
+        data = stats.report(loop, self.db, since, NOW)
+        reviews = data["reviews"]
+        self.assertEqual(reviews["prs_reviewed"], 2)
+        self.assertEqual(reviews["verdicts"], {"changes": 1, "approved": 1})
+        self.assertEqual(reviews["to_verdict"]["median"], 180)               # 300 and 60 s
+        self.assertEqual(data["reviews_before"]["verdicts"], {"approved": 1})
+        self.assertEqual(reviews["models"]["unknown"]["failed"], 1)
+        self.assertEqual(data["stuck"]["why"], "held: waiting for CI on aaaaaaa")
+        out = stats.report_text(data)
+        self.assertIn("PRs reviewed: 2 (+1 vs previous)", out)
+        self.assertIn("most stuck: PR #5", out)
+        self.assertNotIn("exploded", out)
+
+    def test_report_without_a_ledger(self):
+        data = stats.report({"repo": REPO, "id": "w"}, self.db.with_name("none.sqlite"), 0, NOW)
+        self.assertIn("no run ledger yet", stats.report_text(data))
+
     def test_no_ledger_and_a_legacy_one(self):
         self.assertIsNone(stats.ledger(self.db.with_name("missing.sqlite"), REPO, 0))
         legacy = self.db.with_name("legacy.sqlite")
@@ -373,6 +407,21 @@ class Cli(unittest.TestCase):
 
     def cli(self, *argv):
         return t.run_cli(t.parser_for({}).parse_args(list(argv)))
+
+    def test_report_command_across_loops(self):
+        db = run_supervisor.production_ledger()
+        sup = Supervisor(db)
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("rep-1", t.REPO, 41, "a" * 40, "reviewer")
+        rc, out = self.cli("report")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PRs reviewed", out)
+        self.assertIn("most stuck", out)
+        rc, out = self.cli("report", "--json")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("reviews_before", json.loads(out)[0])
+        rc, out = self.cli("report", "--since", "soon")
+        self.assertEqual(rc, 2)
 
     def test_text_json_and_html(self):
         loop_id = json.loads((t.LOOPS_DIR / "widgets.json").read_text())["id"]
