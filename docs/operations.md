@@ -399,6 +399,21 @@ an eligible issue gets one fixer turn from the base commit, which may open one P
 post one cannot-fix comment. It never merges. A partial branch/PR sequence requires
 inspection, not replay. [Issues](issues.md) covers setup and truthful limitations.
 
+## Holding one PR
+
+A maintainer (`triage.maintainers`) holds a PR by applying the `diaktoros:hold` label or
+commenting `/loop hold`; `/loop release`, or removing the label, lifts it. The latest
+event from a maintainer wins; anyone else's label or comment is ignored and logged.
+
+While held, no review, fix, CI-fix or conflict turn is claimed: queued turns stay pending
+and start after release (the next watchdog sweep re-arms the worker). A turn already
+running is not interrupted. `explain` and `status` show who held it and when, and the
+watchdog reports no stall for it. A hold that cannot be read is treated as held.
+
+It cannot fire on a loop without `triage.maintainers` (they need `triage.fix_label`):
+nobody there is allowed to hold. The hold is read at claim time and by the watchdog sweep,
+so it needs the read token to see issue events and comments.
+
 ## When a gate crashes or runs out of time
 
 Gate failures are separate from model failures. The watchdog records/reports crashes,

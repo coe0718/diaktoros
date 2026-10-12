@@ -734,6 +734,26 @@ class LoopState:
     def watch_save(self, data: dict) -> None:
         self._save(self.watch_file, data)
 
+    # -- PRs a maintainer holds (#477): {PR number: {"by", "at", "how"}} ------
+
+    def pr_holds(self) -> dict:
+        raw = self._load(self.dir / "held-prs.json", {})
+        return {int(k): v for k, v in (raw.items() if isinstance(raw, dict) else ())
+                if str(k).isdigit() and isinstance(v, dict)}
+
+    def pr_hold_set(self, number: int, hold: dict) -> None:
+        with self.locked():
+            data = {str(k): v for k, v in self.pr_holds().items()}
+            if data.get(str(number)) != hold:
+                data[str(number)] = hold
+                self._save(self.dir / "held-prs.json", data)
+
+    def pr_hold_drop(self, number: int) -> None:
+        with self.locked():
+            data = {str(k): v for k, v in self.pr_holds().items()}
+            if data.pop(str(number), None) is not None:
+                self._save(self.dir / "held-prs.json", data)
+
     # -- held issue-fix hand-offs (#324): {issue number: origin PR} ----------
 
     def fix_holds(self) -> dict:

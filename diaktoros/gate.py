@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 
-from . import config, gate_decisions, gate_failures, gh, isolation, observer, situation, transition, state as state_mod
+from . import config, gate_decisions, gate_failures, gh, isolation, observer, pr_hold, situation, transition, state as state_mod
 from .util import iso_at, log, now_iso, silence
 from . import envnames
 
@@ -661,7 +661,8 @@ def explain_facts(loop: dict, number: int) -> dict:
             ro_conflict = review_only_conflict.assess(loop, number, head, pr)
         except Exception:
             ro_conflict = None
-    return {"review_only_conflict": ro_conflict,
+    hold, hold_error = pr_hold.read(loop, number)      # #477
+    return {"review_only_conflict": ro_conflict, "hold": hold, "hold_error": hold_error,
             "pr": pr, "pr_error": pr_error, "reviews": reviews, "reviews_error": reviews_error,
             "armed": armed, "armed_error": armed_error, "read_at": time.time(),
             "chain": chain, "parent_readiness": readiness,
@@ -728,6 +729,8 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     pr = facts.get("pr") if isinstance(facts.get("pr"), dict) else None
     reviews = facts.get("reviews") if isinstance(facts.get("reviews"), list) else None
     armed = facts.get("armed")
+    hold = facts.get("hold") if isinstance(facts.get("hold"), dict) else None
+    hold_error = str(facts.get("hold_error") or "")
     pr_error = str(facts.get("pr_error") or "")
     reviews_error = str(facts.get("reviews_error") or "")
     armed_error = str(facts.get("armed_error") or "")
@@ -909,6 +912,11 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                                 f"unknown, never guessed")
             if not head:
                 blockers.append("PR head missing or malformed — no gate can authorize a run")
+            if hold:
+                blockers.append(pr_hold.line(hold))
+            elif hold_error:
+                blockers.append(f"hold state unreadable ({hold_error}) — no turn starts until it "
+                                "is read")
             if pr.get("draft"):
                 blockers.append("draft PR: the reviewer gate stays silent until ready_for_review")
             if stacked:
@@ -996,6 +1004,12 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
         kind = "retry"
         action = (f"retry the PR read for {repo}#{number} — its head is missing or malformed; "
                   "no review can be requested without a known head")
+    elif hold or hold_error:
+        kind = "operator" if hold else "retry"
+        action = (f"{pr_hold.line(hold)} — comment `/loop release` as a maintainer or remove the "
+                  f"{pr_hold.LABEL} label" if hold else
+                  f"retry the hold read for {repo}#{number} ({hold_error}) — no turn starts until "
+                  "it is known")
     elif pr.get("draft"):
         kind = "ready"
         action = ("mark the PR ready for review (the ready_for_review event) — the reviewer gate "
