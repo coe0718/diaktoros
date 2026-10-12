@@ -161,7 +161,7 @@ def now(db: Path, repo: str, at: float | None = None) -> dict | None:
     if not db.exists():
         return None
     at = time.time() if at is None else at
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
     try:
         con.row_factory = sqlite3.Row
         marks = ",".join("?" * len(LIVE_STATES))
