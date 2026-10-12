@@ -679,7 +679,7 @@ probe retains original failures, queue/control receipts, helper measurements,
 worker stdout/stderr and OS log evidence. Failure or worker timeout retains
 storage. A pass requires the exact image's verified disposal and an empty owned
 inventory. A lane with no qualifying natural case is marked inconclusive and
-exits 2; quiet churn cannot establish natural-busy recovery. Twenty-two local collector checks pass, including deadline, durable receipt,
+exits 2; quiet churn cannot establish natural-busy recovery. Twenty-five local collector checks pass, including deadline, durable receipt,
 exhaustion, verified removal and inconclusive-result checks for the added rules.
 
 The next run completed 128 cycles in each of four lanes (512 total), with no
@@ -701,6 +701,19 @@ remain retained and block admission. This does not establish eventual recovery
 of a naturally exhausted normal turn eject.
 
 ## Dedicated eject forensics
+
+An additional `--stress-timing` queued lane now runs on each chip alongside the
+eight forensic lanes. It keeps the original native disk-command implementation,
+the stress harness's eight one-MiB fsynced writes, and native eject diagnostics.
+It adds no helper sampling, first-busy collector log writes, verbose/sync/unmount
+interventions or background OS log reader between retries. Exact-image event
+observation and durable queue proof remain required; fresh workers still must
+verify disposal within five sweeps/five minutes. Artifacts keep cycle/eject
+events, receipts and worker outcomes, with system-history collected afterwards.
+This is a timing comparison, not proof that forensic sampling causes the race;
+pool ownership paths and receipt writes still differ from the legacy stress test.
+The latest eight-lane run caught transient busy ejects but none exhausted the
+policy; separate Intel stress lanes did exhaust it. No cleanup error is injected.
 
 The fourth eventual-recovery run captured an Intel sync-unmount image whose
 five normal ejects and final force all returned busy. Production recovery

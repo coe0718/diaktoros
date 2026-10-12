@@ -2,7 +2,7 @@
 import _home_guard  # noqa: F401
 import argparse
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import json
 import os
@@ -92,12 +92,15 @@ def registry_connections(raw, devices):
 
 
 class Recorder:
-    def __init__(self, output, *, verbose=False, sync_delay=False, pre_unmount=False):
+    def __init__(self, output, *, verbose=False, sync_delay=False, pre_unmount=False, stress_timing=False):
+        if stress_timing and (verbose or sync_delay or pre_unmount):
+            raise ValueError('stress timing cannot add verbose, sync or forced-unmount instrumentation')
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=False)
         self.verbose = verbose
         self.sync_delay = sync_delay or pre_unmount
         self.pre_unmount = pre_unmount
+        self.stress_timing = stress_timing
         self.sequence = 0
         self.first_busy = False
         self.helper_baselines = {}
@@ -164,6 +167,8 @@ class Recorder:
                     raise RuntimeError('experimental pre-detach unmount failed')
 
     def helper_progress(self, workspace, phase):
+        if self.stress_timing:
+            return
         image = str(workspace.image)
         baseline = self.helper_baselines.get(image, {})
         # Include baseline PIDs when the image has detached or a helper vanished.
@@ -307,10 +312,12 @@ class ObservedWorkspace(native_storage.Workspace):
     def _note_busy(self, error, *, force):
         if 'Resource busy' in str(error) and not self.had_busy:
             self.had_busy = True
-            self.recorder.helper_progress(self, 'first-failure')
+            if not self.recorder.stress_timing:
+                self.recorder.helper_progress(self, 'first-failure')
         if 'Resource busy' in str(error) and not self.recorder.first_busy:
             self.recorder.first_busy = True
-            self.recorder.emit({'tag': 'first-busy', 'image': str(self.image), 'force': force})
+            if not self.recorder.stress_timing:
+                self.recorder.emit({'tag': 'first-busy', 'image': str(self.image), 'force': force})
             if self.recorder.verbose:
                 self.recorder.snapshot(self, 'first-busy')
 
@@ -480,7 +487,9 @@ def probe_eventual(recorder, cycles, *, require_natural=False, forensic_precondi
     natural_pending = 0
     completions = []
     completed_cycles = 0
-    with recorder.log_stream(), mock.patch.object(native_storage, '_run', recorder.run):
+    stream = nullcontext() if recorder.stress_timing else recorder.log_stream()
+    commands = nullcontext() if recorder.stress_timing else mock.patch.object(native_storage, '_run', recorder.run)
+    with stream, commands:
         recorder.command('runtime', ['/usr/bin/sw_vers'])
         if forensic_precondition:
             recorder.command('hdiutil-help', [native_storage.HDIUTIL, 'help', 'detach'])
@@ -496,6 +505,7 @@ def probe_eventual(recorder, cycles, *, require_natural=False, forensic_precondi
                 event = {'tag': 'eventual-cycle', 'cycle': cycle, 'workload': workload,
                          'architecture': platform.machine(), 'verbose': recorder.verbose,
                          'sync_delay': recorder.sync_delay, 'pre_unmount': recorder.pre_unmount,
+                         'stress_timing': recorder.stress_timing,
                          'precondition_suite': precondition_suite,
                          'turn_processes_launched': False, 'injected': False}
                 started = time.monotonic()
@@ -510,7 +520,11 @@ def probe_eventual(recorder, cycles, *, require_natural=False, forensic_precondi
                                 path.unlink()
                         elif workload == 'fsync':
                             with (workspace.work / 'synced').open('wb') as target:
-                                target.write(b'x' * (8 * 1024 * 1024))
+                                if recorder.stress_timing:
+                                    for _ in range(8):
+                                        target.write(b'x' * (1024 * 1024))
+                                else:
+                                    target.write(b'x' * (8 * 1024 * 1024))
                                 target.flush()
                                 os.fsync(target.fileno())
                         native_recovery.arm(workspace)
@@ -565,6 +579,7 @@ def probe_eventual(recorder, cycles, *, require_natural=False, forensic_precondi
     result = {'tag': 'eventual-result', 'failures': failures, 'precondition_failed': precondition_failed,
               'precondition_suite': precondition_suite, 'verbose': recorder.verbose,
               'sync_delay': recorder.sync_delay, 'pre_unmount': recorder.pre_unmount,
+              'stress_timing': recorder.stress_timing,
               'natural_pending_images': natural_pending, 'completed_cycles': completed_cycles,
               'natural_recovery_accepted': accepted, 'inconclusive': not failures and not precondition_failed and not natural_pending,
               'worst_cleanup_sweeps': max((x['sweeps'] for x in completions), default=None),
@@ -582,6 +597,8 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cycles', type=int, default=64, choices=range(1, 129))
     parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--stress-timing', action='store_true',
+                        help='keep native command timing: no collector wrapping, log stream or helper sampling')
     parser.add_argument('--eventual-cleanup', action='store_true',
                         help='route real busy ejects through the durable cleanup pool')
     parser.add_argument('--require-natural-pending', action='store_true',
@@ -599,8 +616,11 @@ if __name__ == '__main__':
         parser.error('--require-natural-pending requires --eventual-cleanup')
     if args.forensic_precondition and not args.eventual_cleanup:
         parser.error('--forensic-precondition requires --eventual-cleanup')
+    if args.stress_timing and (not args.eventual_cleanup or args.verbose or args.sync_delay or args.sync_unmount):
+        parser.error('--stress-timing requires --eventual-cleanup and excludes verbose/sync instrumentation')
     recorder = Recorder(args.output, verbose=args.verbose,
-                        sync_delay=args.sync_delay, pre_unmount=args.sync_unmount)
+                        sync_delay=args.sync_delay, pre_unmount=args.sync_unmount,
+                        stress_timing=args.stress_timing)
     if args.eventual_cleanup:
         raise SystemExit(probe_eventual(recorder, args.cycles, require_natural=args.require_natural_pending,
                                       forensic_precondition=args.forensic_precondition))

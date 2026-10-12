@@ -15,6 +15,45 @@ from diaktoros import native_storage
 
 
 class ForensicsValidation(unittest.TestCase):
+    def test_stress_timing_busy_detection_does_not_insert_sampling_or_log_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = forensics.Recorder(Path(directory)/'evidence', stress_timing=True)
+            w = forensics.ObservedWorkspace(recorder)
+            with mock.patch.object(recorder, 'helper_progress') as progress, \
+                    mock.patch.object(recorder, 'emit') as emit:
+                w._note_busy(native_storage.StorageError('Resource busy'), force=False)
+            self.assertTrue(w.had_busy)
+            self.assertTrue(recorder.first_busy)
+            progress.assert_not_called()
+            emit.assert_not_called()
+            with mock.patch.object(recorder, 'command') as command:
+                recorder.helper_progress(w, 'eventual-give-up')
+            command.assert_not_called()
+
+    def test_stress_timing_keeps_native_commands_and_skips_background_log_reader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            recorder = forensics.Recorder(root/'evidence', stress_timing=True)
+            def command(*args, **kwargs):
+                self.assertIs(native_storage._run, recorder.original_run)
+                return {'returncode':0}, b'', b''
+            with mock.patch.object(forensics.tempfile, 'mkdtemp', return_value=str(root/'pool')), \
+                    mock.patch.object(recorder, 'log_stream') as stream, \
+                    mock.patch.object(recorder, 'run') as wrapped, \
+                    mock.patch.object(recorder, 'command', side_effect=command):
+                result = forensics.probe_eventual(recorder, 0, require_natural=True)
+            self.assertEqual(result, 2)
+            stream.assert_not_called()
+            wrapped.assert_not_called()
+            report = json.loads((recorder.output/'eventual-result.json').read_text())
+            self.assertTrue(report['stress_timing'])
+            self.assertTrue(report['inconclusive'])
+
+    def test_stress_timing_rejects_modes_that_change_detach_timing(self):
+        for flags in ({'verbose':True}, {'sync_delay':True}, {'pre_unmount':True}):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(ValueError):
+                    forensics.Recorder(Path(directory)/'evidence', stress_timing=True, **flags)
     def test_reconstructed_owned_workspace_busy_ejects_reach_eventual_worker(self):
         import shutil
         from diaktoros import native_cleanup, native_recovery
