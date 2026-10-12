@@ -2137,17 +2137,31 @@ def check_branch_protection(loop: dict, offline: bool) -> Check | None:
     if not wanted or offline:
         return None
     base = str(loop.get("base") or "main")
-    response = gh.request(loop, f"/repos/{loop['repo']}/branches/{base}/protection/required_status_checks")
-    if response.status == 404:
-        have: set[str] = set()
-    elif response.error or not isinstance(response.data, dict):
-        return Check("branch-protection", UNKNOWN,
-                     f"could not read protection of {base}: {gh.one_line(response.error)}",
-                     "the read token needs admin read access; compare by hand in repo settings → branches")
-    else:
-        have = {str(c) for c in response.data.get("contexts") or []}
-        have |= {str(c.get("context")) for c in response.data.get("checks") or []
+    # GitHub requires checks two ways: classic branch protection (its read needs admin access)
+    # and rulesets (readable with plain read access). A base protected only by a ruleset answers
+    # "Branch not protected" to the classic read, so both are read and their checks merged.
+    have: set[str] = set()
+    unread = []
+    rules = gh.request(loop, f"/repos/{loop['repo']}/rules/branches/{base}?per_page=100")
+    if rules.status != 404 and (rules.error or not isinstance(rules.data, list)):
+        unread.append(f"rulesets ({gh.one_line(rules.error or 'no rule list')})")
+    elif isinstance(rules.data, list):
+        for rule in rules.data:
+            if isinstance(rule, dict) and rule.get("type") == "required_status_checks":
+                params = rule.get("parameters") if isinstance(rule.get("parameters"), dict) else {}
+                have |= {str(c.get("context")) for c in params.get("required_status_checks") or []
+                         if isinstance(c, dict) and c.get("context")}
+    classic = gh.request(loop, f"/repos/{loop['repo']}/branches/{base}/protection/required_status_checks")
+    if classic.status != 404 and (classic.error or not isinstance(classic.data, dict)):
+        unread.append(f"classic branch protection ({gh.one_line(classic.error or 'no answer')})")
+    elif isinstance(classic.data, dict):
+        have |= {str(c) for c in classic.data.get("contexts") or []}
+        have |= {str(c.get("context")) for c in classic.data.get("checks") or []
                  if isinstance(c, dict)}
+    if len(unread) == 2:
+        return Check("branch-protection", UNKNOWN,
+                     f"could not read the required checks of {base}: {'; '.join(unread)}",
+                     "compare by hand in repo settings → rules and branches")
     want = set(wanted)
     if want == have:
         return None
@@ -2156,6 +2170,8 @@ def check_branch_protection(loop: dict, offline: bool) -> Check | None:
         parts.append(f"loop requires but {base} does not: {', '.join(sorted(want - have))}")
     if have - want:
         parts.append(f"{base} requires but the loop does not: {', '.join(sorted(have - want))}")
+    if unread:
+        parts.append(f"not read: {unread[0]}")
     return Check("branch-protection", UNKNOWN, "; ".join(parts),
                  f"align `required_checks` with the required status checks of {base}")
 

@@ -44,13 +44,20 @@ class Environment(unittest.TestCase):
         self.headers = {gh.TOKEN_EXPIRY_HEADER: stamp(90), "x-oauth-scopes": "repo"}
         self.labels = [{"name": "bug"}, {"name": "Docs"}]
         self.protection = {"contexts": ["ci"]}
+        self.rules = []
 
     def fake(self, loop, path, method="GET", body=None, login=None):
         if path == "/user":
             return gh.Response({"login": login}, "", 200, dict(self.headers))
         if "/labels" in path:
             return gh.Response(self.labels, "", 200, {})
+        if "/rules/branches/" in path:
+            if self.rules is None:
+                return gh.Response(None, "HTTP 403", 403, {})
+            return gh.Response(self.rules, "", 200, {})
         if "required_status_checks" in path:
+            if self.protection == "forbidden":
+                return gh.Response(None, "HTTP 403 Resource not accessible", 403, {})
             if self.protection is None:
                 return gh.Response(None, "HTTP 404", 404, {})
             return gh.Response(self.protection, "", 200, {})
@@ -117,6 +124,34 @@ class Environment(unittest.TestCase):
         self.assertIn("lint", c.detail)
         self.protection = None          # unprotected base: loop requires "ci" but GitHub does not
         self.assertIn("branch-protection", self.run_check())
+
+    def test_a_ruleset_only_base_is_read_without_admin_access(self):
+        # Live, 2026-10-11: main is protected by a ruleset; the classic read said "Branch not
+        # protected" (404), and doctor reported every required check as missing on main.
+        ruleset = [{"type": "pull_request", "parameters": {}},
+                   {"type": "required_status_checks",
+                    "parameters": {"required_status_checks": [{"context": "ci"}]}}]
+        self.protection, self.rules = None, ruleset
+        self.assertNotIn("branch-protection", self.run_check())
+        # The classic read forbidden (no admin access): the ruleset still answers.
+        self.protection = "forbidden"
+        self.assertNotIn("branch-protection", self.run_check())
+        # A ruleset that requires less is still a mismatch, and says what it could not read.
+        self.rules = []
+        c = self.run_check()["branch-protection"]
+        self.assertIn("loop requires but main does not: ci", c.detail)
+        self.assertIn("not read: classic branch protection", c.detail)
+        # Neither readable: unknown, said once.
+        self.rules = None
+        c = self.run_check()["branch-protection"]
+        self.assertIn("could not read the required checks of main", c.detail)
+
+    def test_classic_and_ruleset_checks_are_merged(self):
+        self.protection = {"contexts": ["ci"]}
+        self.rules = [{"type": "required_status_checks",
+                       "parameters": {"required_status_checks": [{"context": "lint"}]}}]
+        c = self.run_check()["branch-protection"]
+        self.assertIn("main requires but the loop does not: lint", c.detail)
 
     def test_offline_reads_nothing(self):
         with mock.patch.object(gh, "request", side_effect=AssertionError("network")):
