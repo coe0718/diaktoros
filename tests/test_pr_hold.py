@@ -136,5 +136,49 @@ class Explain(fg.Base):
         self.assertFalse(any("held by" in b for b in report["blockers"]))
 
 
+class Sweep(fg.Base):
+    """The watchdog sweep (`_sweep_loop_locked`) leaves a held PR alone (#477)."""
+    HOLD = {"by": BOSS, "at": "2026-01-01T00:00:00Z", "how": "label"}
+
+    def sweep(self, read):
+        from scripts import watchdog
+        dirty = {**fg.LIVE, "mergeable_state": "dirty"}
+        with mock.patch.object(watchdog, "TEST", True), \
+             mock.patch.object(gate, "hooks_armed", return_value=True), \
+             mock.patch.object(watchdog.route_intent, "heal", return_value=[]), \
+             mock.patch.object(gh, "open_prs", return_value=[fg.LIVE]), \
+             mock.patch.object(gh, "pr", return_value=dirty) as live, \
+             mock.patch.object(gh, "reviews", return_value=[fg.verdict()]), \
+             mock.patch.object(pr_hold, "read", side_effect=read), \
+             mock.patch.object(watchdog, "retry_pending_breaches"), \
+             mock.patch.object(watchdog.routes, "fire"), \
+             mock.patch.object(watchdog.observer, "notify"), \
+             mock.patch.object(watchdog.observer, "retry", return_value=0), \
+             mock.patch.object(watchdog.observer, "flush"):
+            lines = watchdog.sweep_loop(self.loop, self.st)
+        return "\n".join(lines), live
+
+    def test_a_held_pr_gets_no_stall_report_no_conflict_read_and_is_recorded(self):
+        from scripts import watchdog
+        gate.hold_fixer_push_off(self.loop, self.st, 7, fg.HEAD)
+        self.sweep(lambda *a: (None, ""))                  # baseline
+        watch = self.st.watch()
+        watch["heads"]["7"]["observed_at"] = 0.0
+        self.st.watch_save(watch)
+        text, _ = self.sweep(lambda *a: (None, ""))
+        self.assertIn(watchdog.PUSH_OFF_KIND, text)        # control: a released PR does stall
+        text, live = self.sweep(lambda *a: (self.HOLD, ""))
+        self.assertNotIn(watchdog.PUSH_OFF_KIND, text)
+        live.assert_not_called()                           # no conflict turn is even considered
+        self.assertEqual(self.st.pr_holds(), {7: self.HOLD})
+
+    def test_release_drops_the_record_and_an_unreadable_hold_keeps_it(self):
+        self.st.pr_hold_set(7, self.HOLD)
+        self.sweep(lambda *a: (None, "event page 1: boom"))
+        self.assertEqual(self.st.pr_holds(), {7: self.HOLD})
+        self.sweep(lambda *a: (None, ""))
+        self.assertEqual(self.st.pr_holds(), {})
+
+
 if __name__ == "__main__":
     unittest.main()
