@@ -159,6 +159,53 @@ class Environment(unittest.TestCase):
         self.assertTrue(checks)
         self.assertTrue(all(c.status == doctor.UNKNOWN for c in checks))
 
+    # --- #556: plugin-version ---
+    SHA = "57bfffa" + "0" * 33
+
+    def version_fake(self, behind_release=False, main_ahead=41, fail=None):
+        def fake(loop, path, method="GET", body=None, login=None):
+            if fail and fail in path:
+                return gh.Response(None, "HTTP 500", 500, {})
+            if path.endswith("/releases/latest"):
+                return gh.Response({"tag_name": "v0.2.0"}, "", 200, {})
+            if "/compare/v0.2.0..." in path:
+                st = "behind" if behind_release else "ahead"
+                return gh.Response({"status": st}, "", 200, {})
+            if path.endswith("...main"):
+                return gh.Response({"ahead_by": main_ahead}, "", 200, {})
+            return self.fake(loop, path, method, body, login)
+        return fake
+
+    def version_check(self, offline=False, **kw):
+        with mock.patch.object(gh, "request", side_effect=self.version_fake(**kw)), \
+             mock.patch.object(doctor, "installed_commit", return_value=self.SHA), \
+             mock.patch.object(time, "time", return_value=NOW):
+            checks = doctor.check_loop(self.loop, offline)
+        return {c.name: c for c in checks}.get("plugin-version")
+
+    def test_plugin_version_at_the_release_is_verified(self):
+        c = self.version_check(main_ahead=0)
+        self.assertEqual(c.status, doctor.VERIFIED)
+
+    def test_plugin_version_behind_warns_with_counts(self):
+        c = self.version_check(behind_release=True)
+        self.assertEqual(c.status, doctor.UNKNOWN)
+        self.assertFalse(c.failed)
+        self.assertIn("57bfffa", c.detail)
+        self.assertIn("41 commits behind main", c.detail)
+        self.assertIn("v0.2.0", c.detail)
+
+    def test_plugin_version_unreadable_is_unknown(self):
+        for fail in ("releases/latest", "/compare/"):
+            c = self.version_check(fail=fail)
+            self.assertEqual(c.status, doctor.UNKNOWN, fail)
+        with mock.patch.object(doctor, "installed_commit", return_value=""):
+            c = doctor.check_plugin_version(self.loop)
+        self.assertEqual(c.status, doctor.UNKNOWN)
+
+    def test_plugin_version_offline_is_skipped(self):
+        self.assertIsNone(self.version_check(offline=True))
+
     def test_check_loop_runs_them(self):
         names = self.run_check("loop")
         for name in ("token-expiry:rev", "token-expiry:fix", "token-expiry:reader", "labels"):

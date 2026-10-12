@@ -2176,6 +2176,56 @@ def check_branch_protection(loop: dict, offline: bool) -> Check | None:
                  f"align `required_checks` with the required status checks of {base}")
 
 
+UPSTREAM_REPO = "coe0718/diaktoros"
+
+
+def installed_commit() -> str:
+    """The installed plugin's commit (its git checkout's HEAD), or "" when it is not a checkout."""
+    try:
+        proc = subprocess.run(["git", "-C", str(plugin_root()), "rev-parse", "HEAD"],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else ""
+
+
+def check_plugin_version(loop: dict, offline: bool = False) -> Check | None:
+    """#556: is the installed plugin behind the latest release or ``main``? None with --offline.
+
+    Behind the latest release is a warning (``unknown``), never a failure. Either side
+    unreadable is ``unknown`` too. Only a git checkout can be compared; a catalog install
+    without ``.git`` reports unknown.
+    """
+    if offline:
+        return None
+    name = "plugin-version"
+    sha = installed_commit()
+    if not sha:
+        return Check(name, UNKNOWN, "could not read the installed plugin's commit (not a git checkout)",
+                     f"compare by hand with the latest release of {UPSTREAM_REPO}")
+    short = sha[:7]
+    base = f"/repos/{UPSTREAM_REPO}"
+    release = gh.request(loop, f"{base}/releases/latest")
+    tag = str(release.data.get("tag_name") or "") if isinstance(release.data, dict) else ""
+    if release.error or not tag:
+        return Check(name, UNKNOWN, f"could not read the latest release of {UPSTREAM_REPO}: "
+                     f"{gh.one_line(release.error or 'no tag')}")
+    since = gh.request(loop, f"{base}/compare/{tag}...{sha}")
+    status = since.data.get("status") if isinstance(since.data, dict) else None
+    main = gh.request(loop, f"{base}/compare/{sha}...main")
+    behind_main = main.data.get("ahead_by") if isinstance(main.data, dict) else None
+    if since.error or not status or main.error or type(behind_main) is not int:
+        return Check(name, UNKNOWN, f"could not compare installed {short} with {tag} or main: "
+                     f"{gh.one_line(since.error or main.error or 'no comparison')}")
+    commits = f"{behind_main} commit{'s' if behind_main != 1 else ''} behind main"
+    if status in ("ahead", "identical"):
+        return Check(name, VERIFIED, f"installed {short} is at or after the latest release ({tag}); "
+                     f"{commits}")
+    return Check(name, UNKNOWN, f"installed {short} is {commits} and 1 release behind ({tag})",
+                 "update the installed plugin to the latest release")
+
+
 def check_environment(loop: dict, offline: bool) -> list[Check]:
     """The GitHub-side contract: token expiry and scopes, triage labels, branch protection."""
     checks = check_token_expiry_scopes(loop, offline)
@@ -2227,6 +2277,9 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.append(check_gateway(loop, offline))
     checks.extend(check_hooks(loop, offline))
     checks.extend(check_environment(loop, offline))
+    version = check_plugin_version(loop, offline)
+    if version:
+        checks.append(version)
     return checks
 
 

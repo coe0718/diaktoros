@@ -206,6 +206,10 @@ elif path == "/user":
     print(json.dumps({"__gh_stub_response__": {"status": 200, "body": {"login": os.environ.get("GH_LOGIN", "")},
           "headers": {"github-authentication-token-expiration": "2099-01-01 00:00:00 UTC",
                       "x-oauth-scopes": "repo"}}}))
+elif path.endswith("/releases/latest"):
+    print(json.dumps({"tag_name": "v0.2.0"}))
+elif "/compare/" in path:
+    print(json.dumps({"status": "identical", "ahead_by": 0}))
 elif path.endswith("/git/ref/heads/main"):
     print(json.dumps({"ref": "refs/heads/main", "object": {"type": "commit", "sha": "c" * 40}}))
 elif "/pulls?" in path:
