@@ -44,11 +44,11 @@ def preflight():
             'python': sys.version, 'checks': checks, 'passed': all(checks.values())}
 
 
-def run_step(name, argv, output, *, timeout):
+def run_step(name, argv, output, *, timeout, extra_env=None, cwd=REPO):
     started = time.monotonic()
     record = {'name': name, 'argv': argv, 'timeout_seconds': timeout, 'log': name + '.log'}
     with (output / record['log']).open('xb') as log:
-        child = subprocess.Popen(argv, cwd=REPO, env=environment(), stdin=subprocess.DEVNULL,
+        child = subprocess.Popen(argv, cwd=cwd, env={**environment(), **(extra_env or {})}, stdin=subprocess.DEVNULL,
                                  stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             child.wait(timeout=timeout)
@@ -79,7 +79,7 @@ def plan(mode, output):
     return []
 
 
-def run(mode, output):
+def run(mode, output, *, prepared=None):
     output = Path(output).absolute()
     if output.parent.resolve(strict=True) != output.parent:
         raise ValueError('evidence parent must be canonical, without symlinks')
@@ -96,13 +96,22 @@ def run(mode, output):
         temporary.replace(output / 'result.json')
     save()
     try:
+        hermes_env = None
+        if mode == 'hermes':
+            from native_tester_hermes import prepared_environment
+            hermes_env = prepared_environment(prepared)
+            report['prepared_manifest'] = str(Path(prepared).resolve())
         for name, argv in (('commit', ['/usr/bin/git', 'rev-parse', 'HEAD']),
                            ('working_tree', ['/usr/bin/git', 'status', '--porcelain'])):
             report['steps'].append(run_step(name, argv, output, timeout=10))
         if report['preflight']['passed'] and all(s['status'] == 'passed' for s in report['steps']):
-            for name, argv, timeout in plan(mode, output):
+            steps = plan(mode, output)
+            if mode == 'hermes':
+                steps = [('native_hermes', [sys.executable, 'tests/leakguard.py', 'discover', '-v',
+                                           '-s', 'tests', '-p', 'test_native_macos.py'], 900)]
+            for name, argv, timeout in steps:
                 print(f'Running {name}; evidence: {output}', flush=True)
-                report['steps'].append(run_step(name, argv, output, timeout=timeout))
+                report['steps'].append(run_step(name, argv, output, timeout=timeout, extra_env=hermes_env))
                 save()
                 if report['steps'][-1]['status'] != 'passed':
                     break
@@ -118,7 +127,15 @@ def run(mode, output):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('preflight', 'boundary', 'soak'))
+    parser.add_argument('mode', choices=('preflight', 'boundary', 'soak', 'prepare-hermes', 'hermes'))
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--prepared', type=Path)
     args = parser.parse_args()
-    raise SystemExit(run(args.mode, args.output))
+    if args.mode == 'hermes' and args.prepared is None:
+        parser.error('hermes requires --prepared pointing at preparation/result.json')
+    if args.prepared is not None and args.mode != 'hermes':
+        parser.error('--prepared is only used by hermes')
+    if args.mode == 'prepare-hermes':
+        from native_tester_hermes import prepare
+        raise SystemExit(prepare(args.output))
+    raise SystemExit(run(args.mode, args.output, prepared=args.prepared))

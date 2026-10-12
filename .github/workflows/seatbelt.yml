@@ -34,6 +34,8 @@ on:
       - tests/test_turn_layout.py
       - tests/test_native_roles.py
       - tests/native_tester.py
+      - tests/native_tester_hermes.py
+      - tests/test_native_tester_hermes.py
       - tests/test_native_tester.py
       - docs/native-macos-tester.md
       - tests/native_rust_fixture.py
@@ -144,20 +146,10 @@ jobs:
       matrix:
         runner: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
-    env:
-      HERMES_AGENT_SOURCE: ${{ github.workspace }}/hermes
-      DIAKTOROS_REQUIRE_NATIVE_HERMES: '1'
-      UV_PYTHON_PREFERENCE: only-managed
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          repository: NousResearch/hermes-agent
-          ref: be5e9f72c6681af9dfb75bf480f08844f1499949
-          path: hermes
           persist-credentials: false
       - uses: actions/setup-python@v7
         with:
@@ -166,46 +158,20 @@ jobs:
         with:
           version: '0.12.19'
           enable-cache: false
-      - name: Stage dedicated Rust toolchain, vendored crate and selected Apple SDK
-        run: |
-          rustup_bin=$(command -v rustup)
-          export RUSTUP_HOME="$RUNNER_TEMP/native-rustup"
-          export CARGO_HOME="$RUNNER_TEMP/native-cargo"
-          "$rustup_bin" toolchain install 1.85.1 --profile minimal --no-self-update
-          rust_root=$("$rustup_bin" run 1.85.1 rustc --print sysroot)
-          export PATH="$rust_root/bin:$PATH"
-          fixture="$RUNNER_TEMP/native-build-fixture"
-          python tests/native_rust_fixture.py "$fixture"
-          cargo generate-lockfile --manifest-path "$fixture/Cargo.toml"
-          cargo vendor --locked --manifest-path "$fixture/Cargo.toml" "$fixture/vendor"
-          sdk=$(xcrun --sdk macosx --show-sdk-path)
-          clang=$(xcrun --sdk macosx --find clang)
-          developer_tools=$(dirname "$(dirname "$clang")")
-          test -x "$developer_tools/bin/clang"
-          test -d "$sdk"
-          echo "DIAKTOROS_NATIVE_RUST_ROOT=$rust_root" >> "$GITHUB_ENV"
-          echo "DIAKTOROS_NATIVE_BUILD_FIXTURE=$fixture" >> "$GITHUB_ENV"
-          echo "DIAKTOROS_NATIVE_SDK=$sdk" >> "$GITHUB_ENV"
-          echo "DIAKTOROS_NATIVE_DEVELOPER_TOOLS=$developer_tools" >> "$GITHUB_ENV"
-      - name: Install pinned native Hermes into a disposable venv
-        run: |
-          py=$(python -c 'import json; print(json.load(open("hermes/pm/lock.json"))["packages"]["python"]["version"].split("+")[0])')
-          uv venv --python "$py" hermes/venv
-          cd hermes
-          UV_PROJECT_ENVIRONMENT="$HERMES_AGENT_SOURCE/venv" uv sync --frozen --no-dev --extra anthropic
-          test -x "$HERMES_AGENT_SOURCE/venv/bin/hermes"
-      - name: Build experimental fork-exec adapter
-        run: |
-          generation="$RUNNER_TEMP/native-spawn"
-          mkdir -m 700 "$generation"
-          arch_flags=(-arch x86_64)
-          if [[ $(uname -m) == arm64 ]]; then
-            arch_flags=(-arch arm64 -arch arm64e)
-          fi
-          /usr/bin/clang -dynamiclib -Wall -Wextra -Werror -Wno-deprecated-declarations "${arch_flags[@]}" diaktoros/native_spawn.c -o "$generation/spawn.dylib"
-          echo "DIAKTOROS_NATIVE_SPAWN_ADAPTER=$generation/spawn.dylib" >> "$GITHUB_ENV"
-      - name: Real Hermes tool turn over Unix model and broker sockets
-        run: python tests/leakguard.py discover -v -s tests -p 'test_native_macos.py'
+      - name: Prepare pinned Hermes using the tester command
+        run: python tests/native_tester.py prepare-hermes --output "$RUNNER_TEMP/tester-hermes-preparation"
+      - name: Real Hermes tool turn using the tester command
+        run: python tests/native_tester.py hermes --prepared "$RUNNER_TEMP/tester-hermes-preparation/result.json" --output "$RUNNER_TEMP/tester-hermes-evidence"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-tester-hermes-${{ matrix.runner }}
+          path: |
+            ${{ runner.temp }}/tester-hermes-preparation/result.json
+            ${{ runner.temp }}/tester-hermes-preparation/*.log
+            ${{ runner.temp }}/tester-hermes-evidence
+          retention-days: 14
+          if-no-files-found: error
       - name: Native runtime denials on failure
         if: failure()
         run: /usr/bin/log show --last 2m --style compact --predicate 'eventMessage CONTAINS "deny" AND (eventMessage CONTAINS "python" OR eventMessage CONTAINS "Python" OR eventMessage CONTAINS "cargo" OR eventMessage CONTAINS "rustc" OR eventMessage CONTAINS "clang" OR eventMessage CONTAINS "ld(")' 2>&1 | tail -n 100

@@ -4,8 +4,9 @@ For a separate first hardware test, use [the tester guide](native-macos-tester.m
 and `tests/native_tester.py`. Its preflight, boundary/watchdog and optional soak
 commands collect evidence without selecting the production native backend.
 The native CI matrix validates that entry point on both chips before a tester
-is asked to use it. Observer delivery and a live Hermes workload remain separate
-acceptance work.
+is asked to use it. `prepare-hermes` and `hermes --prepared` stage and run the
+pinned fake-provider Hermes/Rust vertical using the same commands in CI.
+Observer delivery and a live Hermes workload remain separate acceptance work.
 
 This branch starts issue #256's native alternative with a standalone Seatbelt
 profile builder, a native staged-Hermes launcher and executable boundary probes. It does **not** enable native

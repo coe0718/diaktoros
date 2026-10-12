@@ -81,13 +81,43 @@ a diagnostic PID list. Unknown ownership and interrupted setup stay retained.
 The bounded worker reports a timeout without claiming disposal and allows a later
 sweep to retry. A missing image alone is not process-exit proof.
 
-## Subsequent tester stages
+## Pinned Hermes/Rust tool turn
 
-After this hardware pass, prepare a separate pinned Hermes fixture using the
-`hermes-turn` job in `.github/workflows/seatbelt.yml`: it stages Hermes dependencies,
-Rust vendor inputs, the Apple SDK and the trusted fork/exec adapter before launch.
-That fixture uses fake model/GitHub responses with real Hermes execution. A live
-provider/workspace workload, observer pause/resume delivery, physical reboot with
-pending images and loss of all completion observers remain acceptance gates.
+After the boundary pass, stay in the separate checkout and activated test venv.
+This stage needs `rustup` on PATH; check `rustup --version` first. The preparer
+does not install rustup globally. Install the CI-pinned uv in the test venv:
+
+```sh
+python -m pip install uv==0.12.19
+python tests/native_tester.py prepare-hermes --output "$HOME/diaktoros-native-evidence/hermes-preparation-01"
+python tests/native_tester.py hermes --prepared "$HOME/diaktoros-native-evidence/hermes-preparation-01/result.json" --output "$HOME/diaktoros-native-evidence/hermes-turn-01"
+```
+
+Preparation downloads Hermes at commit
+`be5e9f72c6681af9dfb75bf480f08844f1499949`, its locked Python/dependencies, a
+dedicated Rust 1.85.1 toolchain and the memchr 2.7.4 vendor fixture. It selects
+the installed Apple SDK and compiles the trusted fork/exec adapter. Downloads,
+toolchains, caches and the venv live inside the new preparation directory; the
+existing Hermes/Rust installs are not used as writable fixtures. Allow roughly
+45 minutes and several GB of free space for this stage. Each preparation step
+has a timeout, a log and a recorded result; any failure stops subsequent steps.
+
+The test command verifies the pinned source commit and required staged files
+before launching. Missing or failed preparation is an error, not a skipped
+success. It launches real Hermes and an offline Rust build under Seatbelt,
+using a fake model provider and fake GitHub responses over scoped sockets.
+No live provider key or real review is involved. `hermes_model_turns` remains
+false in the report because this is not a live model workload. The `hermes-turn`
+CI jobs run these exact two tester commands on both architectures.
+
+Share the preparation `result.json` and relevant `.log` files plus the turn's
+`result.json`/`native_hermes.log`; the downloaded checkout, toolchain, caches and
+image files are not needed as evidence. Keep preparation intact until the turn
+finishes, since it supplies read-only runtime inputs.
+
+## Remaining tester stages
+
+A live provider/workspace workload, observer pause/resume delivery, physical
+reboot with pending images and loss of all completion observers remain gates.
 The normal plugin installer and doctor still require Linux; they are not the
 entry points for this first Mac experiment.
