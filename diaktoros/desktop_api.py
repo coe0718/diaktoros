@@ -27,6 +27,28 @@ class BadRequest(ValueError):
     pass
 
 
+class Forbidden(PermissionError):
+    pass
+
+
+# The probe reads a credential and calls GitHub, so it answers only a caller on this machine.
+# The dashboard server is the one surface Caddy exposes off-host. A forwarding header of ANY kind
+# means a proxy is in the path even when the peer looks local (a same-host nginx, a tunnel), and
+# presence is the signal, not the value: a header that is present but empty was still set by
+# something in front of us (#648 review, F1).
+LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
+FORWARDING_HEADERS = ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip")
+
+
+def probe_is_local(client_host: str | None, headers=None) -> bool:
+    """Whether this caller may run the credential-reading probe: a local peer, and no forwarding
+    header of any kind. An empty client_host (an in-process call) counts as local; a header that
+    is present at all — even an empty one — does not."""
+    if headers is not None and any(name in headers for name in FORWARDING_HEADERS):
+        return False
+    return not client_host or client_host in LOCAL_HOSTS
+
+
 def loops() -> list[dict]:
     """The configured loops the page can show: id and repository only."""
     found, _ = config.readable_loops()
@@ -59,22 +81,30 @@ def now_view(loop_id: str | None) -> dict:
     return view if view is not None else {"repo": loop["repo"], "runs": [], "counts": {}}
 
 
-def health_view(loop_id: str | None) -> dict:
-    """``doctor``'s checks for one loop, read-only and offline: every check that would need the
-    network (the gateway probe, hooks, token expiry, labels, rulesets) reports itself unprobed
-    instead of reaching out, so opening the page fires no route and reads no token's meaning.
+def health_view(loop_id: str | None, probe: bool = False, client_host: str | None = None,
+                headers=None) -> dict:
+    """``doctor``'s checks for one loop, read-only.
+
+    Offline by default: every check that would need the network — the gateway probe, the hooks,
+    token expiry and scopes, the labels — reports itself unprobed instead of reaching out, so
+    opening the page fires no route and reads no token's meaning. ``probe`` runs the full set:
+    it reads the loop's own tokens and makes a few GitHub reads, and it is refused for any caller
+    that is not on this machine.
 
     Slower than the other views — seconds, not milliseconds: it stats profiles, the cron store
-    and the venvs — so the page asks for it on demand rather than on every refresh.
+    and the venvs (and, when probing, reads GitHub) — so the page asks on demand rather than on
+    every refresh.
     """
     loop = _loop(loop_id)
+    if probe and not probe_is_local(client_host, headers):
+        raise Forbidden("the probe is local-only: it reads the loop's tokens")
     checks = [{"name": check.name, "status": check.status, "detail": check.detail,
                "fix": check.fix, "paused": check.paused}
-              for check in doctor.check_loop(loop, offline=True)]
+              for check in doctor.check_loop(loop, offline=not probe)]
     counts: dict[str, int] = {}
     for check in checks:
         counts[check["status"]] = counts.get(check["status"], 0) + 1
-    return {"repo": loop["repo"], "loop": loop["id"], "offline": True, "checks": checks,
+    return {"repo": loop["repo"], "loop": loop["id"], "offline": not probe, "checks": checks,
             "counts": counts, "read_at": time.time()}
 
 
