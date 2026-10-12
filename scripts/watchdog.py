@@ -58,6 +58,7 @@ from diaktoros import (  # noqa: E402
     hostdirs,
     main_check,
     observer,
+    pr_hold,
     route_intent,
     routes,
     situation,
@@ -408,6 +409,10 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False) -
             # The other seat owns this PR. Its handoff (or its slot expiring) is what frees it —
             # the poller must not start a run on top of it, or it would just re-queue.
             log(f"drain: the {held} seat holds {key} — left queued")
+            continue
+
+        if number in st.pr_holds():
+            log(f"drain: #{number} is held by a maintainer — left queued")   # #477
             continue
 
         pr = gh.pr(loop, number)
@@ -958,6 +963,19 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         number = pr.get("number")
         head = (pr.get("head") or {}).get("sha") or ""
         if not number or not head:
+            continue
+        # #477: a PR a maintainer holds is left alone: no stall, no conflict turn. The hold is
+        # recorded for `status` and the drain; a failed read keeps the last record (never
+        # "released" by a read that failed) and is said with the other failed reads.
+        hold, hold_error = pr_hold.read(loop, number)
+        if hold_error:
+            pr_failures.append((number, hold_error))
+        elif hold:
+            st.pr_hold_set(number, hold)
+        else:
+            st.pr_hold_drop(number)
+        if hold or (hold_error and number in st.pr_holds()):
+            unjudged.add(f"{number}:")
             continue
         # #303 stage 1: a loop PR that no longer merges into its base is said once per head.
         # The listing carries no mergeability, so this is one read of the PR; GitHub computes it

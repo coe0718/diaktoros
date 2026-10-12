@@ -161,6 +161,7 @@ class EffectiveVerdictTest(unittest.TestCase):
                 st.active.return_value = {}
                 st.queue_drop_unreadable.return_value = []   # nothing unreadable to prune (#80)
                 st.held_by_other.return_value = None
+                st.pr_holds.return_value = {}   # no maintainer hold (#477)
                 st.watch.return_value = {}
                 with (mock.patch.object(watchdog.config, "seat_concurrency", return_value=1),
                       mock.patch.object(gh, "pr", return_value=PR),

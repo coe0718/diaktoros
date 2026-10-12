@@ -30,6 +30,7 @@ from . import (
     gate_shims,
     gh,
     observer,
+    pr_hold,
     prompts,
     route_intent,
     routes,
@@ -3355,6 +3356,8 @@ def cmd_status(args) -> int:
             print(f"  deps:       {line}")
         for issue_no, origin in sorted(st.fix_holds().items()):
             print(f"  held:       issue #{issue_no} fix waits for PR #{origin} to merge")
+        for pr_no, hold in sorted(st.pr_holds().items()):
+            print(f"  held:       PR #{pr_no} {pr_hold.line(hold)}")
         for seat in ("reviewer", "fixer"):
             queued = len(st.queue_items(seat))
             if queued:

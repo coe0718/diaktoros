@@ -490,6 +490,12 @@ def issue_comments_read(loop: dict, number: int) -> tuple[list[dict] | None, str
                        "comment", MAX_COMMENT_PAGES)
 
 
+def issue_events_read(loop: dict, number: int) -> tuple[list[dict] | None, str]:
+    """Every timeline event on an issue/PR (who labeled it, when), or ``(None, reason)`` (#477)."""
+    return _read_pages(loop, f"/repos/{loop['repo']}/issues/{number}/events?per_page=100",
+                       "event", MAX_COMMENT_PAGES)
+
+
 def reviews(loop: dict, number: int, errors: list | None = None):
     """The PR's whole review history, or ``None`` (unknown). Pass ``errors`` to receive why."""
     result, error = reviews_read(loop, number)

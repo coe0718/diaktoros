@@ -1193,6 +1193,8 @@ def ruling_at(db: str | Path, repo: str, pr: int, head: str) -> str | None:
         return None
 
 
+# Seats whose turns a held PR (#477) waits out; an issue fix's number is an issue, not a PR.
+PR_HOLD_SEATS = ('reviewer', 'fixer')
 INFLIGHT_LABEL = {'reviewer': 'review', 'fixer': 'fix'}
 
 
@@ -2496,6 +2498,18 @@ class Supervisor:
                     if escalated_loop is not None and gate.escalated(
                             state_mod.state_for(escalated_loop).breach_get(row['pr']), row['head']):
                         superseded = 'escalated to adjudication at this head'
+                except Exception as exc:
+                    read_error = read_error or f'{type(exc).__name__}: {exc}'[:200]
+            if (self.production_config and row['seat'] in PR_HOLD_SEATS and not superseded):
+                # A maintainer holds this PR (#477): the row waits, pending, like a draft's, and
+                # starts after release. An unreadable hold is not "not held": it waits too.
+                from . import config, pr_hold
+                try:
+                    hold_loop = config.by_repo(row['repo'])
+                    if hold_loop is not None:
+                        hold, hold_error = pr_hold.read(hold_loop, row['pr'])
+                        retry_read = retry_read or bool(hold)
+                        read_error = read_error or hold_error
                 except Exception as exc:
                     read_error = read_error or f'{type(exc).__name__}: {exc}'[:200]
             if self.production_config and row['seat'] == 'adjudicator':
