@@ -679,7 +679,7 @@ probe retains original failures, queue/control receipts, helper measurements,
 worker stdout/stderr and OS log evidence. Failure or worker timeout retains
 storage. A pass requires the exact image's verified disposal and an empty owned
 inventory. A lane with no qualifying natural case is marked inconclusive and
-exits 2; quiet churn cannot establish natural-busy recovery. Twenty local collector checks pass, including deadline, durable receipt,
+exits 2; quiet churn cannot establish natural-busy recovery. Twenty-two local collector checks pass, including deadline, durable receipt,
 exhaustion, verified removal and inconclusive-result checks for the added rules.
 
 The next run completed 128 cycles in each of four lanes (512 total), with no
@@ -701,6 +701,17 @@ remain retained and block admission. This does not establish eventual recovery
 of a naturally exhausted normal turn eject.
 
 ## Dedicated eject forensics
+
+The fourth eventual-recovery run captured an Intel sync-unmount image whose
+five normal ejects and final force all returned busy. Production recovery
+durably queued it, but the collector incorrectly stopped before retrying:
+recovery reconstructs a base `Workspace`, bypassing the test subclass's event
+list and busy flag. The collector now observes that reconstructed workspace's
+exact root/image ejects during initial disposal, preserving production ownership
+checks and queue decisions. Regression coverage follows the actual reconstruction,
+records all six failures, reaches the fresh cleanup worker and excludes other
+images. This captured case establishes genuine exhaustion and durable queuing,
+not eventual disposal; a new successful recovery capture is still required.
 
 Queued recovery now also runs the baseline forensic matrix: standard, verbose,
 sync-delay and sync-unmount on both ARM and Intel. `--forensic-precondition`

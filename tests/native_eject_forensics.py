@@ -301,15 +301,41 @@ class ObservedWorkspace(native_storage.Workspace):
         try:
             return super()._eject(device, force=force)
         except native_storage.StorageError as error:
-            if 'Resource busy' in str(error) and not self.had_busy:
-                self.had_busy = True
-                self.recorder.helper_progress(self, 'first-failure')
-            if 'Resource busy' in str(error) and not self.recorder.first_busy:
-                self.recorder.first_busy = True
-                self.recorder.emit({'tag': 'first-busy', 'image': str(self.image), 'force': force})
-                if self.recorder.verbose:
-                    self.recorder.snapshot(self, 'first-busy')
+            self._note_busy(error, force=force)
             raise
+
+    def _note_busy(self, error, *, force):
+        if 'Resource busy' in str(error) and not self.had_busy:
+            self.had_busy = True
+            self.recorder.helper_progress(self, 'first-failure')
+        if 'Resource busy' in str(error) and not self.recorder.first_busy:
+            self.recorder.first_busy = True
+            self.recorder.emit({'tag': 'first-busy', 'image': str(self.image), 'force': force})
+            if self.recorder.verbose:
+                self.recorder.snapshot(self, 'first-busy')
+
+    @contextmanager
+    def observe_recovery(self):
+        """Capture exact-image ejects from recovery's reconstructed Workspace.
+
+        Ownership recovery deliberately rebuilds the production class instead
+        of trusting this test subclass. Observe that call, without replacing its
+        detach, ownership verification or durable queue decisions.
+        """
+        original = native_storage.Workspace._eject
+        def eject(actual, device, *, force):
+            if actual is self or actual.root != self.root or actual.image != self.image:
+                return original(actual, device, force=force)
+            offset = len(actual.cleanup_events)
+            try:
+                return original(actual, device, force=force)
+            except native_storage.StorageError as error:
+                self._note_busy(error, force=force)
+                raise
+            finally:
+                self.cleanup_events.extend(actual.cleanup_events[offset:])
+        with mock.patch.object(native_storage.Workspace, '_eject', eject):
+            yield
 
 
 def probe(recorder, cycles):
@@ -474,7 +500,7 @@ def probe_eventual(recorder, cycles, *, require_natural=False, forensic_precondi
                          'turn_processes_launched': False, 'injected': False}
                 started = time.monotonic()
                 try:
-                    with workspace:
+                    with workspace.observe_recovery(), workspace:
                         if workload == 'metadata':
                             for index in range(192):
                                 path = workspace.work / f'file-{index}'

@@ -15,6 +15,65 @@ from diaktoros import native_storage
 
 
 class ForensicsValidation(unittest.TestCase):
+    def test_reconstructed_owned_workspace_busy_ejects_reach_eventual_worker(self):
+        import shutil
+        from diaktoros import native_cleanup, native_recovery
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            pool = native_cleanup.Manager(root/'pool')
+            recorder = forensics.Recorder(root/'evidence')
+            w = forensics.ObservedWorkspace(recorder, cleanup_manager=pool)
+            w._preparation = pool.prepare(w)
+            w.image.write_bytes(b'fixture')
+            w.image.chmod(0o600)
+            w.mount.mkdir()
+            w._preparation.update('created', image_identity=native_recovery._identity(w.image.lstat()))
+            w._preparation.update('attached')
+            native_recovery.arm(w)
+            with native_recovery.Record(w.root) as receipt:
+                receipt.update('drained')
+            original = native_storage.Workspace._eject
+            with w.observe_recovery(), \
+                    mock.patch.object(native_storage.Workspace, '_devices', return_value=['/dev/disk99']), \
+                    mock.patch.object(native_storage.Workspace, '_attachments', return_value=[]), \
+                    mock.patch.object(native_storage, '_run', side_effect=native_storage.StorageError('Resource busy')), \
+                    mock.patch.object(native_storage.time, 'sleep'), \
+                    mock.patch.object(recorder, 'helper_progress') as progress:
+                w._cleanup()  # Real recovery reconstructs the base Workspace here.
+            self.assertIs(native_storage.Workspace._eject, original)
+            self.assertTrue(w.had_busy)
+            self.assertEqual(len(w.cleanup_events), 6)
+            self.assertEqual([e['force'] for e in w.cleanup_events], [False]*5+[True])
+            self.assertEqual(w.pending_cleanup['status'], 'pending')
+            progress.assert_called_once_with(w, 'first-failure')
+            def command(*args, **kwargs):
+                shutil.rmtree(w.root)
+                return {'returncode':0}, json.dumps({'results':[{'root':str(w.root),'status':'removed'}]}).encode(), b''
+            with mock.patch.object(recorder, 'command', side_effect=command) as worker, \
+                    mock.patch.object(recorder, 'helper_progress'), \
+                    mock.patch.object(forensics.time, 'monotonic', side_effect=[1,2]):
+                result = forensics.reconcile_natural(recorder, w, pool, 0)
+            self.assertEqual(result['sweeps'], 1)
+            worker.assert_called_once()
+
+    def test_recovery_observation_does_not_adopt_another_images_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = forensics.Recorder(Path(directory)/'evidence')
+            w = forensics.ObservedWorkspace(recorder)
+            w.root, w.image = Path(directory)/'owned', Path(directory)/'owned/turn.dmg'
+            other = native_storage.Workspace(64)
+            other.root, other.image = Path(directory)/'other', Path(directory)/'other/turn.dmg'
+            other.mount = other.root/'mount'
+            with w.observe_recovery(), \
+                    mock.patch.object(native_storage, '_run', side_effect=native_storage.StorageError('Resource busy')), \
+                    mock.patch.object(other, '_attachments', return_value=[]), \
+                    mock.patch.object(recorder, 'helper_progress') as progress:
+                with self.assertRaises(native_storage.StorageError):
+                    other._eject('/dev/disk99', force=True)
+            self.assertFalse(w.had_busy)
+            self.assertEqual(w.cleanup_events, [])
+            progress.assert_not_called()
+
     def test_forced_unmount_rechecks_ownership_and_reports_failed_intervention(self):
         for still_owned, outcome in ((True, {'returncode': 0}), (False, {'returncode': 0}),
                                      (True, {'returncode': 1})):
