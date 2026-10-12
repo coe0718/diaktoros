@@ -19,6 +19,21 @@ from diaktoros import contained, native_lifecycle, native_macos, native_storage,
 
 
 class StorageValidation(unittest.TestCase):
+    def test_protected_system_event_directory_is_reported_without_aborting_mount_setup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            w = native_storage.Workspace(64)
+            w.mount = Path(directory)
+            original = Path.touch
+            def touch(path, *args, **kwargs):
+                if path.name == 'no_log':
+                    raise PermissionError('system-owned event directory')
+                return original(path, *args, **kwargs)
+            with mock.patch.object(Path, 'touch', autospec=True, side_effect=touch):
+                w._install_markers()
+            self.assertTrue((w.mount / '.metadata_never_index').exists())
+            self.assertFalse(w.creation_events[-1]['installed'])
+            self.assertIn('system-owned', w.creation_events[-1]['error'])
+
     def test_eject_diagnostics_cannot_interrupt_cleanup_after_reader_dies(self):
         reader, writer = os.pipe()
         os.close(reader)

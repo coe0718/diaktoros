@@ -111,10 +111,7 @@ class Workspace:
                 self._preparation.update('attached')
             # This is disposable turn storage, not an indexed or event-backed
             # user volume. Install opt-out markers before creating turn files.
-            (self.mount / '.metadata_never_index').touch(mode=0o600)
-            event_log = self.mount / '.fseventsd'
-            event_log.mkdir(mode=0o700, exist_ok=True)
-            (event_log / 'no_log').touch(mode=0o600)
+            self._install_markers()
             # Git trees require distinct case-sensitive names, even on a default Mac host.
             case_paths = (self.mount / 'CaseProbe', self.mount / 'caseprobe')
             for path in case_paths:
@@ -130,6 +127,22 @@ class Workspace:
         except BaseException:
             self._cleanup()
             raise
+
+    def _install_markers(self):
+        (self.mount / '.metadata_never_index').touch(mode=0o600)
+        event = {'stage': 'filesystem-event-marker', 'installed': False}
+        try:
+            event_log = self.mount / '.fseventsd'
+            event_log.mkdir(mode=0o700, exist_ok=True)
+            (event_log / 'no_log').touch(mode=0o600)
+            event['installed'] = True
+        except PermissionError as error:
+            # fseventsd can create a protected directory immediately on attach.
+            # This optional noise-reduction hint is not containment authority.
+            # Do not change system ownership or fail an otherwise valid mount.
+            event['error'] = str(error)[-2000:]
+        self.creation_events.append(event)
+        _diagnostic('NATIVE_STORAGE', event)
 
     def _attachments(self) -> list[dict]:
         info = plistlib.loads(_run([HDIUTIL, 'info', '-plist']))

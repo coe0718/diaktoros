@@ -596,6 +596,12 @@ and disposal within five sweeps/five minutes remain required. A sweep bounds
 its number of workspaces; existing disk-command timeouts and watchdog cadence
 still need a wall-clock budget suitable for the five-minute target.
 
+The `.fseventsd/no_log` hint is best effort: macOS may create a protected,
+system-owned `.fseventsd` directory before the host reaches it. Permission
+denial is recorded as `filesystem-event-marker` with `installed=false` rather
+than aborting a verified mount. The host never changes system ownership or
+kills an indexing/event helper. This hint supplies no containment proof.
+
 ## 200-turn guarded cleanup soak
 
 `native-cleanup-soak.yml` runs 200 real guarded command turns independently on
