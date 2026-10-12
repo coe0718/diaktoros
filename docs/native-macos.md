@@ -1,5 +1,12 @@
 # Native macOS experiment
 
+For a separate first hardware test, use [the tester guide](native-macos-tester.md)
+and `tests/native_tester.py`. Its preflight, boundary/watchdog and optional soak
+commands collect evidence without selecting the production native backend.
+The native CI matrix validates that entry point on both chips before a tester
+is asked to use it. Observer delivery and a live Hermes workload remain separate
+acceptance work.
+
 This branch starts issue #256's native alternative with a standalone Seatbelt
 profile builder, a native staged-Hermes launcher and executable boundary probes. It does **not** enable native
 production Hermes turns. `contained.py`, setup, doctor and the manifest retain
@@ -724,7 +731,13 @@ exact root/image ejects during initial disposal, preserving production ownership
 checks and queue decisions. Regression coverage follows the actual reconstruction,
 records all six failures, reaches the fresh cleanup worker and excludes other
 images. This captured case establishes genuine exhaustion and durable queuing,
-not eventual disposal; a new successful recovery capture is still required.
+not eventual disposal. Subsequently, the Intel standard lane in
+[run 38301555861](https://github.com/coe0718/diaktoros/actions/runs/38301555861/job/114985424530)
+captured five failed normal ejects and a failed force with no injection, durably
+queued the image, and verified exact-image removal in one fresh sweep at 29.454
+seconds from initial disposal eligibility. Its pool was empty afterwards. This
+meets the five-sweep/five-minute target for that single natural case; repeatability
+and an ARM exhausted-eject recovery capture remain open.
 
 Queued recovery now also runs the baseline forensic matrix: standard, verbose,
 sync-delay and sync-unmount on both ARM and Intel. `--forensic-precondition`

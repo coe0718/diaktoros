@@ -33,6 +33,9 @@ on:
       - tests/test_trusted_fetch.py
       - tests/test_turn_layout.py
       - tests/test_native_roles.py
+      - tests/native_tester.py
+      - tests/test_native_tester.py
+      - docs/native-macos-tester.md
       - tests/native_rust_fixture.py
       - .github/workflows/seatbelt.yml
   workflow_dispatch:
@@ -45,6 +48,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  tester-entrypoint:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Validate the tester commands on a clean Mac
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/tester-evidence"
+          python tests/native_tester.py preflight --output "$RUNNER_TEMP/tester-evidence/preflight"
+          python tests/native_tester.py boundary --output "$RUNNER_TEMP/tester-evidence/boundary"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-tester-${{ matrix.runner }}
+          path: ${{ runner.temp }}/tester-evidence
+          retention-days: 14
+          if-no-files-found: error
+
   boundary:
     strategy:
       fail-fast: false
