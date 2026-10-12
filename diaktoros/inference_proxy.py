@@ -249,6 +249,84 @@ ACTIVITY_LIMIT = 1200
 REPLY_COPY = 64 * 1024
 
 
+def _usage_in(event) -> tuple[int, int, float]:
+    """(tokens in, tokens out, cost) one reply object reports, wherever its mode puts it: a
+    top-level ``usage`` (chat, Responses buffered), ``message.usage`` (Anthropic stream start),
+    ``response.usage`` (Responses stream end). Missing or malformed fields count as 0."""
+    best = [0, 0, 0.0]
+    if not isinstance(event, dict):
+        return 0, 0, 0.0
+    for holder in (event, event.get('message'), event.get('response')):
+        usage = holder.get('usage') if isinstance(holder, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        for slot, names in ((0, ('prompt_tokens', 'input_tokens')),
+                            (1, ('completion_tokens', 'output_tokens'))):
+            for name in names:
+                value = usage.get(name)
+                if isinstance(value, int) and not isinstance(value, bool) and value > best[slot]:
+                    best[slot] = value
+        cost = usage.get('cost')
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > best[2]:
+            best[2] = float(cost)
+    return best[0], best[1], best[2]
+
+
+class UsageMeter:
+    """What one upstream reply cost in tokens (#480), read from the bytes as they are relayed.
+
+    Streams split usage over events (Anthropic: input at the start, output at the end), so each
+    field keeps its largest value across the reply. Cost is only what the provider reports; a
+    reply that reports none adds 0 and ``cost_known`` stays False. Never raises."""
+
+    def __init__(self):
+        self.tokens_in = self.tokens_out = 0
+        self.cost = 0.0
+        self.cost_known = False
+        self._tail = b''
+        self._whole = bytearray()
+        self._stream = False
+
+    def feed(self, chunk: bytes, stream: bool) -> None:
+        try:
+            self._stream = stream
+            if not stream:
+                if len(self._whole) < MAX_RESPONSE:
+                    self._whole.extend(chunk)
+                return
+            lines = (self._tail + chunk).split(b'\n')
+            self._tail = lines.pop()[-MAX_REQUEST:]
+            for line in lines:
+                self._line(line)
+        except Exception:
+            pass
+
+    def _line(self, line: bytes) -> None:
+        line = line.strip()
+        if line.startswith(b'data:') and b'usage' in line:
+            try:
+                self._add(json.loads(line[5:]))
+            except ValueError:
+                pass
+
+    def _add(self, event) -> None:
+        t_in, t_out, cost = _usage_in(event)
+        self.tokens_in = max(self.tokens_in, t_in)
+        self.tokens_out = max(self.tokens_out, t_out)
+        if cost > 0:
+            self.cost, self.cost_known = max(self.cost, cost), True
+
+    def finish(self) -> None:
+        try:
+            if self._stream:
+                self._line(self._tail)
+                self._tail = b''
+            elif self._whole:
+                self._add(json.loads(bytes(self._whole)))
+        except Exception:
+            pass
+
+
 _SECRETISH = re.compile(r'(?i)\b(?:sk|pk|rk|key|token|bearer)[-_a-z0-9]*[\s:=]*[A-Za-z0-9_\-\.]{16,}'
                         r'|[A-Za-z0-9_\-]{40,}')
 
@@ -596,6 +674,11 @@ class InferenceCapability:
         # until a request is seen (or when its level cannot be told): unknown, never "off".
         self.thinking: str | None = None
         self._thinking_seen = False
+        # Tokens in and out of every reply this turn (#480), and the cost the provider reported
+        # (cost_known False: it reported none, so cost is unknown, not zero).
+        self.tokens_in = self.tokens_out = 0
+        self.cost = 0.0
+        self.cost_known = False
         self.model = model
         self.quota = quota
         self.used = 0
@@ -636,6 +719,14 @@ class InferenceCapability:
                 return 401, 'application/json', iter([b'{"error": "upstream rejected the credential"}'])
             status, content_type, data = self.endpoint.post(body, self._headers(fresh, sandbox_headers))
         return status, content_type, data
+
+    def add_usage(self, meter: 'UsageMeter') -> None:
+        """Add one reply's tokens (and the cost the provider reported) to this turn's totals (#480)."""
+        with self.lock:
+            self.tokens_in += meter.tokens_in
+            self.tokens_out += meter.tokens_out
+            self.cost += meter.cost
+            self.cost_known = self.cost_known or meter.cost_known
 
     def note_rate_limit(self, headers: dict, body: bytes) -> None:
         """Record when a 429'd window reopens — only when the provider *says* when. A bare 429
@@ -722,9 +813,12 @@ class InferenceCapability:
                 if hasattr(data, "set_peer"):
                     data.set_peer(self.connection)
                 seen = bytearray()
+                meter = UsageMeter()
                 try:
-                    _relay(self, status, content_type, data, seen)
+                    _relay(self, status, content_type, data, seen, meter)
                 finally:
+                    meter.finish()
+                    capability.add_usage(meter)
                     reply = reply_activity(bytes(seen), _is_stream(content_type))
                     capability.last_activity = (f"{capability.last_activity} → then {reply}"
                                                 if reply else capability.last_activity)
@@ -754,7 +848,8 @@ class InferenceCapability:
         self.credential.close()
 
 
-def _relay(handler, status: int, content_type: str, data, seen: bytearray | None = None) -> None:
+def _relay(handler, status: int, content_type: str, data, seen: bytearray | None = None,
+           meter: 'UsageMeter | None' = None) -> None:
     """Answer ``handler`` with an upstream reply: buffered JSON, or SSE streamed as it arrives.
 
     A stream is sent without ``Content-Length`` and ends when the connection closes (HTTP/1.0
@@ -774,6 +869,8 @@ def _relay(handler, status: int, content_type: str, data, seen: bytearray | None
                 return
             if seen is not None:
                 seen.extend(body[:REPLY_COPY])
+            if meter is not None:
+                meter.feed(body, False)
             handler.send_response(status)
             handler.send_header('Content-Type', content_type)
             handler.send_header('Content-Length', str(len(body)))
@@ -790,6 +887,8 @@ def _relay(handler, status: int, content_type: str, data, seen: bytearray | None
             for chunk in chunks:
                 handler.wfile.write(chunk)
                 handler.wfile.flush()
+                if meter is not None:
+                    meter.feed(chunk, True)
                 if seen is not None and len(seen) < REPLY_COPY:
                     seen.extend(chunk[:REPLY_COPY - len(seen)])
         except (OSError, ProxyError, http.client.HTTPException):

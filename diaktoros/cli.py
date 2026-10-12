@@ -1815,6 +1815,13 @@ def cmd_init(args) -> int:
             if steps not in (0, ""):
                 raw["seats"][seat]["max_steps"] = config._check_max_steps(
                     steps, f"seats.{seat}.max_steps", "init")
+        for seat in ("reviewer", "fixer"):
+            flag = getattr(args, f"{seat}_daily_tokens", None)
+            budget = flag if flag is not None else config._form_int(
+                d[f"{seat}_daily_tokens"].strip())
+            if budget not in (0, ""):
+                raw["seats"][seat]["daily_tokens"] = config._check_daily_tokens(
+                    budget, f"seats.{seat}.daily_tokens", "init")
         flag = getattr(args, "fix_daily_turns", None)
         cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
         if cap not in (0, ""):
@@ -2198,7 +2205,8 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
         argv.append(f"--review-only-update={args.review_only_update}")
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
-    for flag in ("reviewer_max_steps", "fixer_max_steps", "fix_daily_turns",
+    for flag in ("reviewer_max_steps", "fixer_max_steps", "reviewer_daily_tokens",
+                 "fixer_daily_tokens", "fix_daily_turns",
                  "review_only_cap", "review_only_daily", "ci_fix_cap"):
         if getattr(args, flag, None) is not None:
             argv.append(f"--{flag.replace('_', '-')}={getattr(args, flag)}")
@@ -2603,6 +2611,17 @@ def cmd_set(args) -> int:
             seats[seat]["daily_turns"] = value
         else:
             seats[seat].pop("daily_turns", None)
+    # A daily token budget per seat (#480); 0 removes it. normalize refuses anything else.
+    for seat, value in (("reviewer", getattr(args, "reviewer_daily_tokens", None)),
+                         ("fixer", getattr(args, "fixer_daily_tokens", None))):
+        if value is None or (value or None) == config.seat_daily_tokens(loop, seat):
+            continue
+        budget_changes[f"{seat} daily tokens"] = (config.seat_daily_tokens(loop, seat),
+                                                  value or None)
+        if value:
+            seats[seat]["daily_tokens"] = value
+        else:
+            seats[seat].pop("daily_tokens", None)
     # Agent steps per turn (#271); 0 goes back to the seat's default. An issue fix takes the
     # fixer's value. normalize refuses anything outside the range.
     for seat, value in (("reviewer", getattr(args, "reviewer_max_steps", None)),
@@ -2959,6 +2978,10 @@ def _apply(args) -> int:
         was, now = config.max_steps(loop, seat), config.max_steps(updated, seat)
         if was != now:
             changes.append((f"{seat} max steps", was, now))
+    for seat in ("reviewer", "fixer"):
+        was, now = config.seat_daily_tokens(loop, seat), config.seat_daily_tokens(updated, seat)
+        if was != now:
+            changes.append((f"{seat} daily tokens", was, now))
     was = config.seat_daily_turns(loop, "issue_fixer")
     now = config.seat_daily_turns(updated, "issue_fixer")
     if was != now:
@@ -3566,6 +3589,11 @@ def _pacing_lines(loop: dict) -> list[str]:
     if any(cap for _, cap in caps):
         lines.append(" · ".join(f"{seat} {pacing.turns_today(loop['id'], seat)}/"
                                 f"{cap if cap else 'no cap'} today" for seat, cap in caps))
+    budgets = [(seat, config.seat_daily_tokens(loop, seat)) for seat in ("reviewer", "fixer")]
+    if any(budget for _, budget in budgets):
+        lines.append(" · ".join(f"{seat} {pacing.tokens_today(loop['id'], seat):,}/"
+                                f"{f'{budget:,}' if budget else 'no budget'} tokens today"
+                                for seat, budget in budgets))
     try:
         holds = (json.loads(pacing.path().read_text()).get("holds") or {})
     except (OSError, ValueError, AttributeError):
@@ -5455,6 +5483,12 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--fixer-max-steps", type=int, default=None,
                           help="agent steps one fixer or issue-fix turn may take, 8-200 "
                                "(0 = default 80) (default: the plugin setting)")
+        init.add_argument("--reviewer-daily-tokens", type=int, default=None,
+                          help="most tokens the reviewer may spend per day; once spent the next "
+                               "turn waits for midnight (0 = none) (default: the plugin setting)")
+        init.add_argument("--fixer-daily-tokens", type=int, default=None,
+                          help="most tokens the fixer (and issue fixes) may spend per day "
+                               "(0 = none) (default: the plugin setting)")
         init.add_argument("--fix-daily-turns", type=int, default=None,
                           help="issue-fix turns per day: refused here, a new loop has no fix "
                                "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
@@ -5538,6 +5572,12 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         first.add_argument("--fixer-max-steps", type=int, default=None,
                            help="agent steps one fixer or issue-fix turn may take, 8-200 "
                                 "(0 = default 80) (default: the plugin setting)")
+        first.add_argument("--reviewer-daily-tokens", type=int, default=None,
+                           help="most tokens the reviewer may spend per day; once spent the next "
+                                "turn waits for midnight (0 = none) (default: the plugin setting)")
+        first.add_argument("--fixer-daily-tokens", type=int, default=None,
+                           help="most tokens the fixer (and issue fixes) may spend per day "
+                                "(0 = none) (default: the plugin setting)")
         first.add_argument("--fix-daily-turns", type=int, default=None,
                            help="issue-fix turns per day: refused here, a new loop has no fix "
                                 "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
@@ -5766,6 +5806,12 @@ def register_cli(ctx, settings: dict | None = None) -> None:
                                  "midnight (0 removes the cap)")
         change.add_argument("--fixer-daily-turns", type=int, default=None,
                             help="most fixer turns per day on this loop (0 removes the cap)")
+        change.add_argument("--reviewer-daily-tokens", type=int, default=None,
+                            help="most tokens (in + out) the reviewer may spend per day on this "
+                                 "loop; once spent, the next turn waits for midnight (0 removes it)")
+        change.add_argument("--fixer-daily-tokens", type=int, default=None,
+                            help="most tokens the fixer (and issue fixes) may spend per day on "
+                                 "this loop (0 removes it)")
         change.add_argument("--reviewer-max-steps", type=int, default=None,
                             help="agent steps one reviewer turn may take, 8-200 (0 = default 60)")
         change.add_argument("--fixer-max-steps", type=int, default=None,

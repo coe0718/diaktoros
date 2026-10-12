@@ -127,6 +127,16 @@ config_schema:
     type: str
     default: ""
     description: "Agent steps one fixer turn (and an issue fix) may take, 8-200. Blank = not set here: the loop keeps its own value or the role default"
+  reviewer_daily_tokens:
+    label: "Reviewer's daily token budget"
+    type: str
+    default: ""
+    description: "Tokens (in + out) the reviewer may spend per local day, a whole number. Once spent, the next turn waits for midnight; a turn in flight is not killed. Counted by the inference proxy from what the provider reports. Blank = not set here: the loop keeps its own value (default: no budget)"
+  fixer_daily_tokens:
+    label: "Fixer's daily token budget"
+    type: str
+    default: ""
+    description: "Tokens (in + out) the fixer, and issue fixes, may spend per local day, a whole number. Once spent, the next turn waits for midnight; a turn in flight is not killed. Blank = not set here: the loop keeps its own value (default: no budget)"
   fix_daily_turns:
     label: "Issue-fix daily cap (turns)"
     type: str

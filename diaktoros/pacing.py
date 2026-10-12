@@ -279,6 +279,30 @@ def count_turn(loop_id: str, seat: str, now: float | None = None) -> int:
         return day[key]
 
 
+def tokens_today(loop_id: str, seat: str, now: float | None = None) -> int:
+    """Tokens (in + out) the seat's finished turns spent today on this loop (#480)."""
+    now = time.time() if now is None else now
+    day = (_load(path()).get("tokens") or {}).get(_today(now)) or {}
+    value = day.get(f"{loop_id}|{seat}") if isinstance(day, dict) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def count_tokens(loop_id: str, seat: str, tokens: int, now: float | None = None) -> int:
+    """Add ``tokens`` to today's spend for the seat; returns today's total. Old days dropped."""
+    now = time.time() if now is None else now
+    with _locked() as file:
+        data = _load(file)
+        days = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+        keep = sorted(days)[-_KEEP_DAYS:]
+        days = {day: days[day] for day in keep if isinstance(days[day], dict)}
+        day = days.setdefault(_today(now), {})
+        key = f"{loop_id}|{seat}"
+        day[key] = (day.get(key) if isinstance(day.get(key), int) else 0) + max(0, int(tokens))
+        data["tokens"] = days
+        _save(file, data)
+        return day[key]
+
+
 def rename_loop(old_id: str, new_id: str) -> int:
     """Carry a renamed loop's turn counts to its new id (#425); returns the counts moved."""
     moved = 0

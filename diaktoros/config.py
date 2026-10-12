@@ -150,6 +150,19 @@ SETTINGS_SCHEMA: dict = {
                         "description": "Agent steps one fixer turn (and an issue fix) may take, "
                                        "8-200. Blank = not set here: the loop keeps its own value "
                                        "or the role default"},
+    "reviewer_daily_tokens": {"label": "Reviewer's daily token budget", "type": "str", "default": "",
+                              "description": "Tokens (in + out) the reviewer may spend per local "
+                                             "day, a whole number. Once spent, the next turn "
+                                             "waits for midnight; a turn in flight is not "
+                                             "killed. Counted by the inference proxy from what "
+                                             "the provider reports. Blank = not set here: the "
+                                             "loop keeps its own value (default: no budget)"},
+    "fixer_daily_tokens": {"label": "Fixer's daily token budget", "type": "str", "default": "",
+                           "description": "Tokens (in + out) the fixer, and issue fixes, may "
+                                          "spend per local day, a whole number. Once spent, the "
+                                          "next turn waits for midnight; a turn in flight is not "
+                                          "killed. Blank = not set here: the loop keeps its own "
+                                          "value (default: no budget)"},
     "auto_fix_labels": {"label": "Auto-fix labels (comma-separated)", "type": "str", "default": "",
                         "description": "Triage labels (from triage.labels) that hand an issue to "
                                        "the fixer without a maintainer, e.g. P3, documentation. "
@@ -406,6 +419,11 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         if raw_steps is not None:
             seats.setdefault(seat, {})["max_steps"] = _check_max_steps(
                 _form_int(raw_steps), f"seats.{seat}.max_steps", "settings")
+    for seat in ("reviewer", "fixer"):
+        raw_tokens = _form_value(settings, f"{seat}_daily_tokens")
+        if raw_tokens is not None:
+            seats.setdefault(seat, {})["daily_tokens"] = _check_daily_tokens(
+                _form_int(raw_tokens), f"seats.{seat}.daily_tokens", "settings")
     raw_cap = _form_value(settings, "fix_daily_turns")
     if raw_cap is not None:
         triage = dict(loop_raw.get("triage") or {})
@@ -857,6 +875,7 @@ def _check_budget(value, what: str, where: str) -> int:
 
 
 DAILY_TURNS_MAX = 1000
+DAILY_TOKENS_MAX = 10_000_000_000
 
 # Agent steps one isolated turn may take (#271), per role when the seat sets none. A seat that
 # reads one diff and judges it fits the small default; one that must find its way into the code
@@ -1096,6 +1115,23 @@ def _check_daily_turns(value, what: str, where: str) -> int:
     return value
 
 
+def _check_daily_tokens(value, what: str, where: str) -> int:
+    """A per-seat daily token budget (#480): a whole number of tokens, 1-DAILY_TOKENS_MAX."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= DAILY_TOKENS_MAX:
+        raise ConfigError(f"{where}: {what} must be a whole number of tokens, "
+                          f"1-{DAILY_TOKENS_MAX} (leave it out for no budget), got {value!r}")
+    return value
+
+
+def seat_daily_tokens(loop: dict, seat: str) -> int | None:
+    """Tokens (in + out) ``seat`` may spend per local day on this loop, or None (#480). A turn
+    in flight is never killed; once the budget is spent the next turn is held until midnight.
+    An issue fix spends the fixer's budget."""
+    seat = "fixer" if seat == "issue_fixer" else seat
+    value = (((loop.get("seats") or {}).get(seat)) or {}).get("daily_tokens")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
 def seat_daily_turns(loop: dict, seat: str) -> int | None:
     """Turns ``seat`` may start per local day on this loop, or None (no cap) (#219).
 
@@ -1147,9 +1183,9 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
     if raw is None or raw == {}:
         return {}
     if not isinstance(raw, dict) or not set(raw) <= {"login", "concurrency", "turn_budget_s",
-                                                     "daily_turns", "max_steps"}:
+                                                     "daily_turns", "daily_tokens", "max_steps"}:
         raise ConfigError(f"{where}: seats.adjudicator may only hold 'login', 'concurrency', "
-                          "'turn_budget_s', 'daily_turns' and 'max_steps'")
+                          "'turn_budget_s', 'daily_turns', 'daily_tokens' and 'max_steps'")
     seat: dict = {}
     if raw.get("max_steps") not in (None, ""):
         seat["max_steps"] = _check_max_steps(raw["max_steps"], "seats.adjudicator.max_steps",
@@ -1157,6 +1193,9 @@ def _adjudicator_seat(raw, loop: dict, where: str) -> dict:
     if raw.get("daily_turns") not in (None, ""):
         seat["daily_turns"] = _check_daily_turns(raw["daily_turns"],
                                                  "seats.adjudicator.daily_turns", where)
+    if raw.get("daily_tokens") not in (None, ""):
+        seat["daily_tokens"] = _check_daily_tokens(raw["daily_tokens"],
+                                                   "seats.adjudicator.daily_tokens", where)
     if raw.get("turn_budget_s") not in (None, ""):
         seat["turn_budget_s"] = _check_budget(raw["turn_budget_s"],
                                               "seats.adjudicator.turn_budget_s", where)
@@ -1384,15 +1423,18 @@ def _triage_seat(raw, where: str) -> dict:
     if raw in (None, {}):
         return {}
     if not isinstance(raw, dict) or not set(raw) <= {"concurrency", "turn_budget_s", "daily_turns",
-                                                     "max_steps"}:
+                                                     "daily_tokens", "max_steps"}:
         raise ConfigError(f"{where}: seats.triage may only hold 'concurrency', 'turn_budget_s', "
-                          "'daily_turns' and 'max_steps'")
+                          "'daily_turns', 'daily_tokens' and 'max_steps'")
     seat: dict = {}
     if raw.get("max_steps") not in (None, ""):
         seat["max_steps"] = _check_max_steps(raw["max_steps"], "seats.triage.max_steps", where)
     if raw.get("daily_turns") not in (None, ""):
         seat["daily_turns"] = _check_daily_turns(raw["daily_turns"], "seats.triage.daily_turns",
                                                  where)
+    if raw.get("daily_tokens") not in (None, ""):
+        seat["daily_tokens"] = _check_daily_tokens(raw["daily_tokens"],
+                                                   "seats.triage.daily_tokens", where)
     if raw.get("turn_budget_s") not in (None, ""):
         seat["turn_budget_s"] = _check_budget(raw["turn_budget_s"], "seats.triage.turn_budget_s",
                                               where)
@@ -1974,7 +2016,7 @@ def dangerous_root(value: str) -> str:
 LOOP_EXTRA_KEYS = frozenset({"id", "repo", "state_dir", "observer_disabled"})
 # Keys of a reviewer/fixer seat.
 SEAT_FILE_KEYS = frozenset({"route", "profile", "login", "agent", "concurrency", "turn_budget_s",
-                            "daily_turns", "max_steps"})
+                            "daily_turns", "daily_tokens", "max_steps"})
 
 
 def _unknown_keys(keys, known, prefix: str = "") -> list:
@@ -2145,6 +2187,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
         if seats[seat].get("daily_turns") not in (None, ""):
             seats[seat]["daily_turns"] = _check_daily_turns(
                 seats[seat]["daily_turns"], f"seats.{seat}.daily_turns", where)
+        if seats[seat].get("daily_tokens") not in (None, ""):
+            seats[seat]["daily_tokens"] = _check_daily_tokens(
+                seats[seat]["daily_tokens"], f"seats.{seat}.daily_tokens", where)
         if seats[seat].get("max_steps") not in (None, ""):
             seats[seat]["max_steps"] = _check_max_steps(
                 seats[seat]["max_steps"], f"seats.{seat}.max_steps", where)
