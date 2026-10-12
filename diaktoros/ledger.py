@@ -35,7 +35,8 @@ LOCK_WAIT_S = 60
 BUSY_TIMEOUT = f"busy_timeout={LOCK_WAIT_S * 1000}"
 
 # Frames that only open or wrap a connection; ``where`` looks past them to the operation.
-_PLUMBING = {"connect", "_connect", "_worker_connect", "_read_only", "__enter__", "__exit__"}
+_PLUMBING = {"connect", "_connect", "_worker_connect", "read_only_connect", "__enter__",
+             "__exit__"}
 
 
 def locked(exc: BaseException) -> bool:

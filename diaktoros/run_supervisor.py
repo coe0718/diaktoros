@@ -1118,10 +1118,13 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     return rows
 
 
-def _read_only(db: str | Path):
+def read_only_connect(db: str | Path):
     """A connection that writes nothing — no migration, no WAL creation — or None when the ledger
     is absent. With no live WAL, ``immutable`` keeps even a read-only connection from creating
-    -wal/-shm files; with one, those files already exist."""
+    -wal/-shm files; with one, those files already exist.
+
+    Every read-only reader goes through here, ``runs_view``'s callers included, so the policy has
+    one home."""
     path = Path(db)
     if not path.is_file():
         return None
@@ -1137,7 +1140,7 @@ def read_only_view(db: str | Path, repo: str, pr: int | None = None) -> list[dic
     """``runs_view`` without writing anything — no schema migration, no WAL creation — for
     ``status``/``explain``. None when the ledger is absent or unreadable."""
     try:
-        con = _read_only(db)
+        con = read_only_connect(db)
         if con is None:
             return None
         try:
@@ -1155,7 +1158,7 @@ def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str 
     tell a ruling still in flight from a breach marker nobody is working on.
     """
     try:
-        con = _read_only(db)
+        con = read_only_connect(db)
         if con is None:
             return None
         try:
@@ -1177,7 +1180,7 @@ def ruling_at(db: str | Path, repo: str, pr: int, head: str) -> str | None:
     a ruling that never came.
     """
     try:
-        con = _read_only(db)
+        con = read_only_connect(db)
         if con is None:
             return None
         try:
@@ -1241,7 +1244,7 @@ def dependency_view(db: str | Path, repo: str, pr: int | None = None,
     Read-only; None when the ledger is absent or unreadable, [] when nothing was recorded.
     """
     try:
-        con = _read_only(db)
+        con = read_only_connect(db)
         if con is None:
             return None
         try:
@@ -1314,7 +1317,7 @@ def view_view(db: str | Path, repo: str, pr: int | None = None,
     Read-only; None when the ledger is absent or unreadable, [] when every recorded view was whole.
     """
     try:
-        con = _read_only(db)
+        con = read_only_connect(db)
         if con is None:
             return None
         try:

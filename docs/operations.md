@@ -649,9 +649,23 @@ In Hermes Desktop, the plugin adds a **Diaktoros** page (with a sidebar entry) a
 summary such as `loop: 1 running · 1 held`. The page shows:
 - **Right now:** every queued, running, held or uncertain run, and the last day's failures, each
   with a short host-written reason (a hold's own line, such as `held: waiting for CI …`). It never
-  shows a turn's output; `explain --pr N` has the detail.
+  shows a turn's output. **Click a row** for that PR's drawer: one line per stuck run saying what
+  would move it (the host's own text, the same `next_step` line `retry` names), the reviewer
+  verdicts and adjudicator rulings this ledger recorded, that PR's turns, and the cap marker when a
+  head has spent its cap. The live round count comes from GitHub's reviews — a person's verdict
+  counts too — so the drawer says what the ledger holds instead of guessing at it; `explain --pr N`
+  has the GitHub half.
 - **Seat turns** for the last 24 hours, 7 days or 30 days: the run ledger's half of
   [`stats`](commands.md#stats).
+- **Health:** [`doctor`](commands.md#doctor)'s checks for this loop, read **offline**: the gateway
+  probe, hooks, token expiry, labels and rulesets report themselves unprobed rather than reaching
+  out. What is wrong comes first; *Show all N* reaches the verified lines, and *Re-check* re-runs
+  it. It takes a few seconds (it stats profiles, the cron store and the venvs), so it is read on
+  demand rather than with every refresh.
+
+The status chip raises a toast when the number of runs waiting on you **rises**. A reload is not
+news, so the first read of a session only records the baseline. Three palette rows (⌘K) open the
+page, refresh its data, and re-run the health checks.
 
 It refreshes every 30–60 seconds. Both halves ship **off**:
 1. **The Python half**, which serves the page's data: add `diaktoros` to
@@ -659,6 +673,6 @@ It refreshes every 30–60 seconds. Both halves ship **off**:
 2. **The Desktop half:** turn on **Diaktoros** under **Capabilities → Plugins**.
 
 The backend (`dashboard/plugin_api.py`, mounted at `/api/plugins/diaktoros/` behind the
-gateway's own auth) has three read-only routes, `loops`, `stats` and `now`. They read the loop files
-and the run ledger only: no GitHub call, no token, no write. GitHub-side numbers stay with
-`stats --github`.
+gateway's own auth) has five read-only routes: `loops`, `stats`, `now`, `pr` and `health`. They read
+the loop's config, the run ledger and — for `health` — the installation's own files: no GitHub call,
+no token, no write. GitHub-side numbers stay with `stats --github`.

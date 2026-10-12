@@ -53,7 +53,7 @@ class Waits(unittest.TestCase):
         # The only exceptions are SQLite files no other connection can hold: :memory: and a new
         # private file, marked so on its line.
         modules = ("run_supervisor", "ci_fix", "review_receipt", "stats", "cli", "migrate",
-                   "backup", "trace", "ledger")
+                   "backup", "trace", "ledger", "desktop_api")
         for name in modules:
             path = ROOT / "diaktoros" / f"{name}.py"
             source = path.read_text()
