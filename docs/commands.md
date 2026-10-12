@@ -94,6 +94,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | let the fixer push on its own | [`fixer-push`](#fixer-push) |
 | label new issues automatically | [`triage`](#triage) |
 | find out why a PR is not moving | [`explain`](#explain) |
+| list the PRs that are safe to merge, in order | [`ready`](#ready) |
 | ask for a fresh review of a PR | [`review`](#review) |
 | send a PR to the adjudicator now | [`escalate`](#escalate) |
 | find out why a webhook started nothing | [`trace`](#trace) |
@@ -963,6 +964,32 @@ exits `2` only when it cannot ask: an unknown loop, a refused loop file, or seve
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
 | `--pr` | `PR` | **required** | pull request number to explain |
+<!-- /flags -->
+
+### ready
+
+Lists the open PRs you can merge now, in the order to merge them, and says why each other PR is
+left out. Read-only: the loop never merges.
+
+A PR is listed when it is approved at its head, that approval is not stale (#473), the required
+checks are green, GitHub reports it mergeable, and nothing holds it (draft, open gate failure,
+human-paths hold, escalation, issue-fix hold, same-head retarget hold). Anything unreadable
+excludes the PR and says so. A stacked PR (based on another PR's branch) comes after its parent
+and is excluded until the parent is ready. PRs changing the same files are listed one after
+another, lowest number first, with a note to re-check the later ones.
+
+With no `required_checks` set, every reported check gates. Branch protection is not read; a
+protection rule GitHub reports as `blocked` excludes the PR. The optional "notice when the set
+changes" is not implemented.
+
+```bash
+hermes dk ready --loop "<loop-id>"
+```
+
+<!-- flags:ready -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
 <!-- /flags -->
 
 ### review

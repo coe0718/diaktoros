@@ -3945,6 +3945,57 @@ def cmd_explain(args) -> int:
     return 0
 
 
+def cmd_ready(args) -> int:
+    """The open PRs that are safe to merge, in merge order, and why each other PR is left out (#479).
+
+    Read-only: it reads GitHub and the loop's state files and writes neither; it never merges.
+    Exit 2 only when the question cannot be asked: an unknown loop, a refused loop file, or several
+    loops and no ``--loop``. A listing GitHub would not give is printed as an answer (unknown).
+    """
+    from . import ready as ready_mod
+    from . import state as state_mod
+
+    if args.loop:
+        try:
+            loops = [config.load_id(args.loop)]
+        except config.ConfigError as exc:
+            print(f"no such loop: {exc}")
+            return 2
+    else:
+        loops, refused = config.readable_loops()
+        for loop_id, reason in refused:
+            print(f"skipping {loop_id}.json: {reason}")
+        names = [loop["id"] for loop in loops] + [loop_id for loop_id, _ in refused]
+        if len(names) > 1:
+            print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
+            return 2
+        if refused:
+            return 2
+        if not loops:
+            print(f"no loops configured in {config.config_dir()}")
+            return 2
+    for loop in loops:
+        st = state_mod.state_for(loop)
+        queue, excluded, error = ready_mod.collect(loop, st)
+        print()
+        print(f"[{loop['id']}] {loop['repo']} — ready to merge (read-only; the loop never merges)")
+        if error:
+            print(f"  unknown: the open PR list could not be read ({error})")
+            continue
+        if not queue:
+            print("  ready:      none")
+        for index, entry in enumerate(queue, 1):
+            after = f" (after {', '.join(entry['after'])})" if entry["after"] else ""
+            print(f"  {index}. #{entry['number']}{after} {entry['title']}")
+            if entry["note"]:
+                print(f"       {entry['note']}")
+        for entry in excluded:
+            print(f"  not ready: #{entry['number']} {entry['title']}")
+            for why in entry["why"]:
+                print(f"       - {why}")
+    return 0
+
+
 def _move_watchdog_job(*, dry_run: bool) -> list[str]:
     """``migrate`` (#425 stage 4): the shared watchdog job and its shim take the new name.
 
@@ -5531,6 +5582,11 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         explain.add_argument("--loop", help="loop id (default: the only configured loop)")
         explain.add_argument("--pr", type=int, required=True, help="pull request number to explain")
         explain.set_defaults(func=cmd_explain)
+
+        ready = sub.add_parser("ready", help="List the open PRs that are safe to merge, in merge "
+                                             "order, and why the others are not (read-only)")
+        ready.add_argument("--loop", help="loop id (default: the only configured loop)")
+        ready.set_defaults(func=cmd_ready)
 
         tracer = sub.add_parser("trace", help="Dry-run one webhook through its gate: why it would "
                                               "(or would not) start a run")
