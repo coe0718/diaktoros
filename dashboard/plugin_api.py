@@ -1,6 +1,7 @@
-"""Backend routes for the Desktop Diaktoros page (#369), mounted by Hermes at
-``/api/plugins/diaktoros/``. Read-only: every route reads the loop config and the run
-ledger, and none writes, calls GitHub or reads a token. The logic is ``diaktoros.desktop_api``.
+"""Backend routes for the Desktop Diaktoros page (#369, #630), mounted by Hermes at
+``/api/plugins/diaktoros/``. Read-only: every route reads the loop config, the run ledger and
+(``/health``) the installation's own files, and none writes, calls GitHub or reads a token.
+The logic is ``diaktoros.desktop_api``.
 """
 from __future__ import annotations
 
@@ -40,3 +41,13 @@ def stats(loop: str | None = None, since: str = "7d"):
 @router.get("/now")
 def now(loop: str | None = None):
     return _answer(desktop_api.now_view, loop)
+
+
+@router.get("/pr")
+def pr(pr: int, loop: str | None = None):
+    return _answer(desktop_api.pr_view, loop, pr)
+
+
+@router.get("/health")
+def health(loop: str | None = None):
+    return _answer(desktop_api.health_view, loop)

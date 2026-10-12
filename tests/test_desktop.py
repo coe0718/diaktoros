@@ -16,12 +16,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from diaktoros import config, desktop_api, ledger, stats  # noqa: E402
+from diaktoros import config, desktop_api, ledger, run_supervisor, stats  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 REPO = "acme/widgets"
@@ -100,6 +101,142 @@ class Api(unittest.TestCase):
             desktop_api.stats_view("widgets", "1y")
 
 
+class Pr(unittest.TestCase):
+    """One PR's record: the host's own next-step line, what the ledger recorded, and — the
+    promise the whole page rests on — a run's error text never reaching the view."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        self.addCleanup(temp.cleanup)
+        self.db = pathlib.Path(temp.name) / "runs.sqlite"
+        self.sup = Supervisor(self.db)
+        self.n = 0
+        self.loops = [{"id": "widgets", "repo": REPO, "cap": 3}]
+
+    def patch_all(self):
+        return mock.patch.object(config, "readable_loops", return_value=(self.loops, [])), \
+            mock.patch.object(run_supervisor, "production_ledger", return_value=self.db)
+
+    def row(self, state, error=None, seat="reviewer", pr=626, head=None, retry_at=None):
+        self.n += 1
+        # The ledger's own unique key is (repo, pr, head, seat, turn_key), so rows for one PR
+        # need their own heads — that is what a turn per head means.
+        head = head or chr(ord("a") + self.n) * 40
+        with mock.patch.object(self.sup, "_spawn"):
+            self.sup.enqueue(f"d{self.n}", REPO, pr, head, seat)
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state=?, error=?, updated=?, retry_at=? WHERE delivery=?",
+                        (state, error, time.time(), retry_at, f"d{self.n}"))
+        return f"d{self.n}"
+
+    def test_the_next_step_is_the_host_line_and_a_runs_error_text_never_appears(self):
+        self.row("waiting", "held: waiting on a review window")      # host-written reason
+        self.row("waiting", SECRET)                                  # retry wait, error not shown
+        self.row("uncertain", SECRET, seat="fixer")
+        self.row("failed", SECRET)
+        loops, prod = self.patch_all()
+        with loops, prod:
+            view = desktop_api.pr_view("widgets", 626)
+        self.assertEqual(len(view["stuck"]), 4)
+        for stuck in view["stuck"]:
+            self.assertTrue(stuck["next"], stuck)
+            self.assertNotIn("exploded", stuck["next"])
+        self.assertNotIn("exploded", json.dumps(view))
+        self.assertEqual([t["state"] for t in view["turns"]],
+                         ["waiting", "waiting", "uncertain", "failed"])
+
+    def test_verdicts_are_the_receipts_github_states_and_the_cap_is_the_loops(self):
+        # One receipt per run — its primary key is run_id — so one run per verdict. The runs go
+        # in first: a single write transaction cannot wait on itself.
+        deliveries = [self.row("succeeded") for _ in range(3)]
+        with ledger.connect(self.db) as con:
+            ids = {row[1]: (row[0], row[2])
+                   for row in con.execute("SELECT id, delivery, head FROM runs")}
+            for verdict, delivery in zip(("APPROVED", "CHANGES_REQUESTED", "APPROVED"), deliveries):
+                con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,"
+                            "review_id,verdict,created) VALUES(?,?,?,?,?,?,?)",
+                            (ids[delivery][0], "confirmed", "g1", 42, self.n, verdict, time.time()))
+            run_id, head = ids[deliveries[0]]
+            con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,created,"
+                        "updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (run_id, REPO, 626, head, "t1", "REJECT", "no", time.time(), time.time()))
+        loops, prod = self.patch_all()
+        with loops, prod:
+            view = desktop_api.pr_view("widgets", 626)
+        self.assertEqual(view["verdicts"], {"APPROVED": 2, "CHANGES_REQUESTED": 1})
+        self.assertEqual(view["cap"], 3)
+        self.assertEqual([r["verdict"] for r in view["rulings"]], ["REJECT"])
+        self.assertEqual(view["rulings"][0]["head"], head[:7])
+
+    def test_a_bad_pr_number_and_an_unknown_loop_are_refused(self):
+        loops, prod = self.patch_all()
+        with loops, prod:
+            for bad in (0, -1, "626", 3.5, True):
+                with self.subTest(bad), self.assertRaises(desktop_api.BadRequest):
+                    desktop_api.pr_view("widgets", bad)
+            with self.assertRaises(desktop_api.NotFound):
+                desktop_api.pr_view("nope", 626)
+
+    def test_no_ledger_is_an_empty_record_not_an_error(self):
+        loops, prod = self.patch_all()
+        with loops, mock.patch.object(run_supervisor, "production_ledger",
+                                      return_value=self.db.with_name("missing.sqlite")):
+            view = desktop_api.pr_view("widgets", 626)
+        self.assertEqual(view["turns"], [])
+        self.assertEqual(view["stuck"], [])
+        self.assertEqual(view["verdicts"], {})
+
+    def test_the_pr_view_creates_no_files_of_its_own(self):
+        # The reader policy this view uses: a ledger with no live WAL is opened immutable, which
+        # creates neither -wal nor -shm. The stats views (mode=ro) may leave a -shm behind —
+        # SQLite's own reader mechanics — so this asserts the new view, not the whole page.
+        self.row("waiting", "held: a reason")
+        before = sorted(p.name for p in self.db.parent.iterdir())
+        loops, prod = self.patch_all()
+        with loops, prod:
+            desktop_api.pr_view("widgets", 626)
+        self.assertEqual(sorted(p.name for p in self.db.parent.iterdir()), before)
+
+    def test_both_views_leave_the_ledgers_records_untouched(self):
+        self.row("waiting", "held: a reason")
+
+        def snapshot():
+            with ledger.connect(self.db) as con:
+                return (con.execute("SELECT COUNT(*) FROM runs").fetchone()[0],
+                        con.execute("SELECT MAX(updated) FROM runs").fetchone()[0],
+                        con.execute("SELECT COUNT(*) FROM ledger_events").fetchone()[0])
+
+        before = snapshot()
+        loops, prod = self.patch_all()
+        with loops, prod:
+            desktop_api.pr_view("widgets", 626)
+            desktop_api.now_view("widgets")
+        self.assertEqual(snapshot(), before)
+
+
+class Health(unittest.TestCase):
+    def loops(self, found):
+        return mock.patch.object(config, "readable_loops", return_value=(found, []))
+
+    def test_the_checks_are_the_doctors_own_and_offline(self):
+        checks = [desktop_api.doctor.Check("config", "verified", "ok", ""),
+                  desktop_api.doctor.Check("token:x", "mismatch", "missing", "create it"),
+                  desktop_api.doctor.Check("gateway", "unknown", "not probed (--offline)", "")]
+        with self.loops([{"id": "widgets", "repo": REPO}]), \
+             mock.patch.object(desktop_api.doctor, "check_loop", return_value=checks) as called:
+            view = desktop_api.health_view("widgets")
+        self.assertIs(called.call_args.kwargs["offline"], True)
+        self.assertEqual(view["counts"], {"verified": 1, "mismatch": 1, "unknown": 1})
+        self.assertEqual(view["checks"][1], {"name": "token:x", "status": "mismatch",
+                                             "detail": "missing", "fix": "create it",
+                                             "paused": False})
+
+    def test_an_unknown_loop_is_refused(self):
+        with self.loops([{"id": "widgets", "repo": REPO}]), \
+             self.assertRaises(desktop_api.NotFound):
+            desktop_api.health_view("nope")
+
+
 @unittest.skipUnless(importlib.util.find_spec("fastapi"), "fastapi is not installed here")
 class Routes(unittest.TestCase):
     def setUp(self):
@@ -111,10 +248,25 @@ class Routes(unittest.TestCase):
         from fastapi import HTTPException
         methods = {m for route in self.api.router.routes for m in route.methods}
         self.assertEqual(methods, {"GET"})
+        paths = {route.path for route in self.api.router.routes}
+        self.assertEqual(paths, {"/loops", "/stats", "/now", "/pr", "/health"})
         with mock.patch.object(desktop_api, "now_view", side_effect=desktop_api.NotFound("no")), \
              self.assertRaises(HTTPException) as caught:
             self.api.now("x")
         self.assertEqual(caught.exception.status_code, 404)
+        with mock.patch.object(desktop_api, "pr_view",
+                               side_effect=desktop_api.BadRequest("pr must be positive")), \
+             self.assertRaises(HTTPException) as caught:
+            self.api.pr(0)
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_the_pr_route_passes_the_number_and_the_health_route_the_loop(self):
+        with mock.patch.object(desktop_api, "pr_view", return_value={"ok": 1}) as pr_view:
+            self.assertEqual(self.api.pr(626, "widgets"), {"ok": 1})
+        self.assertEqual(pr_view.call_args.args, ("widgets", 626))
+        with mock.patch.object(desktop_api, "health_view", return_value={"ok": 1}) as health_view:
+            self.assertEqual(self.api.health("widgets"), {"ok": 1})
+        self.assertEqual(health_view.call_args.args, ("widgets",))
 
 
 class Package(unittest.TestCase):
