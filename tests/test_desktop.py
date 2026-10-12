@@ -245,14 +245,19 @@ class Health(unittest.TestCase):
         self.assertIs(view["offline"], False)
 
     def test_the_probe_is_refused_off_this_machine_before_it_reads_anything(self):
+        # Presence is the signal, not the value: an empty header came from a proxy just as much
+        # as a filled one, and this is the case the first version of the guard let through.
+        proxied = ({"x-forwarded-for": "203.0.113.9"}, {"x-forwarded-for": ""},
+                   {"forwarded": "for=203.0.113.9"}, {"x-real-ip": "203.0.113.9"},
+                   {"x-forwarded-host": "hermes.example"})
+        cases = [("10.0.0.5", None), (None, {"x-forwarded-for": "203.0.113.9"})]
+        cases += [("127.0.0.1", headers) for headers in proxied]      # loopback, but proxied
         with self.loops([{"id": "widgets", "repo": REPO}]), \
              mock.patch.object(desktop_api.doctor, "check_loop") as called:
-            for host, forwarded in (("10.0.0.5", None),           # a remote peer
-                                    ("127.0.0.1", "203.0.113.9"),  # a proxy in front, wherever it runs
-                                    (None, "203.0.113.9")):
-                with self.subTest(host=host, forwarded=forwarded), \
+            for host, headers in cases:
+                with self.subTest(host=host, headers=headers), \
                      self.assertRaises(desktop_api.Forbidden):
-                    desktop_api.health_view("widgets", True, host, forwarded)
+                    desktop_api.health_view("widgets", True, host, headers)
         called.assert_not_called()                  # refused before a token is opened
         # The offline view reads no credential, so it answers whoever asks.
         with self.loops([{"id": "widgets", "repo": REPO}]), \
@@ -261,9 +266,11 @@ class Health(unittest.TestCase):
 
     def test_probe_is_local_allows_a_local_peer_and_nothing_proxied(self):
         for host in ("127.0.0.1", "::1", "localhost", None, ""):
-            self.assertTrue(desktop_api.probe_is_local(host, None), host)
+            for headers in (None, {}):              # no forwarding header at all
+                self.assertTrue(desktop_api.probe_is_local(host, headers), (host, headers))
         self.assertFalse(desktop_api.probe_is_local("10.0.0.5", None))
-        self.assertFalse(desktop_api.probe_is_local("127.0.0.1", "203.0.113.9"))
+        for headers in ({"x-forwarded-for": "203.0.113.9"}, {"x-forwarded-for": ""}):
+            self.assertFalse(desktop_api.probe_is_local("127.0.0.1", headers), headers)
 
 
 @unittest.skipUnless(importlib.util.find_spec("fastapi"), "fastapi is not installed here")
@@ -273,9 +280,9 @@ class Routes(unittest.TestCase):
         self.api = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.api)
 
-    def request(self, host="127.0.0.1", forwarded=None):
+    def request(self, host="127.0.0.1", headers=None):
         return types.SimpleNamespace(client=types.SimpleNamespace(host=host),
-                                     headers={"x-forwarded-for": forwarded} if forwarded else {})
+                                     headers=dict(headers or {}))
 
     def test_only_reads_and_maps_errors(self):
         from fastapi import HTTPException
@@ -304,10 +311,15 @@ class Routes(unittest.TestCase):
         self.assertEqual(pr_view.call_args.args, ("widgets", 626))
         with mock.patch.object(desktop_api, "health_view", return_value={"ok": 1}) as health_view:
             self.assertEqual(self.api.health(self.request(), "widgets", True), {"ok": 1})
-        self.assertEqual(health_view.call_args.args, ("widgets", True, "127.0.0.1", None))
+        self.assertEqual(health_view.call_args.args, ("widgets", True, "127.0.0.1", {}))
         with mock.patch.object(desktop_api, "health_view", return_value={"ok": 1}) as health_view:
-            self.api.health(self.request("10.0.0.5", "203.0.113.9"))
-        self.assertEqual(health_view.call_args.args, (None, False, "10.0.0.5", "203.0.113.9"))
+            self.api.health(self.request("10.0.0.5", {"x-forwarded-for": "203.0.113.9"}))
+        self.assertEqual(health_view.call_args.args,
+                         (None, False, "10.0.0.5", {"x-forwarded-for": "203.0.113.9"}))
+        # The whole header mapping goes down: an empty value is still a forwarding header.
+        with mock.patch.object(desktop_api, "health_view", return_value={"ok": 1}) as health_view:
+            self.api.health(self.request("127.0.0.1", {"x-forwarded-for": ""}))
+        self.assertEqual(health_view.call_args.args, (None, False, "127.0.0.1", {"x-forwarded-for": ""}))
 
 
 class Package(unittest.TestCase):

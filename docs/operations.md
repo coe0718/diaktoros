@@ -679,5 +679,6 @@ gateway's own auth) has five GET routes: `loops`, `stats`, `now`, `pr` and `heal
 loop's config, the run ledger and — for `health` — the installation's own files, and nothing writes.
 `health?probe=1` is the one route that reads a credential: the loop's own tokens, to read GitHub for
 the hook, expiry and scope checks the offline pass leaves unprobed. It is refused unless the caller
-is on this machine — a non-local peer, or any forwarding header at all, gets 403 — because the
-dashboard is the surface Caddy exposes off-host. GitHub-side numbers stay with `stats --github`.
+is on this machine — a non-loopback peer, or any forwarding header at all (`Forwarded`,
+`X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`; present is what counts, so an empty one refuses
+too) gets 403 — because the dashboard is the surface Caddy exposes off-host. GitHub-side numbers stay with `stats --github`.

@@ -32,16 +32,19 @@ class Forbidden(PermissionError):
 
 
 # The probe reads a credential and calls GitHub, so it answers only a caller on this machine.
-# The dashboard server is the one surface Caddy exposes off-host, and any forwarding hop at all
-# means the peer is a proxy rather than a local process.
+# The dashboard server is the one surface Caddy exposes off-host. A forwarding header of ANY kind
+# means a proxy is in the path even when the peer looks local (a same-host nginx, a tunnel), and
+# presence is the signal, not the value: a header that is present but empty was still set by
+# something in front of us (#648 review, F1).
 LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
+FORWARDING_HEADERS = ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip")
 
 
-def probe_is_local(client_host: str | None, forwarded_for: str | None) -> bool:
-    """Whether this caller may run the credential-reading probe: a local peer and no proxy in
-    front of it. An empty client_host (an in-process call) counts as local; a forwarding header
-    never does."""
-    if forwarded_for:
+def probe_is_local(client_host: str | None, headers=None) -> bool:
+    """Whether this caller may run the credential-reading probe: a local peer, and no forwarding
+    header of any kind. An empty client_host (an in-process call) counts as local; a header that
+    is present at all — even an empty one — does not."""
+    if headers is not None and any(name in headers for name in FORWARDING_HEADERS):
         return False
     return not client_host or client_host in LOCAL_HOSTS
 
@@ -79,7 +82,7 @@ def now_view(loop_id: str | None) -> dict:
 
 
 def health_view(loop_id: str | None, probe: bool = False, client_host: str | None = None,
-                forwarded_for: str | None = None) -> dict:
+                headers=None) -> dict:
     """``doctor``'s checks for one loop, read-only.
 
     Offline by default: every check that would need the network — the gateway probe, the hooks,
@@ -93,7 +96,7 @@ def health_view(loop_id: str | None, probe: bool = False, client_host: str | Non
     every refresh.
     """
     loop = _loop(loop_id)
-    if probe and not probe_is_local(client_host, forwarded_for):
+    if probe and not probe_is_local(client_host, headers):
         raise Forbidden("the probe is local-only: it reads the loop's tokens")
     checks = [{"name": check.name, "status": check.status, "detail": check.detail,
                "fix": check.fix, "paused": check.paused}

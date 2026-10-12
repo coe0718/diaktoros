@@ -53,5 +53,7 @@ def pr(pr: int, loop: str | None = None):
 @router.get("/health")
 def health(request: Request, loop: str | None = None, probe: bool = False):
     client = request.client
+    # The whole header mapping goes down, not one value: presence is what refuses, and an empty
+    # X-Forwarded-For is still a forwarding header (#648 review, F1).
     return _answer(desktop_api.health_view, loop, probe,
-                   client.host if client else None, request.headers.get("x-forwarded-for"))
+                   client.host if client else None, request.headers)
