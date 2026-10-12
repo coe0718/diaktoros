@@ -17,6 +17,26 @@ HEAD = "a" * 40
 
 
 class ObserverTierTests(unittest.TestCase):
+    def test_native_cleanup_notice_is_immediate_has_no_pr_and_is_deduplicated(self):
+        self.loop['observer'].update(digest_min=30, urgent_route='feed-urgent')
+        self.register(urgent=True)
+        message = 'native turns paused: 4 images awaiting cleanup, oldest 2 min'
+        with patch.object(routes, 'fire', return_value=True) as fire:
+            self.assertTrue(observer.notify(self.loop, self.state, 'held', None,
+                                            identity='pool:transition', outcome=message))
+            self.assertFalse(observer.notify(self.loop, self.state, 'held', None,
+                                             identity='pool:transition', outcome=message))
+            self.assertTrue(observer.notify(self.loop, self.state, 'held', None,
+                                            identity='pool:resumed', outcome='native turns resumed: cleanup admission recovered'))
+        self.assertEqual(fire.call_count, 2)
+        self.assertEqual(fire.call_args.args[0], 'feed-urgent')
+        block = fire.call_args.args[2]['_observer']
+        self.assertIsNone(block['pr'])
+        self.assertEqual(block['url'], 'https://github.com/owner/feed')
+        self.assertIn('native storage', block['message'])
+        self.assertIn('native turns resumed', block['message'])
+        self.assertNotIn('#None', block['message'])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

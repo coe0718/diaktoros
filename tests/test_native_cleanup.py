@@ -17,6 +17,43 @@ from diaktoros import native_cleanup, native_lifecycle, native_recovery, native_
 
 
 class CleanupPoolTests(unittest.TestCase):
+    def test_observer_delivery_is_claimed_before_send_and_failure_is_not_replayed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pool = self.pool(directory, max_pending=1)
+            w = self.workspace(pool)
+            with self.fail_eject():
+                w._cleanup()
+            with self.assertRaises(native_cleanup.AdmissionRefused):
+                pool.prepare(native_storage.Workspace(64, cleanup_manager=pool))
+            def send(identity, message):
+                import json
+                record = json.loads((pool.root/native_recovery.JOURNAL).read_text())
+                self.assertEqual(next(n['state'] for n in record['notices'] if n['id']==identity), 'uncertain')
+                self.assertIn('native turns paused', message)
+                raise RuntimeError('observer acknowledgement lost')
+            with mock.patch.object(native_recovery, 'recover', return_value={'status':'pending'}):
+                result = pool.sweep(notify_record=send)
+                again = mock.Mock()
+                pool.sweep(notify_record=again)
+            again.assert_not_called()
+            self.assertEqual(result['notice_delivery_uncertain'], 1)
+            detail = native_cleanup.ledger_status(Path(directory)/'ledger.sqlite')
+            self.assertIn('observer acknowledgement lost', detail['detail'])
+            self.assertEqual(detail['uncertain_notices'], 1)
+
+    def test_cleanup_observer_shares_destination_once_and_respects_muted_feeds(self):
+        from diaktoros import config, observer, state
+        loops = [{'id':name, 'repo':'owner/'+name, 'host':'https://gateway.example',
+                  'observer':{'profile':'default', 'route':'shared'}} for name in ('one','two')]
+        loops.append({**loops[0], 'id':'muted', 'observer':{'route':'other','mute':True}})
+        with mock.patch.object(config, 'all_loops', return_value=loops), \
+                mock.patch.object(state, 'state_for', return_value=mock.sentinel.state), \
+                mock.patch.object(observer, 'notify', return_value=True) as notify:
+            native_cleanup.observer_notice(Path('/private/pool'), 'transition-id', 'native turns resumed')
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.args[2:], ('held', None))
+        self.assertTrue(notify.call_args.kwargs['identity'].endswith(':transition-id'))
+
     def test_worker_has_its_own_timeout_when_parent_no_longer_enforces_budget(self):
         code = native_cleanup._SWEEP_WORKER_CODE.replace('value = Manager',
                                                         'import time; time.sleep(60)\nvalue = Manager')

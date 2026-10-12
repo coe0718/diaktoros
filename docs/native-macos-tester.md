@@ -117,6 +117,15 @@ finishes, since it supplies read-only runtime inputs.
 
 ## Remaining tester stages
 
+The cleanup worker now sends pause/resume transitions to an existing configured
+observer as immediate `held` events, using the urgent route when configured.
+Messages say `native storage`, contain no invented PR number and link to the
+repository. Existing mute/event filters apply; with no observer, notices stay on
+the console. The isolated fixture tests do not configure or send live chat notices.
+For the later live trial, verify both a pause and its recovery reach the selected
+route once. Failed or interrupted delivery stays uncertain in doctor/explain;
+reconcile it with the observer receipt before attempting a manual resend.
+
 A live provider/workspace workload, observer pause/resume delivery, physical
 reboot with pending images and loss of all completion observers remain gates.
 The normal plugin installer and doctor still require Linux; they are not the

@@ -411,6 +411,8 @@ def summarize(loop: dict, event: str, number, head: str, *, outcome: str = "",
     decide whether to look, and the link to look at. Anything longer belongs on the PR.
     """
     emoji = EMOJI.get(event, "•")
+    if number is None:
+        return f"{emoji} [{loop.get('id')}] native storage — {outcome}"
     # An issue has no head of its own: the notice names the issue alone.
     at = "" if issue else f" `{(head or '')[:7]}`"
     parts = [f"{emoji} [{loop.get('id')}] #{number}{at} {LABEL.get(event, event)}"]
@@ -427,7 +429,7 @@ def summarize(loop: dict, event: str, number, head: str, *, outcome: str = "",
 
 def render(loop: dict, event: str, number, head: str, **fields) -> str:
     """The full notice: the summary, then the direct PR link on its own line."""
-    return f"{summarize(loop, event, number, head, **fields)}\n{gh.pr_url(loop, number)}"
+    return f"{summarize(loop, event, number, head, **fields)}\n{link(loop, number)}"
 
 
 # How a transition reads inside a digest line: short, in order, outcome only where it matters.
@@ -521,6 +523,8 @@ def verified_base_sha(loop: dict, pr: object) -> str:
 
 def link(loop: dict, number, issue: bool = False) -> str:
     """Where a notice points: the issue for an issue-side notice, else the PR."""
+    if number is None:
+        return 'https://github.com/' + loop['repo']
     return gh.issue_url(loop, number) if issue else gh.pr_url(loop, number)
 
 

@@ -30,7 +30,10 @@ signal.signal(signal.SIGALRM, lambda *_: os.killpg(os.getpgrp(), signal.SIGKILL)
 signal.setitimer(signal.ITIMER_REAL, float(sys.argv[4]) + 2)
 sys.path.insert(0, sys.argv[1])
 from diaktoros.native_cleanup import Manager
-value = Manager(Path(sys.argv[2]), create=False).sweep(notify=lambda message: print(message, flush=True))
+from diaktoros.native_cleanup import observer_notice
+value = Manager(Path(sys.argv[2]), create=False).sweep(
+    notify=lambda message: print(message, flush=True),
+    notify_record=lambda identity, message: observer_notice(Path(sys.argv[2]), identity, message))
 with os.fdopen(int(sys.argv[3]), 'w') as target:
     json.dump(value, target)
     target.flush()
@@ -92,6 +95,31 @@ class AdmissionRefused(RuntimeError):
     pass
 
 
+def observer_notice(pool, identity, message):
+    """Host-wide held-style fact, once per configured observer destination.
+
+    Called only after the pool durably claims its outbox entry. Missing/muted
+    subscriptions keep the console notice; attempted sends require an ack.
+    """
+    from . import config, observer, state
+    destinations = set()
+    for loop in config.all_loops():
+        cfg = loop.get('observer') or {}
+        if not cfg or cfg.get('mute') or not observer.subscribes(loop, 'held'):
+            continue
+        if reason := observer.configured(loop):
+            raise RuntimeError('native cleanup observer configuration: ' + reason)
+        destination = (loop.get('host'), cfg.get('urgent_route') or cfg.get('route'),
+                       json.dumps(observer.route_contract(loop, bool(cfg.get('urgent_route'))), sort_keys=True))
+        if destination in destinations:
+            continue
+        destinations.add(destination)
+        if not observer.notify(loop, state.state_for(loop), 'held', None,
+                               identity=str(Path(pool).resolve()) + ':' + identity,
+                               outcome=message, next_turn=''):
+            raise RuntimeError('native cleanup observer delivery unacknowledged; reconcile before retry')
+
+
 @dataclass(frozen=True)
 class Policy:
     max_pending: int = 4
@@ -149,6 +177,7 @@ class Manager:
                     any(type(n) is not dict or type(n.get('message')) is not str or
                         n.get('state') not in ('pending', 'uncertain', 'delivered') or
                         type(n.get('id')) is not str for n in value['notices']) or
+                    any(type(n.get('delivery_error', '')) is not str for n in value['notices']) or
                     type(value.get('requested_bytes', 0)) is not int or value.get('requested_bytes', 0) < 0):
                 raise ValueError('invalid cleanup state')
             return value
@@ -244,7 +273,7 @@ class Manager:
             workspace._disposal_lease = descriptor
             return receipt
 
-    def sweep(self, *, notify=None):
+    def sweep(self, *, notify=None, notify_record=None):
         """One bounded, rotating retry pass. Never signals saved process IDs."""
         with recovery.Record(self.root, create=True) as lease:
             state = self._load(lease)
@@ -259,7 +288,7 @@ class Manager:
                 results.append(recovery.recover(Path(root), defer=True))
             summary = self._summary(self._inventory(), state.get('requested_bytes', 0))
             self._refresh(lease, state, summary)
-            if notify is not None:
+            if notify is not None or notify_record is not None:
                 for notice in state['notices']:
                     if notice['state'] != 'pending':
                         continue
@@ -268,14 +297,22 @@ class Manager:
                     notice['state'] = 'uncertain'
                     lease.write(state)
                     try:
-                        notify(notice['message'])
-                    except Exception:
+                        if notify is not None:
+                            notify(notice['message'])
+                        if notify_record is not None:
+                            notify_record(notice['id'], notice['message'])
+                    except Exception as error:
+                        notice['delivery_error'] = str(error)[-512:]
+                        lease.write(state)
                         continue
                     notice['state'] = 'delivered'
                     lease.write(state)
                 state['notices'] = [n for n in state['notices'] if n['state'] != 'delivered']
                 lease.write(state)
-            return {'summary': summary, 'results': results}
+            return {'summary': summary, 'results': results,
+                    'notice_delivery_uncertain': sum(n['state'] == 'uncertain' for n in state['notices']),
+                    'last_notice_error': next((n.get('delivery_error', '') for n in reversed(state['notices'])
+                                              if n['state'] == 'uncertain'), '')}
 
     def status(self):
         """Read-only doctor/explain view; never retries detach or writes control state."""
@@ -299,7 +336,10 @@ def ledger_status(db):
         return None
     try:
         summary = Manager(root, create=False).status()
-        return {'paused': summary['paused'], 'detail': describe(summary),
+        notice_error = next((n.get('delivery_error', '') for n in reversed(summary['notices'])
+                             if n['state'] == 'uncertain'), '')
+        return {'paused': summary['paused'], 'detail': describe(summary) +
+                ('; observer delivery uncertain: ' + notice_error if notice_error else ''),
                 'uncertain_notices': sum(n['state'] == 'uncertain' for n in summary['notices'])}
     except (OSError, RuntimeError) as error:
         return {'paused': True, 'detail': 'native cleanup state unverified: ' + str(error),

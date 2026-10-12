@@ -6,7 +6,8 @@ commands collect evidence without selecting the production native backend.
 The native CI matrix validates that entry point on both chips before a tester
 is asked to use it. `prepare-hermes` and `hermes --prepared` stage and run the
 pinned fake-provider Hermes/Rust vertical using the same commands in CI.
-Observer delivery and a live Hermes workload remain separate acceptance work.
+Cleanup observer delivery is wired through the existing held-style route;
+live route validation and a live Hermes workload remain separate acceptance work.
 
 This branch starts issue #256's native alternative with a standalone Seatbelt
 profile builder, a native staged-Hermes launcher and executable boundary probes. It does **not** enable native
@@ -588,7 +589,14 @@ still decide eligibility. Pause/resume transitions are recorded in a bounded
 outbox and emitted once into the watchdog/operator output, with count, reserved
 bytes, oldest age and last error. Delivery is claimed before output: interrupted
 or failed delivery remains visible as uncertain and is not blindly replayed.
-The observer chat-route adapter is not wired by this slice.
+The bounded watchdog/CLI worker now delivers pause/resume transitions through
+the configured observer route as immediate `held` events. These host-wide facts
+carry no PR number and link to the repository. Shared authorized destinations
+receive one notice per transition; muted feeds and event filters are respected.
+The pool durably claims before sending. Failed/unacknowledged sends remain
+uncertain without automatic replay, with the last delivery error visible in
+doctor/explain and sweep results. No configured observer means console delivery
+only. Live route delivery still needs the tester's validation.
 
 Doctor and explain read the ledger-adjacent pool without creating files,
 retrying detaches or acknowledging notices. Local validation covers deferred
