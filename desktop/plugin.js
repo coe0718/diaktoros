@@ -65,10 +65,15 @@ function usePr(loop, pr) {
   })
 }
 
-function useHealth(loop) {
+function useHealth(loop, probe) {
+  // The probe reads the loop's own tokens, so it is a different read, not a refresh of this one:
+  // its own cache entry, and it only ever runs because the operator asked for it.
+  const params = []
+  if (loop) params.push('loop=' + encodeURIComponent(loop))
+  if (probe) params.push('probe=1')
   return useQuery({
-    queryKey: [ID, 'health', loop],
-    queryFn: () => call('/health' + (loop ? '?loop=' + encodeURIComponent(loop) : '')),
+    queryKey: [ID, 'health', loop, probe ? 'probe' : 'local'],
+    queryFn: () => call('/health' + (params.length ? '?' + params.join('&') : '')),
     enabled: !!loop,
     refetchOnWindowFocus: false,
     staleTime: HEALTH_STALE_MS
@@ -364,14 +369,21 @@ function otherStates(states) {
 
 function Health({ loop }) {
   const [showAll, setShowAll] = useState(false)
-  const health = useHealth(loop)
+  const [probe, setProbe] = useState(false)
+  const health = useHealth(loop, probe)
   const checks = (health.data && health.data.checks) || []
   const counts = (health.data && health.data.counts) || {}
 
   // The failures first: an install is read for what is wrong with it, not for its 40 verified
-  // lines. "Show all" reaches the rest without hiding that they were checked.
+  // lines. Then what could not be read at all — an unprobed check is not a passing one, and the
+  // offline set is exactly what Probe GitHub is for. "Show all" reaches the rest without hiding
+  // that they were checked.
   const attention = checks.filter(c => c.status === 'mismatch' || c.status === 'absent')
-  const shown = showAll ? checks : attention.length ? attention : []
+  const unprobed = checks.filter(c => c.status === 'unknown')
+  const shown = showAll ? checks : attention.length ? attention : unprobed
+
+  const button = (label, onClick, disabled) =>
+    jsx(Button, { size: 'xs', variant: 'ghost', onClick, disabled, children: label })
 
   return jsx(Section, {
     title: 'Health',
@@ -387,20 +399,12 @@ function Health({ loop }) {
                 jsx(Badge, { size: 'xs', variant: CHECK_TONE[name] || 'muted', children: counts[name] + ' ' + name }, name)
               ),
             jsx('div', { className: 'flex-1' }),
-            jsx(Button, {
-              size: 'xs',
-              variant: 'ghost',
-              onClick: () => health.refetch(),
-              disabled: health.isFetching,
-              children: health.isFetching ? 'Checking…' : 'Re-check'
-            }),
+            health.data && health.data.offline
+              ? button('Probe GitHub', () => setProbe(true), health.isFetching)
+              : null,
+            button(health.isFetching ? 'Checking…' : 'Re-check', () => health.refetch(), health.isFetching),
             checks.length
-              ? jsx(Button, {
-                  size: 'xs',
-                  variant: 'ghost',
-                  onClick: () => setShowAll(!showAll),
-                  children: showAll ? 'Only problems' : 'Show all ' + checks.length
-                })
+              ? button(showAll ? 'Only problems' : 'Show all ' + checks.length, () => setShowAll(!showAll), false)
               : null
           ]
         }),
@@ -418,10 +422,14 @@ function Health({ loop }) {
                     })
             }),
         jsx(Muted, {
-          text:
-            'The installation’s own preflight, read offline: gateway, hooks, token expiry, labels ' +
-            'and rulesets are left unprobed, so nothing here fires a route or a GitHub call. ' +
-            'Run: hermes dk doctor — it includes them.'
+          text: health.data && health.data.offline
+            ? 'The installation’s own preflight, read offline: the gateway, the hooks, token expiry ' +
+              'and scopes, and the labels are left unprobed — nothing here fires a route or a ' +
+              'GitHub call. Probe GitHub reads them with this loop’s own tokens, from this machine ' +
+              'only; hermes dk doctor does the same in a terminal.'
+            : 'Read on demand with this loop’s own tokens: the gateway, every hook with its latest ' +
+              'delivery and decision, token expiry and scopes, and the labels — the same set ' +
+              'hermes dk doctor reads.'
         })
       ]
     })

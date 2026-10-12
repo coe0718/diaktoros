@@ -657,11 +657,13 @@ summary such as `loop: 1 running · 1 held`. The page shows:
   has the GitHub half.
 - **Seat turns** for the last 24 hours, 7 days or 30 days: the run ledger's half of
   [`stats`](commands.md#stats).
-- **Health:** [`doctor`](commands.md#doctor)'s checks for this loop, read **offline**: the gateway
-  probe, hooks, token expiry, labels and rulesets report themselves unprobed rather than reaching
-  out. What is wrong comes first; *Show all N* reaches the verified lines, and *Re-check* re-runs
-  it. It takes a few seconds (it stats profiles, the cron store and the venvs), so it is read on
-  demand rather than with every refresh.
+- **Health:** [`doctor`](commands.md#doctor)'s checks for this loop. It opens **offline**: the
+  gateway probe, the hooks, token expiry and scopes, and the labels report themselves unprobed
+  rather than reaching out. What is broken comes first, then what could not be read — an unprobed
+  check is not a passing one — and only then is there nothing to list. **Probe GitHub** runs the
+  full set with this loop's own tokens, from this machine only (a forwarded or non-local caller is
+  refused); *Re-check* re-runs whichever set is showing, and *Show all N* lists them. Seconds
+  either way (7.8s probed vs 5.1s offline on the live install), so it is read on demand.
 
 The status chip raises a toast when the number of runs waiting on you **rises**. A reload is not
 news, so the first read of a session only records the baseline. Three palette rows (⌘K) open the
@@ -673,6 +675,9 @@ It refreshes every 30–60 seconds. Both halves ship **off**:
 2. **The Desktop half:** turn on **Diaktoros** under **Capabilities → Plugins**.
 
 The backend (`dashboard/plugin_api.py`, mounted at `/api/plugins/diaktoros/` behind the
-gateway's own auth) has five read-only routes: `loops`, `stats`, `now`, `pr` and `health`. They read
-the loop's config, the run ledger and — for `health` — the installation's own files: no GitHub call,
-no token, no write. GitHub-side numbers stay with `stats --github`.
+gateway's own auth) has five GET routes: `loops`, `stats`, `now`, `pr` and `health`. They read the
+loop's config, the run ledger and — for `health` — the installation's own files, and nothing writes.
+`health?probe=1` is the one route that reads a credential: the loop's own tokens, to read GitHub for
+the hook, expiry and scope checks the offline pass leaves unprobed. It is refused unless the caller
+is on this machine — a non-local peer, or any forwarding header at all, gets 403 — because the
+dashboard is the surface Caddy exposes off-host. GitHub-side numbers stay with `stats --github`.

@@ -12,7 +12,7 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:          # Hermes imports this file by path, not as a package
     sys.path.insert(0, str(_ROOT))
 
-from fastapi import APIRouter, HTTPException  # noqa: E402
+from fastapi import APIRouter, HTTPException, Request  # noqa: E402
 
 from diaktoros import desktop_api  # noqa: E402
 
@@ -24,6 +24,8 @@ def _answer(fn, *args):
         return fn(*args)
     except desktop_api.NotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
+    except desktop_api.Forbidden as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
     except desktop_api.BadRequest as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
@@ -49,5 +51,7 @@ def pr(pr: int, loop: str | None = None):
 
 
 @router.get("/health")
-def health(loop: str | None = None):
-    return _answer(desktop_api.health_view, loop)
+def health(request: Request, loop: str | None = None, probe: bool = False):
+    client = request.client
+    return _answer(desktop_api.health_view, loop, probe,
+                   client.host if client else None, request.headers.get("x-forwarded-for"))
