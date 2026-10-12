@@ -224,7 +224,7 @@ def describe(summary):
 
 def ledger_status(db):
     """Optional read-only install view. Absence means this experiment is unused."""
-    root = Path(db).parent / 'native-cleanup'
+    root = Path(db).parent.resolve() / 'native-cleanup'
     if not root.exists() and not root.is_symlink():
         return None
     try:

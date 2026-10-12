@@ -596,6 +596,40 @@ and disposal within five sweeps/five minutes remain required. A sweep bounds
 its number of workspaces; existing disk-command timeouts and watchdog cadence
 still need a wall-clock budget suitable for the five-minute target.
 
+## 200-turn guarded cleanup soak
+
+`native-cleanup-soak.yml` runs 200 real guarded command turns independently on
+Apple Silicon and Intel, after each lane passes the cleanup-pool preconditions.
+Each turn creates a fresh 64 MiB case-sensitive APFS workspace under the opt-in
+pool. The five-way mix covers fsync writes, Python and raw syscall setsid/setpgid
+attempts, double fork, a background build-server-shaped helper with an open
+cache file, and a background daemon with no open workspace file. These are
+controlled Python command fixtures, not 200 Hermes model/tool turns or actual
+language build servers; real Hermes validation remains in the boundary matrix.
+
+The host registers live kernel exit events for the seat and its surviving
+helpers before releasing the parent to exit. Every turn requires all those
+exits, an empty process-group snapshot, the matching drained receipt, and its
+original exit code. Results are fsynced outside the volume before releasing the
+host disposal lease. An injected busy eject on every tenth turn forces queue
+coverage; genuine observed deferrals are counted separately. A fresh Python
+process performs each cleanup sweep. Admission pauses must clear through those
+sweeps; unknown ownership fails the run.
+
+Every eligible pending image must disappear within five total sweeps and five
+minutes of result recording, including initial detach time. Late success is a
+failure, not a passing retry. The last reconciliation requires an empty owned
+workspace inventory. Four local acceptance-accounting checks verify deadline
+and live-exit requirements. The 60-minute CI job and 90-second fresh-worker
+limit bound the probe; they do not replace a production cleanup worker budget.
+No physical reboot or private spawn-action compatibility is claimed.
+
+Artifacts always retain runtime/precondition logs, durable per-turn results,
+structured turn/sweep events, final acceptance counts, cleanup-control and
+ownership receipts, failure traceback, current image attachments and process
+snapshot. Backing images stay on the runner on failure and are not uploaded.
+The soak and boundary workflows preserve in-progress runs when the PR is updated.
+
 ## Dedicated eject forensics
 
 `native-eject-forensics.yml` runs eight independent Mac lanes: ARM and Intel,

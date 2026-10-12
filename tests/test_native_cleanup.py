@@ -224,6 +224,18 @@ class CleanupPoolTests(unittest.TestCase):
                     pool.prepare(native_storage.Workspace(64, cleanup_manager=pool))
                 self.assertEqual(len(list(pool.volumes.iterdir())), 1)
 
+    def test_status_resolves_parent_alias_but_rejects_a_linked_pool_root(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as target:
+            root = Path(directory).resolve()
+            pool = self.pool(directory)
+            pool.sweep()
+            alias = Path(target).resolve() / 'parent-alias'
+            alias.symlink_to(root, target_is_directory=True)
+            self.assertFalse(native_cleanup.ledger_status(alias / 'ledger.sqlite')['paused'])
+            linked = Path(target).resolve() / 'native-cleanup'
+            linked.symlink_to(pool.root, target_is_directory=True)
+            self.assertTrue(native_cleanup.ledger_status(linked.parent / 'ledger.sqlite')['paused'])
+
     def test_missing_pool_state_refuses_existing_images_instead_of_resetting_policy(self):
         with tempfile.TemporaryDirectory() as directory:
             pool = self.pool(directory, max_pending=1)

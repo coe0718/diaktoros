@@ -42,7 +42,7 @@ permissions:
 
 concurrency:
   group: seatbelt-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   boundary:
