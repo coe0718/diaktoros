@@ -50,6 +50,8 @@ def pinned_host_memory():
 from diaktoros import doctor as _doctor_module  # the same object the harness namespace re-exports
 
 _doctor_module._host_memory = pinned_host_memory
+# #556: /work is not a git checkout here; pin an installed commit (the stub answers "identical").
+_doctor_module.installed_commit = lambda: "a" * 40
 
 
 def loop_file() -> pathlib.Path:
@@ -399,6 +401,8 @@ DOCTOR_FIXTURE_CHECKS = frozenset({
     "token-expiry:rev-coach", "token-expiry:dev-fixer", "token-expiry:read-acct",
     "token-scopes:rev-coach", "token-scopes:dev-fixer", "token-scopes:read-acct",
     "runtime:runtime", "runtime:rust", "runtime:source", "runtime:venv",
+    # #556: the installed plugin against the latest release and main (skipped with --offline).
+    "plugin-version",
 })
 
 
