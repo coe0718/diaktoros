@@ -39,6 +39,19 @@ class Meter(unittest.TestCase):
             self.assertEqual((meter.tokens_in, meter.tokens_out, meter.cost), want)
         self.assertFalse(meter.cost_known)
 
+    def test_reported_zero_cost_is_known(self):
+        for body, stream in ((b'{"usage": {"prompt_tokens": 5, "cost": 0}}', False),
+                             (b'data: {"usage": {"output_tokens": 3, "cost": 0.0}}\n', True)):
+            meter = UsageMeter()
+            meter.feed(body, stream)
+            meter.finish()
+            self.assertTrue(meter.cost_known)
+            self.assertEqual(meter.cost, 0.0)
+        meter = UsageMeter()
+        meter.feed(b'{"usage": {"prompt_tokens": 5}}', False)
+        meter.finish()
+        self.assertFalse(meter.cost_known)
+
     def test_junk_counts_as_nothing(self):
         meter = UsageMeter()
         meter.feed(b'{"usage": {"prompt_tokens": true, "completion_tokens": "9"}}', False)

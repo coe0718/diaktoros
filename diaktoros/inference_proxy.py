@@ -249,13 +249,14 @@ ACTIVITY_LIMIT = 1200
 REPLY_COPY = 64 * 1024
 
 
-def _usage_in(event) -> tuple[int, int, float]:
+def _usage_in(event) -> tuple[int, int, float | None]:
     """(tokens in, tokens out, cost) one reply object reports, wherever its mode puts it: a
     top-level ``usage`` (chat, Responses buffered), ``message.usage`` (Anthropic stream start),
-    ``response.usage`` (Responses stream end). Missing or malformed fields count as 0."""
-    best = [0, 0, 0.0]
+    ``response.usage`` (Responses stream end). Missing or malformed token fields count as 0; cost
+    is None when none is reported, and a reported 0 stays 0.0 (known, free)."""
+    best = [0, 0, None]
     if not isinstance(event, dict):
-        return 0, 0, 0.0
+        return 0, 0, None
     for holder in (event, event.get('message'), event.get('response')):
         usage = holder.get('usage') if isinstance(holder, dict) else None
         if not isinstance(usage, dict):
@@ -267,7 +268,8 @@ def _usage_in(event) -> tuple[int, int, float]:
                 if isinstance(value, int) and not isinstance(value, bool) and value > best[slot]:
                     best[slot] = value
         cost = usage.get('cost')
-        if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > best[2]:
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0 \
+                and (best[2] is None or cost > best[2]):
             best[2] = float(cost)
     return best[0], best[1], best[2]
 
@@ -313,7 +315,7 @@ class UsageMeter:
         t_in, t_out, cost = _usage_in(event)
         self.tokens_in = max(self.tokens_in, t_in)
         self.tokens_out = max(self.tokens_out, t_out)
-        if cost > 0:
+        if cost is not None:
             self.cost, self.cost_known = max(self.cost, cost), True
 
     def finish(self) -> None:
