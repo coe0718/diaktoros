@@ -174,12 +174,17 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             checkout_writable: bool = True,
             dependency_caches: dict[str, Path] | None = None,
             review_dir: Path | None = None,
-            etc_dir: Path | None = None) -> list[str]:
+            etc_dir: Path | None = None,
+            node: Path | None = None) -> list[str]:
     """Build an allowlisted mount namespace for the *entire* process tree.
 
     code must be a separately staged, audited, credentialless source snapshot;
     none of these directories may be the user's actual home or source checkout.
     There is deliberately no caller-selectable arbitrary host bind.
+
+    ``node`` is the trusted host's own detected Node install root (``runtime_detect.node_root``),
+    bound read-only at ``/opt/node`` with ``/opt/node/bin`` on PATH (#685), the shape of the Rust
+    mount. ``None`` mounts nothing, and a seat then has no ``node``.
 
     A writable ``checkout`` is never bound into the namespace directly: it is staged into a sized
     tmpfs that the seat cannot grow past, and the old, unbounded ``--bind`` of the host filesystem
@@ -187,7 +192,7 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
     """
     if network:
         raise ValueError("host networking is forbidden")
-    for p in (code, venv, runtime, home, checkout, rust, query):
+    for p in (code, venv, runtime, home, checkout, rust, query, *([node] if node else [])):
         if not Path(p).exists():
             raise FileNotFoundError(p)
     if inference_socket_dir is not None:
@@ -267,6 +272,7 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             "--ro-bind", str(venv), "/opt/venv",
             "--ro-bind", str(code), "/opt/code",
             "--ro-bind", str(rust), "/opt/rust",
+            *(["--ro-bind", str(node), NODE_MOUNT] if node else []),
             "--bind", str(home), "/home/agent",
             *checkout_mount,
             *target_mount,
@@ -294,7 +300,8 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             "--setenv", "PYTHONPATH", "/opt/code:/opt/client" if client_code else "/opt/code", "--setenv", "CARGO_HOME", "/tmp/cargo",
             "--setenv", "RUSTUP_HOME", "/tmp/rustup", "--setenv", "CARGO_TARGET_DIR",
             "/work/target" if checkout_writable else "/target",
-            "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH", "/opt/venv/bin:/opt/rust/bin:/usr/bin:/bin",
+            "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH",
+            "/opt/venv/bin:/opt/rust/bin:" + (NODE_MOUNT + "/bin:" if node else "") + "/usr/bin:/bin",
             "--setenv", "GIT_CONFIG_GLOBAL", "/dev/null", "--setenv", "GIT_CONFIG_SYSTEM", "/dev/null",
             "--setenv", "GIT_TERMINAL_PROMPT", "0", "--setenv", "USER", SANDBOX_USER,
             "--setenv", "LOGNAME", SANDBOX_USER, "--setenv", *OFFLINE_ENV, "--chdir", "/work",
@@ -302,6 +309,7 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
 
 
 SANDBOX_USER = "agent"
+NODE_MOUNT = "/opt/node"
 
 
 def write_etc(directory: Path, uid: int | None = None, gid: int | None = None) -> Path:

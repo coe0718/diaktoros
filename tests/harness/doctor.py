@@ -319,6 +319,13 @@ def doctor_runtime_fixture() -> list[pathlib.Path]:
     # #67's ``runtime:rust`` checks for the toolchain's cargo: a Rust toolchain dir, not the
     # Python install root. Give it one so the fixture is a complete, correct installation.
     (rust / "bin" / "cargo").write_text("")
+    # #685's ``runtime:node`` reports the host Node; a complete install has one (the absent case
+    # is a reported skip, pinned in tests/test_node_runtime.py).
+    node = pathlib.Path(os.environ.get("HERMES_REAL_HOME") or pathlib.Path.home()) \
+        / ".hermes" / "node" / "bin" / "node"
+    node.parent.mkdir(parents=True, exist_ok=True)
+    node.write_text("#!/bin/sh\necho v22.0.0\n")
+    node.chmod(0o755)
     runtime = home / "diaktoros-runtime.json"
     runtime.write_text(json.dumps({"source": fake_hermes_source(), "venv": resolver_venv(venv),
                                    "runtime": str(TMP), "rust": str(rust)}))
@@ -400,7 +407,7 @@ DOCTOR_FIXTURE_CHECKS = frozenset({
     # #474: per login with a token file, expiry and scopes.
     "token-expiry:rev-coach", "token-expiry:dev-fixer", "token-expiry:read-acct",
     "token-scopes:rev-coach", "token-scopes:dev-fixer", "token-scopes:read-acct",
-    "runtime:runtime", "runtime:rust", "runtime:source", "runtime:venv",
+    "runtime:runtime", "runtime:rust", "runtime:source", "runtime:venv", "runtime:node",
     # #556: the installed plugin against the latest release and main (skipped with --offline).
     "plugin-version",
 })

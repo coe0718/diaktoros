@@ -473,6 +473,8 @@ The isolated worker requires a private regular host runtime file at `$HERMES_HOM
 | `runtime` | Directory containing both the venv interpreter's literal symlink target and its resolved installation. Detection finds their common installation root, not `/`. This path is bound at its same absolute location in the sandbox. |
 | `rust` | Toolchain directory with `bin/cargo`. Detection prefers rustup's default, then stable/available toolchains, then a system cargo prefix; not the `~/.cargo/bin` rustup proxy. |
 
+Node is not a runtime-file key (#685). The host detects it itself (`~/.hermes/node`, `~/.local/bin/node`, then `node` on PATH; an install under `/usr` is already visible and is not mounted), binds its install root read-only at `/opt/node` and puts `/opt/node/bin` on the seat's PATH, so `node --version` and `node --test <file>` work in a turn. `doctor` (`runtime:node`) and `selftest` report the resolved version. With no Node the mount and PATH entry are absent, `runtime:node` is a reported skip (doctor) or warning (selftest), and JavaScript suites stay unverified. Nothing is downloaded. It takes effect only for turns launched after the host has Node; it is not caller-selectable.
+
 These four keys are mandatory non-empty strings; extra top-level runtime keys are rejected. Path-shape parsing does not prove the installation is usable: detection/selftest check the filesystem and interpreter. Use absolute paths. Unlike GitHub token-path helpers, runtime host paths are not generally tilde-expanded by consumers.
 
 ### Model precedence
