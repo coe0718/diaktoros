@@ -549,6 +549,16 @@ class RunBroker:
                         failing=[*gating.failed, *gating.missing])
             if reason:
                 raise ProtocolError(reason)
+            # #687: a block whose only ground is a test this sandbox could not run, when a
+            # required check ran it at this head (or skipped it too).
+            if verdict == "REQUEST_CHANGES":
+                from . import ci, ci_tests
+                head_ci = ci.read(self._loop, self.scope.head)
+                reason = ci_tests.refusal(
+                    ci_tests.read(self._loop, head_ci, config.required_checks(self._loop),
+                                  self.scope.head), verdict, body)
+                if reason:
+                    raise ProtocolError(reason)
             # Requirements of the issue(s) the PR closes (#511); a PR closing none is unaffected.
             from . import issue_facts
             reason = issue_facts.check(self._loop, self.scope.number, verdict, body)

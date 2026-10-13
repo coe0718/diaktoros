@@ -271,6 +271,13 @@ What to do:
    nothing, write `Not verified: nothing`. The broker refuses a review without the line.
 6. Finish with a 3-5 line summary: verdict, what you verified, what you did not verify.
 
+A test you cannot run because a toolchain is missing, or for a timeout or platform, is looked up
+in the **Per-test results** section (the required checks' unittest lines at this head, when the
+host could read them). `ok` there: it counts as executed, cite the check. Skipped there too, or
+absent: say so under `Not verified:`; that alone is not a block unless the requirement is that it
+runs. "Could not run it here" is never a finding by itself, and the broker refuses a block that
+rests on it for a test CI ran `ok`.
+
 Never approve what you did not verify. If you are uncertain — something you could not verify —
 the verdict is REQUEST_CHANGES, naming exactly what could not be verified, instead of guessing.
 One exception, when what you could not verify is the environment and not the change: when the host's
