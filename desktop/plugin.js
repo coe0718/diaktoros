@@ -256,6 +256,57 @@ function Drawer({ loop, pr, onClose }) {
     .map(name => verdicts[name] + ' ' + name)
     .join(' · ')
 
+  const findings = (d && d.findings) || []
+  const openFindings = findings.filter(item => item.open)
+  const decisions = ((d && d.decisions) || []).slice().reverse()
+
+  const findingsBlock = findings.length
+    ? jsx('div', {
+        className: 'flex flex-col gap-1',
+        children: findings
+          .slice()
+          .sort((a, b) => (b.open ? 1 : 0) - (a.open ? 1 : 0))
+          .map(item =>
+            jsxs('div', {
+              className: 'flex items-start gap-2 border-b border-(--ui-stroke-secondary) py-1.5 last:border-b-0',
+              children: [
+                jsx('span', { className: 'w-8 shrink-0 font-mono text-(--ui-text-quaternary)', children: item.id }),
+                jsx(Badge, {
+                  size: 'xs',
+                  variant: item.open ? 'warn' : 'muted',
+                  children: item.missed && item.open ? 'open (missed)' : item.state
+                }),
+                jsx('span', {
+                  className: 'min-w-0 flex-1 text-xs text-(--ui-text-secondary)',
+                  children: item.text + (item.head ? '  · at ' + item.head : '')
+                })
+              ]
+            }, item.id))
+      })
+    : jsx(Muted, { text: 'The reviewer has raised no numbered findings on this PR.' })
+
+  const decisionsBlock = decisions.length
+    ? decisions.map(decision =>
+        jsxs('div', {
+          className: 'flex items-start gap-2 border-b border-(--ui-stroke-secondary) py-1.5 last:border-b-0',
+          children: [
+            jsx('span', { className: 'w-40 shrink-0 font-mono text-(--ui-text-quaternary)', children: decision.gate }),
+            jsx(Badge, {
+              size: 'xs',
+              variant: decision.decision === 'accepted' ? 'success' : 'muted',
+              children: decision.event + (decision.action ? '/' + decision.action : '')
+            }),
+            jsxs('span', {
+              className: 'min-w-0 flex-1 text-xs text-(--ui-text-secondary)',
+              children: [
+                decision.decision + ': ' + decision.reason,
+                decision.sender ? ' · by ' + decision.sender : ''
+              ]
+            })
+          ]
+        }, decision.gate + decision.event + decision.time))
+    : jsx(Muted, { text: 'No gate saw an event for this PR — the loop never heard of it.' })
+
   const why = stuck.length
     ? jsx('div', {
         className: 'flex flex-col gap-2',
@@ -308,6 +359,11 @@ function Drawer({ loop, pr, onClose }) {
               children: [
                 jsx(Pacing, { pacing: d && d.pacing }),
                 jsx(Section, { title: 'Why it is not moving', children: why }),
+                jsxs(Section, {
+                  title: 'Findings (' + openFindings.length + ' open of ' + findings.length + ')',
+                  children: findingsBlock
+                }),
+                jsx(Section, { title: 'Why the loop did or did not react', children: decisionsBlock }),
                 d && d.breach
                   ? jsx(Muted, {
                       text:

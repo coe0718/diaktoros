@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import time
 
-from . import config, doctor, pacing, run_supervisor, stats
+from . import config, doctor, findings, gate_decisions, pacing, run_supervisor, stats
 
 SINCE_CHOICES = ("24h", "7d", "30d")
 # What the ledger keeps for one PR is its turns; a long-lived PR is bounded here so a single
 # pathological one cannot make the page huge.
 TURNS_MAX = 50
+# How many gate decisions the drawer shows for one PR: the recent trail, not the whole log.
+DECISIONS_MAX = 10
 
 
 class NotFound(LookupError):
@@ -127,7 +129,11 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     repo = loop["repo"]
     view: dict = {"repo": repo, "loop": loop["id"], "pr": pr, "cap": loop.get("cap"),
                   "stuck": [], "turns": [], "verdicts": {}, "rulings": [], "breach": None,
-                  "read_at": time.time()}
+                  "findings": [], "decisions": [], "read_at": time.time()}
+    # The loop's own state files, not the ledger: what the reviewer raised, and why each gate
+    # did or did not act. Both read-only, both local.
+    view["findings"] = _findings(loop, pr)
+    view["decisions"] = _decisions(loop, pr)
     db = run_supervisor.production_ledger()
     con = run_supervisor.read_only_connect(db)
     if con is None:                                 # no ledger: an empty record, not an error
@@ -170,6 +176,43 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     view["breach"] = _breach(loop, pr)
     view["pacing"] = pacing.seats(loop)
     return view
+
+
+def _findings(loop: dict, pr: int) -> list[dict]:
+    """What the reviewer has raised on this PR, across rounds (#475), from the loop's own state
+    file: the id, its state, the text, and the head it was raised at. Read, never written."""
+    from . import state as state_mod
+    try:
+        entry = state_mod.state_for(loop).findings_get(pr)
+    except Exception:                   # a state dir this reader cannot open is not an answer
+        return []
+    found = entry.get("findings") if isinstance(entry, dict) else None
+    if not isinstance(found, dict):
+        return []
+    open_ids = set(findings.open_ids(entry))
+    out = []
+    for fid, item in found.items():
+        if not isinstance(fid, str) or not isinstance(item, dict):
+            continue
+        at = item.get("at")
+        out.append({"id": fid, "state": str(item.get("state") or ""), "open": fid in open_ids,
+                    # The host's own ``findings.lines`` strips the separator the reviewer
+                    # writes after the id, so the same text reads the same in both places.
+                    "text": str(item.get("text") or "").lstrip(" :")[:300],
+                    "head": str(item.get("head") or "")[:7],
+                    "at": float(at) if isinstance(at, (int, float)) else None,
+                    "missed": bool(item.get("missed"))})
+    out.sort(key=lambda item: int(item["id"][1:]) if item["id"][1:].isdigit() else 0)
+    return out
+
+
+def _decisions(loop: dict, pr: int) -> list[dict]:
+    """Why each gate did or did not act on this PR (#209): the gate, the event and action, who
+    sent it, the decision and its reason. Oldest first, as the host writes them."""
+    try:
+        return gate_decisions.for_pr(loop, pr, limit=DECISIONS_MAX)
+    except Exception:                   # unreadable is empty, exactly as the host treats it
+        return []
 
 
 def _breach(loop: dict, pr: int) -> dict | None:

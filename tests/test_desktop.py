@@ -115,7 +115,9 @@ class Pr(unittest.TestCase):
         self.db = pathlib.Path(temp.name) / "runs.sqlite"
         self.sup = Supervisor(self.db)
         self.n = 0
-        self.loops = [{"id": "widgets", "repo": REPO, "cap": 3}]
+        # Its own state dir: findings live in the loop's state files, not the ledger.
+        self.loops = [{"id": "widgets", "repo": REPO, "cap": 3,
+                       "state_dir": str(pathlib.Path(temp.name) / "state")}]
 
     def patch_all(self):
         return mock.patch.object(config, "readable_loops", return_value=(self.loops, [])), \
@@ -171,6 +173,43 @@ class Pr(unittest.TestCase):
         self.assertEqual(view["cap"], 3)
         self.assertEqual([r["verdict"] for r in view["rulings"]], ["REJECT"])
         self.assertEqual(view["rulings"][0]["head"], head[:7])
+
+    def test_findings_come_from_the_loops_own_state_with_the_hosts_open_flag(self):
+        from diaktoros import state as state_mod
+        state_mod.state_for(self.loops[0]).findings_put(626, {"last_head": "a" * 40, "findings": {
+            "F2": {"state": "fixed", "text": ": second", "head": "a" * 40, "missed": False},
+            "F1": {"state": "open", "text": ": the first one", "head": "b" * 40, "missed": True},
+        }})
+        loops, prod = self.patch_all()
+        with loops, prod:
+            view = desktop_api.pr_view("widgets", 626)
+        self.assertEqual([f["id"] for f in view["findings"]], ["F1", "F2"])   # numeric, not lexical
+        self.assertEqual([f["open"] for f in view["findings"]], [True, False])
+        self.assertEqual(view["findings"][0]["text"], "the first one")        # the id separator gone
+        self.assertTrue(view["findings"][0]["missed"])
+        self.assertEqual(view["findings"][0]["head"], "bbbbbbb")
+
+    def test_a_pr_the_reviewer_never_numbered_has_no_findings(self):
+        loops, prod = self.patch_all()
+        with loops, prod:
+            self.assertEqual(desktop_api.pr_view("widgets", 626)["findings"], [])
+
+    def test_gate_decisions_come_from_the_hosts_own_log(self):
+        rows = [{"gate": "gate_reviewer", "event": "pull_request", "action": "opened",
+                 "decision": "accepted", "reason": "reviewer turn enqueued", "number": 626,
+                 "sender": "tuck-coe", "time": "2026-10-12T23:08:55Z", "head": "aaaaaaa"}]
+        loops, prod = self.patch_all()
+        with loops, prod, mock.patch.object(desktop_api.gate_decisions, "for_pr",
+                                            return_value=rows) as for_pr:
+            view = desktop_api.pr_view("widgets", 626)
+        self.assertEqual(view["decisions"], rows)
+        self.assertEqual(for_pr.call_args.args, (self.loops[0], 626))
+
+    def test_an_unreadable_decision_log_is_empty_never_an_error(self):
+        loops, prod = self.patch_all()
+        with loops, prod, mock.patch.object(desktop_api.gate_decisions, "for_pr",
+                                            side_effect=OSError("gone")):
+            self.assertEqual(desktop_api.pr_view("widgets", 626)["decisions"], [])
 
     def test_a_bad_pr_number_and_an_unknown_loop_are_refused(self):
         loops, prod = self.patch_all()
