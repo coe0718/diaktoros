@@ -896,6 +896,10 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
         required = config_mod.required_checks(loop)
         text += ci.section(state, required)
         if seat == 'reviewer':
+            # #687: what the required checks ran at this head, for a test this sandbox cannot run.
+            from . import ci_tests
+            text += ci_tests.section(ci_tests.read(loop, state, required, row['head']))
+        if seat == 'reviewer':
             # #539: commits CI-fix turns pushed unreviewed, so this review checks none weakened
             # a test.
             from . import ci_fix

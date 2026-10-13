@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from diaktoros import ci, gh  # noqa: E402
+from diaktoros import ci, ci_tests, gh  # noqa: E402
 import test_partial_view_no_approve as pv  # noqa: E402
 
 HEAD = pv.HEAD
@@ -244,6 +244,96 @@ class LongNamesTest(unittest.TestCase):
         self.assertEqual(state.failed, [a])
         self.assertNotIn(a, ci.approval_refusal(state))
         self.assertIn("y" * 100 + "...", ci.approval_refusal(state))
+
+
+
+
+LOG_OK = ("test_components_with_sdk_query_fixtures (test_desktop.Surface) ... ok\n"
+          "test_it_parses_as_an_es_module (test_desktop.Surface) ... ok\n"
+          "test_needs_gpu (test_desktop.Surface) ... skipped 'no gpu'\n")
+UNRUN = ("F1: src/lib.rs:1: {} has not been executed in this sandbox (Node is not installed)\n"
+         "Not verified: nothing")
+
+
+class CITestsBroker(pv.Broker):
+    """#687: CI ran a test the reviewer's sandbox could not; the host-read lines count."""
+
+    job_head = HEAD
+    run_repo = pv.REPO
+
+    def setUp(self):
+        super().setUp()
+        self.runs = [run("tests (3.14)", id=11)]
+        self.loop["required_checks"] = ["tests (3.14)"]
+        patch = mock.patch.object(gh, "api", side_effect=self.api)
+        patch.start()
+        self.addCleanup(patch.stop)
+        patch = mock.patch.object(gh, "read_text", side_effect=lambda *a, **k: LOG_OK)
+        patch.start()
+        self.addCleanup(patch.stop)
+        files = mock.patch.object(gh, "pr_files_read", return_value=(
+            [{"filename": "src/lib.rs", "patch": "@@ -1,2 +1,3 @@\n a\n+b\n c"}], ""))
+        files.start()
+        self.addCleanup(files.stop)
+
+    def api(self, loop, path, method="GET", body=None, login=None):
+        if "/check-runs" in path:
+            return {"total_count": len(self.runs), "check_runs": self.runs}
+        if path.endswith("/status"):
+            return {"state": "success", "statuses": []}
+        if path.endswith("/actions/jobs/11"):
+            return {"head_sha": self.job_head, "run_id": 5}
+        if path.endswith("/actions/runs/5"):
+            return {"head_sha": self.job_head, "head_repository": {"full_name": self.run_repo}}
+        return super().api(loop, path, method, body, login)
+
+    def block(self, test):
+        sup, scope = self.ledgered("")
+        server = self.start(scope, require_receipt=True)
+        return self.send(server, "REQUEST_CHANGES", UNRUN.format(test)), server
+
+    def test_a_block_on_a_test_ci_ran_ok_at_the_head_is_refused(self):
+        reply, server = self.block("test_it_parses_as_an_es_module")
+        self.assertFalse(reply["ok"])
+        self.assertIn("counts as executed", reply["error"])
+        self.assertEqual(self.posts, [])
+        self.assertFalse(server.completed)
+
+    def test_a_test_ci_skipped_too_is_not_a_block_by_itself(self):
+        reply, _ = self.block("test_needs_gpu")
+        self.assertFalse(reply["ok"])
+        self.assertIn("Not verified", reply["error"])
+
+    def test_a_test_ci_did_not_list_still_blocks(self):
+        reply, _ = self.block("test_unlisted")
+        self.assertTrue(reply["ok"])
+        self.assertEqual([p["event"] for p in self.posts], ["REQUEST_CHANGES"])
+
+    def test_an_excerpt_from_a_different_head_is_ignored(self):
+        self.job_head = "b" * 40
+        reply, _ = self.block("test_it_parses_as_an_es_module")
+        self.assertTrue(reply["ok"])
+
+    def test_an_excerpt_from_a_fork_is_ignored(self):
+        self.run_repo = "evil/widgets"
+        reply, _ = self.block("test_it_parses_as_an_es_module")
+        self.assertTrue(reply["ok"])
+
+    def test_no_required_checks_reads_nothing(self):
+        self.loop["required_checks"] = []
+        reply, _ = self.block("test_it_parses_as_an_es_module")
+        self.assertTrue(reply["ok"])
+
+
+class CITestsUnit(unittest.TestCase):
+    def test_parse_and_section(self):
+        got = ci_tests.parse("\x1b[0m2026-01-01T00:00:00Z " + LOG_OK)
+        self.assertEqual(got["test_it_parses_as_an_es_module"], "ok")
+        self.assertEqual(got["test_needs_gpu"], "skipped")
+        text = ci_tests.section(got)
+        self.assertIn("test_it_parses_as_an_es_module", text)
+        self.assertIn("skipped in CI (1): test_needs_gpu", text)
+        self.assertEqual(ci_tests.section({}), "")
 
 
 if __name__ == "__main__":
