@@ -9,6 +9,17 @@ const source = await readFile(new URL('../desktop/plugin.js', import.meta.url), 
 // Pinned from real stats.collect with a missing disposable ledger; Python checks equality.
 const noLedgerStats = JSON.parse(await readFile(new URL('./fixtures/desktop_no_ledger_stats.json', import.meta.url), 'utf8'))
 
+// One loop of an /overview read, for synthetic fixtures. needs_you defaults to its uncertain run
+// count, as the host view derives it; an unavailable or failed loop carries no counts.
+function overviewLoop(id, { available = true, error = false, counts = {}, repo = 'fixture/repo' } = {}) {
+  const usable = available && !error
+  return { id, repo, available, error, counts: usable ? counts : {}, needs_you: usable ? counts.uncertain || 0 : 0 }
+}
+
+function overview(...loops) {
+  return { loops, read_at: 1800000000 }
+}
+
 async function harness({ cachedAge = null } = {}) {
   const registrations = []
   const queries = {}
@@ -41,11 +52,14 @@ async function harness({ cachedAge = null } = {}) {
   }
   const emit = event => { for (const fn of cacheListeners) fn(event) }
   const store = new Map()
+  const focusWrites = []
   let response = {}
   const good = data => ({ data, dataUpdatedAt: time, isError: false, isFetching: false,
     isLoading: false, refetch: () => calls.push('refetch') })
   queries.loops = good({ loops: [{ id: 'fixture-loop', repo: 'fixture/repo' }] })
+  queries.focus = good({ loop: '' })
   queries.now = good({ runs: [], counts: {}, pacing: {} })
+  queries.overview = good({ loops: [overviewLoop('fixture-loop')], read_at: time / 1000 })
   queries.stats = good({ turns: {} })
   queries.health = good({ checks: [], counts: {}, offline: true })
   if (cachedAge !== null) cacheRows.push({ queryKey: ['diaktoros', 'now', 'seeded'],
@@ -57,7 +71,14 @@ async function harness({ cachedAge = null } = {}) {
   Object.assign(sdk, {
     PALETTE_AREA: 'palette', ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'nav', STATUSBAR_AREAS: { right: 'status' },
     host: { notify: n => notices.push(n), navigate: p => navigations.push(p) },
-    queryClient: { getQueryCache: () => cache, invalidateQueries: args => calls.push(args) },
+    queryClient: {
+      getQueryCache: () => cache,
+      invalidateQueries: args => calls.push(args),
+      // The focus handoff the chip writes and the page observes; a real cache write notifies
+      // observers, which is what a mounted page re-renders on.
+      setQueryData: (key, data) => { queries[key[1]] = good(data); focusWrites.push(data) },
+      getQueryData: key => (queries[key[1]] && queries[key[1]].data)
+    },
     useQuery: opts => { options[opts.queryKey[1]] = opts; return queries[opts.queryKey[1]] }
   })
   const react = {
@@ -71,7 +92,8 @@ async function harness({ cachedAge = null } = {}) {
     },
     useState: initial => {
       const index = cursor++
-      if (!(index in states)) states[index] = initial
+      // React calls a function initializer; the harness models it so a lazy seed behaves the same.
+      if (!(index in states)) states[index] = typeof initial === 'function' ? initial() : initial
       return [states[index], value => {
         states[index] = typeof value === 'function' ? value(states[index]) : value
         if (mountedId) render(mountedId)
@@ -133,7 +155,14 @@ async function harness({ cachedAge = null } = {}) {
       emit({ type: 'updated', action: { type: 'success' }, query: row })
       return row
     },
+    overviewRead: (data = queries.overview.data, row = cacheRows.find(r => r.queryKey[1] === 'overview')) => {
+      if (!row) { row = { queryKey: ['diaktoros', 'overview'], state: {} }; cacheRows.push(row); emit({ type: 'added', query: row }) }
+      row.state = { data, dataUpdatedAt: time, status: 'success' }
+      emit({ type: 'updated', action: { type: 'success' }, query: row })
+      return row
+    },
     emit, listenerCount: () => cacheListeners.size,
+    focusWrites: () => focusWrites,
     pendingTimers: () => [...timers.values()].filter(timer => timer.at - elapsed === 60000).map(timer => timer.fn),
     dispose: () => { effects.forEach(effect => effect.cleanup?.()); mountedId = null; disposers.forEach(fn => fn()) },
     unmount: () => { effects.forEach(effect => effect.cleanup?.()); mountedId = null },
@@ -228,15 +257,15 @@ test('palette only: forward-clock expiry stays stale after rollback', async () =
   assert.match(h.detail(), /^stale/)
 })
 
-test('shared freshness: palette and hooks agree; queued old timer cannot expire newer read', async () => {
+test('shared freshness: palette and chip agree on the overview read; queued old timer cannot expire newer read', async () => {
   const h = await harness()
-  h.cacheRead()
+  h.overviewRead()
   h.render('status')
   const oldCallbacks = h.pendingTimers()
   assert.equal(oldCallbacks.length, 1)
   h.advance(30000)
-  const row = h.cacheRead(h.queries.now.data)
-  h.queries.now = { ...h.queries.now, ...row.state }
+  const row = h.overviewRead(h.queries.overview.data)
+  h.queries.overview = { ...h.queries.overview, ...row.state }
   h.render('status')
   oldCallbacks.forEach(fn => fn())
   assert.match(h.detail(), /^verified-empty/)
@@ -303,7 +332,7 @@ for (const kind of ['now', 'stats']) {
     h.render('page')
     h.respond({})
     await assert.rejects(h.options[kind].queryFn(), /Invalid/)
-    h.respond(kind === 'now' ? { runs: [], counts: {} } : { turns: {} })
+    h.respond(kind === 'now' ? { runs: [], counts: {}, available: true } : { turns: {} })
     await h.options[kind].queryFn()
     assert.match(h.calls.at(-1), /loop=fixture-loop/)
   })
@@ -336,30 +365,31 @@ test('real missing-ledger stats payload is unavailable, not malformed or verifie
 
 test('chip: loading, unavailable, cached failure, recovery, timestamps and retry', async () => {
   const h = await harness()
-  h.queries.now = h.loading()
+  h.queries.overview = h.loading()
   assert.match(h.text(h.render('status')), /loop: loading/)
-  h.queries.now = h.fail(undefined)
+  h.queries.overview = h.fail(undefined)
   let tree = h.render('status')
   assert.match(h.text(tree), /loop: unavailable/)
   h.buttons(tree).find(n => h.text([n]) === 'Retry').props.onClick()
   assert.ok(h.calls.includes('refetch'))
-  h.queries.now = h.fail({ runs: [], counts: { pending: 2, waiting: 3, uncertain: 4 } })
+  h.queries.overview = h.fail(overview(overviewLoop('fixture-loop', { counts: { pending: 2, waiting: 3, uncertain: 4 } })))
   tree = h.render('status')
   assert.match(h.text(tree), /stale · 2 pending · 3 retry-waiting · 4 need you/)
   assert.match(h.buttons(tree)[0].props.title, /Last good read:.*Backend read failed/)
   assert.doesNotMatch(h.buttons(tree)[0].props.title, /fixture backend offline/)
   assert.equal(h.notices.length, 0)
   assert.equal(h.store.size, 0)
-  h.queries.now = h.good({ runs: [], counts: {} })
+  h.queries.overview = h.good(overview(overviewLoop('fixture-loop')))
   tree = h.render('status')
   assert.match(h.text(tree), /verified-empty · idle/)
   h.buttons(tree)[0].props.onClick()
-  assert.deepEqual(h.navigations, ['/diaktoros'])
+  assert.deepEqual(h.navigations, ['/diaktoros?loop=fixture-loop'])
 })
 
 test('pending and retry-waiting are not idle or verified-empty in page and chip', async () => {
   const h = await harness()
-  h.queries.now = h.good({ runs: [], counts: { pending: 2, waiting: 3 } })
+  h.queries.now = h.good({ runs: [], counts: { pending: 2, waiting: 3 }, available: true })
+  h.queries.overview = h.good(overview(overviewLoop('fixture-loop', { counts: { pending: 2, waiting: 3 } })))
   for (const id of ['page', 'status']) {
     const text = h.text(h.render(id))
     assert.match(text, /2 pending · 3 retry-waiting/)
@@ -401,7 +431,7 @@ test('cached loop discovery failure is visible in page and chip', async () => {
   const h = await harness()
   h.queries.loops = h.fail(h.queries.loops.data)
   for (const id of ['page', 'status']) assert.match(h.text(h.render(id)), /stale/)
-  h.queries.now = h.fail(undefined)
+  h.queries.overview = h.fail(undefined)
   assert.match(h.text(h.render('status')), /unavailable/)
   assert.doesNotMatch(h.text(h.render('status')), /idle/)
 })
@@ -417,7 +447,7 @@ test('changing loop and window selects isolated query keys without ambiguous now
   h.buttons(tree).find(n => h.text([n]) === '30d').props.onClick()
   h.render('page')
   assert.equal(h.options.stats.queryKey[3], '30d')
-  h.respond({ runs: [], counts: {} })
+  h.respond({ runs: [], counts: {}, available: true })
   await h.options.now.queryFn()
   assert.equal(h.calls.at(-1), '/now?loop=fixture%20second')
 })
@@ -426,11 +456,15 @@ test('last-good timestamp is retained through refresh failure, not replaced by e
   const h = await harness()
   const stamp = h.queries.now.dataUpdatedAt - 10000
   h.queries.now.dataUpdatedAt = stamp
+  h.queries.overview.dataUpdatedAt = stamp
   const date = new Date(stamp).toLocaleString()
   assert.ok(h.text(h.render('page')).includes(date))
   h.queries.now.isError = true
   h.queries.now.error = new Error('fixture later failure')
   assert.ok(h.text(h.render('page')).includes(date))
+  assert.ok(h.buttons(h.render('status'))[0].props.title.includes(date))
+  h.queries.overview.isError = true
+  h.queries.overview.error = new Error('fixture later failure')
   assert.ok(h.buttons(h.render('status'))[0].props.title.includes(date))
 })
 
@@ -442,17 +476,22 @@ test('refresh keeps verified data and timestamp while in flight; retry disabled'
   assert.equal(h.buttons(tree).find(n => h.text([n]) === 'Reading…').props.disabled, true)
 })
 
-test('chip notifications only follow successful verified reads', async () => {
+test('chip notifications only follow successful verified reads, keyed per loop', async () => {
   const h = await harness()
-  h.queries.now = h.good({ runs: [], counts: { uncertain: 1 } })
+  h.queries.overview = h.good(overview(overviewLoop('fixture-loop', { counts: { uncertain: 1 } })))
   h.render('status')
   assert.equal(h.notices.length, 0)
-  h.queries.now = h.fail({ runs: [], counts: { uncertain: 3 } })
+  assert.equal(h.store.get('needsYou:fixture-loop'), 1)
+  h.queries.overview = h.fail(overview(overviewLoop('fixture-loop', { counts: { uncertain: 3 } })))
   h.render('status')
-  assert.equal(h.store.get('needsYouCount'), 1)
-  h.queries.now = h.good({ runs: [], counts: { uncertain: 3 } })
+  // A failed read is not news and must not rebaseline the loop either.
+  assert.equal(h.store.get('needsYou:fixture-loop'), 1)
+  assert.equal(h.notices.length, 0)
+  h.queries.overview = h.good(overview(overviewLoop('fixture-loop', { counts: { uncertain: 3 } })))
   h.render('status')
   assert.equal(h.notices.length, 1)
+  assert.match(h.notices[0].message, /3 run\(s\) need you \(fixture-loop\)/)
+  assert.equal(h.store.get('needsYou:fixture-loop'), 3)
 })
 
 for (const id of ['page', 'status']) {
@@ -470,8 +509,9 @@ for (const id of ['page', 'status']) {
     assert.equal(h.timerCount(), 0)
     h.render(id)
     assert.doesNotMatch(h.text(h.tree()), /verified/)
-    h.queries.now = h.good({ runs: [], counts: {} })
+    h.queries.now = h.good({ runs: [], counts: {}, available: true })
     h.queries.loops = h.good(h.queries.loops.data)
+    h.queries.overview = h.good(h.queries.overview.data)
     h.queries.stats = h.good({ turns: {} })
     h.render(id)
     assert.match(h.text(h.tree()), /verified-empty/)
@@ -516,14 +556,14 @@ test('expiry timer re-arms for a new successful timestamp and cleans up on failu
   const h = await harness()
   h.render('status')
   h.advance(30000)
-  h.queries.now = h.good({ runs: [], counts: {} })
+  h.queries.overview = h.good(overview(overviewLoop('fixture-loop')))
   h.render('status')
   assert.equal(h.timerCount(), 2)
   h.advance(30000)
   assert.match(h.text(h.tree()), /verified-empty/)
   h.advance(30000)
   assert.match(h.text(h.tree()), /stale/)
-  h.queries.now = h.fail(undefined)
+  h.queries.overview = h.fail(undefined)
   h.render('status')
   assert.equal(h.timerCount(), 1)
   h.unmount()
@@ -533,22 +573,22 @@ test('expiry timer re-arms for a new successful timestamp and cleans up on failu
 test('sticky expiry resets on a timestamp-only success with structurally shared data', async () => {
   const h = await harness()
   h.render('status')
-  const data = h.queries.now.data
+  const data = h.queries.overview.data
   h.advance(60000, -3600000)
   assert.match(h.text(h.tree()), /stale/)
-  h.queries.now = { ...h.queries.now, isError: true, error: new Error('offline') }
+  h.queries.overview = { ...h.queries.overview, isError: true, error: new Error('offline') }
   h.render('status')
-  h.queries.now = { ...h.queries.now, isError: false }
+  h.queries.overview = { ...h.queries.overview, isError: false }
   h.render('status')
   assert.match(h.text(h.tree()), /stale/)
-  h.queries.now = h.good(data)
+  h.queries.overview = h.good(data)
   h.render('status')
   assert.match(h.text(h.tree()), /verified-empty/)
   h.advance(60000, 0)
   assert.match(h.text(h.tree()), /stale/)
   // A new identity at the same timestamp is a distinct successful read as well.
   h.queries.loops = h.good(h.queries.loops.data)
-  h.queries.now = { ...h.queries.now, data: { runs: [], counts: {} } }
+  h.queries.overview = { ...h.queries.overview, data: overview(overviewLoop('fixture-loop')) }
   h.render('status')
   assert.match(h.text(h.tree()), /verified-empty/)
   h.advance(60000, 0)
@@ -557,23 +597,28 @@ test('sticky expiry resets on a timestamp-only success with structurally shared 
   assert.equal(h.timerCount(), 0)
 })
 
-test('nested now responses reject invalid counts and run rows before caching', async () => {
+test('nested now responses reject invalid counts, run rows and a ledger-absent payload with counts', async () => {
   const h = await harness()
   h.render('page')
   for (const value of [-1, Infinity, NaN, 1.5, '2', null]) {
-    h.respond({ runs: [], counts: { running: value } })
+    h.respond({ runs: [], counts: { running: value }, available: true })
     await assert.rejects(h.options.now.queryFn(), /Invalid now/)
   }
   const row = { pr: 42, seat: 'reviewer', head: 'abcdef0', state: 'waiting', why: 'waiting to retry' }
   for (const run of [null, {}, { ...row, pr: -1 }, { ...row, pr: 1.5 },
     { ...row, seat: null }, { ...row, head: {} }, { ...row, state: 'not-a-state' }, { ...row, why: {} }]) {
-    h.respond({ runs: [run], counts: {} })
+    h.respond({ runs: [run], counts: {}, available: true })
     await assert.rejects(h.options.now.queryFn(), /Invalid now/)
   }
-  h.respond({ runs: [row], counts: { waiting: 1 } })
+  // A ledger that could not be read must not arrive with counts: that would be a manufactured zero.
+  h.respond({ runs: [], counts: { uncertain: 1 }, available: false })
+  await assert.rejects(h.options.now.queryFn(), /Invalid now/)
+  h.respond({ runs: [], counts: {}, available: 'yes' })
+  await assert.rejects(h.options.now.queryFn(), /Invalid now/)
+  h.respond({ runs: [row], counts: { waiting: 1 }, available: true })
   await h.options.now.queryFn()
   for (const pacing of [{ seats: { reviewer: null } }, { seats: [] }, { holds: [null] }, { holds: {} }]) {
-    h.respond({ runs: [], counts: {}, pacing })
+    h.respond({ runs: [], counts: {}, pacing, available: true })
     await assert.rejects(h.options.now.queryFn(), /Invalid now/)
   }
 })
@@ -636,4 +681,182 @@ test('RunRow retains responsive wrapping and full-width narrow reason', async ()
   assert.match(row.props.className, /flex-wrap/)
   const reason = h.flatten([row]).find(node => node.type === 'span' && node.props.children === 'long fixture reason')
   assert.match(reason.props.className, /basis-full.*break-words.*sm:basis-auto.*sm:flex-1.*sm:truncate/)
+})
+
+// ---- Desktop slice 2: multi-loop visibility -------------------------------------------------
+
+const TWO_LOOPS = { loops: [{ id: 'widgets', repo: 'acme/widgets' }, { id: 'gadgets', repo: 'acme/gadgets' }] }
+
+test('chip: aggregate across all loops, naming each and showing a per-loop read failure', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.overview = h.good(overview(
+    overviewLoop('widgets', { counts: { uncertain: 2, running: 1 } }),
+    overviewLoop('gadgets', { error: true })))
+  const tree = h.render('status')
+  assert.equal(h.text(tree), 'loops: verified · widgets 1 running · 2 need you · gadgets read failed')
+  assert.match(h.buttons(tree)[0].props.title, /Diaktoros · widgets, gadgets/)
+})
+
+test('chip: a loop with no ledger reads as no ledger, not verified idle', async () => {
+  const h = await harness()
+  h.queries.overview = h.good(overview(overviewLoop('fixture-loop', { available: false })))
+  const text = h.text(h.render('status'))
+  assert.match(text, /loop: verified · no ledger/)
+  assert.doesNotMatch(text, /idle|verified-empty/)
+})
+
+test('chip: a rise in any loop announces once, named, and a reload never announces', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.overview = h.good(overview(
+    overviewLoop('widgets', { counts: { uncertain: 1 } }), overviewLoop('gadgets')))
+  h.render('status')
+  assert.equal(h.notices.length, 0)                       // the first read records the baseline only
+  assert.equal(h.store.get('needsYou:widgets'), 1)
+  assert.equal(h.store.get('needsYou:gadgets'), 0)
+  h.queries.overview = h.good(overview(
+    overviewLoop('widgets', { counts: { uncertain: 1 } }), overviewLoop('gadgets')))
+  h.render('status')
+  assert.equal(h.notices.length, 0)                       // a reload of the same read is not news
+  h.queries.overview = h.good(overview(
+    overviewLoop('widgets', { counts: { uncertain: 1 } }), overviewLoop('gadgets', { counts: { uncertain: 4 } })))
+  h.render('status')
+  assert.equal(h.notices.length, 1)                       // one toast for one rise
+  assert.match(h.notices[0].message, /5 run\(s\) need you \(gadgets\)/)
+  assert.equal(h.store.get('needsYou:gadgets'), 4)
+  assert.equal(h.store.get('needsYou:widgets'), 1)
+})
+
+test('chip reports the loop that needs you and the page opens it', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.overview = h.good(overview(
+    overviewLoop('widgets', { counts: { running: 1 } }), overviewLoop('gadgets', { counts: { uncertain: 2 } })))
+  const tree = h.render('status')
+  h.buttons(tree)[0].props.onClick()
+  assert.deepEqual(h.navigations, ['/diaktoros?loop=gadgets'])
+  // The page honours the handoff: it selects the reported loop and reads that loop's runs.
+  h.render('page')
+  assert.equal(h.options.now.queryKey[2], 'gadgets')
+})
+
+test('page: the cross-loop needs-you block names each loop and selecting one opens its runs', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.overview = h.good(overview(
+    overviewLoop('widgets', { counts: { uncertain: 1 } }), overviewLoop('gadgets', { counts: { uncertain: 2 } })))
+  let tree = h.render('page')
+  assert.match(h.text(tree), /Needs you/)
+  assert.equal(h.options.now.queryKey[2], 'widgets')      // the first loop by default
+  h.buttons(tree).find(n => h.text([n]) === 'gadgets 2 need you').props.onClick()
+  tree = h.render('page')
+  assert.equal(h.options.now.queryKey[2], 'gadgets')      // the block opened that loop's runs
+})
+
+test('page: a handoff to an already-open page moves it to the loop the chip reported', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.overview = h.good(overview(
+    overviewLoop('widgets', { counts: { running: 1 } }), overviewLoop('gadgets')))
+  h.render('page')
+  assert.equal(h.options.now.queryKey[2], 'widgets')      // the page is already open on this loop
+  // The chip writes the handoff and navigates; the open page observes the same cache key, which a
+  // real query client notifies its observers about. This is the case the route's query string
+  // alone cannot cover.
+  h.render('status')
+  h.buttons(h.tree())[0].props.onClick()
+  h.queries.focus = h.good({ loop: 'gadgets' })
+  h.render('page')
+  assert.equal(h.options.now.queryKey[2], 'gadgets')
+})
+
+test('chip: a configured loop the read did not name is not read, never idle', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.overview = h.good(overview(overviewLoop('widgets', { counts: { running: 1 } })))
+  const text = h.text(h.render('status'))
+  assert.match(text, /widgets 1 running · gadgets not read/)
+  assert.doesNotMatch(text, /gadgets idle|gadgets verified-empty/)
+})
+
+test('page: a single-loop install gets no cross-loop block', async () => {
+  const h = await harness()
+  h.queries.overview = h.good(overview(overviewLoop('fixture-loop', { counts: { uncertain: 1 } })))
+  assert.doesNotMatch(h.text(h.render('page')), /Needs you/)
+})
+
+test('page: the drawer is scoped to its loop and closes when the loop changes', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.now = h.good({ runs: [{ pr: 42, seat: 'reviewer', head: 'abcdef0', state: 'waiting', why: 'waiting to retry' }],
+    counts: { waiting: 1 }, pacing: {}, available: true })
+  h.queries.pr = h.good({ repo: 'acme/widgets', loop: 'widgets', pr: 42, cap: 3, stuck: [], turns: [],
+    verdicts: {}, rulings: [], breach: null, findings: [], decisions: [], read_at: 1800000000 })
+  let tree = h.render('page')
+  h.buttons(tree).find(n => h.text([n]).includes('#42')).props.onClick()
+  tree = h.render('page')
+  assert.match(h.text(tree), /hermes dk explain --pr 42 --loop widgets/)
+  h.buttons(tree).find(n => h.text([n]) === 'gadgets').props.onClick()
+  tree = h.render('page')
+  assert.doesNotMatch(h.text(tree), /hermes dk explain --pr 42/)
+})
+
+test('page: a /now read with no ledger renders unavailable, never nothing-running', async () => {
+  const h = await harness()
+  h.queries.now = h.good({ repo: 'fixture/repo', runs: [], counts: {}, pacing: {}, available: false })
+  const page = h.text(h.render('page'))
+  assert.match(page, /unavailable/)
+  assert.match(page, /No run ledger available in the last successful backend read. Run counts are unavailable, not zero./)
+  assert.doesNotMatch(page, /No active or recent failed runs recorded|idle/)
+})
+
+test('overview responses reject malformed loops and a bad read_at before caching', async () => {
+  const h = await harness()
+  h.render('status')
+  const bad = [
+    [{ id: '' }],
+    [{ id: 'a', repo: 'r' }],
+    [{ id: 'a', repo: 'r', available: 'yes', error: false, counts: {}, needs_you: 0 }],
+    [{ id: 'a', repo: 'r', available: false, error: false, counts: { uncertain: 1 }, needs_you: 1 }],
+    [{ id: 'a', repo: 'r', available: true, error: false, counts: { x: -1 }, needs_you: 0 }]
+  ]
+  for (const loops of bad) {
+    h.respond({ loops, read_at: 1 })
+    await assert.rejects(h.options.overview.queryFn(), /Invalid overview/)
+  }
+  h.respond({ loops: [overviewLoop('a')], read_at: 'x' })
+  await assert.rejects(h.options.overview.queryFn(), /Invalid overview/)
+  h.respond({ loops: [overviewLoop('a')], read_at: 1 })
+  await h.options.overview.queryFn()
+})
+
+test('page: the cross-loop block keeps last-good entries on a stale read', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.overview = h.fail(overview(overviewLoop('widgets'), overviewLoop('gadgets', { counts: { uncertain: 2 } })))
+  const text = h.text(h.render('page'))
+  assert.match(text, /Needs you/)
+  assert.match(text, /gadgets 2 need you/)                       // last-good data kept, not hidden
+  assert.match(text, /Across all loops: showing last good data/)
+  assert.doesNotMatch(text, /No run in any loop is waiting on you/)
+})
+
+test('page: the cross-loop block names broken loops and never claims nothing is waiting', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.overview = h.good(overview(
+    overviewLoop('widgets', { available: false }), overviewLoop('gadgets', { error: true })))
+  const text = h.text(h.render('page'))
+  assert.match(text, /Could not read: widgets \(no ledger\), gadgets \(read failed\)/)
+  assert.doesNotMatch(text, /No run in any loop is waiting on you/)
+})
+
+test('page: an unread overview never claims nothing is waiting', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.overview = h.fail(undefined)
+  const text = h.text(h.render('page'))
+  assert.match(text, /Across all loops: no verified data available/)
+  assert.doesNotMatch(text, /No run in any loop is waiting on you/)
 })

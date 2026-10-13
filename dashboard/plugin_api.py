@@ -45,6 +45,11 @@ def now(loop: str | None = None):
     return _answer(desktop_api.now_view, loop)
 
 
+@router.get("/overview")
+def overview():
+    return _answer(desktop_api.overview_view)
+
+
 @router.get("/pr")
 def pr(pr: int, loop: str | None = None):
     return _answer(desktop_api.pr_view, loop, pr)
