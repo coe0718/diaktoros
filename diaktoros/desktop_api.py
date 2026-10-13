@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 
-from . import config, doctor, run_supervisor, stats
+from . import config, doctor, pacing, run_supervisor, stats
 
 SINCE_CHOICES = ("24h", "7d", "30d")
 # What the ledger keeps for one PR is its turns; a long-lived PR is bounded here so a single
@@ -78,7 +78,12 @@ def stats_view(loop_id: str | None, since: str = "7d") -> dict:
 def now_view(loop_id: str | None) -> dict:
     loop = _loop(loop_id)
     view = stats.now(run_supervisor.production_ledger(), loop["repo"])
-    return view if view is not None else {"repo": loop["repo"], "runs": [], "counts": {}}
+    if view is None:
+        view = {"repo": loop["repo"], "runs": [], "counts": {}}
+    # Beside the runs, the live usage-window state: a run's own held line is a snapshot from the
+    # moment it was held, and it can outlive the window it names (#650).
+    view["pacing"] = pacing.seats(loop)
+    return view
 
 
 def health_view(loop_id: str | None, probe: bool = False, client_host: str | None = None,
@@ -163,6 +168,7 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     finally:
         con.close()
     view["breach"] = _breach(loop, pr)
+    view["pacing"] = pacing.seats(loop)
     return view
 
 
