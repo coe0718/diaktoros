@@ -44,14 +44,141 @@ function call(path) {
 }
 
 function useLoops() {
-  return useQuery({ queryKey: [ID, 'loops'], queryFn: () => call('/loops'), staleTime: 60000 })
+  return useQuery({ queryKey: [ID, 'loops'], queryFn: async () => {
+    const data = await call('/loops')
+    if (!Array.isArray(data?.loops) || data.loops.some(loop => !loop || typeof loop.id !== 'string' || !loop.id)) throw invalidResponse('loops')
+    return data
+  }, staleTime: 60000 })
 }
 
 function useNow(loop) {
   return useQuery({
     queryKey: [ID, 'now', loop || ''],
-    queryFn: () => call('/now' + (loop ? '?loop=' + encodeURIComponent(loop) : '')),
+    queryFn: () => readView('/now?loop=' + encodeURIComponent(loop), 'now'),
+    enabled: !!loop,
     refetchInterval: 30000
+  })
+}
+
+// Reject malformed successful responses rather than manufacturing a verified zero.
+function invalidResponse(kind) {
+  const error = new Error('Invalid ' + kind + ' response')
+  error.code = 'INVALID_RESPONSE'
+  return error
+}
+
+function safeError(error) {
+  return error?.code === 'INVALID_RESPONSE'
+    ? 'Backend response could not be verified. Retry the read.'
+    : 'Backend read failed. Check the connection and retry.'
+}
+
+async function readView(path, kind) {
+  const data = await call(path)
+  const object = value => value && typeof value === 'object' && !Array.isArray(value)
+  const count = value => Number.isSafeInteger(value) && value >= 0
+  const counts = value => object(value) && Object.values(value).every(count)
+  const text = value => typeof value === 'string' && value.length > 0
+  const nonnegative = value => typeof value === 'number' && Number.isFinite(value) && value >= 0
+  const durationStats = value => value == null || (object(value) &&
+    nonnegative(value.median) && nonnegative(value.max) && Object.values(value).every(nonnegative))
+  const pacing = value => value == null || (object(value) &&
+    (value.seats === undefined || (object(value.seats) && Object.values(value.seats).every(entry =>
+      object(entry) && count(entry.turns) && count(entry.tokens) &&
+      ['turns_cap', 'tokens_cap'].every(key => entry[key] == null || count(entry[key]))))) &&
+    (value.holds === undefined || (Array.isArray(value.holds) && value.holds.every(hold =>
+      object(hold) && text(hold.provider) && text(hold.profile) && nonnegative(hold.until) && typeof hold.reason === 'string'))))
+  const run = value => object(value) && count(value.pr) && value.pr > 0 &&
+    text(value.seat) && text(value.head) && text(value.state) &&
+    ['pending', 'claimed', 'launching', 'running', 'waiting', 'uncertain', 'failed'].includes(value.state) &&
+    typeof value.why === 'string'
+  const turn = value => object(value) && count(value.turns) && count(value.retried) &&
+    counts(value.states) && durationStats(value.ran) && durationStats(value.waited)
+  if (!object(data) || (kind === 'now'
+    ? !Array.isArray(data.runs) || !data.runs.every(run) || !counts(data.counts) || !pacing(data.pacing)
+    : data.turns !== null && (!object(data.turns) || !Object.values(data.turns).every(turn)))) throw invalidResponse(kind)
+  return data
+}
+
+// Query cache timestamps are the last successful fetch, not the latest failed attempt.
+function viewState(q, empty, maxAge = 120000) {
+  const hasData = q.data !== undefined && q.data !== null
+  if (!hasData) return q.isError ? 'unavailable' : 'loading'
+  if (q.isError || !q.dataUpdatedAt || Date.now() - q.dataUpdatedAt >= maxAge) return 'stale'
+  return empty ? 'verified-empty' : 'verified'
+}
+
+// Shared local freshness metadata, never a query-cache/backend write. Weak keys let
+// removed cache data be collected; each age keeps only its latest timestamp. Cache
+// events anchor elapsed time even if neither page, chip nor palette has rendered.
+// Imperative reads need no timers; mounted components own one cancellable wake-up.
+let freshness = new WeakMap()
+
+function freshRead(q, maxAge) {
+  if (q.data == null || !q.dataUpdatedAt) return null
+  let ages = freshness.get(q.data)
+  if (!ages) { ages = new Map(); freshness.set(q.data, ages) }
+  let read = ages.get(maxAge)
+  if (!read || read.updatedAt !== q.dataUpdatedAt) {
+    const remaining = Math.max(0, Math.min(maxAge, q.dataUpdatedAt + maxAge - Date.now()))
+    read = { updatedAt: q.dataUpdatedAt, deadline: performance.now() + remaining, expired: remaining === 0 }
+    ages.set(maxAge, read)
+  }
+  // A forward wall jump is also sticky; neither a later backwards jump nor a
+  // fetch/error/observer notification can make the same successful read current.
+  if (performance.now() >= read.deadline || Date.now() - q.dataUpdatedAt >= maxAge) read.expired = true
+  return read
+}
+
+function trackedViewState(q, empty, maxAge = 120000) {
+  return freshRead(q, maxAge)?.expired ? 'stale' : viewState(q, empty, maxAge)
+}
+
+function observeFreshness(query) {
+  if (query.queryKey[0] !== ID) return
+  const kind = query.queryKey[1]
+  if (kind === 'now' || kind === 'loops' || kind === 'stats') {
+    freshRead(query.state, kind === 'now' ? 60000 : 120000)
+  }
+}
+
+function useViewState(q, empty, maxAge = 120000) {
+  const [, wake] = useState(0)
+  const read = freshRead(q, maxAge)
+  useEffect(() => {
+    if (!read || read.expired) return
+    const timer = setTimeout(() => {
+      // This callback owns only this read, never its replacement. Even an already
+      // queued old callback cannot mark a newer timestamp expired.
+      read.expired = true
+      wake(n => n + 1)
+    }, Math.max(0, read.deadline - performance.now()))
+    return () => clearTimeout(timer)
+  }, [read])
+  return trackedViewState(q, empty, maxAge)
+}
+
+function lastGood(q) {
+  return q.dataUpdatedAt ? new Date(q.dataUpdatedAt).toLocaleString() : 'time unavailable'
+}
+
+function QueryStatus({ query, state, label, noLedger = false }) {
+  return jsxs('div', {
+    role: query.isError ? 'alert' : 'status',
+    className: 'flex flex-wrap items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-4',
+    children: [
+      jsx(Badge, { size: 'xs', variant: state === 'stale' || state === 'unavailable' ? 'warn' : 'muted', children: state }),
+      jsxs('div', {
+        className: 'min-w-0 flex-1 text-xs text-(--ui-text-secondary)',
+        children: [
+          label + (state === 'loading' ? ': loading…' : state === 'unavailable' ? ': no verified data available.' : state === 'stale' ? ': showing last good data, not current status.' : ': backend read succeeded.'),
+          noLedger ? jsx('div', { className: 'mt-1', children: 'No run ledger available in the last successful backend read. Seat-turn counts are unavailable, not zero.' }) : null,
+          query.data != null ? jsx('div', { className: 'mt-1 text-(--ui-text-tertiary)', children: 'Last good read: ' + lastGood(query) + (query.isFetching ? ' · refreshing…' : '') }) : null,
+          query.isError ? jsx('div', { className: 'mt-1 break-words', children: safeError(query.error) }) : null
+        ]
+      }),
+      jsx(Button, { size: 'xs', variant: 'ghost', disabled: query.isFetching, onClick: () => query.refetch(), children: query.isFetching ? 'Reading…' : 'Retry' })
+    ]
   })
 }
 
@@ -137,6 +264,8 @@ function Pacing({ pacing }) {
 
 function summary(counts) {
   const parts = []
+  if (counts.pending) parts.push(counts.pending + ' pending')
+  if (counts.waiting) parts.push(counts.waiting + ' retry-waiting')
   if (counts.running) parts.push(counts.running + ' running')
   if (counts.held) parts.push(counts.held + ' held')
   if (counts.uncertain) parts.push(counts.uncertain + ' need you')
@@ -176,7 +305,7 @@ function CheckRow({ check }) {
 function ErrorLine({ error, children }) {
   return jsxs('div', {
     className: 'text-xs text-(--ui-text-tertiary)',
-    children: [error ? 'Not reachable: ' + String(error.message || error) + ' — ' : '', children]
+    children: [error ? safeError(error) + ' — ' : '', children]
   })
 }
 
@@ -229,7 +358,7 @@ function RunRow({ run, onOpen }) {
   return jsxs('button', {
     type: 'button',
     className:
-      'flex w-full items-center gap-3 border-b border-(--ui-stroke-secondary) px-2 py-1.5 text-left text-xs ' +
+      'flex w-full flex-wrap items-center gap-x-3 gap-y-1 border-b border-(--ui-stroke-secondary) px-2 py-1.5 text-left text-xs ' +
       'last:border-b-0 hover:text-(--ui-accent)',
     onClick: () => onOpen(run.pr),
     children: [
@@ -237,7 +366,7 @@ function RunRow({ run, onOpen }) {
       jsx('span', { className: 'w-20 shrink-0 text-(--ui-text-tertiary)', children: run.seat }),
       jsx('span', { className: 'w-16 shrink-0 font-mono text-(--ui-text-quaternary)', children: run.head }),
       jsx(Badge, { size: 'xs', variant: 'muted', children: run.state }),
-      jsx('span', { className: 'min-w-0 flex-1 truncate text-(--ui-text-tertiary)', children: run.why })
+      jsx('span', { className: 'min-w-0 basis-full break-words text-(--ui-text-tertiary) sm:basis-auto sm:flex-1 sm:truncate', children: run.why })
     ]
   })
 }
@@ -423,24 +552,43 @@ function StatusChip() {
   const first = loops.data && loops.data.loops && loops.data.loops[0]
   const now = useNow(first ? first.id : '')
   const counts = (now.data && now.data.counts) || {}
+  const noLoops = loops.data && !loops.data.loops?.length
+  const loopsState = useViewState(loops, !!noLoops)
+  const nowState = useViewState(now, !(now.data?.runs?.length || Object.values(counts).some(n => n > 0)), 60000)
   // Announce a rise in what is waiting on the operator, once. The first read of a session only
   // records the baseline: a reload is not news.
   useEffect(() => {
-    if (!now.data) return
+    if (!now.data || loopsState !== 'verified' || !nowState.startsWith('verified')) return
     const count = counts.uncertain || 0
     const seen = storage ? storage.get(NEEDS_YOU_KEY) : null
     if (typeof seen === 'number' && count > seen) {
       host.notify({ kind: 'warn', message: 'Diaktoros: ' + count + ' run(s) need you' })
     }
     if (storage) storage.set(NEEDS_YOU_KEY, count)
-  }, [now.data])
-  const text = now.data ? summary(counts) : now.isError ? '?' : '…'
-  return jsx('button', {
-    type: 'button',
-    className: 'px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
-    title: 'Diaktoros',
-    onClick: () => host.navigate(PATH),
-    children: 'loop: ' + text
+  }, [now.data, nowState, loopsState])
+  const state = !loops.data || noLoops ? loopsState
+    : loopsState === 'stale' ? now.data ? 'stale' : 'unavailable'
+    : nowState
+  const text = state === 'loading' || state === 'unavailable' ? state
+    : noLoops ? state + (state === 'verified-empty' ? ' · no loops configured' : ' · loop discovery not current')
+    : state + ' · ' + summary(counts)
+  const retryQuery = loopsState === 'stale' || !loops.data || noLoops ? loops : now
+  return jsxs('div', {
+    className: 'flex items-center gap-1',
+    children: [
+      jsx('button', {
+        type: 'button',
+        className: 'px-2 text-xs text-(--ui-text-secondary)',
+        title: 'Diaktoros · ' + (first?.id || 'no loop selected') +
+          (noLoops ? ' · Last good loop read: ' + lastGood(loops) : now.data ? ' · Last good read: ' + lastGood(now) : '') +
+          (retryQuery.isError ? ' · ' + safeError(retryQuery.error) : ''),
+        onClick: () => host.navigate(PATH),
+        children: 'loop: ' + text
+      }),
+      state === 'stale' || state === 'unavailable'
+        ? jsx(Button, { size: 'xs', variant: 'ghost', disabled: retryQuery.isFetching,
+            onClick: () => retryQuery.refetch(), children: 'Retry' }) : null
+    ]
   })
 }
 
@@ -536,7 +684,7 @@ function Page() {
   const loop = chosen || (list[0] && list[0].id) || ''
   const stats = useQuery({
     queryKey: [ID, 'stats', loop, since],
-    queryFn: () => call('/stats?since=' + since + (loop ? '&loop=' + encodeURIComponent(loop) : '')),
+    queryFn: () => readView('/stats?since=' + since + '&loop=' + encodeURIComponent(loop), 'stats'),
     refetchInterval: 60000,
     enabled: !!loop
   })
@@ -563,6 +711,11 @@ function Page() {
       duration(w && w.median)]
   })
   const runs = (now.data && now.data.runs) || []
+  const loopsState = useViewState(loops, !list.length)
+  const nowState = useViewState(now, !runs.length && !Object.values(now.data?.counts || {}).some(n => n > 0), 60000)
+  const statsReadState = useViewState(stats, total === 0)
+  const noLedger = stats.data?.turns === null
+  const statsState = noLedger ? 'unavailable' : statsReadState
 
   const header = jsxs('div', {
     className: 'flex flex-wrap items-center gap-2',
@@ -591,17 +744,23 @@ function Page() {
   })
 
   let body
-  if (loops.isError) body = jsx(Muted, { text: 'The loop backend is not reachable. Enable the plugin\'s Python half (plugins.enabled in config.yaml) and restart the gateway.' })
-  else if (!loops.isLoading && !list.length) body = jsx(Muted, { text: 'No loops configured. Run: hermes dk setup, in a terminal.' })
+  if (!list.length) body = jsxs('div', {
+    className: 'flex flex-col gap-4',
+    children: [jsx(QueryStatus, { query: loops, state: loopsState, label: 'Configured loops' }),
+      loopsState === 'verified-empty' ? jsx(Muted, { text: 'No loops configured. Run: hermes dk setup, in a terminal.' }) : null]
+  })
   else body = jsxs('div', {
     className: 'flex flex-col gap-5',
     children: [
-      jsx('div', { className: 'grid grid-cols-2 gap-2 sm:grid-cols-4', children: cards }),
+      loopsState === 'stale' ? jsx(QueryStatus, { query: loops, state: loopsState, label: 'Configured loops' }) : null,
       jsx(Section, {
         title: 'Right now',
         children: jsxs('div', {
           className: 'flex flex-col gap-2',
-          children: [jsx(Pacing, { pacing: now.data && now.data.pacing }), runs.length
+          children: [
+            jsx(QueryStatus, { query: now, state: nowState, label: 'Right now' }),
+            now.data ? jsx(Muted, { text: summary(now.data.counts) }) : null,
+            jsx(Pacing, { pacing: now.data && now.data.pacing }), runs.length
           ? jsxs('div', {
               className: 'flex flex-col',
               children: [
@@ -615,19 +774,23 @@ function Page() {
                 jsx(Muted, { text: 'Click a row for what would move it.' })
               ]
             })
-            : jsx(Muted, { text: now.isLoading ? 'Loading…' : 'Nothing running, held or waiting on you.' })]
+            : nowState === 'verified-empty'
+              ? jsx(Muted, { text: 'No active or recent failed runs recorded in this backend read.' }) : null]
         })
       }),
       jsx(Section, {
         title: 'Seat turns (' + since + ')',
         children: jsxs('div', {
           className: 'flex flex-col gap-2',
-          children: [seatRows.length
+          children: [
+            jsx(QueryStatus, { query: stats, state: statsState, label: 'Seat turns · ' + since, noLedger }),
+            stats.data && !noLedger ? jsx('div', { className: 'grid grid-cols-2 gap-2 sm:grid-cols-4', children: cards }) : null,
+            seatRows.length
             ? jsx(Table, {
                 head: ['seat', 'turns', 'ok', 'failed', 'waiting', 'other', 'retried', 'ran (median)', 'ran (max)', 'waited (median)'],
                 rows: seatRows
               })
-            : jsx(Muted, { text: stats.isLoading ? 'Loading…' : 'No turns in this window.' }),
+            : statsState === 'verified-empty' ? jsx(Muted, { text: 'No turns in this window.' }) : null,
             jsx(Muted, {
               text: 'The table is the window above; today’s counts and any closed usage window are in Right now.'
             })]
@@ -654,7 +817,10 @@ function Page() {
  *  client — no second poll of the backend. */
 function liveDetail() {
   for (const query of queryClient.getQueryCache().findAll({ queryKey: [ID, 'now'] })) {
-    if (query.state.data && query.state.data.counts) return summary(query.state.data.counts)
+    if (query.state.data && query.state.data.counts) {
+      const q = { ...query.state, isError: query.state.status === 'error' }
+      return trackedViewState(q, !Object.values(q.data.counts).some(n => n > 0), 60000) + ' · ' + summary(q.data.counts) + ' · Last good read: ' + lastGood(q)
+    }
   }
   return 'not read yet'
 }
@@ -666,7 +832,16 @@ export default {
   register(ctx) {
     rest = ctx.rest
     storage = ctx.storage
+    const cache = queryClient.getQueryCache()
+    // TanStack emits added (including initial/hydrated data) and updated after
+    // replacing query.state. Subscribe before seeding already-cached reads.
+    const unsubscribe = cache.subscribe(event => {
+      if (event.type === 'added' || event.type === 'updated') observeFreshness(event.query)
+    })
+    cache.findAll({ queryKey: [ID] }).forEach(observeFreshness)
     ctx.onDispose(() => {
+      unsubscribe()
+      freshness = new WeakMap()
       rest = null
       storage = null
     })
