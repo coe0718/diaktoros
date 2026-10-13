@@ -41,6 +41,20 @@ python tests/run_tests.py watchdog
 
 The harness also validates fenced `hermes dk` command examples in README/docs/skill against the CLI parser. Keep commands valid and explain every option next to the example; parser acceptance alone does not verify operational effects.
 
+### Desktop component behavior
+
+```sh
+node --experimental-vm-modules --test tests/desktop_behavior.mjs
+node --input-type=module --check < desktop/plugin.js
+python tests/leakguard.py discover -v -s tests -p 'test_desktop.py'
+```
+
+The Node harness executes the shipped plugin's registered page and chip with explicitly synthetic SDK/query fixtures. It tests loading, unavailable, stale cached data, successful empty reads, retry callbacks, summaries, and notifications; it is not a live backend or a browser layout test. Its independent elapsed-timer and wall clocks fire component expiry timers and hook-driven renders without a manual rerender, including a hung refresh, backward wall-clock changes, timestamp replacement, and unmount cleanup. It also checks malformed nested responses, safe error categories, and a missing-ledger payload pinned from real `stats.collect` output (the Python test verifies the same fixture against the collector and Desktop endpoint). `test_desktop.py` also runs this harness when Node is available. The VM module flag is required by this dependency-free harness, not by the Desktop plugin itself.
+
+The page and chip expire `/now` reads at 60 seconds and loop-discovery reads at 120 seconds; the page expires `/stats` reads at 120 seconds. Failed refreshes mark the corresponding read stale immediately. Component-scoped React effects schedule the freshness boundary and cancel their timers on replacement or unmount; they are not a second polling loop. Status labels and dependent empty/setup claims expire together even when polling pauses or a refresh hangs. Elapsed expiry stays sticky for that successful read's data identity and cache timestamp, regardless of backward wall-clock changes; a new successful read resets it. Cached values stay visible with their last successful query-cache timestamp and an explicit stale label; first-load failures show no invented zero. Successful empty reads mean only that this backend returned an empty ledger view, not that GitHub or a fleet was checked. A successful `/stats` payload with `turns: null` instead means no run ledger: the page explicitly shows unavailable counts, never a malformed-response failure or verified zero. Nested counts, run rows, seat turns, duration summaries, and pacing entries are validated before caching; malformed reads are failures, not verified zeros. Retry refetches the relevant read only. The chip shows its last good timestamp and a bounded safe error category in its tooltip, with a separate retry action on failures. Neither the page nor tooltips repeat arbitrary transport error messages.
+
+Native Desktop render verification is still required: light/dark themes, narrow layouts, chip tooltip/action, and hot reload. Unified-package Desktop code is copied at boot or Settings → Capabilities → Plugins → Rescan, not read directly from the package source. No backend route changes are needed for this slice.
+
 ### Boundary and regression suite
 
 ```sh

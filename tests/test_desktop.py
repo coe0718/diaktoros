@@ -104,6 +104,21 @@ class Api(unittest.TestCase):
         with self.loops(self.LOOPS[:1]), self.assertRaises(desktop_api.BadRequest):
             desktop_api.stats_view("widgets", "1y")
 
+    def test_missing_ledger_stats_matches_pinned_desktop_payload(self):
+        expected = json.loads((ROOT / "tests/fixtures/desktop_no_ledger_stats.json").read_text())
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as temp:
+            db = pathlib.Path(temp) / "missing.sqlite"
+            loop = {"id": expected["loop"], "repo": expected["repo"]}
+            actual = stats.collect(loop, db, expected["since"], with_github=False,
+                                   now=expected["until"])
+            self.assertEqual(actual, expected)
+            self.assertIsNone(actual["turns"])
+            self.assertFalse(db.exists())
+            with self.loops([loop]), \
+                 mock.patch.object(run_supervisor, "production_ledger", return_value=db), \
+                 mock.patch.object(stats.time, "time", return_value=expected["until"]):
+                self.assertEqual(desktop_api.stats_view(loop["id"], "7d"), expected)
+
 
 class Pr(unittest.TestCase):
     """One PR's record: the host's own next-step line, what the ledger recorded, and — the
@@ -418,6 +433,13 @@ class Surface(unittest.TestCase):
                 self.assertIsNone(pattern.search(code))
         imports = set(re.findall(r"^import\b[^'\"]*['\"]([^'\"]+)['\"]", code, re.M))
         self.assertEqual(imports - ALLOWED_IMPORTS, set())
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed here")
+    def test_components_with_sdk_query_fixtures(self):
+        done = subprocess.run(
+            ["node", "--experimental-vm-modules", "--test", str(ROOT / "tests" / "desktop_behavior.mjs")],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed here")
     def test_it_parses_as_an_es_module(self):

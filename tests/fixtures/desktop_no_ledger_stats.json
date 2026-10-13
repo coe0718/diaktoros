@@ -1,0 +1,10 @@
+{
+  "repo": "fixture/repo",
+  "loop": "fixture-loop",
+  "since": 1799395200,
+  "until": 1800000000,
+  "turns": null,
+  "revisions": null,
+  "usage": null,
+  "findings_missed": null
+}
