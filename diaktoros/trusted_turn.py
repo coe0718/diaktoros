@@ -26,7 +26,7 @@ import tempfile
 import time
 
 from . import (broker, broker_client, broker_ipc, config, contained, deps, gh, hostdirs,
-               inference_proxy, safe_push, trusted_fetch)
+               inference_proxy, runtime_detect, safe_push, trusted_fetch)
 
 
 def dependency_cache(loop: dict) -> Path | None:
@@ -698,6 +698,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
                 try:
                     result = contained.run(code=code, venv=venv, runtime=runtime,
                         home=home, checkout=checkout, rust=rust, query=query, entry=command,
+                        node=runtime_detect.node_root(),
                         inference_socket_dir=inference.directory,
                         broker_socket_dir=broker.socket_path.parent,
                         client_code=client.parent, review_dir=review, timeout=timeout + grace,

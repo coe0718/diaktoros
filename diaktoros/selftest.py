@@ -341,6 +341,13 @@ def check_runtime(report: Report, path: Path) -> dict | None:
                    "~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu")
     else:
         report.add(step, "runtime:rust", PASS, f"{rust} (bin/cargo)")
+    from . import runtime_detect
+    root, version = runtime_detect.node_version()
+    if root is None:
+        report.add(step, "runtime:node", WARN, f"{version}; JavaScript test suites cannot run in "
+                   "the sandbox (optional)", "install Node under ~/.hermes/node or on PATH")
+    else:
+        report.add(step, "runtime:node", PASS, f"node {version} at {root} (mounted at /opt/node)")
     return settings if usable else None
 
 

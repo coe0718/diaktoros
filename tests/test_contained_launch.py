@@ -144,6 +144,7 @@ class ProductionLaunch(Base):
         self.runtime.mkdir(parents=True, exist_ok=True)
         for name in ("venv", "rust"):
             (self.root / name).mkdir()
+        self.node = None   # the host Node root run_turn would detect (#685); none by default
 
     def launch(self, role: str, *, kill: subprocess.TimeoutExpired | None = None,
                activity: str = "", observed: dict | None = None, rc: int = 0,
@@ -192,6 +193,8 @@ class ProductionLaunch(Base):
              mock.patch.object(trusted_turn.inference_proxy, "InferenceCapability", Inference), \
              mock.patch.object(contained.Path, "is_socket", return_value=True), \
              mock.patch.object(contained, "run", side_effect=run), \
+             mock.patch.object(trusted_turn.runtime_detect, "node_root",
+                               return_value=self.node), \
              (self.assertRaises(trusted_turn.TurnBudgetExceeded if kill is not None
                                 else trusted_turn.TurnDenied) if kill is not None or rc == 0
               else contextlib.nullcontext()):  # the spy: no scoped write
@@ -335,6 +338,36 @@ class ProductionLaunch(Base):
                     rogue.append(option)
                 self.assertEqual(rogue, [],
                                  f"{role}: read-only bind of an arbitrary host path: {rogue}")
+
+    def test_host_node_is_mounted_read_only_with_its_own_path_entry(self):
+        # #685: Node lives under the operator's home, outside the namespace's /usr and /bin. The
+        # turn launch (run_turn, not a helper) stages it at /opt/node and puts it on PATH.
+        node = self.root / "node-install"
+        (node / "bin").mkdir(parents=True)
+        self.node = node
+        for role in ("reviewer", "fixer", "adjudicator"):
+            with self.subTest(role=role):
+                seen = self.launch(role)
+                options = bwrap_options(seen["argv"])
+                self.assertIn(("--ro-bind", str(node), "/opt/node"), options)
+                self.assertEqual([o for o in options if o[0] in BINDS - READ_ONLY_BINDS
+                                  and o[2] == "/opt/node"], [])
+                path = next(o[2] for o in options if o[:2] == ("--setenv", "PATH"))
+                self.assertEqual(path, "/opt/venv/bin:/opt/rust/bin:/opt/node/bin:/usr/bin:/bin")
+                self.assertIs(seen["kwargs"]["node"], node)
+
+    def test_a_host_without_node_mounts_and_adds_nothing(self):
+        for role in ("reviewer", "fixer"):
+            with self.subTest(role=role):
+                options = bwrap_options(self.launch(role)["argv"])
+                self.assertFalse([o for o in options if "/opt/node" in o], options)
+                path = next(o[2] for o in options if o[:2] == ("--setenv", "PATH"))
+                self.assertEqual(path, "/opt/venv/bin:/opt/rust/bin:/usr/bin:/bin")
+
+    def test_a_missing_node_root_is_refused_not_skipped(self):
+        paths = self.staged()
+        with self.assertRaises(FileNotFoundError):
+            contained.command(**paths, entry=["/bin/true"], node=self.root / "absent")
 
     def test_a_read_only_bind_of_a_broad_ancestor_is_rejected(self):
         # The allowlist must reject the roots' own ancestors — `/`, `/tmp`, `/tmp/xyz`, and `/home`
