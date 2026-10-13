@@ -9,7 +9,7 @@ const source = await readFile(new URL('../desktop/plugin.js', import.meta.url), 
 // Pinned from real stats.collect with a missing disposable ledger; Python checks equality.
 const noLedgerStats = JSON.parse(await readFile(new URL('./fixtures/desktop_no_ledger_stats.json', import.meta.url), 'utf8'))
 
-async function harness() {
+async function harness({ cachedAge = null } = {}) {
   const registrations = []
   const queries = {}
   const options = {}
@@ -32,6 +32,14 @@ async function harness() {
   }
   const setTimeout = (fn, delay) => { const id = ++timerId; timers.set(id, { fn, at: elapsed + delay }); return id }
   const clearTimeout = id => timers.delete(id)
+  const cacheRows = []
+  const cacheListeners = new Set()
+  const disposers = []
+  const cache = {
+    findAll: ({ queryKey }) => cacheRows.filter(q => queryKey.every((part, i) => q.queryKey[i] === part)),
+    subscribe: fn => { cacheListeners.add(fn); return () => cacheListeners.delete(fn) }
+  }
+  const emit = event => { for (const fn of cacheListeners) fn(event) }
   const store = new Map()
   let response = {}
   const good = data => ({ data, dataUpdatedAt: time, isError: false, isFetching: false,
@@ -40,6 +48,8 @@ async function harness() {
   queries.now = good({ runs: [], counts: {}, pacing: {} })
   queries.stats = good({ turns: {} })
   queries.health = good({ checks: [], counts: {}, offline: true })
+  if (cachedAge !== null) cacheRows.push({ queryKey: ['diaktoros', 'now', 'seeded'],
+    state: { data: queries.now.data, dataUpdatedAt: time - cachedAge, status: 'success' } })
   const element = (type, props, key) => ({ type, props: props || {}, key })
   const ui = name => props => element(name, props)
   const sdk = Object.fromEntries(['Badge', 'Button', 'Dialog', 'DialogContent', 'DialogDescription',
@@ -47,7 +57,7 @@ async function harness() {
   Object.assign(sdk, {
     PALETTE_AREA: 'palette', ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'nav', STATUSBAR_AREAS: { right: 'status' },
     host: { notify: n => notices.push(n), navigate: p => navigations.push(p) },
-    queryClient: { getQueryCache: () => ({ findAll: () => [] }), invalidateQueries: args => calls.push(args) },
+    queryClient: { getQueryCache: () => cache, invalidateQueries: args => calls.push(args) },
     useQuery: opts => { options[opts.queryKey[1]] = opts; return queries[opts.queryKey[1]] }
   })
   const react = {
@@ -68,7 +78,7 @@ async function harness() {
       }]
     }
   }
-  const context = vm.createContext({ console, Date: FakeDate, Promise, Error, setTimeout, clearTimeout })
+  const context = vm.createContext({ console, Date: FakeDate, performance: { now: () => elapsed }, Promise, Error, setTimeout, clearTimeout })
   const module = new vm.SourceTextModule(source, { context })
   await module.link(specifier => {
     const values = specifier === '@hermes/plugin-sdk' ? sdk : specifier === 'react' ? react : { jsx: element, jsxs: element }
@@ -80,7 +90,7 @@ async function harness() {
   module.namespace.default.register({
     rest: path => { calls.push(path); return Promise.resolve(response) },
     storage: { get: key => store.get(key), set: (key, value) => store.set(key, value) },
-    onDispose: () => {}, registerMany: rows => registrations.push(...rows)
+    onDispose: fn => disposers.push(fn), registerMany: rows => registrations.push(...rows)
   })
   const resolve = node => {
     if (Array.isArray(node)) return node.flatMap(resolve)
@@ -116,6 +126,16 @@ async function harness() {
   return { queries, options, calls, notices, navigations, store, good, fail, loading,
     render, text, buttons, flatten, respond: value => { response = value },
     tree: () => currentTree, timerCount: () => timers.size,
+    detail: () => registrations.find(r => r.id === 'open').data.detail(),
+    cacheRead: (data = queries.now.data, row = cacheRows[0]) => {
+      if (!row) { row = { queryKey: ['diaktoros', 'now', 'fixture-loop'], state: {} }; cacheRows.push(row); emit({ type: 'added', query: row }) }
+      row.state = { data, dataUpdatedAt: time, status: 'success' }
+      emit({ type: 'updated', action: { type: 'success' }, query: row })
+      return row
+    },
+    emit, listenerCount: () => cacheListeners.size,
+    pendingTimers: () => [...timers.values()].filter(timer => timer.at - elapsed === 60000).map(timer => timer.fn),
+    dispose: () => { effects.forEach(effect => effect.cleanup?.()); mountedId = null; disposers.forEach(fn => fn()) },
     unmount: () => { effects.forEach(effect => effect.cleanup?.()); mountedId = null },
     moveWall: ms => { time += ms },
     advance: (ms, wallMs = ms) => {
@@ -126,6 +146,110 @@ async function harness() {
       }
     } }
 }
+
+test('palette only: unseen successful cache read expires despite backward wall clock', async () => {
+  const h = await harness()
+  h.cacheRead()
+  h.moveWall(-3600000)
+  h.advance(60000, 0)
+  assert.match(h.detail(), /^stale · idle/)
+  h.advance(60000, -60000)
+  assert.match(h.detail(), /^stale/)
+  assert.equal(h.timerCount(), 0)
+  assert.equal(h.calls.length, 0)
+})
+
+test('palette only: exact elapsed boundary, hung fetch/error events never extend freshness', async () => {
+  const h = await harness()
+  const row = h.cacheRead({ runs: [], counts: { running: 2 } })
+  assert.match(h.detail(), /^verified · 2 running/)
+  h.moveWall(-3600000)
+  h.advance(59999, 0)
+  row.state.fetchStatus = 'fetching'
+  h.emit({ type: 'updated', action: { type: 'fetch' }, query: row })
+  assert.match(h.detail(), /^verified · 2 running/)
+  h.advance(1, 0)
+  assert.match(h.detail(), /^stale · 2 running/)
+  const stamp = row.state.dataUpdatedAt
+  row.state.status = 'error'
+  h.emit({ type: 'updated', action: { type: 'error' }, query: row })
+  assert.match(h.detail(), /^stale/)
+  row.state.status = 'success'
+  h.emit({ type: 'observerResultsUpdated', query: row })
+  assert.match(h.detail(), /^stale/)
+  assert.equal(row.state.dataUpdatedAt, stamp)
+  assert.equal(h.timerCount(), 0)
+  assert.equal(h.calls.length, 0)
+})
+
+test('palette only: fresh timestamp resets shared-data expiry; identity resets same timestamp', async () => {
+  const h = await harness()
+  const row = h.cacheRead()
+  const data = row.state.data
+  h.advance(60000, -3600000)
+  assert.match(h.detail(), /^stale/)
+  h.cacheRead(data)
+  assert.match(h.detail(), /^verified-empty/)
+  h.advance(59999, 0)
+  assert.match(h.detail(), /^verified-empty/)
+  h.advance(1, 0)
+  assert.match(h.detail(), /^stale/)
+  h.cacheRead({ runs: [], counts: { pending: 1 } })
+  assert.match(h.detail(), /^verified · 1 pending/)
+  h.advance(60000, 0)
+  assert.match(h.detail(), /^stale · 1 pending/)
+  assert.equal(h.timerCount(), 0)
+})
+
+for (const cachedAge of [30000, 60000]) {
+  test(`palette only: registration anchors preexisting ${cachedAge}ms cache without mounted hooks`, async () => {
+    const h = await harness({ cachedAge })
+    h.moveWall(-3600000)
+    if (cachedAge === 30000) {
+      h.advance(29999, 0)
+      assert.match(h.detail(), /^verified-empty/)
+      h.advance(1, 0)
+    }
+    assert.match(h.detail(), /^stale/)
+    assert.equal(h.timerCount(), 0)
+    assert.equal(h.listenerCount(), 1)
+    h.dispose()
+    assert.equal(h.listenerCount(), 0)
+    assert.equal(h.calls.length, 0)
+  })
+}
+
+test('palette only: forward-clock expiry stays stale after rollback', async () => {
+  const h = await harness()
+  h.cacheRead()
+  h.moveWall(60000)
+  assert.match(h.detail(), /^stale/)
+  h.moveWall(-3600000)
+  assert.match(h.detail(), /^stale/)
+})
+
+test('shared freshness: palette and hooks agree; queued old timer cannot expire newer read', async () => {
+  const h = await harness()
+  h.cacheRead()
+  h.render('status')
+  const oldCallbacks = h.pendingTimers()
+  assert.equal(oldCallbacks.length, 1)
+  h.advance(30000)
+  const row = h.cacheRead(h.queries.now.data)
+  h.queries.now = { ...h.queries.now, ...row.state }
+  h.render('status')
+  oldCallbacks.forEach(fn => fn())
+  assert.match(h.detail(), /^verified-empty/)
+  assert.match(h.text(h.tree()), /verified-empty/)
+  h.advance(60000, -3600000)
+  assert.match(h.detail(), /^stale/)
+  assert.match(h.text(h.tree()), /stale/)
+  h.unmount()
+  assert.equal(h.timerCount(), 0)
+  assert.match(h.detail(), /^stale/)
+  h.dispose()
+  assert.equal(h.listenerCount(), 0)
+})
 
 for (const kind of ['now', 'stats']) {
   test(`page ${kind}: first load never claims empty or zero`, async () => {

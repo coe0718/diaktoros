@@ -108,25 +108,54 @@ function viewState(q, empty, maxAge = 120000) {
   return empty ? 'verified-empty' : 'verified'
 }
 
-// One elapsed expiry timer per successful read, not a polling loop. Expiration is
-// sticky for that data identity/timestamp, even if the wall clock moves backwards.
-// A replacement successful read resets it; replacement/unmount cancels the timer.
+// Shared local freshness metadata, never a query-cache/backend write. Weak keys let
+// removed cache data be collected; each age keeps only its latest timestamp. Cache
+// events anchor elapsed time even if neither page, chip nor palette has rendered.
+// Imperative reads need no timers; mounted components own one cancellable wake-up.
+let freshness = new WeakMap()
+
+function freshRead(q, maxAge) {
+  if (q.data == null || !q.dataUpdatedAt) return null
+  let ages = freshness.get(q.data)
+  if (!ages) { ages = new Map(); freshness.set(q.data, ages) }
+  let read = ages.get(maxAge)
+  if (!read || read.updatedAt !== q.dataUpdatedAt) {
+    const remaining = Math.max(0, Math.min(maxAge, q.dataUpdatedAt + maxAge - Date.now()))
+    read = { updatedAt: q.dataUpdatedAt, deadline: performance.now() + remaining, expired: remaining === 0 }
+    ages.set(maxAge, read)
+  }
+  // A forward wall jump is also sticky; neither a later backwards jump nor a
+  // fetch/error/observer notification can make the same successful read current.
+  if (performance.now() >= read.deadline || Date.now() - q.dataUpdatedAt >= maxAge) read.expired = true
+  return read
+}
+
+function trackedViewState(q, empty, maxAge = 120000) {
+  return freshRead(q, maxAge)?.expired ? 'stale' : viewState(q, empty, maxAge)
+}
+
+function observeFreshness(query) {
+  if (query.queryKey[0] !== ID) return
+  const kind = query.queryKey[1]
+  if (kind === 'now' || kind === 'loops' || kind === 'stats') {
+    freshRead(query.state, kind === 'now' ? 60000 : 120000)
+  }
+}
+
 function useViewState(q, empty, maxAge = 120000) {
-  const [expired, setExpired] = useState(null)
+  const [, wake] = useState(0)
+  const read = freshRead(q, maxAge)
   useEffect(() => {
-    if (q.data == null || !q.dataUpdatedAt) return
-    const read = { data: q.data, updatedAt: q.dataUpdatedAt, maxAge }
-    const remaining = Math.min(maxAge, q.dataUpdatedAt + maxAge - Date.now())
-    if (remaining <= 0) {
-      setExpired(read)
-      return
-    }
-    const timer = setTimeout(() => setExpired(read), remaining)
+    if (!read || read.expired) return
+    const timer = setTimeout(() => {
+      // This callback owns only this read, never its replacement. Even an already
+      // queued old callback cannot mark a newer timestamp expired.
+      read.expired = true
+      wake(n => n + 1)
+    }, Math.max(0, read.deadline - performance.now()))
     return () => clearTimeout(timer)
-  }, [q.data, q.dataUpdatedAt, maxAge])
-  const state = viewState(q, empty, maxAge)
-  return expired?.data === q.data && expired?.updatedAt === q.dataUpdatedAt && expired?.maxAge === maxAge
-    && q.data != null ? 'stale' : state
+  }, [read])
+  return trackedViewState(q, empty, maxAge)
 }
 
 function lastGood(q) {
@@ -790,7 +819,7 @@ function liveDetail() {
   for (const query of queryClient.getQueryCache().findAll({ queryKey: [ID, 'now'] })) {
     if (query.state.data && query.state.data.counts) {
       const q = { ...query.state, isError: query.state.status === 'error' }
-      return viewState(q, !Object.values(q.data.counts).some(n => n > 0), 60000) + ' · ' + summary(q.data.counts) + ' · Last good read: ' + lastGood(q)
+      return trackedViewState(q, !Object.values(q.data.counts).some(n => n > 0), 60000) + ' · ' + summary(q.data.counts) + ' · Last good read: ' + lastGood(q)
     }
   }
   return 'not read yet'
@@ -803,7 +832,16 @@ export default {
   register(ctx) {
     rest = ctx.rest
     storage = ctx.storage
+    const cache = queryClient.getQueryCache()
+    // TanStack emits added (including initial/hydrated data) and updated after
+    // replacing query.state. Subscribe before seeding already-cached reads.
+    const unsubscribe = cache.subscribe(event => {
+      if (event.type === 'added' || event.type === 'updated') observeFreshness(event.query)
+    })
+    cache.findAll({ queryKey: [ID] }).forEach(observeFreshness)
     ctx.onDispose(() => {
+      unsubscribe()
+      freshness = new WeakMap()
       rest = null
       storage = null
     })
