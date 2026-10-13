@@ -13,6 +13,7 @@ import os
 import pathlib
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -92,9 +93,67 @@ class Api(unittest.TestCase):
              mock.patch.object(stats, "now", return_value=None) as now, \
              mock.patch.object(desktop_api.pacing, "seats", return_value={"seats": {}, "holds": []}):
             self.assertEqual(desktop_api.now_view(None),
-                             {"repo": REPO, "runs": [], "counts": {},
+                             {"repo": REPO, "runs": [], "counts": {}, "available": False,
                               "pacing": {"seats": {}, "holds": []}})
         self.assertEqual(now.call_args.args[1], REPO)
+
+    def test_now_carries_ledger_availability_never_a_fabricated_zero(self):
+        # #slice2 defect 2: stats.now returns None when the ledger file is absent. The view must
+        # say so (available false) instead of shipping empty counts that read as a verified zero.
+        pacing = mock.patch.object(desktop_api.pacing, "seats", return_value={"seats": {}, "holds": []})
+        with self.loops(self.LOOPS[:1]), \
+             mock.patch.object(stats, "now", return_value=None), pacing:
+            absent = desktop_api.now_view("widgets")
+        self.assertIs(absent["available"], False)        # omitted entirely by the reverted fix
+        self.assertEqual(absent["runs"], [])
+        self.assertEqual(absent["counts"], {})
+        with self.loops(self.LOOPS[:1]), \
+             mock.patch.object(stats, "now",
+                               return_value={"repo": REPO, "runs": [], "counts": {"uncertain": 1}}), pacing:
+            present = desktop_api.now_view("widgets")
+        self.assertIs(present["available"], True)
+        self.assertEqual(present["counts"], {"uncertain": 1})
+
+    def test_overview_lists_every_loop_with_its_counts_and_availability(self):
+        def fake_now(db, repo, at=None):
+            if repo == REPO:
+                return {"repo": repo, "runs": [], "counts": {"uncertain": 2, "running": 1}}
+            return None                                  # gadgets has no ledger
+        with self.loops(self.LOOPS), \
+             mock.patch.object(stats, "now", side_effect=fake_now), \
+             mock.patch.object(run_supervisor, "production_ledger",
+                               return_value=pathlib.Path("/nonexistent/runs.sqlite")):
+            view = desktop_api.overview_view()
+        self.assertEqual([loop["id"] for loop in view["loops"]], ["widgets", "gadgets"])
+        widgets, gadgets = view["loops"]
+        self.assertEqual(widgets, {"id": "widgets", "repo": REPO, "available": True, "error": False,
+                                   "counts": {"uncertain": 2, "running": 1}, "needs_you": 2})
+        self.assertEqual(gadgets, {"id": "gadgets", "repo": "acme/gadgets", "available": False,
+                                   "error": False, "counts": {}, "needs_you": 0})
+        self.assertIsInstance(view["read_at"], float)
+
+    def test_overview_keeps_the_other_loops_when_one_read_fails(self):
+        def fake_now(db, repo, at=None):
+            if repo == REPO:
+                return {"repo": repo, "runs": [], "counts": {"uncertain": 1}}
+            raise sqlite3.OperationalError("database disk image is malformed")
+        with self.loops(self.LOOPS), mock.patch.object(stats, "now", side_effect=fake_now):
+            widgets, gadgets = desktop_api.overview_view()["loops"]
+        self.assertIs(widgets["available"], True)
+        self.assertIs(widgets["error"], False)
+        self.assertEqual(widgets["needs_you"], 1)
+        self.assertIs(gadgets["available"], False)
+        self.assertIs(gadgets["error"], True)            # the failure is reported per loop
+        self.assertEqual(gadgets["counts"], {})          # never a manufactured count
+        self.assertEqual(gadgets["needs_you"], 0)
+
+    def test_overview_takes_no_loop_argument_and_reads_no_ledger_of_its_own(self):
+        # It is a host view over every configured loop; it names none, so an empty config is an
+        # empty list, not an error.
+        with self.loops([]), \
+             mock.patch.object(stats, "now") as now:
+            self.assertEqual(desktop_api.overview_view()["loops"], [])
+        now.assert_not_called()
 
     def test_stats_reads_the_ledger_only(self):
         with self.loops(self.LOOPS[:1]), \
@@ -346,7 +405,7 @@ class Routes(unittest.TestCase):
         methods = {m for route in self.api.router.routes for m in route.methods}
         self.assertEqual(methods, {"GET"})
         paths = {route.path for route in self.api.router.routes}
-        self.assertEqual(paths, {"/loops", "/stats", "/now", "/pr", "/health"})
+        self.assertEqual(paths, {"/loops", "/stats", "/now", "/overview", "/pr", "/health"})
         with mock.patch.object(desktop_api, "now_view", side_effect=desktop_api.NotFound("no")), \
              self.assertRaises(HTTPException) as caught:
             self.api.now("x")
@@ -361,6 +420,11 @@ class Routes(unittest.TestCase):
              self.assertRaises(HTTPException) as caught:
             self.api.health(self.request(), "widgets", True)
         self.assertEqual(caught.exception.status_code, 403)
+
+    def test_the_overview_route_takes_no_argument(self):
+        with mock.patch.object(desktop_api, "overview_view", return_value={"loops": []}) as overview_view:
+            self.assertEqual(self.api.overview(), {"loops": []})
+        overview_view.assert_called_once_with()
 
     def test_the_pr_route_passes_the_number_and_health_its_scope_and_caller(self):
         with mock.patch.object(desktop_api, "pr_view", return_value={"ok": 1}) as pr_view:
@@ -394,6 +458,18 @@ class Package(unittest.TestCase):
         plugin_name = re.search(r"^name:\s*(\S+)", (ROOT / "plugin.yaml").read_text(), re.M).group(1)
         self.assertIn(f"const ID = '{plugin_name}'", source)
         self.assertIn("defaultEnabled: false", source)
+
+    def test_slice2_plugin_has_a_per_loop_baseline_and_a_loop_scoped_drawer(self):
+        source = PLUGIN_JS.read_text()
+        self.assertIn("const NEEDS_YOU_PREFIX = 'needsYou:'", source)   # keyed by loop id
+        self.assertNotIn("NEEDS_YOU_KEY", source)                        # the single global key is gone
+        self.assertIn("'drawer-' + openPr.loop", source)                 # drawer identity carries the loop
+        self.assertIn("readView('/overview', 'overview')", source)
+        # The chip->page handoff is a cache write the page observes, not a route string the app
+        # would have to re-render on.
+        self.assertIn("queryClient.setQueryData(FOCUS_KEY", source)
+        self.assertIn("useQuery({ queryKey: FOCUS_KEY", source)
+        self.assertNotIn("window.addEventListener", source)              # stays inside the SDK surface
 
     def test_first_render_findings_641(self):
         source = PLUGIN_JS.read_text()
@@ -437,9 +513,18 @@ class Surface(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "node is not installed here")
     def test_components_with_sdk_query_fixtures(self):
         done = subprocess.run(
-            ["node", "--experimental-vm-modules", "--test", str(ROOT / "tests" / "desktop_behavior.mjs")],
-            capture_output=True, text=True, timeout=60)
+            ["node", "--experimental-vm-modules", "--test", "--test-reporter=tap",
+             str(ROOT / "tests" / "desktop_behavior.mjs")],
+            capture_output=True, text=True, timeout=120)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        # A green exit code is not evidence the suite ran: a binary that prints a version and
+        # stops, or a runner that skips everything, also exits 0 (a test-harness fixture once
+        # replaced the operator's Node with a stub). Require reported tests, no failures, and a
+        # named test.
+        ok = re.findall(r"^ok \d+ - ", done.stdout, re.M)
+        self.assertGreaterEqual(len(ok), 40, done.stdout[-4000:])
+        self.assertNotIn("not ok", done.stdout)
+        self.assertIn("palette only: unseen successful cache read expires", done.stdout)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed here")
     def test_it_parses_as_an_es_module(self):

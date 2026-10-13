@@ -3,9 +3,10 @@
 
 Nothing here writes, calls GitHub or reads a token: ``stats`` is the run ledger's half of
 ``hermes dk stats`` (totals and timings only), ``now`` lists live runs with host-written
-reasons, ``pr`` adds the host's own "what moves it" line (``run_supervisor.next_step``) plus
-what the ledger recorded, and ``health`` is ``doctor``'s checks with the network reads left
-unprobed. Never a turn's output, never a run's error text.
+reasons, ``overview`` is that same live state for every configured loop at once (for the status
+chip and the cross-loop block), ``pr`` adds the host's own "what moves it" line
+(``run_supervisor.next_step``) plus what the ledger recorded, and ``health`` is ``doctor``'s
+checks with the network reads left unprobed. Never a turn's output, never a run's error text.
 """
 from __future__ import annotations
 
@@ -80,12 +81,47 @@ def stats_view(loop_id: str | None, since: str = "7d") -> dict:
 def now_view(loop_id: str | None) -> dict:
     loop = _loop(loop_id)
     view = stats.now(run_supervisor.production_ledger(), loop["repo"])
+    # A missing ledger is not a verified zero: ``stats.now`` returns None when there is no
+    # ledger, so the view carries ``available`` and the page renders unavailable, never "nothing
+    # running". The empty runs and counts below are placeholders for that case only.
+    available = view is not None
     if view is None:
         view = {"repo": loop["repo"], "runs": [], "counts": {}}
+    view["available"] = available
     # Beside the runs, the live usage-window state: a run's own held line is a snapshot from the
     # moment it was held, and it can outlive the window it names (#650).
     view["pacing"] = pacing.seats(loop)
     return view
+
+
+def overview_view() -> dict:
+    """Every configured loop's live run state, in one read.
+
+    The status chip and the cross-loop block answer "what is waiting on me" across all loops
+    without one request per loop. Per loop: its id and repo, the live run counts and the
+    uncertain ("needs you") count when the ledger could be read, and whether it could be read at
+    all — ``available`` false when there is no ledger, ``error`` true when the read raised. A
+    missing ledger is unavailable, never a verified zero, exactly as ``/now`` reports it. One
+    loop failing is not the others' failure: it is reported on its own entry.
+    """
+    found, _ = config.readable_loops()
+    db = run_supervisor.production_ledger()
+    entries = []
+    for loop in found:
+        entry = {"id": loop["id"], "repo": loop["repo"], "available": True, "error": False,
+                 "counts": {}, "needs_you": 0}
+        try:
+            view = stats.now(db, loop["repo"])
+        except Exception:                   # one loop's read failing must not blank the others
+            entry["available"], entry["error"] = False, True
+        else:
+            if view is None:
+                entry["available"] = False
+            else:
+                entry["counts"] = view["counts"]
+                entry["needs_you"] = view["counts"].get("uncertain", 0)
+        entries.append(entry)
+    return {"loops": entries, "read_at": time.time()}
 
 
 def health_view(loop_id: str | None, probe: bool = False, client_host: str | None = None,

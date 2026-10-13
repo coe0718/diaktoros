@@ -27,9 +27,9 @@ const ID = 'diaktoros'
 const PATH = '/diaktoros'
 const SINCE = ['24h', '7d', '30d']
 const SEATS = ['reviewer', 'fixer', 'issue_fixer', 'triage', 'adjudicator']
-// Where the chip remembers the last "needs you" count it announced, so a toast fires on a
-// change and never on the first read after a reload.
-const NEEDS_YOU_KEY = 'needsYouCount'
+// Where the chip remembers each loop's last announced "needs you" count, keyed by loop id, so a
+// rise in any loop toasts once and the first read after a reload only records the baseline.
+const NEEDS_YOU_PREFIX = 'needsYou:'
 // The health view is the slow one (it stats profiles, the cron store and the venvs), so it is
 // read once and kept, not polled like the run views.
 const HEALTH_STALE_MS = 600000
@@ -37,6 +37,17 @@ const HEALTH_STALE_MS = 600000
 // Set in register(), cleared on dispose: components reach the backend through them.
 let rest = null
 let storage = null
+// The status chip reports the loop it highlights and the page must open that loop, but the SDK
+// hands a route's render no location. Both halves live in this one file and share the app's query
+// cache, so the chip writes the loop here and the page observes it: the handoff works when the
+// page mounts afterwards and when it is already open, and it stays inside the SDK surface.
+const FOCUS_KEY = [ID, 'focus']
+
+function useFocus() {
+  // Client-side only: nothing to fetch, the chip writes it. Observed so an open page follows.
+  return useQuery({ queryKey: FOCUS_KEY, queryFn: () => ({ loop: '' }), staleTime: Infinity,
+    refetchOnMount: false, refetchOnWindowFocus: false })
+}
 
 function call(path) {
   if (!rest) return Promise.reject(new Error('plugin not loaded'))
@@ -56,6 +67,17 @@ function useNow(loop) {
     queryKey: [ID, 'now', loop || ''],
     queryFn: () => readView('/now?loop=' + encodeURIComponent(loop), 'now'),
     enabled: !!loop,
+    refetchInterval: 30000
+  })
+}
+
+// One read for every configured loop: the chip and the cross-loop block both answer "what is
+// waiting on me" from it, so a chip never fetches once per loop.
+function useOverview() {
+  return useQuery({
+    queryKey: [ID, 'overview'],
+    queryFn: () => readView('/overview', 'overview'),
+    staleTime: 30000,
     refetchInterval: 30000
   })
 }
@@ -94,9 +116,24 @@ async function readView(path, kind) {
     typeof value.why === 'string'
   const turn = value => object(value) && count(value.turns) && count(value.retried) &&
     counts(value.states) && durationStats(value.ran) && durationStats(value.waited)
-  if (!object(data) || (kind === 'now'
-    ? !Array.isArray(data.runs) || !data.runs.every(run) || !counts(data.counts) || !pacing(data.pacing)
-    : data.turns !== null && (!object(data.turns) || !Object.values(data.turns).every(turn)))) throw invalidResponse(kind)
+  // One loop of the /overview read: its identity, whether its ledger could be read at all, and —
+  // only then — its counts. Unavailable or failed must carry no counts, so a missing ledger can
+  // never be read as a verified zero.
+  const loop = value => object(value) && text(value.id) && text(value.repo) &&
+    typeof value.available === 'boolean' && typeof value.error === 'boolean' &&
+    counts(value.counts) && count(value.needs_you) &&
+    (value.available && !value.error
+      ? true
+      : Object.keys(value.counts).length === 0 && value.needs_you === 0)
+  if (!object(data)) throw invalidResponse(kind)
+  if (kind === 'now') {
+    if (typeof data.available !== 'boolean' || !Array.isArray(data.runs) || !data.runs.every(run) ||
+      !counts(data.counts) || !pacing(data.pacing)) throw invalidResponse(kind)
+    // A ledger that could not be read must come back empty, never with manufactured counts.
+    if (!data.available && (data.runs.length || Object.keys(data.counts).length)) throw invalidResponse(kind)
+  } else if (kind === 'overview') {
+    if (!Array.isArray(data.loops) || !data.loops.every(loop) || !nonnegative(data.read_at)) throw invalidResponse(kind)
+  } else if (data.turns !== null && (!object(data.turns) || !Object.values(data.turns).every(turn))) throw invalidResponse(kind)
   return data
 }
 
@@ -137,9 +174,8 @@ function trackedViewState(q, empty, maxAge = 120000) {
 function observeFreshness(query) {
   if (query.queryKey[0] !== ID) return
   const kind = query.queryKey[1]
-  if (kind === 'now' || kind === 'loops' || kind === 'stats') {
-    freshRead(query.state, kind === 'now' ? 60000 : 120000)
-  }
+  if (kind === 'now' || kind === 'overview') freshRead(query.state, 60000)
+  else if (kind === 'loops' || kind === 'stats') freshRead(query.state, 120000)
 }
 
 function useViewState(q, empty, maxAge = 120000) {
@@ -172,7 +208,9 @@ function QueryStatus({ query, state, label, noLedger = false }) {
         className: 'min-w-0 flex-1 text-xs text-(--ui-text-secondary)',
         children: [
           label + (state === 'loading' ? ': loading…' : state === 'unavailable' ? ': no verified data available.' : state === 'stale' ? ': showing last good data, not current status.' : ': backend read succeeded.'),
-          noLedger ? jsx('div', { className: 'mt-1', children: 'No run ledger available in the last successful backend read. Seat-turn counts are unavailable, not zero.' }) : null,
+          // ``noLedger`` is the missing-ledger disclosure; a caller may pass its own sentence, else
+          // it reads as the seat-turns default. Either way it is a disclosure, never a zero.
+          noLedger ? jsx('div', { className: 'mt-1', children: typeof noLedger === 'string' ? noLedger : 'No run ledger available in the last successful backend read. Seat-turn counts are unavailable, not zero.' }) : null,
           query.data != null ? jsx('div', { className: 'mt-1 text-(--ui-text-tertiary)', children: 'Last good read: ' + lastGood(query) + (query.isFetching ? ' · refreshing…' : '') }) : null,
           query.isError ? jsx('div', { className: 'mt-1 break-words', children: safeError(query.error) }) : null
         ]
@@ -547,48 +585,126 @@ function Drawer({ loop, pr, onClose }) {
   })
 }
 
+/** One loop's live state as a short phrase: its run counts, or why they could not be read. */
+function loopLine(entry) {
+  if (entry.missing) return 'not read'
+  if (entry.error) return 'read failed'
+  if (!entry.available) return 'no ledger'
+  return summary(entry.counts)
+}
+
+/** How many runs across an /overview read are waiting on the operator, ignoring unreadable loops. */
+function needsYouTotal(entries) {
+  return entries.reduce((n, entry) => n + (entry.available && !entry.error ? entry.needs_you || 0 : 0), 0)
+}
+
 function StatusChip() {
   const loops = useLoops()
-  const first = loops.data && loops.data.loops && loops.data.loops[0]
-  const now = useNow(first ? first.id : '')
-  const counts = (now.data && now.data.counts) || {}
+  const overview = useOverview()
+  const list = (loops.data && loops.data.loops) || []
+  const entries = (overview.data && overview.data.loops) || []
   const noLoops = loops.data && !loops.data.loops?.length
   const loopsState = useViewState(loops, !!noLoops)
-  const nowState = useViewState(now, !(now.data?.runs?.length || Object.values(counts).some(n => n > 0)), 60000)
-  // Announce a rise in what is waiting on the operator, once. The first read of a session only
-  // records the baseline: a reload is not news.
+  // The overview is empty only when every loop was read and every one is idle: a loop whose
+  // ledger could not be read is unknown, not empty.
+  const overviewEmpty = entries.length > 0 &&
+    entries.every(entry => entry.available && !entry.error && !Object.values(entry.counts).some(n => n > 0))
+  const overviewState = useViewState(overview, overviewEmpty, 60000)
+  const byId = {}
+  entries.forEach(entry => { byId[entry.id] = entry })
+  // A configured loop the read did not name is unknown, not idle: it keeps its own line rather
+  // than disappearing from the chip.
+  const live = list.map(loop => byId[loop.id] ||
+    { id: loop.id, repo: loop.repo, available: false, error: true, missing: true, counts: {}, needs_you: 0 })
+  const total = needsYouTotal(entries)
+  // Announce a rise in any loop's uncertain count, once, naming the loop. The first read of a
+  // session only records each loop's baseline, so a reload is never news; a loop whose ledger
+  // could not be read keeps its previous baseline and is left out rather than compared to zero.
   useEffect(() => {
-    if (!now.data || loopsState !== 'verified' || !nowState.startsWith('verified')) return
-    const count = counts.uncertain || 0
-    const seen = storage ? storage.get(NEEDS_YOU_KEY) : null
-    if (typeof seen === 'number' && count > seen) {
-      host.notify({ kind: 'warn', message: 'Diaktoros: ' + count + ' run(s) need you' })
+    if (!overview.data || loopsState !== 'verified' || !overviewState.startsWith('verified')) return
+    const risen = []
+    for (const entry of overview.data.loops) {
+      if (!entry.available || entry.error || !storage) continue
+      const key = NEEDS_YOU_PREFIX + entry.id
+      const seen = storage.get(key)
+      if (typeof seen === 'number' && entry.needs_you > seen) risen.push(entry.id)
+      storage.set(key, entry.needs_you)
     }
-    if (storage) storage.set(NEEDS_YOU_KEY, count)
-  }, [now.data, nowState, loopsState])
+    if (risen.length) host.notify({ kind: 'warn',
+      message: 'Diaktoros: ' + total + ' run(s) need you (' + risen.join(', ') + ')' })
+  }, [overview.data, overviewState, loopsState])
   const state = !loops.data || noLoops ? loopsState
-    : loopsState === 'stale' ? now.data ? 'stale' : 'unavailable'
-    : nowState
+    : loopsState === 'stale' ? overview.data ? 'stale' : 'unavailable'
+    : overviewState
+  const named = list.length > 1
   const text = state === 'loading' || state === 'unavailable' ? state
     : noLoops ? state + (state === 'verified-empty' ? ' · no loops configured' : ' · loop discovery not current')
-    : state + ' · ' + summary(counts)
-  const retryQuery = loopsState === 'stale' || !loops.data || noLoops ? loops : now
+    : named ? state + ' · ' + live.map(entry => entry.id + ' ' + loopLine(entry)).join(' · ')
+    : live.length ? state + ' · ' + loopLine(live[0])
+    : state
+  // The chip reports the loop that needs you first, else the first loop; the page opens it.
+  const focus = live.find(entry => entry.available && !entry.error && entry.needs_you > 0) || live[0] || list[0]
+  const retryQuery = loopsState === 'stale' || !loops.data || noLoops ? loops : overview
+  const names = named ? list.map(loop => loop.id).join(', ') : (focus?.id || 'no loop selected')
   return jsxs('div', {
     className: 'flex items-center gap-1',
     children: [
       jsx('button', {
         type: 'button',
         className: 'px-2 text-xs text-(--ui-text-secondary)',
-        title: 'Diaktoros · ' + (first?.id || 'no loop selected') +
-          (noLoops ? ' · Last good loop read: ' + lastGood(loops) : now.data ? ' · Last good read: ' + lastGood(now) : '') +
+        title: 'Diaktoros · ' + names +
+          (noLoops ? ' · Last good loop read: ' + lastGood(loops) : overview.data ? ' · Last good read: ' + lastGood(overview) : '') +
           (retryQuery.isError ? ' · ' + safeError(retryQuery.error) : ''),
-        onClick: () => host.navigate(PATH),
-        children: 'loop: ' + text
+        onClick: () => {
+          // Write the handoff before navigating: an open page follows the cache, a page that
+          // mounts next reads it. The route also names the loop, for the URL.
+          queryClient.setQueryData(FOCUS_KEY, { loop: focus ? focus.id : '' })
+          host.navigate(PATH + (focus ? '?loop=' + encodeURIComponent(focus.id) : ''))
+        },
+        children: (named ? 'loops: ' : 'loop: ') + text
       }),
       state === 'stale' || state === 'unavailable'
         ? jsx(Button, { size: 'xs', variant: 'ghost', disabled: retryQuery.isFetching,
             onClick: () => retryQuery.refetch(), children: 'Retry' }) : null
     ]
+  })
+}
+
+/** The cross-loop answer to "what is waiting on me": one entry per loop that needs the operator,
+ *  each opening that loop on this page. Only shown when more than one loop is configured. */
+function NeedsYou({ overview, state, onPick }) {
+  const entries = (overview.data && overview.data.loops) || []
+  const waiting = entries.filter(entry => entry.available && !entry.error && entry.needs_you > 0)
+  const broken = entries.filter(entry => entry.error || !entry.available)
+  // Without a verified read there is nothing to claim: no "nothing is waiting" line, no entries.
+  // "Nothing is waiting" is only honest when every loop was read — a broken loop is not idle.
+  const unread = !overview.data || state === 'unavailable'
+  const readable = entries.length > 0 && !broken.length
+  return jsx(Section, {
+    title: 'Needs you',
+    children: jsxs('div', {
+      className: 'flex flex-col gap-2',
+      children: [
+        state === 'stale' || state === 'unavailable'
+          ? jsx(QueryStatus, { query: overview, state, label: 'Across all loops' }) : null,
+        unread ? null : waiting.length
+          ? jsx('div', {
+              className: 'rounded-md border border-(--ui-stroke-secondary)',
+              children: waiting.map(entry => jsxs('button', {
+                type: 'button',
+                className: 'flex w-full flex-wrap items-center gap-x-3 gap-y-1 border-b border-(--ui-stroke-secondary) px-2 py-1.5 text-left text-xs last:border-b-0 hover:text-(--ui-accent)',
+                onClick: () => onPick(entry.id),
+                children: [
+                  jsx('span', { className: 'w-24 shrink-0 font-mono text-(--ui-accent)', children: entry.id }),
+                  jsx('span', { className: 'min-w-0 flex-1 text-(--ui-text-secondary)', children: summary(entry.counts) })
+                ]
+              }, entry.id))
+            })
+          : readable ? jsx(Muted, { text: 'No run in any loop is waiting on you.' }) : null,
+        unread || !broken.length ? null
+          : jsx(Muted, { text: 'Could not read: ' + broken.map(entry => entry.id + ' (' + loopLine(entry) + ')').join(', ') })
+      ]
+    })
   })
 }
 
@@ -677,10 +793,20 @@ function Health({ loop }) {
 
 function Page() {
   const [since, setSince] = useState('7d')
-  const [chosen, setChosen] = useState('')
+  const focus = useFocus()
+  // The loop the chip reported: read once at mount, then followed through the same observed key,
+  // so a handoff to an already-open page moves it too.
+  const [chosen, setChosen] = useState(() => (focus.data && focus.data.loop) || '')
+  // The drawer remembers which loop it was opened on, so switching loops closes it rather than
+  // showing another loop's record for the same PR number.
   const [openPr, setOpenPr] = useState(null)
   const loops = useLoops()
+  const overview = useOverview()
   const list = (loops.data && loops.data.loops) || []
+  useEffect(() => {
+    const id = focus.data && focus.data.loop
+    if (id) setChosen(id)
+  }, [focus.data])
   const loop = chosen || (list[0] && list[0].id) || ''
   const stats = useQuery({
     queryKey: [ID, 'stats', loop, since],
@@ -712,7 +838,12 @@ function Page() {
   })
   const runs = (now.data && now.data.runs) || []
   const loopsState = useViewState(loops, !list.length)
+  const overviewState = useViewState(overview, false, 60000)
   const nowState = useViewState(now, !runs.length && !Object.values(now.data?.counts || {}).some(n => n > 0), 60000)
+  // /now carries whether its own ledger could be read; a missing ledger renders unavailable,
+  // never a verified-empty "nothing running".
+  const nowNoLedger = now.data?.available === false
+  const nowDisplayState = nowNoLedger ? 'unavailable' : nowState
   const statsReadState = useViewState(stats, total === 0)
   const noLedger = stats.data?.turns === null
   const statsState = noLedger ? 'unavailable' : statsReadState
@@ -753,13 +884,17 @@ function Page() {
     className: 'flex flex-col gap-5',
     children: [
       loopsState === 'stale' ? jsx(QueryStatus, { query: loops, state: loopsState, label: 'Configured loops' }) : null,
+      list.length > 1
+        ? jsx(NeedsYou, { overview, state: overviewState, onPick: setChosen })
+        : null,
       jsx(Section, {
         title: 'Right now',
         children: jsxs('div', {
           className: 'flex flex-col gap-2',
           children: [
-            jsx(QueryStatus, { query: now, state: nowState, label: 'Right now' }),
-            now.data ? jsx(Muted, { text: summary(now.data.counts) }) : null,
+            jsx(QueryStatus, { query: now, state: nowDisplayState, label: 'Right now',
+              noLedger: nowNoLedger ? 'No run ledger available in the last successful backend read. Run counts are unavailable, not zero.' : false }),
+            now.data && !nowNoLedger ? jsx(Muted, { text: summary(now.data.counts) }) : null,
             jsx(Pacing, { pacing: now.data && now.data.pacing }), runs.length
           ? jsxs('div', {
               className: 'flex flex-col',
@@ -768,13 +903,13 @@ function Page() {
                   className: 'rounded-md border border-(--ui-stroke-secondary)',
                   children: runs.map(run => jsx(RunRow, {
                     run,
-                    onOpen: pr => setOpenPr(pr)
+                    onOpen: pr => setOpenPr({ loop, pr })
                   }, run.pr + run.seat + run.head + run.state))
                 }),
                 jsx(Muted, { text: 'Click a row for what would move it.' })
               ]
             })
-            : nowState === 'verified-empty'
+            : nowDisplayState === 'verified-empty'
               ? jsx(Muted, { text: 'No active or recent failed runs recorded in this backend read.' }) : null]
         })
       }),
@@ -806,8 +941,8 @@ function Page() {
     children: [
       header,
       body,
-      openPr
-        ? jsx(Drawer, { loop, pr: openPr, onClose: () => setOpenPr(null) }, 'drawer-' + openPr)
+      openPr && openPr.loop === loop
+        ? jsx(Drawer, { loop, pr: openPr.pr, onClose: () => setOpenPr(null) }, 'drawer-' + openPr.loop + '-' + openPr.pr)
         : null
     ]
   })
@@ -816,6 +951,16 @@ function Page() {
 /** The palette rows read the same cache the page paints from, through the app's one query
  *  client — no second poll of the backend. */
 function liveDetail() {
+  // The chip answers for the whole install from its own read; the palette shares it first, then
+  // falls back to a page's single-loop read. Still clock-safe: freshness goes through the same
+  // tracked read, never a wall-clock comparison here.
+  for (const query of queryClient.getQueryCache().findAll({ queryKey: [ID, 'overview'] })) {
+    if (query.state.data && Array.isArray(query.state.data.loops)) {
+      const q = { ...query.state, isError: query.state.status === 'error' }
+      const total = needsYouTotal(q.data.loops)
+      return trackedViewState(q, total === 0, 60000) + ' · ' + total + ' need you · Last good read: ' + lastGood(q)
+    }
+  }
   for (const query of queryClient.getQueryCache().findAll({ queryKey: [ID, 'now'] })) {
     if (query.state.data && query.state.data.counts) {
       const q = { ...query.state, isError: query.state.status === 'error' }
