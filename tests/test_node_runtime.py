@@ -9,7 +9,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from diaktoros import doctor, runtime_detect  # noqa: E402
+from diaktoros import contained, doctor, runtime_detect  # noqa: E402
+from test_sandbox_limits import bwrap_works  # noqa: E402
 
 
 class NodeRuntime(unittest.TestCase):
@@ -53,6 +54,47 @@ class NodeRuntime(unittest.TestCase):
     def test_a_broken_node_is_not_reported_as_available(self):
         root = self.install(self.home / ".hermes" / "node", "garbage")
         self.assertEqual(runtime_detect.node_version(root)[0], None)
+
+
+@unittest.skipUnless(bwrap_works(), "unprivileged bubblewrap unavailable")
+class NodeInRealSandbox(unittest.TestCase):
+    """#685: run through real bubblewrap; the seat finds `node` on PATH only via the mount.
+
+    The install is a stand-in script (no real Node exists where this runs): it proves the
+    bind and PATH entry, which is all the launcher controls. A real host Node needs `selftest`.
+    """
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        for name in ("code", "home", "export"):
+            (self.root / name).mkdir(mode=0o700)
+        (self.root / "q.txt").write_text("q\n")
+        self.node = self.root / "node-install"
+        (self.node / "bin").mkdir(parents=True)
+        script = self.node / "bin" / "node"
+        script.write_text('#!/bin/sh\ncase "$1" in --version) echo v22.9.9;; '
+                          '--test) echo "ok $2"; echo "# pass 1";; esac\n')
+        script.chmod(0o755)
+
+    def run_in_sandbox(self, shell: str, node):
+        kw = dict(code=self.root / "code", venv=Path("/usr"), runtime=Path("/usr"),
+                  home=self.root / "home", checkout=self.root / "export", rust=Path("/usr"),
+                  query=self.root / "q.txt", entry=["/bin/sh", "-c", shell])
+        if node is not None:
+            kw["node"] = node
+        return contained.run(timeout=60, **kw)
+
+    def test_seat_runs_node_version_and_node_test(self):
+        done = self.run_in_sandbox("node --version && node --test /work/x.test.js", self.node)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        out = done.stdout.decode() if isinstance(done.stdout, bytes) else done.stdout
+        self.assertIn("v22.9.9", out)
+        self.assertIn("ok /work/x.test.js", out)
+
+    def test_without_the_mount_the_seat_has_no_node(self):
+        done = self.run_in_sandbox("node --version", None)
+        self.assertNotEqual(done.returncode, 0)
 
 
 if __name__ == "__main__":
