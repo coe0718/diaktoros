@@ -2,9 +2,35 @@
 
 **Bounded, autonomous software maintenance for Hermes.**
 
-A Hermes plugin for bounded GitHub pull-request review: an isolated **reviewer** posts a verdict; an optional **fixer** answers changes; deterministic Python controls eligibility, capacity, retries and escalation. The loop never merges.
+One agent reviews pull requests; another fixes what it finds. New issues are triaged and small ones fixed automatically, red CI goes to the fixer first, a watchdog reports stalls, disputes go to an adjudicator, and rounds are capped. Deterministic Python controls eligibility, capacity, retries and escalation. **The loop never merges.**
 
 **Start here:** [Getting started](docs/getting-started.md) · [Documentation map](docs/README.md) · [Commands](docs/commands.md) · [Troubleshooting](docs/troubleshooting.md)
+
+## What it does
+
+Every capability below is on `main` and driven by the command named beside it. Run `hermes dk <command> --help` for the exact flags; [`docs/commands.md`](docs/commands.md) is the full reference.
+
+| Capability | What happens | Command |
+| --- | --- | --- |
+| **Review** | An isolated reviewer posts a real GitHub review at the exact head | hooks, or `hermes dk review` |
+| **Fix** | The fixer answers the findings on the PR branch | hooks, or manual |
+| **Issue triage** | New issues are classified; small ones are fixed | `hermes dk triage` |
+| **CI repair** | Red CI goes to the fixer before the reviewer spends a verdict | `hermes dk set` |
+| **Affected tests** | The fixer runs only the tests its change touches | `hermes dk set` |
+| **Rounds and the cap** | Verdicts are counted; at the cap the PR escalates | built in |
+| **Adjudication** | A dispute goes to an adjudicator for a ruling | `hermes dk escalate` |
+| **Stalls** | A watchdog reports sleeps, drains queued work, repairs owned routes | scheduled job |
+| **Merge readiness** | Open PRs that are safe to merge, in a safe order | `hermes dk ready` |
+| **History** | Seat turns, timings, verdicts and cost over a window | `hermes dk stats` |
+| **Why a PR is stuck** | The current gate, and what has to happen next | `hermes dk explain` |
+| **Re-arm a failed run** | Retry a run that failed before writing anything | `hermes dk retry` |
+| **Queue** | A queued run starts once its seat frees | `hermes dk drain` |
+| **Disk** | Local review artifacts for merged or closed PRs are reclaimed | `hermes dk cleanup` |
+| **Backup and restore** | One private archive of everything the plugin owns | `hermes dk backup`, `hermes dk restore` |
+| **Desktop** | An optional page and status-bar item in Hermes Desktop | Desktop -> Capabilities |
+| **Notices** | An optional observer feed posts transitions to a chat | [Observer](docs/observer.md) |
+| **Diagnosis** | Preflight, live-path selftest, and a webhook dry-run | `hermes dk doctor`, `hermes dk selftest`, `hermes dk trace` |
+| **Regression replay** | Historical PRs with known problems, run end to end | `hermes dk corpus` |
 
 ## Before you start
 
