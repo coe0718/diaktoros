@@ -405,7 +405,8 @@ class Routes(unittest.TestCase):
         methods = {m for route in self.api.router.routes for m in route.methods}
         self.assertEqual(methods, {"GET"})
         paths = {route.path for route in self.api.router.routes}
-        self.assertEqual(paths, {"/loops", "/stats", "/now", "/overview", "/pr", "/health"})
+        self.assertEqual(paths, {"/loops", "/stats", "/now", "/overview", "/pr", "/health",
+                                 "/settings"})
         with mock.patch.object(desktop_api, "now_view", side_effect=desktop_api.NotFound("no")), \
              self.assertRaises(HTTPException) as caught:
             self.api.now("x")
@@ -425,6 +426,11 @@ class Routes(unittest.TestCase):
         with mock.patch.object(desktop_api, "overview_view", return_value={"loops": []}) as overview_view:
             self.assertEqual(self.api.overview(), {"loops": []})
         overview_view.assert_called_once_with()
+
+    def test_the_settings_route_takes_no_argument(self):
+        with mock.patch.object(desktop_api, "settings_view", return_value={"plugin": {}}) as settings_view:
+            self.assertEqual(self.api.settings(), {"plugin": {}})
+        settings_view.assert_called_once_with()
 
     def test_the_pr_route_passes_the_number_and_health_its_scope_and_caller(self):
         with mock.patch.object(desktop_api, "pr_view", return_value={"ok": 1}) as pr_view:

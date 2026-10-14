@@ -48,6 +48,21 @@ def _fake_settings_module(fields):
     return package, module
 
 
+# A loop file in the shape the loops themselves carry: seats under ``seats``, credentials mapped
+# by login under ``tokens``, flags under the names the loop's own readers use. A hand-built dict
+# with a top-level ``reviewer`` and a ``ci_fix`` flag passes while the page shows blanks — that is
+# how this projection first shipped reading a shape no loop has, so the tests load files instead.
+LOOP = {"repo": "acme/good", "base": "main", "cap": 3, "fix_ci": True, "review_after_ci": True,
+        "fixer_check": "python3 tests/affected.py", "reviewers": ["vex-coe"],
+        "fixers": ["drey-coe1"], "read_token": "reader",
+        "tokens": {"reader": "/x/read.pat", "vex-coe": "/x/vex.pat", "drey-coe1": "/x/drey.pat",
+                   "tuck-coe": "/x/tuck.pat"},
+        "seats": {"reviewer": {"route": "r-review", "profile": "vex", "login": "vex-coe"},
+                  "fixer": {"route": "r-fix", "profile": "drey", "login": "drey-coe1"},
+                  "adjudicator": {"login": "tuck-coe"}},
+        "adjudicator": {"profile": "default", "route": "r-breach"}}
+
+
 class SettingsView(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
@@ -167,44 +182,131 @@ class SettingsView(unittest.TestCase):
 
     # ---- per-loop answers ------------------------------------------------------------
 
+    def write_loops(self, **files: str) -> pathlib.Path:
+        """Loop files for this test, in the config dir the projection reads — removed afterwards.
+
+        The config dir is shared state inside the guarded temp home: a file left behind is a
+        configured loop for every later test in the same run, which is how a leak from one test
+        file failed a test in another. Each write is undone, and the directory too when this test
+        is the one that made it.
+        """
+        directory = config.config_dir()
+        created = not directory.exists()
+        directory.mkdir(parents=True, exist_ok=True)
+        if created:
+            self.addCleanup(lambda: directory.exists() and not any(directory.iterdir())
+                            and directory.rmdir())
+        for loop_id, text in files.items():
+            path = directory / f"{loop_id}.json"
+            path.write_text(text)
+            self.addCleanup(path.unlink, missing_ok=True)
+        return directory
+
+    def write_loop(self, loop_id: str, **body) -> None:
+        """One real loop file: ``LOOP`` as ``body`` overrides it, with the id its filename claims."""
+        self.write_loops(**{loop_id: json.dumps({**LOOP, **body, "id": loop_id})})
+
     def test_each_loop_reports_its_own_effective_answers(self):
         self._install([])
-        loop = {"id": "good", "repo": "c/d", "base": "main",
-                "reviewer": {"profile": "vex"}, "fixer": {}, "adjudicator": {}}
-        with mock.patch.object(config, "readable_loops", return_value=([loop], [])):
-            loops = desktop_api.settings_view()["loops"]
-        self.assertEqual(len(loops), 1)
+        self.write_loop("good")
+        loops = desktop_api.settings_view()["loops"]
+        self.assertEqual([loop["id"] for loop in loops], ["good"])
         entry = loops[0]
         self.assertFalse(entry["error"])
-        self.assertEqual(entry["id"], "good")
         self.assertEqual(entry["base"], "main")
         self.assertEqual(set(entry["seats"]), set(config.ROUTE_ROLES))
         self.assertEqual(entry["seats"]["reviewer"]["profile"], "vex")
+        self.assertEqual(entry["seats"]["reviewer"]["login"], "vex-coe")
+        self.assertEqual(entry["seats"]["reviewer"]["route"], "r-review")
+        self.assertEqual(entry["seats"]["adjudicator"]["profile"], "default")
+        self.assertEqual(entry["seats"]["adjudicator"]["route"], "r-breach")
         for seat in entry["seats"].values():
             self.assertIsInstance(seat["turn_budget_s"], int)
             self.assertIsInstance(seat["max_steps"], int)
-        self.assertIn("review_after_ci", entry["flags"])
-        self.assertIn("ci_fix", entry["flags"])
+            self.assertTrue(seat["profile"])
 
-    def test_one_unreadable_loop_does_not_blank_the_others(self):
+    def test_a_seat_names_the_token_path_for_its_login(self):
         self._install([])
-        broken = {"id": "broken", "repo": "a/b"}
-        good = {"id": "good", "repo": "c/d", "base": "main",
-                "reviewer": {"profile": "vex"}, "fixer": {}, "adjudicator": {}}
+        self.write_loop("good")
+        seats = desktop_api.settings_view()["loops"][0]["seats"]
+        self.assertEqual(seats["reviewer"]["token_file"], "/x/vex.pat")
+        self.assertEqual(seats["fixer"]["token_file"], "/x/drey.pat")
+        self.assertEqual(seats["adjudicator"]["token_file"], "/x/tuck.pat")
+
+    def test_a_loop_reports_the_flags_its_file_actually_sets(self):
+        """Under the names a loop carries: ``fix_ci`` — a page reading ``ci_fix`` shows off forever."""
+        self._install([])
+        self.write_loop("good")
+        self.write_loop("quiet", fix_ci=False, review_after_ci=False, fixer_check="")
+        flags = {loop["id"]: loop["flags"] for loop in desktop_api.settings_view()["loops"]}
+        self.assertTrue(flags["good"]["fix_ci"])
+        self.assertTrue(flags["good"]["review_after_ci"])
+        self.assertEqual(flags["good"]["fixer_check"], "python3 tests/affected.py")
+        self.assertFalse(flags["quiet"]["fix_ci"])
+        self.assertFalse(flags["quiet"]["review_after_ci"])
+        self.assertEqual(flags["quiet"]["fixer_check"], "")
+
+    def test_a_reader_raising_for_one_loop_is_only_that_loop_s_error(self):
+        self._install([])
+        self.write_loop("good")
+        self.write_loop("broken")
 
         def budget(loop, seat):                   # only the broken loop fails to answer
             if loop["id"] == "broken":
                 raise KeyError("no such loop")
             return 900
 
-        with mock.patch.object(config, "readable_loops", return_value=([broken, good], [])), \
-                mock.patch.object(config, "turn_budget", budget):
+        with mock.patch.object(config, "turn_budget", budget):
             loops = desktop_api.settings_view()["loops"]
         by_id = {loop["id"]: loop for loop in loops}
-        self.assertEqual(len(loops), 2)
+        self.assertEqual(sorted(by_id), ["broken", "good"])
         self.assertTrue(by_id["broken"]["error"])
+        self.assertEqual(by_id["broken"]["reason"], "KeyError")
         self.assertFalse(by_id["good"]["error"])
         self.assertEqual(by_id["good"]["seats"]["reviewer"]["profile"], "vex")
+
+    def test_a_loop_file_that_does_not_parse_is_reported_not_dropped(self):
+        """A loop whose config cannot be read at all still gets an entry, and the rest still load.
+
+        Only a real unreadable file exercises ``readable_loops``'s ``skipped`` list. A loop that
+        loads and then raises elsewhere is a *different* case, and covering that one alone is how a
+        whole configured loop disappeared from this projection without a test noticing.
+        """
+        self._install([])
+        self.write_loop("good")
+        self.write_loops(broken="{ this is not json\n")
+        by_id = {loop["id"]: loop for loop in desktop_api.settings_view()["loops"]}
+        self.assertIn("broken", by_id, "an unreadable loop is reported, never dropped")
+        self.assertTrue(by_id["broken"]["error"])
+        self.assertTrue(by_id["broken"]["reason"])
+        self.assertEqual(by_id["broken"]["seats"], {})
+        self.assertFalse(by_id["good"]["error"])
+        self.assertEqual(by_id["good"]["repo"], "acme/good")
+
+    def test_every_entry_carries_the_same_keys_whatever_happened(self):
+        self._install([])
+        self.write_loop("good")
+        self.write_loops(unreadable="{ nope\n")
+
+        def budget(loop, seat):
+            if loop["id"] == "good":
+                raise KeyError("no such loop")
+            return 900
+
+        with mock.patch.object(config, "turn_budget", budget):
+            loops = desktop_api.settings_view()["loops"]
+        self.assertEqual(len(loops), 2)
+        self.assertEqual(len({frozenset(loop) for loop in loops}), 1)
+
+    def test_an_unreadable_reason_is_one_bounded_line(self):
+        self._install([])
+        with mock.patch.object(config, "readable_loops",
+                               return_value=([], [("broken", "x" * 5000 + "\n\ttail")])):
+            entry = desktop_api.settings_view()["loops"][0]
+        self.assertTrue(entry["error"])
+        self.assertEqual(entry["id"], "broken")
+        self.assertLessEqual(len(entry["reason"]), 200)
+        self.assertNotIn("\n", entry["reason"])
 
     # ---- read-only -------------------------------------------------------------------
 

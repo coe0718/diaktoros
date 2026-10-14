@@ -14,7 +14,8 @@ from __future__ import annotations
 import pathlib
 import time
 
-from . import config, doctor, findings, gate_decisions, pacing, run_supervisor, stats
+from . import (config, doctor, findings, gate_decisions, pacing, route_intent, run_supervisor,
+               stats)
 
 SINCE_CHOICES = ("24h", "7d", "30d")
 # What the ledger keeps for one PR is its turns; a long-lived PR is bounded here so a single
@@ -370,42 +371,92 @@ def _seat_settings(settings: dict) -> dict:
 def _loop_settings() -> list[dict]:
     """What each loop runs as today: effective seats, budgets, step caps and flags.
 
-    One unreadable loop is reported on its own entry and never suppresses the others — the same
-    rule ``overview`` follows for the ledger.
+    **Every configured loop answers**, including one whose file cannot be read at all: that loop is
+    reported on its own entry, with the reason, and never suppresses the loops that do load — the
+    rule ``overview`` follows for the ledger. A loop missing from this list is a loop the page
+    cannot report at all, which is the one thing a status surface must never do.
     """
-    found, _ = config.readable_loops()
-    entries: list[dict] = []
-    for loop in found:
-        entry = {"id": loop.get("id", ""), "repo": loop.get("repo", ""), "error": False}
-        try:
-            entry["base"] = loop.get("base", "")
-            entry["seats"] = {role: _seat_line(loop, role) for role in config.ROUTE_ROLES}
-            entry["flags"] = _loop_flags(loop)
-        except Exception:                       # one broken loop must not blank the others
-            entry["error"] = True
-        entries.append(entry)
-    return entries
+    found, unreadable = config.readable_loops()
+    return [_loop_entry(loop) for loop in found] + [
+        {"id": str(loop_id), "repo": "", "base": "", "error": True,
+         "reason": _bounded(reason), "seats": {}, "flags": {}}
+        for loop_id, reason in unreadable]
+
+
+def _loop_entry(loop: dict) -> dict:
+    """One loop's effective answers, or its own error entry when a reader raised for it.
+
+    Every entry carries the same keys whatever happened, so a renderer can show a loop that
+    answered and a loop that did not without a second code path — and a partial entry can never be
+    mistaken for a loop with no seats.
+    """
+    entry = {"id": str(loop.get("id", "")), "repo": str(loop.get("repo", "")),
+             "base": str(loop.get("base") or ""), "error": False, "reason": "",
+             "seats": {}, "flags": {}}
+    try:
+        entry["seats"] = {role: _seat_line(loop, role) for role in config.ROUTE_ROLES}
+        entry["flags"] = _loop_flags(loop)
+    except Exception as exc:                    # one broken loop must not blank the others
+        entry["error"] = True
+        entry["reason"] = _bounded(type(exc).__name__)
+    return entry
+
+
+def _bounded(text: object, limit: int = 200) -> str:
+    """One line of diagnostic text: whitespace collapsed, capped, never a traceback.
+
+    A loop's load failure carries the config's own message (the same one ``hermes dk list`` prints),
+    and this is what keeps that to a bounded category on a page: no traceback, no second line.
+    """
+    return " ".join(str(text).split())[:limit]
 
 
 def _seat_line(loop: dict, role: str) -> dict:
-    """One seat's effective identity for a loop, its budget and step cap included."""
-    entry = loop.get(role) or {}
+    """One seat's effective identity for a loop: who serves it, as what login, woken by which route.
+
+    Read through the helpers the CLI and the gate shims read — ``seat_profile``/``seat_login``/
+    ``adjudicator_login`` for the identity, ``route_intent.routes_of`` for the route the seat owns,
+    ``turn_budget``/``max_steps`` for its limits — so the page cannot answer differently from
+    ``hermes dk show``. Those readers resolve the real shape: a seat's identity lives in
+    ``loop["seats"][role]`` (the adjudicator's profile and route live at the loop's top level),
+    never at ``loop[role]``.
+    """
+    login = config.seat_login(loop, role)
+    if role == "adjudicator":
+        login = login or config.adjudicator_login(loop)
     return {
-        "profile": entry.get("profile") or "",
-        "login": entry.get("login") or "",
-        "token_file": entry.get("token_file") or "",
-        "route": entry.get("route") or "",
+        "profile": config.seat_profile(loop, role),
+        "login": login,
+        "token_file": _token_path(loop, login),
+        "route": route_intent.routes_of(loop).get(role) or "",
         "turn_budget_s": config.turn_budget(loop, role),
         "max_steps": config.max_steps(loop, role),
     }
 
 
+def _token_path(loop: dict, login: str) -> str:
+    """Where ``login``'s PAT is read from at use time, or ``""`` — a path, never a credential.
+
+    The same two-step lookup the CLI's credential lines use: the exact login key first, then any
+    case, because a hand-edited ``tokens`` map may key it either way. The file is never opened.
+    """
+    tokens = loop.get("tokens") or {}
+    if not login:
+        return ""
+    return str(tokens.get(login) or tokens.get(login.lower()) or "")
+
+
 def _loop_flags(loop: dict) -> dict:
-    """The on/off settings the page shows as chips. Absent is off, and off is reported as off."""
+    """The on/off settings the page shows as chips. Absent is off, and off is reported as off.
+
+    Keyed by the names the loop file actually carries (``fix_ci``, ``review_after_ci``,
+    ``fixer_check``): a flag read under a name nothing writes is a chip that is always off, which
+    is exactly the kind of quiet wrong answer this projection exists to avoid.
+    """
     return {
         "review_after_ci": bool(loop.get("review_after_ci")),
         "fixer_check": loop.get("fixer_check") or "",
-        "ci_fix": bool(loop.get("ci_fix")),
+        "fix_ci": bool(loop.get("fix_ci")),
         "cap": loop.get("cap") or config.SETTINGS_SCHEMA["cap"]["default"],
         "base": loop.get("base") or config.SETTINGS_SCHEMA["base"]["default"],
     }
