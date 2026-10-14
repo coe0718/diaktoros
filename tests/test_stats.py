@@ -151,21 +151,27 @@ class Ledger(unittest.TestCase):
         self.escalate(9, d, 3, NOW - 600)                         # re-breach at a new head
         self.escalate(10, a, 3, NOW - 500, repo="other/repo")     # another loop's repository
         self.escalate(11, a, 3, since - DAY)                      # the window before
+        self.escalate(14, a, 3, since)                            # [since: in
+        self.escalate(15, a, 3, NOW)                              # until): out, and not before
         breaches = {f"{REPO}#7": {"head": a, "rounds": 3},
                     f"{REPO}#8": {"head": b, "rounds": 1, "escalated": {"by": "op", "why": "x"}},
                     f"{REPO}#9": {"head": d, "rounds": 3},
                     f"{REPO}#12": {"head": a, "rounds": 3, "at": iso(NOW - 50)},   # no turn
                     f"{REPO}#13": {"head": a, "rounds": 3, "at": iso(since - 50)},
+                    f"{REPO}#16": {"head": a, "rounds": 3, "at": iso(since)},      # [since: in
+                    f"{REPO}#17": {"head": a, "rounds": 3, "at": iso(NOW)},        # until): out
                     "other/repo#10": {"head": a, "rounds": 3, "escalated": {"by": "op"}}}
         data = stats.report(loop, self.db, since, NOW, breaches=breaches)
-        self.assertEqual(data["escalations"], {"total": 5, "ruled": 1, "awaiting": 4,
-                                               "by": {"cap": 3, "operator": 1, "unknown": 1}})
+        self.assertEqual(data["escalations"], {"total": 7, "ruled": 1, "awaiting": 6,
+                                               "by": {"cap": 4, "operator": 1, "unknown": 2}})
         self.assertEqual(data["escalations_before"]["total"], 2)    # PR 11's turn, PR 13's marker
+        later = stats.escalations(self.db, REPO, NOW, NOW + DAY, breaches)
+        self.assertEqual(later["total"], 2)                         # PR 15's turn, PR 17's marker
         self.assertEqual(data["reviews"]["rulings"], {"fixer-wins": 1})
         out = stats.report_text(data)
-        self.assertIn("escalations: 5 (+3 vs previous) · ruled 1, awaiting 4 · by cap 3, "
-                      "by operator 1, unknown 1", out)
-        self.assertEqual(json.loads(json.dumps(data))["escalations"]["total"], 5)
+        self.assertIn("escalations: 7 (+5 vs previous) · ruled 1, awaiting 6 · by cap 4, "
+                      "by operator 1, unknown 2", out)
+        self.assertEqual(json.loads(json.dumps(data))["escalations"]["total"], 7)
 
     def test_report_without_a_ledger(self):
         data = stats.report({"repo": REPO, "id": "w"}, self.db.with_name("none.sqlite"), 0, NOW)
