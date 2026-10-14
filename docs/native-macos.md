@@ -447,6 +447,15 @@ file actions, cwd, signals, descriptors, exec errors and concurrent callers.
 `sandbox-exec` is deprecated. Its presence and effective restrictions must be
 tested on every supported OS rather than inferred from the OS name. This
 experiment is not App Sandbox packaging or an Apple-supported stable SBPL API.
+The launcher uses an exec-based `/usr/bin/sandbox-exec -f <profile-file>` path,
+not an in-process `sandbox_init` call in a post-fork child. It does not put the
+profile source in a `-p` argument. Parameterized paths still appear in `-D`
+arguments, however; the profile-file choice is not a guarantee of argv path
+privacy. Do not put credentials in profile parameters. The native lifecycle
+captures stdout and stderr separately, preserving launcher warnings in stderr
+evidence without treating them as command stdout or suppressing other errors.
+Availability on tested machines is not a promise that a deprecated interface
+will remain present on a future macOS version.
 
 References: [Codex's Seatbelt implementation](https://github.com/openai/codex/tree/main/codex-rs/sandboxing/src),
 [Anthropic's macOS sandbox implementation](https://github.com/anthropics/sandbox-runtime/blob/main/src/sandbox/macos-sandbox-utils.ts).

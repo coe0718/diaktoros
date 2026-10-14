@@ -17,6 +17,7 @@ users or new permanent APFS volume are needed by this experiment.
 ```sh
 git clone --branch feat/native-macos-seatbelt --single-branch https://github.com/coe0718/diaktoros.git diaktoros-native-test
 cd diaktoros-native-test
+git switch --detach 0411de5a37a9c9e9d5dde5e8fe78f236a9176a62
 python3 -m venv .venv-native
 . .venv-native/bin/activate
 mkdir -m 700 "$HOME/diaktoros-native-evidence"
@@ -41,7 +42,9 @@ durable ownership, queued disposal and the bounded cleanup worker. The existing
 test-home guard gives these suites a disposable Hermes home. Tests create small
 temporary APFS images; failed cleanup can retain them for verified recovery.
 The runner stops at the first failed suite, preserving its log and the result
-manifest. Each suite has a four-minute outer timeout.
+manifest. Allow up to about 40 minutes for the nine suites; each suite has a
+four-minute outer timeout. The checkout above pins the code validated on both
+architectures, so later branch changes do not change this test pass.
 
 ## Optional 200-turn cleanup soak
 
@@ -61,7 +64,9 @@ retains per-turn evidence under `soak/`. No physical reboot is performed.
 
 Every completed tester command, including failed preparation/tests, automatically
 creates `evidence.zip` in its output directory and prints the ZIP path. Send that
-ZIP back for review. It contains the result manifest, command logs and selected
+ZIP to Jeremy through the private conversation used to arrange the test. If
+that channel cannot accept files, ask Jeremy for an upload destination. It
+contains the result manifest, command logs and selected
 soak events/receipts, plus hashes in `bundle-manifest.json`. Downloaded Hermes
 source, toolchains, caches, venvs, adapters and disk images are excluded.
 Files over 8 MiB keep their tail; the archive manifest identifies truncations and
