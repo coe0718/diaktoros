@@ -5,11 +5,13 @@ Nothing here writes, calls GitHub or reads a token: ``stats`` is the run ledger'
 ``hermes dk stats`` (totals and timings only), ``now`` lists live runs with host-written
 reasons, ``overview`` is that same live state for every configured loop at once (for the status
 chip and the cross-loop block), ``pr`` adds the host's own "what moves it" line
-(``run_supervisor.next_step``) plus what the ledger recorded, and ``health`` is ``doctor``'s
-checks with the network reads left unprobed. Never a turn's output, never a run's error text.
+(``run_supervisor.next_step``) plus what the ledger recorded, ``health`` is ``doctor``'s
+checks with the network reads left unprobed, and ``settings`` is the plugin-level form and each
+loop's effective answers. Never a turn's output, never a run's error text.
 """
 from __future__ import annotations
 
+import pathlib
 import time
 
 from . import config, doctor, findings, gate_decisions, pacing, run_supervisor, stats
@@ -263,3 +265,147 @@ def _breach(loop: dict, pr: int) -> dict | None:
         return None
     return {"head": str(marker.get("head") or "")[:7], "status": str(marker.get("status") or ""),
             "rounds": marker.get("rounds")}
+
+
+def settings_view() -> dict:
+    """The plugin-level settings the Desktop form renders, and what each loop runs as today.
+
+    Two halves, from the same functions ``hermes dk settings`` prints from:
+
+    * **``plugin``** — the schema every field needs (label, type, default, description), the
+      effective value of each key, and whether it was *set* in the form or is the schema default.
+      This is what a form renders and what ``apply --loop`` would push onto a loop.
+    * **``loops``** — each configured loop's *effective* seats, budgets, step caps and flags, so
+      the page shows what a loop runs as now without applying anything to it.
+
+    Settings are defaults, not a subscription: an existing loop keeps its own numbers until
+    ``apply`` pushes the plugin's onto it, so a blank field is "not set here", never "forget what
+    this loop already answered".
+
+    Safety, per this module's rule that nothing here writes:
+
+    * **A token is a path, never a value.** ``token_file`` names where a login's PAT is read from
+      at use time; the file is never opened, read or returned.
+    * **An unreadable settings store is unavailable, not a clean default** — ``available`` is
+      false and ``reason`` says why, so the page cannot present schema defaults as if the
+      operator had chosen them. A store that reads fine but holds nothing is available,
+      all-default, and says so.
+    * **One loop's failure is not the others'**: an unreadable loop is reported on its own entry.
+    """
+    settings, available, reason = _form_settings()
+    defaults = config.settings_defaults(settings)
+    return {
+        "plugin": {
+            "available": available,
+            "reason": reason,
+            "schema": {
+                key: {"label": spec.get("label", key), "type": spec.get("type", "str"),
+                      "default": spec.get("default"),
+                      "description": spec.get("description", "")}
+                for key, spec in config.SETTINGS_SCHEMA.items()
+            },
+            "values": {key: defaults.get(key) for key in config.SETTINGS_SCHEMA},
+            "sources": {key: ("set" if str(settings.get(key, "")) not in ("", "None")
+                              else "default")
+                        for key in config.SETTINGS_SCHEMA},
+            "seats": _seat_settings(settings),
+            "roles": list(config.ROUTE_ROLES),
+            "routed_roles": list(config.ROUTED_ROLES),
+        },
+        "loops": _loop_settings(),
+        "read_at": time.time(),
+    }
+
+
+def _form_settings() -> tuple[dict, bool, str]:
+    """The settings the form holds, whether they could be read, and the reason when they could not.
+
+    Read through ``hermes_cli.plugins_settings`` — the form's own reader — so the page and the
+    form can never disagree about what is set. That reader is a documented plugin surface that
+    holds no process state, so it answers the same in any process, including one where this
+    plugin was never registered with its settings.
+
+    Imported lazily and defensively: a Hermes without that surface, or a malformed manifest, is
+    reported as ``available=False`` with a reason — never as an empty form.
+    """
+    try:
+        from hermes_cli.plugins_settings import plugin_settings_fields
+    except Exception as exc:                    # any import failure is the same answer
+        return {}, False, f"settings surface unavailable: {type(exc).__name__}"
+    plugin_dir = pathlib.Path(__file__).resolve().parent.parent
+    try:
+        fields = plugin_settings_fields("diaktoros", plugin_dir)
+    except Exception as exc:                    # a bad manifest must not raise into a render
+        return {}, False, f"settings could not be read: {type(exc).__name__}"
+    values: dict = {}
+    for field in fields or []:
+        try:
+            key = str(field["key"])
+        except Exception:                       # a malformed field is skipped, not fatal
+            continue
+        if field.get("value") not in (None, ""):
+            values[key] = field["value"]
+    return values, True, ""
+
+
+def _seat_settings(settings: dict) -> dict:
+    """The form's seat mapping: profiles and logins, and token *paths* only.
+
+    Blanks stay blank, because a blank is "not set here" rather than "forget what this loop
+    uses". The token file is named, never opened: this module reads no credential.
+    """
+    mapping = config.seat_mapping(settings)
+    out: dict = {}
+    for role in config.ROUTE_ROLES:
+        entry = mapping.get(role) or {}
+        out[role] = {
+            "profile": entry.get("profile") or "",
+            "login": entry.get("login") or "",
+            "token_file": entry.get("token_file") or "",
+            "set": bool(entry),
+        }
+    return out
+
+
+def _loop_settings() -> list[dict]:
+    """What each loop runs as today: effective seats, budgets, step caps and flags.
+
+    One unreadable loop is reported on its own entry and never suppresses the others — the same
+    rule ``overview`` follows for the ledger.
+    """
+    found, _ = config.readable_loops()
+    entries: list[dict] = []
+    for loop in found:
+        entry = {"id": loop.get("id", ""), "repo": loop.get("repo", ""), "error": False}
+        try:
+            entry["base"] = loop.get("base", "")
+            entry["seats"] = {role: _seat_line(loop, role) for role in config.ROUTE_ROLES}
+            entry["flags"] = _loop_flags(loop)
+        except Exception:                       # one broken loop must not blank the others
+            entry["error"] = True
+        entries.append(entry)
+    return entries
+
+
+def _seat_line(loop: dict, role: str) -> dict:
+    """One seat's effective identity for a loop, its budget and step cap included."""
+    entry = loop.get(role) or {}
+    return {
+        "profile": entry.get("profile") or "",
+        "login": entry.get("login") or "",
+        "token_file": entry.get("token_file") or "",
+        "route": entry.get("route") or "",
+        "turn_budget_s": config.turn_budget(loop, role),
+        "max_steps": config.max_steps(loop, role),
+    }
+
+
+def _loop_flags(loop: dict) -> dict:
+    """The on/off settings the page shows as chips. Absent is off, and off is reported as off."""
+    return {
+        "review_after_ci": bool(loop.get("review_after_ci")),
+        "fixer_check": loop.get("fixer_check") or "",
+        "ci_fix": bool(loop.get("ci_fix")),
+        "cap": loop.get("cap") or config.SETTINGS_SCHEMA["cap"]["default"],
+        "base": loop.get("base") or config.SETTINGS_SCHEMA["base"]["default"],
+    }
