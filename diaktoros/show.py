@@ -214,7 +214,16 @@ def _rows(loop: dict) -> list[_Row]:
               f"triage: {key}")
     events = obs.get("events")
     hidden = sorted(set(observer.EVENTS) - set(events)) if events else []
+    # The weekly report is also a settings-form field (#658): one row, under the form's name.
+    schema("observer_weekly_report", ("observer", "weekly_report"),
+           f"{obs['weekly_report']} UTC" if obs.get("weekly_report") else _UNSET,
+           on=bool(obs.get("weekly_report")) and not observer.configured(loop),
+           off="no weekly report" if not obs.get("weekly_report") else "",
+           note=("set but inert: the observer feed is off or muted"
+                 if obs.get("weekly_report") and observer.configured(loop) else ""))
     for key in OBSERVER_KEYS:
+        if key == "weekly_report":
+            continue
         value = obs.get(key)
         row = _Row(f"observer.{key}", ("observer", key),
                    value if value not in (None, "") else _UNSET, f"observer feed: {key}")

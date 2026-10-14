@@ -40,7 +40,7 @@ hermes dk doctor --loop "<loop-id>"
 | `--observer-deliver telegram` | Gateway delivery platform; default Telegram, another configured adapter such as Discord can be selected |
 | `--observer-events` | Comma-separated event filter; blank means all events |
 | `--observer-digest-min 30` | Batch window in minutes for **routine** events (see [tiers](#urgent-and-routine-tiers)); 0 means per-transition notices |
-| `--observer-weekly-report "mon 09:00"` | Send the week's [report](#weekly-report) once a week at this weekday and UTC time; blank turns it off |
+| `--observer-weekly-report "mon 09:00"` | Send the week's [report](#weekly-report) once a week at this weekday and UTC time; blank turns it off. The settings form's **Weekly report** field is the default for `init` and what `apply` pushes (`off` clears it) |
 | `--observer-urgent-route` | A second delivery-only route that receives urgent notices only; blank returns to one feed |
 | `--observer-urgent-profile` | Profile that owns the urgent destination (default: the feed's profile) |
 | `--observer-urgent-deliver` | Gateway platform for urgent notices (default: the feed's `--observer-deliver`) |
