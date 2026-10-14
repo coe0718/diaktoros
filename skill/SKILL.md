@@ -1,5 +1,5 @@
 ---
-name: review-loop
+name: diaktoros
 description: Work a PR review loop — verify before you verdict, publish only through the broker, respect the round budget.
 ---
 
