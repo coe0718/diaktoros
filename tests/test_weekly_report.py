@@ -60,6 +60,11 @@ class Form(unittest.TestCase):
         self.assertIn(f'label: "{spec["label"]}"', block[0])
         self.assertIn(f'description: "{spec["description"]}"', "\n  ".join(block[:4]))
 
+    def test_every_form_field_has_a_row_in_the_desktop_settings_reference(self):
+        doc = (Path(__file__).resolve().parents[1] / "docs" / "settings.md").read_text()
+        for key in config.SETTINGS_SCHEMA:
+            self.assertIn(f"| `{key}` |", doc, key)
+
     def test_apply_sets_clears_and_leaves_it(self):
         applied = config.apply_settings(self.RAW, {"observer_weekly_report": "Tue 08:00"})
         self.assertEqual(applied["observer"]["weekly_report"], "tue 08:00")
