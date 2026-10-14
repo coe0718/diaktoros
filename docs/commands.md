@@ -98,6 +98,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | list the PRs that are safe to merge, in order | [`ready`](#ready) |
 | ask for a fresh review of a PR | [`review`](#review) |
 | send a PR to the adjudicator now | [`escalate`](#escalate) |
+| link a later bug to the approved PR that shipped it | [`regression`](#regression) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
 | start a queued turn now | [`drain`](#drain) |
@@ -258,8 +259,9 @@ it (`unknown` without a reviewer run at that head). Findings recorded before the
 are `undated` and counted outside every window.
 
 The same report can go to the observer feed once a week: see
-[`observer.weekly_report`](observer.md#weekly-report). Not in this command yet: regressions after
-approval (#661) and shadow-review/override feeds (#218, #220). Request → verdict is measured from the review run's creation to its receipt.
+[`observer.weekly_report`](observer.md#weekly-report). Approved, then broke: the bugs linked with
+[`regression`](#regression) in the window. Not in this command yet: shadow-review/override feeds
+(#218, #220). Request → verdict is measured from the review run's creation to its receipt.
 
 <!-- flags:report -->
 | flag | value | default | what it does |
@@ -1114,6 +1116,40 @@ turn running. Exit `1` means it was refused, and the line says why.
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
 | `--pr` | `PR` | **required** | the pull request to escalate |
 | `--reason` | `REASON` |  | why, for the ruling's record (one line) |
+<!-- /flags -->
+
+
+### regression
+
+Links a later bug to the approved PR that shipped it, so `report` can say which approvals were
+followed by a regression (#661). You say which PR caused the bug; the loop records the link only
+as far as GitHub confirms it:
+- `--issue` is an issue, not a pull request;
+- `--pr` merged, and the issue was opened after that merge (an older bug is a pre-existing
+  defect, not one this approval let through);
+- the loop's reviewer approved the **merged head** itself: an approval of an earlier head, or one
+  superseded by changes requested at that head, doesn't cover what merged.
+
+The link keeps the approved head, the review and the resolved model of the review's run (from
+the run ledger, `unknown` without one). Recording the same link again changes nothing.
+`--retract` withdraws a link; it's kept as retracted and the report counts it apart.
+
+```bash
+hermes dk regression --loop "<loop-id>" --issue 90 --pr 72
+hermes dk regression --loop "<loop-id>" --issue 90 --pr 72 --retract
+```
+
+Exit `1` means it was refused, and the line says why; `2` that GitHub or the ledger couldn't
+answer, and nothing was recorded. In `report`, "approved, then broke" counts approved PRs, not
+bug reports (three issues about one regression are one PR), with the links listed under it.
+
+<!-- flags:regression -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
+| `--issue` | `ISSUE` | **required** | the bug report (an issue opened after the PR merged) |
+| `--pr` | `PR` | **required** | the merged pull request that introduced it |
+| `--retract` |  |  | withdraw this link (kept as retracted) |
 <!-- /flags -->
 
 ### trace

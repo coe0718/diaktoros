@@ -3674,9 +3674,9 @@ def cmd_stats(args) -> int:
 def cmd_report(args) -> int:
     """The weekly digest on demand, across every configured loop (or one with ``--loop``): PRs
     reviewed, verdicts, rounds, request-to-verdict time, escalations, rulings, finding and
-    issue-fix outcomes, turns and failures per seat and model, trends against the window before,
-    and the most stuck PR. Read-only: the run ledger, the loops' breach markers and finding
-    records, and one GitHub read per issue-fix PR."""
+    issue-fix outcomes, regressions after approval, turns and failures per seat and model, trends
+    against the window before, and the most stuck PR. Read-only: the run ledger, the loops' breach
+    markers and finding records, and one GitHub read per issue-fix PR."""
     from . import run_supervisor, stats
     try:
         since = stats.parse_since(args.since)
@@ -3824,6 +3824,86 @@ def cmd_escalate(args) -> int:
     print(f"{say}: escalated at {verdicts}/{loop['cap']} verdicts — adjudicator turn "
           f"{'enqueued' if outcome in ('new', 'retry') else outcome}; the PR is parked at this "
           f"head (`hermes dk explain --loop {loop['id']} --pr {number}` follows it)")
+    return 0
+
+
+def _one_loop(args) -> dict | None:
+    """``--loop``, else the only configured loop; None (said) when that cannot be decided."""
+    if args.loop:
+        try:
+            return config.load_id(args.loop)
+        except config.ConfigError as exc:
+            print(f"no such loop: {exc}")
+            return None
+    loops, refused = config.readable_loops()
+    for loop_id, reason in refused:
+        print(f"skipping {loop_id}.json: {reason}")
+    names = [lp["id"] for lp in loops] + [loop_id for loop_id, _ in refused]
+    if len(names) > 1:
+        print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
+        return None
+    if refused or not loops:
+        if not loops and not refused:
+            print(f"no loops configured in {config.config_dir()}")
+        return None
+    return loops[0]
+
+
+def cmd_regression(args) -> int:
+    """Link a later bug to the approved PR that introduced it (#661), or retract that link.
+
+    The operator says which PR caused the bug; the loop only records what GitHub confirms: the
+    issue is an issue, the PR merged, the issue was opened after the merge (an older bug is a
+    pre-existing defect), and the loop's reviewer approved the merged head itself (an approval of
+    an earlier head does not cover what merged). The model is that review's, from the run
+    ledger. Exit 1 when refused, with the reason; 2 when GitHub or the ledger cannot answer."""
+    from . import gate, run_supervisor
+    from .stats import _iso
+    loop = _one_loop(args)
+    if loop is None:
+        return 2
+    say = f"#{args.issue} ← PR #{args.pr}"
+    sup = run_supervisor.Supervisor(run_supervisor.production_ledger())
+    if args.retract:
+        if sup.retract_regression(loop["repo"], args.issue, args.pr):
+            print(f"{say}: link retracted (kept in the ledger as retracted)")
+            return 0
+        print(f"{say}: refused — no live link to retract")
+        return 1
+    issue = gh.api(loop, f"/repos/{loop['repo']}/issues/{args.issue}", login=loop["read_token"])
+    pr = gh.pr(loop, args.pr)
+    if not isinstance(issue, dict) or issue.get("number") != args.issue:
+        print(f"{say}: the issue could not be read from GitHub — nothing recorded")
+        return 2
+    if not isinstance(pr, dict) or pr.get("number") != args.pr:
+        print(f"{say}: the PR could not be read from GitHub — nothing recorded")
+        return 2
+    if "pull_request" in issue:
+        print(f"{say}: refused — #{args.issue} is a pull request, not a bug report")
+        return 1
+    merged, opened = _iso(pr.get("merged_at")), _iso(issue.get("created_at"))
+    if merged is None:
+        print(f"{say}: refused — PR #{args.pr} did not merge, so it cannot have shipped the bug")
+        return 1
+    if opened is None or opened < merged:
+        print(f"{say}: refused — #{args.issue} was opened before PR #{args.pr} merged: a "
+              "pre-existing defect, not one this approval let through")
+        return 1
+    head = str((pr.get("head") or {}).get("sha") or "")
+    reviews = gh.reviews(loop, args.pr)
+    if not isinstance(reviews, list):
+        print(f"{say}: the reviews could not be read from GitHub — nothing recorded")
+        return 2
+    latest = gate.latest_effective_review_at_head(reviews, loop, head) if head else None
+    if not latest or gh.review_state(latest) != "APPROVED":
+        print(f"{say}: refused — the loop's reviewer did not approve PR #{args.pr}'s merged head "
+              f"{head[:7] or '?'}; an approval of an earlier head does not cover what merged")
+        return 1
+    review_id = int(latest["id"])
+    model = sup.approving_model(loop["repo"], args.pr, head, review_id)
+    outcome = sup.link_regression(loop["repo"], args.issue, args.pr, head, review_id, model)
+    print(f"{say}: {outcome} — approved at {head[:7]} (review {review_id}, model "
+          f"{model or 'unknown'})")
     return 0
 
 
@@ -5663,8 +5743,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
 
         report_cmd = sub.add_parser("report", help="The digest on demand, across all loops: reviews, "
                                                    "rounds, time to verdict, escalations, rulings, "
-                                                   "finding and issue-fix outcomes, turns per "
-                                                   "seat and model, trends, the most stuck PR")
+                                                   "finding and issue-fix outcomes, regressions "
+                                                   "after approval, turns per seat and model, "
+                                                   "trends, the most stuck PR")
         report_cmd.add_argument("--loop", help="one loop id (default: every configured loop)")
         report_cmd.add_argument("--since", default="7d",
                                 help="window start: 7d, 24h or a date like 2026-09-28 (default 7d)")
@@ -5686,6 +5767,18 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         escalate.add_argument("--pr", type=int, required=True, help="the pull request to escalate")
         escalate.add_argument("--reason", default="", help="why, for the ruling's record (one line)")
         escalate.set_defaults(func=cmd_escalate)
+
+        regression = sub.add_parser("regression",
+                                    help="Link a later bug to the approved PR that shipped it, "
+                                         "for the report (#661); checked against GitHub")
+        regression.add_argument("--loop", help="loop id (default: the only configured loop)")
+        regression.add_argument("--issue", type=int, required=True,
+                                help="the bug report (an issue opened after the PR merged)")
+        regression.add_argument("--pr", type=int, required=True,
+                                help="the merged pull request that introduced it")
+        regression.add_argument("--retract", action="store_true",
+                                help="withdraw this link (kept as retracted)")
+        regression.set_defaults(func=cmd_regression)
 
         explain = sub.add_parser("explain",
                                  help="Why one PR is not moving, and what has to happen next")
