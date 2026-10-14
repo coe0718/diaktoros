@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import config, gate, gh, pr_hold  # noqa: E402
+from diaktoros import config, gate, gh, ledger, pr_hold, run_supervisor  # noqa: E402
 from diaktoros.run_supervisor import CONFLICT_KEY, Supervisor  # noqa: E402
 
 BOSS, STRANGER = "boss", "stranger"
@@ -171,6 +171,10 @@ class Sweep(fg.Base):
         self.assertNotIn(watchdog.PUSH_OFF_KIND, text)
         live.assert_not_called()                           # no conflict turn is even considered
         self.assertEqual(self.st.pr_holds(), {7: self.HOLD})
+        self.sweep(lambda *a: (self.HOLD, ""))             # still held: the same hold
+        with ledger.connect(run_supervisor.production_ledger()) as con:   # the report's (#678)
+            self.assertEqual(con.execute("SELECT pr, action FROM operator_actions").fetchall(),
+                             [(7, "hold")])
 
     def test_release_drops_the_record_and_an_unreadable_hold_keeps_it(self):
         self.st.pr_hold_set(7, self.HOLD)

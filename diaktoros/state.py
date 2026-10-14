@@ -741,12 +741,15 @@ class LoopState:
         return {int(k): v for k, v in (raw.items() if isinstance(raw, dict) else ())
                 if str(k).isdigit() and isinstance(v, dict)}
 
-    def pr_hold_set(self, number: int, hold: dict) -> None:
+    def pr_hold_set(self, number: int, hold: dict) -> bool:
+        """Record the hold; True when the PR was not held before (a hold began)."""
         with self.locked():
             data = {str(k): v for k, v in self.pr_holds().items()}
+            began = str(number) not in data
             if data.get(str(number)) != hold:
                 data[str(number)] = hold
                 self._save(self.dir / "held-prs.json", data)
+            return began
 
     def pr_hold_drop(self, number: int) -> None:
         with self.locked():

@@ -104,6 +104,13 @@ CREATE TABLE IF NOT EXISTS filed_issues (
  created REAL NOT NULL, updated REAL NOT NULL,
  PRIMARY KEY (run_id, seq), UNIQUE (repo, pr, title_key)
 );
+-- An operator's explicit step on a PR (#678), recorded after it took effect, for the report:
+-- retry (a run re-armed), escalate, review (a fresh review asked for), hold (a maintainer's
+-- hold began). Only counted; nothing decides from it.
+CREATE TABLE IF NOT EXISTS operator_actions (
+ id INTEGER PRIMARY KEY, repo TEXT NOT NULL, pr INTEGER NOT NULL, action TEXT NOT NULL,
+ created REAL NOT NULL
+);
 -- Facts about the ledger itself for the operator outbox, e.g. that it vanished and was
 -- recreated empty. Delivered once by notify(), claim-before-send like every other notice.
 CREATE TABLE IF NOT EXISTS ledger_events (
@@ -273,6 +280,17 @@ def production_ledger() -> Path:
     (``review-loop-runs.sqlite`` until ``migrate`` moves it)."""
     from . import config
     return config.host_path("ledger")
+
+
+def record_operator_action(repo: str, pr: int, action: str) -> None:
+    """Note an operator's step on a PR in the production ledger, for the report (#678). A plain
+    host Supervisor: it needs no runtime file. Best effort: never raises past a bad name."""
+    try:
+        Supervisor(production_ledger()).record_operator_action(repo, pr, action)
+    except ValueError:
+        raise
+    except Exception as exc:
+        util.log(f"operator action {action} on {repo}#{pr} not recorded: {exc}")
 
 
 def presence_marker() -> Path:
@@ -1951,6 +1969,20 @@ class Supervisor:
                         'new_head=COALESCE(?,new_head),pr_number=COALESCE(?,pr_number),'
                         'comment_id=COALESCE(?,comment_id),updated=? WHERE run_id=?',
                         (state, error, new_head, pr_number, comment_id, time.time(), run_id))
+
+    OPERATOR_ACTIONS = ("retry", "escalate", "review", "hold")
+
+    def record_operator_action(self, repo: str, pr: int, action: str) -> None:
+        """Note an operator's step on a PR for the report (#678). Called after the step took
+        effect; best effort, so a ledger that refuses the write never fails the step."""
+        if action not in self.OPERATOR_ACTIONS:
+            raise ValueError(f"unknown operator action {action!r}")
+        try:
+            with self._connect() as con:
+                con.execute('INSERT INTO operator_actions(repo,pr,action,created) VALUES(?,?,?,?)',
+                            (repo, int(pr), action, time.time()))
+        except (sqlite3.Error, OSError, LedgerMissing) as exc:
+            util.log(f"operator action {action} on {repo}#{pr} not recorded: {exc}")
 
     def issue_fix_result(self, run_id: str) -> dict | None:
         with self._connect() as con:

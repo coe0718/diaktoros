@@ -81,6 +81,9 @@ class Command(Base):
         rc, out, _ = self.escalate()
         self.assertEqual(rc, 1)
         self.assertIn("already awaiting a ruling", out)
+        with ledger.connect(run_supervisor.production_ledger()) as con:   # the report's (#678)
+            self.assertEqual(con.execute("SELECT pr, action FROM operator_actions").fetchall(),
+                             [(7, "escalate")])
 
     def test_refusals(self):
         cases = {

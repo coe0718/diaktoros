@@ -422,6 +422,88 @@ def escalations(db: Path, repo: str, since: float, until: float,
             "by": {kind: counts[kind] for kind in ("cap", "operator", "unknown")}}
 
 
+FIX_READS_MAX = 100
+
+
+def fix_outcomes(db: Path, repo: str, since: float, until: float, pr_state) -> dict | None:
+    """What became of the issue fixes proposed in ``[since, until)`` (#678).
+
+    The cohort is the issue-fix writes the ledger recorded in the window, dated when they were
+    recorded: a PR opened last week and merged this week stays in last week's cohort, and its
+    outcome is read now, so a later merge updates it. A PR's outcome is GitHub's (``pr_state``:
+    ``open``, ``merged``, ``closed`` or None when unreadable); a write with no PR number (its
+    outcome uncertain) or an unreadable PR is ``unknown``, never guessed. Conversion is merged
+    over decided (merged + closed), with open and unknown shown beside it.
+
+    Turns per merged fix: the launched issue-fix turn plus every launched turn on its PR (review,
+    fix, CI fix, conflict, ruling) — ledger rows, one per turn, so a redelivery cannot add one.
+    Operator steps are the ``operator_actions`` on its PR after the proposal; the table exists
+    from this version on, so ``steps_from`` is the first one recorded and older work reads as a
+    lower bound. None when there is no ledger."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        con.row_factory = sqlite3.Row
+        try:
+            fixes = con.execute("SELECT run_id, number, kind, pr_number, created FROM issue_fixes "
+                                "WHERE repo=? AND created>=? AND created<? ORDER BY created",
+                                (repo, since, until)).fetchall()
+        except sqlite3.OperationalError:
+            fixes = []
+        prs = sorted({row["pr_number"] for row in fixes if row["kind"] == "pr"
+                      and row["pr_number"] is not None})
+        marks = ",".join("?" * len(prs))
+        runs = con.execute(f"SELECT id, pr, created FROM runs WHERE repo=? AND pr IN ({marks}) "
+                           "AND seat!='issue_fixer' AND launch_intent IS NOT NULL",
+                           (repo, *prs)).fetchall() if prs else []
+        launched = {row[0] for row in con.execute(
+            "SELECT id FROM runs WHERE repo=? AND seat='issue_fixer' AND launch_intent IS NOT NULL",
+            (repo,))}
+        try:
+            actions = con.execute(f"SELECT pr, action, created FROM operator_actions WHERE repo=? "
+                                  f"AND pr IN ({marks})", (repo, *prs)).fetchall() if prs else []
+            first = con.execute("SELECT MIN(created) FROM operator_actions").fetchone()[0]
+        except sqlite3.OperationalError:
+            actions, first = [], None
+    finally:
+        con.close()
+    outcomes, turns, steps = Counter(), [], Counter()
+    explained, partial, reads = 0, False, {}
+    for fix in fixes:
+        if fix["kind"] != "pr":
+            explained += 1
+            continue
+        number = fix["pr_number"]
+        if number is None:
+            outcomes["unknown"] += 1
+            continue
+        if number not in reads:
+            if len(reads) >= FIX_READS_MAX:
+                partial = True
+                reads[number] = None
+            else:
+                try:
+                    reads[number] = pr_state(number)
+                except Exception:
+                    reads[number] = None
+        outcome = reads[number] or "unknown"
+        outcomes[outcome] += 1
+        mine = [a for a in actions if a["pr"] == number and a["created"] >= fix["created"]]
+        steps.update(a["action"] for a in mine)
+        if outcome == "merged":
+            turns.append((1 if fix["run_id"] in launched else 0)
+                         + sum(1 for run in runs if run["pr"] == number
+                               and run["created"] >= fix["created"]))
+    decided = outcomes["merged"] + outcomes["closed"]
+    return {"proposed": sum(outcomes.values()), "explained": explained,
+            "outcomes": {name: outcomes[name] for name in ("merged", "closed", "open", "unknown")},
+            "conversion": {"merged": outcomes["merged"], "decided": decided},
+            "turns_per_merged": summary(turns), "steps": dict(sorted(steps.items())),
+            "steps_from": first, "partial": partial}
+
+
 def stuck(db: Path, repo: str, at: float) -> dict | None:
     """The longest-waiting run that is held, waiting or uncertain, with ``now``'s host-written
     reason; None when nothing is stuck."""
@@ -442,14 +524,19 @@ def _breaches(loop: dict) -> dict:
 
 
 def report(loop: dict, db: Path, since: float, until: float | None = None,
-           breaches: dict | None = None) -> dict:
+           breaches: dict | None = None, pr_state=None) -> dict:
     """The digest for one loop over ``[since, until)`` plus the equal window before it, for
-    week-over-week trends. The run ledger and the loop's breach markers: nothing new is
-    collected."""
+    week-over-week trends. The run ledger and the loop's breach markers, plus one GitHub read
+    (as the reader) per issue-fix PR in the window for its outcome."""
     until = time.time() if until is None else until
     before = since - (until - since)
     repo = loop["repo"]
     breaches = _breaches(loop) if breaches is None else breaches
+    if pr_state is None:
+        from . import fix_hold
+
+        def pr_state(number):
+            return fix_hold.pr_state(loop, number)
     return {"repo": repo, "loop": loop.get("id", ""), "since": since, "until": until,
             "turns": ledger(db, repo, since, until),
             "turns_before": ledger(db, repo, before, since),
@@ -457,6 +544,7 @@ def report(loop: dict, db: Path, since: float, until: float | None = None,
             "reviews_before": review_window(db, repo, before, since),
             "escalations": escalations(db, repo, since, until, breaches),
             "escalations_before": escalations(db, repo, before, since, breaches),
+            "fixes": fix_outcomes(db, repo, since, until, pr_state),
             "stuck": stuck(db, repo, until)}
 
 
@@ -496,6 +584,23 @@ def report_text(data: dict) -> str:
                    f" · by cap {by['cap']}, by operator {by['operator']}, unknown {by['unknown']}")
     out.append("rulings: " + (", ".join(f"{n} {v}" for v, n in sorted(rulings.items()))
                               if rulings else "none"))
+    fixes = data.get("fixes")
+    if fixes is not None:
+        got, conv, per = fixes["outcomes"], fixes["conversion"], fixes["turns_per_merged"]
+        steps = fixes["steps"]
+        out.append(f"issue fixes: {fixes['proposed']} PRs proposed"
+                   f" ({fixes['explained']} explained without a PR) · merged {got['merged']},"
+                   f" closed {got['closed']}, open {got['open']}, unknown {got['unknown']}"
+                   + (" (some PRs not read)" if fixes["partial"] else ""))
+        out.append(f"merge conversion: {conv['merged']}/{conv['decided']} decided"
+                   f" · turns per merged fix: "
+                   + (f"median {per['median']:.0f}, max {per['max']}" if per else "-")
+                   + " · operator steps: "
+                   + (f"{sum(steps.values())} (" + ", ".join(f"{name} {n}" for name, n in
+                                                            steps.items()) + ")"
+                      if steps else "none")
+                   + (f", recorded from {_day(fixes['steps_from'])}" if fixes["steps_from"]
+                      else ", none recorded yet"))
     turns, was = data["turns"] or {}, data["turns_before"]
     out.append(f"turns: {_trend(_total(turns), _total(was))} · failed "
                f"{_trend(_total(turns, 'failed'), _total(was, 'failed'))} · "

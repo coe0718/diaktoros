@@ -67,6 +67,10 @@ class Review(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("#7 @ aaaaaaa: review queued for the isolated worker", out)
         self.assertNotIn("waiting", out)
+        from diaktoros import ledger, run_supervisor
+        with ledger.connect(run_supervisor.production_ledger()) as con:   # the report's (#678)
+            self.assertIn((t.REPO, 7, "review"),
+                          con.execute("SELECT repo, pr, action FROM operator_actions").fetchall())
 
     def test_a_gate_timeout_is_its_own_outcome(self):
         import subprocess
