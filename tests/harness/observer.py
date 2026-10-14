@@ -432,7 +432,8 @@ def group_observer_cli() -> None:
                               "--fixer-profile", "fx", "--host", HOST,
                               "--token", f"{REVIEWER}={SEAT_PATS[0]}",
                               "--token", f"{FIXER}={SEAT_PATS[1]}", *READER_ARGS,
-                              "--observer-profile", "arbiter"])
+                              "--observer-profile", "arbiter",
+                              "--observer-weekly-report", "Mon 09:00"])
     init_output = io.StringIO()
     with contextlib.redirect_stdout(init_output):
         rc = args.func(args)
@@ -443,6 +444,7 @@ def group_observer_cli() -> None:
     check("  the feed is on, named after the loop", loop["observer"]["route"], "feed-observe")
     check("  for the profile that was named", loop["observer"]["profile"], "arbiter")
     check("  delivered to telegram by default", loop["observer"]["deliver"], "telegram")
+    check("  with its weekly report, normalized", loop["observer"]["weekly_report"], "mon 09:00")
     subs = json.loads(SUBS.read_text())
     check("  its route exists, deliver-only (no agent)", subs["feed-observe"]["deliver_only"], True)
     check("  with the notice prompt", subs["feed-observe"]["prompt"], "{_observer.message}")
@@ -452,6 +454,22 @@ def group_observer_cli() -> None:
           [subs[name].get("deliver_only") for name in ("feed-review", "feed-fix")], [None, None])
 
     check("  registered at the operator's own gateway", subs["feed-observe"]["host"], HOST)
+    args.repo, args.observer_weekly_report = "acme/weekly", "monday"
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = args.func(args)
+    check("init refuses an unreadable weekly report time", rc, 2)
+    check("  by name", "--observer-weekly-report" in out.getvalue(), True)
+    check("  and writes no loop", (LOOPS_DIR / "weekly.json").exists(), False)
+    args.observer_weekly_report = ""
+    args.repo = "acme/formweekly"
+    with mock.patch.object(cli, "_SETTINGS", {"observer_weekly_report": "Thu 06:15"}), \
+         contextlib.redirect_stdout(io.StringIO()):
+        rc = args.func(args)
+    check("init takes the form's weekly report time when no flag is given", rc, 0)
+    check("  normalized", config.load_id("formweekly")["observer"].get("weekly_report"),
+          "thu 06:15")
+    args.repo = "acme/feed"
     args.repo = "acme/conflict"
     args.observer_route = "widgets-review"
     with contextlib.redirect_stdout(io.StringIO()):
@@ -540,6 +558,17 @@ def group_observer_cli() -> None:
     rc, out = call_set(observer_digest_min=30)
     check("digest → accepted", rc, 0)
     check("  written", config.load_id("feed")["observer"]["digest_min"], 30)
+    rc, out = call_set(observer_weekly_report="FRI 17:30")
+    check("weekly report time → accepted", rc, 0)
+    check("  written normalized", config.load_id("feed")["observer"]["weekly_report"], "fri 17:30")
+    rc, out = call_set(observer_weekly_report="friday")
+    check("an unreadable weekly report time is refused", rc, 2)
+    check("  by name", "--observer-weekly-report" in out, True)
+    check("  and nothing was written", config.load_id("feed")["observer"]["weekly_report"],
+          "fri 17:30")
+    rc, out = call_set(observer_weekly_report="")
+    check("blank → no weekly report", rc, 0)
+    check("  removed", "weekly_report" in config.load_id("feed")["observer"], False)
     rc, out = call_set(observer_unmute=True)
     check("unmute → accepted", rc, 0)
     check("  written", config.load_id("feed")["observer"]["mute"], False)

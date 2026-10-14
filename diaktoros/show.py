@@ -22,8 +22,8 @@ from . import config, observer
 
 # Every key `show` covers. The tests compare these against SETTINGS_SCHEMA, DEFAULTS, TRIAGE_KEYS
 # and the observer keys, so a key added to the loop without a row here turns a test red.
-OBSERVER_KEYS = ("route", "profile", "deliver", "mute", "events", "digest_min", "urgent_route",
-                 "urgent_profile", "urgent_deliver")
+OBSERVER_KEYS = ("route", "profile", "deliver", "mute", "events", "digest_min", "weekly_report",
+                 "urgent_route", "urgent_profile", "urgent_deliver")
 SEAT_FILE_KEYS = ("route", "profile", "login", "agent", "concurrency", "turn_budget_s",
                   "daily_turns", "max_steps")
 
@@ -214,7 +214,16 @@ def _rows(loop: dict) -> list[_Row]:
               f"triage: {key}")
     events = obs.get("events")
     hidden = sorted(set(observer.EVENTS) - set(events)) if events else []
+    # The weekly report is also a settings-form field (#658): one row, under the form's name.
+    schema("observer_weekly_report", ("observer", "weekly_report"),
+           f"{obs['weekly_report']} UTC" if obs.get("weekly_report") else _UNSET,
+           on=bool(obs.get("weekly_report")) and not observer.configured(loop),
+           off="no weekly report" if not obs.get("weekly_report") else "",
+           note=("set but inert: the observer feed is off or muted"
+                 if obs.get("weekly_report") and observer.configured(loop) else ""))
     for key in OBSERVER_KEYS:
+        if key == "weekly_report":
+            continue
         value = obs.get(key)
         row = _Row(f"observer.{key}", ("observer", key),
                    value if value not in (None, "") else _UNSET, f"observer feed: {key}")

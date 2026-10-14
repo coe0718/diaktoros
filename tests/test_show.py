@@ -32,12 +32,13 @@ class ShowTests(_Base):
         self.assertFalse(unshown, f"DEFAULTS keys `show` does not list: {sorted(unshown)}")
         for key in config.TRIAGE_KEYS:
             self.assertTrue(f"triage.{key}" in rows or key in rows, f"triage.{key}")
-        for key in show.OBSERVER_KEYS:
-            self.assertIn(f"observer.{key}", rows)
+        for key in show.OBSERVER_KEYS:     # a form field keeps the form's name (observer_<key>)
+            self.assertTrue(f"observer.{key}" in rows or f"observer_{key}" in rows, key)
         self.assertIn("adjudicator.route", rows)
 
     def test_observer_keys_match_the_normalizer(self):
         norm = config.normalize_observer({"route": "r", "events": ["stall"], "digest_min": 5,
+                                          "weekly_report": "mon 09:00",
                                           "urgent_route": "u", "urgent_profile": "p",
                                           "urgent_deliver": "d"})
         self.assertLessEqual(set(norm), set(show.OBSERVER_KEYS))
