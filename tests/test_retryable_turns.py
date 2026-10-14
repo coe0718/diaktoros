@@ -396,6 +396,9 @@ class OperatorCommands(unittest.TestCase):
         code, out = self.run_cli(cli.cmd_retry, loop='widgets', pr=7, seat='reviewer')
         self.assertEqual(code, 2)
         self.assertIn('nothing to retry', out)
+        with ledger.connect(self.db) as con:           # one step for the report (#678), not two
+            self.assertEqual(con.execute("SELECT repo, pr, action FROM operator_actions")
+                             .fetchall(), [('acme/widgets', 7, 'retry')])
 
     def test_retry_names_the_pr_head_not_a_supersession_bumped_timestamp(self):
         # #126: bare `retry` picked the head by `max(updated)`, but the claim path bumps `updated`

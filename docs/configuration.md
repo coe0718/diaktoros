@@ -611,7 +611,7 @@ State is operational data, not additional user configuration. Do not hand-edit l
 
 | Host-wide location under `$HERMES_HOME/state/` | Purpose |
 |---|---|
-| `diaktoros-runs.sqlite` | Isolated run states/leases/budgets/retries, broker write-ahead records, rulings, triage, and issue-fix results. |
+| `diaktoros-runs.sqlite` | Isolated run states/leases/budgets/retries, broker write-ahead records, rulings, triage and issue-fix results, and operator steps on PRs (retry, escalate, review, a maintainer's hold) for the report. |
 | `diaktoros-runs.sqlite.workers.log` | Detached worker diagnostics, rotated once to `.1` after 256 KiB. |
 | `diaktoros-pacing.json` | Account usage-window holds and local-day start counts; account metadata, not credentials. |
 | `diaktoros-seat-locks/` | Per-profile model-resolution/refresh serialization locks. |

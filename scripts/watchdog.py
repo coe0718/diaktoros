@@ -972,7 +972,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         if hold_error:
             pr_failures.append((number, hold_error))
         elif hold:
-            st.pr_hold_set(number, hold)
+            if st.pr_hold_set(number, hold):              # a hold began: the report's (#678)
+                from diaktoros.run_supervisor import record_operator_action
+                record_operator_action(loop["repo"], number, "hold")
         else:
             st.pr_hold_drop(number)
         if hold or (hold_error and number in st.pr_holds()):

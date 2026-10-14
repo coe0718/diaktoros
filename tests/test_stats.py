@@ -173,6 +173,85 @@ class Ledger(unittest.TestCase):
                       "by operator 1, unknown 2", out)
         self.assertEqual(json.loads(json.dumps(data))["escalations"]["total"], 7)
 
+    def turn(self, pr, seat, created, launched=True, repo=REPO):
+        """One run on ``pr``; its run id."""
+        self.n += 1
+        with mock.patch.object(self.sup, "_spawn"):
+            self.sup.enqueue(f"t{self.n}", repo, pr, f"{self.n:040x}", seat)
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='succeeded', created=?, launch_intent=? "
+                        "WHERE delivery=?", (created, created if launched else None, f"t{self.n}"))
+            return con.execute("SELECT id FROM runs WHERE delivery=?", (f"t{self.n}",)).fetchone()[0]
+
+    def proposal(self, issue, kind, pr, created, repo=REPO):
+        run_id = self.turn(issue, "issue_fixer", created, repo=repo)
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO issue_fixes(run_id,repo,number,base,kind,branch,state,"
+                        "pr_number,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (run_id, repo, issue, "e" * 40, kind, f"diaktoros/issue-{issue}",
+                         "requested" if pr else "uncertain", pr, created, created))
+
+    def action(self, pr, action, created):
+        self.sup.record_operator_action(REPO, pr, action)
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE operator_actions SET created=? WHERE id=(SELECT MAX(id) FROM "
+                        "operator_actions)", (created,))
+
+    def test_issue_fix_outcomes_conversion_turns_and_operator_steps(self):
+        since, loop = NOW - 7 * DAY, {"repo": REPO, "id": "w"}
+        self.turn(120, "reviewer", NOW - 5000)                    # before the proposal: not its
+        self.action(120, "review", NOW - 4900)                    # likewise
+        self.proposal(20, "pr", 120, NOW - 4000)                  # merged
+        self.turn(120, "reviewer", NOW - 3900)
+        self.turn(120, "fixer", NOW - 3800)
+        self.turn(120, "reviewer", NOW - 3700)
+        self.turn(120, "reviewer", NOW - 3600, launched=False)    # queued, never ran
+        self.action(120, "retry", NOW - 3500)
+        self.action(120, "hold", NOW - 3400)
+        self.proposal(21, "pr", 121, NOW - 3000)                  # closed unmerged
+        self.proposal(22, "pr", 122, NOW - 2000)                  # still open
+        self.proposal(23, "pr", 123, NOW - 1500)                  # unreadable
+        self.proposal(24, "pr", None, NOW - 1000)                 # outcome of the write unknown
+        self.proposal(25, "comment", None, NOW - 900)             # explained, no PR
+        self.proposal(26, "pr", 126, since - DAY)                 # last week's cohort
+        self.turn(126, "reviewer", NOW - 800)                     # merged this week
+        self.proposal(27, "pr", 127, NOW - 700, repo="other/repo")
+        states = {120: "merged", 121: "closed", 122: "open", 123: None, 126: "merged"}
+        read = []
+
+        def pr_state(number):
+            read.append(number)
+            return states[number]
+        data = stats.report(loop, self.db, since, NOW, breaches={}, pr_state=pr_state)
+        fixes = data["fixes"]
+        self.assertEqual((fixes["proposed"], fixes["explained"]), (5, 1))
+        self.assertEqual(fixes["outcomes"], {"merged": 1, "closed": 1, "open": 1, "unknown": 2})
+        self.assertEqual(fixes["conversion"], {"merged": 1, "decided": 2})
+        self.assertEqual(fixes["turns_per_merged"]["median"], 4)    # issue fix + 3 launched
+        self.assertEqual(fixes["steps"], {"hold": 1, "retry": 1})
+        self.assertEqual(fixes["steps_from"], NOW - 4900)
+        self.assertEqual(sorted(read), [120, 121, 122, 123])        # one read each, this repo
+        out = stats.report_text(data)
+        self.assertIn("issue fixes: 5 PRs proposed (1 explained without a PR) · merged 1, "
+                      "closed 1, open 1, unknown 2", out)
+        self.assertIn("merge conversion: 1/2 decided · turns per merged fix: median 4, max 4 · "
+                      "operator steps: 2 (hold 1, retry 1)", out)
+        before = stats.fix_outcomes(self.db, REPO, since - 7 * DAY, since, pr_state)
+        self.assertEqual((before["proposed"], before["outcomes"]["merged"]), (1, 1))
+        self.assertEqual(before["turns_per_merged"]["median"], 2)   # its later review counts
+
+    def test_issue_fix_reads_are_bounded(self):
+        for n in range(3):
+            self.proposal(30 + n, "pr", 130 + n, NOW - 100 + n)
+        with mock.patch.object(stats, "FIX_READS_MAX", 2):
+            fixes = stats.fix_outcomes(self.db, REPO, 0, NOW, lambda n: "open")
+        self.assertEqual((fixes["outcomes"]["open"], fixes["outcomes"]["unknown"]), (2, 1))
+        self.assertTrue(fixes["partial"])
+
+    def test_operator_actions_are_named(self):
+        with self.assertRaises(ValueError):
+            self.sup.record_operator_action(REPO, 1, "merge")
+
     def test_report_without_a_ledger(self):
         data = stats.report({"repo": REPO, "id": "w"}, self.db.with_name("none.sqlite"), 0, NOW)
         self.assertIn("no run ledger yet", stats.report_text(data))

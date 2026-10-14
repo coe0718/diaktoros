@@ -3529,6 +3529,7 @@ def cmd_retry(args) -> int:
         rearmed += 1
         print(f"[{loop['id']}] {label} re-armed (was {row['state']}: {row['error'] or 'no reason'})")
     if rearmed:
+        sup.record_operator_action(loop["repo"], args.pr, "retry")
         try:
             started = gate.resume_isolated(loop)
         except Exception as exc:
@@ -3653,9 +3654,10 @@ def cmd_stats(args) -> int:
 
 def cmd_report(args) -> int:
     """The weekly digest on demand, across every configured loop (or one with ``--loop``): PRs
-    reviewed, verdicts, rounds, request-to-verdict time, escalations, rulings, turns and failures
-    per seat and model, trends against the window before, and the most stuck PR. Read-only: the
-    run ledger and the loops' breach markers."""
+    reviewed, verdicts, rounds, request-to-verdict time, escalations, rulings, issue-fix outcomes,
+    turns and failures per seat and model, trends against the window before, and the most stuck
+    PR. Read-only: the run ledger, the loops' breach markers, and one GitHub read per issue-fix
+    PR."""
     from . import run_supervisor, stats
     try:
         since = stats.parse_since(args.since)
@@ -3797,6 +3799,9 @@ def cmd_escalate(args) -> int:
     if outcome == "stale":
         print(f"{say}: the PR moved while escalating — nothing escalated")
         return 1
+    if outcome == "new":
+        from .run_supervisor import record_operator_action
+        record_operator_action(loop["repo"], number, "escalate")
     print(f"{say}: escalated at {verdicts}/{loop['cap']} verdicts — adjudicator turn "
           f"{'enqueued' if outcome in ('new', 'retry') else outcome}; the PR is parked at this "
           f"head (`hermes dk explain --loop {loop['id']} --pr {number}` follows it)")
@@ -3885,11 +3890,15 @@ def cmd_review(args) -> int:
               "no answer; check `explain` before asking again")
         return 2
     if _reviewer_runs(loop["repo"], args.pr, head) > before[0]:
+        from .run_supervisor import record_operator_action
+        record_operator_action(loop["repo"], args.pr, "review")
         print(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker "
               f"(`hermes dk explain --loop {loop['id']} --pr {args.pr}` follows it)")
         return 0
     waiting = queued()
     if waiting and waiting != before[1]:
+        from .run_supervisor import record_operator_action
+        record_operator_action(loop["repo"], args.pr, "review")
         reason = waiting.get("reason") or "the reviewer seat is busy"
         print(f"#{args.pr} @ {head[:7]}: review queued, waiting — {reason}")
         return 0
@@ -5632,8 +5641,8 @@ def register_cli(ctx, settings: dict | None = None) -> None:
 
         report_cmd = sub.add_parser("report", help="The digest on demand, across all loops: reviews, "
                                                    "rounds, time to verdict, escalations, rulings, "
-                                                   "turns per seat and model, trends, the most "
-                                                   "stuck PR")
+                                                   "issue-fix outcomes, turns per seat and model, "
+                                                   "trends, the most stuck PR")
         report_cmd.add_argument("--loop", help="one loop id (default: every configured loop)")
         report_cmd.add_argument("--since", default="7d",
                                 help="window start: 7d, 24h or a date like 2026-09-28 (default 7d)")

@@ -218,9 +218,10 @@ content, so they are safe to publish: see [Publishing stats](operations.md#publi
 
 The digest on demand, across every configured loop (or one with `--loop`), from the run ledger
 and the loop's breach markers: PRs reviewed, approvals vs changes requested, review rounds per PR,
-median request → verdict time, escalations, adjudicator rulings, turns and failures per seat and
-per resolved model, the change against the window just before (week over week for the default
-`7d`), and the most stuck PR with its host-written reason (a hold, a wait or an uncertain run).
+median request → verdict time, escalations, adjudicator rulings, what became of the issue fixes,
+turns and failures per seat and per resolved model, the change against the window just before
+(week over week for the default `7d`), and the most stuck PR with its host-written reason (a hold,
+a wait or an uncertain run).
 
 Escalations are counted apart from rulings. One escalation is one adjudicator turn, whether a
 spent cap or `escalate` started it, dated when it was committed; a redelivered breach is the same
@@ -233,8 +234,19 @@ only each PR's latest head: an older escalation, or one whose marker is gone, re
 hermes dk report --since 7d
 ```
 
-Not in this command yet: the weekly Telegram message (#658), review quality (#660, #661),
-issue-fix outcomes (#678) and shadow-review/override feeds (#218, #220). Request → verdict is measured from the review run's creation to its receipt.
+Issue fixes: the cohort is the issue-fix writes recorded in the window, so a PR opened last week
+and merged this week stays in last week's cohort, and its outcome is read from GitHub (as the
+reader, one read per PR, at most 100) each time the report runs. `merged`, `closed` (unmerged) and
+`open` are GitHub's; `unknown` is a write with no PR on record or a PR that could not be read.
+Merge conversion is merged over decided (merged + closed). Turns per merged fix count the
+issue-fix turn and every turn that ran on its PR after it: reviews, fixes, CI fixes, conflict
+turns and rulings. Operator steps are the explicit ones on that PR after the proposal: `retry`,
+`escalate`, `review` (a fresh review asked for) and `hold` (a maintainer's hold began). They are
+recorded from this version on, so the line says when the first was; earlier work is a lower
+bound. Human overrides (#220) are not among them.
+
+Not in this command yet: the weekly Telegram message (#658), review quality (#660, #661) and
+shadow-review/override feeds (#218, #220). Request → verdict is measured from the review run's creation to its receipt.
 
 <!-- flags:report -->
 | flag | value | default | what it does |
