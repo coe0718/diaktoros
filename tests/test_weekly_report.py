@@ -49,6 +49,42 @@ class Schedule(unittest.TestCase):
         self.assertIn("weekly report fri 17:30 UTC", observer.describe(feed))
 
 
+class Form(unittest.TestCase):
+    """The settings form (#658): the same setting, pushed by `apply`, the default for `init`."""
+    RAW = {**fg.raw_loop(False), "observer": {"route": "one-observe", "profile": "p"}}
+
+    def test_the_form_field_matches_plugin_yaml(self):
+        spec = config.SETTINGS_SCHEMA["observer_weekly_report"]
+        text = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text()
+        block = text.split("  observer_weekly_report:\n", 1)[1].split("\n  ", 4)
+        self.assertIn(f'label: "{spec["label"]}"', block[0])
+        self.assertIn(f'description: "{spec["description"]}"', "\n  ".join(block[:4]))
+
+    def test_apply_sets_clears_and_leaves_it(self):
+        applied = config.apply_settings(self.RAW, {"observer_weekly_report": "Tue 08:00"})
+        self.assertEqual(applied["observer"]["weekly_report"], "tue 08:00")
+        self.assertEqual(config.normalize(applied)["observer"]["weekly_report"], "tue 08:00")
+        cleared = config.apply_settings(applied, {"observer_weekly_report": "off"})
+        self.assertNotIn("weekly_report", cleared["observer"])
+        kept = config.apply_settings(applied, {"observer_weekly_report": ""})
+        self.assertEqual(kept["observer"]["weekly_report"], "tue 08:00")     # blank: not set here
+
+    def test_show_lists_it_under_the_form_s_name(self):
+        from diaktoros import show
+        loop = config.normalize({**self.RAW, "observer": {**self.RAW["observer"],
+                                                          "weekly_report": "tue 08:00"}})
+        rows = {row.name: row for row in show._rows(loop)}
+        self.assertEqual(rows["observer_weekly_report"].value, "tue 08:00 UTC")
+        self.assertEqual(rows["observer_weekly_report"].path, ("observer", "weekly_report"))
+        self.assertNotIn("observer.weekly_report", rows)                   # one row, not two
+
+    def test_apply_refuses_by_name(self):
+        with self.assertRaisesRegex(config.ConfigError, "observer_weekly_report: 'tuesday'"):
+            config.apply_settings(self.RAW, {"observer_weekly_report": "tuesday"})
+        with self.assertRaisesRegex(config.ConfigError, "needs the loop's observer feed"):
+            config.apply_settings(fg.raw_loop(False), {"observer_weekly_report": "tue 08:00"})
+
+
 class Feed(fg.Base):
     def setUp(self):
         super().setUp()

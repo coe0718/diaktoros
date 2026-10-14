@@ -1735,6 +1735,11 @@ def cmd_init(args) -> int:
             and (not d["adjudicator_login"]
                  or d["adjudicator_login"].lower() == adjudicator_login.lower())):
         tokens[adjudicator_login] = str(pathlib.Path(d["adjudicator_token_file"]).expanduser())
+    # The weekly report (#658): the flag wins over the form; the form's 'off' or blank is none.
+    weekly_form = str(d["observer_weekly_report"]).strip()
+    if (not getattr(args, "observer_weekly_report", "") and weekly_form.lower() not in ("", "off")
+            and (args.observer_profile or args.observer_route)):     # only for a feed being made
+        args.observer_weekly_report = weekly_form
     if getattr(args, "observer_weekly_report", ""):
         try:
             config.check_weekly_report(args.observer_weekly_report)

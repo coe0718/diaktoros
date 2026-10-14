@@ -162,6 +162,11 @@ config_schema:
     type: str
     default: ""
     description: "Verdicts the reviewer may give one review-only PR before it stops until a maintainer grants another round, a whole number 1-1000. Blank = not set here: the loop's own value, else the review cap"
+  observer_weekly_report:
+    label: "Weekly report (weekday and UTC time)"
+    type: str
+    default: ""
+    description: "When the observer feed gets the week's report: a weekday and a UTC time like 'mon 09:00'. Needs the loop's observer feed. 'off' turns it off. Blank = not set here: the loop's own value, else none"
   ci_fix_cap:
     label: "CI-fix turns per PR"
     type: str
