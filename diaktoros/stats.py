@@ -422,6 +422,94 @@ def escalations(db: Path, repo: str, since: float, until: float,
             "by": {kind: counts[kind] for kind in ("cap", "operator", "unknown")}}
 
 
+FINDING_OUTCOMES = ("fixed", "withdrawn", "overruled", "upheld", "respecified", "disputed", "open")
+
+
+def finding_outcomes(db: Path, repo: str, since: float, until: float,
+                     tracked: dict | None) -> dict | None:
+    """What became of the reviewer's numbered findings raised in ``[since, until)`` (#660).
+
+    ``tracked`` is the loop's finding record (``LoopState.findings_all``: per PR, each ``F<n>``
+    with its latest state, the head it was raised at and when). A finding keeps its id across
+    rounds, so it counts once however many reviews restate it. Its outcome, first match wins:
+
+    - ``upheld``: a REJECT ruling on its PR after it was raised (the adjudicator sided with it);
+    - ``overruled``: an ACCEPT ruling after it, and it was neither fixed nor withdrawn (the
+      adjudicator found it did not block: the one adjudication-confirmed false positive);
+    - ``respecified``: a RESPEC ruling after it (the goal, not the finding, was in question);
+    - ``fixed`` / ``withdrawn``: the reviewer's own latest state for it;
+    - ``disputed``: the fixer disputed the round after it was raised and no ruling followed;
+    - ``open``: none of those yet.
+
+    A dispute is not proof of a false positive, and an unchallenged finding is not proof of a
+    true one: ``false_positives`` is bounded to what a ruling decided (overruled over overruled
+    plus upheld). Per resolved model of the review that raised it (the reviewer run at that
+    head), else ``unknown``. A finding recorded before its time was kept (no ``at``) cannot be
+    placed in a window: ``undated`` counts them, outside every window. None without a ledger."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        con.row_factory = sqlite3.Row
+        columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
+        model = "model" if "model" in columns else "NULL"
+        reviews = con.execute(f"SELECT pr, head, {model} AS model FROM runs WHERE repo=? "
+                              "AND seat='reviewer' ORDER BY created", (repo,)).fetchall()
+        try:
+            rulings = con.execute("SELECT pr, verdict, created FROM rulings WHERE repo=? "
+                                  "ORDER BY created", (repo,)).fetchall()
+        except sqlite3.OperationalError:
+            rulings = []
+        try:
+            disputes = con.execute("SELECT pr, created FROM disputes WHERE repo=?",
+                                   (repo,)).fetchall()
+        except sqlite3.OperationalError:
+            disputes = []
+    finally:
+        con.close()
+    models = {(row["pr"], row["head"]): row["model"] for row in reviews}   # the latest wins
+    counts, by_model, undated = Counter(), {}, 0
+    for number, entry in (tracked or {}).items():
+        if not str(number).isdigit() or not isinstance(entry, dict):
+            continue
+        pr = int(number)
+        for item in (entry.get("findings") or {}).values():
+            if not isinstance(item, dict):
+                continue
+            at = item.get("at")
+            if not isinstance(at, (int, float)):
+                undated += 1
+                continue
+            if not since <= at < until:
+                continue
+            state = item.get("state")
+            ruled = next((r["verdict"] for r in rulings if r["pr"] == pr and r["created"] >= at),
+                         None)
+            if ruled == "REJECT":
+                outcome = "upheld"
+            elif ruled == "ACCEPT" and state not in ("fixed", "withdrawn"):
+                outcome = "overruled"
+            elif ruled == "RESPEC":
+                outcome = "respecified"
+            elif state in ("fixed", "withdrawn"):
+                outcome = state
+            elif any(d["pr"] == pr and d["created"] >= at for d in disputes):
+                outcome = "disputed"
+            else:
+                outcome = "open"
+            counts[outcome] += 1
+            name = models.get((pr, item.get("head"))) or "unknown"
+            by_model.setdefault(name, Counter())[outcome] += 1
+
+    def shaped(c: Counter) -> dict:
+        return {"raised": sum(c.values()), **{name: c[name] for name in FINDING_OUTCOMES},
+                "false_positives": {"overruled": c["overruled"],
+                                    "ruled": c["overruled"] + c["upheld"]}}
+    return {**shaped(counts), "undated": undated,
+            "models": {name: shaped(c) for name, c in sorted(by_model.items())}}
+
+
 FIX_READS_MAX = 100
 
 
@@ -523,8 +611,17 @@ def _breaches(loop: dict) -> dict:
         return {}
 
 
+def _tracked_findings(loop: dict) -> dict:
+    """The loop's numbered findings record, read-only; empty when it cannot be read."""
+    try:
+        from . import state as state_mod
+        return state_mod.state_for(loop).findings_all()
+    except Exception:
+        return {}
+
+
 def report(loop: dict, db: Path, since: float, until: float | None = None,
-           breaches: dict | None = None, pr_state=None) -> dict:
+           breaches: dict | None = None, pr_state=None, tracked: dict | None = None) -> dict:
     """The digest for one loop over ``[since, until)`` plus the equal window before it, for
     week-over-week trends. The run ledger and the loop's breach markers, plus one GitHub read
     (as the reader) per issue-fix PR in the window for its outcome."""
@@ -532,6 +629,7 @@ def report(loop: dict, db: Path, since: float, until: float | None = None,
     before = since - (until - since)
     repo = loop["repo"]
     breaches = _breaches(loop) if breaches is None else breaches
+    tracked = _tracked_findings(loop) if tracked is None else tracked
     if pr_state is None:
         from . import fix_hold
 
@@ -545,6 +643,7 @@ def report(loop: dict, db: Path, since: float, until: float | None = None,
             "escalations": escalations(db, repo, since, until, breaches),
             "escalations_before": escalations(db, repo, before, since, breaches),
             "fixes": fix_outcomes(db, repo, since, until, pr_state),
+            "findings": finding_outcomes(db, repo, since, until, tracked),
             "stuck": stuck(db, repo, until)}
 
 
@@ -607,6 +706,13 @@ def report_text(data: dict) -> str:
                    f" · by cap {by['cap']}, by operator {by['operator']}, unknown {by['unknown']}")
     out.append("rulings: " + (", ".join(f"{n} {v}" for v, n in sorted(rulings.items()))
                               if rulings else "none"))
+    found = data.get("findings")
+    if found is not None:
+        fp = found["false_positives"]
+        out.append(f"findings: {found['raised']} raised · "
+                   + ", ".join(f"{name} {found[name]}" for name in FINDING_OUTCOMES)
+                   + f" · adjudicated false positives: {fp['overruled']} of {fp['ruled']} ruled"
+                   + (f" · {found['undated']} undated, in no window" if found["undated"] else ""))
     fixes = data.get("fixes")
     if fixes is not None:
         got, conv, per = fixes["outcomes"], fixes["conversion"], fixes["turns_per_merged"]
@@ -632,6 +738,14 @@ def report_text(data: dict) -> str:
         out += ["", *_table(["seat", "turns", "failed", "held"],
                             [[seat, str(d["turns"]), str(d["states"].get("failed", 0)),
                               str(d["held"])] for seat, d in sorted(turns.items())])]
+    if found and found["models"]:
+        rows = [[name, str(g["raised"]), str(g["fixed"]), str(g["withdrawn"]),
+                 str(g["overruled"]), str(g["upheld"]),
+                 f"{g['false_positives']['overruled']}/{g['false_positives']['ruled']}"]
+                for name, g in found["models"].items()]
+        out += ["", "Findings by model", *_table(["model", "raised", "fixed", "withdrawn",
+                                                 "overruled", "upheld", "false positives"],
+                                                rows)]
     if reviews["models"]:
         rows = [[name, str(g["turns"]), str(g["failed"]), str(g["verdicts"].get("approved", 0)),
                  str(g["verdicts"].get("changes", 0)),
