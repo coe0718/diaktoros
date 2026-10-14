@@ -20,12 +20,12 @@ an explicit `apply --loop "<loop-id>"`.
 
 | Surface | Owns | How changes take effect |
 | --- | --- | --- |
-| Plugin settings form | Numeric defaults, gateway/clone defaults, working-seat identities and token paths, optional adjudicator identity, attribution | `init`/`setup` consume effective defaults for a new loop; `apply` overlays explicitly stored nonblank fields on one named loop. |
+| Plugin settings form | Numeric defaults, gateway/clone defaults, working-seat identities and token paths, optional adjudicator identity, attribution, the weekly report's time | `init`/`setup` consume effective defaults for a new loop; `apply` overlays explicitly stored nonblank fields on one named loop. |
 | Per-loop JSON | Repository, allowlists, routes, seats, consent policy, observer/triage and all effective loop settings | Use `set`, `triage`, `fixer-push`, or a carefully reviewed manual edit plus route reconciliation. See [Configuration](configuration.md). |
 | Private runtime JSON | Host Hermes/Python/Rust paths and optional model overrides | `setup` detects/writes it; workers resolve models through the runtime. See [Configuration](configuration.md). |
 
-The form and `SETTINGS_SCHEMA` in `diaktoros/config.py` mirror the 23 keys declared in
-`plugin.yaml:config_schema`. The schema supplies types, labels and defaults, not a complete
+The form and `SETTINGS_SCHEMA` in `diaktoros/config.py` mirror the keys declared in
+`plugin.yaml:config_schema`, and every one of them has a row below (a test checks both). The schema supplies types, labels and defaults, not a complete
 validation contract. The CLI handlers validate the resulting loop before their own writes.
 
 ## Every form field
@@ -60,6 +60,8 @@ Defaults are for a fresh form; existing loops retain values when a field is abse
 | `review_only_cap` | str / `""` | Whole number 1-1000, or blank | `review_only_cap`; verdicts the reviewer gives one review-only PR before it waits for `review --another-round`. Blank = the loop's `cap`. |
 | `ci_fix_cap` | str / `""` | Whole number 1-10, or blank | `ci_fix_cap`; CI-fix turns per PR before a red head goes to the reviewer. Blank = the loop's own value, else 3. |
 | `review_only_daily` | str / `""` | Whole number 1-1000, or blank | `review_only_daily`; reviewer turns per local day on review-only PRs. Blank = no cap. |
+| `review_only_update` | bool / `false` | Boolean | `review_only_update`: on, the host also pushes a clean merge of the base into a conflicting review-only PR's same-repository branch, with a lease on the head it read. Needs unattended fixer pushes; never resolves a real conflict or a workflow change. Off: a notice names the merged PRs, the files and the commands. |
+| `observer_weekly_report` | str / `""` | A weekday and a UTC time, `mon 09:00`; `off`; or blank | `observer.weekly_report`: when the observer feed gets the week's report (see [observer](observer.md#weekly-report)). `init` uses it for a new feed when `--observer-weekly-report` isn't given; `apply` sets it, and `off` clears it. Refused for a loop with no observer feed or an unreadable time. Blank = the loop's own value. |
 | `required_checks` | str / `""` | Comma-separated check names (a comma inside parentheses stays in the name); at most 50 unique names | `required_checks`: only these gate an approval and the CI hold; others are optional. A required check that never reports at the head is refused on approval and holds the review (up to an hour) whatever `review_after_ci` is. |
 | `human_paths` | str / `""` | Comma-separated glob patterns; at most 50 unique, each up to 200 characters | `human_paths`: a diff touching one is never approved by the loop; when the reviewer would approve, the approval is left to a person and the head is held. Blank keeps the loop's own list. |
 | `fixer_check` | str / `""` | One printable line, at most 500 characters | `fixer_check`: one command the fixer and issue-fix turns run before publishing, besides the tests they touched. Blank keeps the loop's value; `set --fixer-check ''` clears it. |
@@ -72,7 +74,8 @@ Defaults are for a fresh form; existing loops retain values when a field is abse
 | `fix_daily_turns` | str / `""` | Whole number 1-1000, or blank | `triage.fix_daily_turns`; issue-fix turns per local day. Needs the loop's `triage.fix_label`, else apply is refused. A new loop has no fix label, so `init` (and `setup`) refuses a non-blank value and writes nothing; set it with `triage --fix-label LABEL --maintainer LOGIN --fix-daily-turns N`, or `apply` once the fix label exists. Blank = not set here. |
 | `attribution` | bool / `true` | Boolean; CLI reader also recognizes boolean words | `attribution`; signs plugin-mediated reviews/comments and commit trailers. See the attribution-only apply limitation below. |
 
-The form deliberately has **no reader login/token field**, no observer destination, no triage,
+The form deliberately has **no reader login/token field**, no observer destination (only the
+weekly report's time, for a feed that already exists), no triage,
 no allowlist editor, no route-name editor, no per-seat model picker and no unattended-push
 consent field. Supply the reader at installation or with `set --read-token`, configure observer
 and triage through their documented commands, and enable push policy only with `fixer-push`.

@@ -188,6 +188,12 @@ SETTINGS_SCHEMA: dict = {
                                        "stops until a maintainer grants another round, a whole "
                                        "number 1-1000. Blank = not set here: the loop's own value, "
                                        "else the review cap"},
+    "observer_weekly_report": {"label": "Weekly report (weekday and UTC time)", "type": "str",
+                               "default": "",
+                               "description": "When the observer feed gets the week's report: a "
+                                              "weekday and a UTC time like 'mon 09:00'. Needs the "
+                                              "loop's observer feed. 'off' turns it off. Blank = "
+                                              "not set here: the loop's own value, else none"},
     "ci_fix_cap": {"label": "CI-fix turns per PR", "type": "str", "default": "",
                    "description": "CI-fix turns per PR (across its heads) before the reviewer "
                                   "reviews a red head, a whole number 1-10. Red required CI goes "
@@ -424,6 +430,20 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         if raw_tokens is not None:
             seats.setdefault(seat, {})["daily_tokens"] = _check_daily_tokens(
                 _form_int(raw_tokens), f"seats.{seat}.daily_tokens", "settings")
+    weekly = _form_value(settings, "observer_weekly_report")
+    if weekly is not None and str(weekly).strip():
+        observer = dict(loop_raw.get("observer") or {})
+        if not observer.get("route"):
+            raise ConfigError("settings: observer_weekly_report needs the loop's observer feed — "
+                              "without one there is nowhere to send the report")
+        if str(weekly).strip().lower() == "off":
+            observer.pop("weekly_report", None)
+        else:
+            try:
+                observer["weekly_report"] = check_weekly_report(weekly)
+            except ValueError as exc:
+                raise ConfigError(f"settings: observer_weekly_report: {exc}") from None
+        overlaid["observer"] = observer
     raw_cap = _form_value(settings, "fix_daily_turns")
     if raw_cap is not None:
         triage = dict(loop_raw.get("triage") or {})

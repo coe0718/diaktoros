@@ -462,6 +462,14 @@ def group_observer_cli() -> None:
     check("  by name", "--observer-weekly-report" in out.getvalue(), True)
     check("  and writes no loop", (LOOPS_DIR / "weekly.json").exists(), False)
     args.observer_weekly_report = ""
+    args.repo = "acme/formweekly"
+    with mock.patch.object(cli, "_SETTINGS", {"observer_weekly_report": "Thu 06:15"}), \
+         contextlib.redirect_stdout(io.StringIO()):
+        rc = args.func(args)
+    check("init takes the form's weekly report time when no flag is given", rc, 0)
+    check("  normalized", config.load_id("formweekly")["observer"].get("weekly_report"),
+          "thu 06:15")
+    args.repo = "acme/feed"
     args.repo = "acme/conflict"
     args.observer_route = "widgets-review"
     with contextlib.redirect_stdout(io.StringIO()):
