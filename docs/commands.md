@@ -218,7 +218,8 @@ content, so they are safe to publish: see [Publishing stats](operations.md#publi
 
 The digest on demand, across every configured loop (or one with `--loop`), from the run ledger
 and the loop's breach markers: PRs reviewed, approvals vs changes requested, review rounds per PR,
-median request → verdict time, escalations, adjudicator rulings, what became of the issue fixes,
+median request → verdict time, escalations, adjudicator rulings, what became of the reviewer's
+findings, what became of the issue fixes,
 turns and failures per seat and per resolved model, the change against the window just before
 (week over week for the default `7d`), and the most stuck PR with its host-written reason (a hold,
 a wait or an uncertain run).
@@ -245,9 +246,20 @@ turns and rulings. Operator steps are the explicit ones on that PR after the pro
 recorded from this version on, so the line says when the first was; earlier work is a lower
 bound. Human overrides (#220) are not among them.
 
+Findings: the reviewer's numbered findings (`F1`, `F2`…) raised in the window, each counted
+once however many rounds restate it. `fixed` or `withdrawn` is the reviewer's own latest state,
+and a ruling never claims such a finding: a ruling decides the findings still open. A finding
+still open is `upheld` (a REJECT ruling on its PR after it was raised, at that head or a later
+one), `overruled` (an ACCEPT ruling after it), `respecified` (a RESPEC ruling after it),
+`disputed` (the fixer disputed the round after it and no ruling followed), else `open`. A dispute alone is not a false positive, and an unchallenged finding is not proven right:
+the adjudicated false-positive rate is overruled over the findings a ruling decided (overruled +
+upheld), shown with that denominator, overall and by the resolved model of the review that raised
+it (`unknown` without a reviewer run at that head). Findings recorded before their time was kept
+are `undated` and counted outside every window.
+
 The same report can go to the observer feed once a week: see
-[`observer.weekly_report`](observer.md#weekly-report). Not in this command yet: review quality
-(#660, #661) and shadow-review/override feeds (#218, #220). Request → verdict is measured from the review run's creation to its receipt.
+[`observer.weekly_report`](observer.md#weekly-report). Not in this command yet: regressions after
+approval (#661) and shadow-review/override feeds (#218, #220). Request → verdict is measured from the review run's creation to its receipt.
 
 <!-- flags:report -->
 | flag | value | default | what it does |
