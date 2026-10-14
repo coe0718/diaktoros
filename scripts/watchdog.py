@@ -683,6 +683,15 @@ def base_tip(loop: dict) -> str | None:
     return sha.lower()
 
 
+def send_weekly_report(loop: dict, st) -> None:
+    """The loop's weekly report, when one is due (#658). Never fails the sweep."""
+    try:
+        from diaktoros import run_supervisor, stats
+        stats.weekly(loop, st, run_supervisor.production_ledger())
+    except Exception as exc:
+        log(f"weekly report: {type(exc).__name__}: {exc}")
+
+
 def retry_pending_breaches(loop: dict, st: state_mod.LoopState, prs: list,
                            failures: list | None = None) -> None:
     """Retry listed eligible heads only after reviews verify the cap.
@@ -919,6 +928,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         if observer.retry(loop, st):
             log("observer: retried an undelivered notice")
         observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
+        send_weekly_report(loop, st)
         finish_reads(loop, watch, now, health, pr_failures, lines)
         st.watch_save(watch)
         return lines
@@ -1242,6 +1252,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
     if observer.retry(loop, st):
         log("observer: retried an undelivered notice")
     observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
+    send_weekly_report(loop, st)
 
     # ``watch["alerts"]`` and ``last_run`` were saved above, before the best-effort work; here only
     # the health settlement (which rewrites ``watch``) is committed, on the same read-modify-write.

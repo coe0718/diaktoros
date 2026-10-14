@@ -508,6 +508,9 @@ def _observer_args(args, loop_id: str) -> dict:
         observer_cfg["events"] = args.observer_events
     if args.observer_digest_min:
         observer_cfg["digest_min"] = args.observer_digest_min
+    if getattr(args, "observer_weekly_report", ""):
+        # Checked again by normalize; refused here by name rather than written misconfigured.
+        observer_cfg["weekly_report"] = config.check_weekly_report(args.observer_weekly_report)
     for key in ("urgent_route", "urgent_profile", "urgent_deliver"):
         if getattr(args, f"observer_{key}", ""):
             observer_cfg[key] = getattr(args, f"observer_{key}")
@@ -1732,6 +1735,12 @@ def cmd_init(args) -> int:
             and (not d["adjudicator_login"]
                  or d["adjudicator_login"].lower() == adjudicator_login.lower())):
         tokens[adjudicator_login] = str(pathlib.Path(d["adjudicator_token_file"]).expanduser())
+    if getattr(args, "observer_weekly_report", ""):
+        try:
+            config.check_weekly_report(args.observer_weekly_report)
+        except ValueError as exc:
+            print(f"refused: --observer-weekly-report: {exc}")
+            return 2
 
     raw = {
         "id": args.id or args.repo.split("/")[-1],
@@ -2653,6 +2662,16 @@ def cmd_set(args) -> int:
         observer_cfg["events"] = args.observer_events
     if args.observer_digest_min is not None:
         observer_cfg["digest_min"] = args.observer_digest_min
+    weekly = getattr(args, "observer_weekly_report", None)
+    if weekly is not None:
+        if weekly.strip():
+            try:
+                observer_cfg["weekly_report"] = config.check_weekly_report(weekly)
+            except ValueError as exc:
+                print(f"refused: --observer-weekly-report: {exc}")
+                return 2
+        else:
+            observer_cfg.pop("weekly_report", None)   # blank = no weekly report
     for key in ("urgent_route", "urgent_profile", "urgent_deliver"):
         value = getattr(args, f"observer_{key}", None)
         if value is not None:
@@ -5455,6 +5474,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--observer-digest-min", type=int, default=0,
                           help="batch the feed into one message per this many minutes "
                                "(0 = one notice per transition)")
+        init.add_argument("--observer-weekly-report", default="",
+                          help="send the week's report to the feed once a week, at a weekday "
+                               "and UTC time like 'mon 09:00' (default: none)")
         init.add_argument("--observer-urgent-route", default="",
                           help="second route for urgent notices (failed, held, escalation, ruling, "
                                "stall, conflict, uncertain); routine ones keep the main feed")
@@ -5893,6 +5915,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         change.add_argument("--observer-digest-min", type=int, default=None,
                             help="batch the feed into one message per N minutes (0 = per "
                                  "transition)")
+        change.add_argument("--observer-weekly-report", default=None,
+                            help="the week's report once a week at a weekday and UTC time like "
+                                 "'mon 09:00' (blank = none)")
         change.add_argument("--observer-urgent-route", default=None,
                             help="route for urgent notices only (blank = one feed for everything)")
         change.add_argument("--observer-urgent-profile", default=None,

@@ -12,6 +12,7 @@ is absent, muted or broken.
 - [Privacy and destination binding](#privacy-and-destination-binding)
 - [Receipts and retries](#receipts-and-retries)
 - [Digests](#digests)
+- [Weekly report](#weekly-report)
 - [Mute, disable and restore](#mute-disable-and-restore)
 - [Troubleshoot](#troubleshoot-the-feed)
 - [Source evidence](#source-evidence)
@@ -28,6 +29,7 @@ Configure the desired platform/chat on the destination Hermes profile first, the
 hermes dk set --loop "<loop-id>" --observer-profile "<observer-profile>" --observer-deliver telegram
 hermes dk set --loop "<loop-id>" --observer-events verdict,escalation,ruling,closed
 hermes dk set --loop "<loop-id>" --observer-digest-min 30
+hermes dk set --loop "<loop-id>" --observer-weekly-report "mon 09:00"
 hermes dk status --loop "<loop-id>"
 hermes dk doctor --loop "<loop-id>"
 ```
@@ -38,6 +40,7 @@ hermes dk doctor --loop "<loop-id>"
 | `--observer-deliver telegram` | Gateway delivery platform; default Telegram, another configured adapter such as Discord can be selected |
 | `--observer-events` | Comma-separated event filter; blank means all events |
 | `--observer-digest-min 30` | Batch window in minutes for **routine** events (see [tiers](#urgent-and-routine-tiers)); 0 means per-transition notices |
+| `--observer-weekly-report "mon 09:00"` | Send the week's [report](#weekly-report) once a week at this weekday and UTC time; blank turns it off |
 | `--observer-urgent-route` | A second delivery-only route that receives urgent notices only; blank returns to one feed |
 | `--observer-urgent-profile` | Profile that owns the urgent destination (default: the feed's profile) |
 | `--observer-urgent-deliver` | Gateway platform for urgent notices (default: the feed's `--observer-deliver`) |
@@ -184,6 +187,30 @@ they matter (changes vs approve), at most 25 lines and then "…and N more":
 
 Batch claims precede POST; uncertain batches
 keep members attached rather than emitting duplicates separately.
+
+## Weekly report
+
+With `observer.weekly_report` set (a weekday and a UTC time, such as `mon 09:00`), the feed gets
+the loop's report once a week: the same calculation and text as `hermes dk report`, for the
+seven days before the scheduled time. A report scheduled for `mon 09:00` covers the previous
+Monday 09:00 UTC up to this Monday 09:00 UTC. Times are UTC only, and there is no time zone
+setting.
+
+- **It is sent by the watchdog sweep,** at the first sweep at or after the scheduled time. Like
+  the digest, it is not an independent timer, and with no running watchdog nothing is sent.
+- **Only the latest week is sent.** A week missed while the host was off is not sent late. The
+  first sweep after the setting is turned on sends the latest week already due.
+- **One report per week.** The report is claimed in the observer ledger before the POST, keyed
+  by the loop and the window's end. A second sweep, a restart or a racing run sends nothing
+  more, and a sent week is not even recomputed.
+- **Failures** follow the [receipts and retries](#receipts-and-retries) rules: a definite
+  failure is retried by later sweeps (at most three attempts), and an unverified POST is left
+  uncertain for you to reconcile. Neither blocks reviews or fixes.
+- **The setting is the opt-in.** `--observer-events` and the digest don't apply: the report is
+  never filtered out or batched. A muted or unconfigured feed sends nothing.
+- **Long reports are cut** at about 3,500 characters (under Telegram's 4,096 per message), with a
+  pointer to `hermes dk report` for the rest.
+- No model is called and no seat turn or budget is spent. Each loop sends its own report.
 
 ## Mute, disable and restore
 

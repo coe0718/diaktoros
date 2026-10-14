@@ -43,6 +43,7 @@ import pathlib
 import re
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 from . import config, gh, hostdirs, prompts, route_intent, routes, state
@@ -181,6 +182,8 @@ def describe(observer: dict) -> str:
         line += " · " + ",".join(observer["events"])
     if observer.get("digest_min"):
         line += f" · digest every {observer['digest_min']}m"
+    if observer.get("weekly_report"):
+        line += f" · weekly report {observer['weekly_report']} UTC"
     if observer.get("urgent_route"):
         line += (f" · urgent → {observer['urgent_route']} "
                  f"({observer.get('urgent_deliver') or observer.get('deliver')})")
@@ -700,6 +703,78 @@ def _deliver(loop: dict, st, key: str, text: str, tag: str, event: str, number, 
     else:
         log(f"observer: {event} #{number} not verified ({error})")
     return delivered
+
+
+# -- the weekly report (#658) ---------------------------------------------------
+
+REPORT_CHARS = 3500          # under Telegram's 4096 per message, with room for the link
+
+
+def weekly_due(spec: str, now: float) -> float | None:
+    """The latest scheduled instant at or before ``now`` for ``mon 09:00`` (UTC), as an epoch;
+    None for an unreadable spec. The report it sends covers the seven days before it."""
+    try:
+        day, clock = config.check_weekly_report(spec).split()
+    except ValueError:
+        return None
+    hour, minute = (int(part) for part in clock.split(":"))
+    current = datetime.fromtimestamp(now, timezone.utc)
+    at = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    at -= timedelta(days=(current.weekday() - config.WEEKDAYS.index(day)) % 7)
+    if at > current:
+        at -= timedelta(days=7)
+    return at.timestamp()
+
+
+def report_claimed(loop: dict, st, identity: str) -> bool:
+    """Is the weekly report for this window already in the observer ledger (in any state)?"""
+    with _lock(st.observations):
+        entry = _read(st.observations)["entries"].get(key_for(loop, 0, "", "report", identity))
+    return isinstance(entry, dict)
+
+
+def send_report(loop: dict, st, identity: str, text: str) -> bool:
+    """Send one weekly report, once per ``identity`` (the window's end, ISO).
+
+    The loop's opt-in is ``observer.weekly_report`` itself, so the ``events`` filter and the
+    digest do not apply: it is never batched. Claimed in the observer ledger before the POST,
+    like a notice, so a second sweep, a restart or a concurrent run finds the claim and sends
+    nothing; a definite failure is retried by :func:`retry`, an unverified one is left for the
+    operator. Returns True only when this call got a receipt. Never raises."""
+    try:
+        reason = configured(loop)
+        if reason:
+            log(f"observer: no weekly report — {reason}")
+            return False
+        if len(text) > REPORT_CHARS:
+            text = text[:REPORT_CHARS].rsplit("\n", 1)[0] + "\n… (cut; `hermes dk report` has it all)"
+        url = f"https://github.com/{loop['repo']}"
+        key = key_for(loop, 0, "", "report", identity)
+        tag = f"report-{loop.get('id')}"
+        delivery = routes.delivery_id(tag)
+        with _lock(st.observations):
+            data = _read(st.observations)
+            _prune(data, time.time())
+            if isinstance(data["entries"].get(key), dict):
+                _save(st.observations, data)
+                return False
+            data["entries"][key] = {"status": "pending", "event": "report", "number": 0,
+                                    "head": "", "identity": identity, "summary": text[:200],
+                                    "base_sha": "", "issue": False, "outcome": "",
+                                    "urgent": False, "message": text, "url": url,
+                                    "delivery": delivery, "attempts": 0, "error": "",
+                                    "at": time.time()}
+            _save(st.observations, data)
+        block = {"event": "report", "loop": loop.get("id"), "pr": "", "head": "", "url": url,
+                 "at": now_iso(), "message": text}
+        delivered, error, uncertain = _post(loop, block, tag, delivery)
+        _receipt(st, key, delivered, error, uncertain)
+        log(f"observer: weekly report {identity} " + ("delivered" if delivered else
+                                                      f"not verified ({error})"))
+        return delivered
+    except Exception as exc:
+        log(f"observer: weekly report failed: {type(exc).__name__}: {exc}")
+        return False
 
 
 def retry(loop: dict, st) -> int:

@@ -245,8 +245,9 @@ turns and rulings. Operator steps are the explicit ones on that PR after the pro
 recorded from this version on, so the line says when the first was; earlier work is a lower
 bound. Human overrides (#220) are not among them.
 
-Not in this command yet: the weekly Telegram message (#658), review quality (#660, #661) and
-shadow-review/override feeds (#218, #220). Request → verdict is measured from the review run's creation to its receipt.
+The same report can go to the observer feed once a week: see
+[`observer.weekly_report`](observer.md#weekly-report). Not in this command yet: review quality
+(#660, #661) and shadow-review/override feeds (#218, #220). Request → verdict is measured from the review run's creation to its receipt.
 
 <!-- flags:report -->
 | flag | value | default | what it does |
@@ -429,6 +430,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--observer-deliver` | `OBSERVER_DELIVER` | `telegram` | where the gateway delivers the feed (telegram, discord, ...); the feed never wakes an agent |
 | `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set (default: all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per this many minutes (0 = one notice per transition) |
+| `--observer-weekly-report` | `OBSERVER_WEEKLY_REPORT` |  | send the week's report to the feed once a week, at a weekday and UTC time like 'mon 09:00' (default: none) |
 | `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | second route for urgent notices (failed, held, escalation, ruling, stall, conflict, uncertain); routine ones keep the main feed |
 | `--observer-urgent-profile` | `OBSERVER_URGENT_PROFILE` |  | profile for the urgent route (default: the observer profile) |
 | `--observer-urgent-deliver` | `OBSERVER_URGENT_DELIVER` |  | where the gateway delivers urgent notices (default: the feed's) |
@@ -557,6 +559,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--observer-deliver` | `OBSERVER_DELIVER` |  | where the gateway delivers the feed (telegram, discord, ...) |
 | `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set (blank = all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per N minutes (0 = per transition) |
+| `--observer-weekly-report` | `OBSERVER_WEEKLY_REPORT` |  | the week's report once a week at a weekday and UTC time like 'mon 09:00' (blank = none) |
 | `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | route for urgent notices only (blank = one feed for everything) |
 | `--observer-urgent-profile` | `OBSERVER_URGENT_PROFILE` |  | profile that owns the urgent destination (blank = the feed's) |
 | `--observer-urgent-deliver` | `OBSERVER_URGENT_DELIVER` |  | where the gateway delivers urgent notices (blank = the feed's) |

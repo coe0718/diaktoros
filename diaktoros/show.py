@@ -22,8 +22,8 @@ from . import config, observer
 
 # Every key `show` covers. The tests compare these against SETTINGS_SCHEMA, DEFAULTS, TRIAGE_KEYS
 # and the observer keys, so a key added to the loop without a row here turns a test red.
-OBSERVER_KEYS = ("route", "profile", "deliver", "mute", "events", "digest_min", "urgent_route",
-                 "urgent_profile", "urgent_deliver")
+OBSERVER_KEYS = ("route", "profile", "deliver", "mute", "events", "digest_min", "weekly_report",
+                 "urgent_route", "urgent_profile", "urgent_deliver")
 SEAT_FILE_KEYS = ("route", "profile", "login", "agent", "concurrency", "turn_budget_s",
                   "daily_turns", "max_steps")
 

@@ -548,6 +548,29 @@ def report(loop: dict, db: Path, since: float, until: float | None = None,
             "stuck": stuck(db, repo, until)}
 
 
+WEEK_S = 7 * 86400
+
+
+def weekly(loop: dict, st, db: Path, now: float | None = None) -> bool:
+    """The watchdog's weekly report (#658): when ``observer.weekly_report`` is set and its
+    latest scheduled instant has no report yet, send ``report`` for the seven days before it.
+    The same calculation as ``hermes dk report``. A missed week (the host was off) is not sent
+    late: only the latest due window is. No model, no seat turn. True when one was delivered."""
+    from . import observer
+    spec = (loop.get("observer") or {}).get("weekly_report")
+    if not spec or observer.configured(loop):
+        return False
+    now = time.time() if now is None else now
+    due = observer.weekly_due(spec, now)
+    if due is None:
+        return False
+    identity = _day(due)
+    if observer.report_claimed(loop, st, identity):
+        return False
+    text = "📊 weekly report\n" + report_text(report(loop, db, due - WEEK_S, due))
+    return observer.send_report(loop, st, identity, text)
+
+
 def _total(seats: dict | None, state: str | None = None) -> int:
     return sum(seat["turns"] if state is None else seat["states"].get(state, 0)
                for seat in (seats or {}).values())

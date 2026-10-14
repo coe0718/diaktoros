@@ -38,6 +38,7 @@ class ShowTests(_Base):
 
     def test_observer_keys_match_the_normalizer(self):
         norm = config.normalize_observer({"route": "r", "events": ["stall"], "digest_min": 5,
+                                          "weekly_report": "mon 09:00",
                                           "urgent_route": "u", "urgent_profile": "p",
                                           "urgent_deliver": "d"})
         self.assertLessEqual(set(norm), set(show.OBSERVER_KEYS))

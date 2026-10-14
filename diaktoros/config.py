@@ -1456,7 +1456,8 @@ def normalize_observer(raw) -> dict:
 
     ``events`` narrows the feed; absent or empty means every transition (``observer.EVENTS``).
     ``digest_min`` above zero batches transitions into one compact message flushed by the
-    watchdog sweep instead of one notice per transition.
+    watchdog sweep instead of one notice per transition. ``weekly_report`` (``mon 09:00``, UTC)
+    sends the week's report once a week (#658); an unreadable value misconfigures the feed.
     """
     if raw is None or raw == "" or raw == {}:
         return {}
@@ -1482,6 +1483,12 @@ def normalize_observer(raw) -> dict:
         digest = 0
     if digest > 0:
         observer["digest_min"] = digest
+    weekly = raw.get("weekly_report")
+    if weekly not in (None, ""):
+        try:
+            observer["weekly_report"] = check_weekly_report(weekly)
+        except ValueError as exc:
+            return {**observer, "misconfigured": f"observer.weekly_report: {exc}"}
     # A second destination for urgent notices (observer.URGENT_EVENTS): its own delivery-only
     # route, optionally its own profile and platform. Unset: one feed gets everything.
     urgent = str(raw.get("urgent_route") or "").strip()
@@ -1494,6 +1501,20 @@ def normalize_observer(raw) -> dict:
             if value:
                 observer[key] = value
     return observer
+
+
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_WEEKLY = re.compile(r"^(mon|tue|wed|thu|fri|sat|sun) ([01]\d|2[0-3]):([0-5]\d)$")
+
+
+def check_weekly_report(value) -> str:
+    """``observer.weekly_report`` (#658): a weekday and a UTC time, ``mon 09:00``; else
+    ValueError. Normalized to lower case with a single space."""
+    text = " ".join(str(value).split()).lower() if isinstance(value, str) else ""
+    if not _WEEKLY.match(text):
+        raise ValueError(f"{value!r} is not a weekday and a UTC time like 'mon 09:00' "
+                         f"(days: {', '.join(WEEKDAYS)})")
+    return text
 
 
 class ConfigError(Exception):
