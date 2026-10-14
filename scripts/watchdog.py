@@ -57,6 +57,7 @@ from diaktoros import (  # noqa: E402
     gh,
     hostdirs,
     main_check,
+    ready,
     observer,
     pr_hold,
     route_intent,
@@ -1169,6 +1170,10 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         main_check.sweep(loop, st, log)       # a required check red on main after merges
     except Exception as exc:
         log(f"main check failed: {type(exc).__name__}: {exc}")
+    try:
+        ready.sweep(loop, st, log)            # #654: one notice when the ready-to-merge set changes
+    except Exception as exc:
+        log(f"ready sweep failed: {type(exc).__name__}: {exc}")
     resolving = config.unattended_fixer_push_enabled(loop)
     tip = base_tip(loop) if resolving and conflicts else None
     for number, head, _pr_base_sha, author in conflicts:

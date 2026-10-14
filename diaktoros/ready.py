@@ -14,7 +14,8 @@ while the parent is not itself ready. PRs that change the same files are merged 
 (lowest number first), each annotated with the one before it, since the later ones need
 re-checking once the earlier one has landed.
 
-Not done here: the optional "one notice when the set changes" from the issue.
+The watchdog sweep (``sweep`` below, never ``hermes dk ready`` itself) sends one ``ready_set``
+observer notice when the set changes (#654).
 
 Needs a ``required_checks`` list in the loop to mean "required": with none, every check that
 reports gates, as everywhere else. GitHub branch protection is not read; ``mergeable_state``
@@ -178,3 +179,43 @@ def collect(loop: dict, st) -> tuple[list[dict], list[dict], str]:
                                    if isinstance(files, list) else None)}
     ready, excluded = build(loop, st, prs, reads)
     return ready, excluded, ""
+
+
+FILE = "ready-set.json"
+
+
+def _outcome(numbers: list[int]) -> str:
+    if not numbers:
+        return "nothing is ready to merge now"
+    return "ready to merge, in order: " + ", ".join(f"#{n}" for n in numbers)
+
+
+def sweep(loop: dict, st, log=lambda _msg: None) -> bool:
+    """One watchdog pass over the ready set (#654). True when a notice was raised now.
+
+    The last set is kept beside ``main-ci.json``. No baseline means no news: the first set is
+    recorded silently. A set that becomes empty is a change. Nothing is read from GitHub while the
+    feed is unconfigured or does not subscribe to ``ready_set``; an unreadable listing is no news.
+    """
+    import time
+
+    from . import observer
+    if observer.configured(loop) or not observer.subscribes(loop, "ready_set"):
+        return False
+    ready, _excluded, error = collect(loop, st)
+    if error:
+        log(f"ready set unreadable: {error}")
+        return False
+    numbers = [e["number"] for e in ready]
+    path = st.dir / FILE
+    with st.locked():
+        memory = st._load(path, {})
+        previous = memory.get("ready") if isinstance(memory, dict) else None
+        st._save(path, {"ready": numbers})
+    if not isinstance(previous, list) or previous == numbers:
+        return False                                  # first run, or nothing changed
+    observer.notify(loop, st, "ready_set", numbers[0] if numbers else 0, "",
+                    identity=f"{','.join(map(str, numbers)) or 'none'}#{int(time.time())}",
+                    outcome=_outcome(numbers), next_turn="you merge" if numbers else "")
+    log(f"ready set changed: {_outcome(numbers)}")
+    return True

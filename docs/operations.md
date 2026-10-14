@@ -662,14 +662,23 @@ It's refused while one of the loop's runs is in flight or uncertain. Then, in th
 
 In Hermes Desktop, the plugin adds a **Diaktoros** page (with a sidebar entry) and a status-bar
 summary such as `loop: 1 running · 1 held`. The page shows:
-- **Right now:** every queued, running, held or uncertain run, and the last day's failures, each
-  with a short host-written reason (a hold's own line, such as `held: waiting for CI …`). It never
-  shows a turn's output. **Click a row** for that PR's drawer: one line per stuck run saying what
-  would move it (the host's own text, the same `next_step` line `retry` names), the reviewer
-  verdicts and adjudicator rulings this ledger recorded, that PR's turns, and the cap marker when a
-  head has spent its cap. The live round count comes from GitHub's reviews — a person's verdict
-  counts too — so the drawer says what the ledger holds instead of guessing at it; `explain --pr N`
-  has the GitHub half.
+- **Right now:** the live usage-window state first — any seat account held for its reset, and
+  today's turns (and tokens, where a budget is set) per seat against their caps, from the same
+  read [`status`](commands.md#status) prints. Then every queued, running, held or uncertain run,
+  and the last day's failures, each with a short host-written reason (a hold's own line, such as
+  `held: waiting for CI …`). A run's held line is a **snapshot** from the moment it was held and
+  can name a reset that has already passed, which is why the live strip sits above it. It never
+  shows a turn's output. **Click a row** for that PR's drawer: the live window state again, one
+  line per stuck run saying what would move it (the host's own text, the same `next_step` line
+  `retry` names), the reviewer verdicts and adjudicator rulings this ledger recorded, that PR's
+  turns, and the cap marker when a head has spent its cap. The live round count comes from
+  GitHub's reviews — a person's verdict counts too — so the drawer says what the ledger holds
+  instead of guessing at it; `explain --pr N` has the GitHub half. Two more sections answer what
+  the ledger cannot: **Findings** lists the reviewer's numbered findings across rounds (#475) with
+  their state — open first, resolved dimmed — and **Why the loop did or did not react** is the
+  gate's own decision log (#209): the gate, the event and action, who sent it, and its reason
+  (`declined: issues labeled maintainer: not the fix label`), which is the answer to "why did
+  nothing happen when I labelled that?".
 - **Seat turns** for the last 24 hours, 7 days or 30 days: the run ledger's half of
   [`stats`](commands.md#stats).
 - **Health:** [`doctor`](commands.md#doctor)'s checks for this loop. It opens **offline**: the

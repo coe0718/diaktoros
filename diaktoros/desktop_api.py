@@ -3,20 +3,23 @@
 
 Nothing here writes, calls GitHub or reads a token: ``stats`` is the run ledger's half of
 ``hermes dk stats`` (totals and timings only), ``now`` lists live runs with host-written
-reasons, ``pr`` adds the host's own "what moves it" line (``run_supervisor.next_step``) plus
-what the ledger recorded, and ``health`` is ``doctor``'s checks with the network reads left
-unprobed. Never a turn's output, never a run's error text.
+reasons, ``overview`` is that same live state for every configured loop at once (for the status
+chip and the cross-loop block), ``pr`` adds the host's own "what moves it" line
+(``run_supervisor.next_step``) plus what the ledger recorded, and ``health`` is ``doctor``'s
+checks with the network reads left unprobed. Never a turn's output, never a run's error text.
 """
 from __future__ import annotations
 
 import time
 
-from . import config, doctor, run_supervisor, stats
+from . import config, doctor, findings, gate_decisions, pacing, run_supervisor, stats
 
 SINCE_CHOICES = ("24h", "7d", "30d")
 # What the ledger keeps for one PR is its turns; a long-lived PR is bounded here so a single
 # pathological one cannot make the page huge.
 TURNS_MAX = 50
+# How many gate decisions the drawer shows for one PR: the recent trail, not the whole log.
+DECISIONS_MAX = 10
 
 
 class NotFound(LookupError):
@@ -78,7 +81,47 @@ def stats_view(loop_id: str | None, since: str = "7d") -> dict:
 def now_view(loop_id: str | None) -> dict:
     loop = _loop(loop_id)
     view = stats.now(run_supervisor.production_ledger(), loop["repo"])
-    return view if view is not None else {"repo": loop["repo"], "runs": [], "counts": {}}
+    # A missing ledger is not a verified zero: ``stats.now`` returns None when there is no
+    # ledger, so the view carries ``available`` and the page renders unavailable, never "nothing
+    # running". The empty runs and counts below are placeholders for that case only.
+    available = view is not None
+    if view is None:
+        view = {"repo": loop["repo"], "runs": [], "counts": {}}
+    view["available"] = available
+    # Beside the runs, the live usage-window state: a run's own held line is a snapshot from the
+    # moment it was held, and it can outlive the window it names (#650).
+    view["pacing"] = pacing.seats(loop)
+    return view
+
+
+def overview_view() -> dict:
+    """Every configured loop's live run state, in one read.
+
+    The status chip and the cross-loop block answer "what is waiting on me" across all loops
+    without one request per loop. Per loop: its id and repo, the live run counts and the
+    uncertain ("needs you") count when the ledger could be read, and whether it could be read at
+    all — ``available`` false when there is no ledger, ``error`` true when the read raised. A
+    missing ledger is unavailable, never a verified zero, exactly as ``/now`` reports it. One
+    loop failing is not the others' failure: it is reported on its own entry.
+    """
+    found, _ = config.readable_loops()
+    db = run_supervisor.production_ledger()
+    entries = []
+    for loop in found:
+        entry = {"id": loop["id"], "repo": loop["repo"], "available": True, "error": False,
+                 "counts": {}, "needs_you": 0}
+        try:
+            view = stats.now(db, loop["repo"])
+        except Exception:                   # one loop's read failing must not blank the others
+            entry["available"], entry["error"] = False, True
+        else:
+            if view is None:
+                entry["available"] = False
+            else:
+                entry["counts"] = view["counts"]
+                entry["needs_you"] = view["counts"].get("uncertain", 0)
+        entries.append(entry)
+    return {"loops": entries, "read_at": time.time()}
 
 
 def health_view(loop_id: str | None, probe: bool = False, client_host: str | None = None,
@@ -122,7 +165,11 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     repo = loop["repo"]
     view: dict = {"repo": repo, "loop": loop["id"], "pr": pr, "cap": loop.get("cap"),
                   "stuck": [], "turns": [], "verdicts": {}, "rulings": [], "breach": None,
-                  "read_at": time.time()}
+                  "findings": [], "decisions": [], "read_at": time.time()}
+    # The loop's own state files, not the ledger: what the reviewer raised, and why each gate
+    # did or did not act. Both read-only, both local.
+    view["findings"] = _findings(loop, pr)
+    view["decisions"] = _decisions(loop, pr)
     db = run_supervisor.production_ledger()
     con = run_supervisor.read_only_connect(db)
     if con is None:                                 # no ledger: an empty record, not an error
@@ -163,7 +210,45 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     finally:
         con.close()
     view["breach"] = _breach(loop, pr)
+    view["pacing"] = pacing.seats(loop)
     return view
+
+
+def _findings(loop: dict, pr: int) -> list[dict]:
+    """What the reviewer has raised on this PR, across rounds (#475), from the loop's own state
+    file: the id, its state, the text, and the head it was raised at. Read, never written."""
+    from . import state as state_mod
+    try:
+        entry = state_mod.state_for(loop).findings_get(pr)
+    except Exception:                   # a state dir this reader cannot open is not an answer
+        return []
+    found = entry.get("findings") if isinstance(entry, dict) else None
+    if not isinstance(found, dict):
+        return []
+    open_ids = set(findings.open_ids(entry))
+    out = []
+    for fid, item in found.items():
+        if not isinstance(fid, str) or not isinstance(item, dict):
+            continue
+        at = item.get("at")
+        out.append({"id": fid, "state": str(item.get("state") or ""), "open": fid in open_ids,
+                    # The host's own ``findings.lines`` strips the separator the reviewer
+                    # writes after the id, so the same text reads the same in both places.
+                    "text": str(item.get("text") or "").lstrip(" :")[:300],
+                    "head": str(item.get("head") or "")[:7],
+                    "at": float(at) if isinstance(at, (int, float)) else None,
+                    "missed": bool(item.get("missed"))})
+    out.sort(key=lambda item: int(item["id"][1:]) if item["id"][1:].isdigit() else 0)
+    return out
+
+
+def _decisions(loop: dict, pr: int) -> list[dict]:
+    """Why each gate did or did not act on this PR (#209): the gate, the event and action, who
+    sent it, the decision and its reason. Oldest first, as the host writes them."""
+    try:
+        return gate_decisions.for_pr(loop, pr, limit=DECISIONS_MAX)
+    except Exception:                   # unreadable is empty, exactly as the host treats it
+        return []
 
 
 def _breach(loop: dict, pr: int) -> dict | None:

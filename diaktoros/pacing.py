@@ -279,6 +279,68 @@ def count_turn(loop_id: str, seat: str, now: float | None = None) -> int:
         return day[key]
 
 
+def tokens_today(loop_id: str, seat: str, now: float | None = None) -> int:
+    """Tokens (in + out) the seat's finished turns spent today on this loop (#480)."""
+    now = time.time() if now is None else now
+    day = (_load(path()).get("tokens") or {}).get(_today(now)) or {}
+    value = day.get(f"{loop_id}|{seat}") if isinstance(day, dict) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def count_tokens(loop_id: str, seat: str, tokens: int, now: float | None = None) -> int:
+    """Add ``tokens`` to today's spend for the seat; returns today's total. Old days dropped."""
+    now = time.time() if now is None else now
+    with _locked() as file:
+        data = _load(file)
+        days = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+        keep = sorted(days)[-_KEEP_DAYS:]
+        days = {day: days[day] for day in keep if isinstance(days[day], dict)}
+        day = days.setdefault(_today(now), {})
+        key = f"{loop_id}|{seat}"
+        day[key] = (day.get(key) if isinstance(day.get(key), int) else 0) + max(0, int(tokens))
+        data["tokens"] = days
+        _save(file, data)
+        return day[key]
+
+
+def seats(loop: dict, now: float | None = None) -> dict:
+    """What this loop's seats have spent today and which of their windows are closed (#219, #650).
+
+    The live read: today's turns and tokens per seat against their caps, and every hold that
+    belongs to one of this loop's seat profiles. A run's own ``held: ...`` error is a snapshot
+    from the moment it was held, so it can still name a reset time that has long passed — this
+    is the answer that expires with the window.
+
+    ``review_only`` appears only for a loop that has review-only authors: a reviewer turn on one
+    of their PRs is counted there (``run_supervisor``), capped by ``review_only_daily``, and the
+    seats' own counters do not see it.
+    """
+    now = time.time() if now is None else now
+    names = ["reviewer", "fixer"]
+    if config.review_only(loop):
+        names.append(REVIEW_ONLY_SEAT)
+    per_seat = {seat: {"turns": turns_today(loop["id"], seat, now),
+                       "turns_cap": (config.review_only_daily(loop) if seat == REVIEW_ONLY_SEAT
+                                     else config.seat_daily_turns(loop, seat)),
+                       "tokens": tokens_today(loop["id"], seat, now),
+                       "tokens_cap": config.seat_daily_tokens(loop, seat)}
+                for seat in names}
+    profiles = {str(((loop.get("seats") or {}).get(seat) or {}).get("profile") or "")
+                for seat in ("reviewer", "fixer")} | {
+                str((loop.get("adjudicator") or {}).get("profile") or "")} - {""}
+    holds = []
+    for key, entry in sorted((_load(path()).get("holds") or {}).items()):
+        until = entry.get("until") if isinstance(entry, dict) else None
+        if not isinstance(until, (int, float)) or until <= now:
+            continue                        # a window that has reopened is not news
+        provider, profile = key.split("|", 1)[0], key.rsplit("|", 1)[-1]
+        if profile not in profiles:
+            continue                        # another loop's, or another profile's, window
+        holds.append({"provider": provider, "profile": profile, "until": float(until),
+                      "reason": str(entry.get("reason") or "usage window")})
+    return {"now": now, "seats": per_seat, "holds": holds}
+
+
 def rename_loop(old_id: str, new_id: str) -> int:
     """Carry a renamed loop's turn counts to its new id (#425); returns the counts moved."""
     moved = 0

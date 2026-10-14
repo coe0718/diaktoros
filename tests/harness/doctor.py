@@ -305,6 +305,90 @@ def fake_hermes_source() -> str:
     return str(root)
 
 
+# The operator's own home as it was *before* this group pinned a fake one (#690), so a check can
+# still digest what must not move.
+_real_home_at_entry: str | None = None
+
+
+def _outside_tmp(path: pathlib.Path) -> str:
+    """Why writing ``path`` would escape this run's temp root — the harness's only writable world.
+
+    The harness's fixtures may create a whole fake host (homes, toolchains, state) — inside ``TMP``.
+    Anything outside it belongs to the operator, and a test that writes there is a bug whether or
+    not it notices: #690 wrote a stub Node over the live ``~/.hermes/node/bin/node``.
+    """
+    resolved = pathlib.Path(path).resolve()
+    root = pathlib.Path(TMP).resolve()
+    if resolved != root and root not in resolved.parents:
+        return f"{resolved} is outside the harness temp root {root}"
+    return ""
+
+
+def inside_tmp(path: pathlib.Path) -> pathlib.Path:
+    """``path`` when it lies inside ``TMP``, else an ``AssertionError``: the write guard fixtures use."""
+    outside = _outside_tmp(path)
+    if outside:
+        raise AssertionError(f"harness fixture would write outside its sandbox: {outside}")
+    return path
+
+
+def fixture_path(*parts: str) -> pathlib.Path:
+    """A path inside ``TMP``, refused by the same guard. The name a fixture writes through."""
+    return inside_tmp(pathlib.Path(TMP, *parts))
+
+
+# The fake operator home: every host path the checks under test read as "the operator's" is
+# resolved inside here, and the fixtures that need a host build it here (#690).
+OPERATOR_HOME = fixture_path("operator-home")
+
+
+@contextlib.contextmanager
+def fake_operator_home():
+    """Pin ``HERMES_REAL_HOME`` at a home inside ``TMP`` for the duration, and restore it after.
+
+    ``runtime_detect._real_home()`` resolves the host Node through that variable, and a Hermes-run
+    shell exports it naming the operator's live home (a profile-run gateway points ``HOME`` at the
+    profile instead, so the plugin needs the real one). A fixture that needs a host Node must
+    therefore pin the variable to a home *it* owns rather than write wherever it happens to point
+    — #690 replaced the operator's real Node with a stub that way.
+    """
+    global _real_home_at_entry
+    OPERATOR_HOME.mkdir(parents=True, exist_ok=True)
+    _real_home_at_entry = os.environ.get("HERMES_REAL_HOME")
+    os.environ["HERMES_REAL_HOME"] = str(OPERATOR_HOME)
+    try:
+        yield OPERATOR_HOME
+    finally:
+        if _real_home_at_entry is None:
+            os.environ.pop("HERMES_REAL_HOME", None)
+        else:
+            os.environ["HERMES_REAL_HOME"] = _real_home_at_entry
+        _real_home_at_entry = None
+
+
+def operator_home_node() -> list[pathlib.Path]:
+    """The operator's own ``node`` paths — the real binary and the ``~/.local/bin`` link into it.
+
+    Named from the home as it stood before the pin, never from the pinned fake: these are the paths
+    a fixture that escapes the temp root would damage.
+    """
+    raw = _real_home_at_entry or os.environ.get("DIAKTOROS_TEST_USER_HOME") or ""
+    if not raw:
+        return []
+    home = pathlib.Path(raw)
+    return [home / ".hermes" / "node" / "bin" / "node", home / ".local" / "bin" / "node"]
+
+
+def binary_digest(path: pathlib.Path) -> str:
+    """``size:sha256`` of a file, or ``absent`` — a before/after digest of what must not move."""
+    import hashlib
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return "absent"
+    return f"{len(data)}:{hashlib.sha256(data).hexdigest()[:16]}"
+
+
 def doctor_runtime_fixture() -> list[pathlib.Path]:
     """A runtime file whose "Hermes" is this interpreter, and a provider in each seat profile.
 
@@ -319,11 +403,20 @@ def doctor_runtime_fixture() -> list[pathlib.Path]:
     # #67's ``runtime:rust`` checks for the toolchain's cargo: a Rust toolchain dir, not the
     # Python install root. Give it one so the fixture is a complete, correct installation.
     (rust / "bin" / "cargo").write_text("")
+    # #685's ``runtime:node`` reports the host Node; a complete install has one (the absent case
+    # is a reported skip, pinned in tests/test_node_runtime.py). The host here is the fake operator
+    # home ``fake_operator_home`` pins — the check resolves it through ``HERMES_REAL_HOME``, and the
+    # stub goes under the temp root whatever that variable names (#690: writing at
+    # ``$HERMES_REAL_HOME/.hermes/node/bin/node`` put it over the operator's live Node).
+    node = inside_tmp(OPERATOR_HOME / ".hermes" / "node" / "bin" / "node")
+    node.parent.mkdir(parents=True, exist_ok=True)
+    node.write_text("#!/bin/sh\necho v22.0.0\n")
+    node.chmod(0o755)
     runtime = home / "diaktoros-runtime.json"
     runtime.write_text(json.dumps({"source": fake_hermes_source(), "venv": resolver_venv(venv),
                                    "runtime": str(TMP), "rust": str(rust)}))
     runtime.chmod(0o600)
-    return [runtime] + write_seat_models()
+    return [runtime, node] + write_seat_models()
 
 
 def edit_subs(mutate) -> dict:
@@ -400,7 +493,7 @@ DOCTOR_FIXTURE_CHECKS = frozenset({
     # #474: per login with a token file, expiry and scopes.
     "token-expiry:rev-coach", "token-expiry:dev-fixer", "token-expiry:read-acct",
     "token-scopes:rev-coach", "token-scopes:dev-fixer", "token-scopes:read-acct",
-    "runtime:runtime", "runtime:rust", "runtime:source", "runtime:venv",
+    "runtime:runtime", "runtime:rust", "runtime:source", "runtime:venv", "runtime:node",
     # #556: the installed plugin against the latest release and main (skipped with --offline).
     "plugin-version",
 })
@@ -519,7 +612,23 @@ def group_doctor() -> None:
     check("an over-20 space-bearing replacement parses whole, not its first token",
           parsed3, [overlong, "turn-budget"])
     check("  so it is not mistaken for the real 'config'", "config" in parsed3, False)
+    # #690: the fixture installs a host Node for ``runtime:node``, and it must build that host
+    # inside this run's temp root. Digest the operator's own Node — the path their home names, taken
+    # before this group pinned a fake one — across the install: this is the check that would have
+    # caught the stub written over the live ``~/.hermes/node/bin/node``, after which every
+    # JavaScript suite exited 0 without running a test. The resolution is pinned as well, so what
+    # the check under test sees is the fixture's Node, not whatever Node this machine happens to have.
+    operator_node = {str(path): binary_digest(path) for path in operator_home_node()}
     install_doctor_fixture()
+    from diaktoros import runtime_detect
+    check("the preflight fixture writes nothing into the operator's home",
+          {str(path): binary_digest(path) for path in operator_home_node()}, operator_node)
+    check("  and builds the host Node it needs inside the temp root",
+          _outside_tmp(OPERATOR_HOME / ".hermes" / "node" / "bin" / "node"), "")
+    node_root, node_version = runtime_detect.node_version()
+    check("  and runtime:node reports that fixture Node, not the host's",
+          (str(node_root) if node_root else None, node_version),
+          (str(OPERATOR_HOME / ".hermes" / "node"), "v22.0.0"))
     install_watchdog_state(load_loop())
     added = doctor_runtime_fixture()
     before_files = tree_digest(TMP)
@@ -1299,6 +1408,23 @@ def group_doctor() -> None:
     _runtime_added.clear()
 
 
+def _pinned_operator_home(func):
+    """Run a group with ``HERMES_REAL_HOME`` pinned inside the temp root (#690).
+
+    Every host path the checks in this area read resolves through ``runtime_detect._real_home()``.
+    Without the pin a group resolves the *operator's* live home, and a fixture that needs a host
+    Node (``runtime:node``) writes one there — over the real one.
+    """
+    import functools
+
+    @functools.wraps(func)
+    def run(*args, **kwargs):
+        with fake_operator_home():
+            return func(*args, **kwargs)
+
+    return run
+
+
 GROUPS = {
-    "doctor": group_doctor,
+    "doctor": _pinned_operator_home(group_doctor),
 }

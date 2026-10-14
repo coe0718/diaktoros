@@ -292,6 +292,33 @@ class ProductionWorker(unittest.TestCase):
         self.assertAlmostEqual(row["retry_at"], pacing.next_midnight(), delta=2)
         self.assertIn("daily turn cap (1) reached", row["error"])
 
+    def token_loop(self, budget):
+        return config.normalize({**self.raw, "seats": {
+            **self.raw["seats"], "fixer": {**self.raw["seats"]["fixer"], "daily_tokens": budget}}})
+
+    def test_a_turn_records_its_tokens_and_spends_the_budget(self):
+        # #480: the proxy's counts reach the ledger columns and today's per-seat spend.
+        def spends(_loop, scope, observed=None, **kw):
+            observed.update(tokens_in=700, tokens_out=300, cost=0.25)
+            return 0
+        row = self.run_production(spends, self.token_loop(5000))
+        self.assertEqual((row["tokens_in"], row["tokens_out"], row["cost"]), (700, 300, 0.25))
+        self.assertEqual(pacing.tokens_today("widgets", "fixer"), 1000)
+
+    def test_a_spent_token_budget_holds_the_next_turn_until_midnight(self):
+        pacing.count_tokens("widgets", "fixer", 1000)          # today's budget is spent
+        row = self.run_production(lambda *a, **k: self.fail("launched past the token budget"),
+                                  self.token_loop(1000))
+        self.assertEqual((row["state"], row["retries"], self.turns), ("waiting", 0, 0))
+        self.assertAlmostEqual(row["retry_at"], pacing.next_midnight(), delta=2)
+        self.assertIn("daily token budget (1000) reached", row["error"])
+        self.assertIn("daily_tokens", run_supervisor.hold_remedy("fixer", row["error"]))
+
+    def test_an_unspent_token_budget_lets_the_turn_run(self):
+        pacing.count_tokens("widgets", "fixer", 999)
+        self.run_production(lambda *a, **k: 0, self.token_loop(1000))
+        self.assertEqual(self.turns, 1)
+
     def review_only_loop(self, daily=1):
         return config.normalize({**self.raw, "review_only": ["owner-human"],
                                  "review_only_daily": daily})
@@ -321,6 +348,57 @@ class ProductionWorker(unittest.TestCase):
         self.assertAlmostEqual(row["retry_at"] - time.time(), run_supervisor.backoff(1), delta=5)
         self.assertIsNone(pacing.held(self.account))
         self.assertEqual(pacing.turns_today("widgets", "fixer"), 1, "a launched turn is counted")
+
+
+class SeatView(unittest.TestCase):
+    """#650: the live usage-window read the status line and the Desktop page share."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        # Its own HERMES_HOME: pacing keeps one host file, and a hold written by one test must
+        # not still be live in the next (`Store` isolates the same way).
+        patcher = mock.patch.dict(os.environ, {"HERMES_HOME": temp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.loop = {"id": "w", "repo": "acme/widgets",
+                     "seats": {"reviewer": {"profile": "vex"}, "fixer": {"profile": "drey"}},
+                     "adjudicator": {"profile": "default"},
+                     "read_token": "coe0718"}
+
+    def test_todays_counts_and_caps_per_seat(self):
+        pacing.count_turn("w", "reviewer")
+        pacing.count_tokens("w", "reviewer", 1200)
+        view = pacing.seats({**self.loop, "seats": {"reviewer": {"profile": "vex", "daily_turns": 4},
+                                                    "fixer": {"profile": "drey"}}})
+        self.assertEqual(view["seats"]["reviewer"], {"turns": 1, "turns_cap": 4,
+                                                     "tokens": 1200, "tokens_cap": None})
+        self.assertEqual(view["seats"]["fixer"]["turns"], 0)
+
+    def test_a_hold_is_live_only_for_this_loops_seat_profiles(self):
+        now = time.time()
+        pacing.hold("openai-codex|chatgpt.com|vex", now + 600, "openai answered 429")
+        pacing.hold("openai-codex|chatgpt.com|someone-else", now + 600, "not this loop")
+        pacing.hold("claude|api|drey", now - 600, "already reopened")
+        view = pacing.seats(self.loop, now=now)
+        self.assertEqual([hold["profile"] for hold in view["holds"]], ["vex"])
+        self.assertEqual(view["holds"][0]["provider"], "openai-codex")
+        self.assertEqual(view["holds"][0]["reason"], "openai answered 429")
+
+    def test_a_reopened_window_is_gone_even_though_a_run_still_names_it(self):
+        now = time.time()
+        pacing.hold("openai-codex|chatgpt.com|vex", now - 1, "openai answered 429")
+        self.assertEqual(pacing.seats(self.loop, now=now)["holds"], [])
+        self.assertIsNone(pacing.held("openai-codex|chatgpt.com|vex", now))
+
+    def test_review_only_appears_only_where_the_loop_has_those_authors(self):
+        with mock.patch.object(config, "review_only", return_value=set()):
+            self.assertNotIn(pacing.REVIEW_ONLY_SEAT, pacing.seats(self.loop)["seats"])
+        with mock.patch.object(config, "review_only", return_value={"tuck-coe"}), \
+             mock.patch.object(config, "review_only_daily", return_value=25):
+            view = pacing.seats(self.loop)
+        self.assertEqual(view["seats"][pacing.REVIEW_ONLY_SEAT], {"turns": 0, "turns_cap": 25,
+                                                                  "tokens": 0, "tokens_cap": None})
 
 
 class Config(unittest.TestCase):

@@ -321,6 +321,8 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
+| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens the reviewer may spend per day; once spent the next turn waits for midnight (0 = none) (default: the plugin setting) |
+| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day (0 = none) (default: the plugin setting) |
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no fix label; set it with `triage --fix-daily-turns N` (0 = ignore) |
 | `--source` | `SOURCE` |  | runtime file's source path (default: detected) |
 | `--venv` | `VENV` |  | runtime file's venv path (default: detected) |
@@ -407,7 +409,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--observer-route` | `OBSERVER_ROUTE` |  | route name for the read-only observer feed (default: <id>-observe) |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | Hermes profile the observer feed belongs to (its chat) — naming one switches the feed on |
 | `--observer-deliver` | `OBSERVER_DELIVER` | `telegram` | where the gateway delivers the feed (telegram, discord, ...); the feed never wakes an agent |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths (default: all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set (default: all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per this many minutes (0 = one notice per transition) |
 | `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | second route for urgent notices (failed, held, escalation, ruling, stall, conflict, uncertain); routine ones keep the main feed |
 | `--observer-urgent-profile` | `OBSERVER_URGENT_PROFILE` |  | profile for the urgent route (default: the observer profile) |
@@ -433,6 +435,8 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds (overrides --turn-budget) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
+| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens the reviewer may spend per day; once spent the next turn waits for midnight (0 = none) (default: the plugin setting) |
+| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day (0 = none) (default: the plugin setting) |
 | `--fix-daily-turns` | `FIX_DAILY_TURNS` |  | issue-fix turns per day: refused here, a new loop has no fix label; set it with `triage --fix-daily-turns N` (0 = ignore) |
 | `--hooks` |  |  | create the GitHub hooks too, paused until `arm` |
 | `--arm` |  |  | with --hooks: create them armed (live at once) instead of paused |
@@ -519,6 +523,8 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--fixer-turn-budget` | `FIXER_TURN_BUDGET` |  | the fixer seat's own turn budget in seconds |
 | `--reviewer-daily-turns` | `REVIEWER_DAILY_TURNS` |  | most reviewer turns per day on this loop; later ones wait for midnight (0 removes the cap) |
 | `--fixer-daily-turns` | `FIXER_DAILY_TURNS` |  | most fixer turns per day on this loop (0 removes the cap) |
+| `--reviewer-daily-tokens` | `REVIEWER_DAILY_TOKENS` |  | most tokens (in + out) the reviewer may spend per day on this loop; once spent, the next turn waits for midnight (0 removes it) |
+| `--fixer-daily-tokens` | `FIXER_DAILY_TOKENS` |  | most tokens the fixer (and issue fixes) may spend per day on this loop (0 removes it) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) |
 | `--host` | `HOST` |  | gateway webhook host |
@@ -531,7 +537,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--observer-route` | `OBSERVER_ROUTE` |  | route the observer feed delivers through |
 | `--observer-profile` | `OBSERVER_PROFILE` |  | profile that owns the observer destination |
 | `--observer-deliver` | `OBSERVER_DELIVER` |  | where the gateway delivers the feed (telegram, discord, ...) |
-| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths (blank = all) |
+| `--observer-events` | `OBSERVER_EVENTS` |  | comma-separated transitions to send, from opened,handoff,verdict,approved,escalation,ruling,stall,closed,triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set (blank = all) |
 | `--observer-digest-min` | `OBSERVER_DIGEST_MIN` |  | batch the feed into one message per N minutes (0 = per transition) |
 | `--observer-urgent-route` | `OBSERVER_URGENT_ROUTE` |  | route for urgent notices only (blank = one feed for everything) |
 | `--observer-urgent-profile` | `OBSERVER_URGENT_PROFILE` |  | profile that owns the urgent destination (blank = the feed's) |
@@ -1004,8 +1010,12 @@ and is excluded until the parent is ready. PRs changing the same files are liste
 another, lowest number first, with a note to re-check the later ones.
 
 With no `required_checks` set, every reported check gates. Branch protection is not read; a
-protection rule GitHub reports as `blocked` excludes the PR. The optional "notice when the set
-changes" is not implemented.
+protection rule GitHub reports as `blocked` excludes the PR.
+
+The command itself never messages you. When the observer feed subscribes to `ready_set`, the
+watchdog sweep sends one routine notice when the set changes (a PR joins or leaves, the order
+changes, or nothing is ready any more); with a digest set, a batch of changes is one message. The
+first sweep only records the set. With no scheduled watchdog or no observer feed, nothing is sent.
 
 ```bash
 hermes dk ready --loop "<loop-id>"

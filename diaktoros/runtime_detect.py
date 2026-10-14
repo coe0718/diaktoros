@@ -114,6 +114,53 @@ def _rust() -> Path | None:
     return None
 
 
+# Install roots the sandbox already sees through its own /usr and /bin binds: nothing to mount.
+_NODE_VISIBLE = (Path("/"), Path("/usr"), Path("/usr/local"))
+
+
+def node_root() -> Path | None:
+    """The host Node install root to stage read-only at ``/opt/node`` (#685), or ``None``.
+
+    Looked for without trusting the caller's PATH alone: Hermes's own ``~/.hermes/node`` (the
+    ``~/.local/bin/node`` link points into it), then ``node`` on PATH. A candidate counts only
+    when it resolves to ``<root>/bin/node`` that is an executable regular file, and the root is
+    not one the sandbox already binds (``/usr`` ...). Nothing is fetched; the choice is the host's
+    and never an argument of a seat or of ``contained.command``'s callers' data.
+    """
+    candidates = [_real_home() / ".hermes" / "node" / "bin" / "node",
+                  _real_home() / ".local" / "bin" / "node"]
+    found = shutil.which("node")
+    if found:
+        candidates.append(Path(found))
+    for candidate in candidates:
+        try:
+            binary = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        root = binary.parent.parent
+        if (binary.is_file() and os.access(binary, os.X_OK) and binary.parent.name == "bin"
+                and root not in _NODE_VISIBLE and not str(binary).startswith("/usr/")):
+            return root
+    return None
+
+
+def node_version(root: Path | None = None) -> tuple[Path | None, str]:
+    """``(root, version)`` of the host Node, e.g. ``v22.1.0``; ``(None, why)`` when unusable."""
+    import subprocess
+    root = root if root is not None else node_root()
+    if root is None:
+        return None, "no Node runtime found on this host"
+    try:
+        done = subprocess.run([str(root / "bin" / "node"), "--version"], capture_output=True,
+                              text=True, timeout=15, env={"PATH": "/usr/bin:/bin"})
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"{root}/bin/node could not run ({type(exc).__name__})"
+    version = done.stdout.strip()
+    if done.returncode != 0 or not re.fullmatch(r"v\d+\.\d+\.\d+\S{0,40}", version):
+        return None, f"{root}/bin/node --version failed"
+    return root, version
+
+
 def detect() -> dict[str, str]:
     """The host paths found on this machine; a key that could not be found is left out."""
     venv = _venv()
