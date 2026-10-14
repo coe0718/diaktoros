@@ -217,18 +217,24 @@ content, so they are safe to publish: see [Publishing stats](operations.md#publi
 ### report
 
 The digest on demand, across every configured loop (or one with `--loop`), from the run ledger
-alone: PRs reviewed, approvals vs changes requested, review rounds per PR, median
-request → verdict time, adjudicator rulings, turns and failures per seat and per resolved model,
-the change against the window just before (week over week for the default `7d`), and the most
-stuck PR with its host-written reason (a hold, a wait or an uncertain run).
+and the loop's breach markers: PRs reviewed, approvals vs changes requested, review rounds per PR,
+median request → verdict time, escalations, adjudicator rulings, turns and failures per seat and
+per resolved model, the change against the window just before (week over week for the default
+`7d`), and the most stuck PR with its host-written reason (a hold, a wait or an uncertain run).
+
+Escalations are counted apart from rulings. One escalation is one adjudicator turn, whether a
+spent cap or `escalate` started it, dated when it was committed; a redelivered breach is the same
+turn, and a re-breach at a new head is a new one. `ruled` means it has a ruling (at any time),
+`awaiting` that it has none yet. A breach with no adjudicator configured has no turn and counts
+from its marker. Who asked (`by cap`, `by operator`) comes from the breach marker, which keeps
+only each PR's latest head: an older escalation, or one whose marker is gone, reads `unknown`.
 
 ```bash
 hermes dk report --since 7d
 ```
 
-Not in this command yet: the weekly Telegram message (scheduling it through the observer), review
-quality (finding false-positive rate, "approved, then broke") and shadow-review/override feeds
-(#218, #220). Request → verdict is measured from the review run's creation to its receipt.
+Not in this command yet: the weekly Telegram message (#658), review quality (#660, #661),
+issue-fix outcomes (#678) and shadow-review/override feeds (#218, #220). Request → verdict is measured from the review run's creation to its receipt.
 
 <!-- flags:report -->
 | flag | value | default | what it does |

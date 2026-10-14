@@ -125,6 +125,48 @@ class Ledger(unittest.TestCase):
         self.assertIn("most stuck: PR #5", out)
         self.assertNotIn("exploded", out)
 
+    def escalate(self, pr, head, rounds, created, repo=REPO):
+        """One adjudicator turn as ``gate.wake_adjudicator`` commits it; its run id."""
+        delivery = f"{repo}:{pr}:{head}:adjudicator:breach:{rounds}"
+        with mock.patch.object(self.sup, "_spawn"):
+            self.sup.submit(delivery, repo, pr, head, "adjudicator", turn_key=f"breach:{rounds}")
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET created=? WHERE delivery=?", (created, delivery))
+            return con.execute("SELECT id FROM runs WHERE delivery=?", (delivery,)).fetchone()[0]
+
+    def rule(self, run_id, pr, head, at):
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,created,"
+                        "updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (run_id, REPO, pr, head, "breach:3", "fixer-wins", "", at, at))
+
+    def test_escalations_counted_apart_from_rulings(self):
+        since, loop = NOW - 7 * DAY, {"repo": REPO, "id": "w"}
+        a, b, c, d = "a" * 40, "b" * 40, "c" * 40, "d" * 40
+        ruled = self.escalate(7, a, 3, NOW - 900)                 # the cap, ruled a day later
+        self.rule(ruled, 7, a, NOW - 100)
+        self.escalate(8, b, 1, NOW - 800)                         # the operator, no ruling yet
+        self.escalate(8, b, 1, NOW - 800)                         # redelivered: the same turn
+        self.escalate(9, c, 3, NOW - 700)                         # an older head of PR 9
+        self.escalate(9, d, 3, NOW - 600)                         # re-breach at a new head
+        self.escalate(10, a, 3, NOW - 500, repo="other/repo")     # another loop's repository
+        self.escalate(11, a, 3, since - DAY)                      # the window before
+        breaches = {f"{REPO}#7": {"head": a, "rounds": 3},
+                    f"{REPO}#8": {"head": b, "rounds": 1, "escalated": {"by": "op", "why": "x"}},
+                    f"{REPO}#9": {"head": d, "rounds": 3},
+                    f"{REPO}#12": {"head": a, "rounds": 3, "at": iso(NOW - 50)},   # no turn
+                    f"{REPO}#13": {"head": a, "rounds": 3, "at": iso(since - 50)},
+                    "other/repo#10": {"head": a, "rounds": 3, "escalated": {"by": "op"}}}
+        data = stats.report(loop, self.db, since, NOW, breaches=breaches)
+        self.assertEqual(data["escalations"], {"total": 5, "ruled": 1, "awaiting": 4,
+                                               "by": {"cap": 3, "operator": 1, "unknown": 1}})
+        self.assertEqual(data["escalations_before"]["total"], 2)    # PR 11's turn, PR 13's marker
+        self.assertEqual(data["reviews"]["rulings"], {"fixer-wins": 1})
+        out = stats.report_text(data)
+        self.assertIn("escalations: 5 (+3 vs previous) · ruled 1, awaiting 4 · by cap 3, "
+                      "by operator 1, unknown 1", out)
+        self.assertEqual(json.loads(json.dumps(data))["escalations"]["total"], 5)
+
     def test_report_without_a_ledger(self):
         data = stats.report({"repo": REPO, "id": "w"}, self.db.with_name("none.sqlite"), 0, NOW)
         self.assertIn("no run ledger yet", stats.report_text(data))
@@ -417,9 +459,11 @@ class Cli(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("PRs reviewed", out)
         self.assertIn("most stuck", out)
+        self.assertIn("escalations: 0 (+0 vs previous)", out)       # the loop's own markers
         rc, out = self.cli("report", "--json")
         self.assertEqual(rc, 0, out)
         self.assertIn("reviews_before", json.loads(out)[0])
+        self.assertEqual(json.loads(out)[0]["escalations"]["total"], 0)
         rc, out = self.cli("report", "--since", "soon")
         self.assertEqual(rc, 2)
 

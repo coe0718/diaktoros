@@ -3653,8 +3653,9 @@ def cmd_stats(args) -> int:
 
 def cmd_report(args) -> int:
     """The weekly digest on demand, across every configured loop (or one with ``--loop``): PRs
-    reviewed, verdicts, rounds, request-to-verdict time, rulings, turns and failures per seat and
-    model, trends against the window before, and the most stuck PR. Read-only, run ledger only."""
+    reviewed, verdicts, rounds, request-to-verdict time, escalations, rulings, turns and failures
+    per seat and model, trends against the window before, and the most stuck PR. Read-only: the
+    run ledger and the loops' breach markers."""
     from . import run_supervisor, stats
     try:
         since = stats.parse_since(args.since)
@@ -5630,8 +5631,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         stats_cmd.set_defaults(func=cmd_stats)
 
         report_cmd = sub.add_parser("report", help="The digest on demand, across all loops: reviews, "
-                                                   "rounds, time to verdict, rulings, turns per "
-                                                   "seat and model, trends, the most stuck PR")
+                                                   "rounds, time to verdict, escalations, rulings, "
+                                                   "turns per seat and model, trends, the most "
+                                                   "stuck PR")
         report_cmd.add_argument("--loop", help="one loop id (default: every configured loop)")
         report_cmd.add_argument("--since", default="7d",
                                 help="window start: 7d, 24h or a date like 2026-09-28 (default 7d)")

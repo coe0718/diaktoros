@@ -366,6 +366,62 @@ def review_window(db: Path, repo: str, since: float, until: float) -> dict | Non
                        for name, g in sorted(models.items())}}
 
 
+def escalations(db: Path, repo: str, since: float, until: float,
+                breaches: dict | None = None) -> dict | None:
+    """PRs sent for a ruling in ``[since, until)`` (#659), counted apart from the rulings.
+
+    An escalation is an adjudicator turn in the run ledger: the cap breach and ``escalate`` both
+    commit one, keyed ``breach:<rounds>`` at the head, and the ledger's unique turn index makes a
+    redelivered breach the same row, so a retry never counts twice while a re-breach at a new head
+    is a new one. ``ruled`` is those with a ruling, at any time; ``awaiting`` the rest. Who asked
+    comes from the loop's breach markers (``breaches``, keyed ``repo#pr``), which keep only each
+    PR's latest head: an older escalation, or one whose marker is gone, is ``unknown``, never
+    guessed. A marker in the window with no turn (no adjudicator configured) counts as well.
+    None when there is no ledger."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT id, pr, head, created FROM runs WHERE repo=? "
+                           "AND seat='adjudicator' AND created>=? AND created<?",
+                           (repo, since, until)).fetchall()
+        try:
+            ruled = {row[0] for row in con.execute("SELECT run_id FROM rulings WHERE repo=?",
+                                                   (repo,))}
+        except sqlite3.OperationalError:
+            ruled = set()
+    finally:
+        con.close()
+    markers = {}
+    for key, marker in (breaches or {}).items():
+        prefix, _, number = str(key).rpartition("#")
+        if prefix == repo and number.isdigit() and isinstance(marker, dict):
+            markers[int(number)] = marker
+
+    def by(pr: int, head: str) -> str:
+        marker = markers.get(pr) or {}
+        if marker.get("head") != head:
+            return "unknown"
+        return "operator" if marker.get("escalated") else "cap"
+
+    counts = Counter()
+    seen = set()
+    for row in rows:
+        seen.add((row["pr"], row["head"]))
+        counts["ruled" if row["id"] in ruled else "awaiting"] += 1
+        counts[by(row["pr"], row["head"])] += 1
+    for pr, marker in markers.items():
+        at = _iso(marker.get("at"))
+        if (at is not None and since <= at < until and (pr, marker.get("head")) not in seen):
+            counts["awaiting"] += 1                 # no adjudicator turn: a person rules
+            counts[by(pr, marker.get("head"))] += 1
+    return {"total": counts["ruled"] + counts["awaiting"], "ruled": counts["ruled"],
+            "awaiting": counts["awaiting"],
+            "by": {kind: counts[kind] for kind in ("cap", "operator", "unknown")}}
+
+
 def stuck(db: Path, repo: str, at: float) -> dict | None:
     """The longest-waiting run that is held, waiting or uncertain, with ``now``'s host-written
     reason; None when nothing is stuck."""
@@ -374,17 +430,33 @@ def stuck(db: Path, repo: str, at: float) -> dict | None:
     return min(waiting, key=lambda run: run["since"]) if waiting else None
 
 
-def report(loop: dict, db: Path, since: float, until: float | None = None) -> dict:
+def _breaches(loop: dict) -> dict:
+    """The loop's breach markers, read-only; empty when they cannot be read."""
+    try:
+        from . import state as state_mod
+        st = state_mod.state_for(loop)
+        data = json.loads(Path(st.breach).read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def report(loop: dict, db: Path, since: float, until: float | None = None,
+           breaches: dict | None = None) -> dict:
     """The digest for one loop over ``[since, until)`` plus the equal window before it, for
-    week-over-week trends. Run ledger only: nothing new is collected."""
+    week-over-week trends. The run ledger and the loop's breach markers: nothing new is
+    collected."""
     until = time.time() if until is None else until
     before = since - (until - since)
     repo = loop["repo"]
+    breaches = _breaches(loop) if breaches is None else breaches
     return {"repo": repo, "loop": loop.get("id", ""), "since": since, "until": until,
             "turns": ledger(db, repo, since, until),
             "turns_before": ledger(db, repo, before, since),
             "reviews": review_window(db, repo, since, until),
             "reviews_before": review_window(db, repo, before, since),
+            "escalations": escalations(db, repo, since, until, breaches),
+            "escalations_before": escalations(db, repo, before, since, breaches),
             "stuck": stuck(db, repo, until)}
 
 
@@ -416,6 +488,12 @@ def report_text(data: dict) -> str:
     out.append(f"request → verdict: median {duration(wait and wait['median'])}, "
                f"max {duration(wait and wait['max'])}")
     rulings = reviews["rulings"]
+    escalated, was_escalated = data.get("escalations"), data.get("escalations_before") or {}
+    if escalated is not None:
+        by = escalated["by"]
+        out.append(f"escalations: {_trend(escalated['total'], was_escalated.get('total', 0))}"
+                   f" · ruled {escalated['ruled']}, awaiting {escalated['awaiting']}"
+                   f" · by cap {by['cap']}, by operator {by['operator']}, unknown {by['unknown']}")
     out.append("rulings: " + (", ".join(f"{n} {v}" for v, n in sorted(rulings.items()))
                               if rulings else "none"))
     turns, was = data["turns"] or {}, data["turns_before"]
