@@ -95,6 +95,88 @@ class Ledger(unittest.TestCase):
             self.assertNotIn(".hermes", out)
         self.assertIn("2.0 min", stats.text(report))
 
+    def receipt(self, delivery, verdict, at):
+        with ledger.connect(self.db) as con:
+            run_id = con.execute("SELECT id FROM runs WHERE delivery=?", (delivery,)).fetchone()[0]
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,verdict,"
+                        "created,confirmed) VALUES(?,?,?,?,?,?,?)",
+                        (run_id, "confirmed", "{}", 1, verdict, at, at))
+
+    def test_report_window_trends_models_and_stuck(self):
+        since, loop = NOW - 7 * DAY, {"repo": REPO, "id": "w"}
+        self.row("reviewer", "succeeded", NOW - 1000, NOW - 990, NOW - 900, error=SECRET)  # d1
+        self.receipt("d1", "REQUEST_CHANGES", NOW - 700)
+        self.row("reviewer", "succeeded", NOW - 500, NOW - 490, NOW - 400)                 # d2
+        self.receipt("d2", "APPROVE", NOW - 440)
+        self.row("reviewer", "failed", NOW - 300, NOW - 290, NOW - 280)
+        self.row("reviewer", "succeeded", since - DAY, since - DAY, since - DAY + 9)       # d4
+        self.receipt("d4", "APPROVE", since - DAY + 10)
+        self.row("fixer", "waiting", NOW - 200, error="held: waiting for CI on aaaaaaa")   # d5
+        data = stats.report(loop, self.db, since, NOW)
+        reviews = data["reviews"]
+        self.assertEqual(reviews["prs_reviewed"], 2)
+        self.assertEqual(reviews["verdicts"], {"changes": 1, "approved": 1})
+        self.assertEqual(reviews["to_verdict"]["median"], 180)               # 300 and 60 s
+        self.assertEqual(data["reviews_before"]["verdicts"], {"approved": 1})
+        self.assertEqual(reviews["models"]["unknown"]["failed"], 1)
+        self.assertEqual(data["stuck"]["why"], "held: waiting for CI on aaaaaaa")
+        out = stats.report_text(data)
+        self.assertIn("PRs reviewed: 2 (+1 vs previous)", out)
+        self.assertIn("most stuck: PR #5", out)
+        self.assertNotIn("exploded", out)
+
+    def escalate(self, pr, head, rounds, created, repo=REPO):
+        """One adjudicator turn as ``gate.wake_adjudicator`` commits it; its run id."""
+        delivery = f"{repo}:{pr}:{head}:adjudicator:breach:{rounds}"
+        with mock.patch.object(self.sup, "_spawn"):
+            self.sup.submit(delivery, repo, pr, head, "adjudicator", turn_key=f"breach:{rounds}")
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET created=? WHERE delivery=?", (created, delivery))
+            return con.execute("SELECT id FROM runs WHERE delivery=?", (delivery,)).fetchone()[0]
+
+    def rule(self, run_id, pr, head, at):
+        with ledger.connect(self.db) as con:
+            con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,created,"
+                        "updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (run_id, REPO, pr, head, "breach:3", "fixer-wins", "", at, at))
+
+    def test_escalations_counted_apart_from_rulings(self):
+        since, loop = NOW - 7 * DAY, {"repo": REPO, "id": "w"}
+        a, b, c, d = "a" * 40, "b" * 40, "c" * 40, "d" * 40
+        ruled = self.escalate(7, a, 3, NOW - 900)                 # the cap, ruled a day later
+        self.rule(ruled, 7, a, NOW - 100)
+        self.escalate(8, b, 1, NOW - 800)                         # the operator, no ruling yet
+        self.escalate(8, b, 1, NOW - 800)                         # redelivered: the same turn
+        self.escalate(9, c, 3, NOW - 700)                         # an older head of PR 9
+        self.escalate(9, d, 3, NOW - 600)                         # re-breach at a new head
+        self.escalate(10, a, 3, NOW - 500, repo="other/repo")     # another loop's repository
+        self.escalate(11, a, 3, since - DAY)                      # the window before
+        self.escalate(14, a, 3, since)                            # [since: in
+        self.escalate(15, a, 3, NOW)                              # until): out, and not before
+        breaches = {f"{REPO}#7": {"head": a, "rounds": 3},
+                    f"{REPO}#8": {"head": b, "rounds": 1, "escalated": {"by": "op", "why": "x"}},
+                    f"{REPO}#9": {"head": d, "rounds": 3},
+                    f"{REPO}#12": {"head": a, "rounds": 3, "at": iso(NOW - 50)},   # no turn
+                    f"{REPO}#13": {"head": a, "rounds": 3, "at": iso(since - 50)},
+                    f"{REPO}#16": {"head": a, "rounds": 3, "at": iso(since)},      # [since: in
+                    f"{REPO}#17": {"head": a, "rounds": 3, "at": iso(NOW)},        # until): out
+                    "other/repo#10": {"head": a, "rounds": 3, "escalated": {"by": "op"}}}
+        data = stats.report(loop, self.db, since, NOW, breaches=breaches)
+        self.assertEqual(data["escalations"], {"total": 7, "ruled": 1, "awaiting": 6,
+                                               "by": {"cap": 4, "operator": 1, "unknown": 2}})
+        self.assertEqual(data["escalations_before"]["total"], 2)    # PR 11's turn, PR 13's marker
+        later = stats.escalations(self.db, REPO, NOW, NOW + DAY, breaches)
+        self.assertEqual(later["total"], 2)                         # PR 15's turn, PR 17's marker
+        self.assertEqual(data["reviews"]["rulings"], {"fixer-wins": 1})
+        out = stats.report_text(data)
+        self.assertIn("escalations: 7 (+5 vs previous) · ruled 1, awaiting 6 · by cap 4, "
+                      "by operator 1, unknown 2", out)
+        self.assertEqual(json.loads(json.dumps(data))["escalations"]["total"], 7)
+
+    def test_report_without_a_ledger(self):
+        data = stats.report({"repo": REPO, "id": "w"}, self.db.with_name("none.sqlite"), 0, NOW)
+        self.assertIn("no run ledger yet", stats.report_text(data))
+
     def test_no_ledger_and_a_legacy_one(self):
         self.assertIsNone(stats.ledger(self.db.with_name("missing.sqlite"), REPO, 0))
         legacy = self.db.with_name("legacy.sqlite")
@@ -373,6 +455,23 @@ class Cli(unittest.TestCase):
 
     def cli(self, *argv):
         return t.run_cli(t.parser_for({}).parse_args(list(argv)))
+
+    def test_report_command_across_loops(self):
+        db = run_supervisor.production_ledger()
+        sup = Supervisor(db)
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("rep-1", t.REPO, 41, "a" * 40, "reviewer")
+        rc, out = self.cli("report")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PRs reviewed", out)
+        self.assertIn("most stuck", out)
+        self.assertIn("escalations: 0 (+0 vs previous)", out)       # the loop's own markers
+        rc, out = self.cli("report", "--json")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("reviews_before", json.loads(out)[0])
+        self.assertEqual(json.loads(out)[0]["escalations"]["total"], 0)
+        rc, out = self.cli("report", "--since", "soon")
+        self.assertEqual(rc, 2)
 
     def test_text_json_and_html(self):
         loop_id = json.loads((t.LOOPS_DIR / "widgets.json").read_text())["id"]

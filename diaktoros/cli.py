@@ -3651,6 +3651,37 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def cmd_report(args) -> int:
+    """The weekly digest on demand, across every configured loop (or one with ``--loop``): PRs
+    reviewed, verdicts, rounds, request-to-verdict time, escalations, rulings, turns and failures
+    per seat and model, trends against the window before, and the most stuck PR. Read-only: the
+    run ledger and the loops' breach markers."""
+    from . import run_supervisor, stats
+    try:
+        since = stats.parse_since(args.since)
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    if args.loop:
+        try:
+            loops = [config.load_id(args.loop)]
+        except config.ConfigError as exc:
+            print(f"no such loop: {exc}")
+            return 2
+    else:
+        loops, refused = config.readable_loops()
+        for loop_id, reason in refused:
+            print(f"skipping {loop_id}.json: {reason}")
+        if not loops:
+            print(f"no loops configured in {config.config_dir()}")
+            return 2
+    db = run_supervisor.production_ledger()
+    datas = [stats.report(loop, db, since) for loop in loops]
+    print(json.dumps(datas, indent=2, sort_keys=True) if args.json
+          else "\n\n".join(stats.report_text(data) for data in datas))
+    return 0
+
+
 def _shim_refusal(exc: OSError) -> str:
     """Why the watchdog shim could not be written, and a chmod that can repair it: on a path that
     exists — a shim not created yet means its directory (or the nearest existing ancestor)
@@ -5598,6 +5629,16 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         stats_cmd.add_argument("--html", metavar="FILE",
                                help="also write one self-contained HTML page to FILE")
         stats_cmd.set_defaults(func=cmd_stats)
+
+        report_cmd = sub.add_parser("report", help="The digest on demand, across all loops: reviews, "
+                                                   "rounds, time to verdict, escalations, rulings, "
+                                                   "turns per seat and model, trends, the most "
+                                                   "stuck PR")
+        report_cmd.add_argument("--loop", help="one loop id (default: every configured loop)")
+        report_cmd.add_argument("--since", default="7d",
+                                help="window start: 7d, 24h or a date like 2026-09-28 (default 7d)")
+        report_cmd.add_argument("--json", action="store_true", help="print the data as JSON")
+        report_cmd.set_defaults(func=cmd_report)
 
         review = sub.add_parser("review", help="Ask for a fresh review of a PR's current head "
                                                "(the reviewer gate decides, as for a webhook)")

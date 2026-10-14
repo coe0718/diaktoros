@@ -51,7 +51,7 @@ def summary(values: list[float]) -> dict | None:
             "median": statistics.median(ordered), "p90": p90, "max": ordered[-1]}
 
 
-def ledger(db: Path, repo: str, since: float) -> dict | None:
+def ledger(db: Path, repo: str, since: float, until: float | None = None) -> dict | None:
     """Per seat: turns by final state, how long succeeded turns ran, how long turns waited to
     start, and how many needed a retry. None when there is no ledger. Opened read-only."""
     db = Path(db)
@@ -64,8 +64,8 @@ def ledger(db: Path, repo: str, since: float) -> dict | None:
         finished = "finished" if "finished" in columns else "NULL AS finished"
         retries = "retries" if "retries" in columns else "0 AS retries"
         rows = con.execute(f"SELECT seat, state, created, launch_intent, {finished}, updated, "
-                           f"{retries}, error FROM runs WHERE repo=? AND created>=?",
-                           (repo, since)).fetchall()
+                           f"{retries}, error FROM runs WHERE repo=? AND created>=? AND created<?",
+                           (repo, since, float("inf") if until is None else until)).fetchall()
     finally:
         con.close()
     seats: dict[str, dict] = {}
@@ -304,6 +304,218 @@ def collect(loop: dict, db: Path, since: float, with_github: bool,
     if with_github:
         report["github"] = github(loop, since)
     return report
+
+
+def review_window(db: Path, repo: str, since: float, until: float) -> dict | None:
+    """Reviews and rulings in ``[since, until)`` from the run ledger alone: PRs reviewed,
+    verdicts, rounds per PR, request-to-verdict time, rulings, and per resolved model the turns,
+    failures, verdicts, time to verdict and rounds. None when there is no ledger."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        con.row_factory = sqlite3.Row
+        columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
+        model = "r.model" if "model" in columns else "NULL"
+        runs = con.execute(f"SELECT r.id, r.pr, r.seat, r.state, {model} AS model, r.created "
+                           "FROM runs r WHERE r.repo=? AND r.created>=? AND r.created<?",
+                           (repo, since, until)).fetchall()
+        try:
+            receipts = con.execute("SELECT run_id, verdict, created, confirmed FROM review_receipts "
+                                   "WHERE state IN ('posted','confirmed')").fetchall()
+        except sqlite3.OperationalError:
+            receipts = []
+        try:
+            rulings = con.execute("SELECT verdict FROM rulings WHERE repo=? AND created>=? "
+                                  "AND created<?", (repo, since, until)).fetchall()
+        except sqlite3.OperationalError:
+            rulings = []
+    finally:
+        con.close()
+    receipt = {row["run_id"]: row for row in receipts}
+    names = {"APPROVE": "approved", "APPROVED": "approved", "REQUEST_CHANGES": "changes",
+             "CHANGES_REQUESTED": "changes"}
+    verdicts, per_pr, waits = Counter(), Counter(), []
+    models: dict[str, dict] = {}
+    for run in runs:
+        group = models.setdefault(run["model"] or "unknown",
+                                  {"turns": 0, "failed": 0, "verdicts": Counter(),
+                                   "prs": Counter(), "waits": []})
+        group["turns"] += 1
+        group["failed"] += 1 if run["state"] == "failed" else 0
+        got = receipt.get(run["id"]) if run["seat"] == "reviewer" else None
+        if got is None:
+            continue
+        end = got["confirmed"] if got["confirmed"] is not None else got["created"]
+        name = names.get(str(got["verdict"]), "other")
+        verdicts[name] += 1
+        per_pr[run["pr"]] += 1
+        group["verdicts"][name] += 1
+        group["prs"][run["pr"]] += 1
+        if end is not None and end >= run["created"]:
+            waits.append(end - run["created"])
+            group["waits"].append(end - run["created"])
+    return {"prs_reviewed": len(per_pr), "verdicts": dict(verdicts),
+            "rounds": summary(list(per_pr.values())), "to_verdict": summary(waits),
+            "rulings": dict(Counter(str(row["verdict"]) for row in rulings)),
+            "models": {name: {"turns": g["turns"], "failed": g["failed"],
+                              "verdicts": dict(g["verdicts"]),
+                              "to_verdict": summary(g["waits"]),
+                              "rounds": summary(list(g["prs"].values()))}
+                       for name, g in sorted(models.items())}}
+
+
+def escalations(db: Path, repo: str, since: float, until: float,
+                breaches: dict | None = None) -> dict | None:
+    """PRs sent for a ruling in ``[since, until)`` (#659), counted apart from the rulings.
+
+    An escalation is an adjudicator turn in the run ledger: the cap breach and ``escalate`` both
+    commit one, keyed ``breach:<rounds>`` at the head, and the ledger's unique turn index makes a
+    redelivered breach the same row, so a retry never counts twice while a re-breach at a new head
+    is a new one. ``ruled`` is those with a ruling, at any time; ``awaiting`` the rest. Who asked
+    comes from the loop's breach markers (``breaches``, keyed ``repo#pr``), which keep only each
+    PR's latest head: an older escalation, or one whose marker is gone, is ``unknown``, never
+    guessed. A marker in the window with no turn (no adjudicator configured) counts as well.
+    None when there is no ledger."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT id, pr, head, created FROM runs WHERE repo=? "
+                           "AND seat='adjudicator' AND created>=? AND created<?",
+                           (repo, since, until)).fetchall()
+        try:
+            ruled = {row[0] for row in con.execute("SELECT run_id FROM rulings WHERE repo=?",
+                                                   (repo,))}
+        except sqlite3.OperationalError:
+            ruled = set()
+    finally:
+        con.close()
+    markers = {}
+    for key, marker in (breaches or {}).items():
+        prefix, _, number = str(key).rpartition("#")
+        if prefix == repo and number.isdigit() and isinstance(marker, dict):
+            markers[int(number)] = marker
+
+    def by(pr: int, head: str) -> str:
+        marker = markers.get(pr) or {}
+        if marker.get("head") != head:
+            return "unknown"
+        return "operator" if marker.get("escalated") else "cap"
+
+    counts = Counter()
+    seen = set()
+    for row in rows:
+        seen.add((row["pr"], row["head"]))
+        counts["ruled" if row["id"] in ruled else "awaiting"] += 1
+        counts[by(row["pr"], row["head"])] += 1
+    for pr, marker in markers.items():
+        at = _iso(marker.get("at"))
+        if (at is not None and since <= at < until and (pr, marker.get("head")) not in seen):
+            counts["awaiting"] += 1                 # no adjudicator turn: a person rules
+            counts[by(pr, marker.get("head"))] += 1
+    return {"total": counts["ruled"] + counts["awaiting"], "ruled": counts["ruled"],
+            "awaiting": counts["awaiting"],
+            "by": {kind: counts[kind] for kind in ("cap", "operator", "unknown")}}
+
+
+def stuck(db: Path, repo: str, at: float) -> dict | None:
+    """The longest-waiting run that is held, waiting or uncertain, with ``now``'s host-written
+    reason; None when nothing is stuck."""
+    live = (now(db, repo, at) or {}).get("runs") or []
+    waiting = [run for run in live if run["state"] in ("waiting", "uncertain")]
+    return min(waiting, key=lambda run: run["since"]) if waiting else None
+
+
+def _breaches(loop: dict) -> dict:
+    """The loop's breach markers, read-only; empty when they cannot be read."""
+    try:
+        from . import state as state_mod
+        st = state_mod.state_for(loop)
+        data = json.loads(Path(st.breach).read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def report(loop: dict, db: Path, since: float, until: float | None = None,
+           breaches: dict | None = None) -> dict:
+    """The digest for one loop over ``[since, until)`` plus the equal window before it, for
+    week-over-week trends. The run ledger and the loop's breach markers: nothing new is
+    collected."""
+    until = time.time() if until is None else until
+    before = since - (until - since)
+    repo = loop["repo"]
+    breaches = _breaches(loop) if breaches is None else breaches
+    return {"repo": repo, "loop": loop.get("id", ""), "since": since, "until": until,
+            "turns": ledger(db, repo, since, until),
+            "turns_before": ledger(db, repo, before, since),
+            "reviews": review_window(db, repo, since, until),
+            "reviews_before": review_window(db, repo, before, since),
+            "escalations": escalations(db, repo, since, until, breaches),
+            "escalations_before": escalations(db, repo, before, since, breaches),
+            "stuck": stuck(db, repo, until)}
+
+
+def _total(seats: dict | None, state: str | None = None) -> int:
+    return sum(seat["turns"] if state is None else seat["states"].get(state, 0)
+               for seat in (seats or {}).values())
+
+
+def _trend(value: int, before: int) -> str:
+    return f"{value} ({value - before:+d} vs previous)"
+
+
+def report_text(data: dict) -> str:
+    days = (data["until"] - data["since"]) / 86400
+    out = [f"{data['repo']} (loop {data['loop']}) · {_day(data['since'])} → "
+           f"{_day(data['until'])} ({days:.1f} days)"]
+    reviews = data["reviews"]
+    if reviews is None:
+        return "\n".join(out + ["no run ledger yet"])
+    prior = data["reviews_before"] or {}
+    verdicts, old = reviews["verdicts"], prior.get("verdicts", {})
+    out.append("PRs reviewed: " + _trend(reviews["prs_reviewed"], prior.get("prs_reviewed", 0)))
+    out.append("verdicts: approved " + _trend(verdicts.get("approved", 0), old.get("approved", 0))
+               + " · changes requested "
+               + _trend(verdicts.get("changes", 0), old.get("changes", 0)))
+    rounds, wait = reviews["rounds"], reviews["to_verdict"]
+    out.append(f"review rounds per PR: median {rounds['median']:.0f}, max {rounds['max']}"
+               if rounds else "review rounds per PR: -")
+    out.append(f"request → verdict: median {duration(wait and wait['median'])}, "
+               f"max {duration(wait and wait['max'])}")
+    rulings = reviews["rulings"]
+    escalated, was_escalated = data.get("escalations"), data.get("escalations_before") or {}
+    if escalated is not None:
+        by = escalated["by"]
+        out.append(f"escalations: {_trend(escalated['total'], was_escalated.get('total', 0))}"
+                   f" · ruled {escalated['ruled']}, awaiting {escalated['awaiting']}"
+                   f" · by cap {by['cap']}, by operator {by['operator']}, unknown {by['unknown']}")
+    out.append("rulings: " + (", ".join(f"{n} {v}" for v, n in sorted(rulings.items()))
+                              if rulings else "none"))
+    turns, was = data["turns"] or {}, data["turns_before"]
+    out.append(f"turns: {_trend(_total(turns), _total(was))} · failed "
+               f"{_trend(_total(turns, 'failed'), _total(was, 'failed'))} · "
+               f"held {sum(s['held'] for s in turns.values())}")
+    if turns:
+        out += ["", *_table(["seat", "turns", "failed", "held"],
+                            [[seat, str(d["turns"]), str(d["states"].get("failed", 0)),
+                              str(d["held"])] for seat, d in sorted(turns.items())])]
+    if reviews["models"]:
+        rows = [[name, str(g["turns"]), str(g["failed"]), str(g["verdicts"].get("approved", 0)),
+                 str(g["verdicts"].get("changes", 0)),
+                 duration(g["to_verdict"] and g["to_verdict"]["median"]),
+                 f"{g['rounds']['median']:.0f}" if g["rounds"] else "-"]
+                for name, g in reviews["models"].items()]
+        out += ["", "By model", *_table(["model", "turns", "failed", "approved", "changes",
+                                        "to verdict (median)", "rounds (median)"], rows)]
+    run = data["stuck"]
+    out += ["", "most stuck: " + (f"PR #{run['pr']} ({run['seat']}) since {_day(run['since'])}: "
+                                  f"{run['why']}" if run else "nothing")]
+    return "\n".join(out)
 
 
 def duration(seconds: float | None) -> str:
