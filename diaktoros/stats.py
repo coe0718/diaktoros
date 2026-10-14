@@ -433,11 +433,14 @@ def finding_outcomes(db: Path, repo: str, since: float, until: float,
     with its latest state, the head it was raised at and when). A finding keeps its id across
     rounds, so it counts once however many reviews restate it. Its outcome, first match wins:
 
-    - ``upheld``: a REJECT ruling on its PR after it was raised (the adjudicator sided with it);
-    - ``overruled``: an ACCEPT ruling after it, and it was neither fixed nor withdrawn (the
-      adjudicator found it did not block: the one adjudication-confirmed false positive);
-    - ``respecified``: a RESPEC ruling after it (the goal, not the finding, was in question);
-    - ``fixed`` / ``withdrawn``: the reviewer's own latest state for it;
+    - ``fixed`` / ``withdrawn``: the reviewer's own latest state for it. A ruling never claims
+      such a finding: it rules on the findings still open, and this one was settled by then or
+      at least is now;
+    - ``upheld``: still open, and a REJECT ruling on its PR after it was raised (at that head or
+      a later one: a finding still open was outstanding at every head since);
+    - ``overruled``: still open, and an ACCEPT ruling after it (the adjudicator found it did
+      not block: the one adjudication-confirmed false positive);
+    - ``respecified``: still open, and a RESPEC ruling after it (the goal was in question);
     - ``disputed``: the fixer disputed the round after it was raised and no ruling followed;
     - ``open``: none of those yet.
 
@@ -484,11 +487,14 @@ def finding_outcomes(db: Path, repo: str, since: float, until: float,
             if not since <= at < until:
                 continue
             state = item.get("state")
-            ruled = next((r["verdict"] for r in rulings if r["pr"] == pr and r["created"] >= at),
-                         None)
+            # A ruling decides the findings still open when it runs, whatever head it judged. The
+            # record keeps each finding's latest state, so only one still open now was open at
+            # every ruling since it was raised; a fixed or withdrawn one keeps its own outcome.
+            ruled = (next((r["verdict"] for r in rulings if r["pr"] == pr and r["created"] >= at),
+                          None) if state not in ("fixed", "withdrawn") else None)
             if ruled == "REJECT":
                 outcome = "upheld"
-            elif ruled == "ACCEPT" and state not in ("fixed", "withdrawn"):
+            elif ruled == "ACCEPT":
                 outcome = "overruled"
             elif ruled == "RESPEC":
                 outcome = "respecified"

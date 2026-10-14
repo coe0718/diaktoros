@@ -247,11 +247,11 @@ recorded from this version on, so the line says when the first was; earlier work
 bound. Human overrides (#220) are not among them.
 
 Findings: the reviewer's numbered findings (`F1`, `F2`…) raised in the window, each counted
-once however many rounds restate it. Its outcome, first match wins: `upheld` (a REJECT ruling on
-its PR after it was raised), `overruled` (an ACCEPT ruling after it, and it was neither fixed nor
-withdrawn), `respecified` (a RESPEC ruling after it), `fixed` or `withdrawn` (the reviewer's own
-latest state), `disputed` (the fixer disputed the round after it and no ruling followed), else
-`open`. A dispute alone is not a false positive, and an unchallenged finding is not proven right:
+once however many rounds restate it. `fixed` or `withdrawn` is the reviewer's own latest state,
+and a ruling never claims such a finding: a ruling decides the findings still open. A finding
+still open is `upheld` (a REJECT ruling on its PR after it was raised, at that head or a later
+one), `overruled` (an ACCEPT ruling after it), `respecified` (a RESPEC ruling after it),
+`disputed` (the fixer disputed the round after it and no ruling followed), else `open`. A dispute alone is not a false positive, and an unchallenged finding is not proven right:
 the adjudicated false-positive rate is overruled over the findings a ruling decided (overruled +
 upheld), shown with that denominator, overall and by the resolved model of the review that raised
 it (`unknown` without a reviewer run at that head). Findings recorded before their time was kept

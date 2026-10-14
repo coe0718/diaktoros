@@ -245,11 +245,11 @@ class Ledger(unittest.TestCase):
         with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET head=?, model=? WHERE id=?", (head, model, run_id))
 
-    def ruled(self, pr, verdict, at, repo=REPO):
+    def ruled(self, pr, verdict, at, repo=REPO, head="f" * 40):
         with ledger.connect(self.db) as con:
             con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,created,"
                         "updated) VALUES(?,?,?,?,?,?,?,?,?)",
-                        (f"rule-{repo}-{pr}-{at}", repo, pr, "f" * 40, "breach:3", verdict, "",
+                        (f"rule-{repo}-{pr}-{at}", repo, pr, head, "breach:3", verdict, "",
                          at, at))
 
     def disputed(self, pr, at):
@@ -269,6 +269,7 @@ class Ledger(unittest.TestCase):
             "40": {"findings": {"F1": f("fixed", NOW - 900), "F2": f("withdrawn", NOW - 900),
                                 "F3": f("open", NOW - 900), "F4": f("fixed", NOW - 900)}},
             "41": {"findings": {"F1": f("open", NOW - 900, h2), "F2": f("fixed", NOW - 900, h2)}},
+            "46": {"findings": {"F1": f("open", NOW - 900, h1), "F2": f("fixed", NOW - 900, h1)}},
             "42": {"findings": {"F1": f("open", NOW - 900, h3), "F2": f("open", NOW - 900, h3)}},
             "43": {"findings": {"F1": f("open", NOW - 900, h3)}},
             "44": {"findings": {"F1": f("open", since - 10, h3), "F2": f("open", NOW, h3),
@@ -278,7 +279,9 @@ class Ledger(unittest.TestCase):
         }
         tracked["42"]["findings"]["F2"]["at"] = NOW - 300      # raised after the dispute
         self.ruled(40, "ACCEPT", NOW - 100)        # F3 overruled; F4 was fixed anyway
-        self.ruled(41, "REJECT", NOW - 100)        # both upheld, fixed or not
+        self.ruled(41, "REJECT", NOW - 100)        # F1 upheld; F2 was fixed: not the ruling's
+        self.ruled(46, "ACCEPT", NOW - 100, head="9" * 40)   # judged a later head: F1, still
+        #                                            open since h1, is overruled; F2 stays fixed
         self.disputed(42, NOW - 500)               # F1 disputed; F2 came later: open
         self.ruled(42, "ACCEPT", NOW - 100, repo="other/repo")   # another repository's ruling
         self.ruled(43, "RESPEC", NOW - 100)
@@ -287,19 +290,20 @@ class Ledger(unittest.TestCase):
                             tracked=tracked)
         found = data["findings"]
         self.assertEqual({k: found[k] for k in stats.FINDING_OUTCOMES},
-                         {"fixed": 2, "withdrawn": 1, "overruled": 1, "upheld": 2,
+                         {"fixed": 4, "withdrawn": 1, "overruled": 2, "upheld": 1,
                           "respecified": 1, "disputed": 1, "open": 2})
-        self.assertEqual((found["raised"], found["undated"]), (10, 1))
-        self.assertEqual(found["false_positives"], {"overruled": 1, "ruled": 3})
+        self.assertEqual((found["raised"], found["undated"]), (12, 1))
+        self.assertEqual(found["false_positives"], {"overruled": 2, "ruled": 3})
         self.assertEqual(found["models"]["model-a"]["false_positives"], {"overruled": 1, "ruled": 1})
-        self.assertEqual(found["models"]["model-b"]["upheld"], 2)
-        self.assertEqual(found["models"]["unknown"]["raised"], 4)
+        self.assertEqual((found["models"]["model-b"]["upheld"],
+                          found["models"]["model-b"]["fixed"]), (1, 1))
+        self.assertEqual(found["models"]["unknown"]["raised"], 6)    # no reviewer run on 42-46
         out = stats.report_text(data)
-        self.assertIn("findings: 10 raised · fixed 2, withdrawn 1, overruled 1, upheld 2, "
-                      "respecified 1, disputed 1, open 2 · adjudicated false positives: 1 of 3 "
+        self.assertIn("findings: 12 raised · fixed 4, withdrawn 1, overruled 2, upheld 1, "
+                      "respecified 1, disputed 1, open 2 · adjudicated false positives: 2 of 3 "
                       "ruled · 1 undated, in no window", out)
         self.assertIn("Findings by model", out)
-        self.assertEqual(json.loads(json.dumps(data))["findings"]["raised"], 10)
+        self.assertEqual(json.loads(json.dumps(data))["findings"]["raised"], 12)
 
     def test_issue_fix_reads_are_bounded(self):
         for n in range(3):
