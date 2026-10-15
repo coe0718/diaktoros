@@ -22,7 +22,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from diaktoros import cli, config, doctor
+from diaktoros import cli, cli_operations, config, doctor
 
 ROOT = Path(__file__).resolve().parent.parent
 READER, REV, FIX, ADJ = "reader-acct", "rev-acct", "fix-acct", "adj-acct"
@@ -466,9 +466,9 @@ class ReaderIdentityTests(_Loop):
             self.assertIn(case.replace("`", "``"), doc, case)
             self.assertIn(case, ops, case)
         # and the formatter's docstring names only its real callers
-        self.assertNotIn("``explain``):", cli._readable_loops.__doc__)
+        self.assertNotIn("``explain``):", cli_operations._readable_loops.__doc__)
         self.assertIn("``explain`` calls ``config.readable_loops``", " ".join(
-            cli._readable_loops.__doc__.split()))
+            cli_operations._readable_loops.__doc__.split()))
 
     def test_apply_refuses_a_reader_with_no_token_file(self):
         rc, out = self.run_cli(self.init_argv())

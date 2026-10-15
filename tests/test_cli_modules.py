@@ -18,7 +18,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import cli  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-MODULES = ("cli_reports",)
+MODULES = ("cli_reports", "cli_operations")
+SHARED = ("cli_common",)          # helpers several groups use: no commands, never imports cli
 
 
 def _defined(path: pathlib.Path) -> set[str]:
@@ -58,7 +59,7 @@ class Split(unittest.TestCase):
                     self.assertIs(verbs[verb].get_default("func"), getattr(module, command))
 
     def test_no_moved_module_imports_cli(self):
-        for name in MODULES:
+        for name in MODULES + SHARED:
             tree = ast.parse((ROOT / "diaktoros" / f"{name}.py").read_text())
             imported = {alias.name for node in ast.walk(tree)
                         if isinstance(node, ast.ImportFrom) for alias in node.names}

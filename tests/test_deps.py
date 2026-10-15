@@ -801,7 +801,7 @@ class LedgerTests(unittest.TestCase):
         self.assertGreater(leases[-1], start[1] + sup.lease_seconds, seen)
 
     def test_status_and_explain_lines_come_from_the_ledger(self):
-        from diaktoros import cli, config
+        from diaktoros import cli_operations, config
         from diaktoros.run_supervisor import Supervisor
         (self.root / "state").mkdir()
         sup = Supervisor(self.root / "state/diaktoros-runs.sqlite",
@@ -809,14 +809,14 @@ class LedgerTests(unittest.TestCase):
         run_id = self.row(sup)
         loop = {"repo": REPO}
         with mock.patch.object(config, "home", return_value=self.root):
-            self.assertEqual(cli._dependency_lines(loop), [])
+            self.assertEqual(cli_operations._dependency_lines(loop), [])
             sup.record_dependencies(run_id, "w", "rust: ready — 224 crates.io crates (2.4s)")
-            self.assertEqual(cli._dependency_lines(loop, 7),
+            self.assertEqual(cli_operations._dependency_lines(loop, 7),
                              ["reviewer #7 @ aaaaaaa running — rust: ready — 224 crates.io "
                               "crates (2.4s)"])
-            self.assertEqual(cli._dependency_lines({"repo": "other/repo"}), [])
+            self.assertEqual(cli_operations._dependency_lines({"repo": "other/repo"}), [])
         with mock.patch.object(config, "home", return_value=self.root / "absent"):
-            self.assertEqual(cli._dependency_lines(loop), [])
+            self.assertEqual(cli_operations._dependency_lines(loop), [])
 
     def test_the_cap_override_reaches_the_worker(self):
         from diaktoros import run_supervisor
