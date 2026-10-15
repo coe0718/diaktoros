@@ -34,6 +34,7 @@ import subprocess
 import sys
 
 from . import config
+from .config import host_guards
 from .util import log
 from . import envnames
 
@@ -80,11 +81,11 @@ def _fetch(clone: pathlib.Path, *refs: str) -> subprocess.CompletedProcess:
     if probe.returncode != 0 or not remote or "\n" in remote:
         why = (f"git could not name origin's fetch URL (ls-remote --get-url rc={probe.returncode}); "
                "not fetching")
-        if config.test_guard_active():
-            raise config.RealNetworkError(f"{config._ARMED}. Otherwise: {why}")
+        if host_guards.test_guard_active():
+            raise host_guards.RealNetworkError(f"{host_guards._ARMED}. Otherwise: {why}")
         return subprocess.CompletedProcess(["git", "fetch", "origin", *refs], probe.returncode or 1,
                                            "", why)
-    config.guard_network(remote)
+    host_guards.guard_network(remote)
     return _git("fetch", "--quiet", *(("--prune",) if not refs else ()), "origin", *refs,
                 timeout=900, cwd=clone)
 

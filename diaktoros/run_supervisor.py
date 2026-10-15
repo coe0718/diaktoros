@@ -1467,7 +1467,7 @@ class Supervisor:
             raise ValueError("child command requires explicit fixture mode")
         if lease_seconds <= 0 or child_timeout <= 0:
             raise ValueError("positive timeouts required")
-        from .config import guard_real_home
+        from .config.host_guards import guard_real_home
         self.db = guard_real_home(Path(db))
         if hermes_home is not None:
             guard_real_home(hermes_home)
@@ -2467,8 +2467,8 @@ class Supervisor:
         args = [sys.executable, "-m", "diaktoros.run_supervisor", operation,
                 str(self.db), command, json.dumps(self.capacity),
                 str(self.lease_seconds), str(self.child_timeout)]
-        from .config import (TEST_GUARD_SENTINEL_ENV, TEST_HOME_GUARD_ENV, TEST_REAL_HOME_ENV,
-                             guard_real_home)
+        from .config.host_guards import (TEST_GUARD_SENTINEL_ENV, TEST_HOME_GUARD_ENV,
+                                         TEST_REAL_HOME_ENV, guard_real_home)
         host_home = guard_real_home(self.hermes_home or Path(os.environ.get("HERMES_HOME", os.environ["HOME"])).resolve(strict=True))
         env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
                "HOME": str(host_home), "HERMES_HOME": str(host_home),

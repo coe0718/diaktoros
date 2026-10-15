@@ -11,6 +11,7 @@ from unittest import mock
 import urllib.error
 
 from diaktoros import config, gh, routes, trusted_fetch
+from diaktoros.config import host_guards  # noqa: E402
 
 
 def http_error(code: int = 500) -> urllib.error.HTTPError:
@@ -26,7 +27,7 @@ class HttpErrorsAreClosed(unittest.TestCase):
         self.addCleanup(patcher.stop)
         # urlopen is the fake here, so nothing leaves the machine; the test guard's network
         # check (tests/_home_guard.py) would refuse the production URLs before reaching it.
-        guard = mock.patch.object(config, 'guard_network', side_effect=lambda url: url)
+        guard = mock.patch.object(host_guards, 'guard_network', side_effect=lambda url: url)
         guard.start()
         self.addCleanup(guard.stop)
         env = mock.patch.dict(os.environ)   # restored after the test, stub or not

@@ -21,6 +21,7 @@ import time
 from urllib.parse import quote
 
 from . import attribution, broker, config, gh, util
+from .config import host_guards
 
 MAX_FILES = 24
 MAX_CONTENT = 128 * 1024
@@ -270,7 +271,7 @@ class _Isolated:
 
 @contextlib.contextmanager
 def _isolated(loop: dict, login: str, identity: dict, remote: str | None):
-    url = config.guard_network(remote if remote is not None else
+    url = host_guards.guard_network(remote if remote is not None else
                                f"https://github.com/{loop['repo']}.git")
     with tempfile.TemporaryDirectory(prefix="review-loop-git-") as temp:
         root = Path(temp)

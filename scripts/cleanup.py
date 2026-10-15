@@ -52,6 +52,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from diaktoros import config, gh, state as state_mod  # noqa: E402
+from diaktoros.config import host_guards
 from diaktoros.util import human
 
 # A CLI's report belongs on stdout: the cron that runs a sweep delivers it, and a gate that
@@ -120,7 +121,7 @@ def has_symlink_component(path: pathlib.Path) -> bool:
 
 
 def safe_roots(loop: dict, number: int) -> list[pathlib.Path]:
-    roots = [config.guard_real_home(pathlib.Path(p).expanduser()) for p in loop["roots"]]
+    roots = [host_guards.guard_real_home(pathlib.Path(p).expanduser()) for p in loop["roots"]]
     roots.append(config.artifacts_dir(loop, number).parent)
     return [root.resolve() for root in roots if root.is_dir() and not has_symlink_component(root)]
 
@@ -417,7 +418,7 @@ def sweep(loop: dict, dry: bool, quiet: bool) -> int:
             by_pr.setdefault(number, []).append(tree)
     # Roots can hold a PR's logs with no worktree left; those still count — when they name this
     # loop's repository (a shared root also holds other loops' PR numbers).
-    for root in [config.guard_real_home(pathlib.Path(p).expanduser()) for p in loop["roots"]]:
+    for root in [host_guards.guard_real_home(pathlib.Path(p).expanduser()) for p in loop["roots"]]:
         if not root.is_dir() or has_symlink_component(root):
             continue
         for child in root.iterdir():

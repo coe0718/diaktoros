@@ -21,6 +21,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import broker, broker_client, config, envnames, util, wire  # noqa: E402
+from diaktoros.config import host_guards  # noqa: E402
 
 HEAD, BASE = "a" * 40, "b" * 40
 LOOP = {"seats": {"fixer": {"login": "fix"}}}
@@ -46,11 +47,11 @@ class Env(unittest.TestCase):
                 with self.subTest(guard=guard, mark=mark), \
                         mock.patch.dict(os.environ, {**clean, guard: "1", mark: sentinel.name},
                                         clear=True):
-                    self.assertTrue(config.test_guard_active())
+                    self.assertTrue(host_guards.test_guard_active())
             clean = {k: v for k, v in os.environ.items()
                      if not k.endswith(("TEST_HOME_GUARD", "TEST_GUARD_SENTINEL"))}
             with mock.patch.dict(os.environ, clean, clear=True):
-                self.assertFalse(config.test_guard_active())
+                self.assertFalse(host_guards.test_guard_active())
 
 
 class Guard(unittest.TestCase):

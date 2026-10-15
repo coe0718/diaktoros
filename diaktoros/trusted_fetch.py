@@ -51,7 +51,7 @@ def _publish_exclusive(private: pathlib.Path, root: pathlib.Path) -> None:
 
 def _request(loop: dict, path: str, login: str, limit: int, accept: str) -> bytes:
     """Read at most limit+1 bytes, including for chunked and dishonest responses."""
-    from .config import guard_network
+    from .config.host_guards import guard_network
     guard_network(f"{gh.API}{path}")    # under the test guard: loopback fakes only
     try:
         credential = gh.token(loop, login)
@@ -194,7 +194,7 @@ def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) ->
     to ``_TARBALL_REDIRECT``, and drop ``Authorization`` on it (codeload authenticates by the
     token in its URL). Nothing credentialed reaches the export.
     """
-    from .config import guard_network
+    from .config.host_guards import guard_network
     guard_network(f"{gh.API}/repos/{repo}/tarball/{head}")
 
     # First request: to the API with Authorization; do NOT follow redirects automatically.
@@ -233,7 +233,7 @@ def _fetch_tarball(loop: dict, repo: str, reader: str, head: str, limit: int) ->
 
 def _fetch_tarball_hop(location: str, limit: int) -> bytes:
     """Take the one allowed redirect hop: validate the target, then fetch it with no credential."""
-    from .config import guard_network
+    from .config.host_guards import guard_network
     parsed = urllib.parse.urlparse(location)
     allowed_scheme, allowed_host = _TARBALL_REDIRECT
     if parsed.scheme != allowed_scheme or (parsed.hostname or "").lower() != allowed_host:

@@ -419,7 +419,7 @@ def guard_registry(env: dict, work: Path, cache: Path, manifest: str, locked: by
     parsed manifest names no registry, source, patch or replace; and every lockfile source is crates.io.
     Outside the guard it does nothing: production already builds exactly this configuration.
     """
-    from .config import _ARMED, RealNetworkError, test_guard_active
+    from .config.host_guards import _ARMED, RealNetworkError, test_guard_active
     if not test_guard_active():
         return
     why = []

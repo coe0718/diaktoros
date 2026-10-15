@@ -17,7 +17,7 @@ import in a process it:
 * arms the plugin's tripwire (``DIAKTOROS_TEST_HOME_GUARD`` plus the sentinel file named by
   ``DIAKTOROS_TEST_GUARD_SENTINEL``, which only this module creates — the variable alone arms
   nothing): while armed, resolving the Hermes home, a ledger, a state dir or a cleanup root
-  anywhere inside the real home raises ``config.RealHomeError`` — so a test that escapes this guard
+  anywhere inside the real home raises ``host_guards.RealHomeError`` — so a test that escapes this guard
   fails instead of writing.
 
 unittest's ``discover -s tests`` never imports ``tests/__init__.py`` (the start directory is the
@@ -66,7 +66,7 @@ def _under_a_home(path: pathlib.Path) -> bool:
     return any(home == form or home in form.parents for home in homes for form in forms)
 
 
-# The temp root must lie outside every protected home. config.guard_real_hermes refuses any
+# The temp root must lie outside every protected home. host_guards.guard_real_hermes refuses any
 # `hermes` anywhere under the real home (a ~/.local/bin/hermes is as real as the install), so a
 # TMPDIR under $HOME would put the temp home — and the shim in it — where the plugin refuses to
 # run it. Rather than make the caller get TMPDIR right, the guard picks a root outside, and every
@@ -96,7 +96,7 @@ else:
     os.environ.update({"HOME": str(TEST_HOME), "HERMES_HOME": str(TEST_HOME / ".hermes"),
                        "DIAKTOROS_TEST_USER_HOME": str(USER_HOME), GUARD_ENV: "1"})
 
-# The plugin's tripwires arm only with GUARD_ENV *and* this sentinel (config.test_guard_active), so
+# The plugin's tripwires arm only with GUARD_ENV *and* this sentinel (host_guards.test_guard_active), so
 # the bare variable inherited by a real loop arms nothing. A guarded child keeps its parent's; one
 # whose sentinel is missing (or never inherited) makes its own. Empty: nothing secret in it.
 SENTINEL_ENV = "DIAKTOROS_TEST_GUARD_SENTINEL"
@@ -240,7 +240,7 @@ def needs_real_hermes(*prerequisites: bool, reason: str = "real-Hermes test prer
 # Create both homes now, in a fresh guarded process and in a guarded child alike: run_supervisor
 # resolves HERMES_HOME strictly, so a guarded spawn must never depend on an earlier test (or the
 # parent) having happened to create it. Never anywhere under a protected home (the same test as
-# the shim's): a child that inherited one is an escape, and config.guard_real_home — which covers
+# the shim's): a child that inherited one is an escape, and host_guards.guard_real_home — which covers
 # the whole real home, not only its .hermes — refuses it on first use (config.home(), a state dir,
 # a ledger). The guard itself must not write there either.
 for _home in {os.environ.get("HOME"), os.environ.get("HERMES_HOME")} - {None, ""}:
