@@ -133,10 +133,10 @@ class AutoOffer(Base):
         self.assertIn("PR #7 closed without merging", self.posted[0])
         self.assertEqual(self.enqueued, [])
 
-    def test_person_issue_naming_an_open_pr_is_held_then_released(self):
+    def test_person_issue_declaring_an_open_pr_is_held_then_released(self):
         from diaktoros import state as state_mod
         self.open_prs = [{"number": 20, "body": ""}]
-        self.live = issue(labels=("P3",), body="Docs for the thing in #20.")
+        self.live = issue(labels=("P3",), body="Docs for the thing. Depends on #20.")
         self.origin_state = "open"
         self.assertIn("held until PR #20", fix_hold.auto_offer(self.loop, 12))
         self.assertEqual(self.enqueued, ["held"])
@@ -148,11 +148,37 @@ class AutoOffer(Base):
         self.assertEqual(st.fix_holds(), {})
         self.assertEqual(pacing.turns_today(self.loop["id"], fix_hold.AUTO_FIX_SEAT), 1)
 
-    def test_person_issue_naming_a_url_to_an_open_pr_is_held(self):
+    def test_person_issue_declaring_a_url_to_an_open_pr_is_held(self):
         self.open_prs = [{"number": 20, "body": ""}]
-        self.live = issue(labels=("P3",), body=f"https://github.com/{REPO}/pull/20")
+        self.live = issue(labels=("P3",), body=f"Builds on https://github.com/{REPO}/pull/20")
         self.origin_state = "open"
         self.assertIn("held until PR #20", fix_hold.auto_offer(self.loop, 12))
+
+    def test_a_mention_of_an_open_pr_is_not_a_dependency(self):
+        # #686: #685 named "PR #684" as its example, and #684 needed #685's fix: never a hold.
+        self.open_prs = [{"number": 20, "body": ""}]
+        self.origin_state = "open"
+        for body in ("Live on PR #20 (the Desktop page): the reviewer can't run Node.",
+                     f"https://github.com/{REPO}/pull/20", "Docs for the thing in #20.",
+                     "It broke after #20 merged.", "#20 needs this fix.",
+                     "Nothing depends on this. #20 is unrelated."):
+            with self.subTest(body):
+                self.assertIsNone(fix_hold.declared_open_pr(self.loop, self.open_prs, body))
+        self.live = issue(labels=("P3",), body="Live on PR #20: the reviewer can't run Node.")
+        self.assertIn("auto-offered at", fix_hold.auto_offer(self.loop, 12))
+        self.assertNotIn("held", self.enqueued)
+
+    def test_the_declarations_that_hold(self):
+        self.open_prs = [{"number": 20, "body": ""}]
+        prs = self.open_prs
+        for body, words in (("Depends on #20.", "Depends on #20"),
+                            ("Follow-up to PR #20.", "Follow-up to PR #20"),
+                            ("blocked by: #20", "blocked by: #20"),
+                            (f"Requires {REPO}#20", f"Requires {REPO}#20"),
+                            ("This builds on pull request #20", "builds on pull request #20")):
+            with self.subTest(body):
+                self.assertEqual(fix_hold.declared_open_pr(self.loop, prs, body), (20, words))
+        self.assertIsNone(fix_hold.declared_open_pr(self.loop, prs, "Depends on #21"))  # not open
 
     def test_person_issue_naming_a_merged_pr_or_an_issue_is_not_held(self):
         self.open_prs = [{"number": 20, "body": ""}]   # 21 merged, 22 an issue: not in the list

@@ -111,6 +111,15 @@ CREATE TABLE IF NOT EXISTS operator_actions (
  id INTEGER PRIMARY KEY, repo TEXT NOT NULL, pr INTEGER NOT NULL, action TEXT NOT NULL,
  created REAL NOT NULL
 );
+-- A later bug linked to the approved PR that introduced it (#661), by the operator and verified
+-- against GitHub when recorded: the PR merged, the issue was opened after the merge, and the
+-- loop's reviewer approved the merged head (review_id). model is the resolved model of that
+-- review's run, when the ledger has it. state: linked | retracted (kept, never deleted).
+CREATE TABLE IF NOT EXISTS regressions (
+ repo TEXT NOT NULL, issue INTEGER NOT NULL, pr INTEGER NOT NULL, head TEXT NOT NULL,
+ review_id INTEGER NOT NULL, model TEXT, state TEXT NOT NULL, created REAL NOT NULL,
+ updated REAL NOT NULL, PRIMARY KEY (repo, issue, pr)
+);
 -- Facts about the ledger itself for the operator outbox, e.g. that it vanished and was
 -- recreated empty. Delivered once by notify(), claim-before-send like every other notice.
 CREATE TABLE IF NOT EXISTS ledger_events (
@@ -1969,6 +1978,52 @@ class Supervisor:
                         'new_head=COALESCE(?,new_head),pr_number=COALESCE(?,pr_number),'
                         'comment_id=COALESCE(?,comment_id),updated=? WHERE run_id=?',
                         (state, error, new_head, pr_number, comment_id, time.time(), run_id))
+
+    def approving_model(self, repo: str, pr: int, head: str, review_id: int) -> str | None:
+        """The resolved model of the reviewer run that posted ``review_id`` at ``head``, else of
+        the latest reviewer run at that head; None when the ledger has neither."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT r.model FROM runs r JOIN review_receipts x ON x.run_id=r.id "
+                "WHERE r.repo=? AND r.pr=? AND r.head=? AND r.seat='reviewer' AND x.review_id=?",
+                (repo, pr, head, review_id)).fetchone()
+            if row is None:
+                row = con.execute("SELECT model FROM runs WHERE repo=? AND pr=? AND head=? AND "
+                                  "seat='reviewer' ORDER BY created DESC LIMIT 1",
+                                  (repo, pr, head)).fetchone()
+        return row[0] if row is not None else None
+
+    def link_regression(self, repo: str, issue: int, pr: int, head: str, review_id: int,
+                        model: str | None) -> str:
+        """Record (or re-link) a verified regression (#661): ``linked``, ``already`` (the same
+        link, unchanged) or ``relinked`` (a retracted link restored)."""
+        now = time.time()
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            prior = con.execute('SELECT state FROM regressions WHERE repo=? AND issue=? AND pr=?',
+                                (repo, issue, pr)).fetchone()
+            if prior is None:
+                con.execute('INSERT INTO regressions(repo,issue,pr,head,review_id,model,state,'
+                            'created,updated) VALUES(?,?,?,?,?,?,?,?,?)',
+                            (repo, issue, pr, head, review_id, model, 'linked', now, now))
+                outcome = 'linked'
+            elif prior[0] == 'linked':
+                outcome = 'already'
+            else:
+                con.execute("UPDATE regressions SET state='linked',head=?,review_id=?,model=?,"
+                            "updated=? WHERE repo=? AND issue=? AND pr=?",
+                            (head, review_id, model, now, repo, issue, pr))
+                outcome = 'relinked'
+            con.execute('COMMIT')
+        return outcome
+
+    def retract_regression(self, repo: str, issue: int, pr: int) -> bool:
+        """Mark a link retracted (kept, so the report can say so); False when there is none."""
+        with self._connect() as con:
+            cur = con.execute("UPDATE regressions SET state='retracted',updated=? WHERE repo=? "
+                              "AND issue=? AND pr=? AND state='linked'",
+                              (time.time(), repo, issue, pr))
+        return cur.rowcount == 1
 
     OPERATOR_ACTIONS = ("retry", "escalate", "review", "hold")
 

@@ -101,9 +101,9 @@ def cmd_stats(args) -> int:
 def cmd_report(args) -> int:
     """The weekly digest on demand, across every configured loop (or one with ``--loop``): PRs
     reviewed, verdicts, rounds, request-to-verdict time, escalations, rulings, finding and
-    issue-fix outcomes, turns and failures per seat and model, trends against the window before,
-    and the most stuck PR. Read-only: the run ledger, the loops' breach markers and finding
-    records, and one GitHub read per issue-fix PR."""
+    issue-fix outcomes, regressions after approval, turns and failures per seat and model, trends
+    against the window before, and the most stuck PR. Read-only: the run ledger, the loops' breach
+    markers and finding records, and one GitHub read per issue-fix PR."""
     from . import run_supervisor, stats
     try:
         since = stats.parse_since(args.since)
