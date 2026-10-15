@@ -3009,7 +3009,12 @@ class Supervisor:
                     rc = child.wait(timeout=budget)
                     retry = rc != 0
                 except subprocess.TimeoutExpired:
-                    os.killpg(child.pid, signal.SIGKILL)
+                    # The child may have exited since wait() raised: a gone group must not
+                    # replace the true "child timeout" with a launch/wait error.
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     child.wait()
                     # The fixture's stand-in for the turn-budget kill (#49): failed, re-armable
                     # by `retry` or a new event, never retried automatically on the same budget.
