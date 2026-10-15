@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import (cli, config, gate_failures, gh, hook_ping, ledger, migrate,  # noqa: E402
                          pacing, route_intent, routes, run_supervisor)
+from diaktoros import cli_common  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
@@ -234,9 +235,9 @@ class Rename(fg.Base):
 
     def migrate(self, ping=(hook_ping.OK, "✅ answered"), *, dry_run=False, extra=()):
         pings = ping if isinstance(ping, list) else None
-        with mock.patch.object(cli, "_hook_listing", side_effect=lambda *a, **k: [
+        with mock.patch.object(cli_common, "_hook_listing", side_effect=lambda *a, **k: [
                     {**h, "config": dict(h["config"])} for h in self.hooks]), \
-                mock.patch.object(cli, "_patch_hook_url", side_effect=self.patch_hook), \
+                mock.patch.object(cli_common, "_patch_hook_url", side_effect=self.patch_hook), \
                 mock.patch.object(hook_ping, "ping", side_effect=(pings if pings else None),
                                   return_value=None if pings else ping), \
                 mock.patch.object(migrate, "doctor_step", return_value=[]), \

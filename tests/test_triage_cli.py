@@ -18,6 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config, doctor, gate_shims, gh, routes  # noqa: E402
+from diaktoros import cli_common  # noqa: E402
 
 LOOP_ID = "triaged"
 LOOP_FILE = t.LOOPS_DIR / f"{LOOP_ID}.json"
@@ -144,7 +145,7 @@ class TriageVerb(unittest.TestCase):
                 return {"id": len(posted)}
             return []
         with mock.patch.object(gh, "api", side_effect=api):
-            cli._install_hooks(loop, "admin")
+            cli_common._install_hooks(loop, "admin")
         self.assertEqual(posted, [["pull_request"], ["pull_request_review"], ["issues"]])
         names = [check.name for check in doctor.check_routes(loop)]
         self.assertIn(f"route:{ROUTE}", names)
@@ -156,7 +157,7 @@ class TriageVerb(unittest.TestCase):
         url = routes.url_for(ROUTE, t.HOST) if routes.route(ROUTE) else f"{t.HOST}/webhooks/{ROUTE}"
         old = {"id": 9, "active": True, "config": {"url": f"https://old.example/webhooks/{ROUTE}"}}
         current = {"id": 3, "active": True, "config": {"url": url}}
-        with mock.patch.object(cli, "_hook_listing", return_value=[old, current]), \
+        with mock.patch.object(cli_common, "_hook_listing", return_value=[old, current]), \
                 mock.patch.object(routes, "route_name_of", return_value=ROUTE):
             rc, out = self.enable("--dry-run", *admin)
         self.assertEqual(rc, 0, out)
@@ -167,13 +168,13 @@ class TriageVerb(unittest.TestCase):
         admin = ("--admin-token", t.REVIEWER)
         url = routes.url_for(ROUTE, t.HOST) if routes.route(ROUTE) else f"{t.HOST}/webhooks/{ROUTE}"
         existing = {"id": 7, "active": True, "config": {"url": url}}
-        with mock.patch.object(cli, "_hook_listing", return_value=[existing]), \
+        with mock.patch.object(cli_common, "_hook_listing", return_value=[existing]), \
                 mock.patch.object(routes, "route_name_of", return_value=ROUTE):
             rc, out = self.enable("--dry-run", *admin)
         self.assertEqual(rc, 0, out)
         self.assertIn("keep hook 7 (active)", out)
         self.assertNotIn("(paused)", out)
-        with mock.patch.object(cli, "_hook_listing", return_value=[]):
+        with mock.patch.object(cli_common, "_hook_listing", return_value=[]):
             rc, out = self.enable("--dry-run", *admin)
         self.assertIn("create the repo hook (paused; next, arm)", out)
 

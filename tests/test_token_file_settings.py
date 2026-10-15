@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, doctor
+from diaktoros import cli_common  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 READER, REV, FIX, ADJ = "reader-acct", "rev-acct", "fix-acct", "adj-acct"
@@ -223,7 +224,7 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.assertEqual(self.loop_file().read_bytes(), before)
 
         # A seat whose token path moves is an identity change: in flight → --while-busy.
-        with patch.object(cli, "_busy_seats", return_value=["reviewer is in flight on #7 (1m)"]):
+        with patch.object(cli_common, "_busy_seats", return_value=["reviewer is in flight on #7 (1m)"]):
             rc, out = self.run_cli(["apply", "--loop", "widgets"], settings)
             self.assertEqual(rc, 2, out)
             self.assertIn("--while-busy", out)

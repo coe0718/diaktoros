@@ -203,9 +203,9 @@ def shim_fix(loop: dict) -> str:
 def hooks_fix(loop: dict, what: str) -> str:
     """``apply --hooks`` reconciles this loop's two repo hooks with its routes; ``init --hooks``
     refuses an existing loop."""
-    from . import cli       # the one wording of what a hook write needs (#106)
+    from . import cli_common   # the one wording of what a hook write needs (#106)
     return (f"`hermes dk apply --loop {loop['id']} --hooks --admin-token <login>` {what} "
-            f"({cli.hook_write_need(loop, '<login>')})")
+            f"({cli_common.hook_write_need(loop, '<login>')})")
 
 
 def _env_keys(path: pathlib.Path) -> set[str]:
@@ -1789,7 +1789,7 @@ def install_hook_urls(loop: dict, name: str) -> list[str]:
     """Every URL a hook *this install* made (or is about to make) for route ``name`` posts to.
 
     An ownership question, not a delivery one: pausing (``arm --pause``), ``uninstall``
-    deleting its hooks (``cli._classify_hooks``) and ``init``'s stale-hook guard (the same
+    deleting its hooks (``cli_common._classify_hooks``) and ``init``'s stale-hook guard (the same
     function) ask "is this hook one of ours?", and the answer includes the route's registry URL
     whatever profile it binds, and the URL the loop's config gives it — which is all there is
     once the registry entry is gone (a route removed before its hooks, or for ``init`` not
@@ -1829,7 +1829,7 @@ def split_route_hooks(loop: dict, listing: list, names, *,
     """``(own, other)`` for the hooks posting to one of the route ``names``.
 
     The one matcher for hooks: ``arm`` (arming and pausing), ``uninstall`` and ``init``'s
-    stale-hook guard (via ``cli._classify_hooks``) and ``selftest --ping``; ``doctor``'s helpers
+    stale-hook guard (via ``cli_common._classify_hooks``) and ``selftest --ping``; ``doctor``'s helpers
     use the same URL rules. A hook is a
     seat's only when it posts to exactly that route's registry URL, and the registry entry binds
     the seat's profile (``seat_route_target``). Every other hook

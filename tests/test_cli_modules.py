@@ -58,6 +58,15 @@ class Split(unittest.TestCase):
                 with self.subTest(verb=verb):
                     self.assertIs(verbs[verb].get_default("func"), getattr(module, command))
 
+    def test_shared_helpers_have_one_binding(self):
+        # cli calls them as cli_common.<name>: a second binding in cli would let a test's patch
+        # reach some callers and silently miss others.
+        from diaktoros import cli_common
+        for name in _defined(ROOT / "diaktoros" / "cli_common.py"):
+            with self.subTest(helper=name):
+                self.assertFalse(hasattr(cli, name), f"cli binds {name}: call cli_common.{name}")
+                self.assertTrue(callable(getattr(cli_common, name)))
+
     def test_no_moved_module_imports_cli(self):
         for name in MODULES + SHARED:
             tree = ast.parse((ROOT / "diaktoros" / f"{name}.py").read_text())

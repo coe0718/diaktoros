@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config
+from diaktoros import cli_common  # noqa: E402
 
 
 def raw_loop(loop_id):
@@ -63,7 +64,7 @@ class FixerPushPolicyTests(unittest.TestCase):
         rc, _ = self.invoke(enable=True, ack=True, dry=True)
         self.assertEqual(rc, 0)
         self.assertEqual(self.first.read_bytes(), original)
-        with patch.object(cli, "_busy_seats", return_value=[]):
+        with patch.object(cli_common, "_busy_seats", return_value=[]):
             rc, out = self.invoke(enable=True, ack=True)
         self.assertEqual(rc, 0, out)
         self.assertTrue(config.unattended_fixer_push_enabled(config.load_id("one")))
@@ -76,7 +77,7 @@ class FixerPushPolicyTests(unittest.TestCase):
 
     def test_busy_fixer_refuses_without_writing(self):
         original = self.first.read_bytes()
-        with patch.object(cli, "_busy_seats", return_value=["fixer on PR 4"]):
+        with patch.object(cli_common, "_busy_seats", return_value=["fixer on PR 4"]):
             rc, out = self.invoke(enable=True, ack=True)
         self.assertEqual(rc, 2)
         self.assertIn("in flight", out)

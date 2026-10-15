@@ -18,6 +18,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, gh
+from diaktoros import cli_common  # noqa: E402
 
 HOST = "https://gw.example"
 
@@ -100,9 +101,9 @@ class ArmVerifyTests(unittest.TestCase):
         out = io.StringIO()
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(gh, "fetch", fake.fetch))
-            if hasattr(cli, "_ping_loop_hooks"):
+            if hasattr(cli_common, "_ping_loop_hooks"):
                 # The post-arm ping (#57) has its own tests; this fake speaks hooks, not pings.
-                stack.enter_context(patch.object(cli, "_ping_loop_hooks", lambda *a, **k: True))
+                stack.enter_context(patch.object(cli_common, "_ping_loop_hooks", lambda *a, **k: True))
             stack.enter_context(redirect_stdout(out))
             rc = cli.cmd_arm(args)
         return rc, out.getvalue()

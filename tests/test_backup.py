@@ -22,6 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import backup, cli, config, migrate, routes  # noqa: E402
+from diaktoros import cli_common  # noqa: E402
 
 SECRET = "s3cr3t-hmac-value-0123456789"
 JOB = {"id": "j1", "name": "diaktoros watchdog", "schedule": {"kind": "interval", "minutes": 5},
@@ -60,13 +61,13 @@ class Base(fg.Base):
         # The loop's routes as the plugin itself writes them (profile, events, script) — keeping
         # one-review's secret — so the starting install is healthy on what restore owns, and a
         # round trip is checked against correctly bound routes, not a broken registry.
-        cli._install_routes(config.all_loops()[0])
+        cli_common._install_routes(config.all_loops()[0])
         for profile in ("reviewer", "fixer"):          # the seats' Hermes profiles exist
             (home / "profiles" / profile).mkdir(parents=True, exist_ok=True)
         cli.gate_shims.install(config.all_loops()[0], dry_run=False, report=False)
         self.jobs = [dict(JOB)]
-        for patcher in (mock.patch.object(cli, "_cron_jobs", side_effect=lambda loop: (self.jobs, "")),
-                        mock.patch.object(cli, "_hermes_bin", return_value="hermes")):
+        for patcher in (mock.patch.object(cli_common, "_cron_jobs", side_effect=lambda loop: (self.jobs, "")),
+                        mock.patch.object(cli_common, "_hermes_bin", return_value="hermes")):
             patcher.start()
             self.addCleanup(patcher.stop)
 

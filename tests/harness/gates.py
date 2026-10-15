@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .fixture import *  # noqa: F403 - the shared harness namespace
+from diaktoros import cli_common  # noqa: E402
 
 
 # == groups ======================================================================
@@ -243,7 +244,7 @@ def group_adjudicator() -> None:
     section("adjudicator — guarded marker, isolated turn, no legacy gateway dispatch")
     reviews = [review(REVIEWER, head=ch * 40, rid=i) for i, ch in enumerate("cde", 1)]
     reset(prs={"7": {**pr(7, head=HEAD_B), "reviews": reviews}})
-    cli._install_routes(config.load_id("widgets"))
+    cli_common._install_routes(config.load_id("widgets"))
     route = json.loads(SUBS.read_text())["widgets-breach"]
     check("adjudicator route retains its own gate", route["script"], "gate_adjudicator.py")
     check("adjudicator retains ruling prompt", route["prompt"] == prompts.ADJUDICATOR, True)

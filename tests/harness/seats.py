@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .fixture import *  # noqa: F403 - the shared harness namespace
+from diaktoros import cli_common  # noqa: E402
 
 
 def group_settings() -> None:
@@ -373,7 +374,7 @@ def make_loop(loop_id: str, repo: str, reviewer_profile: str, fixer_profile: str
     LOOPS_DIR.mkdir(parents=True, exist_ok=True)
     loop = config.normalize(raw)
     (LOOPS_DIR / f"{loop_id}.json").write_text(json.dumps(loop, indent=2))
-    cli_mod._install_routes(loop)
+    cli_common._install_routes(loop)
     return loop
 
 
@@ -1031,7 +1032,7 @@ def group_webhook_host() -> None:
               "/p/fixer-profile/webhooks/widgets-fix")
         calls.clear()
         try:
-            cli._install_hooks({**config.load_id("widgets"), "host": ""}, None)
+            cli_common._install_hooks({**config.load_id("widgets"), "host": ""}, None)
         except config.ConfigError:
             check("install refuses absent loop host", True, True)
         else:
@@ -1052,7 +1053,7 @@ def group_webhook_host() -> None:
         SUBS.write_text(json.dumps(subs))
         calls.clear()
         try:
-            cli._install_hooks(config.load_id("widgets"), None)
+            cli_common._install_hooks(config.load_id("widgets"), None)
         except config.ConfigError as exc:
             check("install refuses missing route before API", "route" in str(exc), True)
         else:

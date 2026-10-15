@@ -30,6 +30,7 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, config, doctor, routes  # noqa: E402
+from diaktoros import cli_common  # noqa: E402
 # By file, not as ``tests.hermes_prereqs``: in CI's installed-mode lane Hermes's own ``tests``
 # package is on PYTHONPATH and would shadow ours.
 sys.path.insert(0, str(ROOT / "tests"))
@@ -1219,7 +1220,7 @@ class DoctorApplyUninstall(Base):
         self.install()
         loop = config.load_id("widgets")
         shim = doctor.shim_path()
-        cli._write_watchdog_shim()
+        cli_common._write_watchdog_shim()
         good = shim.read_text()
         self.assertEqual(gate_shims.heal_watchdog_shim(), [])      # up to date: no line, no write
         # Old template: healed, and doctor then verifies it.
@@ -1260,7 +1261,7 @@ class DoctorApplyUninstall(Base):
         self.install()
         loop = config.load_id("widgets")
         shim = doctor.shim_path()
-        cli._write_watchdog_shim()
+        cli_common._write_watchdog_shim()
         good = shim.read_text()
         shim.write_text(good.replace("diaktoros watchdog failed", "old text"))
         st = state_mod.state_for(loop)
@@ -1316,7 +1317,7 @@ class ObserverApply(Base):
         from diaktoros import gate_shims, observer
         self.assertIn(("arbiter", "observe.py"), gate_shims.wanted(loop))
         self.assertEqual(observer.route_contract(loop)["profile"], "arbiter")
-        self.assertEqual(cli._route_binds(loop, set(cli._routes_of(loop))), {})
+        self.assertEqual(cli._route_binds(loop, set(cli_common._routes_of(loop))), {})
 
     def test_no_observer_has_no_observer_profile(self):
         self.install()

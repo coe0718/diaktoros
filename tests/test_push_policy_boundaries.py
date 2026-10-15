@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import broker_ipc, cli, config, ledger
+from diaktoros import cli_common  # noqa: E402
 from diaktoros.run_supervisor import Supervisor
 from tests.test_fixer_push_policy import raw_loop
 
@@ -55,7 +56,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         with patch.object(sup, '_spawn'):
             sup.enqueue('old', 'owner/one', 3, 'a' * 40, 'fixer')
         self.assertEqual(sup.get('old')['push_admitted'], 0)
-        with patch.object(cli, '_busy_seats', return_value=[]):
+        with patch.object(cli_common, '_busy_seats', return_value=[]):
             self.assertEqual(self.change(True), 0)
         with patch.object(sup, '_spawn'):
             sup.enqueue('old', 'owner/one', 3, 'a' * 40, 'fixer')
@@ -74,7 +75,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         self.assertIn('every write from this turn is refused', str(caught.exception))
 
     def test_enabled_enqueue_is_pinned_and_disable_revokes(self):
-        with patch.object(cli, '_busy_seats', return_value=[]):
+        with patch.object(cli_common, '_busy_seats', return_value=[]):
             self.assertEqual(self.change(True), 0)
         scope = self.admitted_scope()
         sup = Supervisor(scope.ledger_db)
@@ -87,13 +88,13 @@ class PolicyBoundaryTests(unittest.TestCase):
         push.assert_not_called()
 
     def test_stale_set_and_apply_snapshot_cannot_restore_disabled_policy(self):
-        with patch.object(cli, '_busy_seats', return_value=[]):
+        with patch.object(cli_common, '_busy_seats', return_value=[]):
             self.assertEqual(self.change(True), 0)
         stale = config.load_id('one')
         self.assertEqual(self.change(False), 0)
-        cli._write_config({**stale, 'cap': 10})  # set/apply publish a stale snapshot
+        cli_common._write_config({**stale, 'cap': 10})  # set/apply publish a stale snapshot
         self.assertFalse(config.load_id('one')['unattended_fixer_push'])
-        cli._restore_config(self.path, json.dumps(stale).encode())  # apply rollback
+        cli_common._restore_config(self.path, json.dumps(stale).encode())  # apply rollback
         self.assertFalse(config.load_id('one')['unattended_fixer_push'])
 
     def test_symlink_id_cannot_write_another_loop(self):
@@ -122,7 +123,7 @@ class PolicyBoundaryTests(unittest.TestCase):
         sup.enqueue('run', 'owner/one', 3, 'a' * 40, 'fixer')
         with ledger.connect(db) as con:
             con.execute("UPDATE runs SET state='running',launch_intent=1 WHERE delivery='run'")
-        with patch.object(cli, '_busy_seats', return_value=[]):
+        with patch.object(cli_common, '_busy_seats', return_value=[]):
             self.assertEqual(self.change(True), 2)
         self.assertFalse(config.load_id('one')['unattended_fixer_push'])
 

@@ -18,6 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import cli, config, gate_shims, gh, ledger, migrate, run_supervisor  # noqa: E402
+from diaktoros import cli_common  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 OLD, NEW = fg.REPO, "owner/renamed"
@@ -187,7 +188,7 @@ class Writer(fg.Base):
         self.assertEqual(config.load_id("one")["repo"], NEW)
         # The ordinary writer still refuses any repository change.
         with self.assertRaisesRegex(config.ConfigError, "repository changed"):
-            cli._write_config({**moved, "repo": OLD})
+            cli_common._write_config({**moved, "repo": OLD})
 
 
 class Shims(fg.Base):
