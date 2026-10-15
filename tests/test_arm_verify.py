@@ -18,6 +18,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, gh
+from diaktoros import cli_settings  # noqa: E402
 from diaktoros import cli_install  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 
@@ -561,7 +562,7 @@ class ApplyHookMoveTests(unittest.TestCase):
                    {"id": 2, "active": True, "events": ["pull_request_review"],
                     "config": {"url": fixer_url, "content_type": "json"}}]
         with patch.object(gh, "api", return_value=listing):
-            moves, redundant = cli._hook_moves(self.before, self.after, {})
+            moves, redundant = cli_settings._hook_moves(self.before, self.after, {})
         self.assertEqual(redundant, [])
         return [move[:3] for move in moves]
 
