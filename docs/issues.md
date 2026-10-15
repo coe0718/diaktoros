@@ -146,6 +146,24 @@ solve the issue or complete all stages of the PR sequence.
 The host does not merge. GitHub's `Fixes #N` closing behavior applies when the PR is
 merged into the appropriate default-branch context, not merely because a PR was opened.
 
+### When a hand-off waits for a PR
+
+A fix turn starts from the base branch, so the hand-off waits when the work isn't there yet.
+The wait is posted once as a comment, and the watchdog sweep queues the turn when the PR merges:
+
+- **An issue the reviewer filed** waits for the PR it came from while that PR is open: "waiting
+  for #N to merge — this finding is about code only on that branch". If that PR closes without
+  merging, the finding is moot and the hand-off is dropped (the label stays).
+- **An issue a person opened** waits only for an open PR it *declares* it depends on: "Depends
+  on #N", "Blocked by #N", "Builds on #N", "Follow-up to #N" or "Requires #N" (also `PR #N`,
+  `owner/repo#N` or the PR's URL). The comment quotes those words. A PR the issue only mentions,
+  as an example or a link, is never waited for (#686). If the PR closes without merging, the
+  hand-off is dropped with a comment saying so.
+
+To release a wait that no longer applies, edit the issue so it no longer declares the PR, then
+remove and re-apply the fix label: the hand-off is decided again, and the old wait is cleared.
+An issue an open PR already closes (`Fixes #N` in its description) is not handed over at all.
+
 ## Issues the reviewer files
 
 When a review finds something real that doesn't block (issue-tier, usually P2/P3), the reviewer
