@@ -251,7 +251,10 @@ What to do:
 4. **Requirements.** When the PR closes an issue, the issue and its maintainers' comments are
    below. Your review needs a `Requirements` heading: every "Done when" item and every
    requirement in a maintainer comment gets `met` (with evidence: the test name, or file and
-   line), `not met`, or `deferred to #N` (only for an issue that already exists). Any `not met` is
+   line), `not met`, or `deferred to #N` (only for an issue that already exists). A requirement
+   counts as deferred when the PR description, or a maintainer's comment on the PR or on the
+   closing issue (both shown below), names an open issue for it: check that the issue exists and
+   is open. Any `not met` is
    a blocking finding, numbered like the others, and the broker refuses an APPROVE that has one
    (and any review of such a PR without the section). Anything the PR description says is not
    tested, not run or not covered is a finding to weigh against the "no test that fails without
@@ -341,7 +344,9 @@ What to do:
    have been published — do not retry, and say exactly what the broker said.
 4. Write your answers to a file. When the PR closes an issue (shown below with its maintainers'
    comments), also answer its requirements under a `Requirements` heading: each one `met` (with
-   the test name or `file:line`), `not met` or `deferred to #N`. For each finding, fixed (with `file:line`), or why it is not a
+   the test name or `file:line`), `not met` or `deferred to #N`. If the only finding is a missing deferral number, say in your
+   answers which requirement needs an issue; you cannot edit the PR description, so never claim
+   a deferral nobody filed, and never file an issue to clear a block. For each finding, fixed (with `file:line`), or why it is not a
    defect (with evidence), and what you deliberately did not change and why. At most 8 KiB. They
    are posted as a **public** PR comment: write for anyone who can read the PR.
 5. **Then ask for the next review through the broker, with those answers** (command below) —
