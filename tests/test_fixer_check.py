@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import cli, config, prompts, run_supervisor  # noqa: E402
 from diaktoros import cli_install  # noqa: E402
 
@@ -38,13 +39,13 @@ class Setting(unittest.TestCase):
                 config.normalize(raw(fixer_check=bad))
 
     def test_the_form_moves_it_only_when_it_names_it(self):
-        self.assertNotIn("fixer_check", config.apply_settings(raw(), {}))
-        self.assertEqual(config.apply_settings(raw(fixer_check="make lint"),
+        self.assertNotIn("fixer_check", settings_form.apply_settings(raw(), {}))
+        self.assertEqual(settings_form.apply_settings(raw(fixer_check="make lint"),
                                                {"fixer_check": " "})["fixer_check"], "make lint")
-        self.assertEqual(config.apply_settings(raw(), {"fixer_check": CHECK})["fixer_check"],
+        self.assertEqual(settings_form.apply_settings(raw(), {"fixer_check": CHECK})["fixer_check"],
                          CHECK)
         with self.assertRaises(config.ConfigError):
-            config.apply_settings(raw(), {"fixer_check": "a\nb"})
+            settings_form.apply_settings(raw(), {"fixer_check": "a\nb"})
 
 
 class Prompts(unittest.TestCase):

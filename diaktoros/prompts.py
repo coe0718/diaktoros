@@ -577,8 +577,8 @@ REGISTRY_ROWS = {
                      "a doctor check: the doctor harness roster (`tests/harness/doctor.py`). "
                      "Check: `python3 tests/run_tests.py doctor`."),
     "setting": (r'^\+\s+"[a-z_]+": \{"label"|^\+  [a-z_]+:$',
-                "a setting: `config.SETTINGS_SCHEMA` and `plugin.yaml` (the same description), "
-                "`DEFAULTS`, `normalize`, `init`, the `setup` argv, `set`, `apply`'s key list, "
+                "a setting: `SETTINGS_SCHEMA` in `diaktoros/config/settings_form.py` and "
+                "`plugin.yaml` (the same description), `DEFAULTS`, `normalize`, `init`, the `setup` argv, `set`, `apply`'s key list, "
                 "`docs/settings.md` and `docs/configuration.md`, from every path."),
     "broker_refusal": (r"^\+.*raise ProtocolError\(",
                        "a broker refusal: other tests' review and push bodies the new rule now "

@@ -15,6 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 import test_fixer_gating as fg  # noqa: E402
 import test_review_after_ci as rac  # noqa: E402
 import test_seat_models as sm  # noqa: E402
@@ -263,9 +264,9 @@ class Setting(rac.Cli):
                 config.normalize(rac.raw(ci_fix_cap=bad))
 
     def test_form_init_set_apply_and_setup(self):
-        self.assertNotIn("ci_fix_cap", config.apply_settings(rac.raw(), {}))
-        self.assertEqual(config.apply_settings(rac.raw(), {"ci_fix_cap": "4"})["ci_fix_cap"], 4)
-        self.assertIn("ci_fix_cap", config.SETTINGS_SCHEMA)
+        self.assertNotIn("ci_fix_cap", settings_form.apply_settings(rac.raw(), {}))
+        self.assertEqual(settings_form.apply_settings(rac.raw(), {"ci_fix_cap": "4"})["ci_fix_cap"], 4)
+        self.assertIn("ci_fix_cap", settings_form.SETTINGS_SCHEMA)
         rc, out = self.init("--ci-fix-cap", "2")
         self.assertEqual((rc, self.cap_written()), (0, 2), out)
         rc, out = self.cli("set", "--loop", rac.LOOP_ID, "--ci-fix-cap", "5")

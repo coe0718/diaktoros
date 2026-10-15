@@ -4,6 +4,7 @@ import json
 import unittest
 
 from diaktoros import cli, config, observer, show
+from diaktoros.config import settings_form  # noqa: E402
 from test_token_file_settings import TokenFileSettingsTests as _Base, SENTINEL
 
 
@@ -20,7 +21,7 @@ class ShowTests(_Base):
 
     def test_every_schema_key_is_shown(self):
         rows = self.rows()
-        missing = set(config.SETTINGS_SCHEMA) - set(rows)
+        missing = set(settings_form.SETTINGS_SCHEMA) - set(rows)
         self.assertFalse(missing, f"settings schema keys `show` does not list: {sorted(missing)}")
 
     def test_every_loop_key_is_shown(self):

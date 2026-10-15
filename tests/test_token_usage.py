@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import config, show, stats, trusted_turn  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.inference_proxy import PATH, InferenceCapability, UsageMeter, _UnixHTTP  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -167,9 +168,9 @@ class DailyTokensSetting(unittest.TestCase):
     def test_settings_form_schema_and_plugin_yaml_agree(self):
         text = (Path(__file__).resolve().parent.parent / "plugin.yaml").read_text()
         for key in ("reviewer_daily_tokens", "fixer_daily_tokens"):
-            self.assertIn(key, config.SETTINGS_SCHEMA)
+            self.assertIn(key, settings_form.SETTINGS_SCHEMA)
             self.assertIn(f"  {key}:", text)
-            self.assertIn(config.SETTINGS_SCHEMA[key]["description"], text.replace('\\"', '"'))
+            self.assertIn(settings_form.SETTINGS_SCHEMA[key]["description"], text.replace('\\"', '"'))
 
 
 if __name__ == "__main__":

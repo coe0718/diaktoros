@@ -22,6 +22,7 @@ from . import (
     routes,
     state as state_mod,
 )
+from .config import settings_form
 from .cli_common import _ROUTE_PROMPT, BRANCH_PUSH_REFUSAL, GATE_SCRIPT
 
 
@@ -474,7 +475,7 @@ def _set_adjudication(args, loop: dict) -> int:
             print(f"  {line}")
         return 0
 
-    d = config.settings_defaults(cli_common._SETTINGS)
+    d = settings_form.settings_defaults(cli_common._SETTINGS)
     profile = (str(getattr(args, "adjudicator_profile", None) or "").strip()
                or str(current.get("profile") or "") or d["adjudicator_profile"] or "default")
     route = (str(getattr(args, "adjudicator_route", None) or "").strip() or old_route
@@ -1019,7 +1020,7 @@ def _apply(args) -> int:
     try:
         # Token-file paths first: a bad path is refused by name before anything is computed.
         config.verify_token_settings(cli_common._SETTINGS)
-        updated = config.normalize(config.apply_settings(loop, cli_common._SETTINGS))
+        updated = config.normalize(settings_form.apply_settings(loop, cli_common._SETTINGS))
     except config.ConfigError as exc:
         print(f"settings refused: {exc}")
         return 2
@@ -1310,10 +1311,10 @@ def cmd_show(args) -> int:
 
 def cmd_settings(args) -> int:
     """Show the plugin-level defaults — what a new loop starts from, and what ``apply`` pushes."""
-    d = config.settings_defaults(cli_common._SETTINGS)
+    d = settings_form.settings_defaults(cli_common._SETTINGS)
     print("plugin settings (desktop: Capabilities → Plugins → diaktoros)")
-    width = max(len(key) for key in config.SETTINGS_SCHEMA)
-    for key, spec in config.SETTINGS_SCHEMA.items():
+    width = max(len(key) for key in settings_form.SETTINGS_SCHEMA)
+    for key, spec in settings_form.SETTINGS_SCHEMA.items():
         value = d[key]
         source = "set" if str((cli_common._SETTINGS or {}).get(key, "")) not in ("", "None") else "default"
         print(f"  {key:<{width}} {str(value):<26} [{source}]  {spec['description']}")

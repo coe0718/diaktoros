@@ -21,6 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import cli, cli_operations, config, gate, gh, run_supervisor  # noqa: E402
 from diaktoros import cli_install  # noqa: E402
@@ -56,8 +57,8 @@ class Setting(unittest.TestCase):
             self.assertIn("cannot be review-only", str(caught.exception))
 
     def test_the_form_moves_it_only_when_it_names_it(self):
-        self.assertNotIn("review_only", config.apply_settings(raw(), {}))
-        got = config.apply_settings(raw(), {"review_only": " owner-human , other ,"})
+        self.assertNotIn("review_only", settings_form.apply_settings(raw(), {}))
+        got = settings_form.apply_settings(raw(), {"review_only": " owner-human , other ,"})
         self.assertEqual(got["review_only"], [OWNER, "other"])
         self.assertIn("review_only", (t.ROOT / "plugin.yaml").read_text())
 
@@ -489,7 +490,7 @@ class Cli(unittest.TestCase):
         self.assertEqual((rc, self.limits()), (0, (5, None)), out)   # 0 clears the daily cap
         rc, out = self.cli("apply", "--loop", LOOP_ID, settings=form)
         self.assertEqual((rc, self.limits()), (0, (4, 6)), out)  # apply pushes the form
-        self.assertNotIn("review_only_cap", config.apply_settings(raw(), {}))
+        self.assertNotIn("review_only_cap", settings_form.apply_settings(raw(), {}))
         schema = (t.ROOT / "plugin.yaml").read_text()
         for key in ("review_only_cap", "review_only_daily"):
             self.assertIn(f"  {key}:", schema)                   # the Desktop form
@@ -508,7 +509,7 @@ class Cli(unittest.TestCase):
                 self.assertEqual(rc, 2, out)
                 for key in ("review_only_cap", "review_only_daily"):
                     with self.assertRaises(config.ConfigError):
-                        config.apply_settings(raw(), {key: bad})
+                        settings_form.apply_settings(raw(), {key: bad})
                     with self.assertRaises(config.ConfigError):
                         config.normalize(raw(**{key: int(bad) if bad.lstrip("-").isdigit() else bad}))
         loop = config.normalize(raw())

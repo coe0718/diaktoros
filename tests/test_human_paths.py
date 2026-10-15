@@ -13,6 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import config, gh, observer, routes  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import cli_install  # noqa: E402
 import run_tests as t  # noqa: E402
 import test_partial_view_no_approve as pv  # noqa: E402
@@ -37,10 +38,10 @@ class Setting(unittest.TestCase):
                 config.normalize({**self.RAW, "human_paths": bad})
 
     def test_the_form_moves_it_only_when_it_names_it(self):
-        self.assertNotIn("human_paths", config.apply_settings(dict(self.RAW), {}))
-        got = config.apply_settings(dict(self.RAW), {"human_paths": ".github/**, release/*"})
+        self.assertNotIn("human_paths", settings_form.apply_settings(dict(self.RAW), {}))
+        got = settings_form.apply_settings(dict(self.RAW), {"human_paths": ".github/**, release/*"})
         self.assertEqual(got["human_paths"], [".github/**", "release/*"])
-        self.assertIn("human_paths", config.SETTINGS_SCHEMA if hasattr(config, "SETTINGS_SCHEMA")
+        self.assertIn("human_paths", settings_form.SETTINGS_SCHEMA if hasattr(config, "SETTINGS_SCHEMA")
                       else Path(config.__file__).parents[2].joinpath("plugin.yaml").read_text())
 
 

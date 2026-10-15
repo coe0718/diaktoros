@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, doctor
+from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -325,10 +326,10 @@ class TokenFileSettingsTests(unittest.TestCase):
             elif re.match(r"^    \S", line) and current:
                 key, _, value = line.strip().partition(":")
                 manifest[current][key.strip()] = value.strip().strip('"')
-        self.assertEqual(sorted(manifest), sorted(config.SETTINGS_SCHEMA))
+        self.assertEqual(sorted(manifest), sorted(settings_form.SETTINGS_SCHEMA))
         for key in ("reviewer_token_file", "fixer_token_file", "adjudicator_login",
                     "adjudicator_token_file"):
-            spec = config.SETTINGS_SCHEMA[key]
+            spec = settings_form.SETTINGS_SCHEMA[key]
             self.assertEqual((spec["type"], spec["default"]), ("str", ""))
             self.assertEqual(manifest[key], {"label": spec["label"], "type": "str", "default": "",
                                              "description": spec["description"]})

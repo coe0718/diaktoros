@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .fixture import *  # noqa: F403 - the shared harness namespace
+from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 from diaktoros import cli_install  # noqa: E402
 
@@ -236,8 +237,8 @@ def group_plugin_settings() -> None:
     reset(prs={"7": pr(7)})      # a known starting loop, whatever the earlier groups left behind
     manifest = manifest_schema()
     check("plugin.yaml declares a config_schema", bool(manifest), True)
-    check("  the same keys the code reads", sorted(manifest), sorted(config.SETTINGS_SCHEMA))
-    for key, spec in config.SETTINGS_SCHEMA.items():
+    check("  the same keys the code reads", sorted(manifest), sorted(settings_form.SETTINGS_SCHEMA))
+    for key, spec in settings_form.SETTINGS_SCHEMA.items():
         declared = manifest.get(key) or {}
         check(f"  {key}: type agrees", declared.get("type"), spec["type"])
         # YAML spells a boolean lowercase (``default: true``); every other default is its str().
@@ -248,23 +249,23 @@ def group_plugin_settings() -> None:
               declared.get("label"), spec["label"])
         check(f"  {key}: has a description", bool(declared.get("description")), True)
 
-    check("unset → schema defaults", config.settings_defaults(None)["cap"],
-          config.SETTINGS_SCHEMA["cap"]["default"])
-    tuned = config.settings_defaults({"cap": 6, "reviewer_concurrency": "4"})
+    check("unset → schema defaults", settings_form.settings_defaults(None)["cap"],
+          settings_form.SETTINGS_SCHEMA["cap"]["default"])
+    tuned = settings_form.settings_defaults({"cap": 6, "reviewer_concurrency": "4"})
     check("a set value wins", (tuned["cap"], tuned["reviewer_concurrency"]), (6, 4))
     check("  and is coerced to the declared type", isinstance(tuned["reviewer_concurrency"], int), True)
-    check("a junk value falls back", config.settings_defaults({"cap": "many"})["cap"], 3)
+    check("a junk value falls back", settings_form.settings_defaults({"cap": "many"})["cap"], 3)
 
     settings = {"cap": 5, "reviewer_concurrency": 2, "fixer_concurrency": 1,
                 "clone": str(CLONE), "grace_min": 30}
-    raw = config.apply_settings(config.load_id("widgets"), settings)
+    raw = settings_form.apply_settings(config.load_id("widgets"), settings)
     check("apply gives both seats the form's values",
           (config.seat_concurrency(raw, "reviewer"), config.seat_concurrency(raw, "fixer")), (2, 1))
     check("  pinning only the seat that differs from the loop default (#76)",
           (raw["concurrency"], "concurrency" in raw["seats"]["fixer"]), (1, False))
     check("  and the plain knobs", (raw["cap"], raw["grace_min"]), (5, 30))
 
-    kept = config.apply_settings({"clone": "/some/where", "seats": {}}, {"clone": ""})
+    kept = settings_form.apply_settings({"clone": "/some/where", "seats": {}}, {"clone": ""})
     check("a blank clone in the form never wipes the loop's own",
           kept["clone"], "/some/where")
 
@@ -277,7 +278,7 @@ def group_plugin_settings() -> None:
     fake.setup(parser)          # the framework hands setup the COMMAND's parser, not a subparsers action
     args = parser.parse_args(["init", "--repo", "acme/solo", "--fixer", "f", "--reviewer", "r",
                               "--reviewer-profile", "p", "--fixer-profile", "q"])
-    d = config.settings_defaults(settings)
+    d = settings_form.settings_defaults(settings)
     check("a new loop starts from the settings",
           (args.cap, cli_install._init_loop_concurrency(args, d), cli_install._init_seat_concurrency(args, d)),
           (5, 1, {"reviewer": 2}))
@@ -886,8 +887,8 @@ def group_webhook_host() -> None:
             return parser
 
         parser = parser_for()
-        check("unset schema host has no operator URL", config.settings_defaults(None)["host"], "")
-        kept = config.apply_settings(config.load_id("widgets"), {"host": ""})
+        check("unset schema host has no operator URL", settings_form.settings_defaults(None)["host"], "")
+        kept = settings_form.apply_settings(config.load_id("widgets"), {"host": ""})
         check("empty plugin setting preserves existing loop host", kept["host"], HOST)
         for label, args in (("missing", []), ("blank", ["--host", "   "]),
                             ("relative", ["--host", "gateway.local"]),

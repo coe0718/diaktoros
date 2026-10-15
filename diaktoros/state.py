@@ -34,6 +34,7 @@ import uuid
 from collections.abc import Callable
 
 from . import config, hostdirs
+from .config import settings_form
 from .util import log, now_iso
 
 # Per-thread depth of the state lock we already hold, keyed by lock path. ``flock`` is tied to
@@ -298,11 +299,11 @@ class LoopState:
 
         ``config.seat_ttl_s``'s rule — a claim taken for a turn still inside its own budget never
         loses its slot, on ``seat``'s own clock (#98) — reached through the ledger's own read, so a missing or wrong-typed
-        ``ttl_min`` (``config.settings_defaults``' fallback, kept here) cannot propagate into the
+        ``ttl_min`` (``settings_form.settings_defaults``' fallback, kept here) cannot propagate into the
         age arithmetic and stop the readers either. ``recorded`` is the budget the claim was taken
         with, which keeps a lowered ``turn_budget_s`` from shortening it.
         """
-        default = float(config.SETTINGS_SCHEMA["ttl_min"]["default"])
+        default = float(settings_form.SETTINGS_SCHEMA["ttl_min"]["default"])
         raw = self.loop.get("ttl_min")
         if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
             raw = default

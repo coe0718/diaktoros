@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_issue_fix import BASE, REPO, Base, issue  # noqa: E402
 
 from diaktoros import config, fix_hold, gate, gh, pacing  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 
 
 class AutoFixConfig(Base):
@@ -48,7 +49,7 @@ class AutoFixConfig(Base):
     def test_schema_matches_plugin_yaml(self):
         text = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text()
         for key in ("auto_fix_labels", "auto_fix_daily"):
-            self.assertIn(key, config.SETTINGS_SCHEMA)
+            self.assertIn(key, settings_form.SETTINGS_SCHEMA)
             self.assertIn(f"  {key}:", text)
 
 
