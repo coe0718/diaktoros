@@ -164,6 +164,24 @@ class PreWriteTurnFailures(Base):
         self.assertEqual(sup.retry(row['id'], budget=0.5), 'pending')
         self.assertEqual((sup.get('d')['state'], sup.get('d')['budget']), ('pending', 0.5))
 
+    def test_timeout_kill_race_keeps_child_timeout_error(self):
+        # #739: the child exiting between wait() timing out and killpg must not turn the
+        # accurate "child timeout" into "launch/wait failed: ProcessLookupError".
+        (self.root / 'slow.py').write_text('import time\ntime.sleep(5)\n')
+        sup = Supervisor(self.db, fixture_mode=True, child_timeout=0.2,
+                         fixture_command=[sys.executable, str(self.root / 'slow.py')])
+        sup._spawn = lambda: None
+        sup.submit('d', 'o/r', 1, HEAD, 'reviewer')
+        real = os.killpg
+
+        def racy(pid, sig):
+            real(pid, sig)
+            raise ProcessLookupError(3, 'No such process')
+        with patch.object(run_supervisor.os, 'killpg', racy):
+            sup._run_one()
+        row = sup.get('d')
+        self.assertEqual((row['state'], row['error']), ('failed', 'child timeout'))
+
     def test_duplicate_of_active_or_finished_run_is_reported_not_enqueued(self):
         sup = self.sup()
         self.assertEqual(sup.submit('d', 'o/r', 1, HEAD, 'reviewer'), 'enqueued')
