@@ -462,7 +462,7 @@ class OperatorCommands(unittest.TestCase):
         self.assertIn(f'reviewer #7 @ {HEAD[:7]}', text)
 
     def test_ledger_lines_show_reason_tail_and_next_step(self):
-        from diaktoros import cli, config
+        from diaktoros import cli_operations, config
         loop = config.load_id('widgets')
         import contextlib
         import io
@@ -478,7 +478,7 @@ class OperatorCommands(unittest.TestCase):
         # The ledger, and the host's record that it exists (#108: a vanished ledger is reported).
         self.assertEqual(before, ['diaktoros-runs.sqlite', 'diaktoros-runs.sqlite.present'])
         with contextlib.redirect_stdout(out):
-            cli._print_ledger_runs(loop, 7, '  run: ', limit=6)
+            cli_operations._print_ledger_runs(loop, 7, '  run: ', limit=6)
         text = out.getvalue()
         self.assertIn('reviewer #7 @ aaaaaaa failed — retry limit (4 attempts): turn exited with '
                       'status 3; no external write — re-arm: hermes dk retry --loop '

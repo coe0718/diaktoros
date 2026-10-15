@@ -22,7 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 import test_fixer_gating as fg  # noqa: E402
-from diaktoros import cli, config, gate, gh, run_supervisor  # noqa: E402
+from diaktoros import cli, cli_operations, config, gate, gh, run_supervisor  # noqa: E402
 from scripts import gate_fixer, gate_reviewer, watchdog  # noqa: E402
 
 HEAD = fg.HEAD
@@ -237,7 +237,7 @@ class Gates(fg.Base):
 
     def test_another_round_is_granted_on_a_new_unreviewed_head(self):
         cap = self.loop["cap"]
-        with mock.patch.object(cli, "_reviewer_runs", return_value=0):
+        with mock.patch.object(cli_operations, "_reviewer_runs", return_value=0):
             code, out, _ = self.review_cmd(self.verdicts(cap, "c" * 40))
         self.assertIn("another round granted", out)
         self.assertTrue(self.st.review_cap_granted(7, HEAD, cap))
