@@ -20,6 +20,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config, doctor, routes  # noqa: E402
+from diaktoros import cli_common  # noqa: E402
 
 LOOP_FILE = t.LOOPS_DIR / "widgets.json"
 
@@ -638,9 +639,9 @@ class PurgeTest(Base):
             target.rename(real)
             target.symlink_to(real)
             return []
-        original = cli._busy_seats
-        cli._busy_seats = swap
-        self.addCleanup(setattr, cli, "_busy_seats", original)
+        original = cli_common._busy_seats
+        cli_common._busy_seats = swap
+        self.addCleanup(setattr, cli_common, "_busy_seats", original)
         self.addCleanup(lambda: target.is_symlink() and target.unlink())
         rc, out = self.cli("uninstall", "--loop", "widgets", "--purge")
         self.assertEqual(rc, 2, out)
@@ -655,9 +656,9 @@ class PurgeTest(Base):
     def test_deletes_accepted_but_not_read_back_are_not_called_live(self):
         self.fresh_install()
         ids = sorted(hook["id"] for hook in self.hooks())
-        original = cli._loop_hooks
-        cli._loop_hooks = lambda loop, login: (None, "HTTP 502 Bad Gateway")
-        self.addCleanup(setattr, cli, "_loop_hooks", original)
+        original = cli_common._loop_hooks
+        cli_common._loop_hooks = lambda loop, login: (None, "HTTP 502 Bad Gateway")
+        self.addCleanup(setattr, cli_common, "_loop_hooks", original)
         rc, out = self.cli("uninstall", "--loop", "widgets")
         self.assertEqual(rc, 2, out)
         self.assertEqual(self.hooks(), [])                       # they really are gone
@@ -675,13 +676,13 @@ class PurgeTest(Base):
         # absence could not be confirmed — no "still live", no DELETE template.
         self.world(hooks=[])
         calls = []
-        original = cli._loop_hooks
+        original = cli_common._loop_hooks
 
         def failing(loop, login):
             calls.append(login)
             return None, "HTTP 502 Bad Gateway"
-        cli._loop_hooks = failing
-        self.addCleanup(setattr, cli, "_loop_hooks", original)
+        cli_common._loop_hooks = failing
+        self.addCleanup(setattr, cli_common, "_loop_hooks", original)
         rc, out = self.cli("uninstall", "--loop", "widgets")
         self.assertEqual(calls and len(calls), 1, "the read-back must be taken")
         self.assertEqual(rc, 2, out)
@@ -698,9 +699,9 @@ class PurgeTest(Base):
         self.fresh_install()
         live = self.hooks()
         self.world(hooks=[])
-        original = cli._loop_hooks
-        cli._loop_hooks = lambda loop, login: (live, "")
-        self.addCleanup(setattr, cli, "_loop_hooks", original)
+        original = cli_common._loop_hooks
+        cli_common._loop_hooks = lambda loop, login: (live, "")
+        self.addCleanup(setattr, cli_common, "_loop_hooks", original)
         rc, out = self.cli("uninstall", "--loop", "widgets")
         self.assertEqual(rc, 2, out)
         ids = sorted(hook["id"] for hook in live)
@@ -722,13 +723,13 @@ class PurgeTest(Base):
             # this the suite would pass if the code took a read-back and simply ignored its error
             # (#131).
             readbacks: list = []
-            original = cli._loop_hooks
+            original = cli_common._loop_hooks
 
             def spy(loop, login):
                 readbacks.append(login)
                 return original(loop, login)
-            cli._loop_hooks = spy
-            self.addCleanup(setattr, cli, "_loop_hooks", original)
+            cli_common._loop_hooks = spy
+            self.addCleanup(setattr, cli_common, "_loop_hooks", original)
             rc, out = self.cli("uninstall", "--loop", "widgets")
             self.assertEqual(rc, 2, (blank, out))
             self.assertEqual(readbacks, [], "no read-back may be attempted when nothing was read")
@@ -748,11 +749,11 @@ class PurgeTest(Base):
             if method == "DELETE" and path.endswith(f"/hooks/{first}"):
                 return None, "HTTP 500 Internal Server Error"
             return real_fetch(loop, path, method=method, body=body, login=login)
-        original = cli._loop_hooks
+        original = cli_common._loop_hooks
         cli.gh.fetch = fetch
-        cli._loop_hooks = lambda loop, login: (None, "HTTP 502 Bad Gateway")
+        cli_common._loop_hooks = lambda loop, login: (None, "HTTP 502 Bad Gateway")
         self.addCleanup(setattr, cli.gh, "fetch", real_fetch)
-        self.addCleanup(setattr, cli, "_loop_hooks", original)
+        self.addCleanup(setattr, cli_common, "_loop_hooks", original)
         rc, out = self.cli("uninstall", "--loop", "widgets")
         self.assertEqual(rc, 2, out)
         self.assertIn(f"hook {first}: DELETE failed (HTTP 500", out)

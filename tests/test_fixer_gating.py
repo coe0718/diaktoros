@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from diaktoros import ledger  # noqa: E402
+from diaktoros import cli_common  # noqa: E402
 from diaktoros import cli, config, doctor, gate, gh, run_supervisor, state as state_mod  # noqa: E402
 from diaktoros.run_supervisor import FixerPushDisabled, Supervisor  # noqa: E402
 from scripts import gate_fixer, watchdog  # noqa: E402
@@ -315,7 +316,7 @@ class Surfaces(Base):
         gate.hold_fixer_push_off(self.loop, self.st, 7, HEAD)
         args = argparse.Namespace(loop="one", enable=True, disable=False,
                                   acknowledge_pr_race=True, dry_run=False)
-        with mock.patch.object(cli, "_busy_seats", return_value=[]), \
+        with mock.patch.object(cli_common, "_busy_seats", return_value=[]), \
              contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(cli.cmd_fixer_push(args), 0)
         self.assertIn("1 held verdict(s)", out.getvalue())

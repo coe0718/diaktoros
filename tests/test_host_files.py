@@ -23,6 +23,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import cli, config, migrate, pacing, run_supervisor  # noqa: E402
+from diaktoros import cli_common  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 LOOP = {"id": "one", "repo": "owner/one", "base": "main", "cap": 3, "fixers": ["fixer"],
@@ -106,7 +107,7 @@ class Doctor(Home):
 
 class Move(Home):
     def step(self, dry_run=False):
-        return migrate.files_step(cli._write_config, dry_run=dry_run)
+        return migrate.files_step(cli_common._write_config, dry_run=dry_run)
 
     def test_every_file_moves_and_the_loop_follows_and_a_rerun_is_a_no_op(self):
         self.old_install()
@@ -180,7 +181,7 @@ class LedgerSides(Home):
     def test_the_side_files_move_with_the_ledger(self):
         self.old_install()
         self.write_sides()
-        migrate.files_step(cli._write_config, dry_run=False)
+        migrate.files_step(cli_common._write_config, dry_run=False)
         self.assertEqual(self.sides("review-loop-runs"), [])
         self.assertEqual(self.sides("diaktoros-runs"),
                          ["diaktoros-runs.sqlite", "diaktoros-runs.sqlite.present",
@@ -188,9 +189,9 @@ class LedgerSides(Home):
 
     def test_a_rerun_moves_side_files_an_earlier_run_left_behind(self):
         self.old_install()
-        migrate.files_step(cli._write_config, dry_run=False)        # the ledger moved before
+        migrate.files_step(cli_common._write_config, dry_run=False)        # the ledger moved before
         (self.home / "state" / "review-loop-runs.sqlite.workers.log").write_text("x")
-        lines = migrate.files_step(cli._write_config, dry_run=False)
+        lines = migrate.files_step(cli_common._write_config, dry_run=False)
         self.assertIn("diaktoros-runs.sqlite.workers.log", " ".join(lines))
         self.assertEqual(self.sides("review-loop-runs"), [])
 
@@ -198,7 +199,7 @@ class LedgerSides(Home):
         self.old_install()
         self.write_sides()
         (self.home / "state" / "diaktoros-runs.sqlite.present").write_text("new")
-        lines = migrate.files_step(cli._write_config, dry_run=False)
+        lines = migrate.files_step(cli_common._write_config, dry_run=False)
         self.assertTrue(any("REFUSED — both" in line and ".present" in line for line in lines))
         self.assertEqual((self.home / "state" / "diaktoros-runs.sqlite.present").read_text(), "new")
 
@@ -212,7 +213,7 @@ class LedgerSides(Home):
             seen["sides"] = self.sides("review-loop-runs.sqlite.")
             real(path)
         with mock.patch.object(migrate, "_quiet_ledger", side_effect=quiet):
-            migrate.files_step(cli._write_config, dry_run=False)
+            migrate.files_step(cli_common._write_config, dry_run=False)
         self.assertEqual(seen["sides"], ["review-loop-runs.sqlite.present",
                                          "review-loop-runs.sqlite.workers.log",
                                          "review-loop-runs.sqlite.workers.log.1"])
@@ -279,7 +280,7 @@ class Watchdog(Home):
     def move(self, fail_create=False):
         self.fail_create = fail_create
         with mock.patch.object(cli.subprocess, "run", side_effect=self.hermes), \
-                mock.patch.object(cli, "_hermes_bin", return_value="hermes"):
+                mock.patch.object(cli_common, "_hermes_bin", return_value="hermes"):
             return cli._move_watchdog_job(dry_run=False)
 
     def test_the_job_and_shim_move_as_a_pair_with_the_old_schedule(self):

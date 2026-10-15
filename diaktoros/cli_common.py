@@ -1,9 +1,69 @@
-"""Helpers several command groups share (#676): a loop's routes, its token mapping and credential
-lines, and a seat's turn-budget line. Kept apart so a command module never imports ``cli``.
+"""What several command groups share (#676), so a command module never imports ``cli``.
+
+The install plumbing (routes and their prompts, webhooks, the watchdog's cron job and shim) and
+the loop-file write; a loop's token mapping and credential lines; a seat's turn-budget line.
+Callers use it as ``cli_common.<name>``, never a copied name, so a test that patches one helper
+here reaches every caller.
 """
 from __future__ import annotations
 
-from . import config, route_intent
+import json
+import os
+import pathlib
+import shlex
+import shutil
+import tempfile
+import time
+
+from . import config, doctor, envnames, gate_shims, gh, prompts, route_intent, routes
+
+
+# The shim and job names a fresh install gets; an install not yet migrated keeps the old pair
+# (``config.watchdog_shim`` / ``config.watchdog_job_name`` say which is live).
+SHIM_NAME = "diaktoros-watchdog.py"
+
+# One shared job runs the shim (issue #60): `hermes cron create --script` takes only a filename
+# under ~/.hermes/scripts/ and no arguments, so a job cannot carry `--loop <id>`. A single job
+# whose shim runs the watchdog with no `--loop` sweeps every loop exactly once per tick — N loops
+# cost N sweeps, not N². The shim is shared by that one job and is removed only with the last loop.
+SHARED_JOB_NAME = "diaktoros watchdog"
+
+SHARED_JOB_NAMES = frozenset(config.WATCHDOG_JOBS.values())
+
+SHIM = '''#!/usr/bin/env python3
+"""Cron shim written by `hermes dk init`.
+
+The scheduler runs scripts from ~/.hermes/scripts/, so this forwards to the plugin's own
+watchdog and delivers its stdout. Keep the plugin as the single copy of the code.
+"""
+import pathlib
+import subprocess
+import sys
+
+WATCHDOG = pathlib.Path("{watchdog}")
+if not WATCHDOG.exists():
+    print(f"diaktoros watchdog is missing: {{WATCHDOG}}")
+    sys.exit(0)
+
+proc = subprocess.run([sys.executable, str(WATCHDOG), *sys.argv[1:]], capture_output=True, text=True)
+if proc.stdout.strip():
+    print(proc.stdout.strip())
+if proc.returncode != 0 and proc.stderr.strip():
+    print(f"diaktoros watchdog failed: {{proc.stderr.strip()[:400]}}")
+'''
+
+# Which gate script each role's route must run. Ownership is checked against this before a route
+# is written: the registry is shared with every other plugin on the host, and rebinding someone
+# else's route to our profile would be a silent takeover of their webhook.
+GATE_SCRIPT = route_intent.GATE_SCRIPT
+
+# Each role's route prompt: together with the gate script, the proof that a route is ours.
+_ROUTE_PROMPT = route_intent.ROUTE_PROMPT
+
+# One matcher for every caller (doctor.split_route_hooks): arm and selftest --ping credit a hook
+# only at the registry's route URL; uninstall and init's stale-hook guard (ownership) also count
+# the URL the loop's config gives a route the registry no longer holds.
+_hook_route_name = doctor.hook_route_name
 
 
 def _routes_of(loop: dict) -> dict:
@@ -54,3 +114,524 @@ def _budget_line(loop: dict) -> str:
     seats = ["reviewer", "fixer"] + (["adjudicator"] if (loop.get("adjudicator") or {}).get("route")
                                      else [])
     return " · ".join(f"{seat} {config.turn_budget(loop, seat)}s" for seat in seats)
+
+
+def _legacy_job_name(loop: dict) -> str:
+    """The pre-#60 per-loop job name, recognised only to migrate it away."""
+    return f"review loop watchdog ({loop['id']})"
+
+
+def routes_for(loop: dict) -> dict:
+    """The conventional route names for a loop, and the names ``init`` writes."""
+    return {"reviewer": f"{loop['id']}-review", "fixer": f"{loop['id']}-fix",
+            "observer": f"{loop['id']}-observe",
+            "adjudicator": f"{loop['id']}-breach", "triage": f"{loop['id']}-triage"}
+
+
+def _verify_routes(loop: dict, roles) -> None:
+    """Refuse to write a route that is not this loop's to write.
+
+    Three rails: no other loop may already claim the name, no two roles of this loop may share one
+    route (one route wakes one seat), and an installed route must have this role's exact gate and
+    prompt. All three fail *before* anything is written, because a route is the one
+    artifact here that another plugin could own.
+    """
+    mine = _routes_of(loop)
+    route_roles = (*config.ROUTED_ROLES, "observer", "observer_urgent")
+    wanted = [role for role in route_roles if role in set(roles) and role in mine]
+    names = [mine[role] for role in route_roles if role in mine]
+    shared = sorted({name for name in names if names.count(name) > 1})
+    if shared:
+        raise config.ConfigError(
+            f"{loop['id']}: {', '.join(shared)} is routed to more than one seat — one route wakes "
+            "one seat, or two profiles fight over the same webhook")
+    try:
+        other_loops = config.all_loops()
+    except config.ConfigError as exc:
+        raise config.ConfigError(f"cannot check route ownership: {exc}") from exc
+    registry = routes.all_routes()
+    for role in wanted:
+        name = mine[role]
+        # "Itself" is the loop file being rewritten — same id *and* same repo. A loop that merely
+        # shares the id is a different loop, and `init` writing its own file would take the routes
+        # (and the repo) out from under it.
+        owners = [other["id"] for other in other_loops
+                  if not (other["id"] == loop["id"] and other.get("repo") == loop.get("repo"))
+                  and name in set(_routes_of(other).values())]
+        if owners:
+            raise config.ConfigError(
+                f"route {name!r} already belongs to loop {', '.join(sorted(owners))} — give this "
+                "loop its own route name (the registry is shared by every plugin)")
+        if name not in registry:
+            continue                  # not installed yet: nothing of someone else's to collide with
+        entry = registry[name]
+        if not isinstance(entry, dict):
+            raise config.ConfigError(f"route {name!r} exists but its ownership cannot be verified "
+                                     "— pick another route name")
+        script = entry.get("script")
+        if script != GATE_SCRIPT[role] and script not in config.LEGACY_GATE_SCRIPTS.get(role, ()):
+            raise config.ConfigError(
+                f"route {name!r} runs {script!r}, not {GATE_SCRIPT[role]!r} — it belongs to "
+                "something else; pick another route name")
+        if entry.get("prompt") != _ROUTE_PROMPT[role]:
+            raise config.ConfigError(
+                f"route {name!r} does not have this {role} gate's prompt — ownership cannot be "
+                "verified; pick another route name")
+
+
+def _install_routes(loop: dict, roles=None) -> dict:
+    """Write (or rewrite) the loop's routes; return only the roles actually written.
+
+    Rewriting is idempotent and keeps the existing secret, and it is how a stale route gets fixed:
+    the URL itself carries the seat's profile, so a seat that changed profile has a route that no
+    longer points at the right one until this runs. Nothing else in the registry is touched —
+    another loop's routes and their secrets survive this untouched.
+    """
+    names = _routes_of(loop)
+    host = config.webhook_host(loop.get("host"), required=True)
+    skill = loop.get("skill") or ""
+    wanted = ((*config.ROUTED_ROLES, "observer", "observer_urgent") if roles is None
+              else tuple(roles))
+    written: dict = {}
+    for role in config.ROUTED_ROLES:
+        if role not in wanted or role not in names:
+            continue
+        name = names[role]
+        common = {"script": GATE_SCRIPT[role], "host": host,
+                  "skills": [skill] if skill else []}
+        if role == "reviewer":
+            routes.new_route(name, profile=config.seat_profile(loop, "reviewer"),
+                             prompt=prompts.REVIEWER, events=["pull_request"],
+                             deliver="discord",
+                             description=f"{loop['repo']} — wake the reviewer for a new or "
+                                          "requested review", **common)
+        elif role == "fixer":
+            routes.new_route(name, profile=config.seat_profile(loop, "fixer"),
+                             prompt=prompts.FIXER, events=["pull_request_review"],
+                             deliver="discord",
+                             description=f"{loop['repo']} — wake the fixer on a changes-requested "
+                                          "verdict", **common)
+        elif role == "triage":
+            routes.new_route(name, profile=config.seat_profile(loop, "triage"),
+                             prompt=prompts.TRIAGE, events=["issues"], deliver="discord",
+                             description=f"{loop['repo']} — triage a new issue from an "
+                                          "allowlisted author", **common)
+        else:
+            adjudicator = loop.get("adjudicator") or {}
+            routes.new_route(name, profile=config.seat_profile(loop, "adjudicator"),
+                             prompt=prompts.ADJUDICATOR, events=["pull_request"],
+                             deliver=adjudicator.get("deliver", "telegram"),
+                             description=f"{loop['repo']} — adjudicate a loop that spent its "
+                                          "budget", **common)
+        written[role] = name
+    if "observer" in wanted and "observer" in names:
+        observer_cfg = loop["observer"]
+        name = names["observer"]
+        routes.new_route(name, profile=config.seat_profile(loop, "observer"),
+                         prompt=prompts.OBSERVER, events=["pull_request"],
+                         script="observe.py", deliver=observer_cfg.get("deliver", "telegram"),
+                         deliver_only=True, host=host,
+                         description=f"{loop['repo']} — read-only observer feed: one short "
+                                     "notice per loop transition")
+        written["observer"] = name
+    if "observer_urgent" in wanted and "observer_urgent" in names:
+        observer_cfg = loop["observer"]
+        name = names["observer_urgent"]
+        routes.new_route(name, profile=config.seat_profile(loop, "observer_urgent"),
+                         prompt=prompts.OBSERVER, events=["pull_request"],
+                         script="observe.py",
+                         deliver=observer_cfg.get("urgent_deliver") or observer_cfg.get(
+                             "deliver", "telegram"),
+                         deliver_only=True, host=host,
+                         description=f"{loop['repo']} — read-only observer feed: urgent "
+                                     "notices only")
+        written["observer_urgent"] = name
+    return written
+
+
+def _busy_seats(loop: dict, roles: set[str]) -> list[str]:
+    """Seats with a run in flight right now — the ones an identity change must not surprise."""
+    from . import state as state_mod
+
+    st = state_mod.state_for(loop)
+    lines = []
+    for seat in ("reviewer", "fixer"):
+        if seat not in roles:
+            continue
+        live = st.active(seat)
+        if live:
+            held = ", ".join(f"{key} ({int((time.time() - entry.get('at', time.time())) / 60)}m)"
+                             for key, entry in sorted(live.items()))
+            lines.append(f"{seat} is in flight on {held}")
+    return lines
+
+
+def _observer_check(loop: dict) -> None:
+    """Refuse an observer destination the gateway could not deliver without waking an agent.
+
+    ``deliver_only`` is the gateway's no-agent mode and it rejects a ``log`` target outright: a
+    route configured that way does not merely fail to deliver a notice, it stops the gateway from
+    starting. So the mistake is caught here, before anything is written, rather than at the
+    gateway's next restart.
+    """
+    observer_cfg = loop.get("observer") or {}
+    if observer_cfg.get("route") and (observer_cfg.get("deliver") or "log") == "log":
+        raise config.ConfigError(
+            "observer.deliver must be a real destination (telegram, discord, ...) — an observer "
+            "route never wakes an agent, and the gateway refuses a deliver_only file target")
+
+
+def _on_off(args, name: str, default):
+    """An ``on|off`` flag as a bool; ``default`` when the flag was not given."""
+    value = getattr(args, name, None)
+    return default if value is None else value == "on"
+
+
+def _attribution_arg(args, default):
+    """``--attribution on|off`` as a bool; ``default`` when the flag was not given (#197)."""
+    value = getattr(args, "attribution", None)
+    return default if value is None else value == "on"
+
+
+def _install_hooks(loop: dict, token_login: str | None, active: bool = False,
+                   seats=None) -> list[str]:
+    """Create the loop's repo hooks via the API (every hooked role, or only ``seats``). Needs hook
+    write access on the repo: classic ``repo``, or the narrower ``admin:repo_hook``."""
+    names = _routes_of(loop)
+    host = config.webhook_host(loop.get("host"), required=True)
+    # Validate every destination and secret before creating any external hook.
+    hooks = []
+    for seat in config.hook_roles(loop):
+        event = config.HOOK_EVENT[seat]
+        if seats is not None and seat not in seats:
+            continue
+        route_name = names.get(seat, "")
+        url = routes.url_for(route_name, host)
+        secret = (routes.route(route_name) or {}).get("secret", "")
+        if not url or not secret:
+            raise config.ConfigError(f"route {route_name!r} needs a valid webhook URL and secret before installing hooks")
+        hooks.append((event, url, secret))
+    baseline = _hook_listing(loop, token_login, require_active=False)
+    created = []
+    try:
+        for event, url, secret in hooks:
+            # Created paused unless the operator asked for --arm: a loop goes live with `arm`,
+            # after `doctor` and `selftest` pass, never as a side effect of writing its config.
+            body = {"name": "web", "active": active, "events": [event],
+                    "config": {"url": url, "content_type": "json", "secret": secret,
+                               "insecure_ssl": "0"}}
+            result = gh.api(loop, f"/repos/{loop['repo']}/hooks", method="POST", body=body,
+                            login=token_login or loop.get("read_token"))
+            if not isinstance(result, dict) or not isinstance(result.get("id"), int):
+                raise config.ConfigError(f"hook creation not confirmed for {url}: "
+                                         f"{hook_write_need(loop, token_login)}")
+            created.append(result["id"])
+        state = "armed" if active else "paused"
+        return [f"hook {id} → {url} ({state})" for id, (_, url, _) in zip(created, hooks)]
+    except Exception as exc:
+        failures = []
+        # A lost POST response may still have created a hook: compare with the baseline.
+        try:
+            current = _hook_listing(loop, token_login, require_active=False)
+            target_urls = {url for _, url, _ in hooks}
+            created = list(set(created) | {h["id"] for h in current
+                           if h["id"] not in {b["id"] for b in baseline}
+                           and h["config"]["url"] in target_urls})
+        except Exception as read_exc:
+            failures.append(f"cannot identify newly created hooks: {read_exc}")
+        for hook_id in created:
+            try:
+                gh.api(loop, f"/repos/{loop['repo']}/hooks/{hook_id}", method="DELETE",
+                       login=token_login or loop.get("read_token"))
+                if any(h["id"] == hook_id for h in _hook_listing(loop, token_login, require_active=False)):
+                    raise config.ConfigError("still present after DELETE")
+            except Exception as rollback_exc:
+                failures.append(f"hook {hook_id}: {rollback_exc}")
+        raise config.ConfigError(f"hook install failed: {exc}; " +
+                                 ("ROLLBACK FAILED: " + "; ".join(failures) if failures
+                                  else "created hooks removed")) from exc
+
+
+class HookAccessError(config.ConfigError):
+    """GitHub did not let this token read or write the repo's hooks. Only this cause is fixed by
+    a different token; every other hook error names its own remedy."""
+
+
+def _hook_fix(loop: dict, exc: Exception, token_login: str | None = None) -> str:
+    """The remedy for a failed hook step, matched to its cause."""
+    if isinstance(exc, HookAccessError):
+        return f"re-run with --admin-token <login> ({hook_write_need(loop, token_login)})"
+    return f"`hermes dk doctor --loop {loop['id']}` names what to repair first"
+
+
+def _hook_listing(loop: dict, token_login: str | None = None, *,
+                  require_active: bool = True) -> list[dict]:
+    hooks = gh.api(loop, f"/repos/{loop['repo']}/hooks?per_page=100",
+                   login=token_login or loop.get("read_token"))
+    # ``active`` is part of a valid entry where a choice depends on it (which of two hooks for one
+    # route is kept). `arm` asks for ``require_active=False``: it flips and reads back a hook with
+    # no real bool rather than trusting — or refusing — the listing's word for its state (#55).
+    if not isinstance(hooks, list) or len(hooks) >= 100 or any(
+        not isinstance(h, dict) or not isinstance(h.get("id"), int) or
+        (require_active and not isinstance(h.get("active"), bool)) or
+        not isinstance(h.get("config"), dict) or
+        not isinstance(h["config"].get("url"), str) for h in hooks
+    ):
+        raise HookAccessError("cannot read a complete, valid repo hook listing; no changes made")
+    return hooks
+
+
+def hook_write_need(loop: dict, token_login: str | None) -> str:
+    """Which login's file creates, arms and pauses this loop's hooks, and what it must carry.
+
+    ``init --hooks`` and ``arm`` act as ``--admin-token``'s login, else as the reader. The reader
+    is the one role that can hold a read-only token — and on a user-owned repo it is usually the
+    owner, the only account that can manage hooks at all — so say which case this is.
+    """
+    reader = str(loop.get("read_token") or "")
+    login = token_login or reader
+    need = (f"the token for {login!r} needs hook write access on {loop.get('repo')} (classic `repo` or "
+            "`admin:repo_hook`, or fine-grained `repository_hooks: write`)")
+    if login and login.lower() == reader.lower():
+        need += (" — that is the reader's file. On a user-owned repo only the owner can manage "
+                 "hooks, so if the reader is the owner give that file hook write; otherwise pass "
+                 "--admin-token <owner login> (a login mapped with its own --token at init)")
+    else:
+        need += " — check that login's token file"
+    return need
+
+
+def _hook_config(url: str, insecure_ssl=None) -> dict:
+    """The complete config a loop hook for ``url`` must carry. Always sent whole: GitHub may treat
+    a PATCHed ``config`` as a replacement, and a url-only body would then drop the secret, leaving
+    a hook whose deliveries the route rejects. The secret is the route's own, from the registry;
+    it is never printed or logged. ``insecure_ssl`` is the hook's own (the operator's TLS choice,
+    read from the hook listing); ``"0"`` — verify TLS — only when the hook has none."""
+    name = routes.route_name_of(url)
+    secret = (routes.route(name) or {}).get("secret") or ""
+    if not name or not secret:
+        raise config.ConfigError(f"route {name or url!r} has no secret in the registry; "
+                                 "the hook was not changed")
+    ssl = "0" if insecure_ssl in (None, "") else str(insecure_ssl)
+    return {"url": url, "content_type": "json", "insecure_ssl": ssl, "secret": secret}
+
+
+def _patch_hook_url(loop: dict, hook_id: int, url: str, login: str | None = None,
+                    require_secret: bool = False, insecure_ssl=None) -> None:
+    path = f"/repos/{loop['repo']}/hooks/{hook_id}"
+    login = login or loop.get("read_token")
+    result = gh.api(loop, path, method="PATCH", body={"config": _hook_config(url, insecure_ssl)}, login=login)
+    # A lost response is ambiguous. Always read back and roll back if it does not agree.
+    actual = gh.api(loop, path, login=login)
+    got = (actual.get("config") or {}) if isinstance(actual, dict) else {}
+    if not isinstance(result, dict) or not isinstance(actual, dict) or got.get("url") != url \
+            or (require_secret and not got.get("secret")):
+        raise HookAccessError(f"hook {hook_id} update not confirmed as {url!r} — "
+                              f"{hook_write_need(loop, login)}")
+
+
+def _hook_route_names(loop: dict) -> set[str]:
+    """The route names a repo hook of this loop posts to (both seats, and triage when on)."""
+    return {name for role, name in _routes_of(loop).items()
+            if role in config.hook_roles(loop) and name}
+
+
+def _classify_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, list[dict], str]:
+    """``(own, foreign, error)`` for the hooks posting to this loop's route names.
+
+    *Own* hooks post to exactly one of the routes' URLs (``doctor.seat_hook_url``: the gateway
+    binds a route to its profile by URL and answers any other profile's URL 404). *Foreign* ones
+    post to the same route name at another origin, profile or path — another install, an old
+    gateway — and are only ever reported, never deleted or counted as a collision. Every page is read; a partial or malformed listing is
+    ``(None, [], reason)``, never "no hooks".
+    """
+    listing, error = gh.hooks_read(loop, login or loop.get("read_token"))
+    if error:
+        return None, [], error
+    if any(not isinstance(hook.get("id"), int) or not isinstance(hook.get("config"), dict)
+           or not isinstance(hook["config"].get("url"), str) for hook in listing):
+        return None, [], "invalid hook listing"
+    try:
+        own, foreign = doctor.split_route_hooks(loop, listing, _hook_route_names(loop),
+                                                ownership=True)
+    except config.ConfigError as exc:
+        return None, [], f"cannot resolve the loop's webhook host: {exc}"
+    return own, foreign, ""
+
+
+def _loop_hooks(loop: dict, login: str | None) -> tuple[list[dict] | None, str]:
+    """This loop's own repo hooks (see ``_classify_hooks``)."""
+    own, _, error = _classify_hooks(loop, login)
+    return own, error
+
+
+def _foreign_lines(loop: dict, foreign: list[dict]) -> list[str]:
+    lines = []
+    for hook in foreign:
+        name = _hook_route_name(hook)
+        why = doctor.hook_url_difference(str(hook["config"].get("url") or ""),
+                                         (doctor.install_hook_urls(loop, name) or [""])[0])
+        lines.append(f"hook {hook['id']} posts to route {name!r} at {why} — not this install's "
+                     "hook (not the route's URL), left alone")
+    return lines
+
+
+def _hook_delete_commands(loop: dict, hook_ids) -> list[str]:
+    """Pasteable ``gh`` commands that delete these hooks (a token with admin:repo_hook or repo)."""
+    repo = loop["repo"]
+    return [f"gh api -X DELETE {shlex.quote(f'repos/{repo}/hooks/{hook_id}')}"
+            for hook_id in hook_ids]
+
+
+def _hermes_bin() -> str | None:
+    """The ``hermes`` executable the scheduler commands run. ``DIAKTOROS_HERMES`` names a
+    stand-in (the test suite's fake), so no test ever drives the operator's real install."""
+    found = envnames.get("HERMES") or shutil.which("hermes")
+    # Under the test guard (#101), never the operator's real hermes — for cron create and remove.
+    return config.guard_real_hermes(found) if found else None
+
+
+def _cron_jobs(loop: dict) -> tuple[list[dict] | None, str]:
+    """The scheduler watchdog job(s) for this install, read from the job store.
+
+    The shared job (``SHARED_JOB_NAME``) is the one ``init`` creates; a legacy per-loop job
+    (pre-#60) is returned too so it can be recognised and migrated.
+    """
+    path = doctor.cron_store()
+    if not path.exists():
+        return [], ""
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:
+        return None, f"{path} is not readable JSON ({exc})"
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    if not isinstance(jobs, list):
+        return None, f"{path} has no job list"
+    wanted = {*SHARED_JOB_NAMES, _legacy_job_name(loop)}
+    return [job for job in jobs if isinstance(job, dict)
+            and str(job.get("name") or "").strip() in wanted], ""
+
+
+def _write_watchdog_shim() -> pathlib.Path:
+    """The cron shim the watchdog job runs by name, pinned to this plugin's watchdog."""
+    shim = config.watchdog_shim()
+    shim.parent.mkdir(parents=True, exist_ok=True)
+    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    shim.write_text(SHIM.format(watchdog=watchdog))
+    shim.chmod(0o755)
+    return shim
+
+
+def _install_shims(loop: dict, report: bool = True, pairs=None) -> bool:
+    """Write the loop's gate shims where the gateway resolves route scripts (issue #105)."""
+    try:
+        for line in gate_shims.install(loop, report=report, pairs=pairs):
+            print(f"  {line}")
+        return True
+    except (OSError, config.ConfigError) as exc:
+        print(f"gate shim install FAILED: {exc}")
+        print(f"  fix it, then: hermes dk apply --loop {loop['id']}")
+        return False
+
+
+def _write_config(loop: dict, *, policy_change: bool = False) -> pathlib.Path:
+    with config.push_policy_lock():
+        return _write_config_locked(loop, policy_change=policy_change)
+
+
+def _write_config_locked(loop: dict, *, policy_change: bool = False) -> pathlib.Path:
+    directory = config.config_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{loop['id']}.json"
+    if path.is_symlink():
+        raise config.ConfigError('symlinked loop config refused')
+    if path.exists() and not policy_change:
+        # Set/apply snapshots never own this switch. Re-read under the same lock
+        # used by explicit enable/disable and by the broker's ref operation.
+        try:
+            current = config.load_id(loop['id'])
+        except config.ConfigError:
+            # `set --read-token` repairing a file whose only defect is its missing reader.
+            current = config.load_id_for_reader_repair(loop['id'],
+                                                       str(loop.get('read_token') or ''))
+            if current is None:
+                raise
+        if current['repo'] != loop['repo']:
+            raise config.ConfigError('repository changed during config update')
+        loop = {**loop, 'unattended_fixer_push': current['unattended_fixer_push']}
+    payload = json.dumps({k: v for k, v in loop.items() if v not in ({}, [], "")},
+                         indent=2, sort_keys=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{loop['id']}.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        pathlib.Path(temporary).unlink(missing_ok=True)
+    return path
+
+
+def _restore_config(path: pathlib.Path, data: bytes) -> None:
+    """Publish a previous snapshot without exposing partially restored JSON."""
+    with config.push_policy_lock():
+        if path.is_symlink():
+            raise config.ConfigError('symlinked loop config refused')
+        if path.exists():
+            current = config.load_id(path.stem)
+            snapshot = json.loads(data)
+            if snapshot.get('repo', '').lower() != current['repo']:
+                raise config.ConfigError('repository changed during config rollback')
+            if snapshot.get('unattended_fixer_push', False) != current['unattended_fixer_push']:
+                snapshot['unattended_fixer_push'] = current['unattended_fixer_push']
+                data = json.dumps(snapshot, indent=2, sort_keys=True).encode()
+        _restore_config_locked(path, data)
+
+
+def _restore_config_locked(path: pathlib.Path, data: bytes) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.stem}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        pathlib.Path(temporary).unlink(missing_ok=True)
+
+
+def _parallel_lines(loop: dict) -> list[str]:
+    """What ``init`` and ``set`` say about capacity: a note per pinned seat, then the effective
+    limits. A loop default that a seat overrides is exactly the setting someone changes twice and
+    wonders why nothing moved, so the override is said out loud."""
+    lines = [f"note: {seat} has its own concurrency ({loop['seats'][seat]['concurrency']}) — "
+             "the loop default does not apply to it"
+             for seat in ("reviewer", "fixer")
+             if (loop["seats"].get(seat) or {}).get("concurrency") is not None]
+    lines.append("parallel now: " + " · ".join(
+        f"{seat} {config.seat_concurrency(loop, seat)}" for seat in ("reviewer", "fixer"))
+        + "   (1 = serialized; everything above the limit queues)")
+    return lines
+
+
+def _ping_loop_hooks(loop: dict, login: str | None) -> bool:
+    """After arming: ping each of the loop's hooks and report how the gateway answered.
+
+    An active hook whose secret the route does not hold looks armed and wakes nothing; this is
+    the moment to find out. False only on a ping the gateway rejected or one that could not be
+    sent — no delivery seen within the bounded wait is a warning, not a verdict.
+    """
+    from . import hook_ping
+    hooks, error = _loop_hooks(loop, login)
+    if hooks is None:
+        print(f"[{loop['id']}] ⚠️ hooks not pinged: cannot read the repo's hooks ({error})")
+        return True
+    ok = True
+    for hook in sorted(hooks, key=lambda item: item["id"]):
+        status, line = hook_ping.ping(loop, hook["id"], login)
+        for part in line.split("\n"):
+            print(f"[{loop['id']}] {part}")
+        if status in (hook_ping.REJECTED, hook_ping.ERROR) and not line.startswith("⚠️"):
+            ok = False
+    return ok

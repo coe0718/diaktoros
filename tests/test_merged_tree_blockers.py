@@ -15,6 +15,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, gate, gh
+from diaktoros import cli_common  # noqa: E402
 from scripts import watchdog
 
 HEAD = "a" * 40
@@ -67,9 +68,9 @@ class ObserverInitCollisionTest(unittest.TestCase):
                       mock.patch.object(cli.config, "webhook_host", return_value="https://example.test"),
                       mock.patch.object(cli.config, "config_dir", return_value=pathlib.Path("/no-write")),
                       mock.patch.object(cli.routes, "route", return_value={"script": "foreign.py"} if preexisting else None),
-                      mock.patch.object(cli, "_write_config") as write,
-                      mock.patch.object(cli, "_install_routes") as install,
-                      mock.patch.object(cli, "_install_hooks") as hooks,
+                      mock.patch.object(cli_common, "_write_config") as write,
+                      mock.patch.object(cli_common, "_install_routes") as install,
+                      mock.patch.object(cli_common, "_install_hooks") as hooks,
                       contextlib.redirect_stdout(io.StringIO())):
                     self.assertEqual(cli.cmd_init(args), 2)
                 write.assert_not_called()

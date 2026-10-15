@@ -73,10 +73,10 @@ def _snapshot_ledger(src: pathlib.Path, dest: pathlib.Path) -> None:
 
 def watchdog_job() -> dict | None:
     """The shared watchdog job's schedule and delivery target, as the scheduler stores them."""
-    from . import cli, doctor  # noqa: PLC0415 - heavy modules
-    jobs, _ = cli._cron_jobs({"id": ""})
+    from . import cli_common, doctor  # noqa: PLC0415 - heavy modules
+    jobs, _ = cli_common._cron_jobs({"id": ""})
     for job in jobs or []:
-        if str(job.get("name") or "").strip() in cli.SHARED_JOB_NAMES:
+        if str(job.get("name") or "").strip() in cli_common.SHARED_JOB_NAMES:
             return {"name": str(job["name"]).strip(), "schedule": doctor._job_schedule(job),
                     "deliver": doctor._job_deliver(job)}
     return None
