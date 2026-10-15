@@ -2,13 +2,22 @@
   "version": "v0.3.0",
   "version_url": "https://github.com/coe0718/diaktoros/releases/tag/v0.3.0",
   "released": "2026-10-10",
-  "prs_merged": 301,
-  "loop_prs_merged": 140,
-  "issues_closed": 276,
-  "generated": "2026-10-11",
+  "prs_merged": 342,
+  "loop_prs_merged": 151,
+  "issues_closed": 305,
+  "generated": "2026-10-15",
   "demo_pr": {
     "number": 530,
     "url": "https://github.com/coe0718/diaktoros/pull/530",
     "title": "Add fix_ci to every settings path"
-  }
+  },
+  "stars": 5,
+  "forks": 0,
+  "open_issues_count": 65,
+  "pushed_at": "2026-10-15T20:01:59Z",
+  "prs_open": 2,
+  "commits_year": 734,
+  "loop_share": "44%",
+  "issues_open": 63,
+  "last_activity": "11m ago"
 }
