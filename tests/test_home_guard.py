@@ -22,6 +22,7 @@ TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent))
 from diaktoros import (broker, cli, config, deps, doctor, gh, isolation, route_intent,  # noqa: E402
                          routes, safe_push, selftest, state, trusted_fetch)
+from diaktoros import cli_install  # noqa: E402
 from diaktoros import cli_lifecycle  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -550,10 +551,10 @@ class HermesShim(unittest.TestCase):
         self.assertIn(_home_guard.BLOCKED, result.stderr)
 
     def test_plugin_cron_create_hits_the_shim_not_the_real_binary(self):
-        # cli._install_schedule is the plugin's one PATH lookup of `hermes` (`init --schedule`).
+        # cli_install._install_schedule is the plugin's one PATH lookup of `hermes` (`init --schedule`).
         with mock.patch.dict(os.environ, {"HERMES_HOME": str(self.root / "hermes")}):
             os.environ.pop(_home_guard.FAKE_HERMES_ENV, None)
-            lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+            lines, ok = cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertFalse(ok)
         self.assertIn("cron create failed", lines[0])
         self.assertIn(_home_guard.BLOCKED, lines[0])
@@ -565,7 +566,7 @@ class HermesShim(unittest.TestCase):
         fake.chmod(0o755)
         with mock.patch.dict(os.environ, {"HERMES_HOME": str(self.root / "hermes"),
                                           _home_guard.FAKE_HERMES_ENV: str(fake)}):
-            lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+            lines, ok = cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertTrue(ok)
         self.assertIn("scheduled the watchdog", lines[0])
         self.assertEqual(record.read_text().split("\n")[:5],

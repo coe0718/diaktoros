@@ -18,6 +18,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, gh
+from diaktoros import cli_install  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 
 HOST = "https://gw.example"
@@ -613,7 +614,7 @@ class ScheduleFailureTests(unittest.TestCase):
     def test_failed_cron_create_is_not_ok_and_fallback_is_quoted(self):
         self.fake_hermes(1)
         with patch.object(cli.shutil, "which", return_value=str(self.hermes)):
-            lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+            lines, ok = cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertFalse(ok)
         self.assertIn("store is locked", lines[0])
         command = lines[1].split("run it yourself: ", 1)[1]
@@ -660,7 +661,7 @@ class ScheduleFailureTests(unittest.TestCase):
     def test_successful_cron_create_is_ok(self):
         self.fake_hermes(0)
         with patch.object(cli.shutil, "which", return_value=str(self.hermes)):
-            lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+            lines, ok = cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertTrue(ok, lines)
 
 

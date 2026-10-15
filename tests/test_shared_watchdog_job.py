@@ -18,6 +18,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, doctor
+from diaktoros import cli_install  # noqa: E402
 from diaktoros import cli_lifecycle  # noqa: E402
 
 HOST = "https://gw.example"
@@ -112,7 +113,7 @@ class SharedJobTests(unittest.TestCase):
         """Each loop's ``init --schedule`` must not add a second job: one job sweeps all."""
         created = []
         for loop_id in ("widgets", "gadgets", "gizmos"):
-            lines, ok = cli._install_schedule({"id": loop_id}, "15m", "local")
+            lines, ok = cli_install._install_schedule({"id": loop_id}, "15m", "local")
             self.assertTrue(ok, lines)
             created.append(lines[0])
         # One shared job, not three: N loops must not mean N jobs.
@@ -139,13 +140,13 @@ class SharedJobTests(unittest.TestCase):
         self.assertEqual([loop["id"] for loop in loops], ["gadgets", "gizmos", "widgets"])
         self.assertEqual(refused, [])
         # Exactly one sweep source: the one shared job. A second job would double every sweep.
-        cli._install_schedule({"id": "widgets"}, "15m", "local")
-        cli._install_schedule({"id": "gizmos"}, "15m", "local")
+        cli_install._install_schedule({"id": "widgets"}, "15m", "local")
+        cli_install._install_schedule({"id": "gizmos"}, "15m", "local")
         self.assertEqual(len(self._shim_jobs()), 1)
 
     # --- uninstall: the job outlives any one loop -------------------------------------------
     def test_uninstall_one_loop_keeps_the_job_for_the_others(self):
-        cli._install_schedule({"id": "widgets"}, "15m", "local")
+        cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertEqual(len(self._shim_jobs()), 1)
         removed_jobs, failures = cli_lifecycle._remove_cron({"id": "widgets"})
         self.assertEqual(failures, [], failures)
@@ -159,7 +160,7 @@ class SharedJobTests(unittest.TestCase):
     def test_uninstall_the_last_loop_removes_the_job(self):
         for loop_id in ("gadgets", "gizmos"):
             (config.config_dir() / f"{loop_id}.json").unlink()
-        cli._install_schedule({"id": "widgets"}, "15m", "local")
+        cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertEqual(len(self._shim_jobs()), 1)
         removed_jobs, failures = cli_lifecycle._remove_cron({"id": "widgets"})
         self.assertEqual(failures, [], failures)
@@ -243,7 +244,7 @@ class SharedJobTests(unittest.TestCase):
         self.assertTrue(check.failed, check.detail)
 
     def test_doctor_verifies_the_shared_job(self):
-        cli._install_schedule({"id": "widgets"}, "15m", "local")
+        cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         check = doctor.check_cron_job(config.load_id("widgets"))
         self.assertFalse(check.failed, check.detail)
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
@@ -264,7 +265,7 @@ class SharedJobTests(unittest.TestCase):
              "script": cli.SHIM_NAME, "no_agent": True, "enabled": True, "state": "scheduled",
              "schedule": {"kind": "interval", "minutes": 15},
              "next_run_at": "2030-01-01T00:00:00+00:00"}]}))
-        lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+        lines, ok = cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertTrue(ok, lines)
         # Exactly one sweeper: the shared job; this loop's legacy job is gone.
         self.assertEqual(len(self._shim_jobs()), 1, self.hermes.jobs)
@@ -288,7 +289,7 @@ class SharedJobTests(unittest.TestCase):
              "next_run_at": "2030-01-01T00:00:00+00:00"}]}))
         # Make `cron create` fail; `cron remove` still works.
         (self.home / "FAIL_CREATE").write_text("1")
-        lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+        lines, ok = cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertFalse(ok, lines)
         # The legacy job survived: it is still the one sweeper.
         names = [str(j.get("name")) for j in self.hermes.jobs]
@@ -312,7 +313,7 @@ class SharedJobTests(unittest.TestCase):
              "script": cli.SHIM_NAME, "no_agent": True, "enabled": True, "state": "scheduled",
              "schedule": {"kind": "interval", "minutes": 15},
              "next_run_at": "2030-01-01T00:00:00+00:00"}]}))
-        lines, ok = cli._install_schedule({"id": "widgets"}, "15m", "local")
+        lines, ok = cli_install._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertTrue(ok, lines)
         removed = [call for call in self.hermes.calls if call[:2] == ["cron", "remove"]]
         self.assertEqual(removed, [["cron", "remove", "legacy1"]], removed)

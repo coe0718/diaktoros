@@ -41,49 +41,16 @@ from .util import logged
 # dispatch keep working: the implementation is there, never a second copy here.
 from . import cli_common
 from .cli_common import (  # noqa: F401 - constants, re-exported for doctor, backup, gate_shims
-    GATE_SCRIPT, SHARED_JOB_NAME, SHARED_JOB_NAMES, SHIM, SHIM_NAME, _ROUTE_PROMPT, _hook_route_name,
+    BRANCH_PUSH_REFUSAL, GATE_SCRIPT, SHARED_JOB_NAME, SHARED_JOB_NAMES, SHIM, SHIM_NAME,
+    _ROUTE_PROMPT, _hook_route_name,
 )
+from .cli_install import cmd_init, cmd_setup  # noqa: F401
 from .cli_lifecycle import cmd_backup, cmd_migrate, cmd_restore, cmd_uninstall  # noqa: F401
 from .cli_operations import (  # noqa: F401
     cmd_cleanup, cmd_depends, cmd_drain, cmd_escalate, cmd_explain, cmd_list, cmd_ready,
     cmd_regression, cmd_retry, cmd_review, cmd_status,
 )
 from .cli_reports import cmd_models, cmd_report, cmd_stats, cmd_trace  # noqa: F401
-
-def _seat_lines(loop: dict, title: str = "seat mapping") -> list[str]:
-    """The effective mapping: who serves each role, as what login, woken by which route.
-
-    This is the line an operator reads to answer "is the right agent actually the fixer here?" without
-    opening two JSON files — so it shows the resolved values, including the route URL the profile
-    is part of.
-    """
-    lines = [f"{title}:"]
-    names = cli_common._routes_of(loop)
-    host = loop.get("host") or ""
-    for role in config.ROUTE_ROLES:
-        profile = config.seat_profile(loop, role) or "(none)"
-        name = names.get(role) or ""
-        if not name:
-            lines.append(f"  {role:<12} profile {profile:<16} route (none — nothing wakes it)")
-            continue
-        url = ""
-        if host:
-            try:
-                url = routes.url_for_profile(name, profile, host) or ""
-            except config.ConfigError:
-                url = ""
-        login = config.seat_login(loop, role) or "(unset)"
-        # The adjudicator has no login, so it keeps the column empty rather than shifting the route
-        # and URL columns out of line in the one place an operator compares seats side by side.
-        if role == "adjudicator":
-            adj = config.adjudicator_login(loop)
-            login_cell = f"login {adj:<16} " if adj else " " * 23
-        else:
-            login_cell = f"login {login:<16} "
-        lines.append(f"  {role:<12} profile {profile:<16} {login_cell}"
-                     f"route {name:<22} {url}".rstrip())
-    return lines
-
 
 def _role_summary(loop: dict, role: str) -> str:
     profile = config.seat_profile(loop, role) or "(no profile)"
@@ -196,40 +163,6 @@ def _stale_scripts(loop: dict) -> dict:
     return stale
 
 
-BRANCH_PUSH_REFUSAL = (
-    "refused: review_only_update lets the host push a merge commit to a branch the loop does not "
-    "own (a review-only author's, same repository only, only a clean merge, with a lease on the "
-    "head it read), as the account that makes host merge pushes, and needs unattended fixer "
-    "pushes. If the author pushes meanwhile the lease fails and nothing is overwritten, but a "
-    "published merge cannot be undone by the loop. Pass --acknowledge-branch-push to opt in.")
-
-
-def _observer_args(args, loop_id: str) -> dict:
-    """The observer block a new loop starts with — empty when the feed was not asked for.
-
-    Opt-in by construction: naming a profile (or a route) is the whole switch, and a loop without
-    one behaves exactly as it did before this existed.
-    """
-    if not (args.observer_profile or args.observer_route):
-        return {}
-    observer_cfg = {"route": args.observer_route or f"{loop_id}-observe",
-                    "profile": args.observer_profile or "default",
-                    "deliver": args.observer_deliver}
-    if args.observer_events:
-        observer_cfg["events"] = args.observer_events
-    if args.observer_digest_min:
-        observer_cfg["digest_min"] = args.observer_digest_min
-    if getattr(args, "observer_weekly_report", ""):
-        # Checked again by normalize; refused here by name rather than written misconfigured.
-        observer_cfg["weekly_report"] = config.check_weekly_report(args.observer_weekly_report)
-    for key in ("urgent_route", "urgent_profile", "urgent_deliver"):
-        if getattr(args, f"observer_{key}", ""):
-            observer_cfg[key] = getattr(args, f"observer_{key}")
-    return observer_cfg
-
-
-
-
 def _keep_one(candidates: list[dict], dest: str) -> tuple[dict, list[dict]]:
     """Of several repo hooks for one route, the one that stays: an ACTIVE hook first (a route must
     never end up with fewer armed hooks than it had), then one already at ``dest``, then the
@@ -238,15 +171,6 @@ def _keep_one(candidates: list[dict], dest: str) -> tuple[dict, list[dict]]:
                                                   not routes.serves_route_url(hook["config"]["url"], dest),
                                                   hook["id"]))
     return ordered[0], ordered[1:]
-
-
-def _hook_editor_line(loop: dict, token_login: str | None, armed: bool, dry_run: bool) -> str:
-    """Who created (or would create) the hooks, in which state, and what `arm` will need."""
-    who = token_login or loop.get("read_token")
-    verb = "would be created" if dry_run else "were created"
-    state = "armed (--arm)" if armed else "paused"
-    return (f"hooks {verb} {state} as {who}, and `arm` / `arm --pause` edit them as {who} too: "
-            f"{cli_common.hook_write_need(loop, token_login)}")
 
 
 def _hook_write_fix(token_login: str | None, transient: bool = False,
@@ -591,84 +515,6 @@ def _redundant_hook_line(loop: dict, hook: dict, keep: dict) -> str:
             f"`gh api -X DELETE repos/{loop['repo']}/hooks/{hook['id']}`")
 
 
-def _shared_job_present() -> bool:
-    """Is the one shared watchdog job already scheduled? (idempotent init.)"""
-    jobs, _ = cli_common._cron_jobs({"id": ""})
-    if jobs is None:
-        return False
-    return any(str(job.get("name") or "").strip() in SHARED_JOB_NAMES for job in jobs)
-
-
-def _remove_legacy_jobs(loop: dict) -> list[str]:
-    """Remove this loop's pre-#60 per-loop watchdog job, if one exists.
-
-    Called when ``init`` creates (or finds) the shared job: without it the install sits at
-    two sweepers — the shared job and the stale per-loop one — until an operator removes the
-    stale job by hand. The shared job is what sweeps every loop; the legacy job is this
-    loop's own and is safe to remove here.
-    """
-    jobs, error = cli_common._cron_jobs(loop)
-    if jobs is None:
-        return [f"cron: could not check for a legacy job ({error})"]
-    legacy = [job for job in jobs
-              if str(job.get("name") or "").strip() == cli_common._legacy_job_name(loop)]
-    if not legacy:
-        return []
-    hermes = cli_common._hermes_bin()
-    if not hermes:
-        return ["cron: no `hermes` on PATH to remove the legacy job"]
-    lines = []
-    for job in legacy:
-        job_id = str(job.get("id") or "")
-        name = str(job.get("name") or "")
-        if not job_id:
-            lines.append(f"cron: legacy job {name!r} has no id; remove it by hand")
-            continue
-        try:
-            proc = subprocess.run([hermes, "cron", "remove", job_id],
-                                  capture_output=True, text=True, timeout=120)
-        except Exception as exc:
-            lines.append(f"cron: removing legacy job {job_id} failed ({exc})")
-            continue
-        if proc.returncode != 0:
-            lines.append(f"cron: removing legacy job {job_id} failed "
-                         f"({(proc.stderr or proc.stdout).strip()[:200]})")
-        else:
-            lines.append(f"removed the pre-#60 per-loop job: {job_id} ({name})")
-    return lines
-
-
-def _install_schedule(loop: dict, schedule: str, deliver: str) -> tuple[list[str], bool]:
-    """A cron shim plus the one shared job, through the scheduler's own CLI.
-
-    The job is created **only if missing** (#60): one shared job sweeps every loop, so a second
-    ``init`` for another loop must not add a duplicate that would sweep them all again. Returns
-    ``(lines, ok)``; ``ok`` is false only when no job exists and one could not be created. The
-    fallback command is shell-quoted — the job name has spaces — so it can be pasted as printed.
-    """
-    shim = cli_common._write_watchdog_shim()
-    if _shared_job_present():
-        lines = [f"watchdog already scheduled (shared job, deliver={deliver})", f"shim: {shim}"]
-        lines.extend(_remove_legacy_jobs(loop))
-        return lines, True
-    hermes = cli_common._hermes_bin() or "hermes"
-    cmd = [hermes, "cron", "create", schedule, "--name", config.watchdog_job_name(),
-           "--no-agent", "--script", shim.name, "--deliver", deliver]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    except Exception as exc:
-        return [f"could not create the cron job: {exc}",
-                f"run it yourself: {shlex.join(cmd)}"], False
-    if proc.returncode != 0:
-        return [f"cron create failed: {(proc.stderr or proc.stdout).strip()[:200]}",
-                f"run it yourself: {shlex.join(cmd)}"], False
-    lines = [f"scheduled the watchdog ({schedule}, deliver={deliver})", f"shim: {shim}"]
-    # Only now — after the shared job is confirmed present or just created — remove this
-    # loop's legacy job. Removing it earlier would leave no sweeper if creation failed.
-    lines.extend(_remove_legacy_jobs(loop))
-    return lines, True
-
-
 def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
                      token_login: str | None = None) -> tuple[int, int]:
     """``apply --recreate-routes``: write routes the registry lost when no intent record can
@@ -756,738 +602,6 @@ def _diverged(loop: dict, *, rewritten=(), header: str = "") -> bool:
 # -- verbs ----------------------------------------------------------------------
 
 
-def _stale_hooks_refusal(loop: dict, admin: str | None) -> str:
-    """Why ``init --hooks`` must not create hooks yet, or ``""`` when the routes have none.
-
-    Only hooks at this loop's route URLs collide; the same route name at another origin, profile
-    or path is printed as information (the gateway never delivers it to these routes).
-
-    Refuse, never adopt. Adopting would mean PATCHing a new secret onto hooks this install did not
-    create: GitHub never returns a hook's secret, so nothing can prove whose they are or which of
-    several is current, and an adopted hook keeps its old ``active`` state — an armed leftover
-    would arm a loop that has not passed doctor/selftest. Refusing writes nothing, and the fix is
-    one pasteable command per hook (or ``uninstall`` for a loop that is still configured).
-    """
-    hooks, foreign, error = cli_common._classify_hooks(loop, admin)
-    if hooks is None:
-        return (f"refused: cannot read {loop['repo']}'s hooks to check for a previous install's "
-                f"({error}); nothing written. Give the --admin-token login hook access "
-                "(`admin:repo_hook`, or classic `repo`) and re-run")
-    for line in cli_common._foreign_lines(loop, foreign):
-        print(f"  info: {line}")
-    if not hooks:
-        return ""
-    ids = sorted(hook["id"] for hook in hooks)
-    lines = [f"refused: {loop['repo']} already has repo hook(s) posting to this loop's routes "
-             f"({', '.join(sorted({_hook_route_name(h) for h in hooks}))}): "
-             f"{', '.join(str(i) for i in ids)} — "
-             f"{sum(1 for h in hooks if h.get('active'))} active. They were created by a previous "
-             "install and sign with its secret, which the routes this init writes will not hold.",
-             "nothing written. Delete them (a token with `admin:repo_hook` or classic `repo`), "
-             "then re-run this init:"]
-    lines += [f"  {command}" for command in cli_common._hook_delete_commands(loop, ids)]
-    return "\n".join(lines)
-
-
-def _init_loop_concurrency(args, d: dict) -> int:
-    return args.concurrency if args.concurrency is not None else config.settings_loop_concurrency(d)
-
-
-def _init_seat_concurrency(args, d: dict) -> dict:
-    """The ``seats.<seat>.concurrency`` values ``init`` writes — only the ones that were asked for.
-
-    A seat value wins over the loop default for good, so writing one nobody asked for pins that
-    seat and makes ``--concurrency`` (and every later ``set --concurrency``) dead — issue #76.
-    A per-seat flag is always written. Without one, a seat takes the settings form's own value
-    only when the operator did not name a loop default *and* the form's seat differs from the one
-    the form implies (reviewer 2, fixer 1): an explicit flag beats a form default, as everywhere.
-    """
-    loop_value = _init_loop_concurrency(args, d)
-    out = {}
-    for seat in ("reviewer", "fixer"):
-        flag = getattr(args, f"{seat}_concurrency", None)
-        if flag is not None:
-            out[seat] = flag
-        elif args.concurrency is None and d[f"{seat}_concurrency"] != loop_value:
-            out[seat] = d[f"{seat}_concurrency"]
-    return out
-
-
-def cmd_init(args) -> int:
-    """Install a loop: write its config, its routes, and (on request) its hooks and cron job.
-
-    The settings form supplies *who serves each seat* the same way it supplies the numeric knobs —
-    as a default a new loop starts from — while explicit flags still win, because an operator
-    installing a loop from the CLI on this machine should not have to depend on what a per-profile
-    form happens to hold. Everything is validated (profiles, allowlists, credentials, route
-    ownership) before the first file is written.
-    """
-    if getattr(args, "arm", False) and not args.hooks:
-        print("--arm arms the repo hooks init creates; it needs --hooks")
-        return 2
-    loop_id = args.id or args.repo.split("/")[-1]
-    # The rule the loader enforces: an id that does not name exactly one config file would be
-    # written here and then break every loop-wide command that reads the directory.
-    if (not loop_id or loop_id in (".", "..") or pathlib.Path(loop_id).name != loop_id
-            or "\\" in loop_id or loop_id.startswith(".")):
-        print(f"--id {loop_id!r} cannot name a loop config file: use letters, digits, '-', '_' "
-              "or '.' (not leading, not a path)")
-        return 2
-    d = config.settings_defaults(_SETTINGS)
-    tokens = {}
-    for pair in args.token or []:
-        if "=" not in pair:
-            print(f"--token expects login=/path/to/pat, got {pair!r}")
-            return 2
-        login, path = pair.split("=", 1)
-        try:
-            config.check_token_file(path, f"--token {login}")
-        except config.ConfigError as exc:
-            print(f"refused: {exc}")
-            return 2
-        tokens[login] = path
-
-    # Token-file paths from the settings form are checked before anything else is: a path that is
-    # relative, missing, not yours or group/world readable is refused by name, and never opened.
-    try:
-        config.verify_token_settings(_SETTINGS)
-    except config.ConfigError as exc:
-        print(f"config refused: {exc}")
-        return 2
-
-    reviewer_profile = args.reviewer_profile or d["reviewer_profile"]
-    fixer_profile = args.fixer_profile or d["fixer_profile"]
-    fixers = [login for login in (args.fixer or []) if login] or (
-        [d["fixer_login"]] if d["fixer_login"] else [])
-    reviewers = [login for login in (args.reviewer or []) if login] or (
-        [d["reviewer_login"]] if d["reviewer_login"] else [])
-    if not fixers or not reviewers:
-        print("--fixer and --reviewer name the GitHub logins this loop trusts (repeatable); with "
-              "neither the flag nor the plugin settings naming them, there is no loop to install")
-        return 2
-    if not reviewer_profile or not fixer_profile:
-        print("both seats need a Hermes profile: pass --reviewer-profile/--fixer-profile, or set "
-              "them in the plugin settings (Capabilities → Plugins → diaktoros)")
-        return 2
-    configured_reviewer = d["reviewer_login"]
-    reviewer_seat = args.reviewer_seat or (
-        configured_reviewer if configured_reviewer in reviewers else "") or (
-        reviewers[0] if len(reviewers) == 1 else "")
-    if not reviewer_seat:
-        print("with several reviewer logins, --reviewer-seat names which one this loop's route serves")
-        return 2
-    configured_fixer = d["fixer_login"]
-    if configured_fixer and configured_fixer.lower() not in {login.lower() for login in fixers}:
-        print(f"configured fixer login {configured_fixer!r} is not in the --fixer allowlist — "
-              "name an eligible fixer in the plugin settings before installing this loop")
-        return 2
-    fixer_seat = next((login for login in fixers
-                       if login.lower() == configured_fixer.lower()), fixers[0]) if configured_fixer else fixers[0]
-    adjudicator_profile = args.adjudicator_profile or d["adjudicator_profile"] or "default"
-    # An explicit --token for a login wins over the form's path for it, as every explicit flag does.
-    mapped = {login.lower() for login in tokens}
-    for seat_login_, key in ((reviewer_seat, "reviewer_token_file"), (fixer_seat, "fixer_token_file")):
-        if d[key] and seat_login_ and seat_login_.lower() not in mapped:
-            tokens[seat_login_] = str(pathlib.Path(d[key]).expanduser())
-    explicit_adj = getattr(args, "adjudicator_login", None)
-    adjudicator_login = (explicit_adj if explicit_adj is not None
-                         else (d["adjudicator_login"] if args.adjudicator_route else "")).strip()
-    if adjudicator_login and not args.adjudicator_route:
-        print("--adjudicator-login needs --adjudicator-route: the comment identity only ever posts "
-              "a ruling, and without a breach route nothing rules")
-        return 2
-    if (adjudicator_login and d["adjudicator_token_file"]
-            and adjudicator_login.lower() not in mapped
-            and (not d["adjudicator_login"]
-                 or d["adjudicator_login"].lower() == adjudicator_login.lower())):
-        tokens[adjudicator_login] = str(pathlib.Path(d["adjudicator_token_file"]).expanduser())
-    # The weekly report (#658): the flag wins over the form; the form's 'off' or blank is none.
-    weekly_form = str(d["observer_weekly_report"]).strip()
-    if (not getattr(args, "observer_weekly_report", "") and weekly_form.lower() not in ("", "off")
-            and (args.observer_profile or args.observer_route)):     # only for a feed being made
-        args.observer_weekly_report = weekly_form
-    if getattr(args, "observer_weekly_report", ""):
-        try:
-            config.check_weekly_report(args.observer_weekly_report)
-        except ValueError as exc:
-            print(f"refused: --observer-weekly-report: {exc}")
-            return 2
-
-    raw = {
-        "id": args.id or args.repo.split("/")[-1],
-        "repo": args.repo, "base": args.base, "cap": args.cap,
-        "concurrency": _init_loop_concurrency(args, d),
-        "fixers": fixers, "reviewers": reviewers,
-        "reviewer_seat": reviewer_seat,
-        "seats": {
-            "reviewer": {"profile": reviewer_profile, "route": "",
-                         "login": reviewer_seat,
-                         "agent": args.reviewer_agent},
-            "fixer": {"profile": fixer_profile, "route": "",
-                      "login": fixer_seat, "agent": args.fixer_agent},
-            **({"adjudicator": {"login": adjudicator_login}} if adjudicator_login else {}),
-        },
-        "adjudicator": ({"route": args.adjudicator_route, "profile": adjudicator_profile}
-                        if args.adjudicator_route else {}),
-        "skill": args.skill,
-        "tokens": tokens, "read_token": args.read_token,
-        "clone": args.clone, "roots": args.root or [],
-        "state_dir": args.state_dir or str(config.default_state_dir(
-            args.id or args.repo.split("/")[-1])),
-        "host": args.host, "grace_min": args.grace_min,
-        "ttl_min": args.ttl_min, "inflight_ttl_min": args.inflight_ttl_min,
-        "turn_budget_s": getattr(args, "turn_budget", None),
-        "observer": _observer_args(args, args.id or args.repo.split("/")[-1]),
-        # Sign what the loop posts (#197): on unless --attribution off or the form says so.
-        "attribution": cli_common._attribution_arg(args, d["attribution"]),
-        "review_after_ci": cli_common._on_off(args, "review_after_ci", d["review_after_ci"]),
-        "fix_ci": cli_common._on_off(args, "fix_ci", d["fix_ci"]),
-        # Host merge pushes to a review-only author's branch: off unless asked for and acknowledged.
-        "review_only_update": cli_common._on_off(args, "review_only_update", d["review_only_update"]),
-        # The checks CI always runs, which a fixer running only its touched tests would miss.
-        "fixer_check": (d["fixer_check"] if getattr(args, "fixer_check", None) is None
-                        else args.fixer_check),
-        # The checks that gate an approval (#368); none named = every check gates.
-        "required_checks": (config.split_check_names(d["required_checks"])
-                            if getattr(args, "required_check", None) is None
-                            else [name for name in args.required_check if name.strip()]),
-        # Paths only a human may approve (#478).
-        "human_paths": (config.split_human_paths(d["human_paths"])
-                        if getattr(args, "human_path", None) is None
-                        else [name for name in args.human_path if name.strip()]),
-        # Authors reviewed but never fixed (#191).
-        "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
-                        if getattr(args, "review_only", None) is None
-                        else [name for name in args.review_only if name.strip()]),
-    }
-    if raw["review_only_update"] and not getattr(args, "acknowledge_branch_push", False):
-        print(BRANCH_PUSH_REFUSAL)
-        return 2
-    # #539: CI-fix turns per PR; a flag wins over the form; empty = the default.
-    try:
-        raw["ci_fix_cap"] = config.check_ci_fix_cap(
-            getattr(args, "ci_fix_cap", None) if getattr(args, "ci_fix_cap", None) is not None
-            else d["ci_fix_cap"], "init")
-    except config.ConfigError as exc:
-        print(f"refused: {exc}")
-        return 2
-    # The review-only verdict cap and daily cap: a flag wins over the form; empty = unset.
-    for key in ("review_only_cap", "review_only_daily"):
-        flag = getattr(args, key, None)
-        try:
-            raw[key] = config._check_review_only_limit(
-                flag if flag is not None else d[key], key, "init")
-        except config.ConfigError as exc:
-            print(f"refused: {exc}")
-            return 2
-    # A seat-level capacity wins over the loop default, so only write it when it was asked for.
-    for seat, value in _init_seat_concurrency(args, d).items():
-        raw["seats"][seat]["concurrency"] = value
-    for seat, value in (("reviewer", getattr(args, "reviewer_turn_budget", None)),
-                         ("fixer", getattr(args, "fixer_turn_budget", None))):
-        if value is not None:
-            raw["seats"][seat]["turn_budget_s"] = value
-    # Turn knobs (#323): a flag wins over the form; 0 or blank is the role default (nothing written).
-    try:
-        for seat in ("reviewer", "fixer"):
-            flag = getattr(args, f"{seat}_max_steps", None)
-            steps = flag if flag is not None else config._form_int(d[f"{seat}_max_steps"].strip())
-            if steps not in (0, ""):
-                raw["seats"][seat]["max_steps"] = config._check_max_steps(
-                    steps, f"seats.{seat}.max_steps", "init")
-        for seat in ("reviewer", "fixer"):
-            flag = getattr(args, f"{seat}_daily_tokens", None)
-            budget = flag if flag is not None else config._form_int(
-                d[f"{seat}_daily_tokens"].strip())
-            if budget not in (0, ""):
-                raw["seats"][seat]["daily_tokens"] = config._check_daily_tokens(
-                    budget, f"seats.{seat}.daily_tokens", "init")
-        flag = getattr(args, "fix_daily_turns", None)
-        cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
-        if cap not in (0, ""):
-            config._check_daily_turns(cap, "triage.fix_daily_turns", "init")
-            # A new loop has no triage block (so no fix_label) for the cap to live in, and
-            # `apply` refuses it for the same reason: refuse rather than accept and drop it.
-            print(f"refused: the issue-fix daily cap {cap} cannot be set by init: a new loop "
-                  "has no triage.fix_label for it to live in. Leave --fix-daily-turns (and the "
-                  "fix_daily_turns setting) blank, then set it with `hermes dk triage "
-                  "--fix-label LABEL --maintainer LOGIN --fix-daily-turns N`; nothing written")
-            return 2
-    except config.ConfigError as exc:
-        print(f"refused: {exc}")
-        return 2
-    names = cli_common.routes_for(raw)
-    raw["seats"]["reviewer"]["route"] = names["reviewer"]
-    raw["seats"]["fixer"]["route"] = names["fixer"]
-    roles = {"reviewer", "fixer"} | ({"adjudicator"} if raw["adjudicator"] else set())
-    if raw["observer"].get("route"):
-        roles.add("observer")
-        if raw["observer"].get("urgent_route"):
-            roles.add("observer_urgent")
-    try:
-        # The reader is named, never inferred: a default seat login (or the first token) is the
-        # one-account-two-hats shape the broker refuses at the first write.
-        if not args.read_token:
-            raise config.ConfigError(
-                "--read-token LOGIN names the account the gates read GitHub as (map its file with "
-                f"--token LOGIN=/path/to/pat) — {config.FOUR_IDENTITY_RULE}")
-        loop = config.normalize(raw)
-        # One repo, one loop: a second id for it makes by_repo raise in every gate.
-        others = config.loop_ids_for_repo(loop["repo"], exclude=loop["id"])
-        if others:
-            raise config.ConfigError(
-                f"{loop['repo']} is already configured as loop {', '.join(repr(i) for i in others)}"
-                " — change it with `hermes dk set`, or remove it first")
-        # Routes are installed even without --hooks; never write a partial loop with
-        # route URLs that cannot resolve to this operator's own gateway.
-        config.webhook_host(loop["host"], required=True)
-        # Who does what, and may they: profiles, allowlists, distinct credentials and route
-        # ownership are all checked before a single file is written.
-        # The adjudicator's token file is checked first, so a relative, missing or shared-readable
-        # path is refused by its own name rather than as a generic missing file.
-        config.verify_adjudicator_token(loop)
-        config.verify_seats(loop, roles)
-        # Hooks are created as --admin-token's login, after the config and routes are written;
-        # an unmapped login would fail there and roll everything back, so refuse it up front.
-        if args.hooks and args.admin_token and args.admin_token.lower() not in {
-                str(k).lower() for k in loop.get("tokens") or {}}:
-            raise config.ConfigError(
-                f"--admin-token {args.admin_token!r} has no token file — add "
-                f"--token {args.admin_token}=/path/to/pat (hook write access)")
-        cli_common._verify_routes(loop, roles)
-        cli_common._observer_check(loop)
-        # Refuses a foreign file (#105). Routes init is about to write are not "missing".
-        shim_lines = gate_shims.install(loop, dry_run=True, report=False) + [
-            f"⚠️ route {name}: {detail}" for name, (detail, _fix, _status)
-            in gate_shims.divergence(loop, include_missing=False).items()]
-    except config.ConfigError as exc:
-        print(f"config refused: {exc}")
-        return 2
-
-    if args.dry_run:
-        print("dry run — nothing written: no loop config, no routes, no hooks, no cron job")
-        print(f"  would write: {config.config_dir() / (loop['id'] + '.json')}")
-        for line in _seat_lines(loop, "effective seat mapping"):
-            print(f"  {line}")
-        for line in cli_common._parallel_lines(loop):
-            print(f"  {line}")
-        print("  credentials: " + " · ".join(cli_common._credential_lines(loop)))
-        for name in cli_common._routes_of(loop).values():
-            print(f"  would write route: {name}")
-        if args.hooks:
-            print("  would create the two repo hooks (pull_request, pull_request_review), "
-                  + ("armed (--arm)" if getattr(args, "arm", False) else "paused until `arm`"))
-            print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), True)}")
-        if args.schedule:
-            print(f"  would install the watchdog cron job ({args.schedule})")
-        if loop.get("observer", {}).get("route"):
-            print(f"  would write route: {loop['observer']['route']}")
-        for line in shim_lines:
-            print(f"  {line}")
-        return 0
-
-    path = config.config_dir() / f"{loop['id']}.json"
-    if path.exists():
-        print(f"refused: loop {loop['id']!r} already exists; use `hermes dk set` "
-              "to change it without losing observer destination/receipt bindings")
-        return 2
-    observer_name = (loop.get("observer") or {}).get("route")
-    if observer_name and routes.route(observer_name):
-        print(f"refused: route {observer_name!r} already exists and is not this observer's route")
-        return 2
-    if args.hooks:
-        # A previous install's hooks on these routes still sign with that install's secret, and
-        # this init writes the routes with a fresh one: a second set would leave the old ones live
-        # but unable to authenticate, next to new paused ones. Refused (not adopted) while nothing
-        # is written yet; see _stale_hooks_refusal for why.
-        refusal = _stale_hooks_refusal(loop, args.admin_token)
-        if refusal:
-            print(refusal)
-            return 2
-    previous_config = None
-    previous_routes = {name: routes.route(name) for name in cli_common._routes_of(loop).values()}
-    try:
-        path = cli_common._write_config(loop)
-    except Exception as exc:
-        print(f"config install FAILED: {exc}; previous config unchanged")
-        return 2
-    print(f"loop config written: {path}")
-    for line in _seat_lines(loop):
-        print(line)
-    for line in cli_common._parallel_lines(loop):
-        print(f"  {line}")
-    print("  credentials: " + " · ".join(cli_common._credential_lines(loop)))
-    # A route that fails to land must not leave a loop installed with half its seats woken: the
-    # config `init` just wrote and any route it just added are taken back out again, so a second
-    # `init` starts from clean rather than from a loop nobody can see.
-    try:
-        written_routes = list(cli_common._install_routes(loop).values())
-        # The plugin's private copy of what it just wrote (secret included) is part of the same
-        # transaction: self-heal restores from it, so it must never describe routes that failed.
-        route_intent.record_live(loop, written_routes, replace=True)
-    except Exception as exc:
-        try:
-            routes.restore_entries(previous_routes)
-            if previous_config is None:
-                path.unlink(missing_ok=True)
-            else:
-                cli_common._restore_config(path, previous_config)
-        except Exception as rollback_exc:
-            print(f"ROLLBACK FAILED: {rollback_exc} — inspect config and routes manually")
-            return 2
-        print(f"route install FAILED: {exc}")
-        print("  previous config and routes restored; fix the registry and re-run init")
-        return 2
-    for name in written_routes:
-        print(f"route written: {name}")
-    shims_ok = cli_common._install_shims(loop)
-    try:
-        hook_lines = (cli_common._install_hooks(loop, args.admin_token, active=bool(getattr(args, "arm", False)))
-                      if args.hooks else [])
-    except Exception as exc:
-        failed = []
-        try:
-            routes.restore_entries(previous_routes)
-        except Exception as rollback_exc:
-            failed.append(f"routes: {rollback_exc}")
-        try:
-            route_intent.forget(loop, written_routes)
-        except Exception as rollback_exc:
-            failed.append(f"route intent: {rollback_exc}")
-        try:
-            if previous_config is None:
-                path.unlink(missing_ok=True)
-            else:
-                cli_common._restore_config(path, previous_config)
-        except Exception as rollback_exc:
-            failed.append(f"config: {rollback_exc}")
-        print(f"hook install FAILED: {exc}")
-        if failed or "ROLLBACK FAILED" in str(exc):
-            print("ROLLBACK FAILED — inspect before retrying: " + "; ".join(failed))
-        else:
-            print("  prior config and routes restored")
-        return 2
-    for line in hook_lines:
-        print(f"  {line}")
-    if args.hooks:
-        print(f"  {_hook_editor_line(loop, args.admin_token, getattr(args, 'arm', False), False)}")
-    if not args.hooks:
-        print("  (repo hooks not created — pass --hooks, or add them by hand with the route URLs)")
-    # Armed at birth: prove the secret now, as `arm` does, rather than at the first real event.
-    pinged = (cli_common._ping_loop_hooks(loop, args.admin_token)
-              if args.hooks and getattr(args, "arm", False) else True)
-    schedule_lines, scheduled = (_install_schedule(loop, args.schedule, args.watchdog_deliver)
-                                 if args.schedule else ([], True))
-    for line in schedule_lines:
-        print(f"  {line}")
-    if not scheduled:
-        # Config, routes and hooks are in place; only the job is missing. Say so and fail, so an
-        # install script's `init && ...` does not read a missing watchdog as success.
-        print("\ninit INCOMPLETE: the watchdog job was not scheduled — run the command above, "
-              f"then `hermes dk doctor --loop {loop['id']}`")
-        return 1
-    if not pinged:
-        print(f"\ninit INCOMPLETE: a hook's ping was rejected — see the ❌ line above, then "
-              f"`hermes dk doctor --loop {loop['id']}`")
-        return 1
-    # The seats never hold a GitHub token: every write goes through the host broker with the token
-    # files mapped above, so a GH_TOKEN in a seat profile's .env is only an extra copy to leak.
-    lid = loop["id"]
-    runtime = config.host_path("runtime")
-    steps = ([f"create the runtime file {runtime} (`hermes dk setup --repo "
-              f"{shlex.quote(loop['repo'])}` detects and writes it)"]
-             if not runtime.exists() else []) + [
-             f"hermes dk doctor --loop {lid}",
-             f"hermes dk selftest --loop {lid} --no-model, then --pr N, then --pr N --live-turn"]
-    if not config.unattended_fixer_push_enabled(loop):
-        steps.append("decide the fix leg: unattended fixer pushes are off, so a changes-requested "
-                     "verdict is held for you and no fixer turn starts. To let the fixer answer "
-                     f"verdicts: {config.fixer_push_enable_command(loop)} "
-                     "(read docs/operations.md on the PR-metadata race first)")
-    if args.hooks and not getattr(args, "arm", False):
-        admin = f" --admin-token {args.admin_token}" if args.admin_token else ""
-        steps.append(f"hermes dk arm --loop {lid}{admin}   (the hooks were created "
-                     "paused)")
-    elif args.hooks:
-        steps.append("the hooks are ARMED: until the runtime file exists every turn is held")
-    print("\nNext:")
-    for n, step in enumerate(steps, 1):
-        print(f"  {n}. {step}")
-    print("  Seat tokens live only in the token files mapped above; a seat profile needs no "
-          "GH_TOKEN.")
-    return 0 if shims_ok else 1
-
-
-# The root ``hermes dk`` parser, kept by register_cli so ``setup`` runs the other verbs
-# through the very parser (and settings defaults) the operator would.
-_PARSER: argparse.ArgumentParser | None = None
-
-
-def _verb(*argv: str) -> int:
-    """Run another ``hermes dk`` verb in-process; argparse refusing it is exit 2."""
-    try:
-        parsed = _PARSER.parse_args(list(argv))
-    except SystemExit:
-        return 2
-    return parsed.func(parsed)
-
-
-def _ask(question: str, default: str, interactive: bool) -> str:
-    """One answer: typed, or the default (always the default without a terminal)."""
-    if not interactive:
-        return default
-    try:
-        answer = input(f"   {question}{f' [{default}]' if default else ''}: ").strip()
-    except EOFError:
-        answer = ""
-    return answer or default
-
-
-def _agree(question: str, default: bool, interactive: bool, unattended: bool) -> bool:
-    """A yes/no; without a terminal (``--yes``) the answer is ``unattended``."""
-    if not interactive:
-        return unattended
-    try:
-        answer = input(f"   {question} [{'Y/n' if default else 'y/N'}]: ").strip().lower()
-    except EOFError:
-        answer = ""
-    return default if not answer else answer in ("y", "yes")
-
-
-def _setup_runtime(args, interactive: bool) -> bool:
-    """Step 1: keep the runtime file's working paths, detect the rest, write it 0600."""
-    from . import runtime_detect, seat_model
-    file = runtime_detect.path()
-    print(f"\n1. Runtime paths — {file}")
-    current, why = runtime_detect.read()
-    if why and why != "absent":
-        print(f"   the current file cannot be used ({why}); it will be replaced")
-    have = {key: current[key] for key in runtime_detect.HOST_KEYS
-            if current and isinstance(current.get(key), str) and current[key]}
-    broken = runtime_detect.problems(have) if have else {}
-    detected = runtime_detect.detect()
-    chosen, origin = {}, {}
-    # The runtime is derived from the venv actually chosen, so it is resolved last — explicitly,
-    # not by trusting HOST_KEYS to list "venv" before "runtime" (#242).
-    order = [key for key in runtime_detect.HOST_KEYS if key != "runtime"] + ["runtime"]
-    for key in order:
-        if key == "runtime" and "venv" in chosen:
-            # The runtime belongs to the venv actually chosen (given, kept or detected), never to
-            # one detection found elsewhere.
-            derived = runtime_detect.runtime_for(pathlib.Path(chosen["venv"]))
-            detected = {**detected, "runtime": str(derived)} if derived else detected
-        given = getattr(args, key, None)
-        for source, value in (("given", given), ("kept", None if key in broken else have.get(key)),
-                              ("detected", detected.get(key)), ("kept", have.get(key))):
-            if value:
-                chosen[key], origin[key] = str(pathlib.Path(value).expanduser()), source
-                break
-    left = runtime_detect.problems(chosen)
-    for key in runtime_detect.HOST_KEYS:
-        if key in left:
-            print(f"   ❌ {key:<8} {left[key]} — pass --{key} PATH")
-        else:
-            print(f"   ✅ {key:<8} {chosen[key]} ({origin[key]})")
-    if left:
-        print("   not written: every path must check out first (the file is all or nothing)")
-        return False
-    settings = runtime_detect.merged(current, chosen)
-    try:
-        seat_model.parse_runtime(settings)
-    except ValueError as exc:
-        print(f"   ❌ the model overrides kept from the current file do not parse ({exc}); "
-              f"fix {file} by hand")
-        return False
-    private = (current is not None and not file.is_symlink()
-               and not file.stat().st_mode & 0o077)
-    if current == settings and private:
-        print("   in place — nothing to change")
-        return True
-    if args.dry_run:
-        print(f"   would write {file} (0600)")
-        return True
-    if not _agree(f"Write {file.name}?", True, interactive, True):
-        print("   not written")
-        return False
-    print(f"   written: {runtime_detect.write(settings)} (0600)")
-    return True
-
-
-def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[list[str], str]:
-    """Step 2's answers as the ``init`` command line, and the hook admin login ("" for none)."""
-    d = config.settings_defaults(_SETTINGS)
-    ask = lambda flag, question, default="": flag or _ask(question, default, interactive)  # noqa: E731
-    reviewer = ask(args.reviewer, "reviewer GitHub login (the account that reviews)",
-                   d["reviewer_login"])
-    fixer = ask(args.fixer, "fixer GitHub login (the account that pushes fixes)", d["fixer_login"])
-    reviewer_profile = ask(args.reviewer_profile, "reviewer's Hermes profile", d["reviewer_profile"])
-    fixer_profile = ask(args.fixer_profile, "fixer's Hermes profile", d["fixer_profile"])
-    reviewer_file = ask(args.reviewer_token, f"token file for {reviewer or 'the reviewer'}",
-                        d["reviewer_token_file"])
-    fixer_file = ask(args.fixer_token, f"token file for {fixer or 'the fixer'}",
-                     d["fixer_token_file"])
-    reader = ask(args.read_token, "reader login (its own account; the gates read GitHub as it)")
-    reader_file = ask(args.read_token_file, f"token file for {reader or 'the reader'}")
-    host = ask(args.host, "your gateway's webhook origin (https://…)", d["host"])
-    observer = (args.observer_profile if args.observer_profile is not None else
-                _ask("Hermes profile whose chat gets the loop's notices (blank: none)", "",
-                     interactive))
-    after_ci = args.review_after_ci or (
-        "on" if _agree("Start each review after the head's CI finishes (up to an hour)?",
-                       d["review_after_ci"], interactive, d["review_after_ci"]) else "off")
-    fix_ci = args.fix_ci or (
-        "on" if _agree("Give a failed CI check on a fixer's PR to the fixer (needs fixer pushes)?",
-                       d["fix_ci"], interactive, d["fix_ci"]) else "off")
-    attribution = args.attribution or (
-        "on" if _agree("Sign what the loop posts ('Automated by Diaktoros')?",
-                       d["attribution"], interactive, d["attribution"]) else "off")
-    adjudicator = (args.adjudicator_profile if args.adjudicator_profile is not None else
-                   _ask("Adjudicate a PR whose rounds are spent? Profile [blank = no]",
-                        d["adjudicator_profile"], interactive)).strip()
-    check = (args.fixer_check if args.fixer_check is not None else
-             _ask("a command the fixer always runs before publishing, the checks CI always runs "
-                  "(blank: none)", d["fixer_check"], interactive))
-    admin = (args.admin_token if args.admin_token is not None else
-             _ask("hook admin login, to create the repo hooks (blank: add them yourself)", "",
-                  interactive))
-    admin_file = ""
-    if admin and admin.lower() not in {x.lower() for x in (reviewer, fixer, reader) if x}:
-        admin_file = ask(args.admin_token_file, f"token file for {admin}")
-    argv = ["init", f"--repo={repo}", f"--id={loop_id}", f"--reviewer={reviewer}",
-            f"--fixer={fixer}", f"--reviewer-profile={reviewer_profile}",
-            f"--fixer-profile={fixer_profile}", f"--read-token={reader}", f"--host={host}",
-            f"--attribution={attribution}", f"--review-after-ci={after_ci}", f"--fix-ci={fix_ci}"]
-    for login, file in ((reviewer, reviewer_file), (fixer, fixer_file), (reader, reader_file),
-                        (admin, admin_file)):
-        if login and file:
-            argv.append(f"--token={login}={pathlib.Path(file).expanduser()}")
-    if observer:
-        argv.append(f"--observer-profile={observer}")
-    if adjudicator:
-        argv += [f"--adjudicator-route={loop_id}-breach", f"--adjudicator-profile={adjudicator}"]
-    argv.append(f"--fixer-check={check}")
-    required = (args.required_check if args.required_check is not None else
-                config.split_check_names(_ask(
-                    "the CI checks that must pass before an approval, comma-separated, exactly as "
-                    "GitHub names them (blank: every check)", d["required_checks"], interactive)))
-    argv += [f"--required-check={name}" for name in required]
-    humans = (args.human_path if getattr(args, "human_path", None) is not None else
-              config.split_human_paths(_ask(
-                  "glob patterns for paths only a human may approve, comma-separated "
-                  "(blank: none)", d["human_paths"], interactive)))
-    argv += [f"--human-path={name}" for name in humans]
-    reviewed = (args.review_only if getattr(args, "review_only", None) is not None else
-                [name for name in _ask("GitHub logins whose PRs the reviewer reviews but the fixer "
-                                       "never touches, comma-separated (blank: none)",
-                                       d["review_only"], interactive).split(",") if name.strip()])
-    argv += [f"--review-only={name.strip()}" for name in reviewed]
-    if getattr(args, "review_only_update", None) is not None:
-        argv.append(f"--review-only-update={args.review_only_update}")
-    if getattr(args, "acknowledge_branch_push", False):
-        argv.append("--acknowledge-branch-push")
-    for flag in ("reviewer_max_steps", "fixer_max_steps", "reviewer_daily_tokens",
-                 "fixer_daily_tokens", "fix_daily_turns",
-                 "review_only_cap", "review_only_daily", "ci_fix_cap"):
-        if getattr(args, flag, None) is not None:
-            argv.append(f"--{flag.replace('_', '-')}={getattr(args, flag)}")
-    if admin:
-        argv += ["--hooks", f"--admin-token={admin}"]   # created paused; step 5 arms them
-    return argv, admin
-
-
-def cmd_setup(args) -> int:
-    """A first install in one command, safe to re-run (#215).
-
-    1. the runtime file: working paths kept, the rest detected (``runtime_detect``), written 0600;
-    2. the loop: ``init``'s answers asked (the settings form's values as defaults), its dry run
-       shown and confirmed, then ``init`` itself — skipped when the loop already exists;
-    3. the shared watchdog job (created only if missing);
-    4. ``doctor`` and ``selftest --no-model``: any ❌ stops here, with its fix line above;
-    5. ``arm``, only on a clean pass and only when asked.
-
-    Every step runs the same code as its own verb, so ``setup`` adds no second path to keep right.
-    """
-    interactive = not args.yes
-    if interactive and not sys.stdin.isatty():
-        print("setup asks questions; with no terminal, pass --yes to take the flags and the plugin "
-              "settings as the answers")
-        return 2
-    repo = args.repo or _ask("GitHub repository (owner/name)", "", interactive)
-    if not repo or repo.count("/") != 1 or repo.startswith("/") or repo.endswith("/"):
-        print("setup needs the repository as owner/name (--repo)")
-        return 2
-    loop_id = args.id or repo.split("/")[-1]
-    print(f"hermes dk setup — {repo} (loop {loop_id!r}). Safe to re-run: what is already "
-          "in place is kept." + (" Dry run: nothing is written." if args.dry_run else ""))
-
-    runtime_ok = _setup_runtime(args, interactive)
-
-    print("\n2. The loop")
-    existing = (config.config_dir() / f"{loop_id}.json").exists()
-    admin = args.admin_token or ""
-    if existing:
-        try:
-            loop = config.load_id(loop_id)
-        except config.ConfigError as exc:
-            print(f"   ❌ loop {loop_id!r} exists but does not load: {exc}")
-            return 2
-        if loop["repo"].lower() != repo.lower():
-            print(f"   ❌ loop {loop_id!r} serves {loop['repo']}, not {repo} — pass --id to name "
-                  "a new loop")
-            return 2
-        print(f"   ✅ loop {loop_id!r} is configured — kept as it is (change it with `hermes "
-              f"dk set --loop {loop_id}`)")
-    else:
-        argv, admin = _setup_init_argv(args, repo, loop_id, interactive)
-        print("   init dry run:")
-        if _verb(*argv, "--dry-run") != 0:
-            print("\nsetup stopped: init refused the answers — fix what it names and re-run setup")
-            return 2
-        if args.dry_run:
-            print("\n3. would schedule the shared watchdog job (if missing)\n"
-                  "4. would run doctor and selftest --no-model\n5. would arm only when asked")
-            return 0
-        if not _agree("Install this loop?", True, interactive, True):
-            print("setup stopped: nothing installed")
-            return 1
-        if _verb(*argv) == 2:
-            print("\nsetup stopped: init failed — see above; re-running setup is safe")
-            return 2
-
-    print("\n3. The watchdog")
-    schedule = args.schedule or _ask("how often the watchdog sweeps", "15m", interactive)
-    deliver = args.watchdog_deliver or _ask("where its alerts go (local, telegram, …)", "local",
-                                            interactive)
-    if args.dry_run:
-        print(f"   would schedule the shared watchdog job ({schedule}, deliver={deliver}) "
-              "if it is missing")
-        return 0
-    lines, scheduled = _install_schedule(config.load_id(loop_id), schedule, deliver)
-    for line in lines:
-        print(f"   {'✅' if scheduled else '❌'} {line}")
-
-    print("\n4. Checks")
-    doctor_rc = _verb("doctor", f"--loop={loop_id}")
-    selftest_rc = _verb("selftest", f"--loop={loop_id}", "--no-model")
-    if doctor_rc or selftest_rc or not scheduled or not runtime_ok:
-        print("\nsetup stopped before arming: fix each ❌ above (its fix line says how), then "
-              f"re-run `hermes dk setup --repo {shlex.quote(repo)}` — it keeps what is done")
-        return 1
-
-    print("\n5. Arm")
-    if not (args.arm or _agree("Arm the repo hooks now? The loop goes live.", False,
-                               interactive, False)):
-        print(f"   not armed. When ready: hermes dk arm --loop {loop_id}"
-              + (f" --admin-token {admin}" if admin else ""))
-        return 0
-    if not admin:
-        admin = _ask("hook admin login", "", interactive)
-    rc = _verb("arm", f"--loop={loop_id}", *([f"--admin-token={admin}"] if admin else []))
-    print("\nsetup complete: the loop is live" if rc == 0 else
-          "\narm was not confirmed — see above; re-running setup is safe")
-    return rc
-
-
 def _set_adjudication(args, loop: dict) -> int:
     """``set --adjudicator-profile P`` / ``--adjudicator-route NAME`` / ``--adjudicator off``.
 
@@ -1541,7 +655,7 @@ def _set_adjudication(args, loop: dict) -> int:
             print(f"  {line}")
         return 0
 
-    d = config.settings_defaults(_SETTINGS)
+    d = config.settings_defaults(cli_common._SETTINGS)
     profile = (str(getattr(args, "adjudicator_profile", None) or "").strip()
                or str(current.get("profile") or "") or d["adjudicator_profile"] or "default")
     route = (str(getattr(args, "adjudicator_route", None) or "").strip() or old_route
@@ -2085,8 +1199,8 @@ def _apply(args) -> int:
 
     try:
         # Token-file paths first: a bad path is refused by name before anything is computed.
-        config.verify_token_settings(_SETTINGS)
-        updated = config.normalize(config.apply_settings(loop, _SETTINGS))
+        config.verify_token_settings(cli_common._SETTINGS)
+        updated = config.normalize(config.apply_settings(loop, cli_common._SETTINGS))
     except config.ConfigError as exc:
         print(f"settings refused: {exc}")
         return 2
@@ -2367,7 +1481,7 @@ def cmd_show(args) -> int:
     except (config.ConfigError, OSError, ValueError) as exc:
         print(f"cannot show loop: {exc}")
         return 2
-    rows = show.collect(loop, raw if isinstance(raw, dict) else {}, _SETTINGS)
+    rows = show.collect(loop, raw if isinstance(raw, dict) else {}, cli_common._SETTINGS)
     if args.json:
         print(json.dumps({"loop": loop["id"], "settings": rows}, indent=2, sort_keys=True))
     else:
@@ -2377,16 +1491,16 @@ def cmd_show(args) -> int:
 
 def cmd_settings(args) -> int:
     """Show the plugin-level defaults — what a new loop starts from, and what ``apply`` pushes."""
-    d = config.settings_defaults(_SETTINGS)
+    d = config.settings_defaults(cli_common._SETTINGS)
     print("plugin settings (desktop: Capabilities → Plugins → diaktoros)")
     width = max(len(key) for key in config.SETTINGS_SCHEMA)
     for key, spec in config.SETTINGS_SCHEMA.items():
         value = d[key]
-        source = "set" if str((_SETTINGS or {}).get(key, "")) not in ("", "None") else "default"
+        source = "set" if str((cli_common._SETTINGS or {}).get(key, "")) not in ("", "None") else "default"
         print(f"  {key:<{width}} {str(value):<26} [{source}]  {spec['description']}")
 
     print("\nseat mapping (blank = not set here: a loop keeps its own answer)")
-    mapping = config.seat_mapping(_SETTINGS)
+    mapping = config.seat_mapping(cli_common._SETTINGS)
     for role in config.ROUTE_ROLES:
         entry = mapping.get(role) or {}
         profile = entry.get("profile") or "(blank)"
@@ -2415,7 +1529,7 @@ def cmd_settings(args) -> int:
             refs = cli_common._credential_lines(loop)
             if refs:
                 print(f"  {'':<18} token files: " + " · ".join(refs))
-    if not _SETTINGS:
+    if not cli_common._SETTINGS:
         print("\nnothing set — every value above is the schema default")
     print("\napply them to a loop with: hermes dk apply --loop <id>"
           "\n(settings are defaults, not a subscription: an existing loop keeps its own seats, "
@@ -2891,12 +2005,6 @@ def _cmd_fixer_push_locked(args) -> int:
     return 0
 
 
-# What the plugin's settings form held when this process started (Capabilities → Plugins in the
-# desktop). Set by `register_cli`; read by `apply` and `settings`. A form that silently renumbered
-# a running loop would be a nasty thing to debug, so these are *defaults* and a push — never a
-# subscription.
-_SETTINGS: dict = {}
-
 
 RENAMED_NOTE = ("note: `hermes review-loop` is now `hermes dk` (short for `hermes diaktoros`); "
                 "the old name will be removed in a later release")
@@ -2917,8 +2025,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
     from, and what ``apply`` pushes onto an existing loop; it never rewrites a loop behind the
     operator's back.
     """
-    global _SETTINGS
-    _SETTINGS = dict(settings or {})
+    cli_common._SETTINGS = dict(settings or {})
     cli_common._CTX = ctx
     d = config.settings_defaults(settings)
     # Both seats agreeing is the only case where a loop-level default says anything useful: when
@@ -2933,8 +2040,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         quietly offers zero subcommands: ``hermes dk list`` is "unrecognized arguments".)
         """
         sub = parser.add_subparsers(dest="command", metavar="<command>")
-        global _PARSER
-        _PARSER = parser
+        cli_common._PARSER = parser
 
         def _usage(_args) -> int:      # bare `hermes dk` prints the commands, not an error
             parser.print_help()
@@ -3651,10 +2757,9 @@ def register_cli(ctx, settings: dict | None = None) -> None:
 
         It never becomes ``_PARSER``: verbs one command runs for another go through the real name.
         """
-        global _PARSER
-        kept = _PARSER
+        kept = cli_common._PARSER
         setup(parser)
-        _PARSER = kept if kept is not None else parser
+        cli_common._PARSER = kept if kept is not None else parser
         if parser.get_default("func") is not None:          # the bare command prints its usage
             parser.set_defaults(func=_renamed(parser.get_default("func")))
         for action in parser._subparsers._group_actions if parser._subparsers else ():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .fixture import *  # noqa: F403 - the shared harness namespace
 from diaktoros import cli_common  # noqa: E402
+from diaktoros import cli_install  # noqa: E402
 
 
 def group_settings() -> None:
@@ -278,7 +279,7 @@ def group_plugin_settings() -> None:
                               "--reviewer-profile", "p", "--fixer-profile", "q"])
     d = config.settings_defaults(settings)
     check("a new loop starts from the settings",
-          (args.cap, cli._init_loop_concurrency(args, d), cli._init_seat_concurrency(args, d)),
+          (args.cap, cli_install._init_loop_concurrency(args, d), cli_install._init_seat_concurrency(args, d)),
           (5, 1, {"reviewer": 2}))
     check("  clone and grace too", (args.clone, args.grace_min), (str(CLONE), 30))
     check("  an unpassed seat flag is not an answer (#76)",

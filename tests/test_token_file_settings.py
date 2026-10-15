@@ -55,7 +55,7 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.token_files = []
         self.pats = {name: self.pat(name) for name in ("read", "rev", "fix", "adj", "rev2")}
         self.outputs = []
-        self.addCleanup(setattr, cli, "_SETTINGS", getattr(cli, "_SETTINGS", {}))
+        self.addCleanup(setattr, cli_common, "_SETTINGS", getattr(cli_common, "_SETTINGS", {}))
 
     # -- helpers ---------------------------------------------------------------------------
 

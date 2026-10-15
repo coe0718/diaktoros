@@ -23,6 +23,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import attribution, cli, config, gate_shims  # noqa: E402
+from diaktoros import cli_common  # noqa: E402
 
 OLD_FOOTER = ("\n\n---\n<sub>🤖 Automated by [hermes-review-loop]"
               "(https://github.com/coe0718/hermes-review-loop) · reviewer seat · head `abc1234`</sub>")
@@ -44,9 +45,9 @@ def parse(ctx: Ctx, name: str, *argv: str):
 
 class Commands(unittest.TestCase):
     def setUp(self):
-        saved = cli._PARSER
-        self.addCleanup(setattr, cli, "_PARSER", saved)
-        cli._PARSER = None
+        saved = cli_common._PARSER
+        self.addCleanup(setattr, cli_common, "_PARSER", saved)
+        cli_common._PARSER = None
         self.ctx = Ctx()
         cli.register_cli(self.ctx, settings={})
 
@@ -73,9 +74,9 @@ class Commands(unittest.TestCase):
 
     def test_the_old_name_never_becomes_the_parser_verbs_run_through(self):
         parse(self.ctx, "diaktoros")
-        real = cli._PARSER
+        real = cli_common._PARSER
         parse(self.ctx, "review-loop")
-        self.assertIs(cli._PARSER, real)
+        self.assertIs(cli_common._PARSER, real)
 
 
 class Signature(unittest.TestCase):

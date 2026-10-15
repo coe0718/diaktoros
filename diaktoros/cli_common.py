@@ -21,6 +21,23 @@ from . import config, doctor, envnames, gate_shims, gh, prompts, route_intent, r
 # The Hermes plugin context register_cli was given: `migrate` writes settings through it (#425).
 _CTX = None
 
+# What the plugin's settings form held when this process started (Capabilities → Plugins in the
+# desktop). Set by `register_cli`; read by `init`, `setup`, `apply`, `settings` and `show`. A
+# form that silently renumbered a running loop would be a nasty thing to debug, so these are
+# *defaults* and a push — never a subscription.
+_SETTINGS: dict = {}
+
+# The root ``hermes dk`` parser, kept by register_cli so ``setup`` runs the other verbs
+# through the very parser (and settings defaults) the operator would.
+_PARSER = None
+
+BRANCH_PUSH_REFUSAL = (
+    "refused: review_only_update lets the host push a merge commit to a branch the loop does not "
+    "own (a review-only author's, same repository only, only a clean merge, with a lease on the "
+    "head it read), as the account that makes host merge pushes, and needs unattended fixer "
+    "pushes. If the author pushes meanwhile the lease fails and nothing is overwritten, but a "
+    "published merge cannot be undone by the loop. Pass --acknowledge-branch-push to opt in.")
+
 # The shim and job names a fresh install gets; an install not yet migrated keeps the old pair
 # (``config.watchdog_shim`` / ``config.watchdog_job_name`` say which is live).
 SHIM_NAME = "diaktoros-watchdog.py"

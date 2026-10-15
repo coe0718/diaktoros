@@ -23,6 +23,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, cli_operations, config, doctor
+from diaktoros import cli_common  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 READER, REV, FIX, ADJ = "reader-acct", "rev-acct", "fix-acct", "adj-acct"
@@ -96,7 +97,7 @@ class _Home(unittest.TestCase):
             (self.hermes / "profiles" / profile / "config.yaml").write_text("model: {}\n")
         self.keys = self.hermes / "keys"
         self.keys.mkdir(parents=True)
-        self.addCleanup(setattr, cli, "_SETTINGS", getattr(cli, "_SETTINGS", {}))
+        self.addCleanup(setattr, cli_common, "_SETTINGS", getattr(cli_common, "_SETTINGS", {}))
 
     def pat(self, name, mode=0o600):
         path = self.keys / f"{name}-pat"

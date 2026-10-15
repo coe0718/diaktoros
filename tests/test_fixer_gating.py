@@ -321,7 +321,7 @@ class Surfaces(Base):
             self.assertEqual(cli.cmd_fixer_push(args), 0)
         self.assertIn("1 held verdict(s)", out.getvalue())
         self.assertIn("drain --loop one --seat fixer", out.getvalue())
-        source = (ROOT / "diaktoros" / "cli.py").read_text()
+        source = (ROOT / "diaktoros" / "cli_install.py").read_text()     # init's next steps
         self.assertIn("decide the fix leg", source)
         self.assertIn("fixer-push --loop", (ROOT / "docs" / "operations.md").read_text())
 
