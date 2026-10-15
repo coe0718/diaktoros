@@ -18,7 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import cli  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-MODULES = ("cli_reports", "cli_operations", "cli_lifecycle", "cli_install")
+MODULES = ("cli_reports", "cli_operations", "cli_lifecycle", "cli_install", "cli_checks")
 SHARED = ("cli_common",)          # helpers several groups use: no commands, never imports cli
 
 
