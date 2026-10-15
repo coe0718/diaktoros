@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import (cli, config, gate_failures, gh, hook_ping, ledger, migrate,  # noqa: E402
                          pacing, route_intent, routes, run_supervisor)
+from diaktoros import cli_lifecycle  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 from scripts import watchdog  # noqa: E402
@@ -329,13 +330,13 @@ class Rename(fg.Base):
     def test_bad_ids_and_a_taken_name_refuse(self):
         for spec in ("one", "one=one", "one=../x", "=two", "one=a b"):
             with self.subTest(spec=spec):
-                lines, refused = cli._rename_loop(spec, dry_run=True, admin=None)
+                lines, refused = cli_lifecycle._rename_loop(spec, dry_run=True, admin=None)
                 self.assertTrue(refused, lines)
                 self.assertIn("give OLD=NEW", lines[0])
         other = json.loads((config.config_dir() / "one.json").read_text())
         other.update(id="two", repo="owner/other")
         (config.config_dir() / "two.json").write_text(json.dumps(other))
-        lines, refused = cli._rename_loop("one=two", dry_run=True, admin=None)
+        lines, refused = cli_lifecycle._rename_loop("one=two", dry_run=True, admin=None)
         self.assertTrue(refused)
         self.assertIn("already exists", lines[0])
 

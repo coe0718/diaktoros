@@ -22,6 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import backup, cli, config, migrate, routes  # noqa: E402
+from diaktoros import cli_lifecycle  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 
 SECRET = "s3cr3t-hmac-value-0123456789"
@@ -411,7 +412,7 @@ class MigrateBacksUpFirst(Base):
                 mock.patch.object(migrate, "shim_step", return_value=[]), \
                 mock.patch.object(migrate, "files_step", return_value=[]), \
                 mock.patch.object(migrate, "repo_step", return_value=[]), \
-                mock.patch.object(cli, "_move_watchdog_job", return_value=[]):
+                mock.patch.object(cli_lifecycle, "_move_watchdog_job", return_value=[]):
             code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
         self.assertEqual(order[0][0], "backup")
         self.assertIn(str(order[0][1]), text)

@@ -20,6 +20,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config, doctor, routes  # noqa: E402
+from diaktoros import cli_lifecycle  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 
 LOOP_FILE = t.LOOPS_DIR / "widgets.json"
@@ -257,7 +258,7 @@ class UninstallRefusalTest(Base):
                         "could not verify the deletion of hooks 5 (read-back failed)"):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                cli._uninstall_refused(loop, [wording], [], args, accepted_unread=True)
+                cli_lifecycle._uninstall_refused(loop, [wording], [], args, accepted_unread=True)
             out = buf.getvalue()
             self.assertIn("every DELETE was accepted", out, wording)
             self.assertNotIn("still live", out, wording)

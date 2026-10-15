@@ -23,6 +23,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import cli, config, migrate, pacing, run_supervisor  # noqa: E402
+from diaktoros import cli_lifecycle  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -235,7 +236,7 @@ class Order(Home):
         order: list[str] = []
         with mock.patch.object(migrate, "shim_step",
                                side_effect=lambda *a, **k: order.append("shims") or []), \
-                mock.patch.object(cli, "_move_watchdog_job",
+                mock.patch.object(cli_lifecycle, "_move_watchdog_job",
                                   side_effect=lambda **k: order.append("watchdog") or []), \
                 mock.patch.object(migrate, "files_step",
                                   side_effect=lambda *a, **k: order.append("files") or []), \
@@ -281,7 +282,7 @@ class Watchdog(Home):
         self.fail_create = fail_create
         with mock.patch.object(cli.subprocess, "run", side_effect=self.hermes), \
                 mock.patch.object(cli_common, "_hermes_bin", return_value="hermes"):
-            return cli._move_watchdog_job(dry_run=False)
+            return cli_lifecycle._move_watchdog_job(dry_run=False)
 
     def test_the_job_and_shim_move_as_a_pair_with_the_old_schedule(self):
         lines = self.move()

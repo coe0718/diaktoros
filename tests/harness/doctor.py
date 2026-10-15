@@ -48,6 +48,7 @@ def pinned_host_memory():
 
 
 from diaktoros import doctor as _doctor_module  # the same object the harness namespace re-exports
+from diaktoros import cli_lifecycle  # noqa: E402
 
 _doctor_module._host_memory = pinned_host_memory
 # #556: /work is not a git checkout here; pin an installed commit (the stub answers "identical").
@@ -137,7 +138,7 @@ def install_doctor_fixture() -> dict:
     cron = TMP / "hermes-home" / "cron"
     cron.mkdir(parents=True, exist_ok=True)
     (cron / "jobs.json").write_text(json.dumps({"jobs": [{
-        "id": "watchdog-job", "name": cli.watchdog_job_name({"id": "widgets"}),
+        "id": "watchdog-job", "name": cli_lifecycle.watchdog_job_name({"id": "widgets"}),
         "script": cli.SHIM_NAME, "no_agent": True, "enabled": True, "state": "scheduled",
         "schedule": {"kind": "interval", "minutes": 15},
         "schedule_display": "every 15m", "next_run_at": PAST, "deliver": "local"}]}))
@@ -551,7 +552,7 @@ def group_doctor() -> None:
     section("doctor — a correct installation passes, and says nothing it cannot prove")
     check("doctor and init agree on the shim name", doctor.SHIM_NAME, cli.SHIM_NAME)
     check("doctor and init agree on the watchdog job name",
-          doctor.watchdog_job_name({"id": "x"}), cli.watchdog_job_name({"id": "x"}))
+          doctor.watchdog_job_name({"id": "x"}), cli_lifecycle.watchdog_job_name({"id": "x"}))
     check("the seat configs match what this interpreter can read",
           seat_config_style(), "yaml" if any(_have(m) for m in ("yaml", "ruamel.yaml")) else "json")
 
@@ -966,7 +967,7 @@ def group_doctor() -> None:
     install_doctor_fixture()
     cron_file = TMP / "hermes-home" / "cron" / "jobs.json"
     cron_file.write_text(json.dumps([{"id": "watchdog-job",
-                                      "name": cli.watchdog_job_name({"id": "widgets"}),
+                                      "name": cli_lifecycle.watchdog_job_name({"id": "widgets"}),
                                       "script": cli.SHIM_NAME, "enabled": True,
                                       "state": "scheduled", "no_agent": True,
                                       "schedule": {"kind": "interval", "minutes": 15},
@@ -990,7 +991,7 @@ def group_doctor() -> None:
 
     install_doctor_fixture()
     cron_file.write_text(json.dumps({"jobs": [{"id": "watchdog-job",
-                                               "name": cli.watchdog_job_name({"id": "widgets"}),
+                                               "name": cli_lifecycle.watchdog_job_name({"id": "widgets"}),
                                                "script": cli.SHIM_NAME, "enabled": False,
                                                "state": "paused"}]}))
     rc, out = run_doctor("--loop", "widgets")

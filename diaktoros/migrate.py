@@ -319,8 +319,8 @@ def repo_step(loops: list[dict], write_loop, *, dry_run: bool, ledger: pathlib.P
 # -- loop id rename (opt-in) ----------------------------------------------------------------
 # ``--rename-loop OLD=NEW`` gives a loop a new id. A loop's id names its file, its default state
 # directory, its routes (``<id>-review`` and so on) and through them the URLs its GitHub hooks
-# post to. The orchestration (routes, hooks, pings) is ``cli._rename_loop``; the pieces that only
-# move host files are here.
+# post to. The orchestration (routes, hooks, pings) is ``cli_lifecycle._rename_loop``; the pieces
+# that only move host files are here.
 
 LOOP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 

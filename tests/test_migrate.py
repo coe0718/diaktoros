@@ -18,6 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import cli, config, gate_shims, gh, ledger, migrate, run_supervisor  # noqa: E402
+from diaktoros import cli_lifecycle  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -105,7 +106,7 @@ class Repo(fg.Base):
 
     def run_step(self, dry_run=False):
         with self.renamed():
-            return migrate.repo_step([config.load_id("one")], cli._write_moved_repo, dry_run=dry_run,
+            return migrate.repo_step([config.load_id("one")], cli_lifecycle._write_moved_repo, dry_run=dry_run,
                                      ledger=self.db())
 
     def repos_in_ledger(self) -> list:
@@ -141,7 +142,7 @@ class Repo(fg.Base):
         self.assertEqual(list(queued), [f"{NEW}#7"])
         self.assertEqual(queued[f"{NEW}#7"]["url"], f"https://github.com/{NEW}/pull/7")
         with github({f"/repos/{NEW}": {"id": 9, "full_name": NEW}}):
-            again = migrate.repo_step([config.load_id("one")], cli._write_moved_repo, dry_run=False,
+            again = migrate.repo_step([config.load_id("one")], cli_lifecycle._write_moved_repo, dry_run=False,
                                       ledger=self.db())
         self.assertIn("has not been renamed", again[0])
 
@@ -154,7 +155,7 @@ class Repo(fg.Base):
         with github({f"/repos/{OLD}": {"id": 9, "full_name": mixed},
                      f"/repos/{mixed}": {"id": 9, "full_name": mixed}}):
             self.assertEqual(migrate.renamed_to(self.loop), (NEW, ""))
-            migrate.repo_step([config.load_id("one")], cli._write_moved_repo, dry_run=False,
+            migrate.repo_step([config.load_id("one")], cli_lifecycle._write_moved_repo, dry_run=False,
                               ledger=self.db())
         loop = config.load_id("one")
         self.assertEqual(loop["repo"], NEW)
@@ -179,12 +180,12 @@ class Writer(fg.Base):
     def test_only_repo_moves_and_the_current_push_policy_stays(self):
         stale = config.load_id("one")                       # read while pushes were off
         self.set_push(True)                                 # the operator opted in since
-        cli._write_moved_repo(stale, NEW)
+        cli_lifecycle._write_moved_repo(stale, NEW)
         moved = config.load_id("one")
         self.assertEqual(moved["repo"], NEW)
         self.assertTrue(moved["unattended_fixer_push"])
         with self.assertRaisesRegex(config.ConfigError, "repository changed during migrate"):
-            cli._write_moved_repo(stale, "owner/third")     # it no longer names the old repo
+            cli_lifecycle._write_moved_repo(stale, "owner/third")     # it no longer names the old repo
         self.assertEqual(config.load_id("one")["repo"], NEW)
         # The ordinary writer still refuses any repository change.
         with self.assertRaisesRegex(config.ConfigError, "repository changed"):

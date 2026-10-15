@@ -18,6 +18,9 @@ import time
 from . import config, doctor, envnames, gate_shims, gh, prompts, route_intent, routes
 
 
+# The Hermes plugin context register_cli was given: `migrate` writes settings through it (#425).
+_CTX = None
+
 # The shim and job names a fresh install gets; an install not yet migrated keeps the old pair
 # (``config.watchdog_shim`` / ``config.watchdog_job_name`` say which is live).
 SHIM_NAME = "diaktoros-watchdog.py"
