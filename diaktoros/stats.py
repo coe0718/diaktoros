@@ -516,6 +516,44 @@ def finding_outcomes(db: Path, repo: str, since: float, until: float,
             "models": {name: shaped(c) for name, c in sorted(by_model.items())}}
 
 
+def regressions(db: Path, repo: str, since: float, until: float) -> dict | None:
+    """Approved, then broke (#661): the bugs linked in ``[since, until)`` (when the link was
+    recorded, which is when the attribution became known) to an approved PR that shipped them.
+
+    Only links ``hermes dk regression`` verified against GitHub exist, so nothing here is
+    guessed from text. The headline counts approved PRs, not bug reports: three issues about one
+    regression are one PR that broke. A retracted link is left out and counted as ``retracted``;
+    re-recording a link is the same row. ``from`` is when the first link was ever recorded: the
+    table starts with this version, so earlier regressions are simply not linked, not zero.
+    None without a ledger."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        con.row_factory = sqlite3.Row
+        try:
+            rows = con.execute("SELECT issue, pr, head, model, state FROM regressions WHERE repo=? "
+                               "AND created>=? AND created<? ORDER BY pr, issue",
+                               (repo, since, until)).fetchall()
+            first = con.execute("SELECT MIN(created) FROM regressions WHERE repo=?",
+                                (repo,)).fetchone()[0]
+        except sqlite3.OperationalError:
+            rows, first = [], None
+    finally:
+        con.close()
+    live = [row for row in rows if row["state"] == "linked"]
+    models = {}
+    for row in live:
+        models.setdefault(row["model"] or "unknown", set()).add(row["pr"])
+    return {"prs": len({row["pr"] for row in live}), "issues": len(live),
+            "retracted": len(rows) - len(live),
+            "models": {name: len(prs) for name, prs in sorted(models.items())},
+            "links": [{"issue": row["issue"], "pr": row["pr"], "head": row["head"][:7],
+                       "model": row["model"] or "unknown"} for row in live],
+            "from": first}
+
+
 FIX_READS_MAX = 100
 
 
@@ -650,6 +688,7 @@ def report(loop: dict, db: Path, since: float, until: float | None = None,
             "escalations_before": escalations(db, repo, before, since, breaches),
             "fixes": fix_outcomes(db, repo, since, until, pr_state),
             "findings": finding_outcomes(db, repo, since, until, tracked),
+            "regressions": regressions(db, repo, since, until),
             "stuck": stuck(db, repo, until)}
 
 
@@ -719,6 +758,16 @@ def report_text(data: dict) -> str:
                    + ", ".join(f"{name} {found[name]}" for name in FINDING_OUTCOMES)
                    + f" · adjudicated false positives: {fp['overruled']} of {fp['ruled']} ruled"
                    + (f" · {found['undated']} undated, in no window" if found["undated"] else ""))
+    broke = data.get("regressions")
+    if broke is not None:
+        out.append(f"approved, then broke: {broke['prs']} PRs ({broke['issues']} bug reports)"
+                   + (" · " + ", ".join(f"{name} {n}" for name, n in broke["models"].items())
+                      if broke["models"] else "")
+                   + (f" · {broke['retracted']} retracted" if broke["retracted"] else "")
+                   + (f" · linked from {_day(broke['from'])}" if broke["from"]
+                      else " · none linked yet (`hermes dk regression`)"))
+        out += [f"  #{link['issue']} ← PR #{link['pr']} approved at {link['head']} "
+                f"({link['model']})" for link in broke["links"][:10]]
     fixes = data.get("fixes")
     if fixes is not None:
         got, conv, per = fixes["outcomes"], fixes["conversion"], fixes["turns_per_merged"]

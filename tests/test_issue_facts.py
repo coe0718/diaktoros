@@ -110,6 +110,51 @@ class Prompts(unittest.TestCase):
         self.assertIn("MAINTAINER-REQ", text)
         self.assertNotIn("STRANGER-TEXT", text)
 
+    def test_656_fixture_deferral_in_pr_comment_is_visible_and_accepted_by_the_broker(self):
+        # #666/#656: split into #658 lives only in a maintainer's PR comment. The seat sees it,
+        # and the broker's check accepts `deferred to #658` (issue exists) but not a made-up one.
+        base = Fake().api
+
+        def api(loop, path, **kw):
+            if path.endswith("/issues/658"):
+                return {"number": 658, "title": "split", "body": "x", "state": "open"}
+            return base(loop, path, **kw)
+
+        def comments(loop, number):
+            if number == 7:
+                return [comment("boss", "PR-DEFERRAL digest coverage split into #658")], ""
+            return [], ""
+        with mock.patch.object(gh, "api", side_effect=api), \
+                mock.patch.object(gh, "issue_comments_read", side_effect=comments):
+            self.assertIn("split into #658", issue_facts.section(LOOP, 7))
+            body = "## Requirements\n- digest coverage: deferred to #658\n"
+            self.assertEqual(issue_facts.check(LOOP, 7, "APPROVE", body), "")
+            bad = "## Requirements\n- digest coverage: deferred to #999\n"
+            self.assertIn("#999", issue_facts.check(LOOP, 7, "APPROVE", bad))
+
+    def test_reviewer_prompt_carries_maintainer_pr_comment_not_a_strangers(self):
+        # #666: a deferral posted on the PR (#656) reaches the reviewer; a stranger's does not.
+        fake = Fake()
+
+        def comments(loop, number):
+            if number == 7:
+                return [comment("boss", "PR-DEFERRAL split into #658"),
+                        comment("stranger", "PR-STRANGER-TEXT")], ""
+            return [], ""
+        row = {"seat": "reviewer", "repo": "acme/w", "pr": 7, "head": "a" * 40}
+        loop = {**LOOP, "cap": 3, "seats": {}}
+        with mock.patch.object(gh, "api", side_effect=fake.api), \
+                mock.patch.object(gh, "issue_comments_read", side_effect=comments), \
+                mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
+                mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None), \
+                mock.patch("diaktoros.gh.pr_url", return_value="https://github.com/acme/w/pull/7"), \
+                mock.patch("diaktoros.ci.read", return_value=None), \
+                mock.patch("diaktoros.ci.section", return_value=""):
+            text = run_supervisor.isolated_prompt(loop, row, [], change=run_supervisor.PRChange("RECORD", "DIFF"))
+        self.assertIn("PR-DEFERRAL", text)
+        self.assertIn("Maintainers' comments on the PR #7", text)
+        self.assertNotIn("PR-STRANGER-TEXT", text)
+
 
 if __name__ == "__main__":
     unittest.main()
