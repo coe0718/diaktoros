@@ -35,9 +35,13 @@ HARNESS = "run_tests"
 DOC_TESTS = ("test_commands_doc",)
 
 
-def _module_imports(path: Path) -> set[str]:
-    """The ``diaktoros`` modules a ``diaktoros`` module imports (``from . import x`` too)."""
+def _module_imports(path: Path, in_package: bool = False) -> set[str]:
+    """The ``diaktoros`` modules a ``diaktoros`` module imports (``from . import x`` too).
+
+    ``in_package``: the file is inside a ``diaktoros/<pkg>/`` package (#676), where ``from ..
+    import x`` names the sibling module ``x`` and ``from . import y`` stays inside the package."""
     found: set[str] = set()
+    top = 2 if in_package else 1
     try:
         tree = ast.parse(path.read_text())
     except (OSError, SyntaxError, ValueError):
@@ -45,9 +49,9 @@ def _module_imports(path: Path) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             base = node.module or ""
-            if node.level == 1 and not base:
+            if node.level == top and not base:
                 found.update(alias.name for alias in node.names)
-            elif node.level == 1:
+            elif node.level == top:
                 found.add(base.split(".")[0])
             elif base == "diaktoros":
                 found.update(alias.name for alias in node.names)
@@ -63,12 +67,17 @@ def _module_imports(path: Path) -> set[str]:
 def _test_mentions(path: Path) -> set[str]:
     """The ``diaktoros`` modules a test file uses: imports and ``"diaktoros.x…"`` patch
     targets alike."""
-    text = path.read_text(errors="replace")
+    return _test_mentions_text(path.read_text(errors="replace"))
+
+
+def _test_mentions_text(text: str) -> set[str]:
     found = set(re.findall(r"\breview_loop\.(\w+)", text))
     for match in re.finditer(r"^\s*from diaktoros import \(?([^)\n]*(?:\n[^)\n]*)*?)\)?\s*(?:#|$)",
                              text, re.M):
         found.update(name.strip().split(" as ")[0] for name in match.group(1).split(",")
                      if name.strip())
+    # A package's submodule (``from diaktoros.config import settings_form``) uses the package.
+    found.update(re.findall(r"^\s*(?:from|import) diaktoros\.(\w+)", text, re.M))
     return found
 
 
@@ -84,6 +93,10 @@ def _loads_script(text: str, script: str) -> bool:
 def dependents(changed_modules: set[str]) -> list[set[str]]:
     """Layers of ``diaktoros`` modules: the changed ones, then each wave that imports them."""
     graph = {path.stem: _module_imports(path) for path in PACKAGE.glob("*.py")}
+    for init in PACKAGE.glob("*/__init__.py"):          # a package is one module: all its files
+        name = init.parent.name
+        graph[name] = set().union(*(_module_imports(path, in_package=True)
+                                    for path in init.parent.rglob("*.py"))) - {name}
     seen = set(changed_modules)
     layers = [set(changed_modules)]
     while True:
@@ -113,7 +126,7 @@ def select(changed: list[str]) -> list[str]:
             continue
         parts = path.parts
         if parts[:1] == ("diaktoros",) and path.suffix == ".py":
-            modules.add(path.stem)
+            modules.add(parts[1] if len(parts) > 2 else path.stem)    # a package file: the package
         elif parts[:1] == ("scripts",) and path.suffix == ".py":
             scripts.add(path.name)
         elif parts[:1] == ("tests",) and path.name.startswith("test_") and path.suffix == ".py":

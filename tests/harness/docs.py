@@ -63,7 +63,8 @@ def _doc_files() -> list[pathlib.Path]:
 
 
 # Where a reader is sent to the docs from outside them: error messages, help, the skill.
-LINK_SOURCES = ("diaktoros/*.py", "scripts/*.py", "__init__.py", "skill/SKILL.md", "plugin.yaml")
+# diaktoros/**: a package's files too (#676: config is diaktoros/config/).
+LINK_SOURCES = ("diaktoros/**/*.py", "scripts/*.py", "__init__.py", "skill/SKILL.md", "plugin.yaml")
 _DOC_LINK = re.compile(r"\bdocs/([\w-]+\.md)(?:#([\w-]+))?")
 
 
@@ -204,7 +205,8 @@ def group_docs() -> None:
         text = path.read_text()
         for module in sorted(set(re.findall(r"python\s+-m\s+diaktoros\.(\w+)", text))):
             check(f"{path.relative_to(ROOT)}: diaktoros/{module}.py exists",
-                  (ROOT / "diaktoros" / f"{module}.py").is_file(), True)
+                  (ROOT / "diaktoros" / f"{module}.py").is_file()
+                  or (ROOT / "diaktoros" / module / "__main__.py").is_file(), True)  # a package
         for script in sorted(set(re.findall(r"(?:scripts/|\$HERMES_HOME/scripts/)([\w-]+\.py)",
                                            text))):
             check(f"{path.relative_to(ROOT)}: scripts/{script} exists",

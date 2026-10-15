@@ -20,8 +20,8 @@ class Select(unittest.TestCase):
     def test_this_weeks_red_cis_are_picked_before_the_harness(self):
         """Each change, and the module elsewhere it broke."""
         for change, broken in (("diaktoros/review_receipt.py", "test_attribution"),   # #358
-                               ("diaktoros/config.py", "test_setup"),                # #335
-                               ("diaktoros/config.py", "test_triage_cli"),           # #335
+                               ("diaktoros/config/__init__.py", "test_setup"),       # #335
+                               ("diaktoros/config/__init__.py", "test_triage_cli"),  # #335
                                ("scripts/gate_reviewer.py", "test_gate_shims"),        # #356
                                ("scripts/watchdog.py", "test_merged_tree_blockers"),   # #378
                                ("scripts/watchdog.py", "test_route_self_heal")):       # #378
@@ -50,6 +50,18 @@ class Select(unittest.TestCase):
         self.assertIn("test_broker_ipc", helper)
         self.assertNotIn("test_stats", helper)
         self.assertEqual(affected.select(["LICENSE"]), ["test_home_guard"])
+
+    def test_a_package_is_one_module(self):
+        # #676: config is a package. A file in it maps to the package, its files' `from ..`
+        # imports are its own, and a test that imports it (or a submodule) depends on it.
+        for change in ("diaktoros/config/__init__.py", "diaktoros/config/anything.py"):
+            with self.subTest(change=change):
+                order = affected.select([change])
+                self.assertIn("test_setup", order)
+                self.assertNotIn("__init__", order)
+        self.assertIn("config", affected.dependents({"envnames"})[1])   # `from .. import envnames`
+        self.assertIn("cli", affected.dependents({"config"})[1])        # importers of the package
+        self.assertIn("config", affected._test_mentions_text("from diaktoros.config import x\n"))
 
     def test_relative_imports_count(self):
         with tempfile.TemporaryDirectory() as tmp:
