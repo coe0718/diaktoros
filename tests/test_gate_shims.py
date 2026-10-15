@@ -30,6 +30,7 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, config, doctor, routes  # noqa: E402
+from diaktoros import cli_settings  # noqa: E402
 from diaktoros import cli_install  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 # By file, not as ``tests.hermes_prereqs``: in CI's installed-mode lane Hermes's own ``tests``
@@ -1318,7 +1319,7 @@ class ObserverApply(Base):
         from diaktoros import gate_shims, observer
         self.assertIn(("arbiter", "observe.py"), gate_shims.wanted(loop))
         self.assertEqual(observer.route_contract(loop)["profile"], "arbiter")
-        self.assertEqual(cli._route_binds(loop, set(cli_common._routes_of(loop))), {})
+        self.assertEqual(cli_settings._route_binds(loop, set(cli_common._routes_of(loop))), {})
 
     def test_no_observer_has_no_observer_profile(self):
         self.install()
@@ -2209,11 +2210,11 @@ class ShimRefusal(unittest.TestCase):
             scripts = pathlib.Path(tmp) / "scripts"
             scripts.mkdir()
             missing = scripts / "review-loop-watchdog.sh"
-            line = cli._shim_refusal(PermissionError(13, "Permission denied", str(missing)))
+            line = cli_settings._shim_refusal(PermissionError(13, "Permission denied", str(missing)))
             self.assertIn(f"cannot write the watchdog shim at {missing}", line)
             self.assertIn(f"chmod u+w -- {scripts}`", line)
             missing.write_text("x")
-            line = cli._shim_refusal(PermissionError(13, "Permission denied", str(missing)))
+            line = cli_settings._shim_refusal(PermissionError(13, "Permission denied", str(missing)))
             self.assertIn(f"chmod u+w -- {missing}`", line)
 
 if __name__ == "__main__":
