@@ -209,7 +209,7 @@ def _request(loop: dict, path: str, method: str, body, login: str | None,
         f"{API}{path}", data=data, method=method,
         headers={"Accept": "application/vnd.github+json", "Authorization": f"token {tok}",
                  "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "diaktoros"})
-    from .config import guard_network
+    from .config.host_guards import guard_network
     guard_network(req.full_url)         # under the test guard: loopback fakes only
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -258,7 +258,7 @@ class _TokenlessRedirect(urllib.request.HTTPRedirectHandler):
         if before.scheme == "https" and after.scheme != "https":
             raise urllib.error.HTTPError(new.full_url, code, "refused: redirect leaves https",
                                          headers, fp)
-        from .config import guard_network
+        from .config.host_guards import guard_network
         guard_network(new.full_url)
         if (after.hostname, after.port) != (before.hostname, before.port):
             new.remove_header("Authorization")
@@ -286,7 +286,7 @@ def read_text(loop: dict, path: str, login: str | None = None, limit: int = 2621
             f"{API}{path}", method="GET",
             headers={"Accept": "application/vnd.github+json", "Authorization": f"token {tok}",
                      "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "diaktoros"})
-        from .config import guard_network
+        from .config.host_guards import guard_network
         guard_network(req.full_url)
         with _TEXT_OPENER.open(req, timeout=_budgeted("GET", path)) as resp:
             # Only the tail matters: keep reading, keep the last ``limit`` bytes.

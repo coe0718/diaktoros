@@ -16,6 +16,7 @@ import tempfile
 import time
 
 from . import config, doctor, envnames, gate_shims, gh, prompts, route_intent, routes
+from .config import host_guards
 
 
 # The Hermes plugin context register_cli was given: `migrate` writes settings through it (#425).
@@ -508,7 +509,7 @@ def _hermes_bin() -> str | None:
     stand-in (the test suite's fake), so no test ever drives the operator's real install."""
     found = envnames.get("HERMES") or shutil.which("hermes")
     # Under the test guard (#101), never the operator's real hermes — for cron create and remove.
-    return config.guard_real_hermes(found) if found else None
+    return host_guards.guard_real_hermes(found) if found else None
 
 
 def _cron_jobs(loop: dict) -> tuple[list[dict] | None, str]:

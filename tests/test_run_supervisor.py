@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 from diaktoros import (broker, broker_ipc, config, gate, ledger, run_supervisor, seat_model,
                          trusted_turn)
+from diaktoros.config import host_guards  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 from diaktoros.hostdirs import HostStateGone
 import _ledger_guard  # noqa: E402  refuses the operator's real ledger (#108)
@@ -562,7 +563,7 @@ class Lifecycle(unittest.TestCase):
         with patch.dict(os.environ, {"HERMES_HOME": str(real)}), \
                 self.assertRaises(_ledger_guard.REFUSED):
             Supervisor(run_supervisor.production_ledger())
-        # REFUSED is this guard's class, plus #101's config.RealHomeError when that exists;
+        # REFUSED is this guard's class, plus #101's host_guards.RealHomeError when that exists;
         # never a bare RuntimeError, which any unrelated failure could satisfy.
         self.assertNotIn(RuntimeError, _ledger_guard.REFUSED)
 

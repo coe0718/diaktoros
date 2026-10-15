@@ -22,6 +22,7 @@ TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent))
 from diaktoros import (broker, cli, config, deps, doctor, gh, isolation, route_intent,  # noqa: E402
                          routes, safe_push, selftest, state, trusted_fetch)
+from diaktoros.config import host_guards  # noqa: E402
 from diaktoros import cli_install  # noqa: E402
 from diaktoros import cli_lifecycle  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
@@ -84,7 +85,7 @@ class HomeGuard(unittest.TestCase):
 
     def test_guard_is_armed_with_a_temp_home(self):
         real = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
-        self.assertEqual(os.environ[config.TEST_HOME_GUARD_ENV], "1")
+        self.assertEqual(os.environ[host_guards.TEST_HOME_GUARD_ENV], "1")
         self.assertNotEqual(pathlib.Path(os.environ["HOME"]).resolve(), real.resolve())
         self.assertEqual(pathlib.Path.home(), _home_guard.TEST_HOME)
         self.assertIn(_home_guard.TEST_HOME, config.home().resolve().parents)
@@ -94,13 +95,13 @@ class HomeGuard(unittest.TestCase):
         real = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
         for hermes_home in (real, real / ".hermes", real / ".hermes/profiles/x"):
             with mock.patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-                with self.assertRaises(config.RealHomeError):
+                with self.assertRaises(host_guards.RealHomeError):
                     config.home()
-        with self.assertRaises(config.RealHomeError):
+        with self.assertRaises(host_guards.RealHomeError):
             Supervisor(real / ".hermes/state/diaktoros-runs.sqlite")
-        with self.assertRaises(config.RealHomeError):
+        with self.assertRaises(host_guards.RealHomeError):
             state.LoopState({"state_dir": str(real / ".hermes/state/diaktoros/x")})
-        with mock.patch.dict(os.environ, {config.TEST_HOME_GUARD_ENV: ""}):
+        with mock.patch.dict(os.environ, {host_guards.TEST_HOME_GUARD_ENV: ""}):
             self.assertEqual(config.home(), pathlib.Path(os.environ["HERMES_HOME"]))
 
     def _run_leaking_test(self, fake_home: pathlib.Path, *, escaped: bool, argv=None):
@@ -109,9 +110,9 @@ class HomeGuard(unittest.TestCase):
         if escaped:
             # What an escape looks like: the guard believes it already ran, but HOME is the
             # "real" home and HERMES_HOME is unset, so config.home() defaults into it.
-            env.update({config.TEST_HOME_GUARD_ENV: "1", "DIAKTOROS_TEST_USER_HOME": str(fake_home)})
+            env.update({host_guards.TEST_HOME_GUARD_ENV: "1", "DIAKTOROS_TEST_USER_HOME": str(fake_home)})
         else:
-            env.pop(config.TEST_HOME_GUARD_ENV, None)
+            env.pop(host_guards.TEST_HOME_GUARD_ENV, None)
             env.pop("DIAKTOROS_TEST_USER_HOME", None)
         argv = argv or ["-m", "unittest", "-v", LEAKING]
         return subprocess.run([sys.executable, *argv], cwd=TESTS, env=env,
@@ -163,7 +164,7 @@ class GuardedWorker(unittest.TestCase):
             root = pathlib.Path(tmp)
             (root / "home").mkdir()
             env = {k: v for k, v in os.environ.items()
-                   if k not in (config.TEST_HOME_GUARD_ENV, "DIAKTOROS_TEST_USER_HOME",
+                   if k not in (host_guards.TEST_HOME_GUARD_ENV, "DIAKTOROS_TEST_USER_HOME",
                                 "HERMES_HOME", "DIAKTOROS_TEST_SHIM_DIR")}
             env.update(HOME=str(root / "home"), DIAKTOROS_TEST_REAL_HOME=str(root / "home"))
             result = subprocess.run([sys.executable, "-c", _SPAWN_A_WORKER, str(TESTS.parent), tmp],
@@ -180,8 +181,8 @@ class GuardedWorker(unittest.TestCase):
         # it made. With ``shim_dir``, the child inherits that one instead.
         env = {k: v for k, v in os.environ.items() if k != "DIAKTOROS_TEST_SHIM_DIR"}
         env.update({"HOME": str(home), "HERMES_HOME": str(hermes_home),
-                    config.TEST_HOME_GUARD_ENV: "1", "DIAKTOROS_TEST_USER_HOME": str(real),
-                    config.TEST_REAL_HOME_ENV: str(real)})
+                    host_guards.TEST_HOME_GUARD_ENV: "1", "DIAKTOROS_TEST_USER_HOME": str(real),
+                    host_guards.TEST_REAL_HOME_ENV: str(real)})
         if shim_dir is not None:
             env["DIAKTOROS_TEST_SHIM_DIR"] = str(shim_dir)
         return subprocess.run([sys.executable, "-c", "import _home_guard; print(_home_guard.SHIM_DIR)"],
@@ -216,7 +217,7 @@ class GuardedWorker(unittest.TestCase):
             root = pathlib.Path(tmp)
             real = root / "real"
             real.mkdir()
-            # Outside .hermes, but where config.guard_real_hermes calls a `hermes` the operator's.
+            # Outside .hermes, but where host_guards.guard_real_hermes calls a `hermes` the operator's.
             result = self._guarded_child(root / "home", root / "home/.hermes", real,
                                          shim_dir=real / ".local/bin")
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -247,9 +248,9 @@ class GuardedWorker(unittest.TestCase):
                 with self.subTest(fake=str(fake.relative_to(real))):
                     env = {k: v for k, v in os.environ.items() if k != "DIAKTOROS_TEST_SHIM_DIR"}
                     env.update({"HOME": str(root / "home"), "HERMES_HOME": str(root / "home/.hermes"),
-                                config.TEST_HOME_GUARD_ENV: "1",
+                                host_guards.TEST_HOME_GUARD_ENV: "1",
                                 "DIAKTOROS_TEST_USER_HOME": str(real),
-                                config.TEST_REAL_HOME_ENV: str(real),
+                                host_guards.TEST_REAL_HOME_ENV: str(real),
                                 "DIAKTOROS_TEST_SHIM_DIR": str(real / ".hermes/bin"),
                                 "PATH": os.pathsep.join([str(real / ".hermes/bin"),
                                                          str(real / ".local/bin"), "/usr/bin", "/bin"]),
@@ -282,8 +283,8 @@ class GuardedWorker(unittest.TestCase):
             real = pathlib.Path(tmp) / "real"
             real.mkdir()
             env = {k: v for k, v in os.environ.items() if k not in ("HERMES_HOME",)}
-            env.update({"HOME": str(real / "projects/x"), config.TEST_HOME_GUARD_ENV: "1",
-                        "DIAKTOROS_TEST_USER_HOME": str(real), config.TEST_REAL_HOME_ENV: str(real)})
+            env.update({"HOME": str(real / "projects/x"), host_guards.TEST_HOME_GUARD_ENV: "1",
+                        "DIAKTOROS_TEST_USER_HOME": str(real), host_guards.TEST_REAL_HOME_ENV: str(real)})
             result = subprocess.run([sys.executable, "-c", DEFAULT_HOME_WRITER, str(TESTS.parent)],
                                     cwd=TESTS, env=env, text=True, capture_output=True, timeout=60)
             self.assertNotEqual(result.returncode, 0, result.stderr)
@@ -307,7 +308,7 @@ class RealHomeWrites(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.real = pathlib.Path(self.temp.name) / "real"      # a sentinel "real home"
         self.real.mkdir()
-        patch = mock.patch.dict(os.environ, {config.TEST_REAL_HOME_ENV: str(self.real)})
+        patch = mock.patch.dict(os.environ, {host_guards.TEST_REAL_HOME_ENV: str(self.real)})
         patch.start()
         self.addCleanup(patch.stop)
         self.source = pathlib.Path(self.temp.name) / "source"   # a clone to isolate from
@@ -316,7 +317,7 @@ class RealHomeWrites(unittest.TestCase):
                      "state_dir": str(self.real / ".hermes/state/diaktoros/x")}
 
     def assert_refused(self, write):
-        with self.assertRaises(config.RealHomeError):
+        with self.assertRaises(host_guards.RealHomeError):
             write()
         self.assertEqual(list(self.real.rglob("*")), [])
 
@@ -358,7 +359,7 @@ class TmpdirUnderHome(unittest.TestCase):
             home = pathlib.Path(tmp) / "home"
             (home / "tmp").mkdir(parents=True)
             env = {k: v for k, v in os.environ.items()
-                   if k not in (config.TEST_HOME_GUARD_ENV, "DIAKTOROS_TEST_USER_HOME",
+                   if k not in (host_guards.TEST_HOME_GUARD_ENV, "DIAKTOROS_TEST_USER_HOME",
                                 "HERMES_HOME", "DIAKTOROS_TEST_SHIM_DIR")}
             env.update(HOME=str(home), TMPDIR=str(home / "tmp"),
                        DIAKTOROS_TEST_REAL_HOME=str(home))
@@ -374,16 +375,17 @@ class TripwireOutsideTheHarness(unittest.TestCase):
 
     PROBE = ("import sys; sys.path.insert(0, sys.argv[1])\n"
              "from diaktoros import config\n"
-             "print(config.test_guard_active())\n"
+             "from diaktoros.config import host_guards\n"
+             "print(host_guards.test_guard_active())\n"
              "print(config.home())\n"
-             "print(config.guard_network('https://api.github.com/user'))\n")
+             "print(host_guards.guard_network('https://api.github.com/user'))\n")
 
     def _production(self, **extra):
         with tempfile.TemporaryDirectory() as tmp:
             home = pathlib.Path(tmp) / "home"
             (home / ".hermes").mkdir(parents=True)
             env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
-                   config.TEST_HOME_GUARD_ENV: "1", config.TEST_REAL_HOME_ENV: str(home), **extra}
+                   host_guards.TEST_HOME_GUARD_ENV: "1", host_guards.TEST_REAL_HOME_ENV: str(home), **extra}
             return home, subprocess.run([sys.executable, "-c", self.PROBE, str(TESTS.parent)],
                                         cwd=tmp, env=env, text=True, capture_output=True, timeout=60)
 
@@ -394,20 +396,20 @@ class TripwireOutsideTheHarness(unittest.TestCase):
                          ["False", str(home / ".hermes"), "https://api.github.com/user"])
 
     def test_a_stale_sentinel_does_not_arm_it_either(self):
-        home, result = self._production(**{config.TEST_GUARD_SENTINEL_ENV: "/nonexistent/sentinel"})
+        home, result = self._production(**{host_guards.TEST_GUARD_SENTINEL_ENV: "/nonexistent/sentinel"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.split("\n")[0], "False")
 
     def test_under_the_harness_it_is_armed_and_says_how_to_disarm(self):
-        self.assertTrue(config.test_guard_active())
+        self.assertTrue(host_guards.test_guard_active())
         real = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
-        with self.assertRaises(config.RealHomeError) as caught:
-            config.guard_real_home(real / ".hermes")
-        self.assertIn(f"test guard active ({config.TEST_HOME_GUARD_ENV}=1)", str(caught.exception))
-        self.assertIn(f"unset {config.TEST_HOME_GUARD_ENV} if this is a real loop", str(caught.exception))
-        with self.assertRaises(config.RealNetworkError) as caught:
-            config.guard_network("https://api.github.com/user")
-        self.assertIn(f"unset {config.TEST_HOME_GUARD_ENV} if this is a real loop", str(caught.exception))
+        with self.assertRaises(host_guards.RealHomeError) as caught:
+            host_guards.guard_real_home(real / ".hermes")
+        self.assertIn(f"test guard active ({host_guards.TEST_HOME_GUARD_ENV}=1)", str(caught.exception))
+        self.assertIn(f"unset {host_guards.TEST_HOME_GUARD_ENV} if this is a real loop", str(caught.exception))
+        with self.assertRaises(host_guards.RealNetworkError) as caught:
+            host_guards.guard_network("https://api.github.com/user")
+        self.assertIn(f"unset {host_guards.TEST_HOME_GUARD_ENV} if this is a real loop", str(caught.exception))
 
 
 class CratesIoAllowlist(unittest.TestCase):
@@ -436,7 +438,7 @@ class CratesIoAllowlist(unittest.TestCase):
                             (self.LOCK if lock is None else lock).encode())
 
     def test_the_canonical_crates_io_fetch_is_allowed(self):
-        self.assertTrue(config.test_guard_active())
+        self.assertTrue(host_guards.test_guard_active())
         self.check()
         self.assertEqual(self.env["CARGO_REGISTRIES_CRATES_IO_PROTOCOL"], "sparse")
         self.assertEqual(deps.CRATES_IO_HOSTS, frozenset({"index.crates.io", "static.crates.io"}))
@@ -461,7 +463,7 @@ class CratesIoAllowlist(unittest.TestCase):
                       'x = { version = "1", "registry" = "x" }\n',
                       "x = { version = \"1\", 'registry' = \"x\" }\n",
                       'x = { version = "1", registry-index = "x" }\n', 'x = [\n'):
-            with self.subTest(extra), self.assertRaises(config.RealNetworkError):
+            with self.subTest(extra), self.assertRaises(host_guards.RealNetworkError):
                 # A dotted top-level key must precede the first table, or it lands inside it.
                 top = extra.split(".")[0] in ("patch", "registries", "source", "replace")
                 self.check(manifest=extra + self.manifest if top else self.manifest + extra)
@@ -484,7 +486,7 @@ class CratesIoAllowlist(unittest.TestCase):
         for name, plant in cases.items():
             with self.subTest(name):
                 plant()
-                with self.assertRaises(config.RealNetworkError):
+                with self.assertRaises(host_guards.RealNetworkError):
                     self.check()
                 for leftover in (self.work / ".cargo/config.toml", self.cache / "config.toml"):
                     leftover.unlink(missing_ok=True)
@@ -494,11 +496,11 @@ class CratesIoAllowlist(unittest.TestCase):
             "git index protocol": dict(self.env, CARGO_REGISTRIES_CRATES_IO_PROTOCOL="git"),
         }
         for name, env in refusals.items():
-            with self.subTest(name), self.assertRaises(config.RealNetworkError):
+            with self.subTest(name), self.assertRaises(host_guards.RealNetworkError):
                 self.check(env=env)
-        with self.subTest("manifest names a registry"), self.assertRaises(config.RealNetworkError):
+        with self.subTest("manifest names a registry"), self.assertRaises(host_guards.RealNetworkError):
             self.check(manifest=self.manifest + 'x = { version = "1", registry = "x" }\n')
-        with self.subTest("lockfile names another source"), self.assertRaises(config.RealNetworkError):
+        with self.subTest("lockfile names another source"), self.assertRaises(host_guards.RealNetworkError):
             self.check(lock=self.LOCK.replace("registry+https://github.com/rust-lang/crates.io-index",
                                               "sparse+https://x.example/"))
 
@@ -509,7 +511,7 @@ class CratesIoAllowlist(unittest.TestCase):
         cargo.write_text(f"#!/bin/sh\ntouch {marker}\n")
         cargo.chmod(0o755)
         (self.cache / "config.toml").write_text('[source.crates-io]\nreplace-with = "m"\n')
-        with self.assertRaises(config.RealNetworkError):
+        with self.assertRaises(host_guards.RealNetworkError):
             deps._fetch(self.cache, [("itoa", "1.0.18")], self.LOCK.encode(), cargo,
                         self.home / "rustc", time.monotonic() + 30, 1 << 30, 30)
         self.assertFalse(marker.exists())
@@ -520,18 +522,18 @@ class CratesIoAllowlist(unittest.TestCase):
 
     def test_a_proxy_is_refused(self):
         for name in ("https_proxy", "HTTPS_PROXY", "http_proxy", "ALL_PROXY", "CARGO_HTTP_PROXY"):
-            with self.subTest(name), self.assertRaises(config.RealNetworkError):
+            with self.subTest(name), self.assertRaises(host_guards.RealNetworkError):
                 self.check(env=dict(self.env, **{name: "http://proxy.example:3128"}))
 
     def test_outside_the_guard_nothing_is_checked(self):
-        with mock.patch.dict(os.environ, {config.TEST_HOME_GUARD_ENV: ""}):
+        with mock.patch.dict(os.environ, {host_guards.TEST_HOME_GUARD_ENV: ""}):
             self.check(env=dict(self.env, https_proxy="http://proxy.example:3128"))
 
     def test_every_other_host_stays_blocked(self):
         for url in ("https://index.crates.io/", "https://static.crates.io/crates/itoa",
                     "https://crates.io/api/v1/crates"):
-            with self.subTest(url), self.assertRaises(config.RealNetworkError):
-                config.guard_network(url)
+            with self.subTest(url), self.assertRaises(host_guards.RealNetworkError):
+                host_guards.guard_network(url)
 
 
 class HermesShim(unittest.TestCase):
@@ -609,10 +611,10 @@ class HermesShim(unittest.TestCase):
 
     def test_plugin_refuses_a_hermes_inside_the_real_home(self):
         fake_home = self.root / "home"
-        with mock.patch.dict(os.environ, {config.TEST_REAL_HOME_ENV: str(fake_home)}):
-            with self.assertRaises(config.RealHomeError):
-                config.guard_real_hermes(str(fake_home / ".local/bin/hermes"))
-            self.assertEqual(config.guard_real_hermes(str(_home_guard.SHIM_DIR / "hermes")),
+        with mock.patch.dict(os.environ, {host_guards.TEST_REAL_HOME_ENV: str(fake_home)}):
+            with self.assertRaises(host_guards.RealHomeError):
+                host_guards.guard_real_hermes(str(fake_home / ".local/bin/hermes"))
+            self.assertEqual(host_guards.guard_real_hermes(str(_home_guard.SHIM_DIR / "hermes")),
                              str(_home_guard.SHIM_DIR / "hermes"))
 
 
@@ -630,7 +632,7 @@ class LiveHermesSource(unittest.TestCase):
         hermes.parent.mkdir(parents=True)
         hermes.write_text(f"#!/bin/sh\ntouch {self.marker}\n")
         hermes.chmod(0o755)
-        patch = mock.patch.dict(os.environ, {config.TEST_REAL_HOME_ENV: str(self.home)})
+        patch = mock.patch.dict(os.environ, {host_guards.TEST_REAL_HOME_ENV: str(self.home)})
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -647,7 +649,7 @@ class LiveHermesSource(unittest.TestCase):
 
     def test_real_hermes_suites_fail_loudly_not_skip(self):
         env = {k: v for k, v in os.environ.items()
-               if k not in (config.TEST_HOME_GUARD_ENV, "DIAKTOROS_TEST_USER_HOME", "HERMES_HOME")}
+               if k not in (host_guards.TEST_HOME_GUARD_ENV, "DIAKTOROS_TEST_USER_HOME", "HERMES_HOME")}
         env.update(HOME=str(self.home), HERMES_AGENT_SOURCE=str(self.live),
                    PYTHONPATH=os.pathsep.join([str(TESTS), str(TESTS.parent)]))
         suites = ["test_contained_agent", "test_inference_proxy", "test_turn_vertical",
@@ -692,18 +694,18 @@ class NoRealGitHub(unittest.TestCase):
 
     def test_mocking_only_gh_api_still_cannot_reach_github_through_gh_fetch(self):
         with mock.patch.object(gh, "api", return_value=[]):
-            with self.assertRaises(config.RealNetworkError) as caught:
+            with self.assertRaises(host_guards.RealNetworkError) as caught:
                 gh.open_prs_read(self.loop)          # reads through gh.fetch, not gh.api
         self.assertIn("https://api.github.com/repos/acme/widgets/pulls", str(caught.exception))
         self.assertEqual(self.opened, [])
 
     def test_trusted_fetch_request_is_refused(self):
-        with self.assertRaises(config.RealNetworkError):
+        with self.assertRaises(host_guards.RealNetworkError):
             trusted_fetch._request(self.loop, "/repos/acme/widgets/pulls/7", "reader", 10, "x")
         self.assertEqual(self.opened, [])
 
     def test_safe_push_refuses_the_github_remote(self):
-        with self.assertRaises(config.RealNetworkError):
+        with self.assertRaises(host_guards.RealNetworkError):
             safe_push._git_cas(self.loop, "acme/widgets", "fix-7", "a" * 40, [], "m", "reader",
                                {"name": "n", "email": "e@example.invalid"})
 
@@ -726,7 +728,7 @@ class NoRealGitHub(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 128, "", "blocked by the test")
             return real_git(*args, **kwargs)
         with mock.patch.object(isolation, "_git", recording_git):
-            with self.assertRaises(config.RealNetworkError) as caught:
+            with self.assertRaises(host_guards.RealNetworkError) as caught:
                 isolation.ensure(loop, 7, "reviewer")
         self.assertIn("https://github.com/acme/widgets.git", str(caught.exception))
         self.assertEqual([args for args in ran if args[0] == "fetch"], [])
@@ -750,29 +752,29 @@ class NoRealGitHub(unittest.TestCase):
                 ran.append(args[0])
                 return probe if args[0] == "ls-remote" else subprocess.CompletedProcess(args, 0, "", "")
             with mock.patch.object(isolation, "_git", stub_git):
-                with self.assertRaises(config.RealNetworkError):
+                with self.assertRaises(host_guards.RealNetworkError):
                     isolation._fetch(clone)
             self.assertEqual(ran, ["ls-remote"], probe)
 
     def test_bare_hostnames_fail_closed(self):
         for url in ("github.com", "gateway", "api.github.com/user", "", "example.com/x.git"):
-            with self.subTest(url=url), self.assertRaises(config.RealNetworkError):
-                config.guard_network(url)
+            with self.subTest(url=url), self.assertRaises(host_guards.RealNetworkError):
+                host_guards.guard_network(url)
         for url in ("/abs/remote.git", "./rel/remote.git", "../rel/remote.git",
                     "file:///tmp/remote.git", "tcp://127.0.0.1:9", "http://localhost:8080/x"):
             with self.subTest(url=url):
-                self.assertEqual(config.guard_network(url), url)
+                self.assertEqual(host_guards.guard_network(url), url)
 
     def test_scp_style_remote_is_not_a_local_path(self):
         for url in ("git@github.com:acme/widgets.git", "github.com:acme/widgets.git"):
-            with self.assertRaises(config.RealNetworkError):
-                config.guard_network(url)
-        self.assertEqual(config.guard_network("./relative:path"), "./relative:path")
+            with self.assertRaises(host_guards.RealNetworkError):
+                host_guards.guard_network(url)
+        self.assertEqual(host_guards.guard_network("./relative:path"), "./relative:path")
 
     def test_doctor_gateway_probe_is_refused_for_a_real_host(self):
         for host in ("https://gateway.example.invalid", "gateway.example.invalid"):
             with mock.patch("socket.create_connection") as connect:
-                with self.assertRaises(config.RealNetworkError):
+                with self.assertRaises(host_guards.RealNetworkError):
                     doctor.gateway_reachable(host)
             connect.assert_not_called()
         self.assertFalse(doctor.gateway_reachable("http://127.0.0.1:1")[0])
@@ -780,7 +782,7 @@ class NoRealGitHub(unittest.TestCase):
     def test_loopback_fakes_keep_working(self):
         for url in ("http://127.0.0.1:8080/x", "http://localhost/x", "http://[::1]:9/x",
                     "file:///tmp/remote.git", "/tmp/remote.git"):
-            self.assertEqual(config.guard_network(url), url)
+            self.assertEqual(host_guards.guard_network(url), url)
         with mock.patch.object(gh, "API", "http://127.0.0.1:9"):
             _, error = gh.fetch(self.loop, "/user")
         self.assertIn("recorder", error)

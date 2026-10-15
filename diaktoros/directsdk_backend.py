@@ -62,8 +62,9 @@ class DirectSDKBackend:
         if len(body) > MAX_REQUEST:
             raise ProxyError('DirectSDK request too large')
         from . import config, util
+        from .config import host_guards
         import pwd
-        user_home = os.environ.get('HOME', '/') if config.test_guard_active() else pwd.getpwuid(os.getuid()).pw_dir
+        user_home = os.environ.get('HOME', '/') if host_guards.test_guard_active() else pwd.getpwuid(os.getuid()).pw_dir
         env = {'HOME': user_home, 'HERMES_HOME': str(self.home), 'PATH': '/usr/local/bin:/usr/bin:/bin',
                'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1', 'HERMES_DISABLE_LAZY_INSTALLS': '1',
                'TMPDIR': os.environ.get('TMPDIR', str(Path(__file__).parent))}

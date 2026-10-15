@@ -41,8 +41,7 @@ class Setting(unittest.TestCase):
         self.assertNotIn("human_paths", settings_form.apply_settings(dict(self.RAW), {}))
         got = settings_form.apply_settings(dict(self.RAW), {"human_paths": ".github/**, release/*"})
         self.assertEqual(got["human_paths"], [".github/**", "release/*"])
-        self.assertIn("human_paths", settings_form.SETTINGS_SCHEMA if hasattr(config, "SETTINGS_SCHEMA")
-                      else Path(config.__file__).parents[2].joinpath("plugin.yaml").read_text())
+        self.assertIn("human_paths", settings_form.SETTINGS_SCHEMA)
 
 
 class Broker(pv.Broker):

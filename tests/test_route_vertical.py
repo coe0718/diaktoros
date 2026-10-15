@@ -15,6 +15,7 @@ import unittest
 from unittest import mock
 
 from diaktoros import ledger
+from diaktoros.config import host_guards  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 HEAD = "a" * 40
@@ -214,7 +215,7 @@ class RouteSubprocess(unittest.TestCase):
             st.queue_add("reviewer", key, HEAD, "url", "original")
             err = routes.urllib.error.URLError(ConnectionRefusedError(111, "refused"))
             with mock.patch.object(routes, "target", return_value=("http://127.0.0.1:1/x", b"s")), \
-                 mock.patch.object(routes.config, "guard_network"), \
+                 mock.patch.object(host_guards, "guard_network"), \
                  mock.patch.object(routes.urllib.request, "urlopen", side_effect=err) as urlopen:
                 self.assertEqual(watchdog.drain(loop, st, "reviewer", quiet=True), 0)
                 self.assertEqual(watchdog.drain(loop, st, "reviewer", quiet=True), 0)

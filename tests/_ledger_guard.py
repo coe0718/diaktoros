@@ -25,11 +25,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from diaktoros import config, run_supervisor  # noqa: E402
+from diaktoros.config import host_guards  # noqa: E402
 
 REAL_HERMES = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".hermes"
-# With #101's tripwire in the tree, a refusal here is also a ``config.RealHomeError``, so either
+# With #101's tripwire in the tree, a refusal here is also a ``host_guards.RealHomeError``, so either
 # guard's tests accept the other's refusal.
-_TRIPWIRE = getattr(config, "RealHomeError", None)
+_TRIPWIRE = host_guards.RealHomeError
 
 
 class RealHomeTouched(_TRIPWIRE or RuntimeError):

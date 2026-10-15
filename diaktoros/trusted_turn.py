@@ -574,7 +574,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
 
     if not model or not prompt or timeout < 1 or not key:
         raise TurnDenied('missing model, prompt or credential')
-    from .config import guard_real_home, state_dir
+    from .config import state_dir
+    from .config.host_guards import guard_real_home
     parent = guard_real_home(Path(work_root) if work_root else state_dir(loop)).resolve()
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if parent.is_symlink() or parent.stat().st_mode & 0o077:

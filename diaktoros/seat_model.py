@@ -57,6 +57,7 @@ import threading
 from urllib.parse import urlsplit
 
 from . import config, hostdirs, util
+from .config import host_guards
 
 SEATS = ("reviewer", "fixer", "adjudicator", "triage")
 HOST_KEYS = ("source", "venv", "runtime", "rust")
@@ -982,7 +983,7 @@ def run_resolver(profile: str, mode: str, settings: dict | None,
         user_home = pwd.getpwuid(os.getuid()).pw_dir
     except (ImportError, KeyError):
         user_home = os.environ.get("HOME", "/")
-    if config.test_guard_active():
+    if host_guards.test_guard_active():
         user_home = os.environ.get("HOME", "/")   # a guarded test never hands Hermes the real HOME
     env = {"PATH": "/usr/bin:/bin", "HOME": user_home,
            "HERMES_HOME": str(home), "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1",

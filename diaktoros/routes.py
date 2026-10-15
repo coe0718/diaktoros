@@ -26,13 +26,14 @@ import uuid
 from contextlib import contextmanager
 
 from . import config, hostdirs
+from .config import host_guards
 from .util import log
 from . import envnames
 
 
 def subs_path() -> pathlib.Path:
     override = envnames.get("SUBS")
-    return (config.guard_real_home(pathlib.Path(override).expanduser()) if override
+    return (host_guards.guard_real_home(pathlib.Path(override).expanduser()) if override
             else config.home() / "webhook_subscriptions.json")
 
 
@@ -393,7 +394,7 @@ def fire(name: str, event: str, payload: dict, tag: str, host: str | None = None
         "User-Agent": "diaktoros",
     })
     try:
-        config.guard_network(req.full_url)
+        host_guards.guard_network(req.full_url)
         if on_attempt is not None:
             on_attempt()
         with urllib.request.urlopen(req, timeout=20) as resp:
