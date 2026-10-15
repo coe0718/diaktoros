@@ -887,3 +887,251 @@ def cmd_setup(args) -> int:
     print("\nsetup complete: the loop is live" if rc == 0 else
           "\narm was not confirmed — see above; re-running setup is safe")
     return rc
+
+
+# -- the parser for this module's commands (#676 step 7) --------------------------------------
+
+
+def add_init(sub, d, both) -> None:  # noqa: ANN001
+    """The ``init`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    init = sub.add_parser("init", help="Configure a loop and install its routes")
+    init.add_argument("--repo", required=True, help="owner/name")
+    init.add_argument("--id", help="loop id (default: the repository name)")
+    init.add_argument("--fixer", action="append", default=[],
+                      help="GitHub login that pushes (repeatable; default: the plugin setting)")
+    init.add_argument("--reviewer", action="append", default=[],
+                      help="GitHub login that may review (repeatable; default: the plugin setting)")
+    init.add_argument("--reviewer-seat", help="the login the reviewer route serves")
+    init.add_argument("--reviewer-profile", default=d["reviewer_profile"],
+                      help="Hermes profile for the reviewer seat (default: the plugin setting)")
+    init.add_argument("--fixer-profile", default=d["fixer_profile"],
+                      help="Hermes profile for the fixer seat (default: the plugin setting)")
+    init.add_argument("--reviewer-agent", default="", help="display name for the reviewer (default: profile)")
+    init.add_argument("--fixer-agent", default="", help="display name for the fixer")
+    init.add_argument("--cap", type=int, default=d["cap"],
+                      help="verdicts allowed before adjudication")
+    # None, not the settings value: a flag nobody passed must not be written as a seat
+    # override, or the loop default is dead for that seat forever (#76). cmd_init fills in the
+    # settings form's values at read time.
+    init.add_argument("--concurrency", type=int, default=None,
+                      help=f"default PRs per seat at once: 1 = serialized (default: {both}, "
+                           "from the plugin settings). Above 1 needs --clone, because each "
+                           "run then gets its own clone. Override per seat with "
+                           "--reviewer-concurrency / --fixer-concurrency.")
+    init.add_argument("--reviewer-concurrency", type=int, default=None,
+                      help="PRs the reviewer may work at once (overrides --concurrency; "
+                           f"default: the loop's, settings {d['reviewer_concurrency']})")
+    init.add_argument("--fixer-concurrency", type=int, default=None,
+                      help="PRs the fixer may work at once (overrides --concurrency; "
+                           f"default: the loop's, settings {d['fixer_concurrency']})")
+    init.add_argument("--base", default=d["base"],
+                      help="the branch PRs target; only PRs against it are reviewed")
+    init.add_argument("--clone", default=d["clone"], help="local clone the runs may use")
+    init.add_argument("--root", action="append", default=[], help="a directory reviews may clean (repeatable)")
+    init.add_argument("--state-dir", default="",
+                      help="where this loop keeps its state files (default: "
+                           "~/.hermes/state/review-loops/<id>)")
+    init.add_argument("--token", action="append", default=[], help="login=/path/to/pat (repeatable)")
+    init.add_argument("--read-token", default="",
+                      help="required: login whose token reads GitHub — its own account, never "
+                           "a seat or the adjudicator login (the four-identity rule)")
+    init.add_argument("--skill", default="",
+                      help="skill the seats are told to load. A plugin-provided skill is "
+                           "qualified, e.g. diaktoros:review-loop")
+    init.add_argument("--adjudicator-route", default="",
+                      help="route name for the adjudicator (e.g. <id>-breach): setting it "
+                           "turns adjudication on when the verdict cap is spent")
+    init.add_argument("--adjudicator-login", default=None,
+                      help="optional fourth GitHub account the ruling is also posted as (needs "
+                           "--adjudicator-route and its own --token LOGIN=/path)")
+    init.add_argument("--adjudicator-profile", default="",
+                      help="Hermes profile for the adjudicator (default: the plugin setting, "
+                           "else the launch profile)")
+    init.add_argument("--observer-route", default="",
+                      help="route name for the read-only observer feed "
+                           "(default: <id>-observe)")
+    init.add_argument("--observer-profile", default="",
+                      help="Hermes profile the observer feed belongs to (its chat) — naming "
+                           "one switches the feed on")
+    init.add_argument("--observer-deliver", default="telegram",
+                      help="where the gateway delivers the feed (telegram, discord, ...); "
+                           "the feed never wakes an agent")
+    init.add_argument("--observer-events", default="",
+                      help="comma-separated transitions to send, from "
+                           "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
+                           "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set "
+                           "(default: all)")
+    init.add_argument("--observer-digest-min", type=int, default=0,
+                      help="batch the feed into one message per this many minutes "
+                           "(0 = one notice per transition)")
+    init.add_argument("--observer-weekly-report", default="",
+                      help="send the week's report to the feed once a week, at a weekday "
+                           "and UTC time like 'mon 09:00' (default: none)")
+    init.add_argument("--observer-urgent-route", default="",
+                      help="second route for urgent notices (failed, held, escalation, ruling, "
+                           "stall, conflict, uncertain); routine ones keep the main feed")
+    init.add_argument("--observer-urgent-profile", default="",
+                      help="profile for the urgent route (default: the observer profile)")
+    init.add_argument("--observer-urgent-deliver", default="",
+                      help="where the gateway delivers urgent notices (default: the feed's)")
+    init.add_argument("--host", default=d["host"],
+                      help="your gateway webhook origin (required unless set in plugin settings)")
+    init.add_argument("--grace-min", type=int, default=d["grace_min"],
+                      help="minutes a PR may sit quiet before the watchdog reports a stall")
+    init.add_argument("--ttl-min", type=int, default=d["ttl_min"],
+                      help="how long a run may hold its seat slot")
+    init.add_argument("--inflight-ttl-min", type=int, default=d["inflight_ttl_min"],
+                      help="how long an in-flight mark blocks a second run at the same head")
+    init.add_argument("--review-only-update", choices=("on", "off"), default=None,
+                      help="push a clean merge of the base into a review-only author's PR "
+                           "branch (same repository only; off by default; turning it on "
+                           "needs --acknowledge-branch-push)")
+    init.add_argument("--acknowledge-branch-push", action="store_true",
+                      help="accept that the host pushes to a branch the loop does not own; "
+                           "required to turn --review-only-update on")
+    init.add_argument("--review-after-ci", choices=("on", "off"), default=None,
+                      help="start each review after the head's checks finish (up to an hour) "
+                           f"(default {'on' if d['review_after_ci'] else 'off'})")
+    init.add_argument("--fix-ci", choices=("on", "off"), default=None,
+                      help="hand a failed required check on a fixer's PR to the fixer, one "
+                           "turn per head; needs unattended fixer pushes "
+                           f"(default {'on' if d['fix_ci'] else 'off'})")
+    init.add_argument("--attribution", choices=("on", "off"), default=None,
+                      help="sign what the loop posts with 'Automated by Diaktoros' "
+                           f"(default {'on' if d['attribution'] else 'off'})")
+    init.add_argument("--review-only-cap", default=None, metavar="N",
+                      help="verdicts the reviewer gives one review-only PR before it waits "
+                           "for `review --another-round`, 1-1000 (default: the plugin "
+                           "setting, else the review cap)")
+    init.add_argument("--ci-fix-cap", default=None, metavar="N",
+                      help="CI-fix turns per PR before a red head goes to the reviewer, 1-10 "
+                           "(default: the plugin setting, else 3)")
+    init.add_argument("--review-only-daily", default=None, metavar="N",
+                      help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
+                           "plugin setting, else no cap)")
+    init.add_argument("--review-only", action="append", default=None,
+                      help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
+    init.add_argument("--required-check", action="append", default=None,
+                      help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
+    init.add_argument("--human-path", action="append", default=None,
+                      help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
+    init.add_argument("--fixer-check", default=None,
+                      help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
+    init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
+                      help="seconds one isolated seat turn may run, build and tests included "
+                           f"(default {d['turn_budget_s']}; the sandbox is killed past it)")
+    init.add_argument("--reviewer-turn-budget", type=int, default=None,
+                      help="the reviewer seat's own turn budget in seconds (overrides --turn-budget)")
+    init.add_argument("--fixer-turn-budget", type=int, default=None,
+                      help="the fixer seat's own turn budget in seconds (overrides --turn-budget)")
+    init.add_argument("--reviewer-max-steps", type=int, default=None,
+                      help="agent steps one reviewer turn may take, 8-200 (0 = default 60) "
+                           "(default: the plugin setting)")
+    init.add_argument("--fixer-max-steps", type=int, default=None,
+                      help="agent steps one fixer or issue-fix turn may take, 8-200 "
+                           "(0 = default 80) (default: the plugin setting)")
+    init.add_argument("--reviewer-daily-tokens", type=int, default=None,
+                      help="most tokens the reviewer may spend per day; once spent the next "
+                           "turn waits for midnight (0 = none) (default: the plugin setting)")
+    init.add_argument("--fixer-daily-tokens", type=int, default=None,
+                      help="most tokens the fixer (and issue fixes) may spend per day "
+                           "(0 = none) (default: the plugin setting)")
+    init.add_argument("--fix-daily-turns", type=int, default=None,
+                      help="issue-fix turns per day: refused here, a new loop has no fix "
+                           "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
+    init.add_argument("--hooks", action="store_true",
+                      help="create the GitHub hooks too, paused until `arm`")
+    init.add_argument("--arm", action="store_true",
+                      help="with --hooks: create them armed (live at once) instead of paused")
+    init.add_argument("--admin-token", default="", help="login whose token can create hooks")
+    init.add_argument("--schedule", default="", help="e.g. 15m — install the watchdog cron job")
+    init.add_argument("--watchdog-deliver", default="local", help="cron delivery target for watchdog alerts")
+    init.add_argument("--dry-run", action="store_true",
+                      help="print the seat mapping and what would be written, write nothing")
+    init.set_defaults(func=cmd_init)
+
+
+def add_setup(sub) -> None:  # noqa: ANN001
+    """The ``setup`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    first = sub.add_parser("setup", help="First install in one command: runtime paths, init, "
+                                         "watchdog, doctor, selftest, then arm when asked "
+                                         "(safe to re-run)")
+    first.add_argument("--repo", help="owner/name (asked when not given)")
+    first.add_argument("--id", help="loop id (default: the repository name)")
+    first.add_argument("--yes", action="store_true",
+                       help="no questions: the flags and the plugin settings are the answers, "
+                            "and every confirmation is yes (arming still needs --arm)")
+    first.add_argument("--dry-run", action="store_true", help="show every step, write nothing")
+    first.add_argument("--arm", action="store_true",
+                       help="arm the hooks after a clean doctor and selftest")
+    for flag, what in (("reviewer", "reviewer GitHub login"), ("fixer", "fixer GitHub login"),
+                       ("reviewer-profile", "reviewer's Hermes profile"),
+                       ("fixer-profile", "fixer's Hermes profile"),
+                       ("reviewer-token", "reviewer's token file"),
+                       ("fixer-token", "fixer's token file"),
+                       ("read-token", "reader login (its own account)"),
+                       ("read-token-file", "reader's token file"),
+                       ("host", "your gateway's webhook origin"),
+                       ("admin-token-file", "hook admin's token file"),
+                       ("schedule", "watchdog interval (default 15m)"),
+                       ("watchdog-deliver", "where watchdog alerts go (default local)")):
+        first.add_argument(f"--{flag}", default="", help=what)
+    first.add_argument("--admin-token", default=None,
+                       help="hook admin login: the hooks are created (paused) as it")
+    first.add_argument("--observer-profile", default=None,
+                       help="Hermes profile whose chat gets the loop's notices")
+    first.add_argument("--adjudicator-profile", default=None,
+                       help="Hermes profile that rules when a PR's verdict cap is spent; "
+                            "turns adjudication on (blank: off) (default: the plugin setting)")
+    first.add_argument("--review-only-cap", default=None, metavar="N",
+                       help="verdicts the reviewer gives one review-only PR before it waits "
+                            "for `review --another-round`, 1-1000 (default: the plugin "
+                            "setting, else the review cap)")
+    first.add_argument("--ci-fix-cap", default=None, metavar="N",
+                       help="CI-fix turns per PR before a red head goes to the reviewer, 1-10 "
+                            "(default: the plugin setting, else 3)")
+    first.add_argument("--review-only-daily", default=None, metavar="N",
+                       help="reviewer turns a day on review-only PRs, 1-1000 (default: the "
+                            "plugin setting, else no cap)")
+    first.add_argument("--review-only", action="append", default=None,
+                       help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
+    first.add_argument("--required-check", action="append", default=None,
+                       help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
+    first.add_argument("--human-path", action="append", default=None,
+                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
+    first.add_argument("--fixer-check", default=None,
+                       help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
+    first.add_argument("--review-only-update", choices=("on", "off"), default=None,
+                       help="push a clean merge of the base into a review-only author's PR "
+                            "branch (same repository only; off by default; turning it on "
+                            "needs --acknowledge-branch-push)")
+    first.add_argument("--acknowledge-branch-push", action="store_true",
+                       help="accept that the host pushes to a branch the loop does not own; "
+                            "required to turn --review-only-update on")
+    first.add_argument("--review-after-ci", choices=("on", "off"), default=None,
+                       help="start each review after the head's checks finish (up to an hour) (default: the plugin setting, off)")
+    first.add_argument("--fix-ci", choices=("on", "off"), default=None,
+                       help="hand a failed required check on a fixer's PR to the fixer "
+                            "(default: the plugin setting, off)")
+    first.add_argument("--attribution", choices=("on", "off"), default=None,
+                       help="sign what the loop posts with 'Automated by Diaktoros' "
+                            "(default: the plugin setting, on)")
+    first.add_argument("--reviewer-max-steps", type=int, default=None,
+                       help="agent steps one reviewer turn may take, 8-200 (0 = default 60) "
+                            "(default: the plugin setting)")
+    first.add_argument("--fixer-max-steps", type=int, default=None,
+                       help="agent steps one fixer or issue-fix turn may take, 8-200 "
+                            "(0 = default 80) (default: the plugin setting)")
+    first.add_argument("--reviewer-daily-tokens", type=int, default=None,
+                       help="most tokens the reviewer may spend per day; once spent the next "
+                            "turn waits for midnight (0 = none) (default: the plugin setting)")
+    first.add_argument("--fixer-daily-tokens", type=int, default=None,
+                       help="most tokens the fixer (and issue fixes) may spend per day "
+                            "(0 = none) (default: the plugin setting)")
+    first.add_argument("--fix-daily-turns", type=int, default=None,
+                       help="issue-fix turns per day: refused here, a new loop has no fix "
+                            "label; set it with `triage --fix-daily-turns N` (0 = ignore)")
+    for key in ("source", "venv", "runtime", "rust"):
+        first.add_argument(f"--{key}", default="",
+                           help=f"runtime file's {key} path (default: detected)")
+    first.set_defaults(func=cmd_setup)

@@ -23,6 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from test_shared_watchdog_job import FakeHermes  # noqa: E402
 from diaktoros import cli, config, runtime_detect  # noqa: E402
+from diaktoros import cli_checks  # noqa: E402
 
 LOOP_ID = "setupwidgets"
 LOOP_FILE = t.LOOPS_DIR / f"{LOOP_ID}.json"
@@ -161,9 +162,9 @@ class Setup(unittest.TestCase):
         return run
 
     def setup_cli(self, *extra, settings=None) -> tuple[int, str]:
-        with patch.object(cli, "cmd_doctor", self.recorder("doctor")), \
-                patch.object(cli, "cmd_selftest", self.recorder("selftest")), \
-                patch.object(cli, "cmd_arm", self.recorder("arm")):
+        with patch.object(cli_checks, "cmd_doctor", self.recorder("doctor")), \
+                patch.object(cli_checks, "cmd_selftest", self.recorder("selftest")), \
+                patch.object(cli_checks, "cmd_arm", self.recorder("arm")):
             parser = t.parser_for(settings)
             return t.run_cli(parser.parse_args(["setup", *extra]))
 

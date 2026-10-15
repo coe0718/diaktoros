@@ -302,3 +302,71 @@ def cmd_arm(args) -> int:
               "— the lines above show what GitHub reports now")
         return 1
     return 0
+
+
+# -- the parser for this module's commands (#676 step 7) --------------------------------------
+
+
+def add_doctor(sub) -> None:  # noqa: ANN001
+    """The ``doctor`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    preflight = sub.add_parser("doctor", help="Preflight a loop read-only: profiles, tokens, "
+                                              "routes, hooks, scripts, cron, clone")
+    preflight.add_argument("--loop", help="loop id (default: every configured loop)")
+    preflight.add_argument("--offline", action="store_true",
+                           help="skip the two network probes (gateway reachability, repo hooks)")
+    preflight.add_argument("--strict", action="store_true",
+                           help="treat a check that could not be decided as a failure")
+    preflight.add_argument("--repair", action="store_true",
+                           help="restore this loop's own routes from the plugin's intent record "
+                                "(same secret) before checking; the only write doctor makes")
+    preflight.set_defaults(func=cmd_doctor)
+
+
+def add_selftest(sub) -> None:  # noqa: ANN001
+    """The ``selftest`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    check = sub.add_parser("selftest", help="Verify the live isolated path step by step "
+                                            "(runtime, bwrap, model, identities, broker, ledger); "
+                                            "never writes to GitHub")
+    check.add_argument("--loop", required=True,
+                       help="loop id (its config file name; `list` shows them)")
+    check.add_argument("--pr", type=int, help="dry-run the reviewer write authorization on this PR")
+    check.add_argument("--no-model", action="store_true",
+                       help="skip the one tiny real completion (costs a few tokens)")
+    check.add_argument("--live-turn", action="store_true",
+                       help="with --pr: run one real isolated reviewer turn whose verdict is "
+                            "printed and never posted")
+    check.add_argument("--ping", action="store_true",
+                       help="ask GitHub to ping each loop hook and report whether the gateway "
+                            "accepted its signature (the selftest's only GitHub write)")
+    check.add_argument("--admin-token", default="",
+                       help="login whose token may ping hooks (admin:repo_hook or repo)")
+    check.add_argument("--timeout", type=int, default=None,
+                       help="live turn budget in seconds (default: the loop's reviewer "
+                            "turn_budget_s — the budget the production worker enforces)")
+    check.set_defaults(func=cmd_selftest)
+
+
+def add_corpus(sub) -> None:  # noqa: ANN001
+    """The ``corpus`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    corpus_cmd = sub.add_parser("corpus", help="Replay historical PRs with known problems "
+                                               "through the reviewer (no-write) and score "
+                                               "what it caught, per prompt revision and model")
+    corpus_cmd.add_argument("--loop", required=True, help="loop id")
+    corpus_cmd.add_argument("--dir", default="",
+                            help="directory of case files (default: corpus/ in the loop's "
+                                 "state directory)")
+    corpus_cmd.add_argument("--timeout", type=int, default=None,
+                            help="per-case turn budget in seconds (default: the reviewer's)")
+    corpus_cmd.add_argument("--history", action="store_true",
+                            help="print the recorded scores and run nothing")
+    corpus_cmd.set_defaults(func=cmd_corpus)
+
+
+def add_arm(sub) -> None:  # noqa: ANN001
+    """The ``arm`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    arm = sub.add_parser("arm", help="Activate the loop's GitHub hooks")
+    arm.add_argument("--loop", help="loop id (default: every configured loop)")
+    arm.add_argument("--pause", action="store_true", help="pause instead of arming")
+    arm.add_argument("--admin-token", default="",
+                     help="login whose token can edit the repo's hooks (default: the reader)")
+    arm.set_defaults(func=cmd_arm)

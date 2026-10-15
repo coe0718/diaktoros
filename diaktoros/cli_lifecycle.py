@@ -937,3 +937,64 @@ def cmd_uninstall(args) -> int:
         return _uninstall_incomplete(removed, [what for what, _ in leftovers], keep_hooks,
                                      [cmd for _, cmd in leftovers])
     return 0
+
+
+# -- the parser for this module's commands (#676 step 7) --------------------------------------
+
+
+def add_migrate(sub) -> None:  # noqa: ANN001
+    """The ``migrate`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    move = sub.add_parser("migrate", help="Move an install from the hermes-review-loop plugin to "
+                                          "this one: settings, a renamed repository, shims (#425)")
+    move.add_argument("--dry-run", action="store_true",
+                      help="report every step and write nothing")
+    move.add_argument("--rename-loop", metavar="OLD=NEW", default=None,
+                      help="also give a loop a new id: its file, default state directory, "
+                           "routes and the URLs its repo hooks post to (each hook is pinged "
+                           "before the old route goes)")
+    move.add_argument("--admin-token", default=None, metavar="LOGIN",
+                      help="mapped login whose token may edit the repo hooks (--rename-loop)")
+    move.set_defaults(func=cmd_migrate)
+
+
+def add_backup(sub) -> None:  # noqa: ANN001
+    """The ``backup`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    bak = sub.add_parser("backup", help="Write one 0600 archive of everything the plugin owns "
+                                        "(loops, ledger, state, routes, watchdog job) (#496)")
+    bak.add_argument("--out", metavar="FILE", default=None,
+                     help="where to write it (default: $HERMES_HOME/backups/…); never "
+                          "overwrites a file")
+    bak.set_defaults(func=cmd_backup)
+
+
+def add_restore(sub) -> None:  # noqa: ANN001
+    """The ``restore`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    rest = sub.add_parser("restore", help="Put a backup back: files, routes, shims, the "
+                                          "watchdog job; ends with doctor (#496)")
+    rest.add_argument("file", metavar="FILE", help="an archive `backup` wrote")
+    rest.add_argument("--dry-run", action="store_true",
+                      help="report what would be restored and overwritten; write nothing")
+    rest.add_argument("--force", action="store_true",
+                      help="overwrite existing state (refused without it)")
+    rest.add_argument("--allow-state-dir", action="append", default=None, metavar="DIR",
+                      help="write this loop state directory, which the archive declares "
+                           "outside the Hermes home (the dry run lists them; repeat per "
+                           "directory)")
+    rest.set_defaults(func=cmd_restore)
+
+
+def add_uninstall(sub) -> None:  # noqa: ANN001
+    """The ``uninstall`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    uninstall = sub.add_parser("uninstall", help="Remove a loop: its repo hooks, cron job, "
+                               "routes and config (refuses rather than leave live hooks)")
+    uninstall.add_argument("--loop", required=True,
+                           help="loop id (its config file name; `list` shows them)")
+    uninstall.add_argument("--keep-config", action="store_true",
+                           help="remove hooks, cron job and routes but keep the loop config file")
+    uninstall.add_argument("--admin-token", default="",
+                           help="login whose token can delete hooks (admin:repo_hook or repo)")
+    uninstall.add_argument("--keep-hooks", action="store_true",
+                           help="leave the repo hooks live (explicit opt-out)")
+    uninstall.add_argument("--purge", action="store_true",
+                           help="also delete the loop's default state directory")
+    uninstall.set_defaults(func=cmd_uninstall)
