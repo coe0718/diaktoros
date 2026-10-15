@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 
 from . import config, observer
+from .config import settings_form
 
 # Every key `show` covers. The tests compare these against SETTINGS_SCHEMA, DEFAULTS, TRIAGE_KEYS
 # and the observer keys, so a key added to the loop without a row here turns a test red.
@@ -66,7 +67,7 @@ def _rows(loop: dict) -> list[_Row]:
     triage = loop.get("triage") or {}
     adj = loop.get("adjudicator") or {}
     obs = loop.get("observer") or {}
-    S = config.SETTINGS_SCHEMA
+    S = settings_form.SETTINGS_SCHEMA
     rows: list[_Row] = []
 
     def schema(key, path, value, *, derived="", off="", on=None, note=""):
@@ -251,8 +252,8 @@ def collect(loop: dict, raw: dict, form: dict | None = None) -> list[dict]:
         note = row.note
         if source == "derived":
             note = "; ".join(x for x in (f"from {row.derived}", note) if x)
-        if row.schema and form and config._form_value(form, row.name) is not None:
-            held = config.settings_defaults(form)[row.name]
+        if row.schema and form and settings_form._form_value(form, row.name) is not None:
+            held = settings_form.settings_defaults(form)[row.name]
             if row.name not in config.TOKEN_FILE_SETTINGS.values() and held != row.value \
                     and str(held) != str(row.value):
                 note = "; ".join(x for x in (

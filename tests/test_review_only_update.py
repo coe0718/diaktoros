@@ -17,6 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import broker, config, review_only_conflict, safe_push  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 
 REPO = "acme/widgets"
 ENV = {**os.environ, "GIT_AUTHOR_NAME": "F", "GIT_AUTHOR_EMAIL": "f@example.org",
@@ -207,10 +208,10 @@ class Setting(unittest.TestCase):
         self.assertFalse(config.review_only_update(config.normalize(dict(self.RAW))))
         with self.assertRaises(config.ConfigError):
             config.normalize({**self.RAW, "review_only_update": "yes"})
-        self.assertNotIn("review_only_update", config.apply_settings(dict(self.RAW), {}))
-        got = config.apply_settings(dict(self.RAW), {"review_only_update": True})
+        self.assertNotIn("review_only_update", settings_form.apply_settings(dict(self.RAW), {}))
+        got = settings_form.apply_settings(dict(self.RAW), {"review_only_update": True})
         self.assertIs(got["review_only_update"], True)
-        self.assertIn("review_only_update", config.SETTINGS_SCHEMA)
+        self.assertIn("review_only_update", settings_form.SETTINGS_SCHEMA)
         text = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text()
         self.assertIn("  review_only_update:", text)
 

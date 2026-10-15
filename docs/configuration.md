@@ -399,7 +399,7 @@ Do not add `seats.issue_fixer` and expect it to tune this behavior: normalizatio
 
 ## Plugin settings and safe application
 
-The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plugins → diaktoros**. `diaktoros/config/__init__.py::SETTINGS_SCHEMA` mirrors the manifest; tests check agreement. Settings are per Hermes profile and written through Hermes's configuration writer. See [Operations](operations.md) for the settings workflow.
+The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plugins → diaktoros**. `diaktoros/config/settings_form.py::SETTINGS_SCHEMA` mirrors the manifest; tests check agreement. Settings are per Hermes profile and written through Hermes's configuration writer. See [Operations](operations.md) for the settings workflow.
 
 | Setting | New-loop default | Loop destination |
 |---|---|---|

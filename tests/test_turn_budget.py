@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from diaktoros import (broker_ipc, cli, config, doctor, gate, gh,  # noqa: E402
                          run_supervisor, seat_model, selftest, trusted_turn)
+from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 import test_selftest  # noqa: E402
 
@@ -50,8 +51,8 @@ class Settings(unittest.TestCase):
         # Read off an instance: main's test ledger guard wraps Supervisor.__init__.
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(Supervisor(pathlib.Path(tmp) / "runs.sqlite").child_timeout, 900)
-        self.assertEqual(config.SETTINGS_SCHEMA["turn_budget_s"]["default"], 900)
-        self.assertEqual(config.settings_defaults(None)["turn_budget_s"], 900)
+        self.assertEqual(settings_form.SETTINGS_SCHEMA["turn_budget_s"]["default"], 900)
+        self.assertEqual(settings_form.settings_defaults(None)["turn_budget_s"], 900)
 
     def test_per_seat_wins_over_the_loop(self):
         raw = _loop(turn_budget_s=1200)
@@ -74,9 +75,9 @@ class Settings(unittest.TestCase):
             config.normalize(raw)
 
     def test_plugin_settings_feed_new_loops_and_apply(self):
-        d = config.settings_defaults({"turn_budget_s": "1800"})
+        d = settings_form.settings_defaults({"turn_budget_s": "1800"})
         self.assertEqual(d["turn_budget_s"], 1800)
-        overlaid = config.apply_settings(_loop(turn_budget_s=900), {"turn_budget_s": 1800})
+        overlaid = settings_form.apply_settings(_loop(turn_budget_s=900), {"turn_budget_s": 1800})
         self.assertEqual(config.normalize(overlaid)["turn_budget_s"], 1800)
 
     def test_plugin_yaml_declares_it(self):
@@ -241,7 +242,7 @@ class DoctorWallClock(unittest.TestCase):
         check = doctor.check_turn_budget(loop)
         self.assertEqual(check.status, doctor.VERIFIED, check.detail)
         self.assertGreaterEqual(config.DEFAULTS["grace_min"] * 60, config.worst_turn_s(loop))
-        self.assertEqual(config.SETTINGS_SCHEMA["grace_min"]["default"], config.DEFAULTS["grace_min"])
+        self.assertEqual(settings_form.SETTINGS_SCHEMA["grace_min"]["default"], config.DEFAULTS["grace_min"])
         yaml_text = (ROOT / "plugin.yaml").read_text()
         declared = re.search(r"\n  grace_min:\n(?:    .*\n)*?    default: (\d+)", yaml_text)
         self.assertEqual(int(declared.group(1)), config.DEFAULTS["grace_min"])

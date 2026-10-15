@@ -34,6 +34,7 @@ import sqlite3
 import time
 
 from .ledger import LOCK_WAIT_S
+from .config import settings_form
 from . import config, gh, gate_shims, state as state_mod
 from . import envnames
 
@@ -152,7 +153,7 @@ def old_settings(read=_hermes_config) -> dict:
         values = entry.get(subtree)
         if isinstance(values, dict):
             out.update({key: value for key, value in values.items()
-                        if key in config.SETTINGS_SCHEMA and value not in (None, "")})
+                        if key in settings_form.SETTINGS_SCHEMA and value not in (None, "")})
     return out
 
 

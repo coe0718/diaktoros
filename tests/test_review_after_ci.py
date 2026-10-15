@@ -19,6 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import ci, cli, config, ledger, observer, run_supervisor  # noqa: E402
 from diaktoros import cli_install  # noqa: E402
@@ -44,10 +45,10 @@ class Setting(unittest.TestCase):
                 config.normalize(raw(review_after_ci=bad))
 
     def test_the_form_moves_it_only_when_it_names_it(self):
-        self.assertNotIn("review_after_ci", config.apply_settings(raw(), {}))
-        self.assertIs(config.apply_settings(raw(), {"review_after_ci": True})["review_after_ci"],
+        self.assertNotIn("review_after_ci", settings_form.apply_settings(raw(), {}))
+        self.assertIs(settings_form.apply_settings(raw(), {"review_after_ci": True})["review_after_ci"],
                       True)
-        self.assertIs(config.apply_settings(raw(review_after_ci=True),
+        self.assertIs(settings_form.apply_settings(raw(review_after_ci=True),
                                             {"review_after_ci": "off"})["review_after_ci"], False)
 
 
@@ -299,10 +300,10 @@ class FixCi(Cli):
         return json.loads(LOOP_FILE.read_text()).get("fix_ci", False)
 
     def test_form_overlay_only_when_named(self):
-        self.assertNotIn("fix_ci", config.apply_settings(raw(), {}))
-        self.assertIs(config.apply_settings(raw(), {"fix_ci": True})["fix_ci"], True)
-        self.assertIs(config.apply_settings(raw(fix_ci=True), {"fix_ci": "off"})["fix_ci"], False)
-        self.assertIn("fix_ci", config.SETTINGS_SCHEMA)
+        self.assertNotIn("fix_ci", settings_form.apply_settings(raw(), {}))
+        self.assertIs(settings_form.apply_settings(raw(), {"fix_ci": True})["fix_ci"], True)
+        self.assertIs(settings_form.apply_settings(raw(fix_ci=True), {"fix_ci": "off"})["fix_ci"], False)
+        self.assertIn("fix_ci", settings_form.SETTINGS_SCHEMA)
         self.assertIn("  fix_ci:", (pathlib.Path(config.__file__).resolve().parents[2]
                                      / "plugin.yaml").read_text())
 

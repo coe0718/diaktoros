@@ -22,6 +22,7 @@ if str(_HERE) not in sys.path:          # the gates import this package from scr
     sys.path.insert(0, str(_HERE))
 
 from diaktoros import cli, config  # noqa: E402
+from diaktoros.config import settings_form
 
 
 def _settings(ctx) -> dict:
@@ -32,7 +33,7 @@ def _settings(ctx) -> dict:
     operator cannot reach to fix it.
     """
     out: dict = {}
-    for key in config.SETTINGS_SCHEMA:
+    for key in settings_form.SETTINGS_SCHEMA:
         try:
             value = ctx.get_config(key, None)
         except Exception:

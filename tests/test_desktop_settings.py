@@ -2,7 +2,7 @@
 
 Two halves are worth pinning, and one of them is a safety property:
 
-* **The schema is the whole form.** Every key in ``config.SETTINGS_SCHEMA`` must appear in
+* **The schema is the whole form.** Every key in ``settings_form.SETTINGS_SCHEMA`` must appear in
   ``schema``, ``values`` and ``sources``, or a field silently vanishes from the page.
 * **A token is a path, never a value.** The projection names where a PAT is read from at use
   time; it must never carry a credential, whatever the store contains.
@@ -30,6 +30,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import config, desktop_api  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 
 # A settings store carrying a credential-shaped value, to prove the projection never returns it.
 LEAK = "github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP"
@@ -95,7 +96,7 @@ class SettingsView(unittest.TestCase):
         self._install([])
         view = desktop_api.settings_view()
         plugin = view["plugin"]
-        declared = set(config.SETTINGS_SCHEMA)
+        declared = set(settings_form.SETTINGS_SCHEMA)
         self.assertEqual(set(plugin["schema"]), declared)
         self.assertEqual(set(plugin["values"]), declared)
         self.assertEqual(set(plugin["sources"]), declared)
@@ -116,12 +117,12 @@ class SettingsView(unittest.TestCase):
         self.assertEqual(plugin["sources"]["cap"], "set")
         self.assertEqual(plugin["values"]["cap"], 5)
         self.assertEqual(plugin["sources"]["base"], "default")
-        self.assertEqual(plugin["values"]["base"], config.SETTINGS_SCHEMA["base"]["default"])
+        self.assertEqual(plugin["values"]["base"], settings_form.SETTINGS_SCHEMA["base"]["default"])
 
     def test_a_wrong_typed_value_falls_back_rather_than_reaching_the_page(self):
         self._install([{"key": "grace_min", "value": "not a number"}])
         self.assertEqual(desktop_api.settings_view()["plugin"]["values"]["grace_min"],
-                         config.SETTINGS_SCHEMA["grace_min"]["default"])
+                         settings_form.SETTINGS_SCHEMA["grace_min"]["default"])
 
     # ---- the safety property ---------------------------------------------------------
 
@@ -158,7 +159,7 @@ class SettingsView(unittest.TestCase):
         self.assertIn("unavailable", plugin["reason"])
         # The schema is still complete, so the page can render the form's shape and say why the
         # values are not the operator's.
-        self.assertEqual(set(plugin["schema"]), set(config.SETTINGS_SCHEMA))
+        self.assertEqual(set(plugin["schema"]), set(settings_form.SETTINGS_SCHEMA))
 
     def test_a_readable_but_empty_store_is_available_and_all_default(self):
         self._install([])

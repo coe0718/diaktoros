@@ -19,6 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import attribution, broker, config, gh, review_receipt, routes  # noqa: E402
 
 HEAD = "a" * 40
@@ -273,15 +274,15 @@ class Setting(unittest.TestCase):
             self.assertIn("'attribution' must be a JSON boolean", str(caught.exception))
 
     def test_the_form_moves_it_only_when_it_names_it(self):
-        self.assertNotIn("attribution", config.apply_settings(self.raw(), {}))
-        self.assertIs(config.apply_settings(self.raw(attribution=False), {})["attribution"], False)
-        self.assertIs(config.apply_settings(self.raw(), {"attribution": False})["attribution"],
+        self.assertNotIn("attribution", settings_form.apply_settings(self.raw(), {}))
+        self.assertIs(settings_form.apply_settings(self.raw(attribution=False), {})["attribution"], False)
+        self.assertIs(settings_form.apply_settings(self.raw(), {"attribution": False})["attribution"],
                       False)
-        self.assertIs(config.apply_settings(self.raw(attribution=False),
+        self.assertIs(settings_form.apply_settings(self.raw(attribution=False),
                                             {"attribution": "true"})["attribution"], True)
 
     def test_form_words_and_junk(self):
-        defaults = config.settings_defaults
+        defaults = settings_form.settings_defaults
         self.assertIs(defaults({})["attribution"], True)
         for word, want in (("off", False), ("no", False), ("0", False), (False, False),
                            ("on", True), ("yes", True), (True, True), ("garbage", True)):

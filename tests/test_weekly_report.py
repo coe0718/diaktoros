@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import config, gate, gh, observer, pr_hold, run_supervisor, state as state_mod, stats  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 
 
 def utc(*parts) -> float:
@@ -54,7 +55,7 @@ class Form(unittest.TestCase):
     RAW = {**fg.raw_loop(False), "observer": {"route": "one-observe", "profile": "p"}}
 
     def test_the_form_field_matches_plugin_yaml(self):
-        spec = config.SETTINGS_SCHEMA["observer_weekly_report"]
+        spec = settings_form.SETTINGS_SCHEMA["observer_weekly_report"]
         text = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text()
         block = text.split("  observer_weekly_report:\n", 1)[1].split("\n  ", 4)
         self.assertIn(f'label: "{spec["label"]}"', block[0])
@@ -62,16 +63,16 @@ class Form(unittest.TestCase):
 
     def test_every_form_field_has_a_row_in_the_desktop_settings_reference(self):
         doc = (Path(__file__).resolve().parents[1] / "docs" / "settings.md").read_text()
-        for key in config.SETTINGS_SCHEMA:
+        for key in settings_form.SETTINGS_SCHEMA:
             self.assertIn(f"| `{key}` |", doc, key)
 
     def test_apply_sets_clears_and_leaves_it(self):
-        applied = config.apply_settings(self.RAW, {"observer_weekly_report": "Tue 08:00"})
+        applied = settings_form.apply_settings(self.RAW, {"observer_weekly_report": "Tue 08:00"})
         self.assertEqual(applied["observer"]["weekly_report"], "tue 08:00")
         self.assertEqual(config.normalize(applied)["observer"]["weekly_report"], "tue 08:00")
-        cleared = config.apply_settings(applied, {"observer_weekly_report": "off"})
+        cleared = settings_form.apply_settings(applied, {"observer_weekly_report": "off"})
         self.assertNotIn("weekly_report", cleared["observer"])
-        kept = config.apply_settings(applied, {"observer_weekly_report": ""})
+        kept = settings_form.apply_settings(applied, {"observer_weekly_report": ""})
         self.assertEqual(kept["observer"]["weekly_report"], "tue 08:00")     # blank: not set here
 
     def test_show_lists_it_under_the_form_s_name(self):
@@ -85,9 +86,9 @@ class Form(unittest.TestCase):
 
     def test_apply_refuses_by_name(self):
         with self.assertRaisesRegex(config.ConfigError, "observer_weekly_report: 'tuesday'"):
-            config.apply_settings(self.RAW, {"observer_weekly_report": "tuesday"})
+            settings_form.apply_settings(self.RAW, {"observer_weekly_report": "tuesday"})
         with self.assertRaisesRegex(config.ConfigError, "needs the loop's observer feed"):
-            config.apply_settings(fg.raw_loop(False), {"observer_weekly_report": "tue 08:00"})
+            settings_form.apply_settings(fg.raw_loop(False), {"observer_weekly_report": "tue 08:00"})
 
 
 class Feed(fg.Base):

@@ -16,6 +16,7 @@ import time
 
 from . import (config, doctor, findings, gate_decisions, pacing, route_intent, run_supervisor,
                stats)
+from .config import settings_form
 
 SINCE_CHOICES = ("24h", "7d", "30d")
 # What the ledger keeps for one PR is its turns; a long-lived PR is bounded here so a single
@@ -294,7 +295,7 @@ def settings_view() -> dict:
     * **One loop's failure is not the others'**: an unreadable loop is reported on its own entry.
     """
     settings, available, reason = _form_settings()
-    defaults = config.settings_defaults(settings)
+    defaults = settings_form.settings_defaults(settings)
     return {
         "plugin": {
             "available": available,
@@ -303,12 +304,12 @@ def settings_view() -> dict:
                 key: {"label": spec.get("label", key), "type": spec.get("type", "str"),
                       "default": spec.get("default"),
                       "description": spec.get("description", "")}
-                for key, spec in config.SETTINGS_SCHEMA.items()
+                for key, spec in settings_form.SETTINGS_SCHEMA.items()
             },
-            "values": {key: defaults.get(key) for key in config.SETTINGS_SCHEMA},
+            "values": {key: defaults.get(key) for key in settings_form.SETTINGS_SCHEMA},
             "sources": {key: ("set" if str(settings.get(key, "")) not in ("", "None")
                               else "default")
-                        for key in config.SETTINGS_SCHEMA},
+                        for key in settings_form.SETTINGS_SCHEMA},
             "seats": _seat_settings(settings),
             "roles": list(config.ROUTE_ROLES),
             "routed_roles": list(config.ROUTED_ROLES),
@@ -457,6 +458,6 @@ def _loop_flags(loop: dict) -> dict:
         "review_after_ci": bool(loop.get("review_after_ci")),
         "fixer_check": loop.get("fixer_check") or "",
         "fix_ci": bool(loop.get("fix_ci")),
-        "cap": loop.get("cap") or config.SETTINGS_SCHEMA["cap"]["default"],
-        "base": loop.get("base") or config.SETTINGS_SCHEMA["base"]["default"],
+        "cap": loop.get("cap") or settings_form.SETTINGS_SCHEMA["cap"]["default"],
+        "base": loop.get("base") or settings_form.SETTINGS_SCHEMA["base"]["default"],
     }

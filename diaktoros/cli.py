@@ -21,6 +21,7 @@ import time
 import tempfile
 
 from .ledger import LOCK_WAIT_S
+from .config import settings_form
 from . import (
     attribution,
     cli_checks,
@@ -87,10 +88,10 @@ def register_cli(ctx, settings: dict | None = None) -> None:
     """
     cli_common._SETTINGS = dict(settings or {})
     cli_common._CTX = ctx
-    d = config.settings_defaults(settings)
+    d = settings_form.settings_defaults(settings)
     # Both seats agreeing is the only case where a loop-level default says anything useful: when
     # they disagree the differing seat carries its value explicitly (see _init_seat_concurrency).
-    both = config.settings_loop_concurrency(d)
+    both = settings_form.settings_loop_concurrency(d)
 
     def setup(parser) -> None:  # noqa: ANN001
         """Build the command's argparse tree.

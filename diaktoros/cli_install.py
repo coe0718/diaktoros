@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 from . import cli_common, config, gate_shims, route_intent, routes
+from .config import settings_form
 from .cli_common import BRANCH_PUSH_REFUSAL, SHARED_JOB_NAMES, _hook_route_name
 
 
@@ -196,7 +197,7 @@ def _stale_hooks_refusal(loop: dict, admin: str | None) -> str:
 
 
 def _init_loop_concurrency(args, d: dict) -> int:
-    return args.concurrency if args.concurrency is not None else config.settings_loop_concurrency(d)
+    return args.concurrency if args.concurrency is not None else settings_form.settings_loop_concurrency(d)
 
 
 def _init_seat_concurrency(args, d: dict) -> dict:
@@ -239,7 +240,7 @@ def cmd_init(args) -> int:
         print(f"--id {loop_id!r} cannot name a loop config file: use letters, digits, '-', '_' "
               "or '.' (not leading, not a path)")
         return 2
-    d = config.settings_defaults(cli_common._SETTINGS)
+    d = settings_form.settings_defaults(cli_common._SETTINGS)
     tokens = {}
     for pair in args.token or []:
         if "=" not in pair:
@@ -716,7 +717,7 @@ def _setup_runtime(args, interactive: bool) -> bool:
 
 def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[list[str], str]:
     """Step 2's answers as the ``init`` command line, and the hook admin login ("" for none)."""
-    d = config.settings_defaults(cli_common._SETTINGS)
+    d = settings_form.settings_defaults(cli_common._SETTINGS)
     ask = lambda flag, question, default="": flag or _ask(question, default, interactive)  # noqa: E731
     reviewer = ask(args.reviewer, "reviewer GitHub login (the account that reviews)",
                    d["reviewer_login"])

@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+from diaktoros.config import settings_form  # noqa: E402
 import test_ci_gate as cg  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import ci, cli, config, observer  # noqa: E402
@@ -48,10 +49,10 @@ class Setting(unittest.TestCase):
         self.assertEqual(config.split_check_names(""), [])
 
     def test_the_form_moves_it_only_when_it_names_it(self):
-        self.assertNotIn("required_checks", config.apply_settings(raw(), {}))
-        got = config.apply_settings(raw(), {"required_checks": "tests (3.11), test (ubuntu-24.04, 3.11)"})
+        self.assertNotIn("required_checks", settings_form.apply_settings(raw(), {}))
+        got = settings_form.apply_settings(raw(), {"required_checks": "tests (3.11), test (ubuntu-24.04, 3.11)"})
         self.assertEqual(got["required_checks"], REQUIRED)
-        self.assertEqual(config.apply_settings(raw(required_checks=["a"]),
+        self.assertEqual(settings_form.apply_settings(raw(required_checks=["a"]),
                                                {"required_checks": " "})["required_checks"], ["a"])
 
 

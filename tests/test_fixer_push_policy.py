@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config
+from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 
 
@@ -87,11 +88,11 @@ class FixerPushPolicyTests(unittest.TestCase):
         raw = raw_loop("one")
         settings = {"unattended_fixer_push": True}
         self.assertFalse(config.unattended_fixer_push_enabled(
-            config.normalize(config.apply_settings(raw, settings))))
+            config.normalize(settings_form.apply_settings(raw, settings))))
         armed = {**raw, "unattended_fixer_push": True}
         self.assertTrue(config.unattended_fixer_push_enabled(
-            config.normalize(config.apply_settings(armed, settings))))
-        self.assertNotIn("unattended_fixer_push", config.SETTINGS_SCHEMA)
+            config.normalize(settings_form.apply_settings(armed, settings))))
+        self.assertNotIn("unattended_fixer_push", settings_form.SETTINGS_SCHEMA)
 
     def test_cli_parser_requires_exact_loop_and_one_direction(self):
         class Ctx:
