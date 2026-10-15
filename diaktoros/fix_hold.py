@@ -3,8 +3,12 @@
 An issue the reviewer filed (``filed_issues``, #247) is about code that may exist only in the PR
 it was filed from. A fix turn starts from the base branch, so while that PR is open it would find
 nothing. ``gate_triage`` holds such a hand-off here; the watchdog sweep releases it once the PR
-merges, or drops it (with one comment) when the PR closes unmerged. An issue a person opened has
-no ``filed_issues`` row and is never held.
+merges, or drops it (with one comment) when the PR closes unmerged.
+
+An issue a person opened has no ``filed_issues`` row. It is held only on an open PR it *declares*
+it depends on ("depends on #N", "blocked by #N", "follow-up to #N", ...), never on one it merely
+mentions (#686): a mention is an example or a link, and holding on it deadlocked an issue whose
+fix the mentioned PR was waiting for.
 """
 
 from __future__ import annotations
@@ -52,35 +56,41 @@ def queue_fix(loop: dict, number: int) -> tuple[str, str]:
         raise
 
 
-def hold(loop: dict, st, number: int, pr: int) -> None:
-    """Record the held hand-off and say so once."""
+def hold(loop: dict, st, number: int, pr: int, why: str = "") -> None:
+    """Record the held hand-off and say so once; ``why`` is the person's own words that declared
+    the dependency, quoted in the comment (empty for a reviewer's finding)."""
     st.fix_hold_set(number, pr)
     if not st.fix_hold_said(number):
-        if not _wait_comment(loop, number, pr):
+        if not _wait_comment(loop, number, pr, why):
             return                                # POST failed: not "said"; a later sweep retries
         st.fix_hold_say(number)
         _notice(loop, number, "held", pr,
                 f"#{number} waits for PR #{pr} to merge: its finding is about code only there")
 
 
-def _wait_comment(loop: dict, number: int, pr: int) -> bool:
+def _wait_comment(loop: dict, number: int, pr: int, why: str = "") -> bool:
     """Post the wait comment; ``False`` when the POST failed (``gh.api`` returned ``None``)."""
     login = config.triage_login(loop)
     if not login:
         return True                               # nobody to say it as: retrying cannot help
+    text = (f"waiting for #{pr} to merge — this issue says “{why}”. Re-apply the fix label once "
+            "that no longer holds." if why else
+            f"waiting for #{pr} to merge — this finding is about code only on that branch")
     return gh.api(loop, f"/repos/{loop['repo']}/issues/{number}/comments", method="POST",
-                  body={"body": f"waiting for #{pr} to merge — this finding is about code only on "
-                                "that branch"}, login=login) is not None
+                  body={"body": text}, login=login) is not None
 
 
-def _drop_comment(loop: dict, number: int, pr: int) -> None:
+def _drop_comment(loop: dict, number: int, pr: int, declared: bool = False) -> None:
     from . import config as cfg
     login = cfg.triage_login(loop)
     if login:
+        text = (f"PR #{pr}, which this issue says it depends on, closed without merging; not "
+                "handing it to the fixer. Re-apply the fix label if it should go ahead without it."
+                if declared else
+                f"PR #{pr} closed without merging, so the finding in this issue is moot; not "
+                "handing it to the fixer. The label stays for a person to decide.")
         gh.api(loop, f"/repos/{loop['repo']}/issues/{number}/comments", method="POST",
-               body={"body": f"PR #{pr} closed without merging, so the finding in this issue is "
-                             "moot; not handing it to the fixer. The label stays for a person "
-                             "to decide."}, login=login)
+               body={"body": text}, login=login)
 
 
 def sweep(loop: dict, st) -> list[str]:
@@ -97,7 +107,11 @@ def sweep(loop: dict, st) -> list[str]:
             hold(loop, st, number, pr)            # says so once, if the gate could not
             continue
         if state == "closed":
-            _drop_comment(loop, number, pr)
+            try:
+                declared = origin_pr(loop, number) is None    # a person's declared dependency
+            except Exception:
+                continue                                       # lineage unreadable: retry
+            _drop_comment(loop, number, pr, declared)
             st.fix_hold_drop(number)
             log(f"issue #{number}: PR #{pr} closed unmerged; hand-off dropped")
             continue
@@ -151,20 +165,28 @@ def _closing(loop: dict, prs: list[dict], number: int) -> int | None:
     return None
 
 
-def named_open_pr(loop: dict, prs: list[dict], body: str) -> int | None:
-    """The first open PR of this repo that an issue body names (``#N`` or a PR URL), else ``None``.
+# Only phrases that say "this waits for that". "after #N" or "needs #N" read as prose as often
+# as not ("it broke after #12 merged"), and a false hold is the bug this replaced.
+DEPENDS = (r"depends\s+on|depend\s+on|blocked\s+by|builds?\s+on|follow[-\s]?up\s+(?:to|of|on)|"
+           r"requires")
 
-    A merged or closed PR, or an issue, is not in the open listing: never held.
-    """
+
+def declared_open_pr(loop: dict, prs: list[dict], body: str) -> tuple[int, str] | None:
+    """The first open PR of this repo an issue body says it depends on, with those words, else
+    ``None`` (#686). A declaration is one of ``DEPENDS`` right before the PR (``#N``, ``PR #N``,
+    ``owner/repo#N`` or its URL), as in "Depends on #12" or "Follow-up to PR #12"; a PR the body
+    only mentions ("as #12 showed", a bare link) is never one. A merged or closed PR, or an
+    issue, is not in the open listing: never held."""
     import re
     repo = re.escape(str(loop["repo"]))
     open_numbers = {pr["number"] for pr in prs if type(pr.get("number")) is int}
-    pattern = re.compile(rf"(?<![\w/])(?:{repo})?#(\d+)(?!\d)|"
-                         rf"https://github\.com/{repo}/pull/(\d+)(?!\d)", re.IGNORECASE)
+    pattern = re.compile(rf"\b(?:{DEPENDS})\s*:?\s+(?:(?:PR|pull\s+request)\s+)?"
+                         rf"(?:(?:{repo})?#(\d+)(?!\d)|https://github\.com/{repo}/pull/(\d+)(?!\d))",
+                         re.IGNORECASE)
     for match in pattern.finditer(str(body or "")):
         number = int(match.group(1) or match.group(2))
         if number in open_numbers:
-            return number
+            return number, " ".join(match.group(0).split())
     return None
 
 
@@ -199,19 +221,23 @@ def hand_off(loop: dict, number: int, issue: dict, auto: bool) -> tuple[str, str
         origin = origin_pr(loop, number)             # a seat's finding (#324) ...
     except Exception as exc:
         raise RuntimeError(f"lineage unreadable: {exc}") from exc
-    if origin is None:                               # ... or a person's issue naming an open PR
-        origin = named_open_pr(loop, prs, str((issue or {}).get("body") or ""))
+    why = ""
+    if origin is None:                               # ... or a person's declared dependency
+        declared = declared_open_pr(loop, prs, str((issue or {}).get("body") or ""))
+        origin, why = declared if declared else (None, "")
     st = state_mod.state_for(loop)
-    if origin is not None:
+    if origin is None:
+        st.fix_hold_drop(number)                     # an earlier hold no longer applies (#686)
+    else:
         origin_state = pr_state(loop, origin)
         if origin_state is None:
             st.fix_hold_set(number, origin)          # the sweep retries
             return "unreadable", f"PR #{origin} unreadable; held", "", ""
         if origin_state == "open":
-            hold(loop, st, number, origin)
+            hold(loop, st, number, origin, why)
             return "held", f"held until PR #{origin} merges", "", ""
         if origin_state == "closed":
-            _drop_comment(loop, number, origin)
+            _drop_comment(loop, number, origin, bool(why))
             st.fix_hold_drop(number)
             return "dropped", f"PR #{origin} closed unmerged; finding is moot", "", ""
         st.fix_hold_drop(number)

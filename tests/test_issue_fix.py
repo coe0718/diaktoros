@@ -265,6 +265,49 @@ class Gate(Base):
         self.assertEqual(len(self.enqueued), 1)
         self.assertEqual((self.posted, state_mod.state_for(self.loop).fix_holds()), ([], {}))
 
+    def test_a_declared_dependency_is_held_and_the_comment_quotes_it(self):
+        self.live = issue(body="The docs half. Follow-up to PR #7, which adds the flag.")
+        self.open_prs = [{"number": 7, "body": ""}]
+        self.run_gate(self.labeled())
+        st = state_mod.state_for(self.loop)
+        self.assertEqual((self.enqueued, st.fix_holds()), ([], {12: 7}))
+        self.assertEqual([b["body"] for _p, b, _l in self.posted],
+                         ["waiting for #7 to merge — this issue says “Follow-up to PR #7”. "
+                          "Re-apply the fix label once that no longer holds."])
+
+    def test_a_mentioned_pr_is_not_waited_for(self):
+        # #686: "PR #684" named as an example held #685, the fix #684 itself needed.
+        self.live = issue(body="Live on PR #7 (the Desktop page): the reviewer can't run Node.")
+        self.open_prs = [{"number": 7, "body": ""}]
+        self.run_gate(self.labeled())
+        self.assertEqual(len(self.enqueued), 1)
+        self.assertEqual((self.posted, state_mod.state_for(self.loop).fix_holds()), ([], {}))
+
+    def test_re_applying_the_label_releases_a_hold_that_no_longer_applies(self):
+        self.live = issue(body="Depends on #7.")
+        self.open_prs = [{"number": 7, "body": ""}]
+        self.run_gate(self.labeled())
+        st = state_mod.state_for(self.loop)
+        self.assertEqual(st.fix_holds(), {12: 7})
+        self.live = issue(body="No longer waits on anything.")      # the person edited the issue
+        self.run_gate(self.labeled())
+        self.assertEqual((len(self.enqueued), st.fix_holds()), (1, {}))
+        self.origin_pr = {"number": 7, "state": "closed", "merged": True}
+        fix_hold.sweep(self.loop, st)                                # no second turn on merge
+        self.assertEqual(len(self.enqueued), 1)
+
+    def test_a_declared_dependency_closed_unmerged_says_so_plainly(self):
+        self.live = issue(body="Blocked by #7.")
+        self.open_prs = [{"number": 7, "body": ""}]
+        self.run_gate(self.labeled())
+        st = state_mod.state_for(self.loop)
+        self.origin_pr = {"number": 7, "state": "closed", "merged": False}
+        fix_hold.sweep(self.loop, st)
+        self.assertEqual((self.enqueued, st.fix_holds()), ([], {}))
+        self.assertIn("which this issue says it depends on, closed without merging",
+                      self.posted[-1][1]["body"])
+        self.assertNotIn("moot", self.posted[-1][1]["body"])
+
     def test_an_origin_already_merged_queues_at_once(self):
         self.origin = 7
         self.origin_pr = {"number": 7, "state": "closed", "merged": True}
