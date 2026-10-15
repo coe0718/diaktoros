@@ -18,6 +18,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, doctor
+from diaktoros import cli_lifecycle  # noqa: E402
 
 HOST = "https://gw.example"
 
@@ -146,7 +147,7 @@ class SharedJobTests(unittest.TestCase):
     def test_uninstall_one_loop_keeps_the_job_for_the_others(self):
         cli._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertEqual(len(self._shim_jobs()), 1)
-        removed_jobs, failures = cli._remove_cron({"id": "widgets"})
+        removed_jobs, failures = cli_lifecycle._remove_cron({"id": "widgets"})
         self.assertEqual(failures, [], failures)
         # The shared job must stay: two loops still sweep through it.
         self.assertEqual(len(self._shim_jobs()), 1, self.hermes.jobs)
@@ -160,7 +161,7 @@ class SharedJobTests(unittest.TestCase):
             (config.config_dir() / f"{loop_id}.json").unlink()
         cli._install_schedule({"id": "widgets"}, "15m", "local")
         self.assertEqual(len(self._shim_jobs()), 1)
-        removed_jobs, failures = cli._remove_cron({"id": "widgets"})
+        removed_jobs, failures = cli_lifecycle._remove_cron({"id": "widgets"})
         self.assertEqual(failures, [], failures)
         # Last loop gone: the job goes with it.
         self.assertEqual(self._shim_jobs(), [], self.hermes.jobs)
