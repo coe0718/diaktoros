@@ -44,10 +44,15 @@ global.document = {
 };
 global.fetch = (url) => {
   if (String(url).startsWith('https://api.github.com')) {
-    if (scenario === 'live-ok') {
+    if (scenario === 'live-ok' || scenario === 'live-partial') {
       const u = String(url);
-      if (u.includes('/stats/commit_activity'))
+      if (u.includes('/stats/commit_activity')) {
+        // In the partial scenario this one endpoint fails while the rest
+        // succeed, proving one rejection can't abort the live refresh.
+        if (scenario === 'live-partial')
+          return Promise.resolve({ ok: false, status: 403 });
         return Promise.resolve({ ok: true, json: () => Promise.resolve([{ total: 10 }, { total: 20 }]) });
+      }
       if (u.includes('/search/')) {
         // The open-PRs query is the only one with is:open; keep its count
         // small so the derived open-issues math stays positive.
@@ -157,6 +162,24 @@ class SiteRefreshTests(unittest.TestCase):
         self.assertEqual(out["loop_share"], "0-test")
         self.assertEqual(out["stars"], "0-test")
         self.assertEqual(out["last_activity"], "0-test")
+
+    @unittest.skipUnless(shutil.which("node"), "node unavailable")
+    def test_partial_endpoint_failure_does_not_abort_live_refresh(self):
+        # One API endpoint fails while the rest succeed (and the snapshot
+        # is unreachable): every other stat must still update from live.
+        out = self.run_scenario("live-partial")
+        self.assertEqual(out["version"], "v9.9.9-test")
+        self.assertEqual(out["prs_merged"], "4,242")
+        self.assertEqual(out["loop_prs_merged"], "4,242")
+        self.assertEqual(out["loop_share"], "100%")
+        self.assertEqual(out["issues_closed"], "4,242")
+        self.assertEqual(out["prs_open"], "7")
+        self.assertEqual(out["issues_open"], "43")
+        self.assertEqual(out["stars"], "11")
+        self.assertEqual(out["last_activity"], "5m ago")
+        # The failed endpoint keeps its hardcoded value; nothing else
+        # fills it in when the snapshot is unreachable too.
+        self.assertEqual(out["commits_year"], "0-test")
 
     def test_snapshot_covers_every_page_key(self):
         """Every data-site key in the HTML must exist in data.json,
