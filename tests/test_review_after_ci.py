@@ -303,7 +303,7 @@ class FixCi(Cli):
         self.assertIs(config.apply_settings(raw(), {"fix_ci": True})["fix_ci"], True)
         self.assertIs(config.apply_settings(raw(fix_ci=True), {"fix_ci": "off"})["fix_ci"], False)
         self.assertIn("fix_ci", config.SETTINGS_SCHEMA)
-        self.assertIn("  fix_ci:", (pathlib.Path(config.__file__).resolve().parents[1]
+        self.assertIn("  fix_ci:", (pathlib.Path(config.__file__).resolve().parents[2]
                                      / "plugin.yaml").read_text())
 
     def test_init_form_and_flag(self):

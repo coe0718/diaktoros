@@ -38,7 +38,7 @@ File shape (all keys except ``repo`` have defaults)::
       "ttl_min": 45, "inflight_ttl_min": 10, "turn_budget_s": 900
     }
 
-``config.py`` is deliberately strict: a loop that cannot be resolved to a repository,
+``config`` is deliberately strict: a loop that cannot be resolved to a repository,
 a base branch and two seats is a configuration error, not a run that guesses.
 
 The one key that is *not* strict is ``observer`` — the optional read-only feed (see
@@ -61,7 +61,7 @@ import stat
 from urllib.parse import urlsplit
 from urllib.request import Request
 
-from . import envnames
+from .. import envnames
 
 # Plugin-level settings. The desktop's Capabilities → Plugins form renders `config_schema` from
 # plugin.yaml; this table mirrors it so the CLI can use the same defaults without a YAML parser
@@ -832,7 +832,7 @@ def turn_parts(loop: dict, seat: str | None = None, *, recorded: float | None = 
     before its seat is released. ``recorded`` is a budget a running turn was started with: the
     clock never runs shorter than it, whatever the loop says now (a row keeps its budget).
     """
-    from . import deps, trusted_turn   # imported late: both import this module
+    from .. import deps, trusted_turn   # imported late: both import this module
     seats = (seat,) if seat else (*SEAT_KEYS, "adjudicator")
     budget = max(max(turn_budget(loop, name) for name in seats), _recorded_budget(recorded))
     return {"prefetch": deps.FETCH_TIMEOUT, "budget": budget,
@@ -2021,7 +2021,7 @@ def push_policy_lock():
     Manual config edits outside this lock are not an authorization mechanism.
     """
     import fcntl
-    from . import hostdirs
+    from .. import hostdirs
     directory = hostdirs.ensure(config_dir())
     with (directory / '.fixer-push-policy.lock').open('a+b') as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)

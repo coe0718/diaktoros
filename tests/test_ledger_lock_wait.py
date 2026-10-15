@@ -7,6 +7,7 @@ host ran heavy test suites; every connection gave up after 10 s, and the log cou
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 from pathlib import Path
 import ast
+import re
 import sqlite3
 import sys
 import tempfile
@@ -52,10 +53,15 @@ class Waits(unittest.TestCase):
         # connection left on SQLite's default 5 s (#605 review: trace._rows had no timeout).
         # The only exceptions are SQLite files no other connection can hold: :memory: and a new
         # private file, marked so on its line.
-        modules = ("run_supervisor", "ci_fix", "review_receipt", "stats", "cli", "migrate",
-                   "backup", "trace", "ledger", "desktop_api")
-        for name in modules:
-            path = ROOT / "diaktoros" / f"{name}.py"
+        # Found, not listed (#676): a list kept naming `cli` after its ledger connections moved
+        # to cli_operations, and nothing checked the module that had them.
+        paths = sorted(path for path in (ROOT / "diaktoros").rglob("*.py")
+                       if re.search(r"\b(?:sqlite3|ledger)\.connect\(", path.read_text()))
+        names = {path.relative_to(ROOT / "diaktoros").with_suffix("").as_posix() for path in paths}
+        self.assertLessEqual({"run_supervisor", "ci_fix", "review_receipt", "stats", "migrate",
+                              "backup", "trace", "ledger", "cli_operations"}, names)
+        for path in paths:
+            name = path.relative_to(ROOT / "diaktoros").with_suffix("").as_posix()
             source = path.read_text()
             lines = source.splitlines()
             self.assertNotRegex(source, r"busy_timeout=\d", name)

@@ -41,7 +41,7 @@ class Setting(unittest.TestCase):
         got = config.apply_settings(dict(self.RAW), {"human_paths": ".github/**, release/*"})
         self.assertEqual(got["human_paths"], [".github/**", "release/*"])
         self.assertIn("human_paths", config.SETTINGS_SCHEMA if hasattr(config, "SETTINGS_SCHEMA")
-                      else Path(config.__file__).parents[1].joinpath("plugin.yaml").read_text())
+                      else Path(config.__file__).parents[2].joinpath("plugin.yaml").read_text())
 
 
 class Broker(pv.Broker):

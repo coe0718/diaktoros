@@ -337,7 +337,7 @@ permission; verify a fresh turn and the actual filesystem failure before increas
 These are **test-harness tripwires**, not production sandbox breach reports.
 They arm only when `DIAKTOROS_TEST_HOME_GUARD=1` **and**
 `DIAKTOROS_TEST_GUARD_SENTINEL` names an existing harness sentinel file
-(`diaktoros/config.py:test_guard_active`). The variable alone does not arm them.
+(`diaktoros/config/__init__.py:test_guard_active`). The variable alone does not arm them.
 
 In a real gateway, inspect its launch environment/service configuration for leaked test
 settings, unset `DIAKTOROS_TEST_HOME_GUARD` there, and restart the gateway through your

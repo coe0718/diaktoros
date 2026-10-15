@@ -51,13 +51,14 @@ def duplicate_assignments(source: str) -> dict[str, list[int]]:
 
 
 def _modules():
-    return sorted([*ROOT.glob("diaktoros/*.py"), *ROOT.glob("scripts/*.py")])
+    return sorted([*ROOT.glob("diaktoros/**/*.py"), *ROOT.glob("scripts/*.py")])   # packages too
 
 
 class ModuleLevelNames(unittest.TestCase):
     def test_scan_covers_the_package(self):
         names = {path.relative_to(ROOT).as_posix() for path in _modules()}
         self.assertIn("diaktoros/selftest.py", names)
+        self.assertIn("diaktoros/config/__init__.py", names)          # a package's files (#676)
         self.assertTrue(any(name.startswith("scripts/") for name in names))
 
     def test_the_scan_catches_a_rebinding(self):
