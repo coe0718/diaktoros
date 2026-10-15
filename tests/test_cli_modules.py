@@ -11,6 +11,7 @@ import argparse
 import ast
 import importlib
 import pathlib
+import re
 import sys
 import unittest
 
@@ -67,6 +68,14 @@ class Split(unittest.TestCase):
             with self.subTest(helper=name):
                 self.assertFalse(hasattr(cli, name), f"cli binds {name}: call cli_common.{name}")
                 self.assertTrue(callable(getattr(cli_common, name)))
+
+    def test_no_test_patches_a_command_on_cli(self):
+        # The parser dispatches each module's own cmd_*: a patch on cli's re-export would never
+        # be called by `hermes dk <verb>`, so it would silently test nothing.
+        pattern = re.compile(r"""patch\.object\(\s*cli\s*,\s*["']cmd_|["']diaktoros\.cli\.cmd_""")
+        for path in sorted((ROOT / "tests").rglob("*.py")):
+            with self.subTest(file=path.name):
+                self.assertIsNone(pattern.search(path.read_text()), "patch it in its module")
 
     def test_no_moved_module_imports_cli(self):
         for name in MODULES + SHARED:

@@ -935,3 +935,126 @@ def cmd_cleanup(args) -> int:
     if args.dry_run:
         cmd.append("--dry-run")
     return subprocess.run(cmd).returncode
+
+
+# -- the parser for this module's commands (#676 step 7) --------------------------------------
+
+
+def add_list(sub) -> None:  # noqa: ANN001
+    """The ``list`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    sub.add_parser("list", help="List configured loops").set_defaults(func=cmd_list)
+
+
+def add_status(sub) -> None:  # noqa: ANN001
+    """The ``status`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    status = sub.add_parser("status", help="Show a loop's config and live state")
+    status.add_argument("--loop", help="loop id (default: every configured loop)")
+    status.set_defaults(func=cmd_status)
+
+
+def add_review(sub) -> None:  # noqa: ANN001
+    """The ``review`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    review = sub.add_parser("review", help="Ask for a fresh review of a PR's current head "
+                                           "(the reviewer gate decides, as for a webhook)")
+    review.add_argument("--loop", help="loop id (default: the only configured loop)")
+    review.add_argument("--pr", type=int, required=True, help="the pull request to review")
+    review.add_argument("--another-round", action="store_true",
+                        help="allow exactly one more verdict on a review-only PR that has "
+                             "reached its review cap (maintainer or operator only)")
+    review.set_defaults(func=cmd_review)
+
+
+def add_escalate(sub) -> None:  # noqa: ANN001
+    """The ``escalate`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    escalate = sub.add_parser("escalate", help="Send one PR to the adjudicator now, whatever "
+                                               "its verdict count (#459)")
+    escalate.add_argument("--loop", help="loop id (default: the only configured loop)")
+    escalate.add_argument("--pr", type=int, required=True, help="the pull request to escalate")
+    escalate.add_argument("--reason", default="", help="why, for the ruling's record (one line)")
+    escalate.set_defaults(func=cmd_escalate)
+
+
+def add_depends(sub) -> None:  # noqa: ANN001
+    """The ``depends`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    depends = sub.add_parser("depends",
+                             help="Make one issue's fix wait for another issue's merged "
+                                  "implementation (#671), waive it, or list them")
+    depends.add_argument("--loop", help="loop id (default: the only configured loop)")
+    depends.add_argument("--issue", type=int, default=None,
+                         help="the issue that waits (with --on/--waive; alone: its list)")
+    depends_how = depends.add_mutually_exclusive_group()
+    depends_how.add_argument("--on", type=int, default=None,
+                             help="the prerequisite issue whose implementation must merge")
+    depends_how.add_argument("--waive", type=int, default=None,
+                             help="remove this prerequisite from --issue")
+    depends.set_defaults(func=cmd_depends)
+
+
+def add_regression(sub) -> None:  # noqa: ANN001
+    """The ``regression`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    regression = sub.add_parser("regression",
+                                help="Link a later bug to the approved PR that shipped it, "
+                                     "for the report (#661); checked against GitHub")
+    regression.add_argument("--loop", help="loop id (default: the only configured loop)")
+    regression.add_argument("--issue", type=int, required=True,
+                            help="the bug report (an issue opened after the PR merged)")
+    regression.add_argument("--pr", type=int, required=True,
+                            help="the merged pull request that introduced it")
+    regression.add_argument("--retract", action="store_true",
+                            help="withdraw this link (kept as retracted)")
+    regression.set_defaults(func=cmd_regression)
+
+
+def add_explain(sub) -> None:  # noqa: ANN001
+    """The ``explain`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    explain = sub.add_parser("explain",
+                             help="Why one PR is not moving, and what has to happen next")
+    explain.add_argument("--loop", help="loop id (default: the only configured loop)")
+    explain.add_argument("--pr", type=int, required=True, help="pull request number to explain")
+    explain.set_defaults(func=cmd_explain)
+
+
+def add_ready(sub) -> None:  # noqa: ANN001
+    """The ``ready`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    ready = sub.add_parser("ready", help="List the open PRs that are safe to merge, in merge "
+                                         "order, and why the others are not (read-only)")
+    ready.add_argument("--loop", help="loop id (default: the only configured loop)")
+    ready.set_defaults(func=cmd_ready)
+
+
+def add_retry(sub) -> None:  # noqa: ANN001
+    """The ``retry`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    retry = sub.add_parser("retry", help="Re-arm a PR's isolated run that failed before "
+                                         "any GitHub write (refuses one that may have written)")
+    retry.add_argument("--loop", required=True,
+                       help="loop id (its config file name; `list` shows them)")
+    retry.add_argument("--pr", type=int, required=True,
+                       help="the pull request whose failed run to re-arm")
+    retry.add_argument("--seat", choices=["reviewer", "fixer", "adjudicator", "triage",
+                                          "issue_fixer"],
+                       help="only that seat's run (default: whichever failed at the PR's "
+                            "newest head)")
+    retry.set_defaults(func=cmd_retry)
+
+
+def add_drain(sub) -> None:  # noqa: ANN001
+    """The ``drain`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    drain = sub.add_parser("drain", help="Start a queued run once its seat is free")
+    drain.add_argument("--loop", required=True,
+                       help="loop id (its config file name; `list` shows them)")
+    drain.add_argument("--seat", default="reviewer", choices=["reviewer", "fixer"],
+                       help="which seat's queue to drain")
+    drain.set_defaults(func=cmd_drain)
+
+
+def add_cleanup(sub) -> None:  # noqa: ANN001
+    """The ``cleanup`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    cleanup = sub.add_parser("cleanup", help="Reclaim local disk for finished PRs")
+    cleanup.add_argument("--loop", required=True,
+                         help="loop id (its config file name; `list` shows them)")
+    cleanup.add_argument("--pr", type=int,
+                         help="clean one closed PR (default: sweep every closed PR the clone "
+                              "knows about)")
+    cleanup.add_argument("--dry-run", action="store_true",
+                         help="list what would be removed, remove nothing")
+    cleanup.set_defaults(func=cmd_cleanup)

@@ -187,3 +187,69 @@ def cmd_models(args) -> int:
         print(f"⚠️  the current model {current} is not in this list")
     print(f"change it with `hermes -p {profile} model` — this command never writes")
     return 0
+
+
+# -- the parser for this module's commands (#676 step 7) --------------------------------------
+
+
+def add_stats(sub) -> None:  # noqa: ANN001
+    """The ``stats`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    stats_cmd = sub.add_parser("stats", help="What the loop did over a window: seat turns, "
+                                             "how long they ran, and (with --github) its PRs "
+                                             "and reviews")
+    stats_cmd.add_argument("--loop", help="loop id (default: the only configured loop)")
+    stats_cmd.add_argument("--since", default="7d",
+                           help="window start: 7d, 24h or a date like 2026-09-28 (default 7d)")
+    stats_cmd.add_argument("--github", action="store_true",
+                           help="also read the window's PRs and reviews from GitHub, as the "
+                                "reader (one request per PR)")
+    stats_cmd.add_argument("--json", action="store_true", help="print the data as JSON")
+    stats_cmd.add_argument("--html", metavar="FILE",
+                           help="also write one self-contained HTML page to FILE")
+    stats_cmd.set_defaults(func=cmd_stats)
+
+
+def add_report(sub) -> None:  # noqa: ANN001
+    """The ``report`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    report_cmd = sub.add_parser("report", help="The digest on demand, across all loops: reviews, "
+                                               "rounds, time to verdict, escalations, rulings, "
+                                               "finding and issue-fix outcomes, regressions "
+                                               "after approval, turns per seat and model, "
+                                               "trends, the most stuck PR")
+    report_cmd.add_argument("--loop", help="one loop id (default: every configured loop)")
+    report_cmd.add_argument("--since", default="7d",
+                            help="window start: 7d, 24h or a date like 2026-09-28 (default 7d)")
+    report_cmd.add_argument("--json", action="store_true", help="print the data as JSON")
+    report_cmd.set_defaults(func=cmd_report)
+
+
+def add_trace(sub) -> None:  # noqa: ANN001
+    """The ``trace`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    tracer = sub.add_parser("trace", help="Dry-run one webhook through its gate: why it would "
+                                          "(or would not) start a run")
+    tracer.add_argument("--loop", required=True,
+                        help="loop id (its config file name; `list` shows them)")
+    source = tracer.add_mutually_exclusive_group(required=True)
+    source.add_argument("--delivery", help="a recorded delivery to this loop's hooks: GitHub's "
+                                           "numeric id or the X-GitHub-Delivery GUID")
+    source.add_argument("--payload", help="a webhook payload JSON file instead")
+    tracer.add_argument("--event", choices=("pull_request", "pull_request_review", "issues"),
+                        help="with --payload: the event it was (default: read from the payload)")
+    tracer.add_argument("--route", help="the route it was sent to (default: from the delivery's "
+                                        "hook, or the event)")
+    tracer.add_argument("--admin-token", default="",
+                        help="login whose token can read hook deliveries (admin:repo_hook or repo)")
+    tracer.set_defaults(func=cmd_trace)
+
+
+def add_models(sub) -> None:  # noqa: ANN001
+    """The ``models`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    models = sub.add_parser("models", help="Read-only: list the models a seat's Hermes "
+                                           "profile's provider offers (Hermes catalog)")
+    # Never `--profile`/`-p`: `hermes` takes those from anywhere on its command line to switch
+    # its own profile, so the plugin would never see them.
+    models.add_argument("--profile-name", dest="profile", help="Hermes profile name")
+    models.add_argument("--seat", choices=("reviewer", "fixer", "adjudicator"),
+                        help="use this seat's profile from the loop config")
+    models.add_argument("--loop", help="loop id for --seat (default: the only loop)")
+    models.set_defaults(func=cmd_models)

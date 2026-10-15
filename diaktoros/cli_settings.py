@@ -1679,3 +1679,248 @@ def _cmd_fixer_push_locked(args) -> int:
                   f"watchdog sweep, or now: `hermes dk drain --loop {loop['id']} "
                   "--seat fixer`")
     return 0
+
+
+# -- the parser for this module's commands (#676 step 7) --------------------------------------
+
+
+def add_set(sub) -> None:  # noqa: ANN001
+    """The ``set`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    change = sub.add_parser("set", help="Change a loop's settings in place")
+    change.add_argument("--loop", required=True,
+                        help="loop id (its config file name; `list` shows them)")
+    change.add_argument("--concurrency", type=int,
+                        help="default PRs per seat at once (1 = serialized; above 1 needs a "
+                             "clone, since each run gets its own)")
+    change.add_argument("--reviewer-concurrency", type=int, default=None,
+                        help="how many PRs the reviewer may work at once")
+    change.add_argument("--fixer-concurrency", type=int, default=None,
+                        help="how many PRs the fixer may work at once")
+    change.add_argument("--cap", type=int, help="verdicts allowed before adjudication")
+    change.add_argument("--clone", help="local clone the runs isolate from")
+    change.add_argument("--base", help="base branch the loop watches")
+    change.add_argument("--grace-min", type=int, help="quiet minutes before the watchdog speaks")
+    change.add_argument("--marker-grace-min", type=int,
+                        help="minutes an adjudication may sit claimed with no live run before "
+                             "the watchdog reports it")
+    change.add_argument("--ttl-min", type=int, help="how long a run may hold its slot")
+    change.add_argument("--inflight-ttl-min", type=int,
+                        help="minutes an in-flight mark blocks a second run at the same head")
+    change.add_argument("--turn-budget", type=int,
+                        help="seconds one isolated seat turn may run (loop default)")
+    change.add_argument("--attribution", choices=("on", "off"), default=None,
+                        help="sign what the loop posts ('Automated by Diaktoros'), "
+                             "or stop")
+    change.add_argument("--review-only-update", choices=("on", "off"), default=None,
+                        help="push a clean merge of the base into a review-only author's PR "
+                             "branch (same repository only), or stop; turning it on needs "
+                             "--acknowledge-branch-push")
+    change.add_argument("--acknowledge-branch-push", action="store_true",
+                        help="accept that the host pushes to a branch the loop does not own; "
+                             "required to turn --review-only-update on")
+    change.add_argument("--review-after-ci", choices=("on", "off"), default=None,
+                        help="start each review after the head's checks finish (up to an hour), "
+                             "or start at once")
+    change.add_argument("--fix-ci", choices=("on", "off"), default=None,
+                        help="hand a failed required check on a fixer's PR to the fixer "
+                             "(needs unattended fixer pushes), or stop")
+    change.add_argument("--review-only-cap", default=None, metavar="N",
+                        help="verdicts the reviewer gives one review-only PR before it waits "
+                             "for `review --another-round`, 1-1000; 0 = the review cap")
+    change.add_argument("--ci-fix-cap", default=None, metavar="N",
+                        help="CI-fix turns per PR before a red head goes to the reviewer, "
+                             "1-10; 0 = the default (3)")
+    change.add_argument("--review-only-daily", default=None, metavar="N",
+                        help="reviewer turns a day on review-only PRs, 1-1000; 0 = no cap")
+    reviewed = change.add_mutually_exclusive_group()
+    reviewed.add_argument("--review-only", action="append", default=None,
+                          help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated); replaces the list")
+    reviewed.add_argument("--no-review-only", action="store_true",
+                          help="clear the review-only list")
+    required = change.add_mutually_exclusive_group()
+    required.add_argument("--required-check", action="append", default=None,
+                          help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates); replaces the list")
+    required.add_argument("--no-required-checks", action="store_true",
+                          help="clear the list: every check gates again")
+    humans = change.add_mutually_exclusive_group()
+    humans.add_argument("--human-path", action="append", default=None,
+                        help="a glob pattern for paths only a human may approve (repeat it); replaces the list")
+    humans.add_argument("--no-human-paths", action="store_true",
+                        help="clear the list: no path is reserved for a human")
+    change.add_argument("--fixer-check", default=None, help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none)")
+    change.add_argument("--reviewer-turn-budget", type=int, default=None,
+                        help="the reviewer seat's own turn budget in seconds")
+    change.add_argument("--fixer-turn-budget", type=int, default=None,
+                        help="the fixer seat's own turn budget in seconds")
+    change.add_argument("--reviewer-daily-turns", type=int, default=None,
+                        help="most reviewer turns per day on this loop; later ones wait for "
+                             "midnight (0 removes the cap)")
+    change.add_argument("--fixer-daily-turns", type=int, default=None,
+                        help="most fixer turns per day on this loop (0 removes the cap)")
+    change.add_argument("--reviewer-daily-tokens", type=int, default=None,
+                        help="most tokens (in + out) the reviewer may spend per day on this "
+                             "loop; once spent, the next turn waits for midnight (0 removes it)")
+    change.add_argument("--fixer-daily-tokens", type=int, default=None,
+                        help="most tokens the fixer (and issue fixes) may spend per day on "
+                             "this loop (0 removes it)")
+    change.add_argument("--reviewer-max-steps", type=int, default=None,
+                        help="agent steps one reviewer turn may take, 8-200 (0 = default 60)")
+    change.add_argument("--fixer-max-steps", type=int, default=None,
+                        help="agent steps one fixer or issue-fix turn may take, 8-200 "
+                             "(0 = default 80)")
+    change.add_argument("--host", help="gateway webhook host")
+    change.add_argument("--adjudicator-login", default=None,
+                        help="optional fourth GitHub account the ruling is also posted as; "
+                             "\"\" clears it (rulings go to the operator only)")
+    change.add_argument("--adjudicator-profile", default=None,
+                        help="turn adjudication on: the Hermes profile that rules when the "
+                             "verdict cap is spent; creates the <id>-breach route and its shim")
+    change.add_argument("--adjudicator-route", default=None,
+                        help="with --adjudicator-profile: the route's name (default: <id>-breach)")
+    change.add_argument("--adjudicator", choices=("off",), default=None,
+                        help="turn adjudication off: removes the route and the block (breach "
+                             "markers and rulings stay in the ledger)")
+    change.add_argument("--read-token", default=None,
+                        help="the login the gates read GitHub as — its own account, never a "
+                             "seat or the adjudicator login (the four-identity rule); map a "
+                             "new login with --token LOGIN=/path")
+    change.add_argument("--token", action="append", default=[],
+                        help="LOGIN=/path/to/pat for the --read-token or --adjudicator-login "
+                             "login only (a path, never the token)")
+    change.add_argument("--observer-route", help="route the observer feed delivers through")
+    change.add_argument("--observer-profile", help="profile that owns the observer destination")
+    change.add_argument("--observer-deliver",
+                        help="where the gateway delivers the feed (telegram, discord, ...)")
+    change.add_argument("--observer-events", default=None,
+                        help="comma-separated transitions to send, from "
+                             "opened,handoff,verdict,approved,escalation,ruling,stall,closed,"
+                             "triaged,fixing,fixed,failed,held,conflict,ci_failed,updated,main_red,stale_approval,human_paths,ready_set "
+                             "(blank = all)")
+    change.add_argument("--observer-digest-min", type=int, default=None,
+                        help="batch the feed into one message per N minutes (0 = per "
+                             "transition)")
+    change.add_argument("--observer-weekly-report", default=None,
+                        help="the week's report once a week at a weekday and UTC time like "
+                             "'mon 09:00' (blank = none)")
+    change.add_argument("--observer-urgent-route", default=None,
+                        help="route for urgent notices only (blank = one feed for everything)")
+    change.add_argument("--observer-urgent-profile", default=None,
+                        help="profile that owns the urgent destination (blank = the feed's)")
+    change.add_argument("--observer-urgent-deliver", default=None,
+                        help="where the gateway delivers urgent notices (blank = the feed's)")
+    change.add_argument("--observer-mute", action="store_true",
+                        help="stop the feed without forgetting it")
+    change.add_argument("--observer-unmute", action="store_true", help="resume a muted feed")
+    change.add_argument("--observer-disable", action="store_true",
+                        help="drop this loop's observer config entirely")
+    change.set_defaults(func=cmd_set)
+
+
+def add_apply(sub) -> None:  # noqa: ANN001
+    """The ``apply`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    apply_cmd = sub.add_parser("apply", help="Push the plugin settings onto a loop")
+    apply_cmd.add_argument("--loop", required=True,
+                           help="loop id (its config file name; `list` shows them)")
+    apply_cmd.add_argument("--dry-run", action="store_true",
+                           help="show the diff without writing it")
+    apply_cmd.add_argument("--while-busy", action="store_true",
+                           help="rebind a seat's profile/login even while a run is in flight "
+                                "(that run keeps the identity it started with)")
+    apply_cmd.add_argument("--admin-token", default="",
+                           help="login whose token can write the repo's hooks, for the hook "
+                                "moves and re-keys apply makes (default: the reader)")
+    apply_cmd.add_argument("--recreate-routes", action="store_true",
+                           help="write this loop's routes the registry lost, from the loop "
+                                "config, with a new secret, and re-key the repo hooks that "
+                                "point at them (when no intent record can restore them)")
+    apply_cmd.add_argument("--hooks", action="store_true",
+                           help="make this loop's two repo hooks what its routes need: "
+                                "create a missing one (paused until arm), repoint one at the "
+                                "route's exact URL, add its gate's event (hook write access, "
+                                "see --admin-token)")
+    apply_cmd.add_argument("--watchdog-shim", action="store_true",
+                           help="rewrite the cron shim the watchdog job runs, pinned to this "
+                                "plugin's watchdog")
+    apply_cmd.set_defaults(func=cmd_apply)
+
+
+def add_settings(sub) -> None:  # noqa: ANN001
+    """The ``settings`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    settings_cmd = sub.add_parser("settings",
+                                  help="Show the plugin-level defaults a loop starts from")
+    settings_cmd.set_defaults(func=cmd_settings)
+
+
+def add_show(sub) -> None:  # noqa: ANN001
+    """The ``show`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    show_cmd = sub.add_parser("show",
+                              help="Every setting of one loop: value, source, meaning")
+    show_cmd.add_argument("--loop", required=True,
+                          help="loop id (its config file name; `list` shows them)")
+    show_cmd.add_argument("--json", action="store_true", help="machine-readable output")
+    show_cmd.set_defaults(func=cmd_show)
+
+
+def add_triage(sub) -> None:  # noqa: ANN001
+    """The ``triage`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    triage = sub.add_parser("triage", help="Issue triage for one loop: --enable, --disable, "
+                                           "or show it (#213)")
+    triage.add_argument("--loop", required=True,
+                        help="loop id (its config file name; `list` shows them)")
+    switch = triage.add_mutually_exclusive_group()
+    switch.add_argument("--enable", action="store_true",
+                        help="turn triage on (or change it): writes its route, shim and, with "
+                             "--admin-token, its issues hook (paused until arm)")
+    switch.add_argument("--disable", action="store_true",
+                        help="turn triage off: removes its route, shim and (with --admin-token) hook")
+    triage.add_argument("--triage-profile", dest="profile", default="",
+                        help="Hermes profile whose model triages")
+    triage.add_argument("--author", action="append", default=[],
+                        help="GitHub login whose new issues are triaged (repeatable); "
+                             "anyone else's are ignored")
+    triage.add_argument("--labels", default="",
+                        help="comma-separated labels triage may apply, e.g. "
+                             "bug,feature,docs,question,P0,P1,P2,P3")
+    triage.add_argument("--max-labels", type=int, default=None,
+                        help="at most this many labels per issue (default 3)")
+    triage.add_argument("--comment", choices=("on", "off"), default=None,
+                        help="allow one short comment with the labels (default off)")
+    triage.add_argument("--login", default="",
+                        help="account that labels (default: the reviewer seat); needs "
+                             "issues: write, never the reader")
+    triage.add_argument("--token", action="append", default=[],
+                        help="login=/path/to/pat for --login (or --admin-token), if not mapped")
+    triage.add_argument("--fix-label", default=None,
+                        help="a label a maintainer applies to hand an issue to the fixer "
+                             "(#214; needs unattended fixer pushes on); '' turns it off")
+    triage.add_argument("--maintainer", action="append", default=[],
+                        help="login whose applying --fix-label counts (repeatable)")
+    triage.add_argument("--daily-turns", type=int, default=None,
+                        help="at most this many triage turns per day (0 removes the cap)")
+    triage.add_argument("--fix-daily-turns", type=int, default=None,
+                        help="at most this many issue-fix turns per day (0 = the default, "
+                             f"{config.DEFAULT_FIX_DAILY_TURNS}); issue fixes are always "
+                             "capped")
+    triage.add_argument("--auto-fix-label", action="append", default=None,
+                        help="a triage label that hands an issue to the fixer without a "
+                             "maintainer (#232; repeatable; never P0-P2; '' clears the list)")
+    triage.add_argument("--auto-fix-daily", type=int, default=None,
+                        help="at most this many automatic issue fixes per day (0 = the "
+                             f"default, {config.DEFAULT_AUTO_FIX_DAILY})")
+    triage.add_argument("--admin-token", default="",
+                        help="login whose token can create or delete repo hooks")
+    triage.add_argument("--dry-run", action="store_true", help="show the change, write nothing")
+    triage.set_defaults(func=cmd_triage)
+
+
+def add_fixer_push(sub) -> None:  # noqa: ANN001
+    """The ``fixer-push`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
+    fixer_push = sub.add_parser("fixer-push", help="Explicit per-repository unattended fixer push policy")
+    fixer_push.add_argument("--loop", required=True, help="exact loop id (never all loops)")
+    direction = fixer_push.add_mutually_exclusive_group(required=True)
+    direction.add_argument("--enable", action="store_true", help="opt this repository in")
+    direction.add_argument("--disable", action="store_true", help="turn unattended pushes off")
+    fixer_push.add_argument("--acknowledge-pr-race", action="store_true",
+                            help="accept the residual non-atomic PR-metadata/ref race; required for --enable")
+    fixer_push.add_argument("--dry-run", action="store_true", help="show action without writing")
+    fixer_push.set_defaults(func=cmd_fixer_push)
