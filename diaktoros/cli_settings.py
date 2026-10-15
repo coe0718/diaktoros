@@ -22,6 +22,7 @@ from . import (
     routes,
     state as state_mod,
 )
+from .config import credentials
 from .config import settings_form
 from .cli_common import _ROUTE_PROMPT, BRANCH_PUSH_REFUSAL, GATE_SCRIPT
 
@@ -353,7 +354,7 @@ def _recreate_routes(loop: dict, missing: dict, *, dry_run: bool,
     roles = set(missing)
     names = ", ".join(sorted(missing.values()))
     try:
-        config.verify_seats(loop, roles & set(config.SEAT_KEYS))
+        credentials.verify_seats(loop, roles & set(config.SEAT_KEYS))
         cli_common._verify_routes(loop, roles)
         hooks = cli_common._hook_listing(loop, token_login)
     except config.ConfigError as exc:
@@ -484,7 +485,7 @@ def _set_adjudication(args, loop: dict) -> int:
         updated = config.normalize({**loop, "adjudicator": {**current, "route": route,
                                                             "profile": profile}})
         config.webhook_host(updated.get("host"), required=True)
-        config.verify_seats(updated, {"adjudicator"})
+        credentials.verify_seats(updated, {"adjudicator"})
         cli_common._verify_routes(updated, {"adjudicator"})
         gate_shims.install(updated, dry_run=True, report=False)
     except config.ConfigError as exc:
@@ -677,7 +678,7 @@ def cmd_set(args) -> int:
                   "--read-token")
             return 2
         try:
-            config.check_token_file(path, f"--token {login}")
+            credentials.check_token_file(path, f"--token {login}")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             return 2
@@ -817,13 +818,13 @@ def cmd_set(args) -> int:
                 raise config.ConfigError(
                     f"no token file mapped for the reader {read_after!r} — add "
                     f"--token {read_after}=/path/to/pat")
-            config.check_token_file(cli_common._token_ref(updated, read_after),
+            credentials.check_token_file(cli_common._token_ref(updated, read_after),
                                     f"token file for the reader {read_after!r}")
-            config.verify_credentials(updated, {"read"})
+            credentials.verify_credentials(updated, {"read"})
         if adj_changed and config.adjudicator_login(updated):
             # The same file-level rules init applies, plus: the file must exist and be private.
-            config.verify_adjudicator_token(updated)
-            config.verify_credentials(updated)
+            credentials.verify_adjudicator_token(updated)
+            credentials.verify_credentials(updated)
         cli_common._observer_check(updated)
     except config.ConfigError as exc:
         print(f"refused: {exc}")
@@ -1019,7 +1020,7 @@ def _apply(args) -> int:
 
     try:
         # Token-file paths first: a bad path is refused by name before anything is computed.
-        config.verify_token_settings(cli_common._SETTINGS)
+        credentials.verify_token_settings(cli_common._SETTINGS)
         updated = config.normalize(settings_form.apply_settings(loop, cli_common._SETTINGS))
     except config.ConfigError as exc:
         print(f"settings refused: {exc}")
@@ -1027,10 +1028,10 @@ def _apply(args) -> int:
 
     # The four-identity rule holds for the config apply would leave behind, whether or not this
     # push moves an identity: "nothing changed" must not endorse a reader that is also a seat.
-    problem = config.reader_problem(updated)
+    problem = credentials.reader_problem(updated)
     if problem:
         print(f"settings refused: {updated['id']}: {problem} — {config.FOUR_IDENTITY_RULE}")
-        print(f"fix: {config.reader_fix(updated)}")
+        print(f"fix: {credentials.reader_fix(updated)}")
         return 2
     reader = str(updated.get("read_token") or "")
     if reader.casefold() not in {str(k).casefold() for k in updated.get("tokens") or {}}:
@@ -1053,12 +1054,12 @@ def _apply(args) -> int:
     try:
         # Validate what this apply would *write*: a loop that predates the seat checks keeps
         # loading, but a seat this push moves must be one that can actually run.
-        config.verify_seats(updated, rebinding)
+        credentials.verify_seats(updated, rebinding)
         adj = config.adjudicator_login(updated)
         if adj and (adj != config.adjudicator_login(loop)
                     or cli_common._token_ref(loop, adj) != cli_common._token_ref(updated, adj)):
-            config.verify_adjudicator_token(updated)
-            config.verify_credentials(updated)
+            credentials.verify_adjudicator_token(updated)
+            credentials.verify_credentials(updated)
         if rebinding:
             cli_common._verify_routes(updated, rebinding)
         # Refuses a foreign file (#105) — only over what this apply writes: the config's pairs. A
@@ -1536,7 +1537,7 @@ def cmd_triage(args) -> int:
         if not config.profile_exists(updated["triage"]["profile"]):
             raise config.ConfigError(f"no Hermes profile named {updated['triage']['profile']!r} "
                                      f"(looked in {config.profiles_root()})")
-        config.verify_credentials(updated, roles={"read"})
+        credentials.verify_credentials(updated, roles={"read"})
         config.webhook_host(updated["host"], required=True)
         cli_common._verify_routes(updated, {"triage"})
     except config.ConfigError as exc:

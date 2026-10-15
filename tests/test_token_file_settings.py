@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, doctor
+from diaktoros.config import credentials  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 
@@ -341,9 +342,9 @@ class TokenFileSettingsTests(unittest.TestCase):
         with patch("builtins.open", side_effect=AssertionError("token file opened")), \
                 patch.object(Path, "read_text", side_effect=AssertionError("token file read")), \
                 patch.object(Path, "read_bytes", side_effect=AssertionError("token file read")):
-            self.assertEqual(config.token_file_problem(str(self.pats["rev"])), "")
-            self.assertEqual(config.token_file_problem("~/keys/rev.pat"), "")
-            self.assertIn("absolute", config.token_file_problem("keys/rev.pat"))
+            self.assertEqual(credentials.token_file_problem(str(self.pats["rev"])), "")
+            self.assertEqual(credentials.token_file_problem("~/keys/rev.pat"), "")
+            self.assertIn("absolute", credentials.token_file_problem("keys/rev.pat"))
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from diaktoros import config  # noqa: E402
 
 PACKAGE = pathlib.Path(config.__file__).resolve().parent
-SUBMODULES = ("settings_form",)
+SUBMODULES = ("settings_form", "credentials")
 
 
 def _top_level_names(path: pathlib.Path) -> set[str]:

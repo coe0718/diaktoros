@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 from . import cli_common, config, gate_shims, route_intent, routes
+from .config import credentials
 from .config import settings_form
 from .cli_common import BRANCH_PUSH_REFUSAL, SHARED_JOB_NAMES, _hook_route_name
 
@@ -248,7 +249,7 @@ def cmd_init(args) -> int:
             return 2
         login, path = pair.split("=", 1)
         try:
-            config.check_token_file(path, f"--token {login}")
+            credentials.check_token_file(path, f"--token {login}")
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             return 2
@@ -257,7 +258,7 @@ def cmd_init(args) -> int:
     # Token-file paths from the settings form are checked before anything else is: a path that is
     # relative, missing, not yours or group/world readable is refused by name, and never opened.
     try:
-        config.verify_token_settings(cli_common._SETTINGS)
+        credentials.verify_token_settings(cli_common._SETTINGS)
     except config.ConfigError as exc:
         print(f"config refused: {exc}")
         return 2
@@ -452,8 +453,8 @@ def cmd_init(args) -> int:
         # ownership are all checked before a single file is written.
         # The adjudicator's token file is checked first, so a relative, missing or shared-readable
         # path is refused by its own name rather than as a generic missing file.
-        config.verify_adjudicator_token(loop)
-        config.verify_seats(loop, roles)
+        credentials.verify_adjudicator_token(loop)
+        credentials.verify_seats(loop, roles)
         # Hooks are created as --admin-token's login, after the config and routes are written;
         # an unmapped login would fail there and roll everything back, so refuse it up front.
         if args.hooks and args.admin_token and args.admin_token.lower() not in {
