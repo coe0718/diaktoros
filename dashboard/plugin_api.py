@@ -62,3 +62,8 @@ def health(request: Request, loop: str | None = None, probe: bool = False):
     # X-Forwarded-For is still a forwarding header (#648 review, F1).
     return _answer(desktop_api.health_view, loop, probe,
                    client.host if client else None, request.headers)
+
+
+@router.get("/settings")
+def settings():
+    return _answer(desktop_api.settings_view)
