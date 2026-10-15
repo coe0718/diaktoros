@@ -65,8 +65,11 @@ global.fetch = (url) => {
   if (url === 'data.json') {
     if (scenario === 'live-fail-snapshot-ok') {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(
-        { version: 'v1.2.3-test', loop_prs_merged: 7,
-          issues_closed: 8, generated: '2026-01-02' }) });
+        { version: 'v1.2.3-test', loop_prs_merged: 7, prs_merged: 21,
+          issues_closed: 8, prs_open: 3, open_issues_count: 11,
+          stars: 5, forks: 2, commits_year: 345,
+          pushed_at: new Date(Date.now() - 90 * 60000).toISOString(),
+          generated: '2026-01-02' }) });
     }
     return Promise.resolve({ ok: false, status: 404 });
   }
@@ -133,6 +136,16 @@ class SiteRefreshTests(unittest.TestCase):
         self.assertEqual(out["loop_prs_merged"], "7")
         self.assertEqual(out["issues_closed"], "8")
         self.assertEqual(out["generated"], "2026-01-02")
+        # The added stat keys must also fall back to the snapshot,
+        # including the derived ones (share, open issues, relative time).
+        self.assertEqual(out["prs_merged"], "21")
+        self.assertEqual(out["loop_share"], "33%")
+        self.assertEqual(out["prs_open"], "3")
+        self.assertEqual(out["issues_open"], "8")
+        self.assertEqual(out["commits_year"], "345")
+        self.assertEqual(out["stars"], "5")
+        self.assertEqual(out["forks"], "2")
+        self.assertEqual(out["last_activity"], "1h ago")
 
     @unittest.skipUnless(shutil.which("node"), "node unavailable")
     def test_total_failure_preserves_hardcoded_values(self):
@@ -141,6 +154,9 @@ class SiteRefreshTests(unittest.TestCase):
         self.assertEqual(out["loop_prs_merged"], "0-test")
         self.assertEqual(out["issues_closed"], "0-test")
         self.assertEqual(out["generated"], "1970-01-01-test")
+        self.assertEqual(out["loop_share"], "0-test")
+        self.assertEqual(out["stars"], "0-test")
+        self.assertEqual(out["last_activity"], "0-test")
 
     def test_snapshot_covers_every_page_key(self):
         """Every data-site key in the HTML must exist in data.json,
