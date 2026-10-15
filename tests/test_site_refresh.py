@@ -24,7 +24,11 @@ const pageScript = fs.readFileSync(process.argv[2], 'utf8');
 const scenario = process.argv[3];
 // Stand-ins for the hardcoded snapshot values baked into the HTML.
 const HARDCODED = { version: 'v0.0.0-test', loop_prs_merged: '0-test',
-                    issues_closed: '0-test', generated: '1970-01-01-test' };
+                    issues_closed: '0-test', generated: '1970-01-01-test',
+                    prs_merged: '0-test', loop_share: '0-test',
+                    prs_open: '0-test', issues_open: '0-test',
+                    commits_year: '0-test', last_activity: '0-test',
+                    stars: '0-test', forks: '0-test' };
 const elements = {};
 // Real DOM textContent coerces assigned values to strings; mirror that.
 function makeEl(v) {
@@ -41,10 +45,20 @@ global.document = {
 global.fetch = (url) => {
   if (String(url).startsWith('https://api.github.com')) {
     if (scenario === 'live-ok') {
-      const body = String(url).includes('/search/')
-        ? { total_count: 4242 }
-        : { tag_name: 'v9.9.9-test' };
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+      const u = String(url);
+      if (u.includes('/stats/commit_activity'))
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([{ total: 10 }, { total: 20 }]) });
+      if (u.includes('/search/')) {
+        // The open-PRs query is the only one with is:open; keep its count
+        // small so the derived open-issues math stays positive.
+        const total = u.includes('is%3Aopen') ? 7 : 4242;
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ total_count: total }) });
+      }
+      if (u.endsWith('/repos/coe0718/diaktoros'))
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({
+          stargazers_count: 11, forks_count: 3, open_issues_count: 50,
+          pushed_at: new Date(Date.now() - 5 * 60000).toISOString() }) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ tag_name: 'v9.9.9-test' }) });
     }
     return Promise.resolve({ ok: false, status: 403 });
   }
@@ -96,8 +110,16 @@ class SiteRefreshTests(unittest.TestCase):
     def test_live_api_updates_stats(self):
         out = self.run_scenario("live-ok")
         self.assertEqual(out["version"], "v9.9.9-test")
-        self.assertEqual(out["loop_prs_merged"], "4242")
-        self.assertEqual(out["issues_closed"], "4242")
+        self.assertEqual(out["loop_prs_merged"], "4,242")
+        self.assertEqual(out["issues_closed"], "4,242")
+        self.assertEqual(out["prs_merged"], "4,242")
+        self.assertEqual(out["loop_share"], "100%")
+        self.assertEqual(out["prs_open"], "7")
+        self.assertEqual(out["issues_open"], "43")
+        self.assertEqual(out["commits_year"], "30")
+        self.assertEqual(out["stars"], "11")
+        self.assertEqual(out["forks"], "3")
+        self.assertEqual(out["last_activity"], "5m ago")
         # The harness stamps the UTC date; allow yesterday too so the test
         # cannot flake if the run straddles 00:00:00Z.
         today = datetime.now(timezone.utc).date()
