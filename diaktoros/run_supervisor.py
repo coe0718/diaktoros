@@ -2039,6 +2039,14 @@ class Supervisor:
         except (sqlite3.Error, OSError, LedgerMissing) as exc:
             util.log(f"operator action {action} on {repo}#{pr} not recorded: {exc}")
 
+    def issue_fix_prs(self, repo: str, number: int) -> list[int]:
+        """The PRs issue-fix runs opened for issue ``number``, newest first (#671)."""
+        with self._connect() as con:
+            rows = con.execute("SELECT pr_number FROM issue_fixes WHERE repo=? AND number=? "
+                               "AND kind='pr' AND pr_number IS NOT NULL ORDER BY created DESC",
+                               (repo, number)).fetchall()
+        return [row[0] for row in rows]
+
     def issue_fix_result(self, run_id: str) -> dict | None:
         with self._connect() as con:
             row = con.execute('SELECT * FROM issue_fixes WHERE run_id=?', (run_id,)).fetchone()

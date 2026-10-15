@@ -160,6 +160,11 @@ The wait is posted once as a comment, and the watchdog sweep queues the turn whe
   as an example or a link, is never waited for (#686). If the PR closes without merging, the
   hand-off is dropped with a comment saying so.
 
+- **An issue you made depend on another** (`hermes dk depends --issue B --on A`, #671) waits
+  until A's implementation is merged into the base: A's own fix PR merged there, or A closed by
+  a commit the base contains. Closing A any other way keeps B waiting until you waive it
+  (`--waive A`). See [`depends`](commands.md#depends).
+
 To release a wait that no longer applies, edit the issue so it no longer declares the PR, then
 remove and re-apply the fix label: the hand-off is decided again, and the old wait is cleared.
 An issue an open PR already closes (`Fixes #N` in its description) is not handed over at all.

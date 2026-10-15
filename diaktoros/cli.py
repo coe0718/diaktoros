@@ -3406,6 +3406,11 @@ def cmd_status(args) -> int:
             print(f"  deps:       {line}")
         for issue_no, origin in sorted(st.fix_holds().items()):
             print(f"  held:       issue #{issue_no} fix waits for PR #{origin} to merge")
+        declared = st.issue_deps()
+        for issue_no in st.dep_waits():
+            names = ", ".join(f"#{a}" for a in sorted(declared.get(issue_no) or {})) or "?"
+            print(f"  held:       issue #{issue_no} fix waits for prerequisite {names} "
+                  f"(`hermes dk depends --loop {loop['id']} --issue {issue_no}` says why)")
         for pr_no, hold in sorted(st.pr_holds().items()):
             print(f"  held:       PR #{pr_no} {pr_hold.line(hold)}")
         for seat in ("reviewer", "fixer"):
@@ -3715,6 +3720,78 @@ def cmd_escalate(args) -> int:
     print(f"{say}: escalated at {verdicts}/{loop['cap']} verdicts — adjudicator turn "
           f"{'enqueued' if outcome in ('new', 'retry') else outcome}; the PR is parked at this "
           f"head (`hermes dk explain --loop {loop['id']} --pr {number}` follows it)")
+    return 0
+
+
+def cmd_depends(args) -> int:
+    """Declare, waive or list issue dependencies (#671): issue B's fix waits for issue A's
+    implementation to be merged into the base.
+
+    Operator-only: the loop never infers a dependency from issue text. Declaring checks that both
+    are issues of this repository, that B is not A, and that it closes no cycle; it holds B's
+    next hand-off (a turn already queued or running is not recalled). ``--waive`` removes one,
+    and the next watchdog sweep releases B if nothing else holds it. With neither, lists every
+    dependency and whether it is met. Exit 1 when refused, 2 when it cannot be answered.
+    """
+    from . import issue_deps
+    from .util import now_iso
+    if args.loop:
+        try:
+            loop = config.load_id(args.loop)
+        except config.ConfigError as exc:
+            print(f"no such loop: {exc}")
+            return 2
+    else:
+        loops, refused = config.readable_loops()
+        for loop_id, reason in refused:
+            print(f"skipping {loop_id}.json: {reason}")
+        names = [lp["id"] for lp in loops] + [loop_id for loop_id, _ in refused]
+        if len(names) != 1 or refused:
+            print(f"{len(names)} loops are configured ({', '.join(names) or 'none'}) — name one "
+                  "with --loop")
+            return 2
+        loop = loops[0]
+    st = state_mod.state_for(loop)
+    deps = st.issue_deps()
+    if args.on is None and args.waive is None:
+        if args.issue is not None:
+            deps = {args.issue: deps.get(args.issue) or {}}
+        if not any(deps.values()):
+            print(f"[{loop['id']}] no issue dependencies declared")
+            return 0
+        for issue, prerequisites in sorted(deps.items()):
+            for prerequisite in sorted(prerequisites):
+                done, why = issue_deps.met(loop, prerequisite)
+                mark = {True: "met", False: "waiting", None: "unknown"}[done]
+                print(f"[{loop['id']}] #{issue} depends on #{prerequisite}: {mark} — {why}")
+        return 0
+    if args.issue is None:
+        print("--on and --waive need --issue N (the issue that waits)")
+        return 2
+    if args.waive is not None:
+        if st.issue_dep_drop(args.issue, args.waive):
+            print(f"[{loop['id']}] #{args.issue} no longer depends on #{args.waive}; the next "
+                  "watchdog sweep releases it if nothing else holds it")
+            return 0
+        print(f"[{loop['id']}] refused: #{args.issue} does not depend on #{args.waive}")
+        return 1
+    reason = issue_deps.problem(deps, args.issue, args.on)
+    if reason:
+        print(f"[{loop['id']}] refused: {reason}")
+        return 1
+    for number in (args.issue, args.on):
+        found = issue_deps.read_issue(loop, number)
+        if found is None:
+            print(f"[{loop['id']}] #{number} could not be read from GitHub — nothing declared")
+            return 2
+        if "pull_request" in found:
+            print(f"[{loop['id']}] refused: #{number} is a pull request; a dependency joins two "
+                  "issues of this repository")
+            return 1
+    added = st.issue_dep_add(args.issue, args.on, {"by": "operator", "at": now_iso()})
+    print(f"[{loop['id']}] #{args.issue} " + ("now depends on" if added else "already depends on")
+          + f" #{args.on}: its fix waits until #{args.on}'s implementation is merged into "
+            f"{loop['base']}")
     return 0
 
 
@@ -5599,6 +5676,19 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         escalate.add_argument("--pr", type=int, required=True, help="the pull request to escalate")
         escalate.add_argument("--reason", default="", help="why, for the ruling's record (one line)")
         escalate.set_defaults(func=cmd_escalate)
+
+        depends = sub.add_parser("depends",
+                                 help="Make one issue's fix wait for another issue's merged "
+                                      "implementation (#671), waive it, or list them")
+        depends.add_argument("--loop", help="loop id (default: the only configured loop)")
+        depends.add_argument("--issue", type=int, default=None,
+                             help="the issue that waits (with --on/--waive; alone: its list)")
+        depends_how = depends.add_mutually_exclusive_group()
+        depends_how.add_argument("--on", type=int, default=None,
+                                 help="the prerequisite issue whose implementation must merge")
+        depends_how.add_argument("--waive", type=int, default=None,
+                                 help="remove this prerequisite from --issue")
+        depends.set_defaults(func=cmd_depends)
 
         regression = sub.add_parser("regression",
                                     help="Link a later bug to the approved PR that shipped it, "

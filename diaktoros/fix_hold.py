@@ -13,7 +13,7 @@ fix the mentioned PR was waiting for.
 
 from __future__ import annotations
 
-from . import config, gate, gh
+from . import config, gate, gh, issue_deps
 from .util import log
 
 
@@ -98,7 +98,6 @@ def sweep(loop: dict, st) -> list[str]:
     lines: list[str] = []
     if not config.issue_fixes_enabled(loop):
         return lines
-    from . import run_supervisor
     for number, pr in sorted(st.fix_holds().items()):
         state = pr_state(loop, pr)
         if state is None:
@@ -115,33 +114,54 @@ def sweep(loop: dict, st) -> list[str]:
             st.fix_hold_drop(number)
             log(f"issue #{number}: PR #{pr} closed unmerged; hand-off dropped")
             continue
-        try:
-            live = run_supervisor.issue_fix_issue(loop, number)
-        except run_supervisor.RetryableError:
-            continue
-        except Exception as exc:                  # closed, unlabelled, ...: nothing to fix now
+        blockers = issue_deps.blocking(loop, st, number)
+        if blockers:                              # the PR merged; a prerequisite still waits
             st.fix_hold_drop(number)
-            log(f"issue #{number}: held hand-off dropped: {exc}")
+            issue_deps.wait(loop, st, number, blockers)
             continue
-        present = {str((x or {}).get("name") or "").casefold()
-                   for x in live.get("labels") or [] if isinstance(x, dict)}
-        auto = loop["triage"]["fix_label"].casefold() not in present   # no maintainer's label
-        if auto and _capped(loop):
-            continue                              # the day's cap is spent: held till tomorrow
-        try:
-            base, outcome = queue_fix(loop, number)
-        except Exception as exc:
-            lines.append(f"⚠️ issue #{number}: held fix not queued: {type(exc).__name__}: {exc}")
+        _release(loop, st, number, lines, st.fix_hold_drop, pr,
+                 f"PR #{pr} merged")
+    for number in st.dep_waits():                 # #671: waits on declared prerequisites
+        if number in st.fix_holds():
+            continue                              # the PR wait above owns it
+        blockers = issue_deps.blocking(loop, st, number)
+        if blockers:
+            issue_deps.wait(loop, st, number, blockers)   # says so once, if not yet said
             continue
-        st.fix_hold_drop(number)
-        if auto and outcome in ("enqueued", "rearmed", "pending"):
-            from . import pacing
-            pacing.count_turn(loop["id"], AUTO_FIX_SEAT)
-        log(f"issue #{number} released at {base[:7]}: {outcome}")
-        if outcome in ("enqueued", "rearmed", "pending"):
-            _notice(loop, number, "fixing", pr,
-                    f"PR #{pr} merged; fix turn queued from {loop['base']} at {base[:7]}")
+        _release(loop, st, number, lines, st.dep_wait_drop, 0, "its prerequisites merged")
     return lines
+
+
+def _release(loop: dict, st, number: int, lines: list[str], drop, pr: int, why: str) -> None:
+    """Queue a waiting issue's fix from the base's current commit, after re-checking that it is
+    still eligible; ``drop`` clears the wait it came from. Best effort, like the sweep."""
+    from . import run_supervisor
+    try:
+        live = run_supervisor.issue_fix_issue(loop, number)
+    except run_supervisor.RetryableError:
+        return
+    except Exception as exc:                      # closed, unlabelled, ...: nothing to fix now
+        drop(number)
+        log(f"issue #{number}: held hand-off dropped: {exc}")
+        return
+    present = {str((x or {}).get("name") or "").casefold()
+               for x in live.get("labels") or [] if isinstance(x, dict)}
+    auto = loop["triage"]["fix_label"].casefold() not in present   # no maintainer's label
+    if auto and _capped(loop):
+        return                                    # the day's cap is spent: held till tomorrow
+    try:
+        base, outcome = queue_fix(loop, number)
+    except Exception as exc:
+        lines.append(f"⚠️ issue #{number}: held fix not queued: {type(exc).__name__}: {exc}")
+        return
+    drop(number)
+    if auto and outcome in ("enqueued", "rearmed", "pending"):
+        from . import pacing
+        pacing.count_turn(loop["id"], AUTO_FIX_SEAT)
+    log(f"issue #{number} released at {base[:7]}: {outcome}")
+    if outcome in ("enqueued", "rearmed", "pending"):
+        _notice(loop, number, "fixing", pr,
+                f"{why}; fix turn queued from {loop['base']} at {base[:7]}")
 
 
 AUTO_FIX_SEAT = "auto_fix"      # pacing counter key for automatic hand-offs (#232)
@@ -241,6 +261,12 @@ def hand_off(loop: dict, number: int, issue: dict, auto: bool) -> tuple[str, str
             st.fix_hold_drop(number)
             return "dropped", f"PR #{origin} closed unmerged; finding is moot", "", ""
         st.fix_hold_drop(number)
+    blockers = issue_deps.blocking(loop, st, number)   # #671: declared prerequisites
+    if blockers:
+        issue_deps.wait(loop, st, number, blockers)
+        names = ", ".join(f"#{a}" for a, _ in blockers)
+        return "held", f"waits for prerequisite {names}", "", ""
+    st.dep_wait_drop(number)
     if auto and _capped(loop):
         return "capped", f"daily cap ({config.auto_fix_daily(loop)}) reached", "", ""
     base, outcome = queue_fix(loop, number)
