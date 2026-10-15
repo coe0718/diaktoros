@@ -27,6 +27,7 @@ import tempfile
 import time
 
 from .ledger import LOCK_WAIT_S
+from .config import credentials
 from . import config, route_intent, routes, run_supervisor
 
 VERSION = 1
@@ -230,7 +231,7 @@ def missing_tokens(manifest: dict) -> list[str]:
     out = []
     for loop_id, tokens in sorted((manifest.get("tokens") or {}).items()):
         for login, path in sorted(tokens.items()):
-            problem = config.token_file_problem(path)
+            problem = credentials.token_file_problem(path)
             if problem:
                 out.append(f"{loop_id}: token file for {login} ({path}): {problem}")
     return out

@@ -51,6 +51,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 from . import config, gh, observer, route_intent, routes
+from .config import credentials
 
 VERIFIED = "verified"
 ABSENT = "absent"
@@ -495,10 +496,10 @@ def check_triage(loop: dict) -> list[Check]:
                             f"no nonempty token file mapped for the triage login {login or '?'}",
                             f"map one: `hermes dk set --loop {loop['id']} --token "
                             f"{login or '<login>'}=/path/to/pat` (it needs issues: write)"))
-    elif config.token_file_problem(str(path)):
+    elif credentials.token_file_problem(str(path)):
         checks.append(Check("credential:triage", MISMATCH,
                             f"{login} → {_token_file_facts(path)}: "
-                            f"{config.token_file_problem(str(path))}", f"chmod 600 {path}"))
+                            f"{credentials.token_file_problem(str(path))}", f"chmod 600 {path}"))
     else:
         triage = loop["triage"]
         checks.append(Check("credential:triage", VERIFIED,
@@ -687,7 +688,7 @@ def check_seat_extras(loop: dict) -> list[Check]:
 def _token_file_facts(path: pathlib.Path) -> str:
     """``path (exists: yes, private: no)`` — metadata only; the file is never opened here."""
     exists = path.exists()
-    private = exists and not config.token_file_problem(str(path))
+    private = exists and not credentials.token_file_problem(str(path))
     return (f"{path} (exists: {'yes' if exists else 'no'}, "
             f"private: {'yes' if private else 'no'})")
 
@@ -700,9 +701,9 @@ def check_credential(loop: dict, seat: str) -> Check:
         path = gh.token_path(loop, login)
         if path and path.is_file() and path.stat().st_size > 0:
             facts = _token_file_facts(path)
-            if config.token_file_problem(str(path)):
+            if credentials.token_file_problem(str(path)):
                 return Check(f"credential:{seat}", MISMATCH,
-                             f"{login} → {facts}: {config.token_file_problem(str(path))}",
+                             f"{login} → {facts}: {credentials.token_file_problem(str(path))}",
                              f"chmod 600 {path} (and own it): a token file other users can read "
                              "is a shared credential")
             return Check(f"credential:{seat}", VERIFIED,
@@ -761,10 +762,10 @@ def check_adjudicator_identity(loop: dict) -> Check | None:
         return Check("credential:adjudicator", ABSENT,
                      f"{login} → {_token_file_facts(path)}: no nonempty token file",
                      f"write the PAT for {login} (chmod 600)")
-    if config.token_file_problem(str(path)):
+    if credentials.token_file_problem(str(path)):
         return Check("credential:adjudicator", MISMATCH,
                      f"{login} → {_token_file_facts(path)}: "
-                     f"{config.token_file_problem(str(path))}",
+                     f"{credentials.token_file_problem(str(path))}",
                      f"chmod 600 {path} (and own it): the ruling identity needs a private "
                      "credential")
     for role, other in others.items():
@@ -827,12 +828,12 @@ def check_read_token(loop: dict) -> Check:
         return Check("read_token", MISMATCH, f"read_token names {name!r}, which has no token file",
                      f"run `hermes dk set --loop <id> --token {name}=/path/to/pat`: the gates read every PR "
                      f"state as this login")
-    problem = config.reader_problem(loop)
+    problem = credentials.reader_problem(loop)
     if problem:
         # The broker refuses every write while the reader is a seat, so a loop in this shape
         # installs, "passes", and then never posts a review.
         return Check("read_token", MISMATCH, f"{problem} — {config.FOUR_IDENTITY_RULE}",
-                     config.reader_fix(loop))
+                     credentials.reader_fix(loop))
     return Check("read_token", VERIFIED, f"{name} (mapped in tokens; its own account and file)")
 
 

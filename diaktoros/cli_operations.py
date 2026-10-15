@@ -13,6 +13,7 @@ import sys
 import time
 
 from . import attribution, config, gate, gh, observer, pr_hold, routes, state as state_mod
+from .config import credentials
 from .cli_common import _budget_line, _credential_lines, _routes_of
 from .ledger import LOCK_WAIT_S
 from .util import logged
@@ -183,10 +184,10 @@ def cmd_status(args) -> int:
         refs = _credential_lines(loop)
         if refs:
             print("  token refs: " + " · ".join(refs))
-        problem = config.reader_problem(loop)
+        problem = credentials.reader_problem(loop)
         if problem:
             print(f"  ⚠️  reader:  {problem} — {config.FOUR_IDENTITY_RULE}")
-            print(f"  fix:        {config.reader_fix(loop)}")
+            print(f"  fix:        {credentials.reader_fix(loop)}")
         for seat, entries in st._lock_ledger().items():
             for key, entry in (entries if isinstance(entries, dict) else {}).items():
                 at = state_mod.mark_at(entry)
