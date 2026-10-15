@@ -156,6 +156,17 @@ class ConflictHold(Hold):
         with ledger.connect(self.root / "ledger.sqlite") as con:
             self.assertEqual(con.execute("SELECT retries FROM runs").fetchone()[0], 0)
 
+    def test_a_dirty_hold_emits_one_person_needed_notice(self):
+        pr = {"number": 7, "state": "open", "draft": False, "head": {"sha": sm.HEAD, "ref": "f"},
+              "base": {"ref": "main"}, "mergeable_state": "dirty"}
+        with mock.patch.object(ci, "read", return_value=ci.CIState(passed=["t"])), \
+             mock.patch.object(observer, "notify") as notify:
+            self.run_seat("reviewer", loop=self.loop, pr=pr)
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.args[2], "held")
+        self.assertTrue(notify.call_args.kwargs["identity"].endswith(":held:ci-conflict"))
+        self.assertIn("conflicts with main", notify.call_args.kwargs["outcome"])
+
     def test_clean_or_unknown_starts_normally(self):
         for state in ("clean", "unstable", "unknown", None):
             with self.subTest(state=state):
