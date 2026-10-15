@@ -797,6 +797,76 @@ class LoopState:
             if number not in raw:
                 self._save(self.dir / "held-fixes-said.json", sorted(raw + [number]))
 
+    # -- issue dependencies (#671): {issue: {prerequisite issue: {"by", "at"}}} ----------
+
+    def issue_deps(self) -> dict:
+        """Declared dependencies: issue B waits for issue A's implementation to merge. No lock
+        on read, like ``fix_holds``: writes are atomic replaces."""
+        raw = self._load(self.dir / "issue-deps.json", {})
+        out: dict = {}
+        for key, deps in (raw.items() if isinstance(raw, dict) else ()):
+            if str(key).isdigit() and isinstance(deps, dict):
+                kept = {int(a): v for a, v in deps.items() if str(a).isdigit() and isinstance(v, dict)}
+                if kept:
+                    out[int(key)] = kept
+        return out
+
+    def issue_dep_add(self, issue: int, prerequisite: int, record: dict) -> bool:
+        """Declare the dependency; False when it was already declared."""
+        with self.locked():
+            data = {str(b): {str(a): v for a, v in deps.items()}
+                    for b, deps in self.issue_deps().items()}
+            deps = data.setdefault(str(issue), {})
+            if str(prerequisite) in deps:
+                return False
+            deps[str(prerequisite)] = dict(record)
+            self._save(self.dir / "issue-deps.json", data)
+            return True
+
+    def issue_dep_drop(self, issue: int, prerequisite: int) -> bool:
+        """Remove (waive) the dependency; False when there was none."""
+        with self.locked():
+            data = {str(b): {str(a): v for a, v in deps.items()}
+                    for b, deps in self.issue_deps().items()}
+            deps = data.get(str(issue)) or {}
+            if deps.pop(str(prerequisite), None) is None:
+                return False
+            if not deps:
+                data.pop(str(issue), None)
+            self._save(self.dir / "issue-deps.json", data)
+            return True
+
+    def dep_waits(self) -> list[int]:
+        """Issues whose hand-off waits for a prerequisite (#671), re-checked by the sweep."""
+        raw = self._load(self.dir / "dep-waits.json", [])
+        return sorted({n for n in raw if type(n) is int}) if isinstance(raw, list) else []
+
+    def dep_wait_set(self, issue: int) -> None:
+        with self.locked():
+            waits = set(self.dep_waits()) | {issue}
+            self._save(self.dir / "dep-waits.json", sorted(waits))
+
+    def dep_wait_drop(self, issue: int) -> None:
+        with self.locked():
+            waits = set(self.dep_waits())
+            if issue in waits:
+                self._save(self.dir / "dep-waits.json", sorted(waits - {issue}))
+            said = self._load(self.dir / "dep-waits-said.json", [])
+            said = [n for n in said if type(n) is int] if isinstance(said, list) else []
+            if issue in said:
+                self._save(self.dir / "dep-waits-said.json", [n for n in said if n != issue])
+
+    def dep_wait_said(self, issue: int) -> bool:
+        raw = self._load(self.dir / "dep-waits-said.json", [])
+        return issue in (raw if isinstance(raw, list) else ())
+
+    def dep_wait_say(self, issue: int) -> None:
+        with self.locked():
+            raw = self._load(self.dir / "dep-waits-said.json", [])
+            raw = [n for n in raw if type(n) is int] if isinstance(raw, list) else []
+            if issue not in raw:
+                self._save(self.dir / "dep-waits-said.json", sorted(raw + [issue]))
+
     # -- review-only verdict cap: its one notice and granted rounds ----------
 
     def _review_caps(self) -> dict:

@@ -98,6 +98,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | list the PRs that are safe to merge, in order | [`ready`](#ready) |
 | ask for a fresh review of a PR | [`review`](#review) |
 | send a PR to the adjudicator now | [`escalate`](#escalate) |
+| make one issue's fix wait for another issue | [`depends`](#depends) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
 | start a queued turn now | [`drain`](#drain) |
@@ -1085,6 +1086,44 @@ no `--loop` names one, or the gate did not finish within 120 seconds.
 | `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
 | `--pr` | `PR` | **required** | the pull request to review |
 | `--another-round` |  |  | allow exactly one more verdict on a review-only PR that has reached its review cap (maintainer or operator only) |
+<!-- /flags -->
+
+### depends
+
+Makes one issue's fix wait for another issue's implementation (#671): issue B (`--issue`) is
+not handed to the fixer until issue A (`--on`) has its implementation merged into the loop's
+base. Only you declare a dependency; the loop never reads one from issue text (#686), and a
+maintainer's comment can't declare one yet (#708).
+
+```bash
+hermes dk depends --loop "<loop-id>" --issue 42 --on 41
+hermes dk depends --loop "<loop-id>"
+hermes dk depends --loop "<loop-id>" --issue 42 --waive 41
+```
+
+- **Declaring** checks that both numbers are issues of this repository, that 42 isn't 41, and
+  that it closes no cycle (`a cycle: #42 → #41 → #40 → #42`). It holds 42's next hand-off; a fix
+  turn already queued or running isn't recalled.
+- **Done means merged into the base**, on evidence: 41's own issue-fix PR merged into the base,
+  or 41 closed by a commit the base contains (a `Fixes #41` merge). Closing 41 any other way
+  isn't done, and 42 keeps waiting. A fact GitHub can't answer keeps it waiting too.
+- **While it waits**, labelling 42 spends no turn: one comment names the prerequisite, and
+  `status` shows the wait. The watchdog sweep queues 42's fix from the base's current commit
+  once every prerequisite is done, after re-checking that 42 is still eligible, and only once.
+- **With no `--on` or `--waive`** it lists every dependency (or one issue's, with `--issue`) and
+  whether it's met, and why.
+- **`--waive`** removes a dependency; the next sweep releases 42 if nothing else holds it.
+
+Dependencies and waits are kept in the loop's state directory and survive a restart. Exit `1`
+means it was refused, and the line says why; `2` that it couldn't be answered.
+
+<!-- flags:depends -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` |  | loop id (default: the only configured loop) |
+| `--issue` | `ISSUE` |  | the issue that waits (with --on/--waive; alone: its list) |
+| `--on` | `ON` |  | the prerequisite issue whose implementation must merge (one of `--on`, `--waive`) |
+| `--waive` | `WAIVE` |  | remove this prerequisite from --issue (one of `--on`, `--waive`) |
 <!-- /flags -->
 
 ### escalate
