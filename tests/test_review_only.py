@@ -23,6 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import cli, cli_operations, config, gate, gh, run_supervisor  # noqa: E402
+from diaktoros import cli_install  # noqa: E402
 from scripts import gate_fixer, gate_reviewer, watchdog  # noqa: E402
 
 HEAD = fg.HEAD
@@ -519,17 +520,17 @@ class Cli(unittest.TestCase):
     def test_setup_hands_init_the_limits(self):
         args = t.parser_for({"review_only_cap": "4"}).parse_args(
             ["setup", "--repo", t.REPO, "--review-only-daily", "6"])
-        argv, _ = cli._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--review-only-daily=6", argv)
 
     def test_setup_hands_init_each_name(self):
         args = t.parser_for({"review_only": "owner-human, other"}
                             ).parse_args(["setup", "--repo", t.REPO])
-        argv, _ = cli._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn(f"--review-only={OWNER}", argv)
         self.assertIn("--review-only=other", argv)
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--review-only", "solo"])
-        argv, _ = cli._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertEqual([a for a in argv if a.startswith("--review-only")],
                          ["--review-only=solo"])
 

@@ -30,6 +30,7 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, config, doctor, routes  # noqa: E402
+from diaktoros import cli_install  # noqa: E402
 from diaktoros import cli_common  # noqa: E402
 # By file, not as ``tests.hermes_prereqs``: in CI's installed-mode lane Hermes's own ``tests``
 # package is on PYTHONPATH and would shadow ours.
@@ -143,7 +144,7 @@ class Base(unittest.TestCase):
             path.write_text(f"pat-fixture-{name}\n")
             path.chmod(0o600)
             self.pats[name] = path
-        self.addCleanup(setattr, cli, "_SETTINGS", getattr(cli, "_SETTINGS", {}))
+        self.addCleanup(setattr, cli_common, "_SETTINGS", getattr(cli_common, "_SETTINGS", {}))
 
     def run_cli(self, argv, settings=None):
         ctx = _Ctx()
@@ -485,11 +486,11 @@ class SetAdjudication(Base):
             host="https://gateway.example", admin_token="", admin_token_file="",
             observer_profile="", review_after_ci="off", fix_ci="off", attribution="on", fixer_check="",
             required_check=[], adjudicator_profile="arbiter")
-        argv, _admin = cli._setup_init_argv(args, "acme/widgets", "widgets", False)
+        argv, _admin = cli_install._setup_init_argv(args, "acme/widgets", "widgets", False)
         self.assertIn("--adjudicator-route=widgets-breach", argv)
         self.assertIn("--adjudicator-profile=arbiter", argv)
         args.adjudicator_profile = ""
-        argv, _admin = cli._setup_init_argv(args, "acme/widgets", "widgets", False)
+        argv, _admin = cli_install._setup_init_argv(args, "acme/widgets", "widgets", False)
         self.assertFalse([a for a in argv if "adjudicator" in a])
 
 

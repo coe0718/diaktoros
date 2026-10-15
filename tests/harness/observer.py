@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .fixture import *  # noqa: F403 - the shared harness namespace
+from diaktoros import cli_common  # noqa: E402
 
 
 def group_observer() -> None:
@@ -463,7 +464,7 @@ def group_observer_cli() -> None:
     check("  and writes no loop", (LOOPS_DIR / "weekly.json").exists(), False)
     args.observer_weekly_report = ""
     args.repo = "acme/formweekly"
-    with mock.patch.object(cli, "_SETTINGS", {"observer_weekly_report": "Thu 06:15"}), \
+    with mock.patch.object(cli_common, "_SETTINGS", {"observer_weekly_report": "Thu 06:15"}), \
          contextlib.redirect_stdout(io.StringIO()):
         rc = args.func(args)
     check("init takes the form's weekly report time when no flag is given", rc, 0)
@@ -515,11 +516,11 @@ def group_observer_cli() -> None:
                    json.loads(SUBS.read_text())["feed-observe"]["profile"]),
                   (HOST, "another", "another"))
     # Plugin-level apply is another host write path; it must not bypass set's boundary.
-    cli._SETTINGS = {"host": "https://attacker.example"}
+    cli_common._SETTINGS = {"host": "https://attacker.example"}
     rc = cli.cmd_apply(ns(loop="feed", dry_run=False))
     check("apply cannot reroute an unsettled observer host", rc, 2)
     check("apply leaves original host intact", config.load_id("feed")["host"], HOST)
-    cli._SETTINGS = {}
+    cli_common._SETTINGS = {}
     # Disabling is a stop switch, not a new destination: do not force users to
     # send (or adjudicate) an uncertain private notice just to turn off the feed.
     st.observations.write_text(json.dumps({"entries": {"old": {"status": "queued",

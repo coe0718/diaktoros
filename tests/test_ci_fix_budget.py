@@ -19,6 +19,7 @@ import test_fixer_gating as fg  # noqa: E402
 import test_review_after_ci as rac  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import ci, ci_fix, cli, config, gate, gh, observer  # noqa: E402
+from diaktoros import cli_install  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
@@ -274,7 +275,7 @@ class Setting(rac.Cli):
         rc, out = self.cli("apply", "--loop", rac.LOOP_ID, settings={"ci_fix_cap": "7"})
         self.assertEqual((rc, self.cap_written()), (0, 7), out)
         args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--ci-fix-cap", "6"])
-        argv, _ = cli._setup_init_argv(args, t.REPO, rac.LOOP_ID, interactive=False)
+        argv, _ = cli_install._setup_init_argv(args, t.REPO, rac.LOOP_ID, interactive=False)
         self.assertIn("--ci-fix-cap=6", argv)
 
     def test_doctor_names_the_budget(self):
