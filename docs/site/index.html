@@ -661,10 +661,18 @@
         <p class="section-intro">Diaktoros maintains itself the way it maintains your repo. The numbers below are read from the repository every time this page loads — not typed by hand.</p>
       </div>
       <div class="stats" role="list" aria-label="Repository statistics">
-        <div class="stat" role="listitem"><div class="stat-num" data-site="loop_prs_merged">140</div><div class="stat-label">Fixer PRs merged</div></div>
-        <div class="stat" role="listitem"><div class="stat-num" data-site="issues_closed">276</div><div class="stat-label">Issues closed</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="loop_prs_merged">151</div><div class="stat-label">Fixer PRs merged</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="loop_share">44%</div><div class="stat-label">Written by the loop</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="prs_merged">342</div><div class="stat-label">PRs merged, total</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="issues_closed">305</div><div class="stat-label">Issues closed</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="prs_open">2</div><div class="stat-label">PRs open now</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="issues_open">63</div><div class="stat-label">Issues open now</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="commits_year">734</div><div class="stat-label">Commits, last 12 months</div></div>
+        <div class="stat" role="listitem"><div class="stat-num stat-date" data-site="last_activity">just now</div><div class="stat-label">Last activity</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="stars">5</div><div class="stat-label">Stars</div></div>
+        <div class="stat" role="listitem"><div class="stat-num" data-site="forks">0</div><div class="stat-label">Forks</div></div>
         <div class="stat" role="listitem"><div class="stat-num" data-site="version">v0.3.0</div><div class="stat-label">Current release</div></div>
-        <div class="stat" role="listitem"><div class="stat-num stat-date" data-site="generated">2026-10-11</div><div class="stat-label">Page updated</div></div>
+        <div class="stat" role="listitem"><div class="stat-num stat-date" data-site="generated">2026-10-15</div><div class="stat-label">Page updated</div></div>
       </div>
       <div class="proof-points">
         <article class="proof-point">
@@ -753,31 +761,86 @@ hermes dk setup --repo "owner/repository"</code></pre>
 <script>
   (function () {
     // Live numbers straight from the repository API on every page load:
-    // self-updating with no build step and no deploy wiring. Falls back to
-    // the checked-in data.json snapshot, then to the hardcoded values.
+    // self-updating with no build step and no deploy wiring. Each endpoint
+    // is fetched independently, so one dead endpoint can't take down the
+    // rest; whatever is still missing falls back to the checked-in data.json
+    // snapshot, then to the hardcoded values.
     var OWNER = 'coe0718', REPO = 'diaktoros';
     var API = 'https://api.github.com';
-    function set(key, val) {
+    var vals = {}, fresh = {};
+    function num(n) {
+      return typeof n === 'number' ? n.toLocaleString('en-US') : n;
+    }
+    function set(key, val, raw) {
       if (val === null || val === undefined) return;
+      vals[key] = raw !== undefined ? raw : val;
+      fresh[key] = true;
       document.querySelectorAll('[data-site="' + key + '"]').forEach(function (el) {
         el.textContent = val;
       });
+    }
+    function derive() {
+      // Computed from the raw numbers, whichever path supplied them.
+      if (typeof vals.prs_merged === 'number' && typeof vals.loop_prs_merged === 'number' && vals.prs_merged)
+        set('loop_share', Math.round(100 * vals.loop_prs_merged / vals.prs_merged) + '%');
+      if (typeof vals.open_issues_count === 'number' && typeof vals.prs_open === 'number')
+        set('issues_open', num(vals.open_issues_count - vals.prs_open));
+      if (vals.pushed_at) set('last_activity', relTime(vals.pushed_at));
+    }
+    function relTime(iso) {
+      var ms = Date.now() - new Date(iso).getTime();
+      if (!(ms >= 0)) return null;
+      var m = Math.floor(ms / 60000);
+      if (m < 1) return 'just now';
+      if (m < 60) return m + 'm ago';
+      var h = Math.floor(m / 60);
+      if (h < 24) return h + 'h ago';
+      var d = Math.floor(h / 24);
+      if (d < 30) return d + 'd ago';
+      var mo = Math.floor(d / 30);
+      if (mo < 12) return mo + 'mo ago';
+      return Math.floor(mo / 12) + 'y ago';
     }
     function get(path) {
       return fetch(API + path, { headers: { 'Accept': 'application/vnd.github+json' } })
         .then(function (r) { if (!r.ok) throw new Error('api ' + r.status); return r.json(); });
     }
+    function soft(promise) {
+      return promise.catch(function () { return null; });
+    }
     function live() {
       var q = encodeURIComponent;
       return Promise.all([
-        get('/repos/' + OWNER + '/' + REPO + '/releases/latest'),
-        get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:pr is:merged author:drey-coe1') + '&per_page=1'),
-        get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:issue is:closed') + '&per_page=1')
-      ]).then(function (res) {
-        set('version', res[0].tag_name);
-        set('loop_prs_merged', res[1].total_count);
-        set('issues_closed', res[2].total_count);
-        set('generated', new Date().toISOString().slice(0, 10));
+        soft(get('/repos/' + OWNER + '/' + REPO)).then(function (r) {
+          if (!r) return;
+          set('stars', num(r.stargazers_count));
+          set('forks', num(r.forks_count));
+          set('open_issues_count', r.open_issues_count);
+          set('pushed_at', r.pushed_at);
+        }),
+        soft(get('/repos/' + OWNER + '/' + REPO + '/releases/latest')).then(function (r) {
+          if (r) set('version', r.tag_name);
+        }),
+        soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:pr is:merged') + '&per_page=1')).then(function (r) {
+          if (r) set('prs_merged', num(r.total_count), r.total_count);
+        }),
+        soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:pr is:merged author:drey-coe1') + '&per_page=1')).then(function (r) {
+          if (r) set('loop_prs_merged', num(r.total_count), r.total_count);
+        }),
+        soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:issue is:closed') + '&per_page=1')).then(function (r) {
+          if (r) set('issues_closed', num(r.total_count));
+        }),
+        soft(get('/search/issues?q=' + q('repo:' + OWNER + '/' + REPO + ' type:pr is:open') + '&per_page=1')).then(function (r) {
+          if (r) set('prs_open', num(r.total_count), r.total_count);
+        }),
+        soft(get('/repos/' + OWNER + '/' + REPO + '/stats/commit_activity')).then(function (weeks) {
+          if (!Array.isArray(weeks) || !weeks.length) return;
+          var total = weeks.reduce(function (a, w) { return a + (w.total || 0); }, 0);
+          set('commits_year', num(total), total);
+        })
+      ]).then(function () {
+        derive();
+        if (Object.keys(fresh).length) set('generated', new Date().toISOString().slice(0, 10));
       });
     }
     function snapshot() {
@@ -785,10 +848,20 @@ hermes dk setup --repo "owner/repository"</code></pre>
         if (!r.ok) throw new Error('no data');
         return r.json();
       }).then(function (d) {
-        ['version', 'loop_prs_merged', 'issues_closed', 'generated'].forEach(function (k) { set(k, d[k]); });
+        var COUNT_KEYS = ['stars', 'forks', 'prs_merged', 'loop_prs_merged',
+                          'issues_closed', 'prs_open', 'issues_open', 'commits_year'];
+        Object.keys(d).forEach(function (k) {
+          if (fresh[k]) return;
+          if (COUNT_KEYS.indexOf(k) !== -1 && typeof d[k] === 'number')
+            set(k, num(d[k]), d[k]);
+          else
+            set(k, d[k]);
+        });
+        derive();
+        if (!fresh.generated && d.generated) set('generated', d.generated);
       });
     }
-    live().catch(snapshot).catch(function () { /* hardcoded values stand in */ });
+    live().then(snapshot).catch(function () { /* hardcoded values stand in */ });
   }());
 </script>
 </body>
