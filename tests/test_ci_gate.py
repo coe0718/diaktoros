@@ -356,12 +356,29 @@ class CITestsBroker(pv.Broker):
 class CITestsUnit(unittest.TestCase):
     def test_parse_and_section(self):
         got = ci_tests.parse("\x1b[0m2026-01-01T00:00:00Z " + LOG_OK)
-        self.assertEqual(got["test_it_parses_as_an_es_module"], "ok")
-        self.assertEqual(got["test_needs_gpu"], "skipped")
+        self.assertEqual(got["test_desktop.Surface.test_it_parses_as_an_es_module"], "ok")
+        self.assertEqual(got["test_desktop.Surface.test_needs_gpu"], "skipped")
         text = ci_tests.section(got)
         self.assertIn("test_it_parses_as_an_es_module", text)
-        self.assertIn("skipped in CI (1): test_needs_gpu", text)
+        self.assertIn("skipped in CI (1): test_desktop.Surface.test_needs_gpu", text)
         self.assertEqual(ci_tests.section({}), "")
+
+    DUP = ("test_auth (a.Security.test_auth) ... skipped no token\n"
+           "test_auth (b.UI.test_auth) ... ok\n")
+
+    def test_same_method_name_in_two_classes_stays_distinct_in_either_order(self):
+        want = {"a.Security.test_auth": "skipped", "b.UI.test_auth": "ok"}
+        self.assertEqual(ci_tests.parse(self.DUP), want)
+        self.assertEqual(ci_tests.parse("".join(reversed(self.DUP.splitlines(True)))), want)
+
+    def test_refusal_ignores_an_ambiguous_short_name(self):
+        res = ci_tests.parse(self.DUP)
+        self.assertEqual(ci_tests.refusal(
+            res, "REQUEST_CHANGES", "F1: x.py:1: test_auth was not run in this sandbox"), "")
+        self.assertIn("b.UI.test_auth", ci_tests.refusal(
+            res, "REQUEST_CHANGES", "F1: x.py:1: b.UI.test_auth was not run in this sandbox"))
+        self.assertIn("skipped too", ci_tests.refusal(
+            res, "REQUEST_CHANGES", "F1: x.py:1: a.Security.test_auth was not run here"))
 
 
 if __name__ == "__main__":
