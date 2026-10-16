@@ -97,6 +97,29 @@ class Ready(unittest.TestCase):
                        "waiting for a person", "#6", "is stale"):
             self.assertIn(needle, text)
 
+    def test_issue_fix_hold_does_not_exclude_its_origin_pr(self):
+        """#759: an issue waiting for PR #1 to merge must not keep #1 off the ready list."""
+        from diaktoros import fix_hold
+        self.add(1)
+        self.st.fix_hold_set(12, 1)
+        text = self.run_ready()
+        self.assertIn("1. #1", text)
+        self.assertNotIn("not ready", text)
+        self.assertNotIn("fix waits", text)
+        self.assertEqual(self.st.fix_holds(), {12: 1})      # the issue stays held
+        released = []
+        with mock.patch.object(config, "issue_fixes_enabled", return_value=True), \
+             mock.patch.object(fix_hold, "pr_state", return_value="open") as pr_state, \
+             mock.patch.object(fix_hold, "hold"), \
+             mock.patch.object(fix_hold.issue_deps, "blocking", return_value=[]), \
+             mock.patch.object(fix_hold, "_release",
+                               side_effect=lambda *a, **k: released.append(a[2])):
+            fix_hold.sweep(self.loop, self.st)
+            self.assertEqual(released, [])                  # still open: not released
+            pr_state.return_value = "merged"
+            fix_hold.sweep(self.loop, self.st)
+        self.assertEqual(released, [12])                    # released once #1 merged
+
     def test_stacked_base_comes_first_and_child_waits_for_it(self):
         self.add(2, base="b1", files=("c.py",))
         self.add(1, files=("a.py",))
