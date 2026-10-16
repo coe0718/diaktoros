@@ -204,6 +204,32 @@ class Deps(GateFixture):
         self.assertEqual((self.enqueued, self.st.fix_holds(), self.st.dep_waits()),
                          ([], {}, [12]))
 
+    def test_release_skips_an_issue_a_differently_named_pr_now_fixes(self):
+        # prerequisite wait: a person's PR (any branch) opens while it waits
+        self.depends(12, on=5)
+        self.run_gate(self.labeled())
+        self.open_prs = [{"number": 30, "body": "Fixes #12", "head": {"ref": "human/my-branch"}}]
+        self.close_a(MERGE)
+        fix_hold.sweep(self.loop, self.st)
+        self.assertEqual((self.enqueued, self.st.dep_waits()), ([], []))
+        self.assertTrue(any("PR #30 already fixes this" in b["body"] for _p, b, _l in self.posted))
+
+    def test_pr_wait_release_skips_an_issue_an_open_pr_now_fixes(self):
+        self.st.fix_hold_set(12, 7)
+        self.pulls[7] = {"number": 7, "state": "closed", "merged": True}
+        self.open_prs = [{"number": 30, "body": "Fixes #12", "head": {"ref": "human/x"}}]
+        fix_hold.sweep(self.loop, self.st)
+        self.assertEqual((self.enqueued, self.st.fix_holds()), ([], {}))
+
+    def test_release_waits_when_the_open_pr_listing_is_unreadable(self):
+        self.st.fix_hold_set(12, 7)
+        self.pulls[7] = {"number": 7, "state": "closed", "merged": True}
+        with mock.patch.object(gh, "open_prs_read", lambda loop: (None, "boom")):
+            fix_hold.sweep(self.loop, self.st)
+        self.assertEqual((self.enqueued, self.st.fix_holds()), ([], {12: 7}))
+        fix_hold.sweep(self.loop, self.st)                       # readable again, none covers it
+        self.assertEqual(len(self.enqueued), 1)
+
     def test_a_restart_keeps_the_dependency_and_the_wait(self):
         self.depends(12, on=5)
         self.run_gate(self.labeled())
