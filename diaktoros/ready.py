@@ -6,8 +6,9 @@ the reason for every PR it leaves out. The loop never merges.
 A PR is ready when it is approved at its head (the same effective-review predicate the gates use),
 that approval is not stale (#473, ``stale_approval.is_stale``), the required checks at the head are
 green (``ci.gating``), GitHub calls it mergeable, and nothing holds it: no draft, open gate failure,
-human-paths hold, escalation, issue-fix hold or same-head retarget quarantine. Anything unreadable
-is an exclusion, never a guess.
+human-paths hold, escalation or same-head retarget quarantine. Anything unreadable is an
+exclusion, never a guess. An issue-fix hold (``st.fix_holds()``) is not a hold on a PR: it means
+the issue waits for its origin PR to merge, so it never excludes that PR (#759).
 
 Order: a stacked PR (its base is another PR's branch) comes after that parent, and is excluded
 while the parent is not itself ready. PRs that change the same files are merged one after another
@@ -92,9 +93,6 @@ def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> 
             marker if isinstance(marker, dict) else {}, head) in {"awaiting-adjudication",
                                                                   "adjudicating"}:
         why.append("escalated: parked awaiting adjudication")
-    for issue_no, origin in sorted(st.fix_holds().items()):
-        if origin == number:
-            why.append(f"hold: issue #{issue_no} fix waits for this PR to merge")
     if transition.hold(st, number, head):
         why.append("same-head base retarget hold")
     return why
