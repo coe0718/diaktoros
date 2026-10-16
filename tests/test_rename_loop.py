@@ -197,6 +197,16 @@ class Helpers(fg.Base):
         self.assertEqual(pacing.turns_today("two", "reviewer"), 3)
         self.assertEqual(pacing.turns_today("one", "reviewer"), 0)
 
+    def test_token_spend_follows_the_id(self):
+        pacing.count_turn("one", "reviewer")
+        pacing.count_tokens("one", "reviewer", 500)
+        pacing.count_tokens("two", "reviewer", 100)
+        self.assertEqual(pacing.rename_loop("one", "two"), 2)
+        self.assertEqual(pacing.tokens_today("two", "reviewer"), 600)
+        self.assertEqual(pacing.tokens_today("one", "reviewer"), 0)
+        self.assertEqual(pacing.rename_loop("one", "two"), 0)      # idempotent
+        self.assertEqual(pacing.tokens_today("two", "reviewer"), 600)
+
 
 PROFILE = {"review": "reviewer", "fix": "fixer"}
 
