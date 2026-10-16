@@ -304,6 +304,16 @@ class CITestsBroker(pv.Broker):
         self.assertFalse(reply["ok"])
         self.assertIn("Not verified", reply["error"])
 
+    def test_a_concrete_defect_mentioning_an_unavailable_resource_is_written(self):
+        sup, scope = self.ledgered("")
+        server = self.start(scope, require_receipt=True)
+        body = ("F1: src/lib.rs:1: test_it_parses_as_an_es_module passes, but authorize returns "
+                "True when the token is unavailable; an unauthenticated caller can publish.\n"
+                "Not verified: nothing")
+        reply = self.send(server, "REQUEST_CHANGES", body)
+        self.assertTrue(reply["ok"], reply)
+        self.assertEqual([p["event"] for p in self.posts], ["REQUEST_CHANGES"])
+
     def test_a_test_ci_did_not_list_still_blocks(self):
         reply, _ = self.block("test_unlisted")
         self.assertTrue(reply["ok"])
@@ -334,6 +344,16 @@ class CITestsUnit(unittest.TestCase):
         self.assertIn("test_it_parses_as_an_es_module", text)
         self.assertIn("skipped in CI (1): test_needs_gpu", text)
         self.assertEqual(ci_tests.section({}), "")
+
+    def test_refusal_needs_a_verification_only_claim(self):
+        r = {"test_x": "ok"}
+        for text in ("test_x could not run it here", "test_x was not run in this sandbox",
+                     "test_x has not been executed locally (Node is not installed)"):
+            self.assertTrue(ci_tests.refusal(r, "REQUEST_CHANGES", "F1: a.py:1: " + text), text)
+        for text in ("test_x passes but the token is unavailable",
+                     "test_x ok; lib is not installed by setup",
+                     "test_x passes, yet authorize cannot run without a token"):
+            self.assertEqual(ci_tests.refusal(r, "REQUEST_CHANGES", "F1: a.py:1: " + text), "", text)
 
 
 if __name__ == "__main__":

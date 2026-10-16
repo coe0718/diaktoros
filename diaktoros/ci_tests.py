@@ -23,11 +23,16 @@ SKIPPED_SHOWN = 60
 
 _PLAIN = re.compile(r"^(?:\S+Z )?(test\w*) \(([\w.]+)\) \.\.\. (ok|FAIL|ERROR|skipped\b.*)$")
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-# A finding that blocks only because the seat could not run the test itself.
-_UNRUN = re.compile(r"not (?:been )?(?:executed|run|ran)\b|could(?: not|n't) (?:be )?run|"
-                    r"can(?:not|'t) (?:be )?run|did(?: not|n't) run|unable to run|not installed|"
-                    r"unavailable|(?:was|were|is|are) skipped|skipped (?:here|locally)|"
-                    r"no (?:node|toolchain)|missing toolchain", re.IGNORECASE)
+# A finding that blocks only because the seat could not run the test itself (#763). Words that can
+# describe the code's behaviour (unavailable, not installed, cannot run) count only when the same
+# clause ties them to the reviewer's own run: "here", "locally", "in this sandbox".
+_WHERE = r"(?:\bhere\b|\blocally\b|\bin (?:this|my|the) (?:sandbox|seat|environment)\b)"
+_UNRUN = re.compile(
+    r"(?:not (?:been )?(?:executed|run|ran)\b|could(?: not|n't) (?:be )?run|"
+    r"can(?:not|'t) (?:be )?run|did(?: not|n't) run|unable to run|"
+    r"(?:was|were|is|are) (?:not available|unavailable|not installed|skipped)|"
+    r"no (?:node|toolchain)|missing toolchain)[^.;\n]{0,60}?" + _WHERE
+    + r"|skipped (?:here|locally)", re.IGNORECASE)
 _FINDING = re.compile(r"^[ \t>*_#-]*(F\d+)\s*:\s*(.*)$", re.MULTILINE)
 
 
