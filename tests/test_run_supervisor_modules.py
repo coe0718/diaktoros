@@ -23,7 +23,7 @@ from diaktoros import run_supervisor  # noqa: E402
 
 PACKAGE = pathlib.Path(run_supervisor.__file__).resolve().parent
 ROOT = PACKAGE.parents[1]
-SUBMODULES = ("pr_facts", "turn_prompts")
+SUBMODULES = ("pr_facts", "turn_prompts", "records")
 
 
 def _top_level_names(path: pathlib.Path) -> set[str]:
@@ -48,6 +48,15 @@ class Split(unittest.TestCase):
                     self.assertNotIn(moved, core)
                     self.assertFalse(hasattr(run_supervisor, moved), f"call {name}.{moved}")
                     self.assertTrue(hasattr(module, moved))
+
+    def test_the_record_methods_live_only_in_the_mixin(self):
+        # Supervisor inherits records.LedgerRecords: a method defined again in Supervisor's own
+        # body would silently shadow the mixin's (and a test patching one would miss the other).
+        from diaktoros.run_supervisor import Supervisor, records
+        self.assertIn(records.LedgerRecords, Supervisor.__mro__)
+        mixin = {name for name in vars(records.LedgerRecords) if not name.startswith("__")}
+        self.assertTrue(mixin)
+        self.assertFalse(mixin & set(vars(Supervisor)), "defined on both Supervisor and the mixin")
 
     def test_nothing_imports_a_moved_name_from_the_package(self):
         moved = {n for sub in SUBMODULES for n in _top_level_names(PACKAGE / f"{sub}.py")}
