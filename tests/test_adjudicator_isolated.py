@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from diaktoros import ledger  # noqa: E402
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import (broker, broker_ipc, config, contained, gate, gh, observer,  # noqa: E402
                          prompts, state as state_mod, trusted_turn)
 from diaktoros import run_supervisor  # noqa: E402
@@ -524,7 +525,7 @@ class Prompts(Base):
             with self.subTest(seat):
                 row = {"seat": seat, "repo": REPO, "pr": 7, "head": HEAD}
                 with mock.patch.object(gh, "issue_comments_read", return_value=(comments, "")):
-                    change = run_supervisor.PRChange("## The change under review", "")
+                    change = pr_facts.PRChange("## The change under review", "")
                     text = run_supervisor.isolated_prompt(self.loop, row, reviews, marker, change)
                 template, record = text.split("## PR record", 1)
                 self.assertIsNone(self.FIELD.search(template))
@@ -552,7 +553,7 @@ class Prompts(Base):
         with mock.patch.object(gh, "issue_comments_read", return_value=(None, "HTTP 502")):
             text = run_supervisor.isolated_prompt(
                 self.loop, row, reviews, marker,
-                run_supervisor.PRChange("## The change under review", ""))
+                pr_facts.PRChange("## The change under review", ""))
         self.assertIn("answers could not be read", text)
 
 

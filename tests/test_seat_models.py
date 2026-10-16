@@ -22,6 +22,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import ledger  # noqa: E402
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import cli, config, doctor, gh, seat_model, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -471,12 +472,12 @@ class Worker(Base):
              mock.patch.object(gh, "reviews", return_value=[]), \
              mock.patch.object(gh, "review_state", return_value="CHANGES_REQUESTED"), \
              mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value={}), \
-             mock.patch.object(run_supervisor, "adjudication_state",
+             mock.patch.object(pr_facts, "adjudication_state",
                                return_value=("ok", {"reviews": [], "marker": {"rounds": 3}})), \
              mock.patch("diaktoros.state.state_for") as state_for, \
              mock.patch.object(run_supervisor, "isolated_prompt", return_value="PROMPT"), \
-             mock.patch.object(run_supervisor, "pr_change",
-                               return_value=run_supervisor.PRChange("CHANGE", "DIFF")), \
+             mock.patch.object(pr_facts, "pr_change",
+                               return_value=pr_facts.PRChange("CHANGE", "DIFF")), \
              mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
              mock.patch.object(sup, "recover"):
             state_for.return_value.breach_start.return_value = {"ok": True}

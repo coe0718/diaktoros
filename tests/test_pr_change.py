@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from diaktoros import ledger  # noqa: E402
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import config, contained, gh, run_supervisor, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -77,7 +78,7 @@ class Base(unittest.TestCase):
 
     def change(self, world, row=None):
         with mock.patch.object(gh, "fetch", side_effect=world.fetch):
-            return run_supervisor.pr_change(self.loop, row or self.row)
+            return pr_facts.pr_change(self.loop, row or self.row)
 
 
 class Record(Base):
@@ -124,7 +125,7 @@ class Record(Base):
         self.assertIn("- … and 50 more (see /opt/review/pr.diff)", change.record)
         self.assertIn("more patch(es) not shown here for size", change.record)
         self.assertLess(len(change.record.encode()), 64 * 1024)
-        self.assertLessEqual(len(change.diff.encode()), run_supervisor.DIFF_BYTES + 512)
+        self.assertLessEqual(len(change.diff.encode()), pr_facts.DIFF_BYTES + 512)
         self.assertIn("file(s) omitted: the diff is bounded", change.diff)
         self.assertTrue(change.diff.startswith(f"# PR #7 of {REPO}: base main {BASE}"))
 
@@ -238,7 +239,7 @@ class FileListUnreadable(Base):
         world = World([changed(1)])
         world.fail.add(FILES)
         with mock.patch.object(gh, "fetch", side_effect=world.fetch):
-            change = run_supervisor.pr_change(self.loop, self.row, final=True)
+            change = pr_facts.pr_change(self.loop, self.row, final=True)
         self.assertIn("HTTP 502", change.record)
         self.assertIn(self.WARNING, change.record)
 
@@ -270,7 +271,7 @@ class Worker(Base):
                                    return_value={**self.loop, "state_dir": str(root / "state")}), \
                  mock.patch.object(gh, "fetch", side_effect=world.fetch), \
                  mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
-                 mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
+                 mock.patch.object(pr_facts, "effective_reviews", return_value=[]), \
                  mock.patch.object(trusted_turn, "run_turn", return_value=0) as run_turn, \
                  mock.patch.object(sup, "recover"):
                 sup._run_production(run_id, "w")
@@ -315,7 +316,7 @@ class Worker(Base):
                  mock.patch("diaktoros.seat_model.resolve_seat"), \
                  mock.patch.object(config, "by_repo", return_value=self.loop), \
                  mock.patch.object(gh, "fetch", side_effect=world.fetch), \
-                 mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
+                 mock.patch.object(pr_facts, "effective_reviews", return_value=[]), \
                  mock.patch.object(trusted_turn, "run_turn") as run_turn, \
                  mock.patch.object(sup, "recover"):
                 sup._run_production(run_id, "w")
@@ -346,7 +347,7 @@ class Worker(Base):
                  mock.patch("diaktoros.seat_model.resolve_seat"), \
                  mock.patch.object(config, "by_repo", return_value=self.loop), \
                  mock.patch.object(gh, "fetch", side_effect=world.fetch), \
-                 mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
+                 mock.patch.object(pr_facts, "effective_reviews", return_value=[]), \
                  mock.patch.object(trusted_turn, "run_turn") as run_turn, \
                  mock.patch.object(sup, "recover"):
                 sup._run_production(run_id, "w")

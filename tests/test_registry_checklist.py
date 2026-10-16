@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import ci, gh, issue_facts, prompts, run_supervisor  # noqa: E402
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 
 LOOP = {"id": "w", "repo": "acme/w", "base": "main", "cap": 3, "read_token": "read",
         "seats": {}, "fixers": ["fix"], "reviewers": ["rev"], "reviewer_seat": "rev"}
@@ -71,12 +72,12 @@ class Prompts(unittest.TestCase):
             return run_supervisor.isolated_prompt(LOOP, row, [], change=change)
 
     def test_a_fix_round_gets_only_the_rows_its_diff_matches(self):
-        text = self.fix_round(run_supervisor.PRChange("RECORD", DIFFS["event"]))
+        text = self.fix_round(pr_facts.PRChange("RECORD", DIFFS["event"]))
         self.assertIn(TEXT["event"], text)
         self.assertNotIn(TEXT["command"], text)
 
     def test_a_fix_round_on_an_unrelated_diff_has_no_checklist(self):
-        text = self.fix_round(run_supervisor.PRChange("RECORD", diff("README.md", "Waves.")))
+        text = self.fix_round(pr_facts.PRChange("RECORD", diff("README.md", "Waves.")))
         self.assertNotIn("## Registries", text)
 
     def test_an_issue_fix_gets_every_row(self):

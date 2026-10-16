@@ -553,7 +553,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
     ``observed``, when given, receives the sandbox exit code, bounded output tails and the
     recorded submissions.
 
-    ``review_diff``, when given, is the host-built diff of the PR (``run_supervisor.pr_change``);
+    ``review_diff``, when given, is the host-built diff of the PR (``run_supervisor.pr_facts.pr_change``);
     it is mounted read-only at ``/opt/review/pr.diff``, outside the ``/work`` a fixer publishes
     from, so it can never become part of a push.
 

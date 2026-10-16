@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import cli, config, prompts, run_supervisor  # noqa: E402
 from diaktoros.cli import install as cli_install  # noqa: E402
@@ -66,7 +67,7 @@ class Prompts(unittest.TestCase):
         loop = {"id": "w", "repo": "acme/widgets", "base": "main", "cap": 3,
                 "fixer_check": CHECK, "seats": {}}
         row = {"seat": "fixer", "repo": "acme/widgets", "pr": 7, "head": "a" * 40}
-        change = run_supervisor.PRChange("RECORD", "DIFF")
+        change = pr_facts.PRChange("RECORD", "DIFF")
         with mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
              mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None), \
              mock.patch("diaktoros.gh.pr_url", return_value="https://github.com/acme/widgets/pull/7"), \

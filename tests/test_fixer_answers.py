@@ -22,6 +22,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import ledger, review_kick  # noqa: E402
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import broker, broker_client, broker_ipc, config, gh, run_supervisor, safe_push  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
@@ -431,7 +432,7 @@ class NextRound(Base):
                                    "body": self.fake.comments[0]["body"].replace(
                                        "fixed:", "FORGED FIXER ANSWER")})
         # The change section (#50) is read and tested in test_pr_change; this test is the answers.
-        change = run_supervisor.PRChange("## The change under review", "")
+        change = pr_facts.PRChange("## The change under review", "")
         reviewer = run_supervisor.isolated_prompt(
             self.loop, {"seat": "reviewer", "repo": REPO, "pr": 7, "head": NEW_HEAD},
             self.fake.reviews, change=change)
