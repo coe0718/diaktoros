@@ -218,6 +218,30 @@ class Filing(Base):
         self.assertIn("already filed", self.send(server, title="t", body="b", labels=[])["error"])
         self.assertEqual(len(self.posts), 1)
 
+    def test_a_lost_post_response_is_write_evidence_so_the_run_is_not_retried(self):
+        sup, run_id = self.run_row()
+        server = self.broker(run_id)
+        self.fail_post = True
+        self.assertIn("outcome is unknown", self.send(server, title="t", body="b",
+                                                      labels=[])["error"])
+        with sup._connect() as con:
+            self.assertEqual(run_supervisor.write_evidence(con, run_id),
+                             "filed issue outcome unknown")
+            con.execute("UPDATE runs SET owner='w' WHERE id=?", (run_id,))
+        with self.assertRaises(ValueError):
+            sup.retry(run_id)
+        sup.complete_uncertain(run_id, "w", 1, "review failed", retry=True)
+        with sup._connect() as con:
+            self.assertNotEqual(con.execute("SELECT state FROM runs WHERE id=?",
+                                            (run_id,)).fetchone()[0], "waiting")
+
+    def test_a_posted_issue_is_a_known_outcome_and_not_write_evidence(self):
+        sup, run_id = self.run_row()
+        server = self.broker(run_id)
+        self.send(server, title="t", body="b", labels=[])
+        with sup._connect() as con:
+            self.assertIsNone(run_supervisor.write_evidence(con, run_id))
+
     def test_a_finding_on_an_automatic_fix_is_one_deeper_and_says_a_person_decides(self):
         sup, run_id = self.run_row()
         # Issue #301 was filed (depth 1); the PR under review fixes it.
