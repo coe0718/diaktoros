@@ -11,6 +11,7 @@ import contextlib
 import io
 import json
 import sys
+import tempfile
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -222,6 +223,55 @@ class Command(fg.Base):
              mock.patch.object(migrate, "doctor_step", return_value=["doctor: every check verified"]), \
              contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(cli.cmd_migrate(argparse.Namespace(dry_run=False)), 1)
+
+
+class RunsInFlightUnreadable(fg.Base):
+    """#767: an unreadable ledger is not proof that no run is active."""
+
+    def _ledger(self, data: bytes) -> Path:
+        path = Path(tempfile.mkdtemp()) / "ledger.db"
+        path.write_bytes(data)
+        return path
+
+    def test_corrupt_ledger_fails_closed(self):
+        path = self._ledger(b"not a sqlite database" * 50)
+        with mock.patch.object(config, "host_path", return_value=path):
+            with self.assertRaises(migrate.RunsUnknown):
+                migrate.runs_in_flight()
+
+    def test_locked_ledger_fails_closed(self):
+        path = self._ledger(b"")
+        with mock.patch.object(config, "host_path", return_value=path), \
+             mock.patch.object(migrate.sqlite3, "connect",
+                               side_effect=migrate.sqlite3.OperationalError("database is locked")):
+            with self.assertRaises(migrate.RunsUnknown):
+                migrate.runs_in_flight()
+
+    def test_absent_ledger_or_runs_table_is_zero(self):
+        with mock.patch.object(config, "host_path", return_value=Path("/nonexistent/x.db")):
+            self.assertEqual(migrate.runs_in_flight(), 0)
+        path = self._ledger(b"")
+        migrate.sqlite3.connect(path).close()
+        with mock.patch.object(config, "host_path", return_value=path):
+            self.assertEqual(migrate.runs_in_flight(), 0)
+
+    def test_restore_refuses_and_replaces_nothing(self):
+        path = self._ledger(b"garbage" * 100)
+        args = argparse.Namespace(file="x.tgz", dry_run=False, force=True)
+        with mock.patch.object(config, "host_path", return_value=path), \
+             mock.patch("diaktoros.backup.read_manifest", return_value={}), \
+             mock.patch.object(cli_lifecycle, "_restore") as restore, \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli_lifecycle.cmd_restore(args), 2)
+        restore.assert_not_called()
+        self.assertIn("could not be read", out.getvalue())
+
+    def test_migrate_files_step_refuses(self):
+        path = self._ledger(b"garbage" * 100)
+        with mock.patch.object(config, "host_path", return_value=path):
+            lines = migrate.files_step(None, dry_run=False)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("REFUSED", lines[0])
 
 
 if __name__ == "__main__":
