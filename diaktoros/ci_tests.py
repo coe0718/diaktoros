@@ -32,13 +32,17 @@ _FINDING = re.compile(r"^[ \t>*_#-]*(F\d+)\s*:\s*(.*)$", re.MULTILINE)
 
 
 def parse(log: str) -> dict[str, str]:
-    """Test name -> ``ok`` / ``FAIL`` / ``ERROR`` / ``skipped`` from unittest ``-v`` lines."""
+    """Qualified test name (``mod.Class.test_x``) -> ``ok`` / ``FAIL`` / ``ERROR`` / ``skipped``.
+
+    Tests sharing a method name in different classes or modules stay distinct."""
     out: dict[str, str] = {}
     for raw in (_ANSI.sub("", log or "")).replace("\r", "").splitlines():
         m = _PLAIN.match(raw.strip())
         if m:
             word = m.group(3)
-            out[m.group(1)] = "skipped" if word.startswith("skipped") else word
+            name, where = m.group(1), m.group(2)
+            qualified = where if where.endswith("." + name) else f"{where}.{name}"
+            out[qualified] = "skipped" if word.startswith("skipped") else word
     return out
 
 
@@ -103,6 +107,23 @@ def section(results: dict[str, str]) -> str:
     return text
 
 
+def _mentions(text: str, name: str) -> bool:
+    return re.search(rf"(?<![\w.]){re.escape(name)}(?!\w)", text) is not None
+
+
+def _named(results: dict[str, str], text: str) -> dict[str, str]:
+    """The tests ``text`` names. A qualified name wins; a bare method name counts only when it
+    matches exactly one qualified test (an ambiguous short name names nothing)."""
+    qualified = {t: r for t, r in results.items() if _mentions(text, t)}
+    if qualified:
+        return qualified
+    by_bare: dict[str, list[str]] = {}
+    for t in results:
+        by_bare.setdefault(t.rsplit(".", 1)[-1], []).append(t)
+    return {ts[0]: results[ts[0]] for bare, ts in by_bare.items()
+            if len(ts) == 1 and _mentions(text, bare)}
+
+
 def refusal(results: dict[str, str], verdict: str, body: str) -> str:
     """Why this review is refused, or "": a blocking finding naming a test CI ran ``ok`` at the
     head whose only ground is that the seat could not run it."""
@@ -111,8 +132,8 @@ def refusal(results: dict[str, str], verdict: str, body: str) -> str:
     for fid, rest in _FINDING.findall(body or ""):
         if not _UNRUN.search(rest):
             continue
-        for test, outcome in results.items():
-            if outcome not in ("ok", "skipped") or not re.search(rf"\b{re.escape(test)}\b", rest):
+        for test, outcome in _named(results, rest).items():
+            if outcome not in ("ok", "skipped"):
                 continue
             if outcome == "ok":
                 return (f"finding {fid} blocks on {test}, which this sandbox could not run, but a "
