@@ -46,7 +46,9 @@ class Ready(unittest.TestCase):
         self.approved[number] = approved
         self.ci[number] = ci_state or ci.CIState(passed=["tests"])
         self.files[number] = list(files)
-        self.mergeable[number] = {"mergeable": mstate != "dirty", "mergeable_state": mstate}
+        self.mergeable[number] = {"mergeable": mstate != "dirty", "mergeable_state": mstate,
+                                  "number": number, "state": "open", "draft": draft,
+                                  "head": {"sha": HEAD[number]}, "base": {"ref": base}}
 
     def run_ready(self):
         def reviews(_loop, number, login=None):
@@ -153,6 +155,17 @@ class Ready(unittest.TestCase):
              redirect_stdout(out):
             self.assertEqual(cli.cmd_ready(types.SimpleNamespace(loop="w")), 0)
         self.assertIn("unknown: the open PR list could not be read (HTTP 500)", out.getvalue())
+
+    def test_detail_that_changed_since_listing_is_not_ready(self):
+        changes = {"number": 2, "state": "closed", "draft": True,
+                   "head": {"sha": "f" * 40}, "base": {"ref": "release"}}
+        for key, value in changes.items():
+            with self.subTest(key):
+                self.add(1)
+                self.mergeable[1][key] = value
+                text = self.run_ready()
+                self.assertNotIn("1. #1", text)
+                self.assertIn("changed since listing", text)
 
 
 if __name__ == "__main__":
