@@ -11,8 +11,8 @@ loop's routes subscribe to ``pull_request`` / ``pull_request_review`` only, so a
 answered 2xx "ignored" and never reaches a gate. Were it ever to reach one, both gates stop at
 "no pull_request in payload" before any state is touched.
 
-Only ``arm`` (after it activated the hooks) and ``selftest --ping`` send pings; ``doctor`` never
-does.
+Only ``arm`` (after it activated the hooks), ``selftest --ping`` and ``migrate --rename-loop``
+(while the install is paused) send pings; ``doctor`` never does.
 """
 
 from __future__ import annotations
