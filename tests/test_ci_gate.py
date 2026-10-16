@@ -352,7 +352,9 @@ class CITestsUnit(unittest.TestCase):
             self.assertTrue(ci_tests.refusal(r, "REQUEST_CHANGES", "F1: a.py:1: " + text), text)
         for text in ("test_x passes but the token is unavailable",
                      "test_x ok; lib is not installed by setup",
-                     "test_x passes, yet authorize cannot run without a token"):
+                     "test_x passes, yet authorize cannot run without a token",
+                     "test_x passes, but authorize cannot run without a token here",
+                     "test_x ok; publish cannot run when the cache is down here"):
             self.assertEqual(ci_tests.refusal(r, "REQUEST_CHANGES", "F1: a.py:1: " + text), "", text)
 
 

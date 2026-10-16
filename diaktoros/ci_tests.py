@@ -31,7 +31,8 @@ _UNRUN = re.compile(
     r"(?:not (?:been )?(?:executed|run|ran)\b|could(?: not|n't) (?:be )?run|"
     r"can(?:not|'t) (?:be )?run|did(?: not|n't) run|unable to run|"
     r"(?:was|were|is|are) (?:not available|unavailable|not installed|skipped)|"
-    r"no (?:node|toolchain)|missing toolchain)[^.;\n]{0,60}?" + _WHERE
+    r"no (?:node|toolchain)|missing toolchain)"
+    r"(?:\s+(?:it|them|this|that|the|tests?|test\w*|again|at all))*\s+" + _WHERE
     + r"|skipped (?:here|locally)", re.IGNORECASE)
 _FINDING = re.compile(r"^[ \t>*_#-]*(F\d+)\s*:\s*(.*)$", re.MULTILINE)
 
