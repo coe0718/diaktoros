@@ -469,7 +469,9 @@ def check_node() -> Check:
                      f"skipped: {version}; seats cannot run `node` and JavaScript test suites "
                      "stay unverified",
                      "install Node under the operator's home (e.g. ~/.hermes/node) or on PATH")
-    return Check("runtime:node", VERIFIED, f"node {version} at {root}, mounted at /opt/node")
+    where = ("mounted at /opt/node" if runtime_detect.node_mounted(root)
+             else "system install, already visible in the sandbox")
+    return Check("runtime:node", VERIFIED, f"node {version} at {root}, {where}")
 
 
 def _check_profile(name: str, seat: str) -> Check:

@@ -1,5 +1,6 @@
 """Host Node detection and its doctor line (#685)."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import io
 import os
 from pathlib import Path
 import sys
@@ -50,6 +51,56 @@ class NodeRuntime(unittest.TestCase):
         self.assertEqual(check.status, doctor.VERIFIED)
         self.assertIn("v20.1.0", check.detail)
         self.assertIn(str(root), check.detail)
+
+    def system_install(self):
+        """A /usr-style install: found on PATH, but a root the sandbox already sees."""
+        root = self.install(self.home / "sysroot", "v18.19.0")
+        env = mock.patch.dict(os.environ, {"PATH": str(root / "bin")})
+        env.start()
+        self.addCleanup(env.stop)
+        vis = mock.patch.object(runtime_detect, "_NODE_VISIBLE", (root,))
+        vis.start()
+        self.addCleanup(vis.stop)
+        return root
+
+    def test_system_install_is_available_but_not_mounted(self):
+        root = self.system_install()
+        self.assertIsNone(runtime_detect.node_root())
+        self.assertEqual(runtime_detect.node_version(), (root, "v18.19.0"))
+        self.assertFalse(runtime_detect.node_mounted(root))
+
+    def test_doctor_reports_system_node_as_verified(self):
+        self.system_install()
+        check = doctor.check_node()
+        self.assertEqual(check.status, doctor.VERIFIED)
+        self.assertIn("v18.19.0", check.detail)
+        self.assertIn("already visible", check.detail)
+
+    def test_selftest_reports_system_node_as_pass(self):
+        import json
+        from diaktoros import selftest
+        self.system_install()
+        src = self.home / "src"
+        (src / ".git").mkdir(parents=True)
+        (src / "run_agent.py").write_text("")
+        venv = self.home / "venv"
+        (venv / "bin").mkdir(parents=True)
+        for name in ("python", "hermes"):
+            (venv / "bin" / name).write_text("")
+        rust = self.home / "rust"
+        (rust / "bin").mkdir(parents=True)
+        (rust / "bin" / "cargo").write_text("")
+        path = self.home / "runtime.json"
+        path.write_text(json.dumps({"source": str(src), "venv": str(venv),
+                                    "runtime": "/usr", "rust": str(rust)}))
+        path.chmod(0o600)
+        report = selftest.Report(out=io.StringIO())
+        selftest.check_runtime(report, path)
+        node = [r for r in report.results if r[1] == "runtime:node"]
+        self.assertEqual(len(node), 1, report.results)
+        self.assertEqual(node[0][2], selftest.PASS)
+        self.assertIn("v18.19.0", node[0][3])
+        self.assertIn("already visible", node[0][3])
 
     def test_a_broken_node_is_not_reported_as_available(self):
         root = self.install(self.home / ".hermes" / "node", "garbage")
