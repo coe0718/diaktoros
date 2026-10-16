@@ -404,7 +404,8 @@ inspection, not replay. [Issues](issues.md) covers setup and truthful limitation
 ## Holding one PR
 
 A maintainer (`triage.maintainers`) holds a PR by applying the `diaktoros:hold` label or
-commenting `/loop hold`; `/loop release`, or removing the label, lifts it. The latest
+commenting `/loop hold`. `/loop release` lifts either; removing the label lifts only a label
+hold, never a `/loop hold` comment. The latest
 event from a maintainer wins; anyone else's label or comment is ignored and logged.
 
 While held, no review, fix, CI-fix or conflict turn is claimed: queued turns stay pending
