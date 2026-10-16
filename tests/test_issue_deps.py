@@ -49,7 +49,10 @@ class Deps(GateFixture):
                 return self.pulls.get(int(path.rsplit("/", 1)[1]))
             number = int(path.rsplit("/", 1)[1])
             return self.issues.get(number)
-        for target, name, value in ((gh, "api", api),
+        def fetch(loop, path, method="GET", body=None, login=None):
+            data = api(loop, path, method, body, login)
+            return data, ("" if data is not None else "unreadable")
+        for target, name, value in ((gh, "api", api), (gh, "fetch", fetch),
                                     (issue_deps, "_fix_prs",
                                      lambda loop, n: self.fix_prs.get(n, [])),
                                     (config, "load_id", lambda loop_id: self.loop)):
@@ -157,6 +160,41 @@ class Deps(GateFixture):
         self.events[5] = [{"event": "closed", "commit_id": MERGE}]   # compare unreadable
         fix_hold.sweep(self.loop, self.st)
         self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
+
+    def _busy_close(self, tail):
+        """Closed #5: an old close by a commit main contains on page 1, then filler, then tail."""
+        self.issues[5] = {**self.issues[5], "state": "closed"}
+        filler = [{"event": "labeled"}] * 100
+        pages = {1: [{"event": "closed", "commit_id": MERGE}] + filler[1:], 2: filler, 3: filler}
+        pages.update(tail)
+        self.requested = []
+
+        def api(loop, path, method="GET", body=None, login=None):
+            if "/events" in path:
+                page = int(path.split("page=")[-1]) if "&page=" in path else 1
+                self.requested.append(page)
+                return pages.get(page)
+            if "/compare/" in path:
+                return {"status": "ahead"}
+            return self.issues[5]
+        return api
+
+    def test_a_close_beyond_the_page_bound_is_unknown_not_met(self):
+        api = self._busy_close({4: [{"event": "reopened"},
+                                    {"event": "closed", "commit_id": None}]})
+        with mock.patch.object(gh, "fetch", lambda l, p, login=None: (api(l, p), "")), \
+                mock.patch.object(gh, "api", api):
+            done, why = issue_deps.met(self.loop, 5)
+        self.assertIsNone(done)
+        self.assertIn("could not be read in full", why)
+
+    def test_an_unreadable_final_page_holds_the_dependent(self):
+        api = self._busy_close({3: None})                 # the last page read fails
+        self.depends(12, on=5)
+        with mock.patch.object(gh, "fetch", lambda l, p, login=None: (api(l, p), "")), \
+                mock.patch.object(gh, "api", api):
+            blockers = issue_deps.blocking(self.loop, self.st, 12)
+        self.assertEqual([b[0] for b in blockers], [5])
 
     def test_a_pr_wait_that_ends_hands_over_to_the_dependency_wait(self):
         self.depends(12, on=5)

@@ -80,17 +80,15 @@ def met(loop: dict, prerequisite: int) -> tuple[bool | None, str]:
         return None, f"#{prerequisite} could not be read"
     if issue.get("state") == "open":
         return False, f"#{prerequisite} is still open"
+    events, why = gh._read_pages(
+        loop, f"/repos/{loop['repo']}/issues/{prerequisite}/events?per_page=100",
+        "event", EVENT_PAGES, login=loop["read_token"])
+    if events is None:                    # unreadable or past the bound: never a prefix (#765)
+        return None, f"#{prerequisite}'s events could not be read in full ({why})"
     closer = ""
-    for page in range(1, EVENT_PAGES + 1):
-        events = gh.api(loop, f"/repos/{loop['repo']}/issues/{prerequisite}/events"
-                              f"?per_page=100&page={page}", login=loop["read_token"])
-        if not isinstance(events, list):
-            return None, f"#{prerequisite}'s events could not be read"
-        for event in events:
-            if isinstance(event, dict) and event.get("event") == "closed":
-                closer = str(event.get("commit_id") or "")     # the last close wins
-        if len(events) < 100:
-            break
+    for event in events:
+        if event.get("event") == "closed":
+            closer = str(event.get("commit_id") or "")         # the last close wins
     if closer:
         inside = _in_base(loop, closer)
         if inside is None:
