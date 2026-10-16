@@ -312,8 +312,8 @@ def seats(loop: dict, now: float | None = None) -> dict:
     is the answer that expires with the window.
 
     ``review_only`` appears only for a loop that has review-only authors: a reviewer turn on one
-    of their PRs is counted there (``run_supervisor``), capped by ``review_only_daily``, and the
-    seats' own counters do not see it.
+    of their PRs is counted there (``run_supervisor``) once ``review_only_daily`` is set, capped by
+    it, and the reviewer's own counter does not see it (#772). Unset, the one pool is the reviewer's.
     """
     now = time.time() if now is None else now
     names = ["reviewer", "fixer"]

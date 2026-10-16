@@ -344,6 +344,46 @@ class ProductionWorker(unittest.TestCase):
         self.run_production(lambda *a, **k: 1, loop, seat="reviewer", author="owner-human")
         self.assertEqual(pacing.turns_today("widgets", pacing.REVIEW_ONLY_SEAT), 2)
 
+    def reviewer_loop(self, turns, daily, tokens=None):
+        reviewer = {**self.raw["seats"]["reviewer"], "daily_turns": turns}
+        if tokens:
+            reviewer["daily_tokens"] = tokens
+        return config.normalize({**self.raw, "review_only": ["owner-human"],
+                                 "review_only_daily": daily,
+                                 "seats": {**self.raw["seats"], "reviewer": reviewer}})
+
+    def test_review_only_turn_is_counted_once_and_leaves_the_fixer_pr_allowance(self):
+        loop = self.reviewer_loop(1, 5)
+        self.run_production(lambda *a, **k: 0, loop, seat="reviewer", author="owner-human")
+        self.assertEqual((pacing.turns_today("widgets", pacing.REVIEW_ONLY_SEAT),
+                          pacing.turns_today("widgets", "reviewer")), (1, 0))
+        self.run_production(lambda *a, **k: 0, loop, seat="reviewer", author="fixer")
+        self.assertEqual(self.turns, 2, "the fixer PR's review was held by a review-only turn")
+
+    def test_a_spent_general_cap_does_not_block_review_only_turns(self):
+        loop = self.reviewer_loop(1, 5)
+        pacing.count_turn("widgets", "reviewer")
+        self.run_production(lambda *a, **k: 0, loop, seat="reviewer", author="owner-human")
+        self.assertEqual(self.turns, 1)
+        row = self.run_production(lambda *a, **k: self.fail("past the general cap"), loop,
+                                  seat="reviewer", author="fixer")
+        self.assertIn("reviewer daily turn cap (1) reached", row["error"])
+
+    def test_without_review_only_daily_review_only_turns_share_the_general_cap(self):
+        loop = self.reviewer_loop(1, None)
+        self.run_production(lambda *a, **k: 0, loop, seat="reviewer", author="owner-human")
+        self.assertEqual(pacing.turns_today("widgets", "reviewer"), 1)
+        row = self.run_production(lambda *a, **k: self.fail("past the cap"), loop,
+                                  seat="reviewer", author="owner-human")
+        self.assertIn("reviewer daily turn cap (1) reached", row["error"])
+
+    def test_the_token_budget_stays_shared_with_review_only_turns(self):
+        pacing.count_tokens("widgets", "reviewer", 100)
+        row = self.run_production(lambda *a, **k: self.fail("past the budget"),
+                                  self.reviewer_loop(5, 5, tokens=100),
+                                  seat="reviewer", author="owner-human")
+        self.assertIn("daily token budget (100) reached", row["error"])
+
     def test_an_ordinary_failure_still_backs_off_and_counts(self):
         row = self.run_production(lambda *a, **k: 1)
         self.assertEqual((row["state"], row["retries"]), ("waiting", 1))

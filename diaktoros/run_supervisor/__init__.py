@@ -2336,9 +2336,8 @@ class Supervisor(records.LedgerRecords):
         prompt = launch.prompt
         if unpublished_before(row):
             prompt = PUBLISH_NUDGE + prompt
-        pacing.count_turn(loop['id'], row['seat'])
-        if ro_turn:
-            pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT)
+        # Each turn is counted once, against its own pool (#772).
+        pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT if ro_turn else row['seat'])
         change, merged = launch.change, launch.merged
         turn.rc = trusted_turn.run_turn(loop, launch.scope, source=Path(settings["source"]),
               venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
@@ -2372,17 +2371,36 @@ class Supervisor(records.LedgerRecords):
         from .. import config, gh, pacing
         row, loop = turn.row, turn.loop
         closed = pacing.held(account)
-        cap = config.seat_daily_turns(loop, row['seat'])
         if closed is not None:
             turn.paced_until = closed[0]
             turn.error = (f"held: {row['seat']} usage window ({provider}) — resumes "
                           f"{pacing.when(closed[0])}")
             return False
-        if cap is not None and pacing.turns_today(loop['id'], row['seat']) >= cap:
-            turn.paced_until = pacing.next_midnight()
-            turn.error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
-                          f"{pacing.when(turn.paced_until)}")
-            return False
+        # Two pools (#772, #457): with review_only_daily set, a review-only PR's reviewer turn
+        # counts against that cap only, every other turn against daily_turns only. Unset,
+        # review-only turns share daily_turns. So the author is classified before any turn cap.
+        ro_cap = config.review_only_daily(loop) if row['seat'] == 'reviewer' else None
+        ro_turn = False
+        if ro_cap is not None and config.review_only(loop):
+            live_pr = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
+                             login=loop["read_token"])
+            if not isinstance(live_pr, dict):
+                raise RetryableError("PR unreadable before launch (GitHub read failed)")
+            ro_author = str(((live_pr.get("user") or {}).get("login")) or "").lower()
+            ro_turn = ro_author in config.review_only(loop)
+        if ro_turn:
+            if pacing.turns_today(loop['id'], pacing.REVIEW_ONLY_SEAT) >= ro_cap:
+                turn.paced_until = pacing.next_midnight()
+                turn.error = (f"held: review-only daily turn cap ({ro_cap}) reached — resumes "
+                              f"{pacing.when(turn.paced_until)}")
+                return ro_turn
+        else:
+            cap = config.seat_daily_turns(loop, row['seat'])
+            if cap is not None and pacing.turns_today(loop['id'], row['seat']) >= cap:
+                turn.paced_until = pacing.next_midnight()
+                turn.error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
+                              f"{pacing.when(turn.paced_until)}")
+                return False
         # A seat's daily token budget (#480): once spent, the next turn waits for midnight.
         # A turn in flight is never killed; this only gates a launch. The fixer's budget
         # covers its issue fixes too (seat_daily_tokens, and record_usage's counter key).
@@ -2393,21 +2411,6 @@ class Supervisor(records.LedgerRecords):
             turn.error = (f"held: {row['seat']} daily token budget ({token_cap}) reached — "
                           f"resumes {pacing.when(turn.paced_until)}")
             return False
-        # Review-only PRs may have their own daily cap on reviewer turns, so the operator's
-        # PRs cannot use up the budget the fixer's PRs share. The fixer's PRs never read it.
-        ro_cap = config.review_only_daily(loop) if row['seat'] == 'reviewer' else None
-        ro_turn = False
-        if ro_cap is not None and config.review_only(loop):
-            live_pr = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
-                             login=loop["read_token"])
-            if not isinstance(live_pr, dict):
-                raise RetryableError("PR unreadable before launch (GitHub read failed)")
-            ro_author = str(((live_pr.get("user") or {}).get("login")) or "").lower()
-            ro_turn = ro_author in config.review_only(loop)
-            if ro_turn and pacing.turns_today(loop['id'], pacing.REVIEW_ONLY_SEAT) >= ro_cap:
-                turn.paced_until = pacing.next_midnight()
-                turn.error = (f"held: review-only daily turn cap ({ro_cap}) reached — resumes "
-                              f"{pacing.when(turn.paced_until)}")
         return ro_turn
 
     def _ci_hold(self, turn: _Turn) -> None:
