@@ -449,6 +449,7 @@ def authorize_issue_fix(loop: dict, *, repo: str, number: int) -> str:
         raise BrokerDenied("token principal cannot be verified")
     try:
         run_supervisor.issue_fix_issue(loop, number)
+        run_supervisor.issue_fix_dependencies(loop, number)
     except (run_supervisor.RetryableError, ValueError) as exc:
         raise BrokerDenied(str(exc)) from None
     return fixer

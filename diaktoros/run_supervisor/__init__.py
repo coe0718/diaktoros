@@ -530,6 +530,15 @@ def issue_fix_issue(loop: dict, number: int) -> dict:
     return issue
 
 
+def issue_fix_dependencies(loop: dict, number: int) -> None:
+    """Raise ``RetryableError`` while a declared prerequisite of the issue is unmet or
+    unreadable (#775): checked at launch and at the broker's publication boundary."""
+    from .. import issue_deps
+    why = issue_deps.hold_reason(loop, number)
+    if why:
+        raise RetryableError(f'issue #{number} {why}')
+
+
 def write_records(con, run_id: str) -> str | None:
     """The host's write-ahead record of an external write this run began, if any.
 
@@ -1827,6 +1836,16 @@ class Supervisor(records.LedgerRecords):
             self._claim_read_adjudicator(row, read)
         if row['seat'] == 'fixer':
             self._claim_read_fixer(row, read)
+        if row['seat'] == 'issue_fixer' and not read.superseded:
+            # A prerequisite declared after the row was queued (#775): it waits, pending, and
+            # starts once the dependency is merged or waived. Unreadable holds too.
+            from .. import config, issue_deps
+            try:
+                dep_loop = config.by_repo(row['repo'])
+                if dep_loop is not None and issue_deps.hold_reason(dep_loop, row['pr']):
+                    read.retry_read = True
+            except Exception:
+                read.retry_read = True
 
     def _claim_read_adjudicator(self, row, read: _ClaimRead) -> None:
         from .. import config

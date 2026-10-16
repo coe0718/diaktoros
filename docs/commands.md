@@ -1105,7 +1105,9 @@ hermes dk depends --loop "<loop-id>" --issue 42 --waive 41
 
 - **Declaring** checks that both numbers are issues of this repository, that 42 isn't 41, and
   that it closes no cycle (`a cycle: #42 → #41 → #40 → #42`). It holds 42's next hand-off; a fix
-  turn already queued or running isn't recalled.
+  turn already queued is held at claim, launch and the broker's publish check until 41 is merged
+  or waived (an unreadable dependency holds too, and `--waive` releases it); one already running
+  isn't recalled.
 - **Done means merged into the base**, on evidence: 41's own issue-fix PR merged into the base,
   or 41 closed by a commit the base contains (a `Fixes #41` merge). Closing 41 any other way
   isn't done, and 42 keeps waiting. A fact GitHub can't answer keeps it waiting too.

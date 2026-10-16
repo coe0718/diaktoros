@@ -115,6 +115,23 @@ def blocking(loop: dict, st, issue: int) -> list[tuple[int, str]]:
     return out
 
 
+def hold_reason(loop: dict, issue: int) -> str:
+    """Why a *queued* fix for ``issue`` may not launch or publish now, or ``""`` (#775).
+
+    The same ``blocking`` rule the hand-off uses, re-read from the current declarations, so a
+    dependency declared after the turn was queued still holds it and a waiver releases it. An
+    unreadable ledger or fact holds too; it is never taken as met.
+    """
+    from . import state as state_mod
+    try:
+        blockers = blocking(loop, state_mod.state_for(loop), issue)
+    except Exception as exc:
+        return f"issue dependencies unreadable: {type(exc).__name__}: {exc}"[:200]
+    if not blockers:
+        return ""
+    return "waiting for " + "; ".join(f"#{a} ({why})" for a, why in blockers)
+
+
 def wait(loop: dict, st, issue: int, blockers: list[tuple[int, str]]) -> None:
     """Record that ``issue``'s hand-off waits, and say so once on the issue."""
     from . import config
