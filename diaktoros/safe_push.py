@@ -752,12 +752,20 @@ def open_branch(loop: dict, *, repo: str, number: int, base: str, branch: str,
                  login, identity, before_push=before_push, from_branch=loop["base"], **extra)
     except Exception as exc:
         error = exc
-    observed = _confirm_ref(loop, ref_path, branch, login, new_head, None,
-                            push_failed=error is not None)
-    outcome = "published" if new_head is not None and observed == new_head else "unknown"
-    if attempt_started:
-        _audit(loop, {**receipt, "new_head": new_head, "phase": "reconciled",
-                      "outcome": outcome, "observed_head": observed})
+    outcome = "unknown"
+    try:
+        observed = _confirm_ref(loop, ref_path, branch, login, new_head, None,
+                                push_failed=error is not None)
+        outcome = "published" if new_head is not None and observed == new_head else "unknown"
+        if attempt_started:
+            _audit(loop, {**receipt, "new_head": new_head, "phase": "reconciled",
+                          "outcome": outcome, "observed_head": observed})
+    except Exception as exc:
+        # Once the attempt began the push may have landed: any failure to confirm or record
+        # it (OSError, BrokerDenied from the audit) is an unknown outcome, never a denial.
+        if attempt_started:
+            raise PushFailure("unknown") from exc
+        raise
     if error is not None or outcome != "published":
         failure = PushFailure(outcome) if attempt_started else broker.BrokerDenied(
             "Git ref update not confirmed (unchanged)")

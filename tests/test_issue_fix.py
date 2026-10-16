@@ -377,6 +377,7 @@ class BrokerWrite(Base):
                 return {"number": 40, "id": 9}
             return self.live
         self.pushed = []
+        self.real_open_branch = safe_push.open_branch
 
         def open_branch(loop, **kw):
             self.pushed.append(kw)
@@ -458,6 +459,41 @@ class BrokerWrite(Base):
         # #522: the run itself is held uncertain, so `status` lists it and `reconcile` applies;
         # it never ends `succeeded` with its write unknown.
         self.assertEqual(self.run_row(), ("uncertain", "post-write push quarantine: unknown"))
+
+    def test_an_oserror_in_the_reconciled_audit_holds_the_run_uncertain(self):
+        self.reconciled_audit_fails(OSError("disk full"))
+
+    def test_a_denied_reconciled_audit_holds_the_run_uncertain(self):
+        self.reconciled_audit_fails(broker.BrokerDenied("durable audit directory unavailable"))
+
+    def reconciled_audit_fails(self, exc):
+        """#769: the real open_branch, driven by the broker's issue-fix write."""
+        new = "e" * 40
+
+        def cas(loop, repo, branch, base, files, message, login, identity, *, before_push, **kw):
+            before_push(new)
+        if True:
+            if True:
+                sup, run_id, server = self.sup, self.run_id, self.server
+
+                def audit(loop, record):
+                    if record.get("phase") == "reconciled":
+                        raise exc
+                safe_push.open_branch.side_effect = self.real_open_branch
+                with mock.patch.object(broker, "authorize_issue_fix", return_value="fix"), \
+                        mock.patch.object(safe_push, "_api", return_value={"login": "fix", "id": 3}), \
+                        mock.patch.object(safe_push, "_git_cas", side_effect=cas), \
+                        mock.patch.object(safe_push, "_audit", side_effect=audit), \
+                        mock.patch.object(safe_push, "_confirm_ref", return_value=new), \
+                        mock.patch.object(safe_push.gh, "fetch", return_value=(None, "HTTP 404 Not Found")), \
+                        self.assertRaisesRegex(broker_ipc.ProtocolError, "unknown"):
+                    server._dispatch(self.open_pr())
+                self.assertEqual(sup.issue_fix_result(run_id)["state"], "uncertain")
+                self.assertEqual(self.posts(), [])
+                with ledger.connect(self.db) as con:
+                    row = tuple(con.execute("SELECT state, error FROM runs WHERE id=?",
+                                            (run_id,)).fetchone())
+                self.assertEqual(row, ("uncertain", "post-write push quarantine: unknown"))
 
     def test_an_unknown_pr_create_holds_the_run_uncertain(self):
         def api(loop, path, method="GET", body=None, login=None):
@@ -648,6 +684,21 @@ class ConfirmAfterPush(OpenBranchGuards):
             self.open()
         self.assertEqual(failed.exception.outcome, "unknown")
         self.assertEqual(self.sleeps, list(safe_push.CONFIRM_WAITS))
+
+
+    def audit_fails_on_reconcile(self, exc):
+        def audit(loop, record):
+            if record.get("phase") == "reconciled":
+                raise exc
+        safe_push._audit.side_effect = audit
+
+    def test_a_failed_reconciled_audit_is_an_unknown_push(self):
+        for exc in (OSError("disk full"), broker.BrokerDenied("durable audit directory unavailable")):
+            with self.subTest(exc=exc):
+                self.audit_fails_on_reconcile(exc)
+                with self.assertRaises(safe_push.PushFailure) as failed:
+                    self.open()
+                self.assertEqual(failed.exception.outcome, "unknown")
 
 
 class ConfirmRef(unittest.TestCase):
