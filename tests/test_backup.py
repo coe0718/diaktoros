@@ -444,5 +444,52 @@ class MigrateBacksUpFirst(Base):
         moved.assert_not_called()
 
 
+class InterruptedKeepsThePause(Base):
+    """#766: an exception inside the hold leaves the marker; clean refusals and success clear it."""
+
+    def test_hold_keeps_the_marker_on_an_exception_and_clears_it_on_a_normal_exit(self):
+        for exc in (OSError("move failed"), KeyboardInterrupt()):
+            with self.assertRaises(type(exc)):
+                with migrate.hold():
+                    raise exc
+            self.assertIsNotNone(migrate.migrating())
+            with migrate.hold() as left:               # a re-run picks it up and finishes
+                self.assertIsNotNone(left)
+            self.assertIsNone(migrate.migrating())
+
+    def test_a_restore_that_fails_partway_stays_paused_until_a_rerun_finishes(self):
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        self.wipe()
+        with mock.patch.object(backup, "put_files", side_effect=OSError("disk gone")):
+            code, _ = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        self.assertEqual(code, 2)
+        self.assertIsNotNone(migrate.migrating())
+        code, _ = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertIsNone(migrate.migrating())
+
+    def test_a_restore_refused_before_any_write_does_not_stay_paused(self):
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        code, _ = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        self.assertEqual(code, 2)                      # existing state, no --force
+        self.assertIsNone(migrate.migrating())
+
+    def test_a_migrate_stopped_after_a_step_stays_paused(self):
+        with mock.patch.object(migrate, "settings_step", return_value=[]), \
+                mock.patch.object(migrate, "shim_step", return_value=[]), \
+                mock.patch.object(migrate, "files_step", side_effect=OSError("move failed")), \
+                mock.patch.object(cli_lifecycle, "_move_watchdog_job", return_value=[]):
+            with self.assertRaises(OSError):
+                self.run_cmd(cli.cmd_migrate, dry_run=False)
+        self.assertIsNotNone(migrate.migrating())
+
+    def test_a_migrate_whose_backup_fails_leaves_no_pause(self):
+        with mock.patch.object(backup, "create", side_effect=backup.BackupError("full")):
+            code, _ = self.run_cmd(cli.cmd_migrate, dry_run=False)
+        self.assertEqual(code, 2)
+        self.assertIsNone(migrate.migrating())
+
+
 if __name__ == "__main__":
     unittest.main()

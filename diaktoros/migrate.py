@@ -126,10 +126,11 @@ def hold():
             raise MigrationBusy(describe(migrating() or {})) from None
         left = migrating()
         state_mod._atomic_write(path, {"pid": os.getpid(), "started": time.time()})
-        try:
-            yield left
-        finally:
-            path.unlink(missing_ok=True)
+        yield left
+        # Only a normal exit clears the marker (#766): an exception (KeyboardInterrupt too) may
+        # come after a step committed, and migration has no global rollback, so the pause stays
+        # until a re-run finishes. Callers refuse before any write by returning, not raising.
+        path.unlink(missing_ok=True)
     finally:
         os.close(fd)
 
