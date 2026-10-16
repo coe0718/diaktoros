@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from diaktoros import ledger  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros import state as state_mod  # noqa: E402
 from diaktoros import (broker, broker_ipc, config, fix_hold, gate, gh, run_supervisor, seat_model,  # noqa: E402
                          safe_push, trusted_turn)
@@ -333,7 +334,7 @@ class Worker(Base):
         self.addCleanup(comments.stop)
 
     def test_the_prompt_names_the_base_branch_and_carries_the_issue_as_data(self):
-        text = run_supervisor.issue_fix_prompt(self.loop, {"repo": REPO, "pr": 12, "head": BASE})
+        text = turn_prompts.issue_fix_prompt(self.loop, {"repo": REPO, "pr": 12, "head": BASE})
         self.assertIn("diaktoros/issue-12", text)
         self.assertIn(BASE, text)
         self.assertIn("issue_comment", text)

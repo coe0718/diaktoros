@@ -22,6 +22,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import ledger  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import cli, config, doctor, gh, seat_model, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
@@ -475,7 +476,7 @@ class Worker(Base):
              mock.patch.object(pr_facts, "adjudication_state",
                                return_value=("ok", {"reviews": [], "marker": {"rounds": 3}})), \
              mock.patch("diaktoros.state.state_for") as state_for, \
-             mock.patch.object(run_supervisor, "isolated_prompt", return_value="PROMPT"), \
+             mock.patch.object(turn_prompts, "isolated_prompt", return_value="PROMPT"), \
              mock.patch.object(pr_facts, "pr_change",
                                return_value=pr_facts.PRChange("CHANGE", "DIFF")), \
              mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \

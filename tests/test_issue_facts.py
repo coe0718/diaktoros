@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import gh, issue_facts, run_supervisor  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 
 LOOP = {"repo": "acme/w", "id": "l", "base": "main", "read_token": "read",
@@ -88,7 +89,7 @@ class Prompts(unittest.TestCase):
                  "body": "BODY5", "labels": [], "html_url": "https://github.com/acme/w/issues/5"}
         with mock.patch.object(run_supervisor, "issue_fix_issue", return_value=issue), \
                 mock.patch.object(gh, "issue_comments_read", side_effect=fake.comments):
-            text = run_supervisor.issue_fix_prompt(LOOP, {"repo": "acme/w", "pr": 5, "head": "c" * 40})
+            text = turn_prompts.issue_fix_prompt(LOOP, {"repo": "acme/w", "pr": 5, "head": "c" * 40})
         self.assertIn("MAINTAINER-REQ", text)
         self.assertNotIn("STRANGER-TEXT", text)
         self.assertLess(text.index("BODY5"), text.index("MAINTAINER-REQ"))
@@ -106,7 +107,7 @@ class Prompts(unittest.TestCase):
                 mock.patch("diaktoros.gh.pr_url", return_value="https://github.com/acme/w/pull/7"), \
                 mock.patch("diaktoros.ci.read", return_value=None), \
                 mock.patch("diaktoros.ci.section", return_value=""):
-            text = run_supervisor.isolated_prompt(loop, row, [], change=change)
+            text = turn_prompts.isolated_prompt(loop, row, [], change=change)
         self.assertIn("BODY5", text)
         self.assertIn("MAINTAINER-REQ", text)
         self.assertNotIn("STRANGER-TEXT", text)
@@ -151,7 +152,7 @@ class Prompts(unittest.TestCase):
                 mock.patch("diaktoros.gh.pr_url", return_value="https://github.com/acme/w/pull/7"), \
                 mock.patch("diaktoros.ci.read", return_value=None), \
                 mock.patch("diaktoros.ci.section", return_value=""):
-            text = run_supervisor.isolated_prompt(loop, row, [], change=pr_facts.PRChange("RECORD", "DIFF"))
+            text = turn_prompts.isolated_prompt(loop, row, [], change=pr_facts.PRChange("RECORD", "DIFF"))
         self.assertIn("PR-DEFERRAL", text)
         self.assertIn("Maintainers' comments on the PR #7", text)
         self.assertNotIn("PR-STRANGER-TEXT", text)

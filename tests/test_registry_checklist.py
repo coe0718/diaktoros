@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import ci, gh, issue_facts, prompts, run_supervisor  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 
 LOOP = {"id": "w", "repo": "acme/w", "base": "main", "cap": 3, "read_token": "read",
@@ -69,7 +70,7 @@ class Prompts(unittest.TestCase):
                 mock.patch.object(gh, "pr_url", return_value="https://github.com/acme/w/pull/7"), \
                 mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
                 mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None):
-            return run_supervisor.isolated_prompt(LOOP, row, [], change=change)
+            return turn_prompts.isolated_prompt(LOOP, row, [], change=change)
 
     def test_a_fix_round_gets_only_the_rows_its_diff_matches(self):
         text = self.fix_round(pr_facts.PRChange("RECORD", DIFFS["event"]))
@@ -85,7 +86,7 @@ class Prompts(unittest.TestCase):
                  "body": "BODY5", "labels": [], "html_url": "https://github.com/acme/w/issues/5"}
         with mock.patch.object(run_supervisor, "issue_fix_issue", return_value=issue), \
                 mock.patch.object(gh, "issue_comments_read", return_value=([], "")):
-            text = run_supervisor.issue_fix_prompt(LOOP, {"repo": "acme/w", "pr": 5,
+            text = turn_prompts.issue_fix_prompt(LOOP, {"repo": "acme/w", "pr": 5,
                                                           "head": "c" * 40})
         self.assertIn(prompts.registry_section(None), text)
 
@@ -93,7 +94,7 @@ class Prompts(unittest.TestCase):
         row = {"turn_key": run_supervisor.CONFLICT_KEY + "b" * 40, "repo": "acme/w", "pr": 7,
                "head": "a" * 40}
         with mock.patch.object(gh, "pr_url", return_value="https://github.com/acme/w/pull/7"):
-            text = run_supervisor.conflict_prompt(LOOP, row, {"conflicted": ["x.py"]})
+            text = turn_prompts.conflict_prompt(LOOP, row, {"conflicted": ["x.py"]})
         self.assertIn(prompts.registry_section(None), text)
 
     def test_the_ci_fix_turn_uses_the_shared_text(self):

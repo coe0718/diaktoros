@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import cli, config, prompts, run_supervisor  # noqa: E402
@@ -73,11 +74,11 @@ class Prompts(unittest.TestCase):
              mock.patch("diaktoros.gh.pr_url", return_value="https://github.com/acme/widgets/pull/7"), \
              mock.patch("diaktoros.issue_facts.section", return_value=""), \
              mock.patch("diaktoros.gh.issue_comments_read", return_value=([], None)):
-            fixer = run_supervisor.isolated_prompt(loop, row, [], change=change)
+            fixer = turn_prompts.isolated_prompt(loop, row, [], change=change)
         with mock.patch.object(run_supervisor, "issue_fix_issue",
                                return_value={"title": "T", "body": "B"}), \
              mock.patch("diaktoros.gh.issue_comments_read", return_value=([], "")):
-            issue = run_supervisor.issue_fix_prompt(loop, {**row, "seat": "issue_fixer"})
+            issue = turn_prompts.issue_fix_prompt(loop, {**row, "seat": "issue_fixer"})
         for text in (fixer, issue):
             self.assertIn("## Always-run check (set by the loop's operator)", text)
             self.assertIn(f"```sh\n{CHECK}\n```", text)
