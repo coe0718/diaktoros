@@ -24,7 +24,7 @@ def diff(path, *added):
 
 
 DIFFS = {
-    "command": diff("diaktoros/cli.py", "    p = sub.add_parser('wave', help='wave')"),
+    "command": diff("diaktoros/cli/__init__.py", "    p = sub.add_parser('wave', help='wave')"),
     "event": diff("diaktoros/observer.py", "    'waved',"),
     "doctor_check": diff("diaktoros/doctor.py", '    return Check("wave", VERIFIED, "ok")'),
     "setting": diff("diaktoros/config/__init__.py", '    "wave": {"label": "Wave", "type": "bool"},'),
@@ -48,7 +48,7 @@ class Detection(unittest.TestCase):
         self.assertEqual(prompts.registry_section(diff("README.md", "Waves.")), "")
 
     def test_a_removed_line_is_not_an_addition(self):
-        removed = diff("diaktoros/cli.py").replace(
+        removed = diff("diaktoros/cli/__init__.py").replace(
             "@@ -1 +1,9 @@\n", "@@ -1 +1,9 @@\n-    sub.add_parser('wave')\n")
         self.assertEqual(prompts.registry_section(removed), "")
 

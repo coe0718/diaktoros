@@ -12,10 +12,16 @@ import shlex
 import subprocess
 import sys
 
-from . import cli_common, config, gate_shims, route_intent, routes
-from .config import credentials
-from .config import settings_form
-from .cli_common import BRANCH_PUSH_REFUSAL, SHARED_JOB_NAMES, _hook_route_name
+from .. import (
+    config,
+    gate_shims,
+    route_intent,
+    routes,
+)
+from . import common as cli_common
+from ..config import credentials
+from ..config import settings_form
+from .common import BRANCH_PUSH_REFUSAL, SHARED_JOB_NAMES, _hook_route_name
 
 
 def _seat_lines(loop: dict, title: str = "seat mapping") -> list[str]:
@@ -659,7 +665,7 @@ def _agree(question: str, default: bool, interactive: bool, unattended: bool) ->
 
 def _setup_runtime(args, interactive: bool) -> bool:
     """Step 1: keep the runtime file's working paths, detect the rest, write it 0600."""
-    from . import runtime_detect, seat_model
+    from .. import runtime_detect, seat_model
     file = runtime_detect.path()
     print(f"\n1. Runtime paths — {file}")
     current, why = runtime_detect.read()

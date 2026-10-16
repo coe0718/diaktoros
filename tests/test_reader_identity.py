@@ -22,8 +22,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from diaktoros import cli, cli_operations, config, doctor
-from diaktoros import cli_common  # noqa: E402
+from diaktoros import cli, config, doctor
+from diaktoros.cli import operations as cli_operations
+from diaktoros.cli import common as cli_common  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 READER, REV, FIX, ADJ = "reader-acct", "rev-acct", "fix-acct", "adj-acct"

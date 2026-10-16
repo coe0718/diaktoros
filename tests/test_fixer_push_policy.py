@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from diaktoros import cli, config
 from diaktoros.config import settings_form  # noqa: E402
-from diaktoros import cli_common  # noqa: E402
+from diaktoros.cli import common as cli_common  # noqa: E402
 
 
 def raw_loop(loop_id):

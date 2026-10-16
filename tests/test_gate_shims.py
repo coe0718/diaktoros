@@ -30,9 +30,9 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, config, doctor, routes  # noqa: E402
-from diaktoros import cli_settings  # noqa: E402
-from diaktoros import cli_install  # noqa: E402
-from diaktoros import cli_common  # noqa: E402
+from diaktoros.cli import settings as cli_settings  # noqa: E402
+from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import common as cli_common  # noqa: E402
 # By file, not as ``tests.hermes_prereqs``: in CI's installed-mode lane Hermes's own ``tests``
 # package is on PYTHONPATH and would shadow ours.
 sys.path.insert(0, str(ROOT / "tests"))

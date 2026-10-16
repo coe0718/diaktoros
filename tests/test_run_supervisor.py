@@ -21,7 +21,7 @@ from unittest.mock import patch
 from diaktoros import (broker, broker_ipc, config, gate, ledger, run_supervisor, seat_model,
                          trusted_turn)
 from diaktoros.config import host_guards  # noqa: E402
-from diaktoros import cli_common  # noqa: E402
+from diaktoros.cli import common as cli_common  # noqa: E402
 from diaktoros.hostdirs import HostStateGone
 import _ledger_guard  # noqa: E402  refuses the operator's real ledger (#108)
 from diaktoros.run_supervisor import (_WORKERS, MAX_ATTEMPTS, SILENT, LedgerMissing,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .fixture import *  # noqa: F403 - the shared harness namespace
-from diaktoros import cli_common  # noqa: E402
+from diaktoros.cli import common as cli_common  # noqa: E402
 
 
 def group_observer() -> None:

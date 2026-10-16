@@ -480,7 +480,8 @@ class OperatorCommands(unittest.TestCase):
         self.assertIn(f'reviewer #7 @ {HEAD[:7]}', text)
 
     def test_ledger_lines_show_reason_tail_and_next_step(self):
-        from diaktoros import cli_operations, config
+        from diaktoros import config
+        from diaktoros.cli import operations as cli_operations
         loop = config.load_id('widgets')
         import contextlib
         import io

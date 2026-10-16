@@ -16,8 +16,16 @@ import sqlite3
 import subprocess
 import sys
 
-from . import cli_common, config, doctor, gate_shims, gh, route_intent, routes
-from .cli_common import SHARED_JOB_NAME, SHARED_JOB_NAMES, SHIM
+from .. import (
+    config,
+    doctor,
+    gate_shims,
+    gh,
+    route_intent,
+    routes,
+)
+from . import common as cli_common
+from .common import SHARED_JOB_NAME, SHARED_JOB_NAMES, SHIM
 
 
 def watchdog_job_name(loop: dict) -> str:
@@ -250,7 +258,7 @@ def _move_watchdog_job(*, dry_run: bool) -> list[str]:
     if dry_run:
         return [f"watchdog: would move job {old_job!r} → {SHARED_JOB_NAME!r} and its shim "
                 f"{old_shim.name} → {new_shim.name}"]
-    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    watchdog = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "watchdog.py"
     new_shim.write_text(SHIM.format(watchdog=watchdog))
     new_shim.chmod(0o755)
     lines = [f"watchdog: shim written as {new_shim.name}"]
@@ -299,7 +307,7 @@ def _rename_loop(spec: str, *, dry_run: bool, admin: str | None) -> tuple[list[s
     route intent record move; the old loop file goes; and an old route is removed only once every
     hook that pointed at it was answered on the new one. A refused ping puts its hook back.
     """
-    from . import (
+    from .. import (
         hook_ping,
         migrate,
         pacing,
@@ -415,7 +423,7 @@ def cmd_migrate(args) -> int:
     finished (a run in flight, a shim this plugin did not write, a hook not yet proven);
     re-running finishes what an interrupted run began.
     """
-    from . import migrate
+    from .. import migrate
     if args.dry_run:
         return _migrate(args)
     try:
@@ -429,7 +437,7 @@ def cmd_migrate(args) -> int:
 
 
 def _migrate(args) -> int:
-    from . import backup, migrate, run_supervisor
+    from .. import backup, migrate, run_supervisor
     try:
         loops = config.all_loops()
     except config.ConfigError as exc:
@@ -447,7 +455,7 @@ def _migrate(args) -> int:
         print(f"backup: {archive} (restore with `hermes dk restore {shlex.quote(str(archive))}`)")
         print(f"backup: {backup.WARNING}")
     lines = migrate.settings_step(cli_common._CTX, dry_run=args.dry_run)
-    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    watchdog = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "watchdog.py"
     if not args.dry_run:
         # Before anything moves, every route and the watchdog run this plugin's code, which
         # honours the pause. Until now they may run the old plugin's, which does not: a delivery
@@ -482,7 +490,7 @@ def _migrate(args) -> int:
 
 def cmd_backup(args) -> int:
     """``backup`` (#496): one 0600 archive of everything the plugin owns; see ``backup``."""
-    from . import backup
+    from .. import backup
     try:
         archive = backup.create(pathlib.Path(args.out) if args.out else None)
     except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
@@ -517,7 +525,7 @@ def _restore_cron(job: dict | None) -> list[str]:
 
 
 def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
-    from . import backup, migrate
+    from .. import backup, migrate
     lines = [f"restore: {len(manifest['files'])} file(s), {len(manifest.get('routes') or {})} "
              f"route(s), loops: {', '.join(manifest.get('loops') or []) or 'none'}"]
     lines += [f"restore: NOT FINISHED — token file missing: {line}"
@@ -540,7 +548,7 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
         routes.restore_entries(manifest["routes"])
         lines.append(f"restore: {len(manifest['routes'])} route entr(ies) put back")
     loops = config.all_loops()
-    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    watchdog = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "watchdog.py"
     if not config.watchdog_shim().is_file():
         cli_common._write_watchdog_shim()
     lines += migrate.shim_step(loops, cli_common._write_watchdog_shim, config.watchdog_shim(),
@@ -556,7 +564,7 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
 
 def cmd_restore(args) -> int:
     """``restore`` (#496): put a backup back, paused with migrate's marker; see ``backup``."""
-    from . import backup, migrate
+    from .. import backup, migrate
     archive = pathlib.Path(args.file).expanduser()
     try:
         manifest = backup.read_manifest(archive)
@@ -929,7 +937,7 @@ def cmd_uninstall(args) -> int:
         # The last loop gone (#113): forget that a run ledger existed, so a later fresh install
         # is not reported as a vanished ledger (run_supervisor.presence_marker). After the state
         # step, so a --purge has removed the state dir first.
-        from .run_supervisor import forget_ledger_presence, presence_marker
+        from ..run_supervisor import forget_ledger_presence, presence_marker
         if not any(config.config_dir().glob("*.json")) and forget_ledger_presence():
             print(f"ledger presence marker removed: {presence_marker()}")
     if leftovers:

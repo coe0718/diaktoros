@@ -18,7 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import cli, config, prompts, run_supervisor  # noqa: E402
-from diaktoros import cli_install  # noqa: E402
+from diaktoros.cli import install as cli_install  # noqa: E402
 
 CHECK = 'python3 -m unittest discover -s tests -p "test_home_guard.py" && echo "${HOME}"'
 
