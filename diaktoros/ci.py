@@ -92,8 +92,8 @@ def read(loop: dict, head: str) -> CIState | None:
             break
     else:
         return None   # more check runs than we read: never call a partial view green
-    status = gh.api(loop, f"/repos/{repo}/commits/{head}/status", login=reader)
-    if not isinstance(status, dict) or not isinstance(status.get("statuses", []), list):
+    statuses = _read_statuses(loop, head)
+    if statuses is None:
         return None
     state = CIState()
     reads = 0
@@ -113,14 +113,42 @@ def read(loop: dict, head: str) -> CIState | None:
             state.cancelled.append(name)
         else:
             state.passed.append(name)
-    for entry in status.get("statuses") or []:
-        if not isinstance(entry, dict):
-            return None
+    for entry in statuses:
         name = _name(entry.get("context"))
         value = entry.get("state")
         (state.failed if value in FAILED_STATUSES else
          state.pending if value == "pending" else state.passed).append(name)
     return state
+
+
+def _read_statuses(loop: dict, head: str) -> list[dict] | None:
+    """Every commit status at the head, or None when the view is partial or unreadable.
+
+    The combined-status reply is paged (30 by default, 100 at most) and says how many contexts
+    exist (`total_count`): fewer in hand than that, or a combined `failure`/`error` with no
+    failing context among them, is an incomplete view, never green.
+    """
+    found: list[dict] = []
+    for page in range(1, MAX_PAGES + 1):
+        reply = gh.api(loop, f"/repos/{loop['repo']}/commits/{head}/status"
+                             f"?per_page=100&page={page}", login=loop.get("read_token"))
+        if not isinstance(reply, dict) or not isinstance(reply.get("statuses", []), list):
+            return None
+        batch = reply.get("statuses") or []
+        if not all(isinstance(entry, dict) for entry in batch):
+            return None
+        found.extend(batch)
+        total = reply.get("total_count")
+        if len(batch) < 100 or (isinstance(total, int) and len(found) >= total):
+            break
+    else:
+        return None   # more contexts than we read
+    if isinstance(total, int) and len(found) < total:
+        return None   # the reply reports contexts we do not hold
+    if reply.get("state") in FAILED_STATUSES and not any(
+            entry.get("state") in FAILED_STATUSES for entry in found):
+        return None   # the combined state fails on a context we cannot see
+    return found
 
 
 def gating(state: CIState | None, required) -> CIState | None:

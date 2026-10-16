@@ -95,7 +95,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                                  for name in world['blobs']])
         elif '/repos/acme/widgets/commits/' in self.path and '/check-runs' in self.path:
             self._send(200, {'total_count': 0, 'check_runs': []})     # no CI reported: green
-        elif self.path.startswith('/repos/acme/widgets/commits/') and self.path.endswith('/status'):
+        elif self.path.startswith('/repos/acme/widgets/commits/') and self.path.split('?')[0].endswith('/status'):
             self._send(200, {'state': 'pending', 'statuses': []})
         elif self.path == '/repos/acme/widgets/pulls/7/reviews?per_page=100':
             self._send(200, world['writes'])

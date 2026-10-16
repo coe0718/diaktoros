@@ -7,7 +7,7 @@ covers the CI reads and refusals themselves.
 """
 import re
 
-_STATUS = re.compile(r"/commits/[^/]+/status$")
+_STATUS = re.compile(r"/commits/[^/]+/status(\?.*)?$")
 
 
 def green(fake):
