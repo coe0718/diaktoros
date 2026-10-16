@@ -583,7 +583,7 @@ def cmd_restore(args) -> int:
                       + (f"\n  … {len(clash) - 20} more" if len(clash) > 20 else ""))
                 return 2
             return _restore(args, manifest, archive)
-    except migrate.MigrationBusy as exc:
+    except (migrate.MigrationBusy, migrate.RunsUnknown) as exc:
         print(f"cannot restore: {exc}")
         return 2
     except (backup.BackupError, OSError, sqlite3.Error, config.ConfigError) as exc:
