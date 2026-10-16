@@ -58,7 +58,7 @@ class Waits(unittest.TestCase):
         paths = sorted(path for path in (ROOT / "diaktoros").rglob("*.py")
                        if re.search(r"\b(?:sqlite3|ledger)\.connect\(", path.read_text()))
         names = {path.relative_to(ROOT / "diaktoros").with_suffix("").as_posix() for path in paths}
-        self.assertLessEqual({"run_supervisor", "ci_fix", "review_receipt", "stats", "migrate",
+        self.assertLessEqual({"run_supervisor/__init__", "ci_fix", "review_receipt", "stats", "migrate",
                               "backup", "trace", "ledger", "cli/operations"}, names)
         for path in paths:
             name = path.relative_to(ROOT / "diaktoros").with_suffix("").as_posix()
@@ -112,6 +112,19 @@ class LockTimeouts(unittest.TestCase):
         exc = self.caught()
         self.assertTrue(ledger.locked(exc))
         self.assertEqual(ledger.where(exc), " (during record_thinking)")
+
+    def test_a_frame_in_a_subpackage_names_the_operation_too(self):
+        # #717: where() once counted only files directly in diaktoros/, so a timeout inside
+        # cli/, config/ or run_supervisor/ lost its "(during ...)" since those became packages.
+        source = ROOT / "diaktoros" / "cli" / "operations.py"
+        namespace = {"sqlite3": sqlite3}
+        exec(compile("def a_cli_operation():\n"
+                     "    raise sqlite3.OperationalError('database is locked')\n",
+                     str(source), "exec"), namespace)
+        try:
+            namespace["a_cli_operation"]()
+        except sqlite3.OperationalError as exc:
+            self.assertEqual(ledger.where(exc), " (during a_cli_operation)")
 
     def test_other_errors_are_not_lock_timeouts(self):
         other = sqlite3.OperationalError("no such table: runs")

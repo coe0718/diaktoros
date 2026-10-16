@@ -22,12 +22,12 @@ import urllib.request
 import uuid
 from contextlib import closing, nullcontext
 
-from . import hostdirs
-from .hostdirs import WORKER_ENV, HostStateGone, in_worker
+from .. import hostdirs
+from ..hostdirs import WORKER_ENV, HostStateGone, in_worker
 
-from . import ledger, util
-from .config import DEFAULT_TURN_BUDGET_S
-from . import envnames
+from .. import ledger, util
+from ..config import DEFAULT_TURN_BUDGET_S
+from .. import envnames
 
 SILENT = "[SILENT]"
 SCHEMA = """
@@ -287,7 +287,7 @@ def ledger_marker(db: str | Path) -> Path:
 def production_ledger() -> Path:
     """The run ledger every host caller uses: ``$HERMES_HOME/state/diaktoros-runs.sqlite``
     (``review-loop-runs.sqlite`` until ``migrate`` moves it)."""
-    from . import config
+    from .. import config
     return config.host_path("ledger")
 
 
@@ -310,7 +310,7 @@ def presence_marker() -> Path:
     ``Supervisor`` of the production ledger checks and keeps it by default, whoever opens it
     first (gate, watchdog, selftest, the ``status`` CLI, observer…); a worker never writes it.
     """
-    from . import config
+    from .. import config
     return config.config_dir() / ".ledger-present"
 
 
@@ -404,7 +404,7 @@ def retryable(exc: BaseException) -> bool:
     """Whether a pre-write exception is plausibly transient. Unknown kinds are not retried
     automatically; they still fail *pre-write*, so a redelivery or ``retry`` re-arms them."""
     import urllib.error
-    from . import seat_model, trusted_fetch
+    from .. import seat_model, trusted_fetch
     if isinstance(exc, (RetryableError, subprocess.TimeoutExpired, TimeoutError,
                         ConnectionError, urllib.error.URLError)):
         return True
@@ -432,7 +432,7 @@ def conflict_merge(loop: dict, row, branch: str) -> dict:
     A whole-file conflict, a base that brings workflow changes the fixer's token cannot push,
     and a base that now merges cleanly all end the run before any turn (ValueError); a Git or
     network failure is transient (RetryableError)."""
-    from . import broker, safe_push
+    from .. import broker, safe_push
     base_sha = str(row['turn_key'])[len(CONFLICT_KEY):]
     try:
         merged = safe_push.merged_tree(loop, branch=branch, head=row['head'],
@@ -455,7 +455,7 @@ def conflict_merge(loop: dict, row, branch: str) -> dict:
 
 def conflict_prompt(loop: dict, row, merged: dict) -> str:
     """The resolving turn's prompt: the rule, then the conflicted files and both sides' changes."""
-    from . import gh, prompts
+    from .. import gh, prompts
     base_sha = str(row['turn_key'])[len(CONFLICT_KEY):]
     text = prompts.render_isolated('conflict', repo=row['repo'], pr=row['pr'],
                                    url=gh.pr_url(loop, row['pr']), head=row['head'],
@@ -481,7 +481,7 @@ def effective_reviews(loop: dict, row, reviews, ledger=None):
     """The PR's reviews as a seat may use them: after a same-head retarget, only
     host-receipted post-boundary reviews (``transition.effective_reviews``); ``None`` when
     either the review list or the receipt ledger is unreadable."""
-    from . import state as state_mod, transition
+    from .. import state as state_mod, transition
     return transition.effective_reviews(loop, state_mod.state_for(loop), row['pr'], row['head'],
                                         reviews, ledger=ledger)
 
@@ -494,7 +494,7 @@ def adjudication_state(loop: dict | None, row, ledger=None) -> tuple[str, dict]:
     approved at the breached head or no longer has a spent cap is superseded for good. A
     failed or malformed read is unknown and retried; it never becomes permission to run.
     """
-    from . import gate, gh, state as state_mod
+    from .. import gate, gh, state as state_mod
     if loop is None:
         return 'retry', {}
     turn = str(row['turn_key'] or '')
@@ -562,7 +562,7 @@ def pr_record(loop: dict, row, reviews, comments=None) -> str:
     retargeted PR's fresh record does not inherit answers to verdicts it no longer counts, and a
     human's comment is never presented as the fixer's side.
     """
-    from . import attribution, broker, gate, gh
+    from .. import attribution, broker, gate, gh
     items = []
     answered = set()
     for review in reviews if isinstance(reviews, list) else []:
@@ -644,7 +644,7 @@ def _fenced(text: str, lang: str = '') -> str:
 
 def _tree_blobs(loop: dict, repo: str, commit: str) -> dict[str, tuple]:
     """``{path: (type, mode, sha)}`` for every non-tree entry of ``commit``, read whole or raised."""
-    from . import gh
+    from .. import gh
     data, error = gh.fetch(loop, f"/repos/{repo}/git/commits/{commit}", login=loop['read_token'])
     tree = (data or {}).get('tree') if isinstance(data, dict) else None
     sha = tree.get('sha') if isinstance(tree, dict) else None
@@ -669,7 +669,7 @@ def unlisted_changes(loop: dict, repo: str, base: str, head: str,
     branch's tip, which may have moved on), so this compares the merge-base tree with the head
     tree and drops every path the listing already named. Raises when any of it is unreadable.
     """
-    from . import gh
+    from .. import gh
     data, error = gh.fetch(loop, f"/repos/{repo}/compare/{base}...{head}?per_page=1",
                            login=loop['read_token'])
     merge_base = (data.get('merge_base_commit') or {}).get('sha') if isinstance(data, dict) else None
@@ -692,7 +692,7 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
     why, and that the seat cannot see the whole change and must not approve it. A turn that says
     what it could not see beats a turn that silently dies.
     """
-    from . import gh
+    from .. import gh
     number = row['pr']
     pr = gh.api(loop, gh.pr_path(loop, number), login=loop['read_token'])
     if (not isinstance(pr, dict) or pr.get('number') != number
@@ -865,7 +865,7 @@ def pr_change(loop: dict, row, *, final: bool = False) -> PRChange:
 
 def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
     """Render the role's isolated prompt from host facts plus the bounded PR record."""
-    from . import config, gate, gh, prompts
+    from .. import config, gate, gh, prompts
     seat = row['seat']
     seats = loop.get('seats') or {}
     counted = gate.verdicts(reviews, loop) if isinstance(reviews, list) else None
@@ -913,23 +913,23 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
         # The issue(s) the PR closes and the maintainers' comments (#511), and the head's CI: a
         # ruling needs both as much as a review does (#521; without CI facts the adjudicator
         # ruled a green head red, on #537, twice).
-        from . import issue_facts
+        from .. import issue_facts
         text += issue_facts.section(loop, row['pr'])
         # The head's CI, read now (the broker re-reads it before an APPROVE): the reviewer must
         # not approve a red head, and the fixer learns which checks to make pass.
-        from . import ci
-        from . import config as config_mod
+        from .. import ci
+        from .. import config as config_mod
         state = ci.read(loop, row['head'])
         required = config_mod.required_checks(loop)
         text += ci.section(state, required)
         if seat == 'reviewer':
             # #687: what the required checks ran at this head, for a test this sandbox cannot run.
-            from . import ci_tests
+            from .. import ci_tests
             text += ci_tests.section(ci_tests.read(loop, state, required, row['head']))
         if seat == 'reviewer':
             # #539: commits CI-fix turns pushed unreviewed, so this review checks none weakened
             # a test.
-            from . import ci_fix
+            from .. import ci_fix
             text += ci_fix.fix_history(loop, row['pr'])
             # A red head reaches the reviewer only once the fixer is done with it: say why, with
             # the failing jobs' logs (#539).
@@ -938,7 +938,7 @@ def isolated_prompt(loop: dict, row, reviews, marker=None, change=None) -> str:
             # #569: a fix round on a red head gets the failing jobs, their failing step and log
             # tails, exactly as a CI-fix turn does: a verdict that says "required check X failed"
             # is unanswerable without them (#537 spent two rounds guessing).
-            from . import ci_fix
+            from .. import ci_fix
             names = ci_fix.failing(state, required)
             if names:
                 text += ci_fix.section(loop, state, names)
@@ -960,7 +960,7 @@ def triage_issue(loop: dict, number: int) -> dict:
     that closed, turned out to be a pull request, changed author, or that a person has since
     labelled from the triage list is no longer this run's to triage.
     """
-    from . import gh
+    from .. import gh
     triage = loop.get('triage') or {}
     if not triage.get('route'):
         raise ValueError('issue triage is off for this loop')
@@ -983,7 +983,7 @@ def triage_issue(loop: dict, number: int) -> dict:
 
 def triage_prompt(loop: dict, row) -> str:
     """The triage turn's prompt: host facts, then the issue's title and body as bounded data."""
-    from . import prompts
+    from .. import prompts
     triage = loop['triage']
     issue = triage_issue(loop, row['pr'])
     url = issue.get('html_url')
@@ -1012,7 +1012,7 @@ def issue_fix_issue(loop: dict, number: int) -> dict:
     must still be an open issue (not a PR) by an allowlisted author, still carrying the fix
     label a maintainer applied.
     """
-    from . import config, gh
+    from .. import config, gh
     triage = loop.get('triage') or {}
     if not triage.get('route') or not triage.get('fix_label'):
         raise ValueError('issue fixes are off for this loop')
@@ -1036,8 +1036,8 @@ def issue_fix_issue(loop: dict, number: int) -> dict:
 
 def issue_fix_prompt(loop: dict, row) -> str:
     """The issue-fix turn's prompt: host facts, then the issue's title and body as bounded data."""
-    from . import issue_facts, prompts
-    from .config import ISSUE_FIX_BRANCH
+    from .. import issue_facts, prompts
+    from ..config import ISSUE_FIX_BRANCH
     issue = issue_fix_issue(loop, row['pr'])
     url = issue.get('html_url')
     if not (isinstance(url, str) and url.startswith('https://')):
@@ -1243,7 +1243,7 @@ def claim_seat(loop: dict, row, budget: float):
     what ``explain``, ``status``, the queue drain and the watchdog's clocks read. Returns what
     ``release_seat`` needs, or None when nothing was written."""
     try:
-        from . import gate, state as state_mod
+        from .. import gate, state as state_mod
         st = state_mod.state_for(loop)
         key = gate.seat_key(loop, row['pr'])
         st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}", budget=budget,
@@ -1467,7 +1467,7 @@ class Supervisor:
             raise ValueError("child command requires explicit fixture mode")
         if lease_seconds <= 0 or child_timeout <= 0:
             raise ValueError("positive timeouts required")
-        from .config.host_guards import guard_real_home
+        from ..config.host_guards import guard_real_home
         self.db = guard_real_home(Path(db))
         if hermes_home is not None:
             guard_real_home(hermes_home)
@@ -1560,7 +1560,7 @@ class Supervisor:
                         (t_in, t_out, cost if isinstance(cost, (int, float)) else None,
                          run_id, owner))
         if loop_id and seat and t_in + t_out > 0:
-            from . import pacing
+            from .. import pacing
             pacing.count_tokens(loop_id, seat, t_in + t_out)
 
     def _connect(self):
@@ -1872,7 +1872,7 @@ class Supervisor:
         if (not isinstance(labels, list) or not all(isinstance(x, str) for x in labels)
                 or not isinstance(body, str)):
             raise ValueError('invalid triage')
-        from .config import TRIAGE_HEAD
+        from ..config import TRIAGE_HEAD
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
             row = con.execute('SELECT repo,pr,head,seat,state,launch_intent FROM runs WHERE id=?',
@@ -2106,7 +2106,7 @@ class Supervisor:
     def _notice_message(row, current, wrote: str | None) -> str:
         loop_id = 'LOOP'
         try:
-            from . import config
+            from .. import config
             loop_id = (config.by_repo(row['repo']) or {}).get('id') or loop_id
         except Exception:
             pass                      # a notice must go out even if the config is unreadable
@@ -2314,7 +2314,7 @@ class Supervisor:
         now = time.time()
         # Serialize policy snapshot and durable enqueue with explicit toggles.
         # Re-delivery of an old row never upgrades its admission.
-        from . import config
+        from .. import config
         lock = config.push_policy_lock() if self.production_config and seat == 'fixer' else nullcontext()
         with lock, self._connect() as con:
             admitted = 0
@@ -2399,7 +2399,7 @@ class Supervisor:
         hold. While unattended fixer pushes are off the retry is refused with the command that
         turns them on. (A redelivered event never upgrades admission; only this does.)
         """
-        from . import config
+        from .. import config
         with self._connect() as con:
             first = con.execute('SELECT repo,seat FROM runs WHERE id=?', (run_id,)).fetchone()
         fixer = first is not None and first['seat'] == 'fixer'
@@ -2467,10 +2467,10 @@ class Supervisor:
         args = [sys.executable, "-m", "diaktoros.run_supervisor", operation,
                 str(self.db), command, json.dumps(self.capacity),
                 str(self.lease_seconds), str(self.child_timeout)]
-        from .config.host_guards import (TEST_GUARD_SENTINEL_ENV, TEST_HOME_GUARD_ENV,
+        from ..config.host_guards import (TEST_GUARD_SENTINEL_ENV, TEST_HOME_GUARD_ENV,
                                          TEST_REAL_HOME_ENV, guard_real_home)
         host_home = guard_real_home(self.hermes_home or Path(os.environ.get("HERMES_HOME", os.environ["HOME"])).resolve(strict=True))
-        env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+        env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
                "HOME": str(host_home), "HERMES_HOME": str(host_home),
                envnames.name("TEST_FIXTURE"): "1" if self.fixture_mode else "0"}
         # The worker's environment is built from scratch; keep the test tripwire armed in it.
@@ -2550,7 +2550,7 @@ class Supervisor:
     def _claim(self):
         # A migration holds the install (#431): no run starts under names being moved. The
         # pending rows wait where they are; the worker that finds nothing here exits as usual.
-        from . import migrate
+        from .. import migrate
         if migrate.migrating() is not None:
             return None
         # Snapshot candidates without taking a writer lock. A slow GitHub read
@@ -2568,8 +2568,8 @@ class Supervisor:
             read_error = ""
             superseded = None
             if self.production_config and row['seat'] == 'reviewer':
-                from . import config, gh
-                from .review_receipt import ReceiptDenied, generation_for
+                from .. import config, gh
+                from ..review_receipt import ReceiptDenied, generation_for
                 try:
                     loop = config.by_repo(row['repo'])
                     if loop is None:
@@ -2596,7 +2596,7 @@ class Supervisor:
                             # The same-head retarget's fresh-review turn exists to review
                             # again at this head, so it is exempt.
                             if not str(row['turn_key'] or '').startswith('retarget:'):
-                                from . import gate
+                                from .. import gate
                                 reviews = effective_reviews(loop, row, gh.reviews(loop, row['pr']),
                                                             self.db)
                                 if not isinstance(reviews, list):
@@ -2616,7 +2616,7 @@ class Supervisor:
             if self.production_config and row['seat'] in ('reviewer', 'fixer') and not superseded:
                 # The operator escalated this head (#459): it waits for a ruling, so a review or
                 # fix queued for it is retired, as a spent cap would have stopped it.
-                from . import config, gate, state as state_mod
+                from .. import config, gate, state as state_mod
                 try:
                     escalated_loop = config.by_repo(row['repo'])
                     if escalated_loop is not None and gate.escalated(
@@ -2627,7 +2627,7 @@ class Supervisor:
             if (self.production_config and row['seat'] in PR_HOLD_SEATS and not superseded):
                 # A maintainer holds this PR (#477): the row waits, pending, like a draft's, and
                 # starts after release. An unreadable hold is not "not held": it waits too.
-                from . import config, pr_hold
+                from .. import config, pr_hold
                 try:
                     hold_loop = config.by_repo(row['repo'])
                     if hold_loop is not None:
@@ -2637,7 +2637,7 @@ class Supervisor:
                 except Exception as exc:
                     read_error = read_error or f'{type(exc).__name__}: {exc}'[:200]
             if self.production_config and row['seat'] == 'adjudicator':
-                from . import config
+                from .. import config
                 try:
                     status, _ = adjudication_state(config.by_repo(row['repo']), row, self.db)
                     superseded = 'adjudication superseded' if status == 'superseded' else None
@@ -2648,7 +2648,7 @@ class Supervisor:
                     read_error = f'{type(exc).__name__}: {exc}'[:200]
             refused = ''
             if self.production_config and row['seat'] == 'fixer':
-                from . import ci_fix, config, gh, gate
+                from .. import ci_fix, config, gh, gate
                 try:
                     loop = config.by_repo(row['repo'])
                     if loop is None:
@@ -2844,7 +2844,7 @@ class Supervisor:
         """The seat's capacity from this repo's own loop; the worker's table otherwise."""
         if self.production_config:
             try:
-                from . import config
+                from .. import config
                 loop = config.by_repo(repo)
                 if loop is not None:
                     return config.seat_concurrency(loop, seat)
@@ -2889,7 +2889,7 @@ class Supervisor:
         # operator's reconciliation is what ends it, so it frees them too. Best effort — the
         # ledger row above is the decision; a loop that is no longer configured has no claim.
         try:
-            from . import config, gate, state as state_mod
+            from .. import config, gate, state as state_mod
             loop = config.by_repo(row['repo'])
             if loop is not None:
                 st = state_mod.state_for(loop)
@@ -3042,7 +3042,7 @@ class Supervisor:
 
     def _run_production(self, run_id: str, owner: str) -> None:
         """Worker-only host control plane; never pass credentials to bwrap."""
-        from . import broker_ipc, ci, ci_fix, config, gh, prompts, seat_model, trusted_turn
+        from .. import broker_ipc, ci, ci_fix, config, gh, prompts, seat_model, trusted_turn
         rc, error = None, None
         budget = int(self.budget_of(run_id))
         retry, stopped, observed, breach, claim = False, True, {}, None, None
@@ -3094,7 +3094,7 @@ class Supervisor:
                 return
             # Pacing (#219): an account whose usage window is closed, or a seat past its daily
             # cap, waits for the reset instead of launching a turn that would only 429.
-            from . import pacing
+            from .. import pacing
             provider = str(getattr(inference, "provider", "") or "the provider")
             account = pacing.account_key(provider, str(getattr(inference, "upstream", "") or ""),
                                          str(getattr(inference, "profile", "") or ""))
@@ -3140,7 +3140,7 @@ class Supervisor:
                 # APPROVE, so the turn could only spend tokens. Running checks hold it only with
                 # review_after_ci (#241), even beside a failed one. A failed check holds only
                 # while the fixer takes it first (#539); otherwise the review says why.
-                from . import ci
+                from .. import ci
                 # A PR that conflicts with its base gets no pull_request CI from GitHub, so the
                 # required checks could never report: hold, nothing spent. The merge push makes
                 # a new head that supersedes this row. unknown/null mergeability is no conflict.
@@ -3221,7 +3221,7 @@ class Supervisor:
                 if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(CONFLICT_KEY):
                     # #303 stage 3: a conflict-resolution turn. No verdict is answered: the host
                     # merges the pinned base into the head and the seat resolves the conflicts.
-                    from . import broker_ipc
+                    from .. import broker_ipc
                     hold = broker_ipc.policy_hold_reason(
                         loop, run_id=run_id, repo=row['repo'], number=row['pr'], head=row['head'],
                         ledger_db=str(self.db))
@@ -3240,7 +3240,7 @@ class Supervisor:
                 elif row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
                     # #306: a failed required check at this head, handed to the fixer. No verdict
                     # is answered; CI is re-read now, and a green or moved head ends the run.
-                    from . import broker_ipc
+                    from .. import broker_ipc
                     hold = broker_ipc.policy_hold_reason(
                         loop, run_id=run_id, repo=row['repo'], number=row['pr'], head=row['head'],
                         ledger_db=str(self.db))
@@ -3268,7 +3268,7 @@ class Supervisor:
                 else:
                     reviews, marker = None, None
                     if row['seat'] == 'fixer':
-                        from . import gate
+                        from .. import gate
                         reviews = effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
                         if not isinstance(reviews, list):
                             raise RetryableError('reviews or receipts unreadable before launch')
@@ -3278,7 +3278,7 @@ class Supervisor:
                         # Every write this fixer turn would make is refused (#81): hold it instead of
                         # launching one. Named with the same reason as the broker's denial and the
                         # gate's queue hold; pre-write, so `retry` re-admits under the policy in force.
-                        from . import broker_ipc
+                        from .. import broker_ipc
                         hold = broker_ipc.policy_hold_reason(
                             loop, run_id=run_id, repo=row['repo'], number=row['pr'], head=row['head'],
                             ledger_db=str(self.db))
@@ -3321,7 +3321,7 @@ class Supervisor:
                                                 row["seat"], head["ref"], row['id'],
                                                 str(self.db), row['generation'], partial_view=partial)
                     if row['seat'] == 'adjudicator':
-                        from . import state as state_mod
+                        from .. import state as state_mod
                         # Last step before launch: mark the breach as being ruled on. Anyone else's
                         # claim (a legacy gateway route included) refuses this one.
                         if state_mod.state_for(loop).breach_start(row['pr'], row['head'],
@@ -3482,7 +3482,7 @@ class Supervisor:
             else:
                 outcome = f"{row['seat']} {state}: {row['error']}"
                 kind = state
-            from . import config, observer, state as state_mod
+            from .. import config, observer, state as state_mod
             loop = config.by_repo(row["repo"])
             if loop is None:
                 return
@@ -3526,7 +3526,7 @@ def main():
             budget = None
             try:
                 # The loop's seat budget now (#49), when its config is readable here.
-                from . import config
+                from .. import config
                 with sup._connect() as con:
                     row = con.execute('SELECT repo,seat FROM runs WHERE id=?',
                                       (a.command,)).fetchone()
@@ -3579,6 +3579,3 @@ def main():
               file=sys.stderr, flush=True)
         return
 
-
-if __name__ == "__main__":
-    main()
