@@ -1,7 +1,7 @@
 """Hold one PR: a maintainer's label or comment pauses the loop on it (#477).
 
 ``diaktoros:hold`` applied by a maintainer, or a maintainer's ``/loop hold`` comment, holds the
-PR; ``/loop release`` or removing the label lifts it. The latest valid event wins. Only
+PR; ``/loop release`` lifts either kind, removing the label only a label hold. The latest valid event wins. Only
 ``triage.maintainers`` count: anyone else's label or comment is ignored and logged. A loop with
 no ``triage.maintainers`` (they need ``triage.fix_label``) has nobody who can hold, so the hold
 can never fire there.
@@ -74,9 +74,16 @@ def read(loop: dict, number: int) -> tuple[dict | None, str]:
     return decide(loop, number, events, comments), ""
 
 
+def release_how(hold: dict) -> str:
+    """What lifts this hold, by its type; every operator-facing text takes it from here."""
+    if hold.get("how") == "label":
+        return f"an authorized `/loop release` or removal of the {LABEL} label"
+    return "an authorized `/loop release` comment (removing the label does not lift it)"
+
+
 def line(hold: dict) -> str:
     """The one sentence explain, status and the watchdog all use."""
     how = "the diaktoros:hold label" if hold.get("how") == "label" else "/loop hold"
     when = iso_at(epoch(hold.get("at"))) or "an unknown time"
     return (f"held by {hold.get('by') or '?'} via {how} since {when}: no review, fix, CI-fix or "
-            f"conflict turn starts until `/loop release` or the label is removed")
+            f"conflict turn starts until {release_how(hold)}")
