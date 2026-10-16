@@ -142,8 +142,16 @@ jobs:
   # installed machine is in, and not the one a stdlib-only image hands you. Only the other mode was
   # ever run here, so the harness could call itself "a complete installation" while nine checks were
   # red on a real box. Run the same suite once with the pinned Hermes on the interpreter.
+  # Two parts in parallel (#850): the harness keeps the `installed-mode` name loops already
+  # require, and the resolver tests run beside it as `installed-mode (resolver)`. In one job they
+  # ran one after the other, 5-7 minutes, the slowest check once `tests` was sharded.
   installed-mode:
+    name: ${{ matrix.part == 'harness' && 'installed-mode' || 'installed-mode (resolver)' }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [harness, resolver]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
@@ -173,9 +181,11 @@ jobs:
       - name: Confirm the suite will run in the installed mode
         run: python -c "import hermes_cli; print('installed mode:', hermes_cli.__file__)"
       - name: Loop tests (installed mode)
+        if: matrix.part == 'harness'
         run: python tests/run_tests.py
       # `discover -s tests`, not `-m unittest tests.…`: Hermes's own `tests` package is on PYTHONPATH.
       - name: Gateway resolver tests against the pinned Hermes (#105)
+        if: matrix.part == 'resolver'
         run: python tests/leakguard.py discover -v -s tests -p 'test_gate_shims.py'
 
   # The vertical tests drive the real Hermes (pinned) inside bubblewrap against local fakes: the
