@@ -14,7 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import config, gh, observer, routes  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
-from diaktoros import cli_install  # noqa: E402
+from diaktoros.cli import install as cli_install  # noqa: E402
 import run_tests as t  # noqa: E402
 import test_partial_view_no_approve as pv  # noqa: E402
 from diaktoros import cli  # noqa: E402

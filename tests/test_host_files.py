@@ -23,8 +23,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import cli, config, migrate, pacing, run_supervisor  # noqa: E402
-from diaktoros import cli_lifecycle  # noqa: E402
-from diaktoros import cli_common  # noqa: E402
+from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
+from diaktoros.cli import common as cli_common  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 LOOP = {"id": "one", "repo": "owner/one", "base": "main", "cap": 3, "fixers": ["fixer"],

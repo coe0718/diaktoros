@@ -23,8 +23,8 @@ sys.path.insert(0, str(TESTS.parent))
 from diaktoros import (broker, cli, config, deps, doctor, gh, isolation, route_intent,  # noqa: E402
                          routes, safe_push, selftest, state, trusted_fetch)
 from diaktoros.config import host_guards  # noqa: E402
-from diaktoros import cli_install  # noqa: E402
-from diaktoros import cli_lifecycle  # noqa: E402
+from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 
 LEAKING = "test_boundary.BoundaryTests.test_gate_blocks_before_workspace_or_gateway_payload"

@@ -6,7 +6,14 @@ loop's GitHub hooks on or off and then verifies what it changed.
 """
 from __future__ import annotations
 
-from . import cli_common, config, doctor, gate_shims, gh, route_intent
+from .. import (
+    config,
+    doctor,
+    gate_shims,
+    gh,
+    route_intent,
+)
+from . import common as cli_common
 
 
 def _hook_write_fix(token_login: str | None, transient: bool = False,
@@ -197,7 +204,7 @@ def cmd_selftest(args) -> int:
     with ``--live-turn`` one real reviewer turn) — but it never writes to GitHub: GitHub calls go
     through a GET-only guard and the live turn's broker runs in its host-only no-write mode.
     """
-    from . import selftest
+    from .. import selftest
     if args.live_turn and args.pr is None:
         print("--live-turn needs --pr N: the turn reviews that pull request")
         return 2
@@ -223,7 +230,7 @@ def cmd_selftest(args) -> int:
 
 def cmd_corpus(args) -> int:
     """Replay the golden corpus through the reviewer (no-write) and record the scores (#491)."""
-    from . import (
+    from .. import (
         corpus,
         prompts,
         seat_model,

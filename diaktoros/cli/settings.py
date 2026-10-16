@@ -10,8 +10,7 @@ import json
 import pathlib
 import shlex
 
-from . import (
-    cli_common,
+from .. import (
     config,
     doctor,
     gate_shims,
@@ -22,9 +21,10 @@ from . import (
     routes,
     state as state_mod,
 )
-from .config import credentials
-from .config import settings_form
-from .cli_common import _ROUTE_PROMPT, BRANCH_PUSH_REFUSAL, GATE_SCRIPT
+from . import common as cli_common
+from ..config import credentials
+from ..config import settings_form
+from .common import _ROUTE_PROMPT, BRANCH_PUSH_REFUSAL, GATE_SCRIPT
 
 
 def _role_summary(loop: dict, role: str) -> str:
@@ -1294,7 +1294,7 @@ def _apply(args) -> int:
 
 def cmd_show(args) -> int:
     """Every setting one loop has, its effective value and where it came from (#555). Read-only."""
-    from . import show
+    from .. import show
 
     try:
         loop = config.load_id(args.loop)
@@ -1632,7 +1632,7 @@ def _cmd_fixer_push_locked(args) -> int:
     if args.enable:
         try:
             busy = cli_common._busy_seats(loop, {"fixer"})
-            from .run_supervisor import Supervisor, ACTIVE
+            from ..run_supervisor import Supervisor, ACTIVE
             ledger = config.host_path("ledger")
             if ledger.exists():
                 with Supervisor(ledger)._connect() as con:
@@ -1671,7 +1671,7 @@ def _cmd_fixer_push_locked(args) -> int:
           f"in {path}")
     if enabled:
         try:
-            from . import state as state_mod
+            from .. import state as state_mod
             held = [key for key, entry in state_mod.state_for(actual).queue_items("fixer").items()
                     if config.is_fixer_push_hold(entry)]
         except Exception:

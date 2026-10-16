@@ -12,11 +12,20 @@ import subprocess
 import sys
 import time
 
-from . import attribution, config, gate, gh, observer, pr_hold, routes, state as state_mod
-from .config import credentials
-from .cli_common import _budget_line, _credential_lines, _routes_of
-from .ledger import LOCK_WAIT_S
-from .util import logged
+from .. import (
+    attribution,
+    config,
+    gate,
+    gh,
+    observer,
+    pr_hold,
+    routes,
+    state as state_mod,
+)
+from ..config import credentials
+from .common import _budget_line, _credential_lines, _routes_of
+from ..ledger import LOCK_WAIT_S
+from ..util import logged
 
 
 def _route_state(loop: dict, role: str) -> str:
@@ -107,7 +116,7 @@ def _dependency_lines(loop: dict, pr: int | None = None, limit: int = 5) -> list
 
     Read-only; an absent or unreadable ledger is simply no lines (status/explain say the rest).
     """
-    from .run_supervisor import dependency_view, describe_dependencies
+    from ..run_supervisor import dependency_view, describe_dependencies
     rows = dependency_view(config.host_path("ledger"), loop["repo"], pr,
                            limit)
     return [describe_dependencies(row) for row in rows or []]
@@ -119,7 +128,7 @@ def _view_lines(loop: dict, pr: int, head: str | None, limit: int = 3) -> list[s
     Only the current head's: a new head gets a new change record. Read-only; an absent or
     unreadable ledger is no lines.
     """
-    from .run_supervisor import describe_view, view_view
+    from ..run_supervisor import describe_view, view_view
     rows = view_view(_ledger_path(), loop["repo"], pr, limit) or []
     return [describe_view(row) for row in rows if head and row["head"] == head]
 
@@ -140,7 +149,7 @@ def cmd_status(args) -> int:
             print(f"no loops configured in {config.config_dir()} — run "
                   "`hermes dk setup` to create one")
     for loop in loops:
-        from . import state as state_mod
+        from .. import state as state_mod
 
         st = state_mod.state_for(loop)
         print()
@@ -258,7 +267,7 @@ def _ledger_path() -> pathlib.Path:
 def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> list[dict]:
     """The isolated run ledger's failed/waiting/uncertain rows for this loop, read-only (#53).
     Prints them and returns them ([] when there is no readable ledger)."""
-    from .run_supervisor import describe_run, read_only_view
+    from ..run_supervisor import describe_run, read_only_view
 
     ledger = _ledger_path()
     if not ledger.exists():
@@ -287,7 +296,7 @@ def cmd_retry(args) -> int:
     uncertain, quarantined, reconciled, or with a receipt claim, push intent or ruling on
     record — is refused with the reconcile instructions; it is never replayed.
     """
-    from .run_supervisor import Supervisor
+    from ..run_supervisor import Supervisor
 
     try:
         loop = config.load_id(args.loop)
@@ -314,8 +323,8 @@ def cmd_retry(args) -> int:
     # The newest head that still has an offerable row is the ledger-only answer; the PR's own head
     # is the tiebreaker when a supersession bump makes those two disagree (a gh read, or — when
     # that read fails — the newest offerable head: never the rewritten timestamp).
-    from .run_supervisor import policy_cancelled
-    from . import gh
+    from ..run_supervisor import policy_cancelled
+    from .. import gh
 
     def offerable(row: dict) -> bool:
         return row["state"] in ("failed", "waiting", "uncertain") or (
@@ -376,7 +385,7 @@ def _pacing_lines(loop: dict) -> list[str]:
     The data is ``pacing.seats`` — the same view the Desktop page reads — so a status line and
     the page cannot disagree about whether a window is closed.
     """
-    from . import pacing
+    from .. import pacing
     data = pacing.seats(loop)
     seats = [(seat, data["seats"][seat]) for seat in ("reviewer", "fixer")]
 
@@ -399,7 +408,7 @@ def _pacing_lines(loop: dict) -> list[str]:
 def _reviewer_runs(repo: str, number: int, head: str) -> int:
     """How many reviewer runs the ledger holds for this head (read-only; 0 without a ledger)."""
     import sqlite3
-    from . import run_supervisor
+    from .. import run_supervisor
     db = run_supervisor.production_ledger()
     if not db.exists():
         return 0
@@ -419,8 +428,8 @@ def cmd_escalate(args) -> int:
     worker re-reads every fact before the ruling runs. Exit 1 when refused, with the reason;
     2 when the question cannot be asked.
     """
-    from . import run_supervisor, state as state_mod, transition
-    from .util import now_iso
+    from .. import run_supervisor, state as state_mod, transition
+    from ..util import now_iso
     if args.loop:
         try:
             loop = config.load_id(args.loop)
@@ -499,7 +508,7 @@ def cmd_escalate(args) -> int:
         print(f"{say}: the PR moved while escalating — nothing escalated")
         return 1
     if outcome == "new":
-        from .run_supervisor import record_operator_action
+        from ..run_supervisor import record_operator_action
         record_operator_action(loop["repo"], number, "escalate")
     print(f"{say}: escalated at {verdicts}/{loop['cap']} verdicts — adjudicator turn "
           f"{'enqueued' if outcome in ('new', 'retry') else outcome}; the PR is parked at this "
@@ -517,8 +526,8 @@ def cmd_depends(args) -> int:
     and the next watchdog sweep releases B if nothing else holds it. With neither, lists every
     dependency and whether it is met. Exit 1 when refused, 2 when it cannot be answered.
     """
-    from . import issue_deps
-    from .util import now_iso
+    from .. import issue_deps
+    from ..util import now_iso
     if args.loop:
         try:
             loop = config.load_id(args.loop)
@@ -609,8 +618,8 @@ def cmd_regression(args) -> int:
     pre-existing defect), and the loop's reviewer approved the merged head itself (an approval of
     an earlier head does not cover what merged). The model is that review's, from the run
     ledger. Exit 1 when refused, with the reason; 2 when GitHub or the ledger cannot answer."""
-    from . import gate, run_supervisor
-    from .stats import _iso
+    from .. import gate, run_supervisor
+    from ..stats import _iso
     loop = _one_loop(args)
     if loop is None:
         return 2
@@ -693,7 +702,7 @@ def cmd_review(args) -> int:
         print(f"#{args.pr}: the PR could not be read from GitHub — nothing started")
         return 2
     head = (pr.get("head") or {}).get("sha") or ""
-    from . import state as state_mod
+    from .. import state as state_mod
     st = state_mod.state_for(loop)
     key = gate.seat_key(loop, args.pr)
     if getattr(args, "another_round", False):
@@ -732,7 +741,7 @@ def cmd_review(args) -> int:
     payload = {"action": "ready_for_review", "number": args.pr, "pull_request": pr,
                "repository": {"full_name": loop["repo"]},
                "sender": {"login": loop.get("read_token") or "operator"}}
-    script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "gate_reviewer.py"
+    script = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "gate_reviewer.py"
     try:
         done = subprocess.run([sys.executable, str(script)], input=json.dumps(payload),
                               text=True, capture_output=True, timeout=120)
@@ -741,14 +750,14 @@ def cmd_review(args) -> int:
               "no answer; check `explain` before asking again")
         return 2
     if _reviewer_runs(loop["repo"], args.pr, head) > before[0]:
-        from .run_supervisor import record_operator_action
+        from ..run_supervisor import record_operator_action
         record_operator_action(loop["repo"], args.pr, "review")
         print(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker "
               f"(`hermes dk explain --loop {loop['id']} --pr {args.pr}` follows it)")
         return 0
     waiting = queued()
     if waiting and waiting != before[1]:
-        from .run_supervisor import record_operator_action
+        from ..run_supervisor import record_operator_action
         record_operator_action(loop["repo"], args.pr, "review")
         reason = waiting.get("reason") or "the reviewer seat is busy"
         print(f"#{args.pr} @ {head[:7]}: review queued, waiting — {reason}")
@@ -780,8 +789,8 @@ def cmd_explain(args) -> int:
     not have, or cannot be read, is an *answer*: it is reported as unknown, with the read to
     retry.
     """
-    from . import state as state_mod
-    from .run_supervisor import next_step
+    from .. import state as state_mod
+    from ..run_supervisor import next_step
 
     if args.loop:
         try:
@@ -830,7 +839,7 @@ def cmd_explain(args) -> int:
         # it); only an operator can end it, so it is said here rather than left to the cap.
         for line in _view_lines(loop, args.pr, report.get("head")):
             print(f"  {'view:':<12}{line}")
-        from . import findings as findings_mod
+        from .. import findings as findings_mod
         for text in findings_mod.lines(st.findings_get(args.pr)):
             print(f"  {'finding:':<12}{text}")
         print(f"  {'escalation:':<12}{report['escalation']}")
@@ -869,8 +878,8 @@ def cmd_ready(args) -> int:
     Exit 2 only when the question cannot be asked: an unknown loop, a refused loop file, or several
     loops and no ``--loop``. A listing GitHub would not give is printed as an answer (unknown).
     """
-    from . import ready as ready_mod
-    from . import state as state_mod
+    from .. import ready as ready_mod
+    from .. import state as state_mod
 
     if args.loop:
         try:
@@ -919,7 +928,7 @@ def cmd_drain(args) -> int:
     except config.ConfigError as exc:
         print(f"cannot drain: {exc}")
         return 2
-    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    watchdog = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "watchdog.py"
     cmd = [sys.executable, str(watchdog), "--loop", args.loop, "--drain", "--seat", args.seat]
     return subprocess.run(cmd).returncode
 
@@ -930,7 +939,7 @@ def cmd_cleanup(args) -> int:
     except config.ConfigError as exc:
         print(f"cannot clean up: {exc}")
         return 2
-    cleanup = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "cleanup.py"
+    cleanup = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "cleanup.py"
     cmd = [sys.executable, str(cleanup), "--loop", args.loop]
     cmd += ["--pr", str(args.pr)] if args.pr else ["--sweep"]
     if args.dry_run:

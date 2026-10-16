@@ -18,8 +18,8 @@ import unittest
 from unittest.mock import patch
 
 from diaktoros import cli, config, doctor
-from diaktoros import cli_install  # noqa: E402
-from diaktoros import cli_lifecycle  # noqa: E402
+from diaktoros.cli import install as cli_install  # noqa: E402
+from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 
 HOST = "https://gw.example"
 

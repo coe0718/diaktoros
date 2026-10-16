@@ -20,7 +20,7 @@ from diaktoros.config import settings_form  # noqa: E402
 import test_ci_gate as cg  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import ci, cli, config, observer  # noqa: E402
-from diaktoros import cli_install  # noqa: E402
+from diaktoros.cli import install as cli_install  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD  # noqa: E402
 
 REQUIRED = ["tests (3.11)", "test (ubuntu-24.04, 3.11)"]

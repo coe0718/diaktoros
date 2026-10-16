@@ -10,7 +10,7 @@ import json
 import pathlib
 import shlex
 
-from . import config, gh
+from .. import config, gh
 
 
 def cmd_trace(args) -> int:
@@ -21,7 +21,7 @@ def cmd_trace(args) -> int:
     ``diaktoros.trace``). Exit 2 when it cannot be asked: an unknown loop, no such delivery, an
     unreadable payload file, or an event or route this loop does not serve.
     """
-    from . import trace
+    from .. import trace
     try:
         loop = config.load_id(args.loop)
     except config.ConfigError as exc:
@@ -62,7 +62,7 @@ def cmd_stats(args) -> int:
     self-contained page; ``--json`` prints the same data. Both hold totals and timings only, so
     either can be published (docs/operations.md, "Publishing stats").
     """
-    from . import run_supervisor, stats
+    from .. import run_supervisor, stats
     try:
         since = stats.parse_since(args.since)
     except ValueError as exc:
@@ -104,7 +104,7 @@ def cmd_report(args) -> int:
     issue-fix outcomes, regressions after approval, turns and failures per seat and model, trends
     against the window before, and the most stuck PR. Read-only: the run ledger, the loops' breach
     markers and finding records, and one GitHub read per issue-fix PR."""
-    from . import run_supervisor, stats
+    from .. import run_supervisor, stats
     try:
         since = stats.parse_since(args.since)
     except ValueError as exc:
@@ -136,7 +136,7 @@ def cmd_models(args) -> int:
     Changing a seat's model is changing that profile's model in Hermes (`hermes -p NAME model`);
     this only lists. Exit 1 when the profile, its provider or the catalog cannot answer.
     """
-    from . import doctor, seat_model
+    from .. import doctor, seat_model
     if bool(args.profile) == bool(args.seat):
         print("pass exactly one of --profile-name NAME or --seat reviewer|fixer|adjudicator")
         return 2

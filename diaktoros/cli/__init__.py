@@ -20,16 +20,10 @@ import sys
 import time
 import tempfile
 
-from .ledger import LOCK_WAIT_S
-from .config import settings_form
-from . import (
+from ..ledger import LOCK_WAIT_S
+from ..config import settings_form
+from .. import (
     attribution,
-    cli_checks,
-    cli_install,
-    cli_lifecycle,
-    cli_operations,
-    cli_reports,
-    cli_settings,
     config,
     doctor,
     envnames,
@@ -43,25 +37,67 @@ from . import (
     routes,
     state as state_mod,
 )
-from .util import logged
+from . import checks as cli_checks
+from . import install as cli_install
+from . import lifecycle as cli_lifecycle
+from . import operations as cli_operations
+from . import reports as cli_reports
+from . import settings as cli_settings
+from ..util import logged
 # Every command lives in its own module with its parser (#676): register_cli below lists them in
 # help order. `cli.cmd_*` stays usable through these re-exports; the parser dispatches to the
 # module's own function, so patch a command there, never here.
-from . import cli_common
-from .cli_common import (  # noqa: F401 - constants, re-exported for doctor, backup, gate_shims
-    BRANCH_PUSH_REFUSAL, GATE_SCRIPT, SHARED_JOB_NAME, SHARED_JOB_NAMES, SHIM, SHIM_NAME,
-    _ROUTE_PROMPT, _hook_route_name,
+from . import common as cli_common
+# Constants, re-exported here for doctor, backup and gate_shims, which read them as cli.<NAME>.
+from .common import (  # noqa: F401
+    BRANCH_PUSH_REFUSAL,
+    GATE_SCRIPT,
+    SHARED_JOB_NAME,
+    SHARED_JOB_NAMES,
+    SHIM,
+    SHIM_NAME,
+    _ROUTE_PROMPT,
+    _hook_route_name,
 )
-from .cli_checks import cmd_arm, cmd_corpus, cmd_doctor, cmd_selftest  # noqa: F401
-from .cli_install import cmd_init, cmd_setup  # noqa: F401
-from .cli_lifecycle import cmd_backup, cmd_migrate, cmd_restore, cmd_uninstall  # noqa: F401
-from .cli_operations import (  # noqa: F401
-    cmd_cleanup, cmd_depends, cmd_drain, cmd_escalate, cmd_explain, cmd_list, cmd_ready,
-    cmd_regression, cmd_retry, cmd_review, cmd_status,
+from .checks import (
+    cmd_arm,
+    cmd_corpus,
+    cmd_doctor,
+    cmd_selftest,
+)  # noqa: F401
+from .install import cmd_init, cmd_setup  # noqa: F401
+from .lifecycle import (
+    cmd_backup,
+    cmd_migrate,
+    cmd_restore,
+    cmd_uninstall,
+)  # noqa: F401
+from .operations import (
+    cmd_cleanup,
+    cmd_depends,
+    cmd_drain,
+    cmd_escalate,
+    cmd_explain,
+    cmd_list,
+    cmd_ready,
+    cmd_regression,
+    cmd_retry,
+    cmd_review,
+    cmd_status,
 )
-from .cli_reports import cmd_models, cmd_report, cmd_stats, cmd_trace  # noqa: F401
-from .cli_settings import (  # noqa: F401
-    cmd_apply, cmd_fixer_push, cmd_set, cmd_settings, cmd_show, cmd_triage,
+from .reports import (
+    cmd_models,
+    cmd_report,
+    cmd_stats,
+    cmd_trace,
+)  # noqa: F401
+from .settings import (
+    cmd_apply,
+    cmd_fixer_push,
+    cmd_set,
+    cmd_settings,
+    cmd_show,
+    cmd_triage,
 )
 
 # -- verbs ----------------------------------------------------------------------

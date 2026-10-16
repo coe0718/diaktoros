@@ -15,7 +15,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from diaktoros import cli, gate, gh
-from diaktoros import cli_common  # noqa: E402
+from diaktoros.cli import common as cli_common  # noqa: E402
 from scripts import watchdog
 
 HEAD = "a" * 40

@@ -22,8 +22,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import backup, cli, config, migrate, routes  # noqa: E402
-from diaktoros import cli_lifecycle  # noqa: E402
-from diaktoros import cli_common  # noqa: E402
+from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
+from diaktoros.cli import common as cli_common  # noqa: E402
 
 SECRET = "s3cr3t-hmac-value-0123456789"
 JOB = {"id": "j1", "name": "diaktoros watchdog", "schedule": {"kind": "interval", "minutes": 5},

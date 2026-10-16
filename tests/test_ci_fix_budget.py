@@ -20,7 +20,7 @@ import test_fixer_gating as fg  # noqa: E402
 import test_review_after_ci as rac  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import ci, ci_fix, cli, config, gate, gh, observer  # noqa: E402
-from diaktoros import cli_install  # noqa: E402
+from diaktoros.cli import install as cli_install  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD  # noqa: E402
 from scripts import watchdog  # noqa: E402
 

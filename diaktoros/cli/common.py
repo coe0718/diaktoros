@@ -15,8 +15,17 @@ import shutil
 import tempfile
 import time
 
-from . import config, doctor, envnames, gate_shims, gh, prompts, route_intent, routes
-from .config import host_guards
+from .. import (
+    config,
+    doctor,
+    envnames,
+    gate_shims,
+    gh,
+    prompts,
+    route_intent,
+    routes,
+)
+from ..config import host_guards
 
 
 # The Hermes plugin context register_cli was given: `migrate` writes settings through it (#425).
@@ -272,7 +281,7 @@ def _install_routes(loop: dict, roles=None) -> dict:
 
 def _busy_seats(loop: dict, roles: set[str]) -> list[str]:
     """Seats with a run in flight right now — the ones an identity change must not surprise."""
-    from . import state as state_mod
+    from .. import state as state_mod
 
     st = state_mod.state_for(loop)
     lines = []
@@ -537,7 +546,7 @@ def _write_watchdog_shim() -> pathlib.Path:
     """The cron shim the watchdog job runs by name, pinned to this plugin's watchdog."""
     shim = config.watchdog_shim()
     shim.parent.mkdir(parents=True, exist_ok=True)
-    watchdog = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "watchdog.py"
+    watchdog = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "watchdog.py"
     shim.write_text(SHIM.format(watchdog=watchdog))
     shim.chmod(0o755)
     return shim
@@ -643,7 +652,7 @@ def _ping_loop_hooks(loop: dict, login: str | None) -> bool:
     the moment to find out. False only on a ping the gateway rejected or one that could not be
     sent — no delivery seen within the bounded wait is a warning, not a verdict.
     """
-    from . import hook_ping
+    from .. import hook_ping
     hooks, error = _loop_hooks(loop, login)
     if hooks is None:
         print(f"[{loop['id']}] ⚠️ hooks not pinged: cannot read the repo's hooks ({error})")

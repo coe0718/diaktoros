@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config  # noqa: E402
-from diaktoros import cli_install  # noqa: E402
+from diaktoros.cli import install as cli_install  # noqa: E402
 from test_init_concurrency import Base, LOOP_FILE, LOOP_ID  # noqa: E402
 
 

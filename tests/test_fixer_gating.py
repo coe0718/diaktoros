@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from diaktoros import ledger  # noqa: E402
-from diaktoros import cli_common  # noqa: E402
+from diaktoros.cli import common as cli_common  # noqa: E402
 from diaktoros import cli, config, doctor, gate, gh, run_supervisor, state as state_mod  # noqa: E402
 from diaktoros.run_supervisor import FixerPushDisabled, Supervisor  # noqa: E402
 from scripts import gate_fixer, watchdog  # noqa: E402
@@ -321,7 +321,7 @@ class Surfaces(Base):
             self.assertEqual(cli.cmd_fixer_push(args), 0)
         self.assertIn("1 held verdict(s)", out.getvalue())
         self.assertIn("drain --loop one --seat fixer", out.getvalue())
-        source = (ROOT / "diaktoros" / "cli_install.py").read_text()     # init's next steps
+        source = (ROOT / "diaktoros" / "cli" / "install.py").read_text()     # init's next steps
         self.assertIn("decide the fix leg", source)
         self.assertIn("fixer-push --loop", (ROOT / "docs" / "operations.md").read_text())
 

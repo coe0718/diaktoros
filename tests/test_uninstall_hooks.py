@@ -20,8 +20,8 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config, doctor, routes  # noqa: E402
-from diaktoros import cli_lifecycle  # noqa: E402
-from diaktoros import cli_common  # noqa: E402
+from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
+from diaktoros.cli import common as cli_common  # noqa: E402
 
 LOOP_FILE = t.LOOPS_DIR / "widgets.json"
 

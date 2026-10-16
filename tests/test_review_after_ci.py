@@ -22,7 +22,7 @@ import run_tests as t  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 import test_seat_models as sm  # noqa: E402
 from diaktoros import ci, cli, config, ledger, observer, run_supervisor  # noqa: E402
-from diaktoros import cli_install  # noqa: E402
+from diaktoros.cli import install as cli_install  # noqa: E402
 from diaktoros.run_supervisor import CI_HOLD, Supervisor  # noqa: E402
 
 RUNNING = ci.CIState(pending=["tests (3.11)"], passed=["lint"])

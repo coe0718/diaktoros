@@ -801,7 +801,8 @@ class LedgerTests(unittest.TestCase):
         self.assertGreater(leases[-1], start[1] + sup.lease_seconds, seen)
 
     def test_status_and_explain_lines_come_from_the_ledger(self):
-        from diaktoros import cli_operations, config
+        from diaktoros import config
+        from diaktoros.cli import operations as cli_operations
         from diaktoros.run_supervisor import Supervisor
         (self.root / "state").mkdir()
         sup = Supervisor(self.root / "state/diaktoros-runs.sqlite",

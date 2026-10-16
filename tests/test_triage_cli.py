@@ -18,8 +18,8 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
 from diaktoros import cli, config, doctor, gate_shims, gh, routes  # noqa: E402
-from diaktoros import cli_settings  # noqa: E402
-from diaktoros import cli_common  # noqa: E402
+from diaktoros.cli import settings as cli_settings  # noqa: E402
+from diaktoros.cli import common as cli_common  # noqa: E402
 
 LOOP_ID = "triaged"
 LOOP_FILE = t.LOOPS_DIR / f"{LOOP_ID}.json"

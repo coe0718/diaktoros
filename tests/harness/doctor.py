@@ -48,7 +48,7 @@ def pinned_host_memory():
 
 
 from diaktoros import doctor as _doctor_module  # the same object the harness namespace re-exports
-from diaktoros import cli_lifecycle  # noqa: E402
+from diaktoros.cli import lifecycle as cli_lifecycle  # noqa: E402
 
 _doctor_module._host_memory = pinned_host_memory
 # #556: /work is not a git checkout here; pin an installed commit (the stub answers "identical").
