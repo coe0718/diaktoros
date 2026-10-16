@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import gh, issue_facts, run_supervisor  # noqa: E402
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 
 LOOP = {"repo": "acme/w", "id": "l", "base": "main", "read_token": "read",
         "triage": {"maintainers": ["Boss"]}}
@@ -96,7 +97,7 @@ class Prompts(unittest.TestCase):
         # #511: isolated_prompt (fixer, fix round) appends the same issue section.
         fake = Fake()
         row = {"seat": "fixer", "repo": "acme/w", "pr": 7, "head": "a" * 40}
-        change = run_supervisor.PRChange("RECORD", "DIFF")
+        change = pr_facts.PRChange("RECORD", "DIFF")
         loop = {**LOOP, "cap": 3, "seats": {}}
         with mock.patch.object(gh, "api", side_effect=fake.api), \
                 mock.patch.object(gh, "issue_comments_read", side_effect=fake.comments), \
@@ -150,7 +151,7 @@ class Prompts(unittest.TestCase):
                 mock.patch("diaktoros.gh.pr_url", return_value="https://github.com/acme/w/pull/7"), \
                 mock.patch("diaktoros.ci.read", return_value=None), \
                 mock.patch("diaktoros.ci.section", return_value=""):
-            text = run_supervisor.isolated_prompt(loop, row, [], change=run_supervisor.PRChange("RECORD", "DIFF"))
+            text = run_supervisor.isolated_prompt(loop, row, [], change=pr_facts.PRChange("RECORD", "DIFF"))
         self.assertIn("PR-DEFERRAL", text)
         self.assertIn("Maintainers' comments on the PR #7", text)
         self.assertNotIn("PR-STRANGER-TEXT", text)

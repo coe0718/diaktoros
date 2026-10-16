@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import ledger  # noqa: E402
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import (broker_client, broker_ipc, config, gh, review_receipt,  # noqa: E402
                          run_supervisor, trusted_turn)
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
@@ -292,8 +293,8 @@ class FixerBroker(Broker):
         world = pc.World([pc.changed(1)])
         world.gone[pc.FILES] = "HTTP 404 {}"
         with mock.patch.object(gh, "fetch", side_effect=world.fetch):
-            fixer = run_supervisor.pr_change(pc.Base.loop, {**pc.Base.row, "seat": "fixer"})
-            reviewer = run_supervisor.pr_change(pc.Base.loop, pc.Base.row)
+            fixer = pr_facts.pr_change(pc.Base.loop, {**pc.Base.row, "seat": "fixer"})
+            reviewer = pr_facts.pr_change(pc.Base.loop, pc.Base.row)
         self.assertIn("the broker refuses a push from this turn", fixer.record)
         self.assertIn("--answers-file", fixer.record)
         self.assertNotIn("do not approve", fixer.record)
@@ -309,7 +310,7 @@ class EveryLessThanWholeView(FixerBroker):
         # His probe: 100 files whose patches together are ~2 MiB — about 50 fit in the diff.
         world = pc.World([pc.changed(i, patch="@@ -1 +1 @@\n+" + "x" * 20900) for i in range(100)])
         with mock.patch.object(gh, "fetch", side_effect=world.fetch):
-            return run_supervisor.pr_change(self.loop, {**pc.Base.row, "seat": seat})
+            return pr_facts.pr_change(self.loop, {**pc.Base.row, "seat": seat})
 
     def test_a_diff_truncated_by_its_byte_bound_is_partial_and_refused(self):
         change = self.truncated()
@@ -336,7 +337,7 @@ class EveryLessThanWholeView(FixerBroker):
     def test_a_whole_view_under_the_bound_stays_complete(self):
         world = pc.World([pc.changed(i) for i in range(100)])
         with mock.patch.object(gh, "fetch", side_effect=world.fetch):
-            change = run_supervisor.pr_change(self.loop, pc.Base.row)
+            change = pr_facts.pr_change(self.loop, pc.Base.row)
         self.assertEqual(change.partial, "")
         self.assertNotIn("You cannot see the whole change", change.record)
 
@@ -402,7 +403,7 @@ class HostRecordsTheView(pc.Base):
                                    return_value={**self.loop, "state_dir": str(root / "state")}), \
                  mock.patch.object(gh, "fetch", side_effect=world.fetch), \
                  mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
-                 mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
+                 mock.patch.object(pr_facts, "effective_reviews", return_value=[]), \
                  mock.patch.object(trusted_turn, "run_turn", side_effect=turn), \
                  mock.patch.object(sup, "recover"):
                 sup._run_production(run_id, "w")
@@ -516,7 +517,7 @@ class LaunchPathRefuses(pc.Base):
                  mock.patch("diaktoros.seat_model.resolve_seat", return_value=inference), \
                  mock.patch.object(config, "by_repo", return_value=loop), \
                  mock.patch.object(gh, "fetch", side_effect=fetch), \
-                 mock.patch.object(run_supervisor, "effective_reviews", return_value=[]), \
+                 mock.patch.object(pr_facts, "effective_reviews", return_value=[]), \
                  mock.patch.object(trusted_turn, "_safe_code_snapshot",
                                    side_effect=lambda src, dst: dst.mkdir()), \
                  mock.patch.object(trusted_fetch, "stage", side_effect=stage), \

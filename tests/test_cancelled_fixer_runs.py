@@ -26,6 +26,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import cli, config, gate, gh, ledger, run_supervisor  # noqa: E402
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.run_supervisor import (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED,  # noqa: E402
                                         Supervisor, describe_run, read_only_view)
 
@@ -67,7 +68,7 @@ class CancelledFixer(unittest.TestCase):
     def claim(self):
         with mock.patch.object(gh, "api", return_value=PR), \
              mock.patch.object(gh, "reviews", return_value=[REVIEW]), \
-             mock.patch.object(run_supervisor, "effective_reviews", return_value=[REVIEW]), \
+             mock.patch.object(pr_facts, "effective_reviews", return_value=[REVIEW]), \
              mock.patch.object(gate, "latest_effective_review_at_head", return_value=REVIEW), \
              mock.patch.object(gh, "review_state", return_value="CHANGES_REQUESTED"):
             return self.sup._claim()

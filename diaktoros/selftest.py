@@ -1058,7 +1058,8 @@ def check_ledger(report: Report, loop: dict, runtime_file: Path, settings: dict 
 def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | None,
                   timeout: int, reviewer=None) -> None:
     from . import broker_ipc, gh as gh_mod, trusted_turn
-    from .run_supervisor import effective_reviews, isolated_prompt, pr_change
+    from .run_supervisor import isolated_prompt
+    from .run_supervisor.pr_facts import effective_reviews, pr_change
     step = "live-turn"
     if settings is None or pr is None or reviewer is None:
         report.add(step, "turn:reviewer", SKIP,

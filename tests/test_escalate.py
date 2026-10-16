@@ -23,6 +23,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_fixer_gating as fg  # noqa: E402
 from diaktoros import cli, config, gate, gh, ledger, run_supervisor, state as state_mod  # noqa: E402
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 from scripts import gate_fixer, gate_reviewer  # noqa: E402
 
@@ -133,9 +134,9 @@ class Parked(Base):
         pr = {**fg.LIVE, "head": {"sha": HEAD, "ref": "fix-7"}}
         with mock.patch.object(gh, "api", return_value=pr), \
                 mock.patch.object(gh, "reviews", return_value=self.reviews), \
-                mock.patch.object(run_supervisor, "effective_reviews",
+                mock.patch.object(pr_facts, "effective_reviews",
                                   side_effect=lambda loop, row, reviews, db=None: reviews):
-            return run_supervisor.adjudication_state(self.loop, self.row())[0]
+            return pr_facts.adjudication_state(self.loop, self.row())[0]
 
     def test_the_ruling_runs_below_the_cap_only_when_escalated(self):
         self.assertEqual(self.adjudication(), "ok")

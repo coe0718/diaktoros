@@ -19,6 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros import attribution, broker, config, gh, review_receipt, routes  # noqa: E402
 
@@ -100,7 +101,7 @@ class Unsign(unittest.TestCase):
         comment = {"user": {"login": "fix"}, "created_at": "2026-10-01T01:00:00Z",
                    "body": attribution.stamp(loop(), answers, seat="fixer", head=HEAD)}
         with mock.patch("diaktoros.gate.is_reviewer", return_value=True):
-            record = run_supervisor.pr_record(lp, None, [review], [comment])
+            record = pr_facts.pr_record(lp, None, [review], [comment])
         self.assertIn("Fix the parser.", record)
         self.assertIn("Fixed it.", record)
         self.assertNotIn("Automated by", record)

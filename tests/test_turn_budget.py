@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from diaktoros import (broker_ipc, cli, config, doctor, gate, gh,  # noqa: E402
                          run_supervisor, seat_model, selftest, trusted_turn)
+from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
 import test_selftest  # noqa: E402
@@ -761,7 +762,7 @@ class GateToProductionWorker(unittest.TestCase):
              mock.patch.object(gh, "review_state", return_value="CHANGES_REQUESTED"), \
              mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value={}), \
              mock.patch.object(run_supervisor, "isolated_prompt", return_value="PROMPT"), \
-             mock.patch.object(run_supervisor, "pr_change", return_value=None), \
+             mock.patch.object(pr_facts, "pr_change", return_value=None), \
              mock.patch.object(trusted_turn, "run_turn", side_effect=run_turn), \
              mock.patch.object(sup, "recover"):
             sup._run_production(row["id"], "w")
