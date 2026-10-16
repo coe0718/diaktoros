@@ -194,20 +194,34 @@ def unsafe(manifest: dict, *, allowed_state_dirs=()) -> list[str]:
     outside = [pathlib.Path(d) for d in outside_state_dirs(manifest)]
     named = {pathlib.Path(os.path.abspath(os.path.expanduser(str(d)))) for d in allowed_state_dirs}
     problems = []
-    for entry in manifest["files"]:
-        target = pathlib.Path(entry["path"])
-        parent = pathlib.Path(os.path.realpath(target.parent))
-        linked = os.path.islink(target) or parent != pathlib.Path(os.path.abspath(target.parent))
+    asked = set()
+
+    def judge(target, parent, linked, what):
         inside = any(parent == root or root in parent.parents for root in roots)
         home_dir = next((d for d in outside if parent == d or d in parent.parents), None)
         if linked or not (inside or home_dir):
             problems.append(f"{target}: outside this plugin's places (the Hermes home, the "
                             "loop files' directory and the archive's state directories) or "
                             "behind a symlink")
-        elif not inside and home_dir not in named:
-            problems.append(f"{target}: in a loop state directory outside the Hermes home, "
+        elif not inside and home_dir not in named and home_dir not in asked:
+            asked.add(home_dir)  # one notice per state directory, not one per path in it
+            problems.append(f"{target}: {what} in a loop state directory outside the Hermes home, "
                             f"named by the archive — check it, then re-run with "
                             f"--allow-state-dir {shlex.quote(str(home_dir))} to write it")
+
+    for entry in manifest["files"]:
+        target = pathlib.Path(entry["path"])
+        parent = pathlib.Path(os.path.realpath(target.parent))
+        linked = os.path.islink(target) or parent != pathlib.Path(os.path.abspath(target.parent))
+        judge(target, parent, linked, "a file")
+    # put_files() also creates every absolute state directory, with or without member files
+    # (#768): the directory itself gets the same rules.
+    for raw in manifest.get("state_dirs") or []:
+        if not pathlib.PurePath(raw).is_absolute():
+            continue
+        target = pathlib.Path(os.path.abspath(str(raw)))
+        real = pathlib.Path(os.path.realpath(target))
+        judge(target, real, real != target, "a directory")
     live = routes.all_routes()
     for name, entry in (manifest.get("routes") or {}).items():
         if not isinstance(entry, dict) or not route_intent.owned(entry):
