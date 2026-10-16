@@ -178,6 +178,26 @@ class Tampered(Base):
         [problem] = backup.unsafe(manifest, allowed_state_dirs=[str(declared), str(away)])
         self.assertIn("outside this plugin's places", problem)
 
+    def test_a_state_dir_without_files_gets_the_same_checks(self):
+        # #768: put_files() mkdirs every absolute state dir, so unsafe() must judge them too.
+        away = self.root / "elsewhere" / "created"
+        empty = self.tamper(lambda m: m["state_dirs"].append(str(away)))
+        self.refused(empty, want=f"--allow-state-dir {away}")
+        self.assertFalse(away.exists())
+        manifest = backup.read_manifest(empty)
+        self.assertEqual(backup.unsafe(manifest, allowed_state_dirs=[str(away)]), [])
+        # An empty state dir inside the home stays restorable.
+        inside = self.tamper(lambda m: m["state_dirs"].append(str(self.root / "home" / "empty")))
+        self.assertEqual(backup.unsafe(backup.read_manifest(inside)), [])
+        # A symlinked ancestor is refused even when the directory is named.
+        target = self.root / "away2"
+        target.mkdir()
+        (self.root / "home" / "link").symlink_to(target, target_is_directory=True)
+        linked = self.tamper(lambda m: m["state_dirs"].append(
+            str(self.root / "home" / "link" / "sub")))
+        self.refused(linked, want="behind a symlink")
+        self.assertFalse((target / "sub").exists())
+
     def test_the_named_directory_restores_through_the_command(self):
         away = self.root / "elsewhere" / "state"
         good = self.tamper(lambda m: (m["state_dirs"].append(str(away)), m["files"].append(
