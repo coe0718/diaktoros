@@ -347,7 +347,9 @@ def check_runtime(report: Report, path: Path) -> dict | None:
         report.add(step, "runtime:node", WARN, f"{version}; JavaScript test suites cannot run in "
                    "the sandbox (optional)", "install Node under ~/.hermes/node or on PATH")
     else:
-        report.add(step, "runtime:node", PASS, f"node {version} at {root} (mounted at /opt/node)")
+        where = ("mounted at /opt/node" if runtime_detect.node_mounted(root)
+                 else "system install, already visible in the sandbox")
+        report.add(step, "runtime:node", PASS, f"node {version} at {root} ({where})")
     return settings if usable else None
 
 

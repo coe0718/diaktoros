@@ -118,14 +118,12 @@ def _rust() -> Path | None:
 _NODE_VISIBLE = (Path("/"), Path("/usr"), Path("/usr/local"))
 
 
-def node_root() -> Path | None:
-    """The host Node install root to stage read-only at ``/opt/node`` (#685), or ``None``.
+def _node_install() -> Path | None:
+    """The host Node install root wherever it lives (``/usr`` included), or ``None``.
 
     Looked for without trusting the caller's PATH alone: Hermes's own ``~/.hermes/node`` (the
     ``~/.local/bin/node`` link points into it), then ``node`` on PATH. A candidate counts only
-    when it resolves to ``<root>/bin/node`` that is an executable regular file, and the root is
-    not one the sandbox already binds (``/usr`` ...). Nothing is fetched; the choice is the host's
-    and never an argument of a seat or of ``contained.command``'s callers' data.
+    when it resolves to ``<root>/bin/node`` that is an executable regular file.
     """
     candidates = [_real_home() / ".hermes" / "node" / "bin" / "node",
                   _real_home() / ".local" / "bin" / "node"]
@@ -137,17 +135,35 @@ def node_root() -> Path | None:
             binary = candidate.resolve(strict=True)
         except OSError:
             continue
-        root = binary.parent.parent
-        if (binary.is_file() and os.access(binary, os.X_OK) and binary.parent.name == "bin"
-                and root not in _NODE_VISIBLE and not str(binary).startswith("/usr/")):
-            return root
+        if binary.is_file() and os.access(binary, os.X_OK) and binary.parent.name == "bin":
+            return binary.parent.parent
     return None
 
 
+def node_mounted(root: Path) -> bool:
+    """False when the sandbox already sees this install through its own /usr and /bin binds."""
+    return root not in _NODE_VISIBLE and not str(root / "bin" / "node").startswith("/usr/")
+
+
+def node_root() -> Path | None:
+    """The host Node install root to stage read-only at ``/opt/node`` (#685), or ``None``.
+
+    ``None`` both when there is no Node and when it is a system install the sandbox already sees
+    (``/usr``): nothing to mount. ``node_version`` tells those apart. Nothing is fetched; the
+    choice is the host's and never an argument of a seat.
+    """
+    root = _node_install()
+    return root if root is not None and node_mounted(root) else None
+
+
 def node_version(root: Path | None = None) -> tuple[Path | None, str]:
-    """``(root, version)`` of the host Node, e.g. ``v22.1.0``; ``(None, why)`` when unusable."""
+    """``(root, version)`` of the host Node, e.g. ``v22.1.0``; ``(None, why)`` when unusable.
+
+    Unlike ``node_root`` the root is reported for system installs too; ``node_mounted(root)``
+    says whether it is staged at ``/opt/node``.
+    """
     import subprocess
-    root = root if root is not None else node_root()
+    root = root if root is not None else _node_install()
     if root is None:
         return None, "no Node runtime found on this host"
     try:
