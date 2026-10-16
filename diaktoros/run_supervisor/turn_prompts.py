@@ -135,6 +135,7 @@ def issue_fix_prompt(loop: dict, row) -> str:
     from .. import issue_facts, prompts
     from ..config import ISSUE_FIX_BRANCH
     issue = run_supervisor.issue_fix_issue(loop, row['pr'])
+    run_supervisor.issue_fix_dependencies(loop, row['pr'])
     url = issue.get('html_url')
     if not (isinstance(url, str) and url.startswith('https://')):
         url = f"https://github.com/{loop['repo']}/issues/{row['pr']}"

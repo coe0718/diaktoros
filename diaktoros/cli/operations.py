@@ -522,7 +522,9 @@ def cmd_depends(args) -> int:
 
     Operator-only: the loop never infers a dependency from issue text. Declaring checks that both
     are issues of this repository, that B is not A, and that it closes no cycle; it holds B's
-    next hand-off (a turn already queued or running is not recalled). ``--waive`` removes one,
+    next hand-off; a turn already queued is held at claim, launch and the broker's publish check
+    until the prerequisite is merged or waived (#775; an unreadable one holds too), but a turn
+    already running is not recalled. ``--waive`` removes one,
     and the next watchdog sweep releases B if nothing else holds it. With neither, lists every
     dependency and whether it is met. Exit 1 when refused, 2 when it cannot be answered.
     """
@@ -584,7 +586,8 @@ def cmd_depends(args) -> int:
     added = st.issue_dep_add(args.issue, args.on, {"by": "operator", "at": now_iso()})
     print(f"[{loop['id']}] #{args.issue} " + ("now depends on" if added else "already depends on")
           + f" #{args.on}: its fix waits until #{args.on}'s implementation is merged into "
-            f"{loop['base']}")
+            f"{loop['base']}; a turn already queued is held at launch and publish until then "
+            "(or until `--waive`), one already running is not recalled")
     return 0
 
 

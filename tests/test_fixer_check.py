@@ -77,6 +77,7 @@ class Prompts(unittest.TestCase):
             fixer = turn_prompts.isolated_prompt(loop, row, [], change=change)
         with mock.patch.object(run_supervisor, "issue_fix_issue",
                                return_value={"title": "T", "body": "B"}), \
+             mock.patch.object(run_supervisor, "issue_fix_dependencies"), \
              mock.patch("diaktoros.gh.issue_comments_read", return_value=([], "")):
             issue = turn_prompts.issue_fix_prompt(loop, {**row, "seat": "issue_fixer"})
         for text in (fixer, issue):

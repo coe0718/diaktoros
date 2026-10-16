@@ -246,6 +246,67 @@ class Deps(GateFixture):
             cli.cmd_status(argparse.Namespace(loop="widgets", seat=None, json=False))
         self.assertIn("issue #12 fix waits for prerequisite #5", out.getvalue())
 
+    # -- a dependency declared after the fix was queued (#775) --------------------------------
+
+    def authorize(self):
+        from diaktoros import broker
+        inner = gh.api
+
+        def api(loop, path, *a, **k):
+            return {"login": "fix"} if path == "/user" else inner(loop, path, *a, **k)
+        names = {"reviewer": "rev", "fixer": "fix"}
+        with mock.patch.object(gh, "api", api), \
+                mock.patch.object(config, "issue_fixes_enabled", lambda loop: True), \
+                mock.patch.object(config, "seat_login", lambda loop, seat: names[seat]), \
+                mock.patch.object(gh, "token_path",
+                                  lambda loop, ident: Path(f"/tok/{ident}")), \
+                mock.patch.object(gh, "token", lambda loop, ident: "t"):
+            return broker.authorize_issue_fix(self.loop, repo=REPO, number=12)
+
+    def claim_holds(self):
+        from diaktoros import run_supervisor
+        read = run_supervisor._ClaimRead()
+        with mock.patch.object(config, "by_repo", lambda repo: self.loop):
+            run_supervisor.Supervisor._claim_read_live(
+                None, {"seat": "issue_fixer", "repo": REPO, "pr": 12}, read)
+        return read.retry_read
+
+    def test_the_broker_refuses_a_publish_while_a_later_dependency_is_unmet(self):
+        from diaktoros import broker
+        self.assertEqual(self.authorize(), "fix")                # nothing declared
+        self.st.issue_dep_add(12, 5, {"by": "operator"})         # declared after enqueue
+        with self.assertRaisesRegex(broker.BrokerDenied, "waiting for #5"):
+            self.authorize()
+        self.depends(12, waive=5)                                # waived: resumes
+        self.assertEqual(self.authorize(), "fix")
+
+    def test_a_queued_row_waits_at_claim_and_resumes_once_merged(self):
+        self.assertFalse(self.claim_holds())
+        self.st.issue_dep_add(12, 5, {"by": "operator"})
+        self.assertTrue(self.claim_holds())
+        self.close_a(MERGE)
+        self.assertFalse(self.claim_holds())
+
+    def test_the_launch_prompt_is_refused_during_preparation(self):
+        from diaktoros import run_supervisor
+        with mock.patch.object(run_supervisor, "issue_fix_issue",
+                               lambda loop, n: self.issues[n]):
+            self.st.issue_dep_add(12, 5, {"by": "operator"})
+            with self.assertRaises(run_supervisor.RetryableError):
+                run_supervisor.issue_fix_dependencies(self.loop, 12)
+
+    def test_an_unreadable_dependency_holds_the_queued_row(self):
+        self.st.issue_dep_add(12, 5, {"by": "operator"})
+        self.issues.pop(5)                                       # GitHub cannot answer
+        self.assertTrue(self.claim_holds())
+        with mock.patch.object(issue_deps, "blocking", side_effect=OSError("ledger")):
+            self.assertIn("unreadable", issue_deps.hold_reason(self.loop, 12))
+
+    def test_depends_says_a_queued_turn_is_held_and_a_running_one_is_not_recalled(self):
+        out = self.depends(12, on=5)[1]
+        self.assertIn("already queued is held at launch and publish", out)
+        self.assertIn("already running is not recalled", out)
+
 
 if __name__ == "__main__":
     unittest.main()
