@@ -3450,12 +3450,19 @@ class Supervisor:
                 return
             event = "failed"
             if state == "waiting" and str(row["error"] or "").startswith(CI_HOLD):
-                if "cancelled" not in str(row["error"]):
+                if " — conflicts with " in str(row["error"]):
+                    # A merge conflict waits on a person too: GitHub runs no CI until it is
+                    # resolved and the loop cannot do it here. Once per run, not per poll.
+                    event, kind = "held", "held:ci-conflict"
+                    outcome = (f"{row['seat']} {row['error']} — the review starts once the "
+                               "conflict is resolved and CI passes; the loop cannot resolve it here")
+                elif "cancelled" not in str(row["error"]):
                     return               # the normal wait for CI (#241): status and explain show it
-                # Cancelled checks wait on a person (#363): say so once per run, not per poll.
-                event, kind = "held", "held:ci-cancelled"
-                outcome = (f"{row['seat']} {row['error']} — the review starts once they pass; "
-                           "the loop cannot re-run CI itself")
+                else:
+                    # Cancelled checks wait on a person (#363): say so once per run, not per poll.
+                    event, kind = "held", "held:ci-cancelled"
+                    outcome = (f"{row['seat']} {row['error']} — the review starts once they pass; "
+                               "the loop cannot re-run CI itself")
             elif state == "waiting" and str(row["error"] or "").startswith("held:"):
                 # A pacing hold (#219, #247): the run waits without spending a retry.
                 event, kind = "held", f"held:{int(row['retry_at'] or 0)}"
