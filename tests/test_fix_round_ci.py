@@ -12,6 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diaktoros import ci, ci_fix, gh, issue_facts, run_supervisor  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 
 LOOP = {"id": "w", "repo": "acme/w", "base": "main", "cap": 3, "read_token": "read",
@@ -32,7 +33,7 @@ class FixRoundCI(unittest.TestCase):
                                   return_value="ok\nFAIL: test_walk (test_reader_identity)\n"), \
                 mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
                 mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None):
-            return run_supervisor.isolated_prompt(LOOP, row, [],
+            return turn_prompts.isolated_prompt(LOOP, row, [],
                                                   change=pr_facts.PRChange("RECORD", "DIFF"))
 
     def test_a_fix_round_on_a_red_head_gets_the_failing_job_and_its_log(self):

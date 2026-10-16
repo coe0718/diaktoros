@@ -21,6 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 import test_fixer_gating as fg  # noqa: E402
@@ -259,10 +260,10 @@ class Gates(fg.Base):
     def test_the_reviewer_is_told_the_author_answers(self):
         row = {"seat": "reviewer", "repo": fg.REPO, "pr": 7, "head": HEAD}
         with mock.patch.object(gh, "issue_comments_read", return_value=([], "")):
-            text = run_supervisor.isolated_prompt(
+            text = turn_prompts.isolated_prompt(
                 self.loop, row, [], change=pr_facts.PRChange("RECORD", "", author=OWNER))
             self.assertIn(f"you review, the PR's author ({OWNER}) fixes", text)
-            fixer = run_supervisor.isolated_prompt(
+            fixer = turn_prompts.isolated_prompt(
                 self.loop, row, [], change=pr_facts.PRChange("RECORD", "", author="fixer"))
             self.assertNotIn("the PR's author", fixer)
 

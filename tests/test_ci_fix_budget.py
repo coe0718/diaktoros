@@ -15,6 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_tests as t  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.config import settings_form  # noqa: E402
 import test_fixer_gating as fg  # noqa: E402
@@ -150,7 +151,7 @@ class PromptHook(unittest.TestCase):
                 mock.patch.object(gh, "pr_url", return_value="https://github.com/acme/w/pull/7"), \
                 mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
                 mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None):
-            return run_supervisor.isolated_prompt(loop, row, [],
+            return turn_prompts.isolated_prompt(loop, row, [],
                                                   change=pr_facts.PRChange("R", "D"))
 
     def test_the_reviewer_is_shown_the_ci_fix_history_and_the_fixer_is_not(self):
@@ -202,7 +203,7 @@ class StillRed(unittest.TestCase):
                 mock.patch.object(gh, "pr_url", return_value="https://github.com/acme/w/pull/7"), \
                 mock.patch("diaktoros.gate.verdicts", return_value=[{}]), \
                 mock.patch("diaktoros.gate.latest_effective_review_at_head", return_value=None):
-            text = run_supervisor.isolated_prompt(loop, row, [],
+            text = turn_prompts.isolated_prompt(loop, row, [],
                                                   change=pr_facts.PRChange("R", "D"))
         self.assertIn("STILL-RED", text)
 

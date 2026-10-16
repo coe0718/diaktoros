@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from diaktoros import ledger  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import config, contained, gh, run_supervisor, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import Supervisor  # noqa: E402
@@ -86,7 +87,7 @@ class Record(Base):
         world = World([changed(1), changed(2, status="renamed", previous_filename="src/old.rs")])
         for seat in ("reviewer", "fixer"):
             with self.subTest(seat), mock.patch.object(gh, "fetch", side_effect=world.fetch):
-                text = run_supervisor.isolated_prompt(self.loop, {**self.row, "seat": seat}, [])
+                text = turn_prompts.isolated_prompt(self.loop, {**self.row, "seat": seat}, [])
             template, rest = text.split("## The change under review", 1)
             change, record = rest.split("## PR record", 1)
             self.assertIn("/opt/review/pr.diff", template)

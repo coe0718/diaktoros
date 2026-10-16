@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from diaktoros import ledger  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros import (broker, broker_ipc, config, contained, gate, gh, observer,  # noqa: E402
                          prompts, state as state_mod, trusted_turn)
@@ -470,7 +471,7 @@ class Prompts(Base):
         with mock.patch.object(gh, "issue_comments_read", return_value=([], "")), \
                 mock.patch.object(ci, "read", return_value=green), \
                 mock.patch.object(issue_facts, "section", return_value="\n\nISSUE-FACTS"):
-            text = run_supervisor.isolated_prompt(self.loop, row, [], marker)
+            text = turn_prompts.isolated_prompt(self.loop, row, [], marker)
         template = text.split("## PR record", 1)[0]
         self.assertIn("## CI at this head", template)
         self.assertIn("- passed: 2", template)
@@ -526,7 +527,7 @@ class Prompts(Base):
                 row = {"seat": seat, "repo": REPO, "pr": 7, "head": HEAD}
                 with mock.patch.object(gh, "issue_comments_read", return_value=(comments, "")):
                     change = pr_facts.PRChange("## The change under review", "")
-                    text = run_supervisor.isolated_prompt(self.loop, row, reviews, marker, change)
+                    text = turn_prompts.isolated_prompt(self.loop, row, reviews, marker, change)
                 template, record = text.split("## PR record", 1)
                 self.assertIsNone(self.FIELD.search(template))
                 self.assertIn("finding 3 at src/x.rs:3", record)
@@ -547,11 +548,11 @@ class Prompts(Base):
         row = {"seat": "adjudicator", "repo": REPO, "pr": 7, "head": HEAD}
         with mock.patch.object(gh, "issue_comments_read", return_value=(None, "HTTP 502")), \
                 self.assertRaises(ValueError):
-            run_supervisor.isolated_prompt(self.loop, row, reviews, marker)
+            turn_prompts.isolated_prompt(self.loop, row, reviews, marker)
         # A reviewer still reviews without them, and is told they could not be read.
         row = {"seat": "reviewer", "repo": REPO, "pr": 7, "head": HEAD}
         with mock.patch.object(gh, "issue_comments_read", return_value=(None, "HTTP 502")):
-            text = run_supervisor.isolated_prompt(
+            text = turn_prompts.isolated_prompt(
                 self.loop, row, reviews, marker,
                 pr_facts.PRChange("## The change under review", ""))
         self.assertIn("answers could not be read", text)
