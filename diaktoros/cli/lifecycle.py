@@ -398,7 +398,7 @@ def _rename_loop(spec: str, *, dry_run: bool, admin: str | None) -> tuple[list[s
     if old_loop is not None:
         lines.append(f"{tag}: " + migrate.move_state_dir(old_loop, target, dry_run=False))
     if pacing.rename_loop(old_id, new_id):
-        lines.append(f"{tag}: today's turn counts moved to {new_id}")
+        lines.append(f"{tag}: today's turn and token counts moved to {new_id}")
     if new_loop is None:
         cli_common._write_config(target)
         lines.append(f"{tag}: loop file written as {new_id}.json")

@@ -316,6 +316,15 @@ class ProductionWorker(unittest.TestCase):
         self.assertIn("daily token budget (1000) reached", row["error"])
         self.assertIn("daily_tokens", run_supervisor.hold_remedy("fixer", row["error"]))
 
+    def test_a_renamed_loop_at_its_token_cap_stays_held(self):
+        # #764: the spend made under the old id must follow the rename into the cap check.
+        pacing.count_tokens("old-widgets", "fixer", 1000)
+        self.assertGreater(pacing.rename_loop("old-widgets", "widgets"), 0)
+        row = self.run_production(lambda *a, **k: self.fail("launched past the token budget"),
+                                  self.token_loop(1000))
+        self.assertEqual((row["state"], row["retries"], self.turns), ("waiting", 0, 0))
+        self.assertIn("daily token budget (1000) reached", row["error"])
+
     def test_an_unspent_token_budget_lets_the_turn_run(self):
         pacing.count_tokens("widgets", "fixer", 999)
         self.run_production(lambda *a, **k: 0, self.token_loop(1000))
