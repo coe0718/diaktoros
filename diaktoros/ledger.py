@@ -53,8 +53,9 @@ def where(exc: BaseException) -> str:
     name = ""
     for frame, _ in traceback.walk_tb(exc.__traceback__):
         code = frame.f_code
-        if (Path(code.co_filename).resolve().parent == package
-                and Path(code.co_filename).name != "ledger.py"
+        source = Path(code.co_filename).resolve()
+        # Anywhere in the plugin, its subpackages included (cli/, config/, run_supervisor/: #717).
+        if (source.is_relative_to(package) and source != Path(__file__).resolve()
                 and code.co_name not in _PLUMBING):
             name = code.co_name
     return f" (during {name})" if name else ""
