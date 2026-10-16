@@ -131,7 +131,9 @@ reviews of that PR with nothing spent, says so once per head, and `explain` show
 `review cap reached`. A maintainer or the operator allows exactly one more verdict on the
 current head with `hermes dk review --loop "<loop-id>" --pr N --another-round`.
 `review_only_daily` (off by default) caps reviewer turns per local day on review-only PRs;
-once spent they wait until midnight and the fixer's PRs are unaffected. Set both with
+it is a separate pool from the reviewer's `daily_turns` (neither spends the other; with both
+set the reviewer may run up to their sum a day, and the reviewer's token budget stays shared).
+Once spent they wait until midnight. Unset, review-only turns count against `daily_turns`. Set both with
 `set --review-only-cap N --review-only-daily N` (0 clears), `init`, `setup` or the settings
 form. Push your
 fix and re-request the reviewer on the PR to get the next review: the reviewer gate
@@ -402,7 +404,8 @@ inspection, not replay. [Issues](issues.md) covers setup and truthful limitation
 ## Holding one PR
 
 A maintainer (`triage.maintainers`) holds a PR by applying the `diaktoros:hold` label or
-commenting `/loop hold`; `/loop release`, or removing the label, lifts it. The latest
+commenting `/loop hold`. `/loop release` lifts either; removing the label lifts only a label
+hold, never a `/loop hold` comment. The latest
 event from a maintainer wins; anyone else's label or comment is ignored and logged.
 
 While held, no review, fix, CI-fix or conflict turn is claimed: queued turns stay pending

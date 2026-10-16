@@ -196,7 +196,7 @@ elif re.search(r"/commits/([0-9a-f]+)/check-runs", path):
         sys.exit(1)
     runs = (world.get("check_runs") or {}).get(re.search(r"/commits/([0-9a-f]+)/", path).group(1), [])
     print(json.dumps({"total_count": len(runs), "check_runs": runs}))
-elif re.search(r"/commits/([0-9a-f]+)/status$", path):
+elif re.search(r"/commits/([0-9a-f]+)/status(?:\?.*)?$", path):
     sha = re.search(r"/commits/([0-9a-f]+)/", path).group(1)
     print(json.dumps({"state": "success", "statuses": (world.get("statuses") or {}).get(sha, [])}))
 elif "/commits/" in path:

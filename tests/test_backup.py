@@ -178,6 +178,26 @@ class Tampered(Base):
         [problem] = backup.unsafe(manifest, allowed_state_dirs=[str(declared), str(away)])
         self.assertIn("outside this plugin's places", problem)
 
+    def test_a_state_dir_without_files_gets_the_same_checks(self):
+        # #768: put_files() mkdirs every absolute state dir, so unsafe() must judge them too.
+        away = self.root / "elsewhere" / "created"
+        empty = self.tamper(lambda m: m["state_dirs"].append(str(away)))
+        self.refused(empty, want=f"--allow-state-dir {away}")
+        self.assertFalse(away.exists())
+        manifest = backup.read_manifest(empty)
+        self.assertEqual(backup.unsafe(manifest, allowed_state_dirs=[str(away)]), [])
+        # An empty state dir inside the home stays restorable.
+        inside = self.tamper(lambda m: m["state_dirs"].append(str(self.root / "home" / "empty")))
+        self.assertEqual(backup.unsafe(backup.read_manifest(inside)), [])
+        # A symlinked ancestor is refused even when the directory is named.
+        target = self.root / "away2"
+        target.mkdir()
+        (self.root / "home" / "link").symlink_to(target, target_is_directory=True)
+        linked = self.tamper(lambda m: m["state_dirs"].append(
+            str(self.root / "home" / "link" / "sub")))
+        self.refused(linked, want="behind a symlink")
+        self.assertFalse((target / "sub").exists())
+
     def test_the_named_directory_restores_through_the_command(self):
         away = self.root / "elsewhere" / "state"
         good = self.tamper(lambda m: (m["state_dirs"].append(str(away)), m["files"].append(
@@ -422,6 +442,53 @@ class MigrateBacksUpFirst(Base):
             code, text = self.run_cmd(cli.cmd_migrate, dry_run=False)
         self.assertEqual(code, 2)
         moved.assert_not_called()
+
+
+class InterruptedKeepsThePause(Base):
+    """#766: an exception inside the hold leaves the marker; clean refusals and success clear it."""
+
+    def test_hold_keeps_the_marker_on_an_exception_and_clears_it_on_a_normal_exit(self):
+        for exc in (OSError("move failed"), KeyboardInterrupt()):
+            with self.assertRaises(type(exc)):
+                with migrate.hold():
+                    raise exc
+            self.assertIsNotNone(migrate.migrating())
+            with migrate.hold() as left:               # a re-run picks it up and finishes
+                self.assertIsNotNone(left)
+            self.assertIsNone(migrate.migrating())
+
+    def test_a_restore_that_fails_partway_stays_paused_until_a_rerun_finishes(self):
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        self.wipe()
+        with mock.patch.object(backup, "put_files", side_effect=OSError("disk gone")):
+            code, _ = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        self.assertEqual(code, 2)
+        self.assertIsNotNone(migrate.migrating())
+        code, _ = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=True)
+        self.assertIsNone(migrate.migrating())
+
+    def test_a_restore_refused_before_any_write_does_not_stay_paused(self):
+        out = self.root / "b.tar.gz"
+        backup.create(out)
+        code, _ = self.run_cmd(cli.cmd_restore, file=str(out), dry_run=False, force=False)
+        self.assertEqual(code, 2)                      # existing state, no --force
+        self.assertIsNone(migrate.migrating())
+
+    def test_a_migrate_stopped_after_a_step_stays_paused(self):
+        with mock.patch.object(migrate, "settings_step", return_value=[]), \
+                mock.patch.object(migrate, "shim_step", return_value=[]), \
+                mock.patch.object(migrate, "files_step", side_effect=OSError("move failed")), \
+                mock.patch.object(cli_lifecycle, "_move_watchdog_job", return_value=[]):
+            with self.assertRaises(OSError):
+                self.run_cmd(cli.cmd_migrate, dry_run=False)
+        self.assertIsNotNone(migrate.migrating())
+
+    def test_a_migrate_whose_backup_fails_leaves_no_pause(self):
+        with mock.patch.object(backup, "create", side_effect=backup.BackupError("full")):
+            code, _ = self.run_cmd(cli.cmd_migrate, dry_run=False)
+        self.assertEqual(code, 2)
+        self.assertIsNone(migrate.migrating())
 
 
 if __name__ == "__main__":

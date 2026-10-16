@@ -168,7 +168,7 @@ class World(http.server.BaseHTTPRequestHandler):
             self._send(200, {'sha': HEAD})     # the watchdog's main check reads main's head
         elif path.startswith(base + '/commits/') and path.endswith('/check-runs'):
             self._send(200, {'total_count': 0, 'check_runs': []})     # no CI reported: green
-        elif path.startswith(base + '/commits/') and path.endswith('/status'):
+        elif path.startswith(base + '/commits/') and path.split('?')[0].endswith('/status'):
             self._send(200, {'state': 'pending', 'statuses': []})
         elif path == base + '/pulls/7/files':
             # The change under review (#50): one modified file, one page.

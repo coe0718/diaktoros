@@ -6,8 +6,9 @@ the reason for every PR it leaves out. The loop never merges.
 A PR is ready when it is approved at its head (the same effective-review predicate the gates use),
 that approval is not stale (#473, ``stale_approval.is_stale``), the required checks at the head are
 green (``ci.gating``), GitHub calls it mergeable, and nothing holds it: no draft, open gate failure,
-human-paths hold, escalation, issue-fix hold or same-head retarget quarantine. Anything unreadable
-is an exclusion, never a guess.
+human-paths hold, escalation or same-head retarget quarantine. Anything unreadable is an
+exclusion, never a guess. An issue-fix hold (``st.fix_holds()``) is not a hold on a PR: it means
+the issue waits for its origin PR to merge, so it never excludes that PR (#759).
 
 Order: a stacked PR (its base is another PR's branch) comes after that parent, and is excluded
 while the parent is not itself ready. PRs that change the same files are merged one after another
@@ -28,6 +29,22 @@ from . import ci, config, gate, gate_failures, gh, stale_approval, transition
 # GitHub mergeable_state values that leave a PR mergeable (``unstable`` is only a non-required
 # check failing; the required ones are judged by ``ci.gating`` above).
 MERGEABLE_STATES = ("clean", "has_hooks", "unstable")
+
+
+def _changed_since_listing(pr: dict, detail: dict) -> list[str]:
+    """Fields of the fresh single-PR read that differ from the listing the approval was judged on."""
+    changed = []
+    if detail.get("number") != pr.get("number"):
+        changed.append("number differs")
+    if detail.get("state") != "open":
+        changed.append(f"state is {detail.get('state') or 'unknown'}")
+    if detail.get("draft") is not False:
+        changed.append("now a draft" if detail.get("draft") else "draft flag unreadable")
+    if (detail.get("head") or {}).get("sha") != (pr.get("head") or {}).get("sha"):
+        changed.append("head moved")
+    if (detail.get("base") or {}).get("ref") != (pr.get("base") or {}).get("ref"):
+        changed.append("base retargeted")
+    return changed
 
 
 def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> list[str]:
@@ -72,6 +89,8 @@ def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> 
 
     if not isinstance(detail, dict):
         why.append("mergeability unreadable")
+    elif changed := _changed_since_listing(pr, detail):
+        why.append("not ready (changed since listing): " + ", ".join(changed))
     else:
         mstate = detail.get("mergeable_state")
         if detail.get("mergeable") is False or mstate == "dirty":
@@ -92,9 +111,6 @@ def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> 
             marker if isinstance(marker, dict) else {}, head) in {"awaiting-adjudication",
                                                                   "adjudicating"}:
         why.append("escalated: parked awaiting adjudication")
-    for issue_no, origin in sorted(st.fix_holds().items()):
-        if origin == number:
-            why.append(f"hold: issue #{issue_no} fix waits for this PR to merge")
     if transition.hold(st, number, head):
         why.append("same-head base retarget hold")
     return why

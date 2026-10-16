@@ -49,7 +49,10 @@ class Deps(GateFixture):
                 return self.pulls.get(int(path.rsplit("/", 1)[1]))
             number = int(path.rsplit("/", 1)[1])
             return self.issues.get(number)
-        for target, name, value in ((gh, "api", api),
+        def fetch(loop, path, method="GET", body=None, login=None):
+            data = api(loop, path, method, body, login)
+            return data, ("" if data is not None else "unreadable")
+        for target, name, value in ((gh, "api", api), (gh, "fetch", fetch),
                                     (issue_deps, "_fix_prs",
                                      lambda loop, n: self.fix_prs.get(n, [])),
                                     (config, "load_id", lambda loop_id: self.loop)):
@@ -158,6 +161,41 @@ class Deps(GateFixture):
         fix_hold.sweep(self.loop, self.st)
         self.assertEqual((self.enqueued, self.st.dep_waits()), ([], [12]))
 
+    def _busy_close(self, tail):
+        """Closed #5: an old close by a commit main contains on page 1, then filler, then tail."""
+        self.issues[5] = {**self.issues[5], "state": "closed"}
+        filler = [{"event": "labeled"}] * 100
+        pages = {1: [{"event": "closed", "commit_id": MERGE}] + filler[1:], 2: filler, 3: filler}
+        pages.update(tail)
+        self.requested = []
+
+        def api(loop, path, method="GET", body=None, login=None):
+            if "/events" in path:
+                page = int(path.split("page=")[-1]) if "&page=" in path else 1
+                self.requested.append(page)
+                return pages.get(page)
+            if "/compare/" in path:
+                return {"status": "ahead"}
+            return self.issues[5]
+        return api
+
+    def test_a_close_beyond_the_page_bound_is_unknown_not_met(self):
+        api = self._busy_close({4: [{"event": "reopened"},
+                                    {"event": "closed", "commit_id": None}]})
+        with mock.patch.object(gh, "fetch", lambda l, p, login=None: (api(l, p), "")), \
+                mock.patch.object(gh, "api", api):
+            done, why = issue_deps.met(self.loop, 5)
+        self.assertIsNone(done)
+        self.assertIn("could not be read in full", why)
+
+    def test_an_unreadable_final_page_holds_the_dependent(self):
+        api = self._busy_close({3: None})                 # the last page read fails
+        self.depends(12, on=5)
+        with mock.patch.object(gh, "fetch", lambda l, p, login=None: (api(l, p), "")), \
+                mock.patch.object(gh, "api", api):
+            blockers = issue_deps.blocking(self.loop, self.st, 12)
+        self.assertEqual([b[0] for b in blockers], [5])
+
     def test_a_pr_wait_that_ends_hands_over_to_the_dependency_wait(self):
         self.depends(12, on=5)
         self.st.fix_hold_set(12, 7)                              # also held on a PR (#686)
@@ -165,6 +203,32 @@ class Deps(GateFixture):
         fix_hold.sweep(self.loop, self.st)
         self.assertEqual((self.enqueued, self.st.fix_holds(), self.st.dep_waits()),
                          ([], {}, [12]))
+
+    def test_release_skips_an_issue_a_differently_named_pr_now_fixes(self):
+        # prerequisite wait: a person's PR (any branch) opens while it waits
+        self.depends(12, on=5)
+        self.run_gate(self.labeled())
+        self.open_prs = [{"number": 30, "body": "Fixes #12", "head": {"ref": "human/my-branch"}}]
+        self.close_a(MERGE)
+        fix_hold.sweep(self.loop, self.st)
+        self.assertEqual((self.enqueued, self.st.dep_waits()), ([], []))
+        self.assertTrue(any("PR #30 already fixes this" in b["body"] for _p, b, _l in self.posted))
+
+    def test_pr_wait_release_skips_an_issue_an_open_pr_now_fixes(self):
+        self.st.fix_hold_set(12, 7)
+        self.pulls[7] = {"number": 7, "state": "closed", "merged": True}
+        self.open_prs = [{"number": 30, "body": "Fixes #12", "head": {"ref": "human/x"}}]
+        fix_hold.sweep(self.loop, self.st)
+        self.assertEqual((self.enqueued, self.st.fix_holds()), ([], {}))
+
+    def test_release_waits_when_the_open_pr_listing_is_unreadable(self):
+        self.st.fix_hold_set(12, 7)
+        self.pulls[7] = {"number": 7, "state": "closed", "merged": True}
+        with mock.patch.object(gh, "open_prs_read", lambda loop: (None, "boom")):
+            fix_hold.sweep(self.loop, self.st)
+        self.assertEqual((self.enqueued, self.st.fix_holds()), ([], {12: 7}))
+        fix_hold.sweep(self.loop, self.st)                       # readable again, none covers it
+        self.assertEqual(len(self.enqueued), 1)
 
     def test_a_restart_keeps_the_dependency_and_the_wait(self):
         self.depends(12, on=5)
@@ -181,6 +245,67 @@ class Deps(GateFixture):
                 mock.patch.object(config, "readable_loops", lambda: ([self.loop], [])):
             cli.cmd_status(argparse.Namespace(loop="widgets", seat=None, json=False))
         self.assertIn("issue #12 fix waits for prerequisite #5", out.getvalue())
+
+    # -- a dependency declared after the fix was queued (#775) --------------------------------
+
+    def authorize(self):
+        from diaktoros import broker
+        inner = gh.api
+
+        def api(loop, path, *a, **k):
+            return {"login": "fix"} if path == "/user" else inner(loop, path, *a, **k)
+        names = {"reviewer": "rev", "fixer": "fix"}
+        with mock.patch.object(gh, "api", api), \
+                mock.patch.object(config, "issue_fixes_enabled", lambda loop: True), \
+                mock.patch.object(config, "seat_login", lambda loop, seat: names[seat]), \
+                mock.patch.object(gh, "token_path",
+                                  lambda loop, ident: Path(f"/tok/{ident}")), \
+                mock.patch.object(gh, "token", lambda loop, ident: "t"):
+            return broker.authorize_issue_fix(self.loop, repo=REPO, number=12)
+
+    def claim_holds(self):
+        from diaktoros import run_supervisor
+        read = run_supervisor._ClaimRead()
+        with mock.patch.object(config, "by_repo", lambda repo: self.loop):
+            run_supervisor.Supervisor._claim_read_live(
+                None, {"seat": "issue_fixer", "repo": REPO, "pr": 12}, read)
+        return read.retry_read
+
+    def test_the_broker_refuses_a_publish_while_a_later_dependency_is_unmet(self):
+        from diaktoros import broker
+        self.assertEqual(self.authorize(), "fix")                # nothing declared
+        self.st.issue_dep_add(12, 5, {"by": "operator"})         # declared after enqueue
+        with self.assertRaisesRegex(broker.BrokerDenied, "waiting for #5"):
+            self.authorize()
+        self.depends(12, waive=5)                                # waived: resumes
+        self.assertEqual(self.authorize(), "fix")
+
+    def test_a_queued_row_waits_at_claim_and_resumes_once_merged(self):
+        self.assertFalse(self.claim_holds())
+        self.st.issue_dep_add(12, 5, {"by": "operator"})
+        self.assertTrue(self.claim_holds())
+        self.close_a(MERGE)
+        self.assertFalse(self.claim_holds())
+
+    def test_the_launch_prompt_is_refused_during_preparation(self):
+        from diaktoros import run_supervisor
+        with mock.patch.object(run_supervisor, "issue_fix_issue",
+                               lambda loop, n: self.issues[n]):
+            self.st.issue_dep_add(12, 5, {"by": "operator"})
+            with self.assertRaises(run_supervisor.RetryableError):
+                run_supervisor.issue_fix_dependencies(self.loop, 12)
+
+    def test_an_unreadable_dependency_holds_the_queued_row(self):
+        self.st.issue_dep_add(12, 5, {"by": "operator"})
+        self.issues.pop(5)                                       # GitHub cannot answer
+        self.assertTrue(self.claim_holds())
+        with mock.patch.object(issue_deps, "blocking", side_effect=OSError("ledger")):
+            self.assertIn("unreadable", issue_deps.hold_reason(self.loop, 12))
+
+    def test_depends_says_a_queued_turn_is_held_and_a_running_one_is_not_recalled(self):
+        out = self.depends(12, on=5)[1]
+        self.assertIn("already queued is held at launch and publish", out)
+        self.assertIn("already running is not recalled", out)
 
 
 if __name__ == "__main__":

@@ -52,6 +52,10 @@ OLD_PLUGIN = "hermes-review-loop"
 MARKER_FILE = "migrating.json"
 
 
+class RunsUnknown(RuntimeError):
+    """The host ledger exists but its active runs could not be read (#767)."""
+
+
 class MigrationBusy(RuntimeError):
     """Another migrate is running now."""
 
@@ -126,10 +130,11 @@ def hold():
             raise MigrationBusy(describe(migrating() or {})) from None
         left = migrating()
         state_mod._atomic_write(path, {"pid": os.getpid(), "started": time.time()})
-        try:
-            yield left
-        finally:
-            path.unlink(missing_ok=True)
+        yield left
+        # Only a normal exit clears the marker (#766): an exception (KeyboardInterrupt too) may
+        # come after a step committed, and migration has no global rollback, so the pause stays
+        # until a re-run finishes. Callers refuse before any write by returning, not raising.
+        path.unlink(missing_ok=True)
     finally:
         os.close(fd)
 
@@ -452,20 +457,32 @@ def runs_in_flight() -> int:
     if not ledger.exists():
         return 0
     from .run_supervisor import ACTIVE  # noqa: PLC0415 - heavy module, only when needed
-    con = sqlite3.connect(ledger, timeout=LOCK_WAIT_S)
     try:
-        return con.execute(f"SELECT COUNT(*) FROM runs WHERE state IN "
-                           f"({','.join('?' * len(ACTIVE))})", ACTIVE).fetchone()[0]
-    except sqlite3.Error:
-        return 0                            # no runs table yet: nothing can be in flight
-    finally:
-        con.close()
+        con = sqlite3.connect(ledger, timeout=LOCK_WAIT_S)
+        try:
+            return con.execute(f"SELECT COUNT(*) FROM runs WHERE state IN "
+                               f"({','.join('?' * len(ACTIVE))})", ACTIVE).fetchone()[0]
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return 0                    # no runs table yet: nothing can be in flight
+            raise
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        # #767: an unreadable ledger is not proof that no run is active
+        raise RunsUnknown(
+            f"the run ledger {ledger} exists but could not be read ({exc}), so active runs "
+            "cannot be ruled out; stop the workers, then restore the ledger from a backup or "
+            "move the damaged file aside (or retry if it was locked)") from exc
 
 
 def files_step(write_loop, *, dry_run: bool) -> list[str]:
     """Move each host file from its old name to its new one; rewrite the loops' state paths."""
     lines: list[str] = []
-    busy = runs_in_flight()
+    try:
+        busy = runs_in_flight()
+    except RunsUnknown as exc:
+        return [f"files: REFUSED — {exc}"]
     if busy:
         return [f"files: REFUSED — {busy} run(s) are in flight or uncertain; wait for them (or "
                 "reconcile them), then run migrate again"]

@@ -135,7 +135,12 @@ def _rows(loop: dict) -> list[_Row]:
     schema("review_only_cap", ("review_only_cap",), config.review_only_cap(loop),
            derived=f"cap ({loop['cap']})")
     schema("ci_fix_cap", ("ci_fix_cap",), config.ci_fix_cap(loop))
-    schema("review_only_daily", ("review_only_daily",), loop.get("review_only_daily") or "no cap")
+    schema("review_only_daily", ("review_only_daily",), loop.get("review_only_daily") or "no cap",
+           note=(f"separate pool: review-only turns count here, not against seats.reviewer."
+                 f"daily_turns ({config.seat_daily_turns(loop, 'reviewer') or 'no cap'}), "
+                 f"which now covers other PRs only"
+                 if config.review_only_daily(loop) else
+                 "unset: review-only turns count against seats.reviewer.daily_turns"))
     for key, off in (
             ("review_only_update", "a conflicting review-only PR gets a notice, no merge push"),
             ("review_after_ci", "a review starts at once, with whatever CI has finished"),

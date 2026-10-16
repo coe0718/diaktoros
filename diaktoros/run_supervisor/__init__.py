@@ -530,6 +530,15 @@ def issue_fix_issue(loop: dict, number: int) -> dict:
     return issue
 
 
+def issue_fix_dependencies(loop: dict, number: int) -> None:
+    """Raise ``RetryableError`` while a declared prerequisite of the issue is unmet or
+    unreadable (#775): checked at launch and at the broker's publication boundary."""
+    from .. import issue_deps
+    why = issue_deps.hold_reason(loop, number)
+    if why:
+        raise RetryableError(f'issue #{number} {why}')
+
+
 def write_records(con, run_id: str) -> str | None:
     """The host's write-ahead record of an external write this run began, if any.
 
@@ -554,6 +563,12 @@ def write_records(con, run_id: str) -> str | None:
         return 'triage recorded'
     if con.execute('SELECT 1 FROM issue_fixes WHERE run_id=?', (run_id,)).fetchone():
         return 'issue fix recorded'
+    # A reviewer-filed issue whose POST outcome is ambiguous ('recorded' = written ahead of the
+    # call, 'uncertain' = response lost) may exist on GitHub: reconcile, never replay (#773).
+    # 'posted' (confirmed) and 'denied' (refused) are known outcomes and do not count.
+    if con.execute("SELECT 1 FROM filed_issues WHERE run_id=? AND state IN "
+                   "('recorded','uncertain')", (run_id,)).fetchone():
+        return 'filed issue outcome unknown'
     return None
 
 
@@ -1827,6 +1842,16 @@ class Supervisor(records.LedgerRecords):
             self._claim_read_adjudicator(row, read)
         if row['seat'] == 'fixer':
             self._claim_read_fixer(row, read)
+        if row['seat'] == 'issue_fixer' and not read.superseded:
+            # A prerequisite declared after the row was queued (#775): it waits, pending, and
+            # starts once the dependency is merged or waived. Unreadable holds too.
+            from .. import config, issue_deps
+            try:
+                dep_loop = config.by_repo(row['repo'])
+                if dep_loop is not None and issue_deps.hold_reason(dep_loop, row['pr']):
+                    read.retry_read = True
+            except Exception:
+                read.retry_read = True
 
     def _claim_read_adjudicator(self, row, read: _ClaimRead) -> None:
         from .. import config
@@ -2336,9 +2361,8 @@ class Supervisor(records.LedgerRecords):
         prompt = launch.prompt
         if unpublished_before(row):
             prompt = PUBLISH_NUDGE + prompt
-        pacing.count_turn(loop['id'], row['seat'])
-        if ro_turn:
-            pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT)
+        # Each turn is counted once, against its own pool (#772).
+        pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT if ro_turn else row['seat'])
         change, merged = launch.change, launch.merged
         turn.rc = trusted_turn.run_turn(loop, launch.scope, source=Path(settings["source"]),
               venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
@@ -2372,17 +2396,36 @@ class Supervisor(records.LedgerRecords):
         from .. import config, gh, pacing
         row, loop = turn.row, turn.loop
         closed = pacing.held(account)
-        cap = config.seat_daily_turns(loop, row['seat'])
         if closed is not None:
             turn.paced_until = closed[0]
             turn.error = (f"held: {row['seat']} usage window ({provider}) — resumes "
                           f"{pacing.when(closed[0])}")
             return False
-        if cap is not None and pacing.turns_today(loop['id'], row['seat']) >= cap:
-            turn.paced_until = pacing.next_midnight()
-            turn.error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
-                          f"{pacing.when(turn.paced_until)}")
-            return False
+        # Two pools (#772, #457): with review_only_daily set, a review-only PR's reviewer turn
+        # counts against that cap only, every other turn against daily_turns only. Unset,
+        # review-only turns share daily_turns. So the author is classified before any turn cap.
+        ro_cap = config.review_only_daily(loop) if row['seat'] == 'reviewer' else None
+        ro_turn = False
+        if ro_cap is not None and config.review_only(loop):
+            live_pr = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
+                             login=loop["read_token"])
+            if not isinstance(live_pr, dict):
+                raise RetryableError("PR unreadable before launch (GitHub read failed)")
+            ro_author = str(((live_pr.get("user") or {}).get("login")) or "").lower()
+            ro_turn = ro_author in config.review_only(loop)
+        if ro_turn:
+            if pacing.turns_today(loop['id'], pacing.REVIEW_ONLY_SEAT) >= ro_cap:
+                turn.paced_until = pacing.next_midnight()
+                turn.error = (f"held: review-only daily turn cap ({ro_cap}) reached — resumes "
+                              f"{pacing.when(turn.paced_until)}")
+                return ro_turn
+        else:
+            cap = config.seat_daily_turns(loop, row['seat'])
+            if cap is not None and pacing.turns_today(loop['id'], row['seat']) >= cap:
+                turn.paced_until = pacing.next_midnight()
+                turn.error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
+                              f"{pacing.when(turn.paced_until)}")
+                return False
         # A seat's daily token budget (#480): once spent, the next turn waits for midnight.
         # A turn in flight is never killed; this only gates a launch. The fixer's budget
         # covers its issue fixes too (seat_daily_tokens, and record_usage's counter key).
@@ -2393,21 +2436,6 @@ class Supervisor(records.LedgerRecords):
             turn.error = (f"held: {row['seat']} daily token budget ({token_cap}) reached — "
                           f"resumes {pacing.when(turn.paced_until)}")
             return False
-        # Review-only PRs may have their own daily cap on reviewer turns, so the operator's
-        # PRs cannot use up the budget the fixer's PRs share. The fixer's PRs never read it.
-        ro_cap = config.review_only_daily(loop) if row['seat'] == 'reviewer' else None
-        ro_turn = False
-        if ro_cap is not None and config.review_only(loop):
-            live_pr = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
-                             login=loop["read_token"])
-            if not isinstance(live_pr, dict):
-                raise RetryableError("PR unreadable before launch (GitHub read failed)")
-            ro_author = str(((live_pr.get("user") or {}).get("login")) or "").lower()
-            ro_turn = ro_author in config.review_only(loop)
-            if ro_turn and pacing.turns_today(loop['id'], pacing.REVIEW_ONLY_SEAT) >= ro_cap:
-                turn.paced_until = pacing.next_midnight()
-                turn.error = (f"held: review-only daily turn cap ({ro_cap}) reached — resumes "
-                              f"{pacing.when(turn.paced_until)}")
         return ro_turn
 
     def _ci_hold(self, turn: _Turn) -> None:

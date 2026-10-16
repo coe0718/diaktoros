@@ -27,8 +27,9 @@ def run(name, status="completed", conclusion="success", id=1):
 class Fake:
     """Check runs and statuses for HEAD; ``None`` makes that read fail."""
 
-    def __init__(self, runs=(), statuses=(), total=None, notes=None):
+    def __init__(self, runs=(), statuses=(), total=None, notes=None, status_pages=None):
         self.runs, self.statuses, self.total = runs, statuses, total
+        self.status_pages = status_pages
         self.notes = notes or {}   # annotations by run id; a missing id is unreadable
         self.paths = []
 
@@ -45,7 +46,9 @@ class Fake:
                 return None
             return {"total_count": len(self.runs) if self.total is None else self.total,
                     "check_runs": list(self.runs)}
-        if path.endswith("/status"):
+        if path.split("?")[0].endswith("/status"):
+            if self.status_pages is not None:   # per-page replies; a missing page is unreadable
+                return self.status_pages.get(int(path.split("&page=")[1]))
             return None if self.statuses is None else {"state": "x", "statuses": list(self.statuses)}
         raise AssertionError(path)
 
@@ -70,6 +73,31 @@ class Read(unittest.TestCase):
         self.assertTrue(all(login == "read" for _, login in fake.paths))
         self.assertIn(f"/repos/{pv.REPO}/commits/{HEAD}/check-runs?per_page=100&page=1",
                       [p for p, _ in fake.paths])
+
+    def test_status_pages_are_all_read_and_a_failure_beyond_page_one_counts(self):
+        ok = lambda n, k: [{"context": f"c{i}", "state": "success"} for i in range(n, n + k)]  # noqa: E731
+        pages = {1: {"state": "failure", "total_count": 101, "statuses": ok(0, 100)},
+                 2: {"state": "failure", "total_count": 101,
+                     "statuses": [{"context": "late", "state": "failure"}]}}
+        state, fake = read(status_pages=pages)
+        self.assertEqual(state.failed, ["late"])
+        self.assertFalse(state.green)
+        self.assertTrue(any("/status?per_page=100&page=2" in p for p, _ in fake.paths))
+
+    def test_a_partial_status_view_is_unreadable_not_green(self):
+        ok = [{"context": f"c{i}", "state": "success"} for i in range(30)]
+        # total_count says 31, only 30 in hand
+        state, _ = read(status_pages={1: {"state": "failure", "total_count": 31, "statuses": ok}})
+        self.assertIsNone(state)
+        # an unreadable subsequent page
+        full = [{"context": f"c{i}", "state": "success"} for i in range(100)]
+        state, _ = read(status_pages={1: {"state": "success", "total_count": 101,
+                                          "statuses": full}})
+        self.assertIsNone(state)
+        # combined failure with no failing context in hand
+        state, _ = read(status_pages={1: {"state": "error", "total_count": 30, "statuses": ok}})
+        self.assertIsNone(state)
+        self.assertIn("could not read CI", ci.approval_refusal(state))
 
     def test_a_rerun_replaces_the_failure_it_reran(self):
         state, _ = read(runs=[run("tests", conclusion="failure", id=1), run("tests", id=2)])
@@ -176,7 +204,7 @@ class Broker(pv.Broker):
         if "/check-runs" in path:
             return None if self.runs is None else {"total_count": len(self.runs),
                                                    "check_runs": self.runs}
-        if path.endswith("/status"):
+        if path.split("?")[0].endswith("/status"):
             return {"state": "success", "statuses": []}
         return super().api(loop, path, method, body, login)
 
@@ -279,7 +307,7 @@ class CITestsBroker(pv.Broker):
     def api(self, loop, path, method="GET", body=None, login=None):
         if "/check-runs" in path:
             return {"total_count": len(self.runs), "check_runs": self.runs}
-        if path.endswith("/status"):
+        if path.split("?")[0].endswith("/status"):
             return {"state": "success", "statuses": []}
         if path.endswith("/actions/jobs/11"):
             return {"head_sha": self.job_head, "run_id": 5}
@@ -338,11 +366,11 @@ class CITestsBroker(pv.Broker):
 class CITestsUnit(unittest.TestCase):
     def test_parse_and_section(self):
         got = ci_tests.parse("\x1b[0m2026-01-01T00:00:00Z " + LOG_OK)
-        self.assertEqual(got["test_it_parses_as_an_es_module"], "ok")
-        self.assertEqual(got["test_needs_gpu"], "skipped")
+        self.assertEqual(got["test_desktop.Surface.test_it_parses_as_an_es_module"], "ok")
+        self.assertEqual(got["test_desktop.Surface.test_needs_gpu"], "skipped")
         text = ci_tests.section(got)
         self.assertIn("test_it_parses_as_an_es_module", text)
-        self.assertIn("skipped in CI (1): test_needs_gpu", text)
+        self.assertIn("skipped in CI (1): test_desktop.Surface.test_needs_gpu", text)
         self.assertEqual(ci_tests.section({}), "")
 
     def test_refusal_needs_a_verification_only_claim(self):
@@ -356,6 +384,23 @@ class CITestsUnit(unittest.TestCase):
                      "test_x passes, but authorize cannot run without a token here",
                      "test_x ok; publish cannot run when the cache is down here"):
             self.assertEqual(ci_tests.refusal(r, "REQUEST_CHANGES", "F1: a.py:1: " + text), "", text)
+
+    DUP = ("test_auth (a.Security.test_auth) ... skipped no token\n"
+           "test_auth (b.UI.test_auth) ... ok\n")
+
+    def test_same_method_name_in_two_classes_stays_distinct_in_either_order(self):
+        want = {"a.Security.test_auth": "skipped", "b.UI.test_auth": "ok"}
+        self.assertEqual(ci_tests.parse(self.DUP), want)
+        self.assertEqual(ci_tests.parse("".join(reversed(self.DUP.splitlines(True)))), want)
+
+    def test_refusal_ignores_an_ambiguous_short_name(self):
+        res = ci_tests.parse(self.DUP)
+        self.assertEqual(ci_tests.refusal(
+            res, "REQUEST_CHANGES", "F1: x.py:1: test_auth was not run in this sandbox"), "")
+        self.assertIn("b.UI.test_auth", ci_tests.refusal(
+            res, "REQUEST_CHANGES", "F1: x.py:1: b.UI.test_auth was not run in this sandbox"))
+        self.assertIn("skipped too", ci_tests.refusal(
+            res, "REQUEST_CHANGES", "F1: x.py:1: a.Security.test_auth was not run here"))
 
 
 if __name__ == "__main__":

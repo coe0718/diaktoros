@@ -85,6 +85,7 @@ class Prompts(unittest.TestCase):
         issue = {"number": 5, "state": "open", "user": {"login": "o"}, "title": "T5",
                  "body": "BODY5", "labels": [], "html_url": "https://github.com/acme/w/issues/5"}
         with mock.patch.object(run_supervisor, "issue_fix_issue", return_value=issue), \
+                mock.patch.object(run_supervisor, "issue_fix_dependencies"), \
                 mock.patch.object(gh, "issue_comments_read", return_value=([], "")):
             text = turn_prompts.issue_fix_prompt(LOOP, {"repo": "acme/w", "pr": 5,
                                                           "head": "c" * 40})

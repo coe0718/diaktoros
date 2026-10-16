@@ -80,17 +80,15 @@ def met(loop: dict, prerequisite: int) -> tuple[bool | None, str]:
         return None, f"#{prerequisite} could not be read"
     if issue.get("state") == "open":
         return False, f"#{prerequisite} is still open"
+    events, why = gh._read_pages(
+        loop, f"/repos/{loop['repo']}/issues/{prerequisite}/events?per_page=100",
+        "event", EVENT_PAGES, login=loop["read_token"])
+    if events is None:                    # unreadable or past the bound: never a prefix (#765)
+        return None, f"#{prerequisite}'s events could not be read in full ({why})"
     closer = ""
-    for page in range(1, EVENT_PAGES + 1):
-        events = gh.api(loop, f"/repos/{loop['repo']}/issues/{prerequisite}/events"
-                              f"?per_page=100&page={page}", login=loop["read_token"])
-        if not isinstance(events, list):
-            return None, f"#{prerequisite}'s events could not be read"
-        for event in events:
-            if isinstance(event, dict) and event.get("event") == "closed":
-                closer = str(event.get("commit_id") or "")     # the last close wins
-        if len(events) < 100:
-            break
+    for event in events:
+        if event.get("event") == "closed":
+            closer = str(event.get("commit_id") or "")         # the last close wins
     if closer:
         inside = _in_base(loop, closer)
         if inside is None:
@@ -113,6 +111,23 @@ def blocking(loop: dict, st, issue: int) -> list[tuple[int, str]]:
         if done is not True:
             out.append((prerequisite, why))
     return out
+
+
+def hold_reason(loop: dict, issue: int) -> str:
+    """Why a *queued* fix for ``issue`` may not launch or publish now, or ``""`` (#775).
+
+    The same ``blocking`` rule the hand-off uses, re-read from the current declarations, so a
+    dependency declared after the turn was queued still holds it and a waiver releases it. An
+    unreadable ledger or fact holds too; it is never taken as met.
+    """
+    from . import state as state_mod
+    try:
+        blockers = blocking(loop, state_mod.state_for(loop), issue)
+    except Exception as exc:
+        return f"issue dependencies unreadable: {type(exc).__name__}: {exc}"[:200]
+    if not blockers:
+        return ""
+    return "waiting for " + "; ".join(f"#{a} ({why})" for a, why in blockers)
 
 
 def wait(loop: dict, st, issue: int, blockers: list[tuple[int, str]]) -> None:

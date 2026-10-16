@@ -1006,8 +1006,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
                   "no review can be requested without a known head")
     elif hold or hold_error:
         kind = "operator" if hold else "retry"
-        action = (f"{pr_hold.line(hold)} — comment `/loop release` as a maintainer or remove the "
-                  f"{pr_hold.LABEL} label" if hold else
+        action = (f"{pr_hold.line(hold)}" if hold else
                   f"retry the hold read for {repo}#{number} ({hold_error}) — no turn starts until "
                   "it is known")
     elif pr.get("draft"):

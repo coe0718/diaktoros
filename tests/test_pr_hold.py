@@ -130,6 +130,18 @@ class Explain(fg.Base):
         self.assertTrue(any("held by boss" in b and "2026-01-01" in b for b in report["blockers"]))
         self.assertIn("/loop release", report["next"]["action"])
 
+    def test_release_advice_follows_the_hold_type_in_line_and_explain(self):
+        comment_hold = {"by": BOSS, "at": "2026-01-01T00:00:00Z", "how": "comment"}
+        label_hold = dict(comment_hold, how="label")
+        self.assertNotIn("or the label is removed", pr_hold.line(comment_hold))
+        self.assertNotIn(pr_hold.LABEL, pr_hold.line(comment_hold).split("until", 1)[1])
+        self.assertIn(pr_hold.LABEL, pr_hold.line(label_hold).split("until", 1)[1])
+        for hold, names_label in ((comment_hold, False), (label_hold, True)):
+            facts = {"pr": fg.LIVE, "reviews": [], "armed": True, "read_at": 0, "hold": hold}
+            action = gate.explain(self.loop, self.st, 7, facts)["next"]["action"]
+            self.assertIn("/loop release", action)
+            self.assertEqual("removal of the diaktoros:hold label" in action, names_label)
+
     def test_explain_without_a_hold_does_not_mention_one(self):
         facts = {"pr": fg.LIVE, "reviews": [], "armed": True, "read_at": 0}
         report = gate.explain(self.loop, self.st, 7, facts)

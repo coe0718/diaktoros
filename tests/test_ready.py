@@ -46,7 +46,9 @@ class Ready(unittest.TestCase):
         self.approved[number] = approved
         self.ci[number] = ci_state or ci.CIState(passed=["tests"])
         self.files[number] = list(files)
-        self.mergeable[number] = {"mergeable": mstate != "dirty", "mergeable_state": mstate}
+        self.mergeable[number] = {"mergeable": mstate != "dirty", "mergeable_state": mstate,
+                                  "number": number, "state": "open", "draft": draft,
+                                  "head": {"sha": HEAD[number]}, "base": {"ref": base}}
 
     def run_ready(self):
         def reviews(_loop, number, login=None):
@@ -97,6 +99,29 @@ class Ready(unittest.TestCase):
                        "waiting for a person", "#6", "is stale"):
             self.assertIn(needle, text)
 
+    def test_issue_fix_hold_does_not_exclude_its_origin_pr(self):
+        """#759: an issue waiting for PR #1 to merge must not keep #1 off the ready list."""
+        from diaktoros import fix_hold
+        self.add(1)
+        self.st.fix_hold_set(12, 1)
+        text = self.run_ready()
+        self.assertIn("1. #1", text)
+        self.assertNotIn("not ready", text)
+        self.assertNotIn("fix waits", text)
+        self.assertEqual(self.st.fix_holds(), {12: 1})      # the issue stays held
+        released = []
+        with mock.patch.object(config, "issue_fixes_enabled", return_value=True), \
+             mock.patch.object(fix_hold, "pr_state", return_value="open") as pr_state, \
+             mock.patch.object(fix_hold, "hold"), \
+             mock.patch.object(fix_hold.issue_deps, "blocking", return_value=[]), \
+             mock.patch.object(fix_hold, "_release",
+                               side_effect=lambda *a, **k: released.append(a[2])):
+            fix_hold.sweep(self.loop, self.st)
+            self.assertEqual(released, [])                  # still open: not released
+            pr_state.return_value = "merged"
+            fix_hold.sweep(self.loop, self.st)
+        self.assertEqual(released, [12])                    # released once #1 merged
+
     def test_stacked_base_comes_first_and_child_waits_for_it(self):
         self.add(2, base="b1", files=("c.py",))
         self.add(1, files=("a.py",))
@@ -130,6 +155,17 @@ class Ready(unittest.TestCase):
              redirect_stdout(out):
             self.assertEqual(cli.cmd_ready(types.SimpleNamespace(loop="w")), 0)
         self.assertIn("unknown: the open PR list could not be read (HTTP 500)", out.getvalue())
+
+    def test_detail_that_changed_since_listing_is_not_ready(self):
+        changes = {"number": 2, "state": "closed", "draft": True,
+                   "head": {"sha": "f" * 40}, "base": {"ref": "release"}}
+        for key, value in changes.items():
+            with self.subTest(key):
+                self.add(1)
+                self.mergeable[1][key] = value
+                text = self.run_ready()
+                self.assertNotIn("1. #1", text)
+                self.assertIn("changed since listing", text)
 
 
 if __name__ == "__main__":

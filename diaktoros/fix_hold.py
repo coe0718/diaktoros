@@ -144,6 +144,16 @@ def _release(loop: dict, st, number: int, lines: list[str], drop, pr: int, why: 
         drop(number)
         log(f"issue #{number}: held hand-off dropped: {exc}")
         return
+    prs, error = gh.open_prs_read(loop)           # the guard hand_off applies, at every release
+    if prs is None:
+        log(f"issue #{number}: open PR listing unreadable, release waits: {error}")
+        return                                    # retry on the next sweep
+    existing = _closing(loop, prs, number)
+    if existing is not None:                      # a PR opened during the wait already fixes it
+        _skip_comment(loop, number, existing)
+        drop(number)
+        log(f"issue #{number}: open PR #{existing} already fixes it; held hand-off dropped")
+        return
     present = {str((x or {}).get("name") or "").casefold()
                for x in live.get("labels") or [] if isinstance(x, dict)}
     auto = loop["triage"]["fix_label"].casefold() not in present   # no maintainer's label

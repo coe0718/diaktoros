@@ -312,8 +312,8 @@ def seats(loop: dict, now: float | None = None) -> dict:
     is the answer that expires with the window.
 
     ``review_only`` appears only for a loop that has review-only authors: a reviewer turn on one
-    of their PRs is counted there (``run_supervisor``), capped by ``review_only_daily``, and the
-    seats' own counters do not see it.
+    of their PRs is counted there (``run_supervisor``) once ``review_only_daily`` is set, capped by
+    it, and the reviewer's own counter does not see it (#772). Unset, the one pool is the reviewer's.
     """
     now = time.time() if now is None else now
     names = ["reviewer", "fixer"]
@@ -342,20 +342,25 @@ def seats(loop: dict, now: float | None = None) -> dict:
 
 
 def rename_loop(old_id: str, new_id: str) -> int:
-    """Carry a renamed loop's turn counts to its new id (#425); returns the counts moved."""
+    """Carry a renamed loop's turn and token counts to its new id (#425, #764); returns the counts moved.
+
+    Both families share ``loop_id|seat`` keys and move in one locked write; totals already
+    under the new id are added to, and a re-run finds nothing left to move.
+    """
     moved = 0
     with _locked() as file:
         data = _load(file)
-        turns = data.get("turns") if isinstance(data.get("turns"), dict) else {}
-        for day in turns.values():
-            if not isinstance(day, dict):
-                continue
-            for key in [k for k in day if k.startswith(f"{old_id}|")]:
-                count = day.pop(key)
-                new_key = f"{new_id}|{key[len(old_id) + 1:]}"
-                day[new_key] = ((day.get(new_key) if isinstance(day.get(new_key), int) else 0)
-                                + (count if isinstance(count, int) else 0))
-                moved += 1
+        for family in ("turns", "tokens"):
+            days = data.get(family) if isinstance(data.get(family), dict) else {}
+            for day in days.values():
+                if not isinstance(day, dict):
+                    continue
+                for key in [k for k in day if k.startswith(f"{old_id}|")]:
+                    count = day.pop(key)
+                    new_key = f"{new_id}|{key[len(old_id) + 1:]}"
+                    day[new_key] = ((day.get(new_key) if isinstance(day.get(new_key), int) else 0)
+                                    + (count if isinstance(count, int) else 0))
+                    moved += 1
         if moved:
             _save(file, data)
     return moved
