@@ -30,6 +30,22 @@ from . import ci, config, gate, gate_failures, gh, stale_approval, transition
 MERGEABLE_STATES = ("clean", "has_hooks", "unstable")
 
 
+def _changed_since_listing(pr: dict, detail: dict) -> list[str]:
+    """Fields of the fresh single-PR read that differ from the listing the approval was judged on."""
+    changed = []
+    if detail.get("number") != pr.get("number"):
+        changed.append("number differs")
+    if detail.get("state") != "open":
+        changed.append(f"state is {detail.get('state') or 'unknown'}")
+    if detail.get("draft") is not False:
+        changed.append("now a draft" if detail.get("draft") else "draft flag unreadable")
+    if (detail.get("head") or {}).get("sha") != (pr.get("head") or {}).get("sha"):
+        changed.append("head moved")
+    if (detail.get("base") or {}).get("ref") != (pr.get("base") or {}).get("ref"):
+        changed.append("base retargeted")
+    return changed
+
+
 def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> list[str]:
     """Why one open PR is not ready to merge; ``[]`` when nothing excludes it.
 
@@ -72,6 +88,8 @@ def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> 
 
     if not isinstance(detail, dict):
         why.append("mergeability unreadable")
+    elif changed := _changed_since_listing(pr, detail):
+        why.append("not ready (changed since listing): " + ", ".join(changed))
     else:
         mstate = detail.get("mergeable_state")
         if detail.get("mergeable") is False or mstate == "dirty":
