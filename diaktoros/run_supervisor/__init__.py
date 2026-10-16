@@ -554,6 +554,12 @@ def write_records(con, run_id: str) -> str | None:
         return 'triage recorded'
     if con.execute('SELECT 1 FROM issue_fixes WHERE run_id=?', (run_id,)).fetchone():
         return 'issue fix recorded'
+    # A reviewer-filed issue whose POST outcome is ambiguous ('recorded' = written ahead of the
+    # call, 'uncertain' = response lost) may exist on GitHub: reconcile, never replay (#773).
+    # 'posted' (confirmed) and 'denied' (refused) are known outcomes and do not count.
+    if con.execute("SELECT 1 FROM filed_issues WHERE run_id=? AND state IN "
+                   "('recorded','uncertain')", (run_id,)).fetchone():
+        return 'filed issue outcome unknown'
     return None
 
 
