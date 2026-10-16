@@ -21,6 +21,7 @@ from typing import NamedTuple
 import urllib.request
 import uuid
 from contextlib import closing, nullcontext
+from dataclasses import dataclass, field
 
 from .. import hostdirs
 from ..hostdirs import WORKER_ENV, HostStateGone, in_worker
@@ -888,6 +889,49 @@ def _pid_reused(pid: int, launched: float | None) -> bool:
     return started > launched + 2.0
 
 
+@dataclass
+class _ClaimRead:
+    """What a pending row's claim-time reads found; ``_claim_commit`` settles the row from it.
+    ``retry_read`` is a legitimate wait (a draft), left pending. ``read_error`` is a read that
+    failed: counted and backed off like a failed turn, then failed with its reason, so it can
+    never sit pending and invisible (#53, review on #97). ``refused`` is a row that can never
+    publish; ``unavailable``, one whose review generation cannot be pinned."""
+    generation: str | None = None
+    unavailable: str | None = None
+    retry_read: bool = False
+    read_error: str = ""
+    superseded: str | None = None
+    refused: str = ""
+
+
+@dataclass
+class _Turn:
+    """One production turn's state, shared by its steps and by ``_production_finish``, which
+    runs however the turn ends."""
+    run_id: str
+    owner: str
+    budget: int
+    rc: int | None = None
+    error: str | None = None
+    retry: bool = False
+    stopped: bool = True
+    observed: dict = field(default_factory=dict)
+    breach: tuple | None = None
+    claim: object = None
+    paced_until: float | None = None
+    row: sqlite3.Row | None = None
+    loop: dict | None = None
+
+
+class _Launch(NamedTuple):
+    """What a turn is launched with: its prompt, its broker scope, the change it reviews or
+    fixes, and a conflict turn's merge."""
+    prompt: str
+    scope: object
+    change: object = None
+    merged: dict | None = None
+
+
 class Supervisor(records.LedgerRecords):
     def __init__(self, db: str | Path, *, fixture_command: list[str] | None = None,
                  fixture_mode: bool = False, capacity: dict[str, int] | None = None,
@@ -1694,197 +1738,217 @@ class Supervisor(records.LedgerRecords):
             candidates = con.execute("SELECT * FROM runs WHERE state='pending' "
                                      "ORDER BY created,id").fetchall()
         for row in candidates:
-            generation = None
-            unavailable = None
-            # retry_read: a legitimate wait (a draft), left pending. read_error: a read that
-            # failed — counted and backed off like a failed turn, then failed with its reason,
-            # so it can never sit pending and invisible (#53, review on #97).
-            retry_read = False
-            read_error = ""
-            superseded = None
+            read = _ClaimRead()
             if self.production_config and row['seat'] == 'reviewer':
-                from .. import config, gh
-                from ..review_receipt import ReceiptDenied, generation_for
-                try:
-                    loop = config.by_repo(row['repo'])
-                    if loop is None:
-                        unavailable = 'loop not configured'
-                    else:
-                        pr = gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}",
-                                    login=loop['read_token'])
-                        # gh.api answers None for any failed read (a 502 included): that is a
-                        # read to retry, never a verdict on the PR (#53). A closed PR or a moved
-                        # head retires this turn (a reopen/redelivery re-arms it); a draft waits
-                        # for ready, as the fixer's claim does.
-                        if not isinstance(pr, dict) or pr.get('number') != row['pr']:
-                            read_error = 'PR unreadable (GitHub read failed)'
-                        elif pr.get('state') == 'closed':
-                            superseded = 'PR closed before the review started'
-                        elif (pr.get('head') or {}).get('sha') != row['head']:
-                            superseded = 'PR head moved before the review started'
-                        elif pr.get('state') != 'open' or pr.get('draft') is not False:
-                            retry_read = True
-                        else:
-                            generation = generation_for(pr, loop, row['pr'], row['head'])
-                            # A review at this exact head already answers the turn (e.g. one
-                            # posted in the GitHub UI): a second would spend another round.
-                            # The same-head retarget's fresh-review turn exists to review
-                            # again at this head, so it is exempt.
-                            if not str(row['turn_key'] or '').startswith('retarget:'):
-                                from .. import gate
-                                reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']),
-                                                            self.db)
-                                if not isinstance(reviews, list):
-                                    read_error = 'reviews or receipts unreadable (GitHub read failed)'
-                                else:
-                                    answered = [r for r in gate.reviews_at_head(reviews, loop, row['head'])
-                                                if gh.review_state(r) in ('APPROVED', 'CHANGES_REQUESTED')]
-                                    if answered:
-                                        who = gate.reviewer_login(answered[-1]) or 'a reviewer'
-                                        superseded = f'superseded: reviewed at this head by {who}'
-                except ReceiptDenied as exc:
-                    unavailable = f'review generation unavailable: {exc}'
-                except Exception as exc:
-                    read_error = f'{type(exc).__name__}: {exc}'[:200]
+                self._claim_read_reviewer(row, read)
             if row['seat'] not in self.capacity:
                 continue  # a worker spawned with another seat set never claims this row
-            if self.production_config and row['seat'] in ('reviewer', 'fixer') and not superseded:
-                # The operator escalated this head (#459): it waits for a ruling, so a review or
-                # fix queued for it is retired, as a spent cap would have stopped it.
-                from .. import config, gate, state as state_mod
-                try:
-                    escalated_loop = config.by_repo(row['repo'])
-                    if escalated_loop is not None and gate.escalated(
-                            state_mod.state_for(escalated_loop).breach_get(row['pr']), row['head']):
-                        superseded = 'escalated to adjudication at this head'
-                except Exception as exc:
-                    read_error = read_error or f'{type(exc).__name__}: {exc}'[:200]
-            if (self.production_config and row['seat'] in PR_HOLD_SEATS and not superseded):
-                # A maintainer holds this PR (#477): the row waits, pending, like a draft's, and
-                # starts after release. An unreadable hold is not "not held": it waits too.
-                from .. import config, pr_hold
-                try:
-                    hold_loop = config.by_repo(row['repo'])
-                    if hold_loop is not None:
-                        hold, hold_error = pr_hold.read(hold_loop, row['pr'])
-                        retry_read = retry_read or bool(hold)
-                        read_error = read_error or hold_error
-                except Exception as exc:
-                    read_error = read_error or f'{type(exc).__name__}: {exc}'[:200]
-            if self.production_config and row['seat'] == 'adjudicator':
-                from .. import config
-                try:
-                    status, _ = pr_facts.adjudication_state(config.by_repo(row['repo']), row, self.db)
-                    superseded = 'adjudication superseded' if status == 'superseded' else None
-                    if status == 'retry':
-                        read_error = 'adjudication facts unreadable (GitHub read failed)'
-                    retry_read = status == 'wait'
-                except Exception as exc:
-                    read_error = f'{type(exc).__name__}: {exc}'[:200]
-            refused = ''
-            if self.production_config and row['seat'] == 'fixer':
-                from .. import ci_fix, config, gh, gate
-                try:
-                    loop = config.by_repo(row['repo'])
-                    if loop is None:
-                        read_error = 'loop not configured'
-                    elif row['push_admitted'] != 1:
-                        refused = FIXER_NOT_ADMITTED
-                    elif not config.unattended_fixer_push_enabled(loop):
-                        refused = FIXER_PUSH_REVOKED
-                    else:
-                        pr = gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}",
-                                    login=loop['read_token'])
-                        if not isinstance(pr, dict) or not isinstance(pr.get('head'), dict):
-                            read_error = 'PR unreadable (GitHub read failed)'
-                        elif pr['head'].get('sha') != row['head'] or pr.get('state') == 'closed':
-                            superseded = 'fixer verdict superseded'
-                        elif pr.get('state') != 'open' or pr.get('draft') is not False:
-                            retry_read = True
-                        elif (str(row['turn_key'] or '').startswith(CONFLICT_KEY)
-                              or ci_fix.is_ci_fix(row['turn_key'])):
-                            # #303: a conflict turn answers no verdict (the PR may be approved, or
-                            # unreviewed); the worker checks the merge itself before launch.
-                            # #306: nor does a CI-fix turn; the worker re-reads CI before launch.
-                            pass
-                        else:
-                            reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']),
-                                                        self.db)
-                            if not isinstance(reviews, list):
-                                read_error = 'reviews or receipts unreadable (GitHub read failed)'
-                            else:
-                                latest = gate.latest_effective_review_at_head(reviews, loop, row['head'])
-                                if latest is None:
-                                    # Read fine, and no effective verdict yet (a receipt still
-                                    # landing after a retarget): a wait, like a draft.
-                                    retry_read = True
-                                elif gh.review_state(latest) != 'CHANGES_REQUESTED':
-                                    superseded = 'fixer verdict superseded'
-                except Exception as exc:
-                    read_error = f'{type(exc).__name__}: {exc}'[:200]
-            with self._connect() as con:
-                con.execute("BEGIN IMMEDIATE")
-                current = con.execute("SELECT * FROM runs WHERE id=?", (row['id'],)).fetchone()
-                # Another claimant, recovery, or a changed generation invalidates
-                # the read; never bind a resolved receipt to different row terms.
-                if current is None or dict(current) != dict(row):
-                    con.execute("COMMIT")
-                    continue
-                if refused:
-                    # Not a capacity question: this row can never publish, so it never waits.
-                    con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
-                                (refused, time.time(), row['id']))
-                    con.execute('COMMIT')
-                    continue
-                # Recheck both capacity and PR occupancy under the writer lock.
-                occupied = con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? "
-                                       "AND (state IN ('claimed','launching','running','uncertain') "
-                                       "OR push_intent IS NOT NULL)",
-                                       (row['repo'], row['pr'])).fetchone()
-                # Capacity is per repo and seat: another repo's rows never consume it.
-                used = con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND seat=? AND "
-                                   "state IN ('claimed','launching','running','uncertain')",
-                                   (row['repo'], row['seat'])).fetchone()[0]
-                if occupied or used >= self._capacity_for(row['repo'], row['seat']):
-                    con.execute("COMMIT")
-                    continue
-                now = time.time()
-                if superseded:
-                    con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
-                                (superseded, now, row['id']))
-                    con.execute('COMMIT')
-                    continue
-                if read_error:
-                    # Bounded like a failed turn (#53): back off, then fail with the reason and
-                    # a notice. Pre-write, so `retry` (or a new event) re-arms it.
-                    retries = (current['retries'] or 0) + 1
-                    reason = f'claim-time read failed: {read_error}'
-                    if retries < MAX_RETRIES:
-                        con.execute("UPDATE runs SET state='waiting', retries=?, retry_at=?, "
-                                    "error=?, updated=? WHERE id=?",
-                                    (retries, now + backoff(retries), reason, now, row['id']))
-                    else:
-                        con.execute("UPDATE runs SET state='failed', retries=?, retry_at=NULL, "
-                                    "error=?, updated=? WHERE id=?",
-                                    (retries, f'retry limit ({retries} attempts): {reason}'[:600],
-                                     now, row['id']))
-                    con.execute('COMMIT')
-                    continue
-                if retry_read:
-                    con.execute('COMMIT')
-                    continue
-                if unavailable:
-                    con.execute("UPDATE runs SET state='failed', attempts=attempts+1, "
-                                "error=?,updated=? WHERE id=?", (unavailable, now, row['id']))
-                    con.execute("COMMIT")
-                    continue
-                owner = uuid.uuid4().hex
-                con.execute("UPDATE runs SET state='claimed', attempts=attempts+1, "
-                            "owner=?, lease=?, updated=?, generation=? WHERE id=?",
-                            (owner, now + self.lease_seconds, now, generation, row['id']))
-                con.execute("COMMIT")
-                return row['id'], owner
+            if self.production_config:
+                self._claim_read_live(row, read)
+            claimed = self._claim_commit(row, read)
+            if claimed is not None:
+                return claimed
         return None
+
+    def _claim_read_reviewer(self, row, read: _ClaimRead) -> None:
+        """A reviewer row's claim-time read: the PR's state and head, its review generation,
+        and whether a review at this head already answers the turn."""
+        from .. import config, gh
+        from ..review_receipt import ReceiptDenied, generation_for
+        try:
+            loop = config.by_repo(row['repo'])
+            if loop is None:
+                read.unavailable = 'loop not configured'
+                return
+            pr = gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}",
+                        login=loop['read_token'])
+            # gh.api answers None for any failed read (a 502 included): that is a
+            # read to retry, never a verdict on the PR (#53). A closed PR or a moved
+            # head retires this turn (a reopen/redelivery re-arms it); a draft waits
+            # for ready, as the fixer's claim does.
+            if not isinstance(pr, dict) or pr.get('number') != row['pr']:
+                read.read_error = 'PR unreadable (GitHub read failed)'
+            elif pr.get('state') == 'closed':
+                read.superseded = 'PR closed before the review started'
+            elif (pr.get('head') or {}).get('sha') != row['head']:
+                read.superseded = 'PR head moved before the review started'
+            elif pr.get('state') != 'open' or pr.get('draft') is not False:
+                read.retry_read = True
+            else:
+                read.generation = generation_for(pr, loop, row['pr'], row['head'])
+                # A review at this exact head already answers the turn (e.g. one
+                # posted in the GitHub UI): a second would spend another round.
+                # The same-head retarget's fresh-review turn exists to review
+                # again at this head, so it is exempt.
+                if not str(row['turn_key'] or '').startswith('retarget:'):
+                    from .. import gate
+                    reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']),
+                                                         self.db)
+                    if not isinstance(reviews, list):
+                        read.read_error = 'reviews or receipts unreadable (GitHub read failed)'
+                    else:
+                        answered = [r for r in gate.reviews_at_head(reviews, loop, row['head'])
+                                    if gh.review_state(r) in ('APPROVED', 'CHANGES_REQUESTED')]
+                        if answered:
+                            who = gate.reviewer_login(answered[-1]) or 'a reviewer'
+                            read.superseded = f'superseded: reviewed at this head by {who}'
+        except ReceiptDenied as exc:
+            read.unavailable = f'review generation unavailable: {exc}'
+        except Exception as exc:
+            read.read_error = f'{type(exc).__name__}: {exc}'[:200]
+
+    def _claim_read_live(self, row, read: _ClaimRead) -> None:
+        """The production claim's live reads, in order: an escalated head, a maintainer's
+        hold, the adjudicator's facts, the fixer's verdict. Each may add to ``read``."""
+        if row['seat'] in ('reviewer', 'fixer') and not read.superseded:
+            # The operator escalated this head (#459): it waits for a ruling, so a review or
+            # fix queued for it is retired, as a spent cap would have stopped it.
+            from .. import config, gate, state as state_mod
+            try:
+                escalated_loop = config.by_repo(row['repo'])
+                if escalated_loop is not None and gate.escalated(
+                        state_mod.state_for(escalated_loop).breach_get(row['pr']), row['head']):
+                    read.superseded = 'escalated to adjudication at this head'
+            except Exception as exc:
+                read.read_error = read.read_error or f'{type(exc).__name__}: {exc}'[:200]
+        if row['seat'] in PR_HOLD_SEATS and not read.superseded:
+            # A maintainer holds this PR (#477): the row waits, pending, like a draft's, and
+            # starts after release. An unreadable hold is not "not held": it waits too.
+            from .. import config, pr_hold
+            try:
+                hold_loop = config.by_repo(row['repo'])
+                if hold_loop is not None:
+                    hold, hold_error = pr_hold.read(hold_loop, row['pr'])
+                    read.retry_read = read.retry_read or bool(hold)
+                    read.read_error = read.read_error or hold_error
+            except Exception as exc:
+                read.read_error = read.read_error or f'{type(exc).__name__}: {exc}'[:200]
+        if row['seat'] == 'adjudicator':
+            self._claim_read_adjudicator(row, read)
+        if row['seat'] == 'fixer':
+            self._claim_read_fixer(row, read)
+
+    def _claim_read_adjudicator(self, row, read: _ClaimRead) -> None:
+        from .. import config
+        try:
+            status, _ = pr_facts.adjudication_state(config.by_repo(row['repo']), row, self.db)
+            read.superseded = 'adjudication superseded' if status == 'superseded' else None
+            if status == 'retry':
+                read.read_error = 'adjudication facts unreadable (GitHub read failed)'
+            read.retry_read = status == 'wait'
+        except Exception as exc:
+            read.read_error = f'{type(exc).__name__}: {exc}'[:200]
+
+    def _claim_read_fixer(self, row, read: _ClaimRead) -> None:
+        """A fixer row's claim-time read: its push admission, the PR's state and head, and
+        whether the latest effective verdict at this head still asks for changes."""
+        from .. import ci_fix, config, gh, gate
+        try:
+            loop = config.by_repo(row['repo'])
+            if loop is None:
+                read.read_error = 'loop not configured'
+                return
+            if row['push_admitted'] != 1:
+                read.refused = FIXER_NOT_ADMITTED
+                return
+            if not config.unattended_fixer_push_enabled(loop):
+                read.refused = FIXER_PUSH_REVOKED
+                return
+            pr = gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}",
+                        login=loop['read_token'])
+            if not isinstance(pr, dict) or not isinstance(pr.get('head'), dict):
+                read.read_error = 'PR unreadable (GitHub read failed)'
+            elif pr['head'].get('sha') != row['head'] or pr.get('state') == 'closed':
+                read.superseded = 'fixer verdict superseded'
+            elif pr.get('state') != 'open' or pr.get('draft') is not False:
+                read.retry_read = True
+            elif (str(row['turn_key'] or '').startswith(CONFLICT_KEY)
+                  or ci_fix.is_ci_fix(row['turn_key'])):
+                # #303: a conflict turn answers no verdict (the PR may be approved, or
+                # unreviewed); the worker checks the merge itself before launch.
+                # #306: nor does a CI-fix turn; the worker re-reads CI before launch.
+                pass
+            else:
+                reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']),
+                                                     self.db)
+                if not isinstance(reviews, list):
+                    read.read_error = 'reviews or receipts unreadable (GitHub read failed)'
+                else:
+                    latest = gate.latest_effective_review_at_head(reviews, loop, row['head'])
+                    if latest is None:
+                        # Read fine, and no effective verdict yet (a receipt still
+                        # landing after a retarget): a wait, like a draft.
+                        read.retry_read = True
+                    elif gh.review_state(latest) != 'CHANGES_REQUESTED':
+                        read.superseded = 'fixer verdict superseded'
+        except Exception as exc:
+            read.read_error = f'{type(exc).__name__}: {exc}'[:200]
+
+    def _claim_commit(self, row, read: _ClaimRead):
+        """Settle one candidate under the writer lock from what its read found: claim it
+        (returning ``(id, owner)``), retire it, back it off, or leave it pending (None)."""
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            current = con.execute("SELECT * FROM runs WHERE id=?", (row['id'],)).fetchone()
+            # Another claimant, recovery, or a changed generation invalidates
+            # the read; never bind a resolved receipt to different row terms.
+            if current is None or dict(current) != dict(row):
+                con.execute("COMMIT")
+                return None
+            if read.refused:
+                # Not a capacity question: this row can never publish, so it never waits.
+                con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
+                            (read.refused, time.time(), row['id']))
+                con.execute('COMMIT')
+                return None
+            # Recheck both capacity and PR occupancy under the writer lock.
+            occupied = con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? "
+                                   "AND (state IN ('claimed','launching','running','uncertain') "
+                                   "OR push_intent IS NOT NULL)",
+                                   (row['repo'], row['pr'])).fetchone()
+            # Capacity is per repo and seat: another repo's rows never consume it.
+            used = con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND seat=? AND "
+                               "state IN ('claimed','launching','running','uncertain')",
+                               (row['repo'], row['seat'])).fetchone()[0]
+            if occupied or used >= self._capacity_for(row['repo'], row['seat']):
+                con.execute("COMMIT")
+                return None
+            now = time.time()
+            if read.superseded:
+                con.execute("UPDATE runs SET state='cancelled', error=?,updated=? WHERE id=?",
+                            (read.superseded, now, row['id']))
+                con.execute('COMMIT')
+                return None
+            if read.read_error:
+                # Bounded like a failed turn (#53): back off, then fail with the reason and
+                # a notice. Pre-write, so `retry` (or a new event) re-arms it.
+                retries = (current['retries'] or 0) + 1
+                reason = f'claim-time read failed: {read.read_error}'
+                if retries < MAX_RETRIES:
+                    con.execute("UPDATE runs SET state='waiting', retries=?, retry_at=?, "
+                                "error=?, updated=? WHERE id=?",
+                                (retries, now + backoff(retries), reason, now, row['id']))
+                else:
+                    con.execute("UPDATE runs SET state='failed', retries=?, retry_at=NULL, "
+                                "error=?, updated=? WHERE id=?",
+                                (retries, f'retry limit ({retries} attempts): {reason}'[:600],
+                                 now, row['id']))
+                con.execute('COMMIT')
+                return None
+            if read.retry_read:
+                con.execute('COMMIT')
+                return None
+            if read.unavailable:
+                con.execute("UPDATE runs SET state='failed', attempts=attempts+1, "
+                            "error=?,updated=? WHERE id=?", (read.unavailable, now, row['id']))
+                con.execute("COMMIT")
+                return None
+            owner = uuid.uuid4().hex
+            con.execute("UPDATE runs SET state='claimed', attempts=attempts+1, "
+                        "owner=?, lease=?, updated=?, generation=? WHERE id=?",
+                        (owner, now + self.lease_seconds, now, read.generation, row['id']))
+            con.execute("COMMIT")
+            return row['id'], owner
 
     def _heartbeat(self, run_id: str, owner: str, stop: threading.Event) -> None:
         # Only the owning worker can extend a live lease. An expired lease is
@@ -2177,391 +2241,440 @@ class Supervisor(records.LedgerRecords):
 
     def _run_production(self, run_id: str, owner: str) -> None:
         """Worker-only host control plane; never pass credentials to bwrap."""
-        from .. import broker_ipc, ci, ci_fix, config, gh, prompts, seat_model, trusted_turn
-        rc, error = None, None
-        budget = int(self.budget_of(run_id))
-        retry, stopped, observed, breach, claim = False, True, {}, None, None
-        paced_until, account, ro_turn = None, None, False
+        from .. import trusted_turn
+        turn = _Turn(run_id, owner, int(self.budget_of(run_id)))
         try:
-            assert self.production_config is not None
-            try:
-                settings = seat_model.load_runtime(self.production_config)
-            except ValueError:
-                raise ValueError("invalid production configuration") from None
-            with self._connect() as con:
-                row = con.execute("SELECT * FROM runs WHERE id=? AND owner=?", (run_id, owner)).fetchone()
-                if row is None:
-                    raise ValueError("run ownership lost")
-                con.execute("UPDATE runs SET state='running', pid=?, lease=?, updated=? "
-                            "WHERE id=? AND owner=? AND state='launching'",
-                            (os.getpid(), time.time() + self.lease_seconds, time.time(), run_id, owner))
-            loop = config.by_repo(row["repo"])
-            if loop is None:
-                raise ValueError("loop not configured")
-            if row['seat'] == 'fixer' and (row['push_admitted'] != 1
-                                           or not config.unattended_fixer_push_enabled(loop)):
-                # The claim's policy read may be minutes old; a turn that cannot publish is
-                # never started (the broker would refuse its push anyway).
-                error = FIXER_NOT_ADMITTED if row['push_admitted'] != 1 else FIXER_PUSH_REVOKED
-                return
-            # The seat claim and the head's in-flight mark, for as long as this run lives (#98):
-            # the worker is the one party that knows a turn is running, so it writes them.
-            # Seat claims and in-flight marks are PR-keyed (explain, the watchdog's clocks); a
-            # triage run is issue-keyed and held by the ledger alone.
-            claim = (claim_seat(loop, row, budget)
-                     if row['seat'] not in ('triage', 'issue_fixer') else None)
-            if row['seat'] == 'issue_fixer' and not config.issue_fixes_enabled(loop):
-                # The policy may have changed since the gate: a turn that could not publish is
-                # never started (the broker would refuse its write anyway).
-                error = FIXER_PUSH_REVOKED
-                return
-            # The seat's own profile decides its model and account (#32). Resolved host-side,
-            # before any GitHub read: an unresolvable seat is held here with the reason, and never
-            # borrows another seat's model or key. The key lives only in this turn's proxy; an
-            # OAuth seat's token is re-resolved there (host-side) when it nears expiry or is rejected.
-            try:
-                # An issue fix runs as the fixer seat (#214): its profile, its model, its account.
-                model_seat = "fixer" if row["seat"] == "issue_fixer" else row["seat"]
-                inference = seat_model.resolve_seat(loop, model_seat, settings)
-            except seat_model.SeatModelError as exc:
-                error = f"seat model unresolved: {exc}"[:600]
-                retry = retryable(exc)
-                return
-            # Pacing (#219): an account whose usage window is closed, or a seat past its daily
-            # cap, waits for the reset instead of launching a turn that would only 429.
-            from .. import pacing
-            provider = str(getattr(inference, "provider", "") or "the provider")
-            account = pacing.account_key(provider, str(getattr(inference, "upstream", "") or ""),
-                                         str(getattr(inference, "profile", "") or ""))
-            closed = pacing.held(account)
-            cap = config.seat_daily_turns(loop, row['seat'])
-            if closed is not None:
-                paced_until = closed[0]
-                error = (f"held: {row['seat']} usage window ({provider}) — resumes "
-                         f"{pacing.when(closed[0])}")
-                return
-            if cap is not None and pacing.turns_today(loop['id'], row['seat']) >= cap:
-                paced_until = pacing.next_midnight()
-                error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
-                         f"{pacing.when(paced_until)}")
-                return
-            # A seat's daily token budget (#480): once spent, the next turn waits for midnight.
-            # A turn in flight is never killed; this only gates a launch. The fixer's budget
-            # covers its issue fixes too (seat_daily_tokens, and record_usage's counter key).
-            budget_seat = 'fixer' if row['seat'] == 'issue_fixer' else row['seat']
-            token_cap = config.seat_daily_tokens(loop, row['seat'])
-            if token_cap is not None and pacing.tokens_today(loop['id'], budget_seat) >= token_cap:
-                paced_until = pacing.next_midnight()
-                error = (f"held: {row['seat']} daily token budget ({token_cap}) reached — resumes "
-                         f"{pacing.when(paced_until)}")
-                return
-            # Review-only PRs may have their own daily cap on reviewer turns, so the operator's
-            # PRs cannot use up the budget the fixer's PRs share. The fixer's PRs never read it.
-            ro_cap = config.review_only_daily(loop) if row['seat'] == 'reviewer' else None
-            if ro_cap is not None and config.review_only(loop):
-                live_pr = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
-                                 login=loop["read_token"])
-                if not isinstance(live_pr, dict):
-                    raise RetryableError("PR unreadable before launch (GitHub read failed)")
-                ro_author = str(((live_pr.get("user") or {}).get("login")) or "").lower()
-                ro_turn = ro_author in config.review_only(loop)
-                if ro_turn and pacing.turns_today(loop['id'], pacing.REVIEW_ONLY_SEAT) >= ro_cap:
-                    paced_until = pacing.next_midnight()
-                    error = (f"held: review-only daily turn cap ({ro_cap}) reached — resumes "
-                             f"{pacing.when(paced_until)}")
-                    return
-            if row['seat'] == 'reviewer' and time.time() - row['created'] < CI_WAIT_MAX_S:
-                # A cancelled check (#363) holds every review: the broker would refuse its
-                # APPROVE, so the turn could only spend tokens. Running checks hold it only with
-                # review_after_ci (#241), even beside a failed one. A failed check holds only
-                # while the fixer takes it first (#539); otherwise the review says why.
-                from .. import ci
-                # A PR that conflicts with its base gets no pull_request CI from GitHub, so the
-                # required checks could never report: hold, nothing spent. The merge push makes
-                # a new head that supersedes this row. unknown/null mergeability is no conflict.
-                queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
-                                login=loop["read_token"])
-                # A closed or draft PR is left to the eligibility checks below, which supersede it.
-                if (isinstance(queued, dict) and queued.get("mergeable_state") == "dirty"
-                        and queued.get("state") == "open" and queued.get("draft") is False
-                        and isinstance(queued.get("head"), dict)
-                        and queued["head"].get("sha") == row["head"]):
-                    base = queued.get("base")
-                    base = str(base.get("ref") or "") if isinstance(base, dict) else ""
-                    paced_until = time.time() + CI_POLL_S
-                    error = (f"{CI_HOLD} on {row['head'][:7]} — conflicts with "
-                             f"{base or 'its base'} — GitHub runs no CI on it")[:600]
-                    self.held_for_ci = True
-                    return
-                after_ci = config.review_after_ci(loop)
-                # Only the required checks hold it, when the loop names them (#368).
-                checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
-                # #306/#539/#579: a red head goes to the fixer first while its CI-fix budget
-                # lasts, whatever review_after_ci says (queued right here, not left to the next
-                # sweep): no review verdict is spent on code that does not build. Budget spent, or this head's turn
-                # done without a new head: the reviewer reviews it.
-                author = (str(((queued.get("user") or {}).get("login")) or "")
-                          if isinstance(queued, dict) else "")
-                fixing = bool(checks is not None and checks.failed
-                              and ci_fix.fixer_first(loop, number=row['pr'], head=row['head'],
-                                                     author=author, failed=checks.failed,
-                                                     db=self.db, log=util.log))
-                # #374: a failure releases the cancelled/missing holds only (the review would
-                # otherwise go unreported); the pending wait survives it, so one review names
-                # every failure once CI finishes.
-                if checks is not None and (
-                        fixing
-                        or (not checks.failed and (checks.cancelled or checks.missing))
-                        or (after_ci and checks.pending)):
-                    # Nothing spent: no model call, no daily turn, no retry. This worker stays
-                    # to re-queue it (linger_for_ci); the watchdog sweep is the backstop.
-                    paced_until = time.time() + CI_POLL_S
-                    error = (f"{CI_HOLD} on {row['head'][:7]} — "
-                             + (f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
-                                f"GitHub ({ci._names(checks.cancelled[:5])})"
-                                if checks.cancelled else
-                                f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
-                                if fixing else
-                                f"{len(checks.missing)} required check(s) never reported "
-                                f"({ci._names(checks.missing[:5])}); check the name"
-                                if checks.missing else
-                                f"{len(checks.pending)} check(s) still running or not reported"))[:600]
-                    self.held_for_ci = True
-                    return
-            change = None
-            merged = None
-            if row['seat'] == 'triage':
-                # An issue, not a PR (#213): no head, no checkout, no change record. The host
-                # re-reads the issue right before launch and hands the model only its text.
-                prompt = turn_prompts.triage_prompt(loop, row)
-                scope = broker_ipc.RunScope(row["repo"], row["pr"], row["head"], "triage", "",
-                                            row['id'], str(self.db))
-            elif row['seat'] == 'issue_fixer':
-                # An issue handed to the fixer (#214): the base commit it starts from is the
-                # row's head; its one write creates a fresh branch from it.
-                prompt = turn_prompts.issue_fix_prompt(loop, row)
-                scope = broker_ipc.RunScope(row["repo"], row["pr"], row["head"], "issue_fixer",
-                                            config.ISSUE_FIX_BRANCH.format(number=row["pr"]),
-                                            row['id'], str(self.db))
-            else:
-                reader = loop["read_token"]
-                pr = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}', login=reader)
-                if not isinstance(pr, dict):
-                    raise RetryableError("PR unreadable before launch (GitHub read failed)")
-                head = pr.get("head")
-                if not isinstance(head, dict) or head.get("sha") != row["head"]:
-                    raise ValueError("PR head moved")
-                if row['seat'] == 'reviewer' and not row['generation']:
-                    raise ValueError('review generation not durably pinned')
-                if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(CONFLICT_KEY):
-                    # #303 stage 3: a conflict-resolution turn. No verdict is answered: the host
-                    # merges the pinned base into the head and the seat resolves the conflicts.
-                    from .. import broker_ipc
-                    hold = broker_ipc.policy_hold_reason(
-                        loop, run_id=run_id, repo=row['repo'], number=row['pr'], head=row['head'],
-                        ledger_db=str(self.db))
-                    if hold:
-                        error = hold
-                        return
-                    merged = conflict_merge(loop, row, head["ref"])
-                    prompt = turn_prompts.conflict_prompt(loop, row, merged)
-                    change = None
-                    scope = broker_ipc.RunScope(
-                        row["repo"], row["pr"], row["head"], row["seat"], head["ref"], row['id'],
-                        str(self.db), row['generation'],
-                        merge={"base_ref": loop["base"],
-                               "base_sha": row['turn_key'][len(CONFLICT_KEY):],
-                               "tree": merged["tree"]})
-                elif row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
-                    # #306: a failed required check at this head, handed to the fixer. No verdict
-                    # is answered; CI is re-read now, and a green or moved head ends the run.
-                    from .. import broker_ipc
-                    hold = broker_ipc.policy_hold_reason(
-                        loop, run_id=run_id, repo=row['repo'], number=row['pr'], head=row['head'],
-                        ledger_db=str(self.db))
-                    if hold:
-                        error = hold
-                        return
-                    if not config.fix_ci(loop):
-                        raise ValueError('CI fixes are off for this loop')
-                    state = ci.read(loop, row['head'])
-                    if state is None:
-                        raise RetryableError('CI unreadable before launch (GitHub read failed)')
-                    names = ci_fix.failing(state, config.required_checks(loop))
-                    if not names:
-                        raise ValueError('CI no longer failing at this head')
-                    prompt = (prompts.render_isolated('ci_fix', repo=row['repo'], pr=row['pr'],
-                                                      url=gh.pr_url(loop, row['pr']),
-                                                      head=row['head'])
-                              + prompts.fixer_check_section(loop)
-                              + prompts.registry_section(None)
-                              + ci_fix.section(loop, state, names))
-                    change = None
-                    scope = broker_ipc.RunScope(
-                        row["repo"], row["pr"], row["head"], row["seat"], head["ref"], row['id'],
-                        str(self.db), row['generation'], ci_fix=True)
-                else:
-                    reviews, marker = None, None
-                    if row['seat'] == 'fixer':
-                        from .. import gate
-                        reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
-                        if not isinstance(reviews, list):
-                            raise RetryableError('reviews or receipts unreadable before launch')
-                        latest = gate.latest_effective_review_at_head(reviews, loop, row['head'])
-                        if latest is None or gh.review_state(latest) != 'CHANGES_REQUESTED':
-                            raise ValueError('fixer verdict no longer current')
-                        # Every write this fixer turn would make is refused (#81): hold it instead of
-                        # launching one. Named with the same reason as the broker's denial and the
-                        # gate's queue hold; pre-write, so `retry` re-admits under the policy in force.
-                        from .. import broker_ipc
-                        hold = broker_ipc.policy_hold_reason(
-                            loop, run_id=run_id, repo=row['repo'], number=row['pr'], head=row['head'],
-                            ledger_db=str(self.db))
-                        if hold:
-                            error = hold
-                            return
-                    elif row['seat'] == 'adjudicator':
-                        # Same live checks as the claim, repeated right before launch: the claim's
-                        # reads may be minutes old, and a ruling on a moved or approved head is noise.
-                        status, facts = pr_facts.adjudication_state(loop, row, self.db)
-                        if status in ('retry', 'wait'):
-                            raise RetryableError('adjudication facts unreadable before launch')
-                        if status != 'ok':
-                            raise ValueError('adjudication no longer current')
-                        reviews, marker = facts['reviews'], facts['marker']
-                    else:
-                        # A fresh review after a retarget starts from nothing: old verdicts are
-                        # neither its round count nor its PR record.
-                        reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
-                    # The reviewer and fixer see the change itself (#50); the adjudicator needs both
-                    # sides' comments. A read that failed is transient (retry); a moved head is not.
-                    try:
-                        # The last allowed attempt degrades an unreadable file list rather than failing
-                        # the run (#110): a partial view, stated as such, instead of no turn at all.
-                        final = (row['retries'] or 0) + 1 >= MAX_RETRIES
-                        change = (pr_facts.pr_change(loop, row, final=final)
-                                  if row['seat'] in ('reviewer', 'fixer') else None)
-                        prompt = turn_prompts.isolated_prompt(loop, row, reviews, marker, change)
-                    except ValueError as exc:
-                        if str(exc) in ('fixer answers unreadable', 'PR unreadable') \
-                                or str(exc).startswith('PR files unreadable'):
-                            raise RetryableError(str(exc)) from None
-                        raise
-                    # Host-owned, before launch (#93, #110): whether this seat sees the whole change, in
-                    # the ledger (explain, the receipt claim) and in the scope the broker is built from.
-                    # Nothing inside the namespace can reach either.
-                    partial = change.partial if change else ''
-                    self.record_view(run_id, owner, partial)
-                    scope = broker_ipc.RunScope(row["repo"], row["pr"], row["head"],
-                                                row["seat"], head["ref"], row['id'],
-                                                str(self.db), row['generation'], partial_view=partial)
-                    if row['seat'] == 'adjudicator':
-                        from .. import state as state_mod
-                        # Last step before launch: mark the breach as being ruled on. Anyone else's
-                        # claim (a legacy gateway route included) refuses this one.
-                        if state_mod.state_for(loop).breach_start(row['pr'], row['head'],
-                                                                 marker['rounds']) is None:
-                            raise ValueError('breach marker already claimed or replaced')
-                        breach = (state_mod.state_for(loop), marker['rounds'])
-            if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(CONFLICT_KEY):
-                role = 'conflict'
-            elif row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
-                role = 'ci_fix'
-            else:
-                role = row['seat']
-            self.record_launch(run_id, owner, prompts.revision(role), inference.model)
-            if unpublished_before(row):
-                prompt = PUBLISH_NUDGE + prompt
-            pacing.count_turn(loop['id'], row['seat'])
-            if ro_turn:
-                pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT)
-            rc = trusted_turn.run_turn(loop, scope, source=Path(settings["source"]),
-                  venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
-                  rust=Path(settings["rust"]), upstream=inference.upstream,
-                  key=inference.key, model=inference.model,
-                  api_mode=inference.api_mode, credential=inference.credential_provider(),
-                  proxy_model=inference.proxy_model, client_identity=inference.client_identity,
-                  prompt=prompt, review_diff=change.diff if change else None,
-                  **({"merged": merged} if merged is not None else {}),
-                  timeout=budget,
-                  work_root=config.state_dir(loop) / "isolated-runs", observed=observed,
-                  # The prefetch phase lands in the ledger as it happens (#51): a slow one shows
-                  # as "fetching", not as a silent turn, and its outcome outlives the run.
-                  progress=lambda text: self.record_dependencies(run_id, owner, text))
-            # A non-zero sandbox exit with nothing on the write-ahead record is the model or
-            # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
-            retry = rc != 0
-            limited = observed.get('rate_limited_until')
-            if rc != 0 and isinstance(limited, (int, float)) and limited > time.time():
-                # The provider said its window is closed (#219): hold the account, and this run
-                # waits for the reset instead of spending its retries against the 429.
-                pacing.hold(account, limited, f"{provider} answered 429")
-                paced_until = limited
-                error = (f"held: {row['seat']} usage window ({provider}) — resumes "
-                         f"{pacing.when(limited)}")
+            self._production_turn(turn)
         except trusted_turn.TurnBudgetExceeded as exc:
-            # Name the clock (#49): an opaque "TimeoutExpired" hides that a setting killed the
-            # turn. Never retried automatically: the same budget would most likely run out
-            # again, each attempt burning a whole budget.
-            killed = (f"isolated turn failed: TimeoutExpired — killed at the {exc.budget}s turn "
-                      f"budget (sandbox stopped {exc.grace}s past it)")
-            # The broker drain lets a write already in flight finish after the kill (#98): a
-            # push can complete, a receipt be recorded. Then the run wrote — final, and the
-            # "raise the budget, then retry" advice would be wrong (`retry` refuses it).
-            with self._connect() as con:
-                wrote = write_evidence(con, run_id)
-            if wrote == 'review receipt claimed':
-                # Sent but never read back: the run goes uncertain (reconcile), not final.
-                error = (f"{killed} after it may have written ({wrote}) — never replayed; "
-                         "inspect the PR and reconcile")
-            elif wrote is not None:
-                error = (f"{killed} after it wrote ({wrote}) — final: never replayed; a new head "
-                         "gets a fresh turn")
-            else:
-                flag = {'reviewer': '--reviewer-turn-budget',
-                        'fixer': '--fixer-turn-budget'}.get(row['seat'], '--turn-budget')
-                error = (f"{killed} — raise turn_budget_s (hermes dk set --loop "
-                         f"{loop['id']} {flag} N), then `retry`")
-            retry = False
+            turn.error = self._budget_kill_error(turn, exc)
+            turn.retry = False
         except Exception as exc:
             # The real reason, not just its type (#53). Messages here are host-generated
             # (no credential is ever formatted into one), and bounded.
-            error = (f"isolated turn failed: {type(exc).__name__}: {exc}"
-                     f"{ledger.where(exc)}")[:600]
-            retry = retryable(exc)
+            turn.error = (f"isolated turn failed: {type(exc).__name__}: {exc}"
+                          f"{ledger.where(exc)}")[:600]
+            turn.retry = retryable(exc)
             if isinstance(exc, trusted_turn.TurnUnpublished):
                 # The agent never called the broker (#144): nothing was refused or written, so
                 # one retry, nudged, is safe. A second such exit is a person's to look at.
-                retry = not unpublished_before(row)
+                turn.retry = not unpublished_before(turn.row)
             if isinstance(exc, trusted_turn.TurnDenied) and 'did not shut down' in str(exc):
-                stopped = False  # a live broker thread may still write: quarantine
+                turn.stopped = False  # a live broker thread may still write: quarantine
         finally:
+            self._production_finish(turn)
+
+    def _production_turn(self, turn: _Turn) -> None:
+        """The turn itself: take the row, gate the launch, build the turn, run it. A step that
+        holds the turn sets ``turn.error`` and the turn ends there, nothing launched."""
+        from .. import ci_fix, config, pacing, prompts, seat_model, trusted_turn
+        assert self.production_config is not None
+        try:
+            settings = seat_model.load_runtime(self.production_config)
+        except ValueError:
+            raise ValueError("invalid production configuration") from None
+        run_id, owner = turn.run_id, turn.owner
+        with self._connect() as con:
+            row = con.execute("SELECT * FROM runs WHERE id=? AND owner=?", (run_id, owner)).fetchone()
+            if row is None:
+                raise ValueError("run ownership lost")
+            turn.row = row
+            con.execute("UPDATE runs SET state='running', pid=?, lease=?, updated=? "
+                        "WHERE id=? AND owner=? AND state='launching'",
+                        (os.getpid(), time.time() + self.lease_seconds, time.time(), run_id, owner))
+        loop = turn.loop = config.by_repo(row["repo"])
+        if loop is None:
+            raise ValueError("loop not configured")
+        if row['seat'] == 'fixer' and (row['push_admitted'] != 1
+                                       or not config.unattended_fixer_push_enabled(loop)):
+            # The claim's policy read may be minutes old; a turn that cannot publish is
+            # never started (the broker would refuse its push anyway).
+            turn.error = FIXER_NOT_ADMITTED if row['push_admitted'] != 1 else FIXER_PUSH_REVOKED
+            return
+        # The seat claim and the head's in-flight mark, for as long as this run lives (#98):
+        # the worker is the one party that knows a turn is running, so it writes them.
+        # Seat claims and in-flight marks are PR-keyed (explain, the watchdog's clocks); a
+        # triage run is issue-keyed and held by the ledger alone.
+        turn.claim = (claim_seat(loop, row, turn.budget)
+                      if row['seat'] not in ('triage', 'issue_fixer') else None)
+        if row['seat'] == 'issue_fixer' and not config.issue_fixes_enabled(loop):
+            # The policy may have changed since the gate: a turn that could not publish is
+            # never started (the broker would refuse its write anyway).
+            turn.error = FIXER_PUSH_REVOKED
+            return
+        # The seat's own profile decides its model and account (#32). Resolved host-side,
+        # before any GitHub read: an unresolvable seat is held here with the reason, and never
+        # borrows another seat's model or key. The key lives only in this turn's proxy; an
+        # OAuth seat's token is re-resolved there (host-side) when it nears expiry or is rejected.
+        try:
+            # An issue fix runs as the fixer seat (#214): its profile, its model, its account.
+            model_seat = "fixer" if row["seat"] == "issue_fixer" else row["seat"]
+            inference = seat_model.resolve_seat(loop, model_seat, settings)
+        except seat_model.SeatModelError as exc:
+            turn.error = f"seat model unresolved: {exc}"[:600]
+            turn.retry = retryable(exc)
+            return
+        provider = str(getattr(inference, "provider", "") or "the provider")
+        account = pacing.account_key(provider, str(getattr(inference, "upstream", "") or ""),
+                                     str(getattr(inference, "profile", "") or ""))
+        ro_turn = self._pacing_hold(turn, provider, account)
+        if turn.error:
+            return
+        if row['seat'] == 'reviewer' and time.time() - row['created'] < CI_WAIT_MAX_S:
+            self._ci_hold(turn)
+            if turn.error:
+                return
+        launch = self._prepare_launch(turn)
+        if launch is None:
+            return
+        if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(CONFLICT_KEY):
+            role = 'conflict'
+        elif row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
+            role = 'ci_fix'
+        else:
+            role = row['seat']
+        self.record_launch(run_id, owner, prompts.revision(role), inference.model)
+        prompt = launch.prompt
+        if unpublished_before(row):
+            prompt = PUBLISH_NUDGE + prompt
+        pacing.count_turn(loop['id'], row['seat'])
+        if ro_turn:
+            pacing.count_turn(loop['id'], pacing.REVIEW_ONLY_SEAT)
+        change, merged = launch.change, launch.merged
+        turn.rc = trusted_turn.run_turn(loop, launch.scope, source=Path(settings["source"]),
+              venv=Path(settings["venv"]), runtime=Path(settings["runtime"]),
+              rust=Path(settings["rust"]), upstream=inference.upstream,
+              key=inference.key, model=inference.model,
+              api_mode=inference.api_mode, credential=inference.credential_provider(),
+              proxy_model=inference.proxy_model, client_identity=inference.client_identity,
+              prompt=prompt, review_diff=change.diff if change else None,
+              **({"merged": merged} if merged is not None else {}),
+              timeout=turn.budget,
+              work_root=config.state_dir(loop) / "isolated-runs", observed=turn.observed,
+              # The prefetch phase lands in the ledger as it happens (#51): a slow one shows
+              # as "fetching", not as a silent turn, and its outcome outlives the run.
+              progress=lambda text: self.record_dependencies(run_id, owner, text))
+        # A non-zero sandbox exit with nothing on the write-ahead record is the model or
+        # provider failing (429/5xx, OAuth refresh, crash): worth a backed-off retry.
+        turn.retry = turn.rc != 0
+        limited = turn.observed.get('rate_limited_until')
+        if turn.rc != 0 and isinstance(limited, (int, float)) and limited > time.time():
+            # The provider said its window is closed (#219): hold the account, and this run
+            # waits for the reset instead of spending its retries against the 429.
+            pacing.hold(account, limited, f"{provider} answered 429")
+            turn.paced_until = limited
+            turn.error = (f"held: {row['seat']} usage window ({provider}) — resumes "
+                          f"{pacing.when(limited)}")
+
+    def _pacing_hold(self, turn: _Turn, provider: str, account: str) -> bool:
+        """Pacing (#219): an account whose usage window is closed, or a seat past its daily
+        cap, waits for the reset instead of launching a turn that would only 429. Sets
+        ``turn.error`` when held; answers whether this is a review-only turn."""
+        from .. import config, gh, pacing
+        row, loop = turn.row, turn.loop
+        closed = pacing.held(account)
+        cap = config.seat_daily_turns(loop, row['seat'])
+        if closed is not None:
+            turn.paced_until = closed[0]
+            turn.error = (f"held: {row['seat']} usage window ({provider}) — resumes "
+                          f"{pacing.when(closed[0])}")
+            return False
+        if cap is not None and pacing.turns_today(loop['id'], row['seat']) >= cap:
+            turn.paced_until = pacing.next_midnight()
+            turn.error = (f"held: {row['seat']} daily turn cap ({cap}) reached — resumes "
+                          f"{pacing.when(turn.paced_until)}")
+            return False
+        # A seat's daily token budget (#480): once spent, the next turn waits for midnight.
+        # A turn in flight is never killed; this only gates a launch. The fixer's budget
+        # covers its issue fixes too (seat_daily_tokens, and record_usage's counter key).
+        budget_seat = 'fixer' if row['seat'] == 'issue_fixer' else row['seat']
+        token_cap = config.seat_daily_tokens(loop, row['seat'])
+        if token_cap is not None and pacing.tokens_today(loop['id'], budget_seat) >= token_cap:
+            turn.paced_until = pacing.next_midnight()
+            turn.error = (f"held: {row['seat']} daily token budget ({token_cap}) reached — "
+                          f"resumes {pacing.when(turn.paced_until)}")
+            return False
+        # Review-only PRs may have their own daily cap on reviewer turns, so the operator's
+        # PRs cannot use up the budget the fixer's PRs share. The fixer's PRs never read it.
+        ro_cap = config.review_only_daily(loop) if row['seat'] == 'reviewer' else None
+        ro_turn = False
+        if ro_cap is not None and config.review_only(loop):
+            live_pr = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
+                             login=loop["read_token"])
+            if not isinstance(live_pr, dict):
+                raise RetryableError("PR unreadable before launch (GitHub read failed)")
+            ro_author = str(((live_pr.get("user") or {}).get("login")) or "").lower()
+            ro_turn = ro_author in config.review_only(loop)
+            if ro_turn and pacing.turns_today(loop['id'], pacing.REVIEW_ONLY_SEAT) >= ro_cap:
+                turn.paced_until = pacing.next_midnight()
+                turn.error = (f"held: review-only daily turn cap ({ro_cap}) reached — resumes "
+                              f"{pacing.when(turn.paced_until)}")
+        return ro_turn
+
+    def _ci_hold(self, turn: _Turn) -> None:
+        """A reviewer turn held for CI, nothing spent (sets ``turn.error``). A cancelled check
+        (#363) holds every review: the broker would refuse its APPROVE, so the turn could only
+        spend tokens. Running checks hold it only with review_after_ci (#241), even beside a
+        failed one. A failed check holds only while the fixer takes it first (#539); otherwise
+        the review says why."""
+        from .. import ci, ci_fix, config, gh
+        row, loop = turn.row, turn.loop
+        # A PR that conflicts with its base gets no pull_request CI from GitHub, so the
+        # required checks could never report: hold, nothing spent. The merge push makes
+        # a new head that supersedes this row. unknown/null mergeability is no conflict.
+        queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
+                        login=loop["read_token"])
+        # A closed or draft PR is left to the eligibility checks below, which supersede it.
+        if (isinstance(queued, dict) and queued.get("mergeable_state") == "dirty"
+                and queued.get("state") == "open" and queued.get("draft") is False
+                and isinstance(queued.get("head"), dict)
+                and queued["head"].get("sha") == row["head"]):
+            base = queued.get("base")
+            base = str(base.get("ref") or "") if isinstance(base, dict) else ""
+            turn.paced_until = time.time() + CI_POLL_S
+            turn.error = (f"{CI_HOLD} on {row['head'][:7]} — conflicts with "
+                          f"{base or 'its base'} — GitHub runs no CI on it")[:600]
+            self.held_for_ci = True
+            return
+        after_ci = config.review_after_ci(loop)
+        # Only the required checks hold it, when the loop names them (#368).
+        checks = ci.gating(ci.read(loop, row['head']), config.required_checks(loop))
+        # #306/#539/#579: a red head goes to the fixer first while its CI-fix budget
+        # lasts, whatever review_after_ci says (queued right here, not left to the next
+        # sweep): no review verdict is spent on code that does not build. Budget spent, or this head's turn
+        # done without a new head: the reviewer reviews it.
+        author = (str(((queued.get("user") or {}).get("login")) or "")
+                  if isinstance(queued, dict) else "")
+        fixing = bool(checks is not None and checks.failed
+                      and ci_fix.fixer_first(loop, number=row['pr'], head=row['head'],
+                                             author=author, failed=checks.failed,
+                                             db=self.db, log=util.log))
+        # #374: a failure releases the cancelled/missing holds only (the review would
+        # otherwise go unreported); the pending wait survives it, so one review names
+        # every failure once CI finishes.
+        if checks is not None and (
+                fixing
+                or (not checks.failed and (checks.cancelled or checks.missing))
+                or (after_ci and checks.pending)):
+            # Nothing spent: no model call, no daily turn, no retry. This worker stays
+            # to re-queue it (linger_for_ci); the watchdog sweep is the backstop.
+            turn.paced_until = time.time() + CI_POLL_S
+            turn.error = (f"{CI_HOLD} on {row['head'][:7]} — "
+                          + (f"{len(checks.cancelled)} check(s) cancelled, re-run them on "
+                             f"GitHub ({ci._names(checks.cancelled[:5])})"
+                             if checks.cancelled else
+                             f"{len(checks.failed)} check(s) failed, the fixer is taking them first"
+                             if fixing else
+                             f"{len(checks.missing)} required check(s) never reported "
+                             f"({ci._names(checks.missing[:5])}); check the name"
+                             if checks.missing else
+                             f"{len(checks.pending)} check(s) still running or not reported"))[:600]
+            self.held_for_ci = True
+
+    def _prepare_launch(self, turn: _Turn) -> _Launch | None:
+        """What the turn is given: its prompt, its broker scope, and the change it sees.
+        None when a step held the turn (``turn.error`` says why)."""
+        from .. import broker_ipc, config
+        row, loop = turn.row, turn.loop
+        if row['seat'] == 'triage':
+            # An issue, not a PR (#213): no head, no checkout, no change record. The host
+            # re-reads the issue right before launch and hands the model only its text.
+            return _Launch(turn_prompts.triage_prompt(loop, row),
+                           broker_ipc.RunScope(row["repo"], row["pr"], row["head"], "triage", "",
+                                               row['id'], str(self.db)))
+        if row['seat'] == 'issue_fixer':
+            # An issue handed to the fixer (#214): the base commit it starts from is the
+            # row's head; its one write creates a fresh branch from it.
+            return _Launch(turn_prompts.issue_fix_prompt(loop, row),
+                           broker_ipc.RunScope(row["repo"], row["pr"], row["head"], "issue_fixer",
+                                               config.ISSUE_FIX_BRANCH.format(number=row["pr"]),
+                                               row['id'], str(self.db)))
+        return self._prepare_pr_launch(turn)
+
+    def _prepare_pr_launch(self, turn: _Turn) -> _Launch | None:
+        from .. import ci_fix, gh
+        row, loop = turn.row, turn.loop
+        pr = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}', login=loop["read_token"])
+        if not isinstance(pr, dict):
+            raise RetryableError("PR unreadable before launch (GitHub read failed)")
+        head = pr.get("head")
+        if not isinstance(head, dict) or head.get("sha") != row["head"]:
+            raise ValueError("PR head moved")
+        if row['seat'] == 'reviewer' and not row['generation']:
+            raise ValueError('review generation not durably pinned')
+        if row['seat'] == 'fixer' and str(row['turn_key'] or '').startswith(CONFLICT_KEY):
+            return self._prepare_conflict_launch(turn, head)
+        if row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
+            return self._prepare_ci_fix_launch(turn, head)
+        return self._prepare_verdict_launch(turn, head)
+
+    def _policy_hold(self, turn: _Turn) -> bool:
+        """Every write this fixer turn would make is refused (#81): hold it instead of
+        launching one. Named with the same reason as the broker's denial and the gate's queue
+        hold; pre-write, so `retry` re-admits under the policy in force. Sets ``turn.error``."""
+        from .. import broker_ipc
+        row = turn.row
+        turn.error = broker_ipc.policy_hold_reason(
+            turn.loop, run_id=turn.run_id, repo=row['repo'], number=row['pr'], head=row['head'],
+            ledger_db=str(self.db)) or None
+        return turn.error is not None
+
+    def _prepare_conflict_launch(self, turn: _Turn, head: dict) -> _Launch | None:
+        # #303 stage 3: a conflict-resolution turn. No verdict is answered: the host
+        # merges the pinned base into the head and the seat resolves the conflicts.
+        from .. import broker_ipc
+        row, loop = turn.row, turn.loop
+        if self._policy_hold(turn):
+            return None
+        merged = conflict_merge(loop, row, head["ref"])
+        return _Launch(
+            turn_prompts.conflict_prompt(loop, row, merged),
+            broker_ipc.RunScope(
+                row["repo"], row["pr"], row["head"], row["seat"], head["ref"], row['id'],
+                str(self.db), row['generation'],
+                merge={"base_ref": loop["base"],
+                       "base_sha": row['turn_key'][len(CONFLICT_KEY):],
+                       "tree": merged["tree"]}),
+            merged=merged)
+
+    def _prepare_ci_fix_launch(self, turn: _Turn, head: dict) -> _Launch | None:
+        # #306: a failed required check at this head, handed to the fixer. No verdict
+        # is answered; CI is re-read now, and a green or moved head ends the run.
+        from .. import broker_ipc, ci, ci_fix, config, gh, prompts
+        row, loop = turn.row, turn.loop
+        if self._policy_hold(turn):
+            return None
+        if not config.fix_ci(loop):
+            raise ValueError('CI fixes are off for this loop')
+        state = ci.read(loop, row['head'])
+        if state is None:
+            raise RetryableError('CI unreadable before launch (GitHub read failed)')
+        names = ci_fix.failing(state, config.required_checks(loop))
+        if not names:
+            raise ValueError('CI no longer failing at this head')
+        prompt = (prompts.render_isolated('ci_fix', repo=row['repo'], pr=row['pr'],
+                                          url=gh.pr_url(loop, row['pr']),
+                                          head=row['head'])
+                  + prompts.fixer_check_section(loop)
+                  + prompts.registry_section(None)
+                  + ci_fix.section(loop, state, names))
+        return _Launch(prompt, broker_ipc.RunScope(
+            row["repo"], row["pr"], row["head"], row["seat"], head["ref"], row['id'],
+            str(self.db), row['generation'], ci_fix=True))
+
+    def _prepare_verdict_launch(self, turn: _Turn, head: dict) -> _Launch | None:
+        """A review, a fix answering changes requested, or a ruling: the seat sees the PR's
+        record (and, reviewer and fixer, the change itself)."""
+        from .. import broker_ipc, gh
+        row, loop = turn.row, turn.loop
+        reviews, marker = None, None
+        if row['seat'] == 'fixer':
+            from .. import gate
+            reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
+            if not isinstance(reviews, list):
+                raise RetryableError('reviews or receipts unreadable before launch')
+            latest = gate.latest_effective_review_at_head(reviews, loop, row['head'])
+            if latest is None or gh.review_state(latest) != 'CHANGES_REQUESTED':
+                raise ValueError('fixer verdict no longer current')
+            if self._policy_hold(turn):
+                return None
+        elif row['seat'] == 'adjudicator':
+            # Same live checks as the claim, repeated right before launch: the claim's
+            # reads may be minutes old, and a ruling on a moved or approved head is noise.
+            status, facts = pr_facts.adjudication_state(loop, row, self.db)
+            if status in ('retry', 'wait'):
+                raise RetryableError('adjudication facts unreadable before launch')
+            if status != 'ok':
+                raise ValueError('adjudication no longer current')
+            reviews, marker = facts['reviews'], facts['marker']
+        else:
+            # A fresh review after a retarget starts from nothing: old verdicts are
+            # neither its round count nor its PR record.
+            reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
+        # The reviewer and fixer see the change itself (#50); the adjudicator needs both
+        # sides' comments. A read that failed is transient (retry); a moved head is not.
+        try:
+            # The last allowed attempt degrades an unreadable file list rather than failing
+            # the run (#110): a partial view, stated as such, instead of no turn at all.
+            final = (row['retries'] or 0) + 1 >= MAX_RETRIES
+            change = (pr_facts.pr_change(loop, row, final=final)
+                      if row['seat'] in ('reviewer', 'fixer') else None)
+            prompt = turn_prompts.isolated_prompt(loop, row, reviews, marker, change)
+        except ValueError as exc:
+            if str(exc) in ('fixer answers unreadable', 'PR unreadable') \
+                    or str(exc).startswith('PR files unreadable'):
+                raise RetryableError(str(exc)) from None
+            raise
+        # Host-owned, before launch (#93, #110): whether this seat sees the whole change, in
+        # the ledger (explain, the receipt claim) and in the scope the broker is built from.
+        # Nothing inside the namespace can reach either.
+        partial = change.partial if change else ''
+        self.record_view(turn.run_id, turn.owner, partial)
+        scope = broker_ipc.RunScope(row["repo"], row["pr"], row["head"],
+                                    row["seat"], head["ref"], row['id'],
+                                    str(self.db), row['generation'], partial_view=partial)
+        if row['seat'] == 'adjudicator':
+            from .. import state as state_mod
+            # Last step before launch: mark the breach as being ruled on. Anyone else's
+            # claim (a legacy gateway route included) refuses this one.
+            if state_mod.state_for(loop).breach_start(row['pr'], row['head'],
+                                                     marker['rounds']) is None:
+                raise ValueError('breach marker already claimed or replaced')
+            turn.breach = (state_mod.state_for(loop), marker['rounds'])
+        return _Launch(prompt, scope, change=change)
+
+    def _budget_kill_error(self, turn: _Turn, exc) -> str:
+        # Name the clock (#49): an opaque "TimeoutExpired" hides that a setting killed the
+        # turn. Never retried automatically: the same budget would most likely run out
+        # again, each attempt burning a whole budget.
+        killed = (f"isolated turn failed: TimeoutExpired — killed at the {exc.budget}s turn "
+                  f"budget (sandbox stopped {exc.grace}s past it)")
+        # The broker drain lets a write already in flight finish after the kill (#98): a
+        # push can complete, a receipt be recorded. Then the run wrote — final, and the
+        # "raise the budget, then retry" advice would be wrong (`retry` refuses it).
+        with self._connect() as con:
+            wrote = write_evidence(con, turn.run_id)
+        if wrote == 'review receipt claimed':
+            # Sent but never read back: the run goes uncertain (reconcile), not final.
+            return (f"{killed} after it may have written ({wrote}) — never replayed; "
+                    "inspect the PR and reconcile")
+        if wrote is not None:
+            return (f"{killed} after it wrote ({wrote}) — final: never replayed; a new head "
+                    "gets a fresh turn")
+        flag = {'reviewer': '--reviewer-turn-budget',
+                'fixer': '--fixer-turn-budget'}.get(turn.row['seat'], '--turn-budget')
+        return (f"{killed} — raise turn_budget_s (hermes dk set --loop "
+                f"{turn.loop['id']} {flag} N), then `retry`")
+
+    def _production_finish(self, turn: _Turn) -> None:
+        """However the turn ended: its notes and usage, its final state, the breach marker
+        handed back if it made no ruling, the seat released, a failure noticed."""
+        run_id, owner, observed = turn.run_id, turn.owner, turn.observed
+        try:
+            self.record_thinking(run_id, owner, observed.get('thinking'))
+        except Exception:
+            pass    # a lost note must not change how the turn ends
+        try:
+            self.record_usage(run_id, owner, observed, turn.loop['id'],
+                              'fixer' if turn.row['seat'] == 'issue_fixer' else turn.row['seat'])
+        except Exception:
+            pass    # likewise: a lost count must not change how the turn ends
+        state = self.complete_uncertain(
+            run_id, owner, turn.rc, turn.error, stopped=turn.stopped, retry=turn.retry,
+            detail=output_detail(observed.get('stdout'), observed.get('stderr')),
+            paced_until=turn.paced_until)
+        if turn.breach is not None and state in ('waiting', 'failed'):
+            # This run marked the breach 'adjudicating' and made no ruling: hand the
+            # marker back so its retry (or a re-arm) can claim it again.
             try:
-                self.record_thinking(run_id, owner, observed.get('thinking'))
+                with self._connect() as con:
+                    unwritten = write_records(con, run_id) is None
+                if unwritten:
+                    turn.breach[0].breach_resume(turn.row['pr'], turn.row['head'], turn.breach[1])
             except Exception:
-                pass    # a lost note must not change how the turn ends
-            try:
-                self.record_usage(run_id, owner, observed, loop['id'],
-                                  'fixer' if row['seat'] == 'issue_fixer' else row['seat'])
-            except Exception:
-                pass    # likewise: a lost count must not change how the turn ends
-            state = self.complete_uncertain(
-                run_id, owner, rc, error, stopped=stopped, retry=retry,
-                detail=output_detail(observed.get('stdout'), observed.get('stderr')),
-                paced_until=paced_until)
-            if breach is not None and state in ('waiting', 'failed'):
-                # This run marked the breach 'adjudicating' and made no ruling: hand the
-                # marker back so its retry (or a re-arm) can claim it again.
-                try:
-                    with self._connect() as con:
-                        unwritten = write_records(con, run_id) is None
-                    if unwritten:
-                        breach[0].breach_resume(row['pr'], row['head'], breach[1])
-                except Exception:
-                    pass
-            release_seat(claim, state)
-            self.failure_notice(run_id, state)
-            self.recover()
+                pass
+        release_seat(turn.claim, state)
+        self.failure_notice(run_id, state)
+        self.recover()
 
     def failure_notice(self, run_id: str, state: str | None) -> None:
         """The observer's ``failed`` notice (#231): a run's first failed attempt, and its end.
