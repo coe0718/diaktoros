@@ -63,6 +63,30 @@ class ClaimPriority(unittest.TestCase):
         self.assertIn("CI-fix", view[1]["why"])
         self.assertEqual(run_supervisor.claim_class({"seat": "reviewer", "turn_key": ""}), 2)
 
+    def printed(self, pr):
+        import contextlib
+        import io
+        from diaktoros.cli import operations
+        out = io.StringIO()
+        with mock.patch.object(operations, "_ledger_path", return_value=self.db), \
+                contextlib.redirect_stdout(out):
+            operations._print_ledger_runs({"id": "l", "repo": "o/r"}, pr, "", limit=10)
+        return out.getvalue()
+
+    def test_cli_status_and_explain_print_queue_order_and_why(self):
+        self.mixed()
+        self.enqueue("old-issue", "issue_fixer", 9, "issue-fix", age=3 * CLAIM_AGE_STEP_S + 1)
+        status = self.printed(None).splitlines()
+        self.assertEqual(len(status), 6)
+        self.assertIn("queue 1 of 6: issue_fixer #9", status[0])
+        self.assertIn("aged up", status[0])
+        self.assertIn("queue 2 of 6: fixer #4", status[1])
+        self.assertIn("CI-fix/conflict turn", status[1])
+        explain = self.printed(3)
+        self.assertEqual(len(explain.splitlines()), 1)
+        self.assertIn("queue 4 of 6: fixer #3", explain)
+        self.assertIn("fix round", explain)
+
 
 if __name__ == "__main__":
     unittest.main()
