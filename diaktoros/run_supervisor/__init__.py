@@ -2555,6 +2555,8 @@ class Supervisor(records.LedgerRecords):
               timeout=turn.budget,
               # A shadow turn's broker authorizes with live reads and records; it never posts.
               no_write=row['seat'] == SHADOW,
+              # The seat profile's reasoning effort (#874), into the sandbox's Hermes config.
+              reasoning_effort=getattr(inference, "reasoning_effort", "") or "",
               # Its own step budget, though its scope role is the reviewer's (#218).
               **({"steps": config.max_steps(loop, SHADOW)} if row['seat'] == SHADOW else {}),
               work_root=config.state_dir(loop) / "isolated-runs", observed=turn.observed,

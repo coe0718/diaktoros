@@ -834,7 +834,8 @@ def messages_reply(request):
 class RealHermesWireFormats(unittest.TestCase):
     """The sandboxed Hermes, configured by ``sandbox_config``, completes a tool turn in each mode."""
 
-    def turn(self, api_mode, identity, model, proxy_model, upstream_path, reply, credential):
+    def turn(self, api_mode, identity, model, proxy_model, upstream_path, reply, credential,
+             effort=""):
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as tmp:
             root = pathlib.Path(tmp)
             code = root / "code"
@@ -850,7 +851,7 @@ class RealHermesWireFormats(unittest.TestCase):
             home, work, rust = root / "home", root / "work", root / "rust"
             for d in (home, work, rust):
                 d.mkdir()
-            text, env_text, provider = trusted_turn.sandbox_config(model, api_mode, identity)
+            text, env_text, provider = trusted_turn.sandbox_config(model, api_mode, identity, effort)
             (home / "config.yaml").write_text(text)
             if env_text:
                 (home / ".env").write_text(env_text)
@@ -878,6 +879,7 @@ class RealHermesWireFormats(unittest.TestCase):
                            "/opt/venv/bin/python", "/opt/venv/bin/hermes", "chat", "--query-file",
                            "/home/agent/query.txt", "--oneshot", "-Q", "--provider", provider, "-m", model,
                            "-t", "terminal", "--ignore-rules", "--max-turns", "4", "--run-budget", "150"])
+                self.thinking = cap.thinking     # what the proxy saw the turn ask for (#513)
             self.assertEqual(result.returncode, 0, result.stderr[-3000:] + result.stdout[-2000:])
             self.assertIn("FIXTURE_DONE", result.stdout)
             return up.requests
@@ -903,6 +905,16 @@ class RealHermesWireFormats(unittest.TestCase):
         outputs = [item for request in requests for item in request["body"].get("input", [])
                    if isinstance(item, dict) and item.get("type") == "function_call_output"]
         self.assertIn("TOOL-RAN", json.dumps(outputs))
+
+    def test_the_seats_reasoning_effort_reaches_the_proxy(self):
+        """#874: the profile's effort, written by sandbox_config, is what the real Hermes turn
+        asks for: the proxy observes it. Unset, the turn asks for Hermes's own default."""
+        for effort, want in (("high", "effort:high"), ("", "effort:medium")):
+            with self.subTest(effort=effort):
+                self.turn("codex_responses", "", "gpt-5.3-codex", "gpt-5.3-codex",
+                          "/backend-api/codex/responses", responses_reply,
+                          self.refreshing((("ChatGPT-Account-ID", "acct-host"),)), effort=effort)
+                self.assertEqual(self.thinking, want)
 
     def test_claude_subscription_seat(self):
         requests = self.turn("anthropic_messages", "claude_code", "claude-sonnet-4.5",

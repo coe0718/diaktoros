@@ -74,6 +74,9 @@ UNSUPPORTED_PROVIDERS = frozenset({
 # OAuth/subscription providers whose Hermes runtime speaks a proxied wire format, and that format.
 # ``anthropic`` is not listed: it may hold an API key or a Claude subscription token, and Hermes's
 # resolution decides (``client_identity == "claude_code"`` when it is the subscription).
+# What Hermes accepts as agent.reasoning_effort (hermes_constants.VALID_REASONING_EFFORTS, plus
+# "none" for off), the values a seat's profile may name (#874).
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 OAUTH_PROVIDERS = {"openai-codex": "codex_responses", "xai-oauth": "codex_responses",
                    "qwen-oauth": "chat_completions", "nous": "chat_completions",
                    "minimax-oauth": "anthropic_messages"}
@@ -366,6 +369,9 @@ class SeatInference:
     client_identity: str = ""             # "claude_code" for a Claude subscription token
     refreshable: bool = False
     settings: dict | None = field(default=None, repr=False, compare=False)
+    # The profile's agent.reasoning_effort (#874), carried into the sandbox's Hermes config: the
+    # turn thinks as hard as the operator set the seat to. "" = unset (Hermes's default).
+    reasoning_effort: str = ""
 
     @property
     def host(self) -> str:
@@ -734,7 +740,11 @@ if mode == "describe":             # read-only: the profile's config, no credent
     block = block if isinstance(block, dict) else {}
     nous = cfg.get("nous") if isinstance(cfg, dict) else None
     nous = nous if isinstance(nous, dict) else {}
-    done(hermes=hermes_facts(str(block.get("provider") or ""), block),
+    agent = cfg.get("agent") if isinstance(cfg, dict) else None
+    effort = agent.get("reasoning_effort") if isinstance(agent, dict) else None
+    effort = ("" if effort in (None, "", True) else "none" if effort is False
+              else str(effort).strip().lower()[:32])
+    done(hermes=hermes_facts(str(block.get("provider") or ""), block), effort=effort,
          entry_hint=entry_hint(str(block.get("provider") or ""), cfg if isinstance(cfg, dict) else {}),
          model=str(block.get("default") or block.get("model") or ""),
          requested=str(block.get("provider") or "auto").strip().lower(),
@@ -754,6 +764,24 @@ try:
 except Exception as exc:
     done(kind="config", error="profile config unreadable (" + text(exc) + ")")
 model = str(cfg.get("default") or "").strip()
+
+
+def reasoning_effort():
+    """The profile's agent.reasoning_effort as Hermes reads it (#874), or "" when unset."""
+    try:
+        from hermes_cli.config import load_config
+        agent = load_config().get("agent")
+        value = agent.get("reasoning_effort") if isinstance(agent, dict) else None
+    except Exception:
+        return ""
+    if value is None or value == "" or value is True:
+        return ""
+    if value is False:
+        return "none"
+    return str(value).strip().lower()[:32]
+
+
+effort = reasoning_effort()
 if mode == "models":
     try:
         from hermes_cli import model_catalog
@@ -829,7 +857,8 @@ if requested == "claude-subscription-directsdk-experimental":
             runtime.get("base_url") != "process://" + requested or runtime.get("args")):
         refuse("DirectSDK runtime has an unsupported process contract")
     done(model=model, requested=requested, provider=provider, api_mode=api_mode,
-         base_url="process://" + requested, key="host-process", auth="external_process")
+         base_url="process://" + requested, key="host-process", auth="external_process",
+         effort=effort)
 
 if mode == "refresh" and stale and digest(key) == stale:
     # The host saw this very token rejected (or expiring): make Hermes rotate it, under Hermes's
@@ -900,7 +929,7 @@ done(model=model, requested=requested, provider=provider, api_mode=api_mode, bas
      key=key, auth="oauth" if oauth else "api_key", scheme=scheme,
      headers={str(k): str(v) for k, v in (headers or {}).items() if v is not None},
      expires_at=expiry(runtime, key) if oauth else None, wire_model=wire_model,
-     identity=identity, refreshable=bool(oauth or minted))
+     identity=identity, refreshable=bool(oauth or minted), effort=effort)
 '''
 
 
@@ -1116,13 +1145,19 @@ def resolve_profile(profile: str, seat: str, settings: dict | None, *,
                              "which the inference proxy cannot forward — " + fixes["unsupported"])
     if not model:
         raise SeatModelError(f"{where}: no model.default set — `hermes -p {profile} model`")
+    effort = str(answer.get("effort") or "")
+    if effort and effort not in REASONING_EFFORTS:
+        raise SeatModelError(f"{where}: agent.reasoning_effort {effort!r} is not one Hermes "
+                             f"accepts ({', '.join(REASONING_EFFORTS)}) — fix it in "
+                             f"{config.profile_dir(profile) / 'config.yaml'}")
     if answer.get("auth") == "external_process":
         from .directsdk_backend import PROVIDER, UPSTREAM
         if requested != PROVIDER or provider != PROVIDER or api_mode != "chat_completions" or answer.get("base_url") != UPSTREAM:
             raise SeatModelError(f"{where}: unsupported process backend")
         return SeatInference(seat, profile, "profile", PROVIDER, model, UPSTREAM,
                              "host-process", api_mode=api_mode, auth="external_process",
-                             client_identity="directsdk", settings=settings)
+                             client_identity="directsdk", settings=settings,
+                             reasoning_effort=effort)
     if not key or "\n" in key or "\r" in key:
         raise SeatModelError(f"{where} ({requested}): resolved without a usable credential — "
                              f"{fixes['credential']}")
@@ -1142,7 +1177,8 @@ def resolve_profile(profile: str, seat: str, settings: dict | None, *,
                          expires_at=_expiry(answer.get("expires_at")),
                          wire_model=wire if wire and wire != model else "",
                          client_identity="claude_code" if answer.get("identity") == "claude_code" else "",
-                         refreshable=bool(answer.get("refreshable")), settings=settings)
+                         refreshable=bool(answer.get("refreshable")), settings=settings,
+                         reasoning_effort=effort)
 
 
 def resolve_seat(loop: dict, seat: str, settings: dict, *, resolver=None) -> SeatInference:
@@ -1274,6 +1310,15 @@ def describe_seat_wire(loop: dict, seat: str,
             detail = (f"profile {profile}: {requested} / {model}"
                       + (f" via {urlsplit(shown).hostname}" if shown else "")
                       + f" [{mode}, {label}]")
+            # What the turn will think at (#874): the profile's agent.reasoning_effort, which the
+            # sandbox's Hermes config carries.
+            effort = str(answer.get("effort") or "")
+            if effort and effort not in REASONING_EFFORTS:
+                return ("fail", f"{detail}: agent.reasoning_effort {effort!r} is not one Hermes "
+                                f"accepts; the {seat} turn will be held",
+                        f"set it to one of {', '.join(REASONING_EFFORTS)} in "
+                        f"{config.profile_dir(profile) / 'config.yaml'}", wire)
+            detail += f" · reasoning {effort or 'Hermes default (unset)'}"
             if not_asked:
                 return ("warn", f"{detail} by doctor's own table, NOT by Hermes: {not_asked}",
                         "point source/venv in the runtime file at the Hermes install the turn runs "
