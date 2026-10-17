@@ -147,6 +147,27 @@ class Resuming(base.Gate):
         line = fix_hold.ask_line(12, self.st.fix_ask_open()[12])
         self.assertIn("waits for a maintainer", line)
 
+    def test_explain_names_the_waiting_state(self):
+        import argparse
+        import contextlib
+        import io
+        from diaktoros import cli, config
+        report = {"url": "u", "read_at": "t", "state_line": "s", "chain": {"status": "direct"},
+                  "budget": "b", "seat": "x", "queue": "q", "inflight": "i", "escalation": "e",
+                  "hooks": "h", "sweep": "w", "github": "g", "blockers": [],
+                  "next": {"action": "n"}, "head": "a" * 40}
+
+        def run(number):
+            out = io.StringIO()
+            with mock.patch.object(config, "load_id", return_value=self.loop), \
+                 mock.patch.object(gate, "explain_facts", return_value={}), \
+                 mock.patch.object(gate, "explain", return_value=report), \
+                 contextlib.redirect_stdout(out):
+                cli.cmd_explain(argparse.Namespace(loop=self.loop["id"], pr=number))
+            return out.getvalue()
+        self.assertIn("issue #12 fix waits for a maintainer", run(12))
+        self.assertNotIn("waits for a maintainer", run(13))
+
 
 def load_tests(loader, tests, pattern):
     """Only this module's own tests: the borrowed fixtures' classes run in test_issue_fix."""
