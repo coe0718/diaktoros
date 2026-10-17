@@ -389,6 +389,32 @@ class Health(unittest.TestCase):
             self.assertFalse(desktop_api.probe_is_local("127.0.0.1", headers), headers)
 
 
+DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings"}
+
+
+class RouteListing(unittest.TestCase):
+    """Reads dashboard/plugin_api.py as text, so it runs whether or not fastapi is installed."""
+
+    def source(self):
+        return (ROOT / "dashboard" / "plugin_api.py").read_text()
+
+    def decorators(self):
+        return re.findall(r"^@router\.(\w+)\(\s*(?:\"([^\"]*)\")?", self.source(), re.M)
+
+    def test_every_route_is_a_listed_get(self):
+        found = self.decorators()
+        self.assertTrue(found)
+        self.assertEqual({verb for verb, _ in found}, {"get"})
+        paths = [path for _, path in found]
+        self.assertEqual(sorted(paths), sorted(set(paths)))
+        self.assertEqual(set(paths), DASHBOARD_ROUTES)
+
+    def test_no_route_is_registered_another_way(self):
+        text = self.source()
+        self.assertNotRegex(text, r"(?m)^\s*(?:\w+\.)?(?:add_api_route|include_router|api_route)\(")
+        self.assertEqual(len(re.findall(r"@router\.", text)), len(self.decorators()))
+
+
 @unittest.skipUnless(importlib.util.find_spec("fastapi"), "fastapi is not installed here")
 class Routes(unittest.TestCase):
     def setUp(self):
@@ -405,8 +431,7 @@ class Routes(unittest.TestCase):
         methods = {m for route in self.api.router.routes for m in route.methods}
         self.assertEqual(methods, {"GET"})
         paths = {route.path for route in self.api.router.routes}
-        self.assertEqual(paths, {"/loops", "/stats", "/now", "/overview", "/pr", "/health",
-                                 "/settings"})
+        self.assertEqual(paths, DASHBOARD_ROUTES)
         with mock.patch.object(desktop_api, "now_view", side_effect=desktop_api.NotFound("no")), \
              self.assertRaises(HTTPException) as caught:
             self.api.now("x")
