@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,6 +41,24 @@ class Shards(unittest.TestCase):
     def test_the_cli_refuses_a_shard_out_of_range(self):
         self.assertEqual(shard.main(["3", "4"]), 2)
         self.assertEqual(shard.main(["3", "0"]), 2)
+
+
+class Verticals(unittest.TestCase):
+    """The verticals job runs in parts (#850): each vertical module is in exactly one part."""
+
+    def parts(self):
+        text = (shard.TESTS.parent / ".github" / "workflows" / "ci.yml").read_text()
+        job = text.split("\n  verticals:\n", 1)[1].split("\n  # ", 1)[0]
+        return [block.split() for block in re.findall(r"modules: >-\n((?:\s{14}\S+\n)+)", job)]
+
+    def test_every_vertical_module_runs_in_exactly_one_part(self):
+        parts = self.parts()
+        self.assertGreaterEqual(len(parts), 2)
+        listed = [name for part in parts for name in part]
+        self.assertEqual(len(listed), len(set(listed)), "a module is in two parts")
+        files = {f"tests.{p.stem}" for p in shard.TESTS.glob("test_*_vertical.py")}
+        self.assertTrue(files)
+        self.assertLessEqual(files, set(listed), "a *_vertical module is in no part")
 
 
 if __name__ == "__main__":
