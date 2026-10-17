@@ -247,6 +247,7 @@ def cmd_status(args) -> int:
             owed = sum(n for status, n in counts.items() if status != "delivered")
             print(f"  observer:   {counts.get('delivered', 0)} delivered · {owed} owed "
                   f"(failed or waiting)")
+            _print_uncertain(st, loop["id"])
             # Only a live feed can be broken: a muted or absent one is reported above, and calling
             # that a problem would be crying wolf at a setting the operator chose.
             if observer_cfg and not observer.configured(loop):
@@ -258,6 +259,61 @@ def cmd_status(args) -> int:
             print(f"  watchdog:   last run {watch['last_run']}")
         _print_ledger_runs(loop, None, "  runs:       ", limit=10)
     return 2 if skipped else 0
+
+
+def _print_uncertain(st, loop_id: str) -> None:
+    """Each settleable (uncertain) notice: key, event, number, age, error, and how to settle."""
+    rows = observer.owed_entries(st)
+    now = time.time()
+    for key, entry in rows:
+        age = now - (state_mod.mark_at(entry) or now)
+        print(f"    uncertain: {key} · {entry.get('event')} #{entry.get('number')} · "
+              f"{int(age // 86400)}d {int(age % 86400 // 3600)}h old · {entry.get('error')}")
+    if rows:
+        print(f"    after checking the chat: hermes dk observer --loop {loop_id} --settle KEY "
+              "(--delivered | --not-delivered)")
+
+
+def cmd_observer(args) -> int:
+    """List or settle the observer's uncertain notices (#724)."""
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"no such loop: {exc}")
+        return 2
+    st = state_mod.state_for(loop)
+    if args.settle:
+        if args.delivered == args.not_delivered:
+            print("refused: --settle needs exactly one of --delivered or --not-delivered")
+            return 2
+        try:
+            print(observer.settle(st, args.settle, delivered=args.delivered))
+        except observer.SettleError as exc:
+            print(f"refused: {exc}")
+            return 2
+        return 0
+    rows = observer.owed_entries(st)
+    if not rows:
+        print("no uncertain observer notices")
+    for key, entry in rows:
+        print(f"{key} · {entry.get('event')} #{entry.get('number')} · {entry.get('error')}")
+    return 0
+
+
+def add_observer(sub) -> None:  # noqa: ANN001
+    """The ``observer`` subcommand's parser, registered by ``cli.register_cli`` (#724)."""
+    obs = sub.add_parser("observer", help="List or settle uncertain observer notices")
+    obs.add_argument("--loop", required=True,
+                     help="loop id (its config file name; `list` shows them)")
+    obs.add_argument("--list", action="store_true", help="list the uncertain notices (default)")
+    obs.add_argument("--settle", metavar="KEY",
+                     help="settle one uncertain notice after checking the chat by hand")
+    obs.add_argument("--delivered", action="store_true",
+                     help="with --settle: it arrived; record a receipt, send nothing")
+    obs.add_argument("--not-delivered", dest="not_delivered", action="store_true",
+                     help="with --settle: it did not arrive; the next sweep retries it once "
+                          "with its original delivery id")
+    obs.set_defaults(func=cmd_observer)
 
 
 def _ledger_path() -> pathlib.Path:

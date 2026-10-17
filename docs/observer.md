@@ -148,9 +148,20 @@ unsafe observer destination rebind.
 
 `status` aggregates delivered and owed records rather than proving end-user visibility.
 Inspect receipts for the exact error and batch membership when diagnosing a notice.
-There is no general observer replay/reconcile CLI: reconcile chat history and gateway
-records manually, preserve evidence, and do not delete receipt files to manufacture a
-new notice. Supervisor reconciliation does not reconcile observer receipts.
+An `uncertain` notice is never re-sent on its own. After checking the chat by hand, settle it:
+
+    hermes dk observer --loop L --list
+    hermes dk observer --loop L --settle KEY --delivered
+    hermes dk observer --loop L --settle KEY --not-delivered
+
+`--delivered` records a receipt (status `delivered`, settled by the operator, with when) and
+sends nothing. `--not-delivered` makes the entry eligible for one retry by the next watchdog
+sweep, with its original delivery id, so the gateway's idempotency still guards against a
+duplicate if it did land (with no running watchdog, nothing is sent). Only `uncertain` entries
+can be settled; a delivered, pending or failed entry, or an unknown key, is refused (an unknown
+key with the settleable keys). A digest's members are settled through the digest's key.
+`status` lists each uncertain entry's key, event, number, age and error. Do not delete receipt
+files to manufacture a new notice. Supervisor reconciliation does not reconcile observer receipts.
 
 ## Urgent and routine tiers
 
