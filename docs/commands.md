@@ -599,7 +599,7 @@ It also repairs:
 - `--recreate-routes` writes routes the gateway's registry lost, from the loop config, with a
   new secret, and re-keys the repo hooks that point at them. Use it when `doctor` says a route
   is missing and `doctor --repair` cannot restore it.
-- `--hooks` makes the loop's two repo hooks match its routes: it creates a missing one (paused),
+- `--hooks` makes every repo hook the loop's routes need (reviewer and fixer, plus triage's `issues` hook when triage is on) match its routes: it creates a missing one (paused),
   repoints one at the route's exact URL, and adds a missing event. It needs a token with hook
   write access (`--admin-token`).
 - `--watchdog-shim` rewrites the small script the watchdog cron job runs, pointing it at this
@@ -627,7 +627,7 @@ A dry run also previews before the live busy-seat check; it is not proof a busy 
 | `--while-busy` |  |  | rebind a seat's profile/login even while a run is in flight (that run keeps the identity it started with) |
 | `--admin-token` | `ADMIN_TOKEN` |  | login whose token can write the repo's hooks, for the hook moves and re-keys apply makes (default: the reader) |
 | `--recreate-routes` |  |  | write this loop's routes the registry lost, from the loop config, with a new secret, and re-key the repo hooks that point at them (when no intent record can restore them) |
-| `--hooks` |  |  | make this loop's two repo hooks what its routes need: create a missing one (paused until arm), repoint one at the route's exact URL, add its gate's event (hook write access, see --admin-token) |
+| `--hooks` |  |  | make every repo hook this loop's routes need (reviewer, fixer, and triage's issues hook when triage is on) what they need: create a missing one (paused until arm), repoint one at the route's exact URL, add its gate's event (hook write access, see --admin-token) |
 | `--watchdog-shim` |  |  | rewrite the cron shim the watchdog job runs, pinned to this plugin's watchdog |
 <!-- /flags -->
 
