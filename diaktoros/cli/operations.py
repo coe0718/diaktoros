@@ -400,8 +400,9 @@ def cmd_retry(args) -> int:
         rows = [dict(row) for row in con.execute(
             "SELECT id,seat,head,turn_key,state,error,updated FROM runs WHERE repo=? AND pr=? "
             "ORDER BY created,id", (loop["repo"], args.pr))]
-    if args.seat:
-        rows = [row for row in rows if row["seat"] == args.seat]
+    # A shadow run (#218) is retried only by name: it is no part of the PR's loop.
+    rows = [row for row in rows if row["seat"] == args.seat
+            or (not args.seat and row["seat"] != "shadow")]
     if not rows:
         print(f"[{loop['id']}] #{args.pr}: no isolated run on record"
               + (f" for the {args.seat} seat" if args.seat else ""))
@@ -625,8 +626,10 @@ def cmd_escalate(args) -> int:
         busy = run_supervisor.ACTIVE
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
         try:
-            out = con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND state IN "
-                              f"({','.join('?' * len(busy))})", (loop["repo"], number, *busy)).fetchone()[0]
+            # A shadow turn (#218) never writes at the head: it does not hold an escalation.
+            out = con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND seat!='shadow' "
+                              f"AND state IN ({','.join('?' * len(busy))})",
+                              (loop["repo"], number, *busy)).fetchone()[0]
         finally:
             con.close()
         if out:
@@ -1180,9 +1183,9 @@ def add_retry(sub) -> None:  # noqa: ANN001
     retry.add_argument("--pr", type=int, required=True,
                        help="the pull request whose failed run to re-arm")
     retry.add_argument("--seat", choices=["reviewer", "fixer", "adjudicator", "triage",
-                                          "issue_fixer"],
+                                          "issue_fixer", "shadow"],
                        help="only that seat's run (default: whichever failed at the PR's "
-                            "newest head)")
+                            "newest head; a shadow run only when named)")
     retry.set_defaults(func=cmd_retry)
 
 

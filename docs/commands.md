@@ -1255,7 +1255,7 @@ and reconcile it instead.
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--pr` | `PR` | **required** | the pull request whose failed run to re-arm |
-| `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` |  | only that seat's run (default: whichever failed at the PR's newest head) |
+| `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` \| `shadow` |  | only that seat's run (default: whichever failed at the PR's newest head; a shadow run only when named) |
 <!-- /flags -->
 
 ### continue

@@ -59,7 +59,7 @@ from urllib.parse import urlsplit
 from . import config, hostdirs, util
 from .config import host_guards
 
-SEATS = ("reviewer", "fixer", "adjudicator", "triage")
+SEATS = ("reviewer", "fixer", "adjudicator", "triage", "shadow")
 HOST_KEYS = ("source", "venv", "runtime", "rust")
 OVERRIDE_KEYS = ("model", "upstream", "key_file")
 RESOLVE_TIMEOUT = 90
@@ -1027,10 +1027,11 @@ def run_resolver(profile: str, mode: str, settings: dict | None,
 
 def seats_for(loop: dict) -> list[str]:
     """The seats this loop can run isolated turns for (the adjudicator and triage only with
-    their routes)."""
+    their routes, the shadow only with its profile, #218)."""
     return ["reviewer", "fixer"] + (
         ["adjudicator"] if str((loop.get("adjudicator") or {}).get("route") or "") else []) + (
-        ["triage"] if config.triage_enabled(loop) else [])
+        ["triage"] if config.triage_enabled(loop) else []) + (
+        ["shadow"] if config.shadow_profile(loop) else [])
 
 
 # Credential files Hermes may read for an OAuth/subscription seat outside the profile directory
