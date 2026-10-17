@@ -263,6 +263,28 @@ class LedgerRecords:
                         (run_id, repo, number, base, kind, branch, 'recorded', now, now))
             con.execute('COMMIT')
 
+    def record_repro_proof(self, run_id: str, repo: str, number: int, base: str,
+                           proof: str) -> None:
+        """Keep the host's reproduction proof for an issue-fix run (#484); once per run."""
+        with self._connect() as con:
+            con.execute('INSERT OR IGNORE INTO repro_proofs(run_id,repo,number,base,proof,created) '
+                        'VALUES(?,?,?,?,?,?)', (run_id, repo, number, base, proof, time.time()))
+
+    def repro_proof_for_pr(self, repo: str, pr: int) -> tuple[dict, str] | None:
+        """The proof of the issue fix that opened ``pr`` and the fix's head, else None."""
+        with self._connect() as con:
+            row = con.execute(
+                'SELECT p.proof, f.new_head FROM issue_fixes f JOIN repro_proofs p '
+                'ON p.run_id=f.run_id WHERE f.repo=? AND f.pr_number=? ORDER BY f.created DESC',
+                (repo, pr)).fetchone()
+        if row is None:
+            return None
+        try:
+            proof = json.loads(row[0])
+        except ValueError:
+            return None
+        return (proof, row[1] or '') if isinstance(proof, dict) else None
+
     def issue_fix_status(self, run_id: str, state: str, *, error: str | None = None,
                          new_head: str | None = None, pr_number: int | None = None,
                          comment_id: int | None = None) -> None:

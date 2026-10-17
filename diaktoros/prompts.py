@@ -448,6 +448,12 @@ What to do:
    changed and how you verified it. The host pushes your commit to a new branch `{branch}` from
    `{head}`, opens the PR against `{base}` saying it fixes #{number}, and requests the review
    loop's reviewer. Name every file you changed, added or deleted; a large file goes as a diff.
+   Name your reproduction test(s) with `--repro <module.Class.test_name>...` (unittest ids, e.g.
+   `tests.test_x.Case.test_y`): the host runs only those against the original head, with your
+   test files applied (they must fail), and against your fix (they must pass), and shows the
+   reviewer the result. A test that passes on the original head is flagged as not covering the
+   fix; naming none is reported as such. The proof never blocks the PR and runs only where the
+   host has a sandbox; only Python `unittest` ids are run.
 3. If you cannot fix it (the issue is unclear, too large, or needs a decision), do not open a PR.
    Write why to a file and post it with the broker's `issue_comment` command instead, so a person
    can pick it up. Never open a PR that does not fix the issue.

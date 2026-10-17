@@ -1,0 +1,201 @@
+"""The host proves an issue fix's reproduction tests (#484): fail on the old head, pass on the fix.
+
+``repro_proof`` is driven with real ``unittest`` runs in temporary trees (no sandbox needed); the
+enforcing entry point, ``RunBroker`` ``open_pr``, is driven with a prover and the ledger; the
+reviewer's prompt is built through ``turn_prompts.reproduction_section``.
+"""
+import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import base64
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
+
+from diaktoros import broker_ipc, repro_proof  # noqa: E402
+from diaktoros.run_supervisor import turn_prompts  # noqa: E402
+import test_issue_fix as tif  # noqa: E402
+
+OLD_CODE = "def value():\n    return 1\n"
+NEW_CODE = "def value():\n    return 2\n"
+TEST = ("import unittest\nimport widget as c\n\n\nclass Case(unittest.TestCase):\n"
+        "    def test_value(self):\n        self.assertEqual(c.value(), 2)\n")
+WEAK_TEST = TEST.replace("assertEqual(c.value(), 2)", "assertTrue(c.value() > 0)")
+
+
+def manifest(files):
+    return {"base_head": tif.BASE, "message": "fix",
+            "files": [{"path": p, "content_b64": base64.b64encode(d.encode()).decode(),
+                       "sha256": hashlib.sha256(d.encode()).hexdigest()}
+                      for p, d in files.items()]}
+
+
+def run_unittest(tree, ids):
+    done = subprocess.run([sys.executable, "-m", "unittest", "-v", *ids], cwd=tree,
+                          capture_output=True, text=True)
+    return done.stdout + done.stderr
+
+
+class Proof(unittest.TestCase):
+    def prove(self, test_text, ids=("tests.test_it.Case.test_value",)):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            fix = manifest({"widget.py": NEW_CODE, "tests/test_it.py": test_text})
+            return repro_proof.prove(base, fix, list(ids), run_unittest)
+
+    def test_a_test_failing_on_the_old_head_and_passing_on_the_fix_is_proven(self):
+        proof = self.prove(TEST)
+        self.assertEqual(proof["overall"], repro_proof.PROVEN)
+        self.assertEqual(proof["ids"][0]["verdict"], "fail_then_pass")
+        text = repro_proof.section(proof)
+        self.assertIn("PROVEN", text)
+        self.assertIn("original head fail, fix ok", text)
+
+    def test_a_test_passing_on_the_old_head_is_flagged_weak(self):
+        proof = self.prove(WEAK_TEST)
+        self.assertEqual(proof["overall"], repro_proof.WEAK)
+        self.assertEqual(proof["ids"][0]["verdict"], "passes_on_old_head")
+        self.assertIn("does not cover the fix", repro_proof.section(proof))
+
+    def test_a_test_failing_on_the_fix_or_missing_is_unproven(self):
+        self.assertEqual(self.prove(TEST.replace("2)", "3)"))["overall"], repro_proof.UNPROVEN)
+        self.assertEqual(self.prove(TEST, ("tests.test_it.Case.test_nope",))["overall"],
+                         repro_proof.UNPROVEN)
+
+    def test_none_named_is_reported_as_such(self):
+        proof = repro_proof.prove(Path("."), manifest({"a.py": "x"}), [], run_unittest)
+        self.assertEqual(proof["overall"], repro_proof.NONE_NAMED)
+        self.assertIn("NONE NAMED", repro_proof.section(proof))
+
+    def test_ids_are_validated(self):
+        self.assertEqual(repro_proof.valid_ids(None), [])
+        for bad in ("x", ["a b"], ["--help"], ["a.b", "a.b"], ["a"] * 9, [1]):
+            with self.assertRaises(ValueError):
+                repro_proof.valid_ids(bad)
+
+    def test_the_proof_is_stale_text_for_a_later_head(self):
+        text = repro_proof.section(repro_proof.none_named(), "a" * 40, "b" * 40)
+        self.assertIn("later commits are not covered", text)
+
+
+class Broker(tif.Base):
+    """``open_pr`` through ``RunBroker._dispatch``: the proof is run and recorded."""
+
+    def setUp(self):
+        super().setUp()
+        self.sup, self.run_id = self.fix_row()
+        self.pushed = []
+        self.calls = []
+
+        def api(loop, path, *, method="GET", body=None, login=None, **kw):
+            self.calls.append((path, method, body, login))
+            if method == "POST" and path.endswith("/pulls"):
+                return {"number": 40, "head": {"ref": "diaktoros/issue-12"}}
+            if method == "POST":
+                return {"number": 40}
+            return {}
+        from diaktoros import broker, config, gh, safe_push
+        for target, name, value in (
+                (gh, "api", mock.Mock(side_effect=api)),
+                (config, "by_repo", mock.Mock(side_effect=lambda r: self.loop)),
+                (safe_push, "open_branch",
+                 mock.Mock(side_effect=lambda loop, **kw: {"new_head": "d" * 40, "login": "fix"}))):
+            patch = mock.patch.object(target, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.broker = broker
+        self.scope = broker_ipc.RunScope(tif.REPO, 12, tif.BASE, "issue_fixer",
+                                         "diaktoros/issue-12", self.run_id, str(self.db))
+
+    def server(self, prover=None):
+        return broker_ipc.RunBroker(self.loop, self.scope, self.root, prover=prover)
+
+    def request(self, **extra):
+        data = b"fixed\n"
+        return json.dumps({"operation": "open_pr", "title": "Fix", "body": "Fixed.",
+                           "manifest": {"base_head": tif.BASE, "message": "m", "files": [
+                               {"path": "README.md", "content_b64": base64.b64encode(data).decode(),
+                                "sha256": hashlib.sha256(data).hexdigest()}]}, **extra}).encode()
+
+    def stored(self):
+        return self.sup.repro_proof_for_pr(tif.REPO, 40)
+
+    def test_the_named_tests_are_proven_and_the_result_is_kept(self):
+        seen = []
+
+        def prover(m, ids):
+            seen.append(ids)
+            return {"overall": "proven", "ids": [{"id": ids[0], "old": "fail", "new": "ok",
+                                                  "verdict": "fail_then_pass"}]}
+        self.server(prover)._dispatch(self.request(repro=["tests.test_x.Case.test_y"]))
+        self.assertEqual(seen, [["tests.test_x.Case.test_y"]])
+        proof, fix_head = self.stored()
+        self.assertEqual((proof["overall"], fix_head), ("proven", "d" * 40))
+
+    def test_a_weak_test_is_kept_as_weak_and_the_pr_still_opens(self):
+        weak = {"overall": "weak", "ids": [{"id": "a.b", "old": "ok", "new": "ok",
+                                            "verdict": "passes_on_old_head"}]}
+        self.server(lambda m, ids: weak)._dispatch(self.request(repro=["a.b"]))
+        self.assertEqual(self.stored()[0]["overall"], "weak")
+        self.assertEqual(self.sup.issue_fix_result(self.run_id)["state"], "requested")
+
+    def test_none_named_is_recorded_and_the_prover_is_not_run(self):
+        prover = mock.Mock()
+        self.server(prover)._dispatch(self.request())
+        prover.assert_not_called()
+        self.assertEqual(self.stored()[0]["overall"], "none_named")
+
+    def test_without_a_sandbox_or_when_it_breaks_the_record_says_unavailable(self):
+        self.server(None)._dispatch(self.request(repro=["a.b"]))
+        self.assertEqual(self.stored()[0]["overall"], "unavailable")
+
+    def test_a_prover_that_raises_never_blocks_the_pr(self):
+        def broken(m, ids):
+            raise RuntimeError("no bwrap")
+        self.server(broken)._dispatch(self.request(repro=["a.b"]))
+        proof = self.stored()[0]
+        self.assertEqual(proof["overall"], "unavailable")
+        self.assertIn("no bwrap", proof["why"])
+        self.assertEqual(self.sup.issue_fix_result(self.run_id)["state"], "requested")
+
+    def test_bad_ids_are_refused_before_the_write_is_spent(self):
+        server = self.server(mock.Mock())
+        with self.assertRaises(broker_ipc.ProtocolError):
+            server._dispatch(self.request(repro=["--help"]))
+        self.assertFalse(server._used)
+        self.assertIsNone(self.stored())
+
+
+class Prompt(tif.Base):
+    def test_the_reviewer_is_shown_the_proof_for_the_pr(self):
+        sup, run_id = self.fix_row()
+        sup.record_issue_fix(run_id, tif.REPO, 12, tif.BASE, "pr", "diaktoros/issue-12")
+        sup.issue_fix_status(run_id, "requested", new_head="d" * 40, pr_number=40)
+        sup.record_repro_proof(run_id, tif.REPO, 12, tif.BASE, json.dumps(
+            {"overall": "weak", "ids": [{"id": "a.b", "old": "ok", "new": "ok",
+                                         "verdict": "passes_on_old_head"}]}))
+        row = {"repo": tif.REPO, "pr": 40, "head": "d" * 40}
+        with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=self.db):
+            text = turn_prompts.reproduction_section(self.loop, row)
+            other = turn_prompts.reproduction_section(self.loop, {**row, "pr": 41})
+        self.assertIn("WEAK", text)
+        self.assertEqual(other, "")
+
+    def test_the_fixer_is_told_to_name_its_reproduction(self):
+        from diaktoros import prompts, trusted_turn
+        self.assertIn("--repro", prompts.ISOLATED_ISSUE_FIX)
+        self.assertIn("--repro", trusted_turn.tool_instructions("issue_fixer"))
+
+
+if __name__ == "__main__":
+    unittest.main()

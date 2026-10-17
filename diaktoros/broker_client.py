@@ -240,13 +240,16 @@ def read_answers(path: str) -> str:
 
 
 def call(operation: str, *, verdict: str = '', body: str = '', manifest=None,
-         labels: list | None = None, socket_path: str | None = None) -> dict:
+         labels: list | None = None, socket_path: str | None = None,
+         repro: list | None = None) -> dict:
     if operation == 'push':
         payload = {'operation': 'push', 'manifest': manifest}
     elif operation == 'triage':
         payload = {'operation': 'triage', 'labels': list(labels or []), 'body': body}
     elif operation == 'open_pr':
         payload = {'operation': 'open_pr', 'manifest': manifest, 'title': verdict, 'body': body}
+        if repro:
+            payload['repro'] = list(repro)
     elif operation == 'issue_comment':
         payload = {'operation': 'issue_comment', 'body': body}
     elif operation == 'file_issue':
@@ -335,6 +338,10 @@ def main() -> None:
                              'not a defect (cite commands run and output); no re-review is asked')
     parser.add_argument('--title', help='open_pr: the PR title; file_issue: the issue title '
                                         '(one line)')
+    parser.add_argument('--repro', nargs='+', default=[],
+                        help='open_pr: the unittest ids of your reproduction test(s), e.g. '
+                             'tests.test_x.Case.test_y; the host runs them on the original head '
+                             '(they must fail) and on your fix (they must pass)')
     parser.add_argument('--label', action='append', default=[],
                         help='triage/file_issue: one label from the list in your instructions '
                              '(repeatable)')
@@ -352,6 +359,8 @@ def main() -> None:
         parser.error('--label is a triage or file_issue option')
     if args.title is not None and args.operation not in ('open_pr', 'file_issue'):
         parser.error('--title is an open_pr or file_issue option')
+    if args.repro and args.operation != 'open_pr':
+        parser.error('--repro is an open_pr option')
     if args.operation == 'open_pr':
         if args.manifest_file or args.verdict or args.label or args.comment_file:
             parser.error('open_pr takes --files, --message/--message-file, --title and --body-file')
@@ -369,13 +378,13 @@ def main() -> None:
             parser.error(f'open_pr refused before sending (your write is unspent): {exc}')
         if args.dry_run:
             summary = {'ok': True, 'dry_run': True, 'base_head': manifest['base_head'],
-                       'title': args.title,
+                       'title': args.title, 'repro': args.repro,
                        'as': 'diff' if 'patch_b64' in manifest else 'whole files',
                        'files': manifest_paths(manifest)}
             operation = lambda: summary  # noqa: E731
         else:
             operation = lambda: call('open_pr', manifest=manifest, verdict=args.title,  # noqa: E731
-                                     body=description)
+                                     body=description, repro=args.repro)
     elif args.operation == 'file_issue':
         if (args.files or args.message is not None or args.message_file or args.dry_run
                 or args.verdict or args.manifest_file or args.comment_file

@@ -26,7 +26,7 @@ import tempfile
 import time
 
 from . import (broker, broker_client, broker_ipc, config, contained, deps, gh, hostdirs,
-               inference_proxy, runtime_detect, safe_push, trusted_fetch)
+               inference_proxy, repro_proof, runtime_detect, safe_push, trusted_fetch)
 
 
 def dependency_cache(loop: dict) -> Path | None:
@@ -46,6 +46,25 @@ def dependency_cache(loop: dict) -> Path | None:
 # request to the budget. The sandbox is SIGKILLed only this long after, so Hermes's clean stop
 # wins the race instead of a kill landing mid-tool-call (#49).
 KILL_GRACE_S = 30
+
+
+def sandbox_prover(*, checkout: Path, code: Path, venv: Path, runtime: Path, home: Path,
+                   rust: Path, query: Path, timeout: int = 300):
+    """The host's reproduction prover (#484) for an issue-fix turn: ``prover(manifest, ids)``
+    copies the staged original head twice, applies the fix's test files to one and the whole fix
+    to the other, and runs only the named ``unittest`` ids in the same network-less sandbox a
+    seat uses. Only a Python ``unittest`` id is understood (what ``ci_tests`` parses)."""
+    def run(tree: Path, ids: list[str]) -> str:
+        result = contained.run(
+            code=code, venv=venv, runtime=runtime, home=home, checkout=tree, rust=rust,
+            query=query, timeout=timeout,
+            entry=['/bin/sh', '-c', 'exec /opt/venv/bin/python -m unittest -v "$@" 2>&1', 'sh',
+                   *ids])
+        return result.stdout + result.stderr
+
+    def prover(manifest: dict, ids: list[str]) -> dict:
+        return repro_proof.prove(Path(checkout), manifest, ids, run)
+    return prover
 
 
 def not_exported_section(paths: list[str], limit: int = 50) -> str:
@@ -467,7 +486,10 @@ TOOLS = {
                     'description file: `python -m diaktoros.broker_client open_pr --files '
                     'src/a.py src/b.py --message "..." --title "..." --body-file /tmp/pr.md` '
                     '(paths are under `/work`; add `--dry-run` first to check it without spending '
-                    'the write). Name every file you changed, added or deleted; small files go '
+                    'the write). Add `--repro <module.Class.test_name>...` to name the unittest '
+                    'id(s) of your reproduction test: the host runs them on the original head '
+                    '(they must fail) and on your fix (they must pass) and tells the reviewer. '
+                    'Name every file you changed, added or deleted; small files go '
                     'whole, otherwise as a diff against the base you started from. The same '
                     f'limits as a fixer push apply: at most {safe_push.MAX_PATCH_PATHS} files, a '
                     f'diff of at most {safe_push.MAX_PATCH // 1024} KiB, regular files only, '
@@ -686,7 +708,10 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             broker_root.mkdir(mode=0o700)
             broker = stack.enter_context(broker_ipc.RunBroker(
                 loop, scope, broker_root, require_push=scope.role == 'fixer',
-                require_receipt=scope.role == 'reviewer', no_write=no_write))
+                require_receipt=scope.role == 'reviewer', no_write=no_write,
+                prover=(sandbox_prover(checkout=checkout, code=code, venv=venv, runtime=runtime,
+                                       home=home, rust=rust, query=query)
+                        if scope.role == 'issue_fixer' else None)))
             server = broker_ipc.serve_in_thread(broker)
             try:
                 command = ['/opt/venv/bin/python', '-m', 'diaktoros.inference_proxy',
