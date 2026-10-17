@@ -111,6 +111,28 @@ class SettleTests(unittest.TestCase):
             observer.settle(self.state, "k:delivered", delivered=False)
         self.assertEqual(self.entry("k:delivered")["status"], "delivered")
 
+    def test_status_lists_uncertain_entry_and_the_settle_command(self):
+        # Drives cmd_status itself, so dropping the _print_uncertain call turns this red.
+        from diaktoros import config
+        full = config.normalize({
+            "id": "private", "repo": "owner/private", "host": "https://gw.example",
+            "state_dir": self.temp.name, "fixers": ["fix"], "reviewers": ["review"],
+            "tokens": {}, "read_token": "read",
+            "seats": {"reviewer": {"route": "r", "profile": "critic", "login": "review"},
+                      "fixer": {"route": "f", "profile": "coder", "login": "fix"}},
+            "observer": {"route": "private-observe", "profile": "default",
+                         "deliver": "telegram"}})
+        out = io.StringIO()
+        with patch.object(operations.config, "load_id", return_value=full), \
+                patch.object(operations.state_mod, "state_for", return_value=self.state), \
+                patch.object(operations, "_print_ledger_runs"), \
+                contextlib.redirect_stdout(out):
+            operations.cmd_status(Namespace(loop="private", seat=None, json=False))
+        text = out.getvalue()
+        for want in (KEY, "fixed #157", "10d 0h old", "POST result unverified",
+                     "hermes dk observer --loop private --settle KEY"):
+            self.assertIn(want, text)
+
     def test_list_shows_uncertain(self):
         rc, out = self.run_cmd(list=True)
         self.assertEqual(rc, 0)
