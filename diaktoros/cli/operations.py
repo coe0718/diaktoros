@@ -267,7 +267,7 @@ def _ledger_path() -> pathlib.Path:
 def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> list[dict]:
     """The isolated run ledger's failed/waiting/uncertain rows for this loop, read-only (#53).
     Prints them and returns them ([] when there is no readable ledger)."""
-    from ..run_supervisor import describe_run, read_only_view
+    from ..run_supervisor import describe_run, read_only_view, split_history
 
     ledger = _ledger_path()
     if not ledger.exists():
@@ -276,6 +276,22 @@ def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> l
     if rows is None:
         print(f"{prefix}run ledger unreadable ({ledger})")
         return []
+    # A failed run on a PR the watchdog's last complete listing does not show open is history
+    # (#723): counted apart, never offered for re-arm. The ledger rows are not touched.
+    rows, history, unknown = split_history(rows, loop)
+    if history:
+        if pr is None:
+            print(f"{prefix}{len(history)} failed turn(s) on closed PRs, history "
+                  f"(#{', #'.join(str(n) for n in sorted({r['pr'] for r in history}))}): nothing "
+                  "to re-arm")
+        else:
+            for row in history:
+                print(f"{prefix}{row['seat']} #{row['pr']} @ {str(row['head'])[:7]} failed — "
+                      f"{row['error'] or 'no reason recorded'}; PR #{pr} is not open (merged or "
+                      "closed): history, nothing to re-arm")
+    if unknown and any(r["state"] == "failed" for r in rows):
+        print(f"{prefix}note: no open-PR listing from the watchdog yet — whether these PRs are "
+              "still open is unknown")
     for row in rows[-limit:]:
         print(prefix + describe_run(row, loop["id"]))
         if row.get("detail") and pr is not None:
@@ -350,6 +366,22 @@ def cmd_retry(args) -> int:
     # force now; any other cancellation is superseded and is not offered (runs_view draws the
     # same line: a new head gets its own turn).
     candidates = [row for row in rows if row["head"] == head and offerable(row)]
+    # A failed PR run whose PR the watchdog's last complete listing does not show open is history
+    # (#723). The listing is trusted only when fresh and agreeing; otherwise one PR read confirms.
+    from ..run_supervisor import WATCH_INTERVAL_S, ISSUE_SEATS, open_listing
+    listing = open_listing(loop)
+    if listing is not None and any(r["state"] == "failed" and r["seat"] not in ISSUE_SEATS
+                                   for r in candidates):
+        absent = args.pr not in listing["numbers"]
+        if absent or time.time() - listing["at"] > WATCH_INTERVAL_S:
+            live = gh.pr(loop, args.pr)
+            if isinstance(live, dict):
+                is_open = live.get("state") == "open"
+            else:
+                is_open = not absent          # unreadable: the listing alone decides
+            if not is_open:
+                print(f"[{loop['id']}] PR #{args.pr} is not open (merged or closed); nothing to re-arm")
+                return 2
     if not candidates:
         print(f"[{loop['id']}] #{args.pr} @ {head[:7]}: nothing to retry — "
               + ", ".join(f"{row['seat']} {row['state']}" for row in rows if row["head"] == head))

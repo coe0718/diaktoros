@@ -837,6 +837,10 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                      f"{type(exc).__name__}: {exc}")
 
     if isinstance(prs, list):
+        # The last COMPLETE open-PR listing, saved with the sweep's watch state, so status,
+        # explain and retry can tell a failed run on a closed PR from one on an open PR (#723).
+        watch["open_prs"] = {"at": now, "numbers": sorted(
+            p["number"] for p in prs if isinstance(p, dict) and isinstance(p.get("number"), int))}
         retire_stale_runs(loop, prs, lines)
 
     if not isinstance(prs, list):
