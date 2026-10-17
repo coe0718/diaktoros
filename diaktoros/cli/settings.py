@@ -579,6 +579,7 @@ def cmd_set(args) -> int:
               "attribution": cli_common._attribution_arg(args, None),
               "review_after_ci": cli_common._on_off(args, "review_after_ci", None),
               "fix_ci": cli_common._on_off(args, "fix_ci", None),
+              "fixer_scope_lock": cli_common._on_off(args, "fixer_scope_lock", None),
               "review_only_update": cli_common._on_off(args, "review_only_update", None)}
     if (wanted["review_only_update"] and not loop.get("review_only_update")
             and not getattr(args, "acknowledge_branch_push", False)):
@@ -1088,7 +1089,7 @@ def _apply(args) -> int:
     changes = []
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
-                "fix_ci", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
+                "fix_ci", "fixer_scope_lock", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
                 "review_only", "review_only_cap", "review_only_daily"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
@@ -1726,6 +1727,10 @@ def add_set(sub) -> None:  # noqa: ANN001
     change.add_argument("--fix-ci", choices=("on", "off"), default=None,
                         help="hand a failed required check on a fixer's PR to the fixer "
                              "(needs unattended fixer pushes), or stop")
+    change.add_argument("--fixer-scope-lock", choices=("on", "off"), default=None,
+                        help="hold a fix round that changes files its findings do not name "
+                             "(other than their tests and docs) for a maintainer, or stop; "
+                             "needs unattended fixer pushes")
     change.add_argument("--review-only-cap", default=None, metavar="N",
                         help="verdicts the reviewer gives one review-only PR before it waits "
                              "for `review --another-round`, 1-1000; 0 = the review cap")

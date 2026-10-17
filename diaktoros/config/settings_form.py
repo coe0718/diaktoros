@@ -188,6 +188,13 @@ SETTINGS_SCHEMA: dict = {
                "description": "On: a failed required check on a fixer's PR becomes one fixer "
                               "turn per head (needs unattended fixer pushes on). Off: a red "
                               "check is only reported."},
+    "fixer_scope_lock": {"label": "Hold fixes outside the findings' files", "type": "bool",
+                         "default": False,
+                         "description": "On: a fix round that changes files the open findings do "
+                                        "not name (other than their tests and docs) is held for "
+                                        "a maintainer, with a notice listing the extra files; "
+                                        "`hermes dk retry` lets it through. Only takes effect "
+                                        "with unattended fixer pushes on. Off: no check."},
     "attribution": {"label": "Sign what the loop posts", "type": "bool", "default": True,
                     "description": "On: every review, comment and commit the loop itself "
                                    "posts ends with 'Automated by Diaktoros' and "
@@ -309,6 +316,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         overlaid["review_after_ci"] = d["review_after_ci"]
     if _form_value(settings, "fix_ci") is not None:
         overlaid["fix_ci"] = d["fix_ci"]
+    if _form_value(settings, "fixer_scope_lock") is not None:
+        overlaid["fixer_scope_lock"] = d["fixer_scope_lock"]
     if _form_value(settings, "review_only_update") is not None:
         overlaid["review_only_update"] = d["review_only_update"]
     if _form_value(settings, "review_only") is not None:

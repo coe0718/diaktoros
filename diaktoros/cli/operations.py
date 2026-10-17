@@ -20,6 +20,7 @@ from .. import (
     observer,
     pr_hold,
     routes,
+    scope_lock,
     state as state_mod,
 )
 from ..config import credentials
@@ -212,6 +213,9 @@ def cmd_status(args) -> int:
             print(f"  deps:       {line}")
         for issue_no, origin in sorted(st.fix_holds().items()):
             print(f"  held:       issue #{issue_no} fix waits for PR #{origin} to merge")
+        from .. import fix_hold
+        for issue_no, ask in sorted(st.fix_ask_open().items()):
+            print(f"  held:       {fix_hold.ask_line(issue_no, ask)}")
         declared = st.issue_deps()
         for issue_no in st.dep_waits():
             names = ", ".join(f"#{a}" for a in sorted(declared.get(issue_no) or {})) or "?"
@@ -219,6 +223,8 @@ def cmd_status(args) -> int:
                   f"(`hermes dk depends --loop {loop['id']} --issue {issue_no}` says why)")
         for pr_no, hold in sorted(st.pr_holds().items()):
             print(f"  held:       PR #{pr_no} {pr_hold.line(hold)}")
+        for pr_no, hold in sorted(st.scope_holds().items()):
+            print(f"  held:       {scope_lock.line(pr_no, hold)}")
         for seat in ("reviewer", "fixer"):
             queued = len(st.queue_items(seat))
             if queued:
@@ -323,11 +329,16 @@ def _ledger_path() -> pathlib.Path:
 def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> list[dict]:
     """The isolated run ledger's failed/waiting/uncertain rows for this loop, read-only (#53).
     Prints them and returns them ([] when there is no readable ledger)."""
-    from ..run_supervisor import describe_run, read_only_view, split_history
+    from ..run_supervisor import describe_run, pending_view, read_only_view, split_history
 
     ledger = _ledger_path()
     if not ledger.exists():
         return []
+    queue = pending_view(ledger, loop["repo"]) or []
+    for place, row in enumerate(queue, 1):
+        if pr is None or row["pr"] == pr:
+            print(f"{prefix}queue {place} of {len(queue)}: {row['seat']} #{row['pr']} "
+                  f"@ {str(row['head'])[:7]} — {row['why']}")
     rows = read_only_view(ledger, loop["repo"], pr)
     if rows is None:
         print(f"{prefix}run ledger unreadable ({ledger})")
@@ -375,6 +386,11 @@ def cmd_retry(args) -> int:
     except config.ConfigError as exc:
         print(f"no such loop: {exc}")
         return 2
+    released = scope_lock.release(loop, args.pr)      # #482: retry is the release command
+    if released:
+        print(f"[{loop['id']}] #{args.pr}: scope lock released for "
+              f"{', '.join(released.get('files') or [])}; the fixer's next push of that head "
+              "goes through")
     ledger = _ledger_path()
     if not ledger.exists():
         print(f"no run ledger at {ledger} — nothing to retry")
@@ -384,8 +400,9 @@ def cmd_retry(args) -> int:
         rows = [dict(row) for row in con.execute(
             "SELECT id,seat,head,turn_key,state,error,updated FROM runs WHERE repo=? AND pr=? "
             "ORDER BY created,id", (loop["repo"], args.pr))]
-    if args.seat:
-        rows = [row for row in rows if row["seat"] == args.seat]
+    # A shadow run (#218) is retried only by name: it is no part of the PR's loop.
+    rows = [row for row in rows if row["seat"] == args.seat
+            or (not args.seat and row["seat"] != "shadow")]
     if not rows:
         print(f"[{loop['id']}] #{args.pr}: no isolated run on record"
               + (f" for the {args.seat} seat" if args.seat else ""))
@@ -465,6 +482,34 @@ def cmd_retry(args) -> int:
             print("worker started" if started else
                   "no private runtime file — the run stays pending until one exists")
     return 0 if rearmed and not refused else 2
+
+
+def cmd_continue(args) -> int:
+    """Finish a half-written issue fix (#485): inspect, then run only the missing stage.
+
+    Never pushes. Conflicting facts leave the run quarantined and are printed. Exit 0 when
+    the fix is complete, 2 otherwise.
+    """
+    from .. import continue_run
+    from ..run_supervisor import Supervisor
+
+    try:
+        loop = config.load_id(args.loop)
+    except config.ConfigError as exc:
+        print(f"no such loop: {exc}")
+        return 2
+    ledger = _ledger_path()
+    if not ledger.exists():
+        print(f"no run ledger at {ledger} — nothing to continue")
+        return 2
+    sup = Supervisor(ledger)
+    if args.dry_run:
+        plan = continue_run.inspect(loop, sup, args.run)
+        print("\n".join(plan["facts"] + [continue_run.offer(plan, loop["id"], args.run)]))
+        return 0 if not plan["conflicts"] else 2
+    ok, lines = continue_run.run(loop, sup, args.run)
+    print("\n".join(lines))
+    return 0 if ok else 2
 
 
 def _pacing_lines(loop: dict) -> list[str]:
@@ -581,8 +626,10 @@ def cmd_escalate(args) -> int:
         busy = run_supervisor.ACTIVE
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
         try:
-            out = con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND state IN "
-                              f"({','.join('?' * len(busy))})", (loop["repo"], number, *busy)).fetchone()[0]
+            # A shadow turn (#218) never writes at the head: it does not hold an escalation.
+            out = con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND seat!='shadow' "
+                              f"AND state IN ({','.join('?' * len(busy))})",
+                              (loop["repo"], number, *busy)).fetchone()[0]
         finally:
             con.close()
         if out:
@@ -917,6 +964,10 @@ def cmd_explain(args) -> int:
         for issue_no, origin in sorted(st.fix_holds().items()):
             if origin == args.pr:
                 print(f"  {'held:':<12}issue #{issue_no} fix waits for this PR to merge")
+        from .. import fix_hold
+        ask = st.fix_ask_open().get(args.pr)   # the number may be an issue waiting on a maintainer
+        if ask:
+            print(f"  {'held:':<12}{fix_hold.ask_line(args.pr, ask)}")
         if report['chain']['status'] != 'direct':
             print(f"  {'chain:':<12}{report['chain']['status']} · "
                   f"parents {report['chain']['parents']} · {report['chain']['reason']}")
@@ -1132,10 +1183,22 @@ def add_retry(sub) -> None:  # noqa: ANN001
     retry.add_argument("--pr", type=int, required=True,
                        help="the pull request whose failed run to re-arm")
     retry.add_argument("--seat", choices=["reviewer", "fixer", "adjudicator", "triage",
-                                          "issue_fixer"],
+                                          "issue_fixer", "shadow"],
                        help="only that seat's run (default: whichever failed at the PR's "
-                            "newest head)")
+                            "newest head; a shadow run only when named)")
     retry.set_defaults(func=cmd_retry)
+
+
+def add_continue(sub) -> None:  # noqa: ANN001
+    """The ``continue`` subcommand's parser, registered by ``cli.register_cli`` (#485)."""
+    cont = sub.add_parser("continue", help="Finish a half-written issue fix: inspect GitHub and "
+                                           "complete only the missing stage (never pushes)")
+    cont.add_argument("--loop", required=True,
+                      help="loop id (its config file name; `list` shows them)")
+    cont.add_argument("--run", required=True, help="the issue-fix run id (`status` lists it)")
+    cont.add_argument("--dry-run", action="store_true",
+                      help="only inspect and say what the next step would be")
+    cont.set_defaults(func=cmd_continue)
 
 
 def add_drain(sub) -> None:  # noqa: ANN001

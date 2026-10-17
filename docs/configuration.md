@@ -16,6 +16,7 @@ Diaktoros has three configuration layers: a repository's loop JSON, per-profile 
 - [Adjudication](#adjudication)
 - [Observer configuration](#observer-configuration)
 - [Issue triage and issue fixes](#issue-triage-and-issue-fixes)
+- [Shadow reviews](#shadow-reviews)
 - [Plugin settings and safe application](#plugin-settings-and-safe-application)
 - [Runtime file and seat models](#runtime-file-and-seat-models-review-loop-runtimejson)
 - [Environment overrides](#environment-overrides)
@@ -222,6 +223,7 @@ Cleanup considers configured roots and the per-loop artifacts tree, rejects syml
 | `human_paths` | `[]` | Glob patterns (#478; at most 50, unique, one printable line of up to 200 characters each; `fnmatch` rules, case-sensitive, `*` also matches `/`, so `.github/**` covers everything below it). If the PR's diff (read live from GitHub, including a renamed file's old name) touches one and the reviewer would approve, the approval is left to a person: no approval is written, the reviewer's turn ends as done (not retried, not a failure), the head is held (no further loop review there; `explain` says a person must approve; the watchdog does not call it a stall), and one `human_paths` notice per PR and head names the paths. A diff too large for GitHub to list in full (3,000 files) is held the same way. REQUEST_CHANGES and issue filing work as usual. An unreadable file list refuses the approval, and the reviewer may retry. A new head is reviewed afresh. Only the reviewer's approval through the broker is covered: it does not stop a person, another tool or branch protection from approving or merging. With no observer configured, or `human_paths` left out of its events, the refusal still happens but no notice is sent. Set with `init`/`setup`/`set --human-path GLOB` (repeat; `set --no-human-paths` clears), the settings form (comma-separated) or the loop file. |
 | `required_checks` | `[]` | The check runs or status contexts that gate an approval, named exactly as GitHub shows them (at most 50, unique, one printable line of up to 100 characters each). Empty: every check gates. Set: only these gate the broker's APPROVE (a failed one is refused, a cancelled one is refused as needing a re-run), the review-after-CI hold (a required check that has not reported yet counts as running) and, later, #306. Others are shown to the reviewer as *optional* and never block. Host-owned: never read from a PR. Set with `init`/`setup`/`set --required-check NAME` (repeat; `set --no-required-checks` clears) or the settings form (comma-separated; a comma inside parentheses, as in a matrix name, stays part of the name). |
 | `review_only` | `[]` | GitHub logins (at most 50, unique, lowercased) whose PRs the reviewer reviews but the fixer never touches, for example your own account. A review-only author's PR gets reviewer turns like a fixer's; a changes-requested verdict goes back to the author (the notice says "returned to the author") and starts no fixer turn. There is no adjudication on these PRs, and the watchdog never reports a fixer stall for them (a missing review is still reported). They have their own verdict cap, `review_only_cap` (below); at the cap the author re-requesting the reviewer is no bypass, and only a maintainer's `review --another-round` allows one more verdict. Below the cap the author may re-request the reviewer on their own PR. A login can't be both review-only and a fixer or a reviewer. Set with `init`/`setup`/`set --review-only LOGIN` (repeat; `set --no-review-only` clears) or the settings form (comma-separated). |
+| `fixer_scope_lock` | `false` | Strict JSON boolean (#482). Set with `init`/`setup`/`set --fixer-scope-lock on\|off`, the settings form or the loop file. On: a fixer push on a PR with open numbered findings (#475) may change the files those findings name, plus tests (`tests/`, `test_*`, `*_test.*`) and docs (`docs/`, `*.md`, `*.rst`, `*.txt`); any other changed file holds the push: nothing is written, the host records the extra files and sends one `held` notice listing them, and `status` shows the hold. `hermes dk retry --loop L --pr N` releases it for that head and those files; the fixer's next push of the head goes through. It runs in the broker's push path, so it does nothing while `unattended_fixer_push` is off (`show` says so), and it is not applied to conflict-merge or CI-fix pushes, nor to a PR with no open finding. |
 | `review_only_update` | `false` | Strict JSON boolean (a successful push sends an `updated` notice). A review-only PR that conflicts after a merge always gets one notice per head naming the merged PRs, the conflicting files (a host dry merge, nothing pushed) and the commands. `true`, with `unattended_fixer_push` on, also lets the host push a clean merge of the base into a same-repository review-only branch with a lease on the head it read, then one notice ("merged into #N at sha; review resumes"). A real conflict, a workflow change or a fork gets the notice only. Turning it on needs `--acknowledge-branch-push` (`init`, `setup`, `set`); `doctor` checks the pushing token can push. |
 | `review_only_cap` | `null` | Verdicts per review-only PR, whole number 1-1000; `null` = `cap`. At the cap the reviewer declines with nothing spent until `hermes dk review --pr N --another-round` grants one more verdict on the current head. |
 | `review_only_daily` | `null` | Reviewer turns per local day on review-only PRs, whole number 1-1000; `null` = no cap. A separate pool: review-only turns count only against this cap, and other reviewer turns only against `daily_turns`, so neither spends the other's allowance (unset: review-only turns count against `daily_turns`). `seat_daily_tokens` stays shared by every reviewer turn. Once spent they wait until midnight. Upgrade note: with both set, the reviewer can run up to `daily_turns` + `review_only_daily` turns a day. |
@@ -396,6 +398,27 @@ An authorized handoff uses the runtime seat `issue_fixer`, but that seat has no 
 - It requires enabled triage, a configured `fix_label`, and `unattended_fixer_push: true`.
 
 Do not add `seats.issue_fixer` and expect it to tune this behavior: normalization does not retain it as a configurable seat. Its inference resolution uses the fixer seat; the runtime override seat names likewise do not include `issue_fixer`.
+
+## Shadow reviews
+
+A shadow review runs a second reviewer model on a head the real reviewer was queued for, in no-write mode. It authorizes with live reads, records what it would have submitted, and posts nothing. The recorded reviews are for comparing models on the same PRs. Nothing in the loop decides from them.
+
+```json
+"shadow": {"profile": "shadow", "every": 5},
+"seats": {"shadow": {"daily_turns": 10}}
+```
+
+- `shadow.profile`: the Hermes profile shadow reviews run as. Its model and account are the shadow's. Without it, shadow reviews are off. Doctor fails a shadow that runs as the reviewer's own profile: it would compare a model with itself, and a 429 on the shared account would hold the real reviewer.
+- `shadow.every`: shadow one in this many reviewer turns, 1-1000, default 5. The choice is made from the repo, PR and head, so a redelivered event chooses the same way.
+- `seats.shadow`: the seat's limits, like any seat's: `daily_turns`, `daily_tokens`, `turn_budget_s` (default: the loop's), `concurrency` (default 1, never the loop's) and `max_steps`. There is no route, login or token: a shadow never writes.
+
+A shadow turn gets the reviewer's prompt and change view at that head, minus any review posted after it was queued (the real one included). It is not part of the loop:
+- it never occupies the PR, so the real reviewer and fixer never wait for it, and it never waits for them;
+- it claims no seat and marks no head in flight;
+- it pages nobody when it fails;
+- `stats`, `retry` (unless `--seat shadow`) and `escalate` leave it out.
+
+Its records are the `shadow_reviews` table in the run ledger (run, PR, head, model, verdict, body, and whether the broker would have authorized it or left an approval to a person under `human_paths`).
 
 ## Plugin settings and safe application
 

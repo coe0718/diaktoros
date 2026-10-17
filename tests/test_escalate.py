@@ -115,6 +115,17 @@ class Command(Base):
         self.assertIn("in flight", out)
         wake.assert_not_called()
 
+    def test_a_running_shadow_review_does_not_refuse(self):
+        # #218: a shadow writes nothing at the head, so it holds no escalation.
+        sup = Supervisor(config.home() / "state" / "diaktoros-runs.sqlite")
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("d", fg.REPO, 7, HEAD, "shadow")
+        with ledger.connect(sup.db) as con:
+            con.execute("UPDATE runs SET state='running'")
+        rc, out, wake = self.escalate()
+        self.assertEqual(rc, 0, out)
+        wake.assert_called_once()
+
 
 class Parked(Base):
     def setUp(self):

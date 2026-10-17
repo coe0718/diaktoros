@@ -147,10 +147,40 @@ def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key:
     delivery = f"{loop['repo']}:{number}:{head}:{seat}"
     # The turn's wall clock rides on the row (#49): whichever worker claims it — possibly one
     # spawned by another loop's event — runs it for this loop's seat budget, not a worker default.
-    return supervisor.submit(delivery + (f':{turn_key}' if turn_key else ''),
-                             loop["repo"], number, head, seat, turn_key=turn_key,
-                             require_push_admission=seat == "fixer",
-                             budget=config.turn_budget(loop, seat))
+    outcome = supervisor.submit(delivery + (f':{turn_key}' if turn_key else ''),
+                                loop["repo"], number, head, seat, turn_key=turn_key,
+                                require_push_admission=seat == "fixer",
+                                budget=config.turn_budget(loop, seat))
+    if seat == "reviewer" and outcome == "enqueued":
+        enqueue_shadow(loop, supervisor, number, head, turn_key=turn_key)
+    return outcome
+
+
+def shadow_sampled(loop: dict, number: int, head: str) -> bool:
+    """Whether this reviewer turn also gets a shadow review (#218): one in ``shadow.every``,
+    chosen by the repo, PR and head, so a redelivery or a re-queued turn chooses the same."""
+    import hashlib
+    every = config.shadow_every(loop)
+    digest = hashlib.sha256(f"{loop['repo']}:{number}:{head}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") % every == 0
+
+
+def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: str = "") -> str:
+    """Queue a shadow review beside a newly queued reviewer turn (#218), when the loop has a
+    shadow profile and this head is sampled. Best effort and silent: a shadow is never part of
+    the loop, so nothing here can change what the reviewer's enqueue answers. Returns what
+    happened, for logs and tests."""
+    try:
+        if not config.shadow_profile(loop):
+            return "off"
+        if not shadow_sampled(loop, number, head):
+            return "not sampled"
+        delivery = f"{loop['repo']}:{number}:{head}:shadow" + (f":{turn_key}" if turn_key else "")
+        return supervisor.submit(delivery, loop["repo"], number, head, "shadow",
+                                 turn_key=turn_key, budget=config.turn_budget(loop, "shadow"))
+    except Exception as exc:
+        log(f"#{number}: shadow review not queued: {type(exc).__name__}: {exc}")
+        return "error"
 
 
 def resume_isolated(loop: dict) -> bool:

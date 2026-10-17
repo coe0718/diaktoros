@@ -148,11 +148,12 @@ def revisions(db: Path, repo: str, since: float) -> dict | None:
             rows = con.execute(
                 f"SELECT {rev} AS prompt_rev, {model} AS model, {think} AS thinking, r.seat, r.pr, x.verdict "
                 "FROM runs r LEFT JOIN review_receipts x ON x.run_id=r.id AND x.state='posted' "
-                "WHERE r.repo=? AND r.created>=?", (repo, since)).fetchall()
+                "WHERE r.repo=? AND r.created>=? AND r.seat!='shadow'", (repo, since)).fetchall()
         except sqlite3.OperationalError:
             rows = con.execute(
                 f"SELECT {rev} AS prompt_rev, {model} AS model, {think} AS thinking, r.seat, r.pr, NULL AS verdict "
-                "FROM runs r WHERE r.repo=? AND r.created>=?", (repo, since)).fetchall()
+                "FROM runs r WHERE r.repo=? AND r.created>=? AND r.seat!='shadow'",
+                (repo, since)).fetchall()
     finally:
         con.close()
     out = {}
@@ -202,6 +203,7 @@ def now(db: Path, repo: str, at: float | None = None) -> dict | None:
         con.row_factory = sqlite3.Row
         marks = ",".join("?" * len(LIVE_STATES))
         rows = con.execute(f"SELECT pr, seat, head, state, error, updated FROM runs WHERE repo=? "
+                           "AND seat!='shadow' "
                            f"AND (state IN ({marks}) OR (state='failed' AND updated>=?)) "
                            "ORDER BY updated DESC LIMIT 100",
                            (repo, *LIVE_STATES, at - RECENT_FAILED_S)).fetchall()
@@ -319,8 +321,8 @@ def review_window(db: Path, repo: str, since: float, until: float) -> dict | Non
         columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
         model = "r.model" if "model" in columns else "NULL"
         runs = con.execute(f"SELECT r.id, r.pr, r.seat, r.state, {model} AS model, r.created "
-                           "FROM runs r WHERE r.repo=? AND r.created>=? AND r.created<?",
-                           (repo, since, until)).fetchall()
+                           "FROM runs r WHERE r.repo=? AND r.created>=? AND r.created<? "
+                           "AND r.seat!='shadow'", (repo, since, until)).fetchall()
         try:
             receipts = con.execute("SELECT run_id, verdict, created, confirmed FROM review_receipts "
                                    "WHERE state IN ('posted','confirmed')").fetchall()
@@ -588,7 +590,7 @@ def fix_outcomes(db: Path, repo: str, since: float, until: float, pr_state) -> d
                       and row["pr_number"] is not None})
         marks = ",".join("?" * len(prs))
         runs = con.execute(f"SELECT id, pr, created FROM runs WHERE repo=? AND pr IN ({marks}) "
-                           "AND seat!='issue_fixer' AND launch_intent IS NOT NULL",
+                           "AND seat NOT IN ('issue_fixer','shadow') AND launch_intent IS NOT NULL",
                            (repo, *prs)).fetchall() if prs else []
         launched = {row[0] for row in con.execute(
             "SELECT id FROM runs WHERE repo=? AND seat='issue_fixer' AND launch_intent IS NOT NULL",

@@ -495,6 +495,8 @@ TOOLS = {
                     f'diff of at most {safe_push.MAX_PATCH // 1024} KiB, regular files only, '
                     'nothing under `.github/`. If you cannot fix the issue, instead run '
                     '`python -m diaktoros.broker_client issue_comment --body-file /tmp/why.md`. '
+                    'To ask one question or post a plan instead (the issue is handed back until a '
+                    'maintainer replies), add `--ask question` or `--ask plan` to issue_comment. '
                     'You get exactly one of the two; you cannot review, merge or close anything. '),
 }
 

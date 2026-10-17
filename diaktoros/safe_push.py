@@ -20,7 +20,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
-from . import attribution, broker, config, gh, util
+from . import attribution, broker, config, gh, scope_lock, util
 from .config import host_guards
 
 MAX_FILES = 24
@@ -584,6 +584,7 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
     # verdict to answer. ``merge`` is host-built (RunScope), never the seat's: an ordinary push
     # still needs the live verdict.
     verdict = merge is None and not ci_fix   # a CI-fix turn (#306) answers no verdict either
+    scope_check = verdict and role == "fixer"   # only a fix round answering findings (#482)
     login = broker.authorize(loop, repo=repo, number=number, head=head,
                              role=role, branch=branch, operation="push", require_verdict=verdict)
     if not isinstance(branch, str) or len(branch) > 200 or not all(
@@ -632,6 +633,8 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
         broker.authorize(loop, repo=repo, number=number, head=head,
                          role=role, branch=branch, operation="push", require_verdict=verdict)
         check_ref()
+        if scope_check:                      # #482: the paths are known here, diff or whole files
+            scope_lock.check(loop, number, head, receipt["paths"])
         attempt_started = True
         _audit(loop, {**receipt, "new_head": created, "phase": "attempt"})
         new_head = created
@@ -642,6 +645,8 @@ def push(loop: dict, *, repo: str, number: int, head: str, role: str,
                  **({"merge": merge} if merge is not None else {}), **extra)
     except Exception as exc:
         error = exc
+    if isinstance(error, scope_lock.ScopeHold):
+        raise error                          # a hold before any write: say why, not "unconfirmed"
     outcome = "unknown"
     try:
         # Read back independently even on timeout, rejection, or lost response.

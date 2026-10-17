@@ -136,6 +136,15 @@ CREATE TABLE IF NOT EXISTS ledger_events (
  id INTEGER PRIMARY KEY, message TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
  created REAL NOT NULL, delivered REAL
 );
+-- A shadow review (#218): what a second reviewer model WOULD have submitted at a head the real
+-- reviewer was queued for, recorded by the no-write broker and never posted. Compared with the
+-- real review for the report; nothing in the loop decides from it. held: the human_paths reason
+-- when the would-be APPROVE was left to a person (#859).
+CREATE TABLE IF NOT EXISTS shadow_reviews (
+ run_id TEXT PRIMARY KEY REFERENCES runs(id), repo TEXT NOT NULL, pr INTEGER NOT NULL,
+ head TEXT NOT NULL, model TEXT, verdict TEXT NOT NULL, body TEXT NOT NULL,
+ authorized INTEGER NOT NULL, denial TEXT, held TEXT, created REAL NOT NULL
+);
 """
 # The host's migrations of ``runs``, in order: (column, ALTER, follow-up statements). The one
 # source for both the host (which applies what a ledger lacks) and the worker's schema check.
@@ -206,7 +215,12 @@ RETRY_BASE = 120.0
 RETRY_CAP = 3600.0
 DETAIL_BYTES = 2000
 REARMABLE = ("failed", "cancelled")
-SEATS = ("reviewer", "fixer", "adjudicator", "triage", "issue_fixer")
+SEATS = ("reviewer", "fixer", "adjudicator", "triage", "issue_fixer", "shadow")
+# A second reviewer model in no-write mode (#218). It runs beside the real loop and never in it:
+# no PR occupancy, no seat claim, no notice, no write. Everything keyed by seat leaves it out by
+# construction; the few queries over every row of a PR name it (``NOT_SHADOW``).
+SHADOW = "shadow"
+NOT_SHADOW = "seat != 'shadow'"
 RULINGS = ("ACCEPT", "REJECT", "RESPEC")
 # Host-limit settings the sandboxed worker must inherit. The worker starts from the scrubbed
 # environment built in Supervisor._spawn, so an override the operator set for the gateway is
@@ -631,6 +645,60 @@ def policy_hold(error: object) -> bool:
     return isinstance(error, str) and (error.startswith(FIXER_NOT_ADMITTED.split(":")[0])
                                        or error.startswith(FIXER_PUSH_REVOKED.split(":")[0])
                                        or error.startswith(FIXER_PUSH_OFF))
+
+
+# Claim order (#481): finish work before starting more. Lower class goes first; a pending row
+# climbs one class per CLAIM_AGE_STEP_S waited, so the lowest class runs within
+# (classes - 1) * CLAIM_AGE_STEP_S of arrival even while higher classes keep arriving.
+CLAIM_CLASSES = ('CI-fix/conflict turn', 'fix round', 'review', 'new issue fix')
+CLAIM_AGE_STEP_S = 900.0
+
+
+def claim_class(row) -> int:
+    """The priority class (index into ``CLAIM_CLASSES``) of a run row."""
+    from .. import ci_fix
+    seat, key = row['seat'], str(row['turn_key'] or '')
+    if seat == 'fixer' and (key.startswith(CONFLICT_KEY) or ci_fix.is_ci_fix(key)):
+        return 0
+    if seat in ('fixer', 'adjudicator'):
+        return 1
+    return 3 if seat == 'issue_fixer' else 2
+
+
+def claim_rank(row, now: float) -> tuple:
+    """Sort key for a pending row: aged class, then arrival. The one definition the worker's
+    claim and the status/explain queue view share."""
+    aged = int(max(0.0, now - float(row['created'])) // CLAIM_AGE_STEP_S)
+    return (max(0, claim_class(row) - aged), row['created'], row['id'])
+
+
+def claim_order(rows, now: float | None = None) -> list:
+    now = time.time() if now is None else now
+    return sorted(rows, key=lambda r: claim_rank(r, now))
+
+
+def claim_why(row, now: float) -> str:
+    cls, eff = claim_class(row), claim_rank(row, now)[0]
+    text = CLAIM_CLASSES[cls]
+    if eff < cls:
+        text += f", aged up to {CLAIM_CLASSES[eff]} priority after {int(now - float(row['created']))}s"
+    return text
+
+
+def pending_view(db: str | Path, repo: str) -> list[dict] | None:
+    """The loop's pending runs in claim order, read-only, each with ``why``. None: unreadable."""
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return None
+        try:
+            now = time.time()
+            rows = con.execute("SELECT * FROM runs WHERE state='pending' AND repo=?", (repo,)).fetchall()
+            return [{**dict(r), 'why': claim_why(r, now)} for r in claim_order(rows, now)]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
 
 
 def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:
@@ -1284,6 +1352,16 @@ class Supervisor(records.LedgerRecords):
                         (time.time(), time.time(), run_id))
             con.execute('COMMIT')
 
+    def abort_push(self, run_id: str, repo: str, pr: int, head: str) -> None:
+        """Withdraw a push intent for a push held before any write (#482 scope lock)."""
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            con.execute("UPDATE runs SET push_intent=NULL,updated=? WHERE id=? AND repo=? "
+                        "AND pr=? AND head=? AND seat='fixer' AND push_confirmed IS NULL "
+                        "AND state IN ('launching','running')",
+                        (time.time(), run_id, repo, pr, head))
+            con.execute('COMMIT')
+
     def confirm_push(self, run_id: str, repo: str, pr: int, head: str) -> None:
         """Clear hold only after exact ref and PR readback succeeded."""
         with self._connect() as con:
@@ -1387,7 +1465,11 @@ class Supervisor(records.LedgerRecords):
                 "`python -m diaktoros.run_supervisor reconcile DB RUN_ID "
                 "--reason REASON --acknowledge-no-live-worker` only after "
                 "establishing no worker remains. Failed writes require "
-                "manual inspection before any new turn.")
+                "manual inspection before any new turn."
+                + (f" Issue fix: `hermes dk continue --loop {loop_id} --run {row['id']}` "
+                   "inspects GitHub and finishes only the missing stage (never pushes); "
+                   f"a maintainer may reply `continue {row['id']}`."
+                   if row['seat'] == 'issue_fixer' else ""))
 
     def notify(self, deliver) -> int:
         """One bounded alert per failed/uncertain run, retried if delivery fails.
@@ -1399,7 +1481,8 @@ class Supervisor(records.LedgerRecords):
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
             con.execute("INSERT OR IGNORE INTO operator_notices(run_id,state,created) "
-                        "SELECT id,'pending',? FROM runs WHERE state IN ('failed','uncertain')",
+                        "SELECT id,'pending',? FROM runs WHERE state IN ('failed','uncertain') "
+                        "AND " + NOT_SHADOW,
                         (time.time(),))
             con.execute('COMMIT')
             rows = con.execute("SELECT r.id,r.repo,r.pr,r.head,r.seat,r.state,r.error "
@@ -1810,10 +1893,12 @@ class Supervisor(records.LedgerRecords):
         with self._connect() as con:
             candidates = con.execute("SELECT * FROM runs WHERE state='pending' "
                                      "ORDER BY created,id").fetchall()
-        for row in candidates:
+        for row in claim_order(candidates):
             read = _ClaimRead()
             if self.production_config and row['seat'] == 'reviewer':
                 self._claim_read_reviewer(row, read)
+            if self.production_config and row['seat'] == SHADOW:
+                self._claim_read_shadow(row, read)
             if row['seat'] not in self.capacity:
                 continue  # a worker spawned with another seat set never claims this row
             if self.production_config:
@@ -1822,6 +1907,27 @@ class Supervisor(records.LedgerRecords):
             if claimed is not None:
                 return claimed
         return None
+
+    def _claim_read_shadow(self, row, read: _ClaimRead) -> None:
+        """A shadow row's claim-time read (#218): the PR still open, out of draft, at this head.
+        Unlike the reviewer's, a review already at the head never supersedes it: the shadow
+        exists to review the head the real reviewer reviewed. A moved or closed PR retires it."""
+        from .. import config, gh
+        try:
+            loop = config.by_repo(row['repo'])
+            if loop is None or not config.shadow_profile(loop):
+                read.superseded = 'shadow reviews are off for this loop'
+                return
+            pr = gh.api(loop, f"/repos/{row['repo']}/pulls/{row['pr']}",
+                        login=loop['read_token'])
+            if not isinstance(pr, dict) or pr.get('number') != row['pr']:
+                read.read_error = 'PR unreadable (GitHub read failed)'
+            elif pr.get('state') != 'open' or (pr.get('head') or {}).get('sha') != row['head']:
+                read.superseded = 'shadow review superseded: PR closed or head moved'
+            elif pr.get('draft') is not False:
+                read.retry_read = True
+        except Exception as exc:
+            read.read_error = f'{type(exc).__name__}: {exc}'[:200]
 
     def _claim_read_reviewer(self, row, read: _ClaimRead) -> None:
         """A reviewer row's claim-time read: the PR's state and head, its review generation,
@@ -1984,11 +2090,13 @@ class Supervisor(records.LedgerRecords):
                             (read.refused, time.time(), row['id']))
                 con.execute('COMMIT')
                 return None
-            # Recheck both capacity and PR occupancy under the writer lock.
-            occupied = con.execute("SELECT 1 FROM runs WHERE repo=? AND pr=? "
-                                   "AND (state IN ('claimed','launching','running','uncertain') "
-                                   "OR push_intent IS NOT NULL)",
-                                   (row['repo'], row['pr'])).fetchone()
+            # Recheck both capacity and PR occupancy under the writer lock. A shadow turn
+            # (#218) neither occupies the PR nor waits for it: it writes nothing, so the real
+            # reviewer and fixer never queue behind it, and it never queues behind them.
+            occupied = row['seat'] != SHADOW and con.execute(
+                "SELECT 1 FROM runs WHERE repo=? AND pr=? AND " + NOT_SHADOW + " "
+                "AND (state IN ('claimed','launching','running','uncertain') "
+                "OR push_intent IS NOT NULL)", (row['repo'], row['pr'])).fetchone()
             # Capacity is per repo and seat: another repo's rows never consume it.
             used = con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND seat=? AND "
                                "state IN ('claimed','launching','running','uncertain')",
@@ -2383,8 +2491,10 @@ class Supervisor(records.LedgerRecords):
         # the worker is the one party that knows a turn is running, so it writes them.
         # Seat claims and in-flight marks are PR-keyed (explain, the watchdog's clocks); a
         # triage run is issue-keyed and held by the ledger alone.
+        # A shadow turn (#218) holds neither: it is not the PR's review, and a claim or an
+        # in-flight mark would read as one (the gate's "a review is already out").
         turn.claim = (claim_seat(loop, row, turn.budget)
-                      if row['seat'] not in ('triage', 'issue_fixer') else None)
+                      if row['seat'] not in ('triage', 'issue_fixer', SHADOW) else None)
         if row['seat'] == 'issue_fixer' and not config.issue_fixes_enabled(loop):
             # The policy may have changed since the gate: a turn that could not publish is
             # never started (the broker would refuse its write anyway).
@@ -2420,7 +2530,8 @@ class Supervisor(records.LedgerRecords):
         elif row['seat'] == 'fixer' and ci_fix.is_ci_fix(row['turn_key']):
             role = 'ci_fix'
         else:
-            role = row['seat']
+            # A shadow turn is told exactly what the reviewer is told (#218).
+            role = 'reviewer' if row['seat'] == SHADOW else row['seat']
         self.record_launch(run_id, owner, prompts.revision(role), inference.model)
         prompt = launch.prompt
         if unpublished_before(row):
@@ -2437,6 +2548,8 @@ class Supervisor(records.LedgerRecords):
               prompt=prompt, review_diff=change.diff if change else None,
               **({"merged": merged} if merged is not None else {}),
               timeout=turn.budget,
+              # A shadow turn's broker authorizes with live reads and records; it never posts.
+              no_write=row['seat'] == SHADOW,
               work_root=config.state_dir(loop) / "isolated-runs", observed=turn.observed,
               # The prefetch phase lands in the ledger as it happens (#51): a slow one shows
               # as "fetching", not as a silent turn, and its outcome outlives the run.
@@ -2682,15 +2795,22 @@ class Supervisor(records.LedgerRecords):
             # A fresh review after a retarget starts from nothing: old verdicts are
             # neither its round count nor its PR record.
             reviews = pr_facts.effective_reviews(loop, row, gh.reviews(loop, row['pr']), self.db)
+            if row['seat'] == SHADOW and isinstance(reviews, list):
+                # The shadow sees what the real reviewer saw when both were queued (#218): a
+                # review posted since, the real one's included, would tell it the answer.
+                reviews = [r for r in reviews
+                           if not util.epoch(r.get('submitted_at')) > row['created']]
         # The reviewer and fixer see the change itself (#50); the adjudicator needs both
         # sides' comments. A read that failed is transient (retry); a moved head is not.
+        # The shadow is prompted as the reviewer it shadows.
+        prompt_row = dict(row, seat='reviewer') if row['seat'] == SHADOW else row
         try:
             # The last allowed attempt degrades an unreadable file list rather than failing
             # the run (#110): a partial view, stated as such, instead of no turn at all.
             final = (row['retries'] or 0) + 1 >= MAX_RETRIES
-            change = (pr_facts.pr_change(loop, row, final=final)
-                      if row['seat'] in ('reviewer', 'fixer') else None)
-            prompt = turn_prompts.isolated_prompt(loop, row, reviews, marker, change)
+            change = (pr_facts.pr_change(loop, prompt_row, final=final)
+                      if prompt_row['seat'] in ('reviewer', 'fixer') else None)
+            prompt = turn_prompts.isolated_prompt(loop, prompt_row, reviews, marker, change)
         except ValueError as exc:
             if str(exc) in ('fixer answers unreadable', 'PR unreadable') \
                     or str(exc).startswith('PR files unreadable'):
@@ -2702,7 +2822,7 @@ class Supervisor(records.LedgerRecords):
         partial = change.partial if change else ''
         self.record_view(turn.run_id, turn.owner, partial)
         scope = broker_ipc.RunScope(row["repo"], row["pr"], row["head"],
-                                    row["seat"], head["ref"], row['id'],
+                                    prompt_row["seat"], head["ref"], row['id'],
                                     str(self.db), row['generation'], partial_view=partial)
         if row['seat'] == 'adjudicator':
             from .. import state as state_mod
@@ -2750,6 +2870,15 @@ class Supervisor(records.LedgerRecords):
                               'fixer' if turn.row['seat'] == 'issue_fixer' else turn.row['seat'])
         except Exception:
             pass    # likewise: a lost count must not change how the turn ends
+        shadow = turn.row is not None and turn.row['seat'] == SHADOW
+        if shadow:
+            # What the shadow would have submitted (#218), recorded while the run is still live.
+            submissions = observed.get('submissions') or []
+            try:
+                if submissions:
+                    self.record_shadow(run_id, owner, submissions[-1])
+            except Exception:
+                pass    # a lost record must not change how the turn ends
         state = self.complete_uncertain(
             run_id, owner, turn.rc, turn.error, stopped=turn.stopped, retry=turn.retry,
             detail=output_detail(observed.get('stdout'), observed.get('stderr')),
@@ -2765,7 +2894,9 @@ class Supervisor(records.LedgerRecords):
             except Exception:
                 pass
         release_seat(turn.claim, state)
-        self.failure_notice(run_id, state)
+        if not shadow:
+            # A shadow turn is no part of the loop (#218): its failure pages nobody.
+            self.failure_notice(run_id, state)
         self.recover()
 
     def failure_notice(self, run_id: str, state: str | None) -> None:

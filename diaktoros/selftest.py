@@ -1098,7 +1098,8 @@ def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | 
     except Exception as exc:
         rc, error = observed.get("returncode"), f"{type(exc).__name__}: {exc}"
     for entry in observed.get("submissions") or []:
-        state = ("authorized" if entry.get("authorized")
+        state = (f"held for a person: {entry['held']}" if entry.get("held")
+                 else "authorized" if entry.get("authorized")
                  else f"would be DENIED: {entry.get('denial')}")
         report.text(f"  ── the agent would submit {entry['verdict']} ({state}); NOT posted ──")
         for line in (entry.get("body") or "").splitlines()[:200]:
@@ -1114,6 +1115,12 @@ def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | 
                    f"budget with `hermes dk set --loop {loop['id']} "
                    "--reviewer-turn-budget N`; otherwise read the output above — the production "
                    "worker runs the same turn")
+        return
+    if submissions[-1].get("held"):
+        # human_paths (#478): the loop leaves this approval to a person, which is correct.
+        report.add(step, "turn:reviewer", PASS,
+                   f"isolated turn would APPROVE; the loop leaves that to a person here "
+                   f"({submissions[-1]['held']}); nothing was posted or held")
         return
     if not submissions[-1].get("authorized"):
         report.add(step, "turn:reviewer", FAIL, "the agent's verdict would have been denied",

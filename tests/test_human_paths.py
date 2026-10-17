@@ -101,6 +101,22 @@ class Broker(pv.Broker):
         self.assertFalse(again["ok"])                     # the turn's one write is spent
         self.assertEqual(self.posts, [])
 
+    def test_a_no_write_run_records_the_hold_and_sets_none(self):
+        # A no-write run (selftest --live-turn, a shadow review) once set the real hold and sent
+        # the notice, which stopped the real reviewer at this head. It records it instead.
+        self.files = [{"filename": "src/lib.rs"}, {"filename": ".github/workflows/ci.yml"}]
+        sup, scope = self.ledgered("")
+        server = self.start(scope, no_write=True)
+        got = self.send(server, "APPROVE")
+        self.held(got)
+        self.assertTrue(server.completed)
+        from diaktoros import state as state_mod
+        self.assertIsNone(state_mod.state_for(self.loop).human_hold(7, server.scope.head))
+        self.assertEqual(self.notices(), [])
+        self.assertEqual(len(server.recorded), 1)
+        self.assertIn(".github/workflows/ci.yml", server.recorded[0]["held"])
+        self.assertEqual(server.recorded[0]["verdict"], "APPROVE")
+
     def test_a_renamed_away_listed_path_counts(self):
         self.files = [{"filename": "docs/ci.yml", "previous_filename": ".github/ci.yml"}]
         self.held(self.approve()[1])

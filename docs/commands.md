@@ -102,6 +102,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | link a later bug to the approved PR that shipped it | [`regression`](#regression) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
+| finish a half-written issue fix | [`continue`](#continue) |
 | start a queued turn now | [`drain`](#drain) |
 | settle an observer notice whose delivery is uncertain | [`observer`](#observer) |
 | check the reviewer still catches known problems | [`corpus`](#corpus) |
@@ -353,6 +354,7 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default: the plugin setting, off) |
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (default: the plugin setting, off) |
+| `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name for a maintainer (default: the plugin setting, off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default: the plugin setting, on) |
 | `--reviewer-max-steps` | `REVIEWER_MAX_STEPS` |  | agent steps one reviewer turn may take, 8-200 (0 = default 60) (default: the plugin setting) |
 | `--fixer-max-steps` | `FIXER_MAX_STEPS` |  | agent steps one fixer or issue-fix turn may take, 8-200 (0 = default 80) (default: the plugin setting) |
@@ -458,6 +460,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour) (default off) |
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer, one turn per head; needs unattended fixer pushes (default off) |
+| `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name for a maintainer; needs unattended fixer pushes (default off) |
 | `--attribution` | `on` \| `off` |  | sign what the loop posts with 'Automated by Diaktoros' (default on) |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000 (default: the plugin setting, else the review cap) |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head goes to the reviewer, 1-10 (default: the plugin setting, else 3) |
@@ -545,6 +548,7 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--acknowledge-branch-push` |  |  | accept that the host pushes to a branch the loop does not own; required to turn --review-only-update on |
 | `--review-after-ci` | `on` \| `off` |  | start each review after the head's checks finish (up to an hour), or start at once |
 | `--fix-ci` | `on` \| `off` |  | hand a failed required check on a fixer's PR to the fixer (needs unattended fixer pushes), or stop |
+| `--fixer-scope-lock` | `on` \| `off` |  | hold a fix round that changes files its findings do not name (other than their tests and docs) for a maintainer, or stop; needs unattended fixer pushes |
 | `--review-only-cap` | `N` |  | verdicts the reviewer gives one review-only PR before it waits for `review --another-round`, 1-1000; 0 = the review cap |
 | `--ci-fix-cap` | `N` |  | CI-fix turns per PR before a red head goes to the reviewer, 1-10; 0 = the default (3) |
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000; 0 = no cap |
@@ -1251,7 +1255,33 @@ and reconcile it instead.
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--pr` | `PR` | **required** | the pull request whose failed run to re-arm |
-| `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` |  | only that seat's run (default: whichever failed at the PR's newest head) |
+| `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` \| `shadow` |  | only that seat's run (default: whichever failed at the PR's newest head; a shadow run only when named) |
+<!-- /flags -->
+
+### continue
+
+Finishes an issue fix that stopped between its branch push, its PR and its review request
+(#485). It compares the run's `issue_fixes` record with GitHub (branch head, PRs for the branch,
+requested reviewers and reviews), then does only the missing stage: open the PR, request the
+review. It **never pushes**, so nothing is pushed twice. If the records and GitHub disagree (a
+branch at another head, two PRs, a closed PR, an unreadable read) the run stays quarantined and
+the command prints what it found. `--dry-run` only inspects.
+
+```bash
+hermes dk continue --loop "<loop-id>" --run "<run-id>" --dry-run
+hermes dk continue --loop "<loop-id>" --run "<run-id>"
+```
+
+A reply `continue <run-id>` is honoured only from a login in `triage.maintainers`; any other
+sender is ignored. It needs a chat gateway that hands the reply to `continue_run.from_chat`;
+this repository ships no such gateway hook, so only the CLI fires today.
+
+<!-- flags:continue -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
+| `--run` | `RUN` | **required** | the issue-fix run id (`status` lists it) |
+| `--dry-run` |  |  | only inspect and say what the next step would be |
 <!-- /flags -->
 
 ### drain

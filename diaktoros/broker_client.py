@@ -241,7 +241,7 @@ def read_answers(path: str) -> str:
 
 def call(operation: str, *, verdict: str = '', body: str = '', manifest=None,
          labels: list | None = None, socket_path: str | None = None,
-         repro: list | None = None) -> dict:
+         repro: list | None = None, ask: str = '') -> dict:
     if operation == 'push':
         payload = {'operation': 'push', 'manifest': manifest}
     elif operation == 'triage':
@@ -252,6 +252,8 @@ def call(operation: str, *, verdict: str = '', body: str = '', manifest=None,
             payload['repro'] = list(repro)
     elif operation == 'issue_comment':
         payload = {'operation': 'issue_comment', 'body': body}
+        if ask:
+            payload['kind'] = ask
     elif operation == 'file_issue':
         payload = {'operation': 'file_issue', 'title': verdict, 'body': body,
                    'labels': list(labels or [])}
@@ -345,6 +347,10 @@ def main() -> None:
     parser.add_argument('--label', action='append', default=[],
                         help='triage/file_issue: one label from the list in your instructions '
                              '(repeatable)')
+    parser.add_argument('--ask', choices=('question', 'plan'),
+                        help='issue_comment: post the body as your one question or your plan and '
+                             'hand the issue back; a maintainer\'s reply (or /loop approve for a '
+                             'plan) starts a fresh turn')
     parser.add_argument('--comment-file',
                         help=f'triage: one short comment ({TRIAGE_COMMENT_MAX} characters at '
                              'most), only when the loop allows one')
@@ -403,9 +409,9 @@ def main() -> None:
     elif args.operation == 'issue_comment':
         if (args.files or args.message is not None or args.message_file or args.dry_run
                 or args.verdict or args.manifest_file or not args.body_file):
-            parser.error('issue_comment takes only --body-file')
+            parser.error('issue_comment takes only --body-file (and optionally --ask)')
         body = Path(args.body_file).read_text()
-        operation = lambda: call('issue_comment', body=body)  # noqa: E731
+        operation = lambda: call('issue_comment', body=body, ask=args.ask or '')  # noqa: E731
     elif args.operation == 'triage':
         if (args.files or args.message is not None or args.message_file or args.dry_run
                 or args.verdict or args.body_file or args.manifest_file):
