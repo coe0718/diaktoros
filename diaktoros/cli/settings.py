@@ -1836,8 +1836,9 @@ def add_apply(sub) -> None:  # noqa: ANN001
                                 "config, with a new secret, and re-key the repo hooks that "
                                 "point at them (when no intent record can restore them)")
     apply_cmd.add_argument("--hooks", action="store_true",
-                           help="make this loop's two repo hooks what its routes need: "
-                                "create a missing one (paused until arm), repoint one at the "
+                           help="make every repo hook this loop's routes need (reviewer, "
+                                "fixer, and triage's issues hook when triage is on) what "
+                                "they need: create a missing one (paused until arm), repoint one at the "
                                 "route's exact URL, add its gate's event (hook write access, "
                                 "see --admin-token)")
     apply_cmd.add_argument("--watchdog-shim", action="store_true",

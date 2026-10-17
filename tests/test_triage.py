@@ -398,5 +398,15 @@ class Prompts(unittest.TestCase):
                                     labels="", comment_rule="x")
 
 
+class ApplyHooksHelp(unittest.TestCase):
+    def test_hooks_flag_help_does_not_claim_two_hooks(self):
+        sys.path.insert(0, str(ROOT / "tests"))
+        import commands_doc
+        apply_cmd = commands_doc.verbs(commands_doc.parser())["apply"]
+        help_text = next(a.help for a in apply_cmd._actions if "--hooks" in a.option_strings)
+        self.assertNotIn("two repo hooks", help_text)
+        self.assertIn("triage", help_text)
+
+
 if __name__ == "__main__":
     unittest.main()
