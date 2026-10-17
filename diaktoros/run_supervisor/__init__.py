@@ -693,7 +693,9 @@ def pending_view(db: str | Path, repo: str) -> list[dict] | None:
             return None
         try:
             now = time.time()
-            rows = con.execute("SELECT * FROM runs WHERE state='pending' AND repo=?", (repo,)).fetchall()
+            # A pending shadow (#218) is no part of the PR's queue.
+            rows = con.execute("SELECT * FROM runs WHERE state='pending' AND repo=? AND "
+                               + NOT_SHADOW, (repo,)).fetchall()
             return [{**dict(r), 'why': claim_why(r, now)} for r in claim_order(rows, now)]
         finally:
             con.close()
@@ -2553,6 +2555,8 @@ class Supervisor(records.LedgerRecords):
               timeout=turn.budget,
               # A shadow turn's broker authorizes with live reads and records; it never posts.
               no_write=row['seat'] == SHADOW,
+              # Its own step budget, though its scope role is the reviewer's (#218).
+              **({"steps": config.max_steps(loop, SHADOW)} if row['seat'] == SHADOW else {}),
               work_root=config.state_dir(loop) / "isolated-runs", observed=turn.observed,
               # The prefetch phase lands in the ledger as it happens (#51): a slow one shows
               # as "fetching", not as a silent turn, and its outcome outlives the run.
@@ -2935,6 +2939,10 @@ class Supervisor(records.LedgerRecords):
             pass    # likewise: a lost count must not change how the turn ends
         shadow = turn.row is not None and turn.row['seat'] == SHADOW
         if shadow:
+            # A shadow is a sample, never stuck work: a failed one is not retried (#218: the
+            # first live one spent four whole turns' tokens to record nothing). A closed usage
+            # window still waits for its reset, which costs nothing.
+            turn.retry = False
             # What the shadow would have submitted (#218), recorded while the run is still live.
             submissions = observed.get('submissions') or []
             try:

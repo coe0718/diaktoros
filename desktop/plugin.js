@@ -561,7 +561,12 @@ function Drawer({ loop, pr, onClose }) {
                 shadows.length
                   ? jsxs(Section, {
                       title: 'Shadow reviews (' + shadows.length + ', recorded, never posted)',
-                      children: shadowsBlock
+                      children: [
+                        ...shadowsBlock,
+                        d && d.shadows_older > 0
+                          ? jsx(Muted, { text: '… ' + d.shadows_older + ' older shadow review(s) not shown' }, 'older')
+                          : null
+                      ]
                     })
                   : null,
                 jsx(Section, { title: 'Why the loop did or did not react', children: decisionsBlock }),

@@ -290,12 +290,26 @@ class Display(Compare):
         self.real_at(8, b, "APPROVE")
         self.shadow_at(8, c, "APPROVE", "fine")
         self.shadow_at(9, c, "APPROVE", "other PR")
-        got = stats.shadow_reviews_for(self.db, "acme/widgets", 8)
+        got, older = stats.shadow_reviews_for(self.db, "acme/widgets", 8)
+        self.assertEqual(older, 0)
         self.assertEqual([(g["head"], g["verdict"], g["real"], g["agrees"]) for g in got],
                          [("ccccccc", "approved", None, None), ("bbbbbbb", "changes", "approved", False)])
         self.assertEqual((got[1]["findings"], got[1]["more"]),
                          (["a.py:3: leaks", "b.py: x", "c.py: y"], 1))
-        self.assertEqual(stats.shadow_reviews_for(self.db.parent / "none", "acme/widgets", 8), [])
+        self.assertEqual(stats.shadow_reviews_for(self.db.parent / "none", "acme/widgets", 8),
+                         ([], 0))
+
+    def test_older_reviews_past_the_cap_are_counted(self):
+        for i in range(stats.SHADOW_SHOWN + 2):
+            self.shadow_at(8, f"{i:040x}", "APPROVE", "ok")
+        got, older = stats.shadow_reviews_for(self.db, "acme/widgets", 8)
+        self.assertEqual((len(got), older), (stats.SHADOW_SHOWN, 2))
+
+    def test_a_pending_shadow_is_not_in_the_prs_queue(self):
+        self.add("shadow")
+        self.add("reviewer", pr=9)
+        self.assertEqual([r["seat"] for r in run_supervisor.pending_view(self.db, "acme/widgets")],
+                         ["reviewer"])
 
     def test_a_failed_shadow_is_not_a_run_to_act_on(self):
         self.add("shadow", "failed")
@@ -352,7 +366,7 @@ class ProductionTurn(unittest.TestCase):
                                    key="k", model="grok-x", api_mode="chat_completions",
                                    proxy_model="", client_identity="")
 
-    def run_shadow(self, submissions, reviews=()):
+    def run_shadow(self, submissions, reviews=(), rc=0):
         with mock.patch.object(Supervisor, "_spawn"), \
                 mock.patch.object(config, "by_repo", return_value=self.loop):
             gate.enqueue_isolated(self.loop, "reviewer", 8, HEAD)
@@ -368,9 +382,9 @@ class ProductionTurn(unittest.TestCase):
 
         def turn(loop, scope, **kwargs):
             self.seen.update(role=scope.role, no_write=kwargs.get("no_write"),
-                             prompt=kwargs.get("prompt"))
+                             prompt=kwargs.get("prompt"), steps=kwargs.get("steps"))
             kwargs["observed"]["submissions"] = list(submissions)
-            return 0
+            return rc
 
         def prompt(loop, row, reviews, marker=None, change=None):
             self.seen.update(prompt_seat=row["seat"], reviews=list(reviews))
@@ -412,10 +426,21 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual([(r["verdict"], r["model"], r["body"]) for r in got],
                          [("REQUEST_CHANGES", "grok-x", "F1: a.py:1: x")])
 
-    def test_a_shadow_that_submits_nothing_fails_quietly(self):
-        sup, row = self.run_shadow([])
+    def test_a_shadow_that_submits_nothing_fails_once_and_is_not_retried(self):
+        # #218: grok-4.7's first live shadow ran out of steps, exited 1, and was retried three
+        # times, four turns' tokens for nothing. A shadow is a sample: one attempt.
+        sup, row = self.run_shadow([], rc=1)
         self.assertEqual(sup.shadow_reviews(), [])
-        self.assertNotEqual(row["state"], "running")
+        self.assertEqual((row["state"], row["retries"]), ("failed", 0))
+
+    def test_the_shadow_takes_its_own_step_budget(self):
+        self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True}])
+        self.assertEqual(self.seen["steps"], config.DEFAULT_SHADOW_MAX_STEPS)
+        self.loop = config.normalize({**RAW, "state_dir": str(self.home / "state2"),
+                                      "shadow": {"profile": "grok", "every": 1},
+                                      "seats": {**RAW["seats"], "shadow": {"max_steps": 150}}})
+        self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True}])
+        self.assertEqual(self.seen["steps"], 150)
 
 
 LOOP_ID = "shadows"
