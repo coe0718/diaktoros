@@ -236,6 +236,7 @@ DEFAULTS: dict = {
     "review_only_cap": None,   # verdicts per review-only PR; None = the loop's `cap`
     "review_only_daily": None,  # reviewer turns a day on review-only PRs; None = no cap
     "ci_fix_cap": None,       # CI-fix turns per PR before the reviewer reviews red CI; None = 3
+    "fixer_scope_lock": False,  # hold a fix round that changes files its findings do not name (#482)
 }
 
 def unattended_fixer_push_enabled(loop: dict) -> bool:
@@ -1252,6 +1253,9 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     if type(loop["review_only_update"]) is not bool:
         raise ConfigError(f"{where}: 'review_only_update' must be a JSON boolean (true lets the "
                           "host push a clean merge of the base into a review-only PR)")
+    if type(loop["fixer_scope_lock"]) is not bool:
+        raise ConfigError(f"{where}: 'fixer_scope_lock' must be a JSON boolean (true holds a "
+                          "fix round that changes files its findings do not name)")
     if type(loop["fix_ci"]) is not bool:
         raise ConfigError(f"{where}: 'fix_ci' must be a JSON boolean (true hands a failed "
                           "required check on a fixer's PR to the fixer)")
@@ -1580,6 +1584,12 @@ def fix_ci(loop: dict) -> bool:
     """Whether a failed required check on a fixer's PR becomes a fixer turn (#306). Off unless
     set, and it needs unattended fixer pushes too, which it never turns on."""
     return loop.get("fix_ci") is True and unattended_fixer_push_enabled(loop)
+
+
+def fixer_scope_lock(loop: dict) -> bool:
+    """Whether a fix round's push is held when it changes files outside its findings (#482).
+    Off unless set. It acts only where the broker pushes, so it needs unattended fixer pushes."""
+    return loop.get("fixer_scope_lock") is True
 
 
 def review_only_update(loop: dict) -> bool:

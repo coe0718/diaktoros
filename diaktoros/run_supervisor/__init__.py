@@ -1278,6 +1278,16 @@ class Supervisor(records.LedgerRecords):
                         (time.time(), time.time(), run_id))
             con.execute('COMMIT')
 
+    def abort_push(self, run_id: str, repo: str, pr: int, head: str) -> None:
+        """Withdraw a push intent for a push held before any write (#482 scope lock)."""
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            con.execute("UPDATE runs SET push_intent=NULL,updated=? WHERE id=? AND repo=? "
+                        "AND pr=? AND head=? AND seat='fixer' AND push_confirmed IS NULL "
+                        "AND state IN ('launching','running')",
+                        (time.time(), run_id, repo, pr, head))
+            con.execute('COMMIT')
+
     def confirm_push(self, run_id: str, repo: str, pr: int, head: str) -> None:
         """Clear hold only after exact ref and PR readback succeeded."""
         with self._connect() as con:

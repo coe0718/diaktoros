@@ -20,6 +20,7 @@ from .. import (
     observer,
     pr_hold,
     routes,
+    scope_lock,
     state as state_mod,
 )
 from ..config import credentials
@@ -219,6 +220,8 @@ def cmd_status(args) -> int:
                   f"(`hermes dk depends --loop {loop['id']} --issue {issue_no}` says why)")
         for pr_no, hold in sorted(st.pr_holds().items()):
             print(f"  held:       PR #{pr_no} {pr_hold.line(hold)}")
+        for pr_no, hold in sorted(st.scope_holds().items()):
+            print(f"  held:       {scope_lock.line(pr_no, hold)}")
         for seat in ("reviewer", "fixer"):
             queued = len(st.queue_items(seat))
             if queued:
@@ -375,6 +378,11 @@ def cmd_retry(args) -> int:
     except config.ConfigError as exc:
         print(f"no such loop: {exc}")
         return 2
+    released = scope_lock.release(loop, args.pr)      # #482: retry is the release command
+    if released:
+        print(f"[{loop['id']}] #{args.pr}: scope lock released for "
+              f"{', '.join(released.get('files') or [])}; the fixer's next push of that head "
+              "goes through")
     ledger = _ledger_path()
     if not ledger.exists():
         print(f"no run ledger at {ledger} — nothing to retry")

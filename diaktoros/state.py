@@ -758,6 +758,29 @@ class LoopState:
             if data.pop(str(number), None) is not None:
                 self._save(self.dir / "held-prs.json", data)
 
+    # -- fixer scope-lock holds (#482): {PR: {"head", "files", "released"}} ---
+
+    def scope_holds(self) -> dict:
+        raw = self._load(self.dir / "held-scope.json", {})
+        return {int(k): v for k, v in (raw.items() if isinstance(raw, dict) else ())
+                if str(k).isdigit() and isinstance(v, dict)}
+
+    def scope_hold_set(self, number: int, hold: dict) -> bool:
+        """Record the hold; True when it is new or its head or files changed (say it once)."""
+        with self.locked():
+            data = {str(k): v for k, v in self.scope_holds().items()}
+            changed = data.get(str(number)) != hold
+            if changed:
+                data[str(number)] = hold
+                self._save(self.dir / "held-scope.json", data)
+            return changed
+
+    def scope_hold_drop(self, number: int) -> None:
+        with self.locked():
+            data = {str(k): v for k, v in self.scope_holds().items()}
+            if data.pop(str(number), None) is not None:
+                self._save(self.dir / "held-scope.json", data)
+
     # -- held issue-fix hand-offs (#324): {issue number: origin PR} ----------
 
     def fix_holds(self) -> dict:
