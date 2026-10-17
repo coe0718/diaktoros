@@ -1035,7 +1035,11 @@ GitHub and the loop's state and shows:
 - the verdicts counted against the cap;
 - any queued, running, waiting or failed turn, with its reason and its next retry;
 - holds (fixer pushes off, no runtime file, a usage window);
-- the one event that would move the PR.
+- the one event that would move the PR;
+- with [shadow reviews](configuration.md#shadow-reviews) on, a `shadow:` line per shadow review
+  of the PR (model, head, the verdict it would have given, the real reviewer's verdict there and
+  whether they agree, its first findings). These are data for comparing models: a shadow is never
+  a turn the PR waits for, so a queued or failed one is not listed among the PR's turns.
 
 Read-only.
 

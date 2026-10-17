@@ -408,6 +408,10 @@ DAILY_TOKENS_MAX = 10_000_000_000
 # every turn's wall clock. Model calls follow from steps (``model_calls``).
 DEFAULT_MAX_STEPS = {"reviewer": 60, "adjudicator": 40, "triage": 24,
                      "fixer": 80, "issue_fixer": 80}
+# A shadow review (#218) runs with the reviewer's scope role, so it has no entry above; its own
+# default is roomier, since another model may explore more before it submits (grok-4.7's first
+# live shadow ran out at the reviewer's 60).
+DEFAULT_SHADOW_MAX_STEPS = 100
 MAX_STEPS_RANGE = (8, 200)
 
 
@@ -426,7 +430,7 @@ def max_steps(loop: dict, role: str) -> int:
     value = (((loop.get("seats") or {}).get(seat)) or {}).get("max_steps")
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
-    return DEFAULT_MAX_STEPS[role]
+    return DEFAULT_SHADOW_MAX_STEPS if role == "shadow" else DEFAULT_MAX_STEPS[role]
 
 
 def model_calls(steps: int) -> int:

@@ -374,7 +374,8 @@ def _print_shadows(loop: dict, pr: int, prefix: str) -> None:
     """This PR's shadow reviews (#218), each beside the real reviewer's verdict at its head.
     Data for comparing models: nothing in the loop acts on them."""
     from .. import stats
-    for item in stats.shadow_reviews_for(_ledger_path(), loop["repo"], pr):
+    shown, older = stats.shadow_reviews_for(_ledger_path(), loop["repo"], pr)
+    for item in shown:
         real = ("no real verdict yet" if item["real"] is None else
                 f"reviewer {item['real']} ({'agrees' if item['agrees'] else 'disagrees'})")
         held = f", left to a person: {item['held']}" if item["held"] else ""
@@ -384,6 +385,8 @@ def _print_shadows(loop: dict, pr: int, prefix: str) -> None:
             print(f"{' ' * len(prefix)}| {finding}")
         if item["more"]:
             print(f"{' ' * len(prefix)}| … {item['more']} more")
+    if older:
+        print(f"{prefix}… {older} older shadow review(s) not shown")
 
 
 def cmd_retry(args) -> int:

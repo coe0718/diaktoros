@@ -564,7 +564,7 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
              api_mode: str = 'chat_completions', credential=None, proxy_model: str = '',
              client_identity: str = '', review_diff: str | None = None,
              prefetch_timeout: int = deps.FETCH_TIMEOUT, progress=None,
-             merged: dict | None = None) -> int:
+             merged: dict | None = None, steps: int | None = None) -> int:
     """Stage a live PR head, start host capabilities, execute Hermes within bwrap.
 
     ``api_mode`` picks the proxy contract and the sandbox's provider config; ``credential`` (a
@@ -701,7 +701,9 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             if len(os.fsencode(sockets)) > 50:
                 raise TurnDenied('scratch socket directory path too long')
             # Steps per seat are a setting (#271: config.max_steps); model calls follow from them.
-            steps = config.max_steps(loop, scope.role)
+            # ``steps`` overrides it for a seat whose scope role is another's: a shadow review
+            # runs as the reviewer, with its own budget (#218).
+            steps = steps or config.max_steps(loop, scope.role)
             inference = stack.enter_context(inference_proxy.InferenceCapability(
                 sockets / 'i', upstream, None if credential is not None else key,
                 model=proxy_model or model, quota=config.model_calls(steps), api_mode=api_mode,

@@ -704,23 +704,25 @@ def _real_verdict(con, repo: str, pr: int, head: str) -> str | None:
 SHADOW_SHOWN = 10
 
 
-def shadow_reviews_for(db: Path, repo: str, pr: int) -> list[dict]:
+def shadow_reviews_for(db: Path, repo: str, pr: int) -> tuple[list[dict], int]:
     """One PR's shadow reviews (#218), newest first, for `explain` and the Desktop drawer: the
     model, head, would-be verdict, its first new findings, a human_paths hold, and the real
-    reviewer's verdict at that head (None while there is none). Read-only; ``[]`` without a
-    ledger or a shadow review."""
+    reviewer's verdict at that head (None while there is none) — at most ``SHADOW_SHOWN``, with
+    how many older ones were left out. Read-only; ``([], 0)`` without a ledger or a review."""
     from . import findings as findings_mod, run_supervisor
     # Through the one read-only door: `explain` and the Desktop drawer create no -wal/-shm files.
     con = run_supervisor.read_only_connect(db)
     if con is None:
-        return []
+        return [], 0
     try:
         try:
             rows = con.execute("SELECT * FROM shadow_reviews WHERE repo=? AND pr=? "
                                "ORDER BY created DESC, run_id LIMIT ?",
                                (repo, pr, SHADOW_SHOWN)).fetchall()
+            total = con.execute("SELECT COUNT(*) FROM shadow_reviews WHERE repo=? AND pr=?",
+                                (repo, pr)).fetchone()[0]
         except sqlite3.OperationalError:
-            return []
+            return [], 0
         out = []
         for row in rows:
             mine = _VERDICT.get(str(row["verdict"]), "other")
@@ -732,7 +734,7 @@ def shadow_reviews_for(db: Path, repo: str, pr: int) -> list[dict]:
                         "agrees": None if real is None else real == mine,
                         "findings": own[:3], "more": max(0, len(own) - 3),
                         "held": str(row["held"] or ""), "created": row["created"]})
-        return out
+        return out, max(0, total - len(out))
     finally:
         con.close()
 
