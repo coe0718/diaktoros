@@ -16,6 +16,7 @@ Diaktoros has three configuration layers: a repository's loop JSON, per-profile 
 - [Adjudication](#adjudication)
 - [Observer configuration](#observer-configuration)
 - [Issue triage and issue fixes](#issue-triage-and-issue-fixes)
+- [Shadow reviews](#shadow-reviews)
 - [Plugin settings and safe application](#plugin-settings-and-safe-application)
 - [Runtime file and seat models](#runtime-file-and-seat-models-review-loop-runtimejson)
 - [Environment overrides](#environment-overrides)
@@ -397,6 +398,27 @@ An authorized handoff uses the runtime seat `issue_fixer`, but that seat has no 
 - It requires enabled triage, a configured `fix_label`, and `unattended_fixer_push: true`.
 
 Do not add `seats.issue_fixer` and expect it to tune this behavior: normalization does not retain it as a configurable seat. Its inference resolution uses the fixer seat; the runtime override seat names likewise do not include `issue_fixer`.
+
+## Shadow reviews
+
+A shadow review runs a second reviewer model on a head the real reviewer was queued for, in no-write mode. It authorizes with live reads, records what it would have submitted, and posts nothing. The recorded reviews are for comparing models on the same PRs. Nothing in the loop decides from them.
+
+```json
+"shadow": {"profile": "shadow", "every": 5},
+"seats": {"shadow": {"daily_turns": 10}}
+```
+
+- `shadow.profile`: the Hermes profile shadow reviews run as. Its model and account are the shadow's. Without it, shadow reviews are off. Doctor fails a shadow that runs as the reviewer's own profile: it would compare a model with itself, and a 429 on the shared account would hold the real reviewer.
+- `shadow.every`: shadow one in this many reviewer turns, 1-1000, default 5. The choice is made from the repo, PR and head, so a redelivered event chooses the same way.
+- `seats.shadow`: the seat's limits, like any seat's: `daily_turns`, `daily_tokens`, `turn_budget_s` (default: the loop's), `concurrency` (default 1, never the loop's) and `max_steps`. There is no route, login or token: a shadow never writes.
+
+A shadow turn gets the reviewer's prompt and change view at that head, minus any review posted after it was queued (the real one included). It is not part of the loop:
+- it never occupies the PR, so the real reviewer and fixer never wait for it, and it never waits for them;
+- it claims no seat and marks no head in flight;
+- it pages nobody when it fails;
+- `stats`, `retry` (unless `--seat shadow`) and `escalate` leave it out.
+
+Its records are the `shadow_reviews` table in the run ledger (run, PR, head, model, verdict, body, and whether the broker would have authorized it or left an approval to a person under `human_paths`).
 
 ## Plugin settings and safe application
 

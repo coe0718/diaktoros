@@ -557,6 +557,14 @@ def check_seat_models(loop: dict) -> list[Check]:
             status, detail, fix = ("warn", f"could not describe this seat ({type(exc).__name__}: "
                                            f"{exc})", "run `hermes dk selftest`")
         checks.append(Check(f"model:{seat}", status_of[status], detail, fix))
+    shadow = config.shadow_profile(loop)
+    if shadow and shadow == config.seat_profile(loop, "reviewer"):
+        # #218: the same profile is the same account and the same model. A shadow 429 would
+        # hold the real reviewer's account, and its verdicts would compare a model with itself.
+        checks.append(Check("model:shadow-independent", ABSENT,
+                            f"the shadow runs as {shadow!r}, the reviewer's own profile",
+                            "give shadow reviews a profile of their own (another model and "
+                            "account): set shadow.profile in the loop file"))
     return checks
 
 # Read-only: ``find_spec`` locates a module without importing (or installing) anything.

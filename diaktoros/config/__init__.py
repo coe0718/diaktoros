@@ -172,6 +172,8 @@ def seat_profile(loop: dict, role: str) -> str:
         return str((loop.get("adjudicator") or {}).get("profile") or "default")
     if role == "triage":
         return str((loop.get("triage") or {}).get("profile") or "")
+    if role == "shadow":
+        return shadow_profile(loop)
     if role == "issue_fixer":
         role = "fixer"           # an issue fix runs as the fixer seat (#214)
     if role == "observer_urgent":
@@ -207,6 +209,7 @@ DEFAULTS: dict = {
     "seats": {},
     "adjudicator": {},
     "triage": {},
+    "shadow": {},
     "observer": {},
     "skill": "",
     "read_token": "",
@@ -676,7 +679,8 @@ def seat_concurrency(loop: dict, seat: str) -> int:
     """
     seat_cfg = (loop.get("seats") or {}).get(seat) or {}
     value = seat_cfg.get("concurrency")
-    if (value is None or value == "") and seat not in ("adjudicator", "triage", "issue_fixer"):
+    if (value is None or value == "") and seat not in ("adjudicator", "triage", "issue_fixer",
+                                                       "shadow"):
         # The loop default is documented as the default for the two *working* seats. A ruling
         # is rare and read-only; it never inherits a parallelism the operator chose for reviews.
         value = loop.get("concurrency", 1)
@@ -841,6 +845,53 @@ def hook_roles(loop: dict) -> tuple[str, ...]:
     return ("reviewer", "fixer") + (("triage",) if triage_enabled(loop) else ())
 
 
+# Shadow reviews (#218): one in this many reviewer turns also gets a no-write review by the
+# shadow profile's model, unless the loop says otherwise.
+DEFAULT_SHADOW_EVERY = 5
+SHADOW_EVERY_RANGE = (1, 1000)
+
+
+def shadow_profile(loop: dict) -> str:
+    """The Hermes profile shadow reviews run as (#218), or ``""`` when the loop has none (off)."""
+    return str((loop.get("shadow") or {}).get("profile") or "")
+
+
+def shadow_every(loop: dict) -> int:
+    """Shadow one in this many reviewer turns (#218); 1 shadows every one."""
+    value = (loop.get("shadow") or {}).get("every")
+    return (value if isinstance(value, int) and not isinstance(value, bool) and value >= 1
+            else DEFAULT_SHADOW_EVERY)
+
+
+def normalize_shadow(raw, where: str) -> dict:
+    """The ``shadow`` block (#218): ``profile`` (required to turn it on) and ``every``, or ``{}``.
+
+    A shadow review is a second reviewer model in no-write mode: it never posts, so it needs no
+    route, login or token, only the profile its model and account come from. Its limits
+    (``daily_turns``, ``daily_tokens``, ``turn_budget_s``, ``concurrency``) live under
+    ``seats.shadow``, like every seat's.
+    """
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict) or not set(raw) <= {"profile", "every"}:
+        raise ConfigError(f"{where}: shadow may only hold 'profile' and 'every'")
+    profile = str(raw.get("profile") or "").strip()
+    if not profile:
+        raise ConfigError(f"{where}: shadow.profile is required (the Hermes profile shadow "
+                          "reviews run as); remove the shadow block to turn them off")
+    if not _PROFILE_NAME.fullmatch(profile):
+        raise ConfigError(f"{where}: shadow.profile {profile!r} is not a Hermes profile name")
+    shadow = {"profile": profile}
+    if raw.get("every") not in (None, ""):
+        every = raw["every"]
+        low, high = SHADOW_EVERY_RANGE
+        if isinstance(every, bool) or not isinstance(every, int) or not low <= every <= high:
+            raise ConfigError(f"{where}: shadow.every must be a whole number, {low}-{high} "
+                              f"(1 = every reviewer turn), got {every!r}")
+        shadow["every"] = every
+    return shadow
+
+
 def normalize_triage(raw, loop: dict, where: str) -> dict:
     """Validate the ``triage`` block (#213), or ``{}`` when the loop does not triage issues.
 
@@ -939,30 +990,31 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
     return out
 
 
-def _triage_seat(raw, where: str) -> dict:
-    """``seats.triage``: its turn budget, daily cap and concurrency — no login (see triage.login)."""
+def _triage_seat(raw, where: str, name: str = "triage") -> dict:
+    """``seats.triage`` (or ``seats.shadow``, #218): its turn budget, daily cap and concurrency —
+    no login (see triage.login; a shadow never writes)."""
     if raw in (None, {}):
         return {}
     if not isinstance(raw, dict) or not set(raw) <= {"concurrency", "turn_budget_s", "daily_turns",
                                                      "daily_tokens", "max_steps"}:
-        raise ConfigError(f"{where}: seats.triage may only hold 'concurrency', 'turn_budget_s', "
+        raise ConfigError(f"{where}: seats.{name} may only hold 'concurrency', 'turn_budget_s', "
                           "'daily_turns', 'daily_tokens' and 'max_steps'")
     seat: dict = {}
     if raw.get("max_steps") not in (None, ""):
-        seat["max_steps"] = _check_max_steps(raw["max_steps"], "seats.triage.max_steps", where)
+        seat["max_steps"] = _check_max_steps(raw["max_steps"], f"seats.{name}.max_steps", where)
     if raw.get("daily_turns") not in (None, ""):
-        seat["daily_turns"] = _check_daily_turns(raw["daily_turns"], "seats.triage.daily_turns",
+        seat["daily_turns"] = _check_daily_turns(raw["daily_turns"], f"seats.{name}.daily_turns",
                                                  where)
     if raw.get("daily_tokens") not in (None, ""):
         seat["daily_tokens"] = _check_daily_tokens(raw["daily_tokens"],
-                                                   "seats.triage.daily_tokens", where)
+                                                   f"seats.{name}.daily_tokens", where)
     if raw.get("turn_budget_s") not in (None, ""):
-        seat["turn_budget_s"] = _check_budget(raw["turn_budget_s"], "seats.triage.turn_budget_s",
+        seat["turn_budget_s"] = _check_budget(raw["turn_budget_s"], f"seats.{name}.turn_budget_s",
                                               where)
     if raw.get("concurrency") not in (None, ""):
-        seat["concurrency"] = _as_int(raw["concurrency"], "seats.triage.concurrency", where)
+        seat["concurrency"] = _as_int(raw["concurrency"], f"seats.{name}.concurrency", where)
         if seat["concurrency"] < 1:
-            raise ConfigError(f"{where}: seats.triage.concurrency must be >= 1 (1 = serialized)")
+            raise ConfigError(f"{where}: seats.{name}.concurrency must be >= 1 (1 = serialized)")
     return seat
 
 
@@ -1348,6 +1400,10 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     triage_seat = _triage_seat(raw_seats.get("triage"), where)
     if triage_seat:
         seats["triage"] = triage_seat
+    loop["shadow"] = normalize_shadow(loop.get("shadow"), where)
+    shadow_seat = _triage_seat(raw_seats.get("shadow"), where, "shadow")
+    if shadow_seat:
+        seats["shadow"] = shadow_seat
     loop["roots"] = [str(p) for p in (loop.get("roots") or [])]
     for root in loop["roots"]:
         reason = dangerous_root(root)

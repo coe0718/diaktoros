@@ -400,6 +400,19 @@ class OperatorCommands(unittest.TestCase):
             code = func(argparse.Namespace(**kw))
         return code, out.getvalue()
 
+    def test_retry_leaves_a_failed_shadow_alone_unless_it_is_named(self):
+        # #218: a shadow run is no part of the PR's loop; only `--seat shadow` re-arms it.
+        from diaktoros import cli
+        self.sup.submit('s', 'acme/widgets', 7, HEAD, 'shadow')
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='failed', error='x' WHERE delivery='s'")
+        _, out = self.run_cli(cli.cmd_retry, loop='widgets', pr=7, seat=None)
+        self.assertNotIn('shadow', out)
+        self.assertEqual(self.sup.get('s')['state'], 'failed')
+        code, out = self.run_cli(cli.cmd_retry, loop='widgets', pr=7, seat='shadow')
+        self.assertIn('shadow #7 @ aaaaaaa re-armed', out)
+        self.assertEqual(self.sup.get('s')['state'], 'pending')
+
     def test_retry_rearms_prewrite_and_refuses_uncertain(self):
         from diaktoros import cli
         code, out = self.run_cli(cli.cmd_retry, loop='widgets', pr=7, seat=None)

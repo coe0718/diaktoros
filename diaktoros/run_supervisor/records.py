@@ -1,5 +1,5 @@
 """The ledger's record tables (#717): the fixer's answers and disputes, rulings, triage results,
-filed issues, issue fixes, regressions and operator actions, each written before the external
+filed issues, issue fixes, regressions, operator actions and shadow reviews (#218), each written before the external
 write it records and read back by the operator commands.
 
 ``LedgerRecords`` is a mixin: ``Supervisor`` inherits it, so ``Supervisor(db).record_ruling(...)``
@@ -181,6 +181,41 @@ class LedgerRecords:
                         'updated) VALUES(?,?,?,?,?,?,?,?)',
                         (run_id, repo, number, json.dumps(labels), body, 'recorded', now, now))
             con.execute('COMMIT')
+
+    def record_shadow(self, run_id: str, owner: str, entry: dict) -> bool:
+        """Record what a shadow turn would have submitted (#218), from the no-write broker's
+        entry (``verdict``, ``body``, ``authorized``, ``denial``, ``held``). Owner-scoped, while
+        the run is live, once per run. The run's resolved model comes from its own row. Answers
+        whether a row was written; a malformed entry or a run not live writes nothing."""
+        if (not isinstance(entry, dict) or entry.get("verdict") not in ("APPROVE", "REQUEST_CHANGES")
+                or not isinstance(entry.get("body"), str)):
+            return False
+        with self._connect() as con:
+            con.execute('BEGIN IMMEDIATE')
+            row = con.execute('SELECT repo,pr,head,seat,model FROM runs WHERE id=? AND owner=? '
+                              "AND state IN ('launching','running')", (run_id, owner)).fetchone()
+            if row is None or row['seat'] != run_supervisor.SHADOW:
+                con.execute('COMMIT')
+                return False
+            written = con.execute(
+                'INSERT OR IGNORE INTO shadow_reviews(run_id,repo,pr,head,model,verdict,body,'
+                'authorized,denial,held,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                (run_id, row['repo'], row['pr'], row['head'], row['model'], entry['verdict'],
+                 entry['body'][:60000], 1 if entry.get('authorized') else 0,
+                 str(entry.get('denial') or '')[:200] or None,
+                 str(entry.get('held') or '')[:400] or None, time.time())).rowcount
+            con.execute('COMMIT')
+        return written == 1
+
+    def shadow_reviews(self, repo: str | None = None, pr: int | None = None) -> list[dict]:
+        """The recorded shadow reviews, oldest first, optionally for one repo or PR."""
+        query, args = 'SELECT * FROM shadow_reviews', []
+        if repo is not None:
+            query, args = query + ' WHERE repo=?', [repo]
+            if pr is not None:
+                query, args = query + ' AND pr=?', [repo, pr]
+        with self._connect() as con:
+            return [dict(r) for r in con.execute(query + ' ORDER BY created, run_id', args)]
 
     def triage_status(self, run_id: str, state: str, *, error: str | None = None,
                       comment_id: int | None = None) -> None:
