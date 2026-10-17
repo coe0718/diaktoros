@@ -419,7 +419,7 @@ A shadow turn gets the reviewer's prompt and change view at that head, minus any
 - it pages nobody when it fails;
 - `stats`, `retry` (unless `--seat shadow`) and `escalate` leave it out.
 
-Its records are the `shadow_reviews` table in the run ledger (run, PR, head, model, verdict, body, and whether the broker would have authorized it or left an approval to a person under `human_paths`).
+Its records are the `shadow_reviews` table in the run ledger (run, PR, head, model, verdict, body, and whether the broker would have authorized it or left an approval to a person under `human_paths`). `hermes dk report` and the weekly report set each one beside the real review at the same head: see [`report`](commands.md#report).
 
 ## Plugin settings and safe application
 

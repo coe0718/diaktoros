@@ -657,6 +657,105 @@ def _breaches(loop: dict) -> dict:
         return {}
 
 
+# A finding's citation, ``path/to/file.ext:12`` (the line optional): what two reviews of the same
+# head are matched on (#218). Two citations of one file match when either names no line or the
+# lines are within this many of each other.
+_CITE = re.compile(r"([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]+)(?::(\d+))?")
+CITE_NEAR = 10
+_VERDICT = {"APPROVE": "approved", "APPROVED": "approved", "REQUEST_CHANGES": "changes",
+            "CHANGES_REQUESTED": "changes"}
+
+
+def _citation(text: str) -> tuple[str, int | None] | None:
+    found = _CITE.search(str(text or ""))
+    if not found:
+        return None
+    return found.group(1).lstrip("./"), int(found.group(2)) if found.group(2) else None
+
+
+def _matches(a, b) -> bool:
+    return (a is not None and b is not None and a[0] == b[0]
+            and (a[1] is None or b[1] is None or abs(a[1] - b[1]) <= CITE_NEAR))
+
+
+def _match_findings(shadow: list, real: list) -> tuple[int, int, int]:
+    """``(matched, shadow only, reviewer only)``: each finding pairs with at most one."""
+    left = [_citation(t) for t in real]
+    matched = 0
+    for text in shadow:
+        cite = _citation(text)
+        hit = next((i for i, other in enumerate(left) if _matches(cite, other)), None)
+        if hit is not None:
+            matched += 1
+            left.pop(hit)
+    return matched, len(shadow) - matched, len(left)
+
+
+def shadow_outcomes(db: Path, repo: str, since: float, until: float,
+                    tracked: dict | None) -> dict | None:
+    """Shadow reviews (#218) recorded in ``[since, until)``, each set beside the real review at
+    the same head: verdict agreement per shadow model, the disagreements both ways, and findings
+    matched by cited file and line. The real verdict is the reviewer run's posted receipt at that
+    head; its findings are the ones the loop's finding record (#475) opened at that head. A
+    shadow whose head has no real verdict yet is pending. None when there is no ledger; ``{}``
+    when it holds no shadow reviews."""
+    from . import findings as findings_mod
+    db = Path(db)
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        con.row_factory = sqlite3.Row
+        try:
+            shadows = con.execute("SELECT * FROM shadow_reviews WHERE repo=? AND created>=? "
+                                  "AND created<? ORDER BY created, run_id",
+                                  (repo, since, until)).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        real = {}
+        for row in shadows:
+            got = con.execute(
+                "SELECT x.verdict FROM runs r JOIN review_receipts x ON x.run_id=r.id "
+                "WHERE r.repo=? AND r.pr=? AND r.head=? AND r.seat='reviewer' "
+                "AND x.state IN ('posted','confirmed') ORDER BY x.created DESC LIMIT 1",
+                (repo, row["pr"], row["head"])).fetchone()
+            if got is not None:
+                real[row["run_id"]] = _VERDICT.get(str(got["verdict"]), "other")
+    finally:
+        con.close()
+    if not shadows:
+        return {}
+    models: dict = {}
+    blocked_approved, approved_blocked = [], []
+    totals = [0, 0, 0]
+    for row in shadows:
+        model = models.setdefault(row["model"] or "unknown",
+                                  {"shadowed": 0, "paired": 0, "agreed": 0})
+        model["shadowed"] += 1
+        verdict = real.get(row["run_id"])
+        if verdict is None:
+            continue
+        model["paired"] += 1
+        mine = _VERDICT.get(row["verdict"], "other")
+        model["agreed"] += mine == verdict
+        theirs = [item.get("text") or "" for item in
+                  ((tracked or {}).get(str(row["pr"])) or {}).get("findings", {}).values()
+                  if isinstance(item, dict) and item.get("head") == row["head"]]
+        own = [rest for _, kind, rest in findings_mod.parse(row["body"] or "") if kind == "new"]
+        for i, n in enumerate(_match_findings(own, theirs)):
+            totals[i] += n
+        case = {"pr": row["pr"], "head": row["head"], "model": row["model"],
+                "findings": [f.lstrip(" :")[:120] for f in (own if mine == "changes" else theirs)][:3]}
+        if mine == "changes" and verdict == "approved":
+            blocked_approved.append(case)
+        elif mine == "approved" and verdict == "changes":
+            approved_blocked.append(case)
+    return {"shadowed": len(shadows), "paired": sum(m["paired"] for m in models.values()),
+            "agreed": sum(m["agreed"] for m in models.values()), "models": models,
+            "blocked_approved": blocked_approved, "approved_blocked": approved_blocked,
+            "findings": dict(zip(("matched", "shadow_only", "reviewer_only"), totals))}
+
+
 def _tracked_findings(loop: dict) -> dict:
     """The loop's numbered findings record, read-only; empty when it cannot be read."""
     try:
@@ -691,6 +790,7 @@ def report(loop: dict, db: Path, since: float, until: float | None = None,
             "fixes": fix_outcomes(db, repo, since, until, pr_state),
             "findings": finding_outcomes(db, repo, since, until, tracked),
             "regressions": regressions(db, repo, since, until),
+            "shadows": shadow_outcomes(db, repo, since, until, tracked),
             "stuck": stuck(db, repo, until)}
 
 
@@ -770,6 +870,20 @@ def report_text(data: dict) -> str:
                       else " · none linked yet (`hermes dk regression`)"))
         out += [f"  #{link['issue']} ← PR #{link['pr']} approved at {link['head']} "
                 f"({link['model']})" for link in broke["links"][:10]]
+    shadows = data.get("shadows")
+    if shadows:
+        paired = shadows["findings"]
+        out.append(f"shadow reviews: {shadows['shadowed']} ({shadows['paired']} beside a real "
+                   f"verdict) · verdicts agreed {shadows['agreed']}/{shadows['paired']} · "
+                   + ", ".join(f"{name} {m['agreed']}/{m['paired']}"
+                               for name, m in shadows["models"].items())
+                   + f" · findings: {paired['matched']} matched, {paired['shadow_only']} shadow "
+                     f"only, {paired['reviewer_only']} reviewer only")
+        for label, cases in (("shadow blocked, reviewer approved", shadows["blocked_approved"]),
+                             ("shadow approved, reviewer blocked", shadows["approved_blocked"])):
+            out += [f"  {label}: #{case['pr']} at {str(case['head'])[:7]}"
+                    + (f" ({case['findings'][0]})" if case["findings"] else "")
+                    for case in cases[:10]]
     fixes = data.get("fixes")
     if fixes is not None:
         got, conv, per = fixes["outcomes"], fixes["conversion"], fixes["turns_per_merged"]
