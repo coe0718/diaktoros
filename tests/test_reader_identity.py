@@ -323,7 +323,7 @@ class ReaderIdentityTests(_Loop):
                      if isinstance(a, argparse._SubParsersAction)).choices
         extra = {"explain": ["--pr", "1"], "fixer-push": ["--disable"],
                  "trace": ["--payload", "/nonexistent-payload.json"],
-                 "models": ["--seat", "reviewer"], "retry": ["--pr", "1"],
+                 "models": ["--seat", "reviewer"], "retry": ["--pr", "1"], "continue": ["--run", "1"],
                  "review": ["--pr", "1"], "escalate": ["--pr", "1"],
                  "regression": ["--issue", "1", "--pr", "1"],
                  "restore": ["/nonexistent-backup.tar.gz", "--dry-run"],
