@@ -104,6 +104,13 @@ SETTINGS_SCHEMA: dict = {
                                              "killed. Counted by the inference proxy from what "
                                              "the provider reports. Blank = not set here: the "
                                              "loop keeps its own value (default: no budget)"},
+    "shadow_daily_tokens": {"label": "Shadow reviews' daily token budget", "type": "str",
+                            "default": "",
+                            "description": "Tokens (in + out) shadow reviews (#218) may spend per "
+                                           "local day, a whole number. Once spent, the next "
+                                           "shadow waits for midnight; a review in flight is not "
+                                           "killed. Blank = not set here: the loop keeps its own "
+                                           "value (default: no budget)"},
     "fixer_daily_tokens": {"label": "Fixer's daily token budget", "type": "str", "default": "",
                            "description": "Tokens (in + out) the fixer, and issue fixes, may "
                                           "spend per local day, a whole number. Once spent, the "
@@ -386,7 +393,7 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
         if raw_steps is not None:
             seats.setdefault(seat, {})["max_steps"] = config._check_max_steps(
                 config._form_int(raw_steps), f"seats.{seat}.max_steps", "settings")
-    for seat in ("reviewer", "fixer"):
+    for seat in ("reviewer", "fixer", "shadow"):
         raw_tokens = _form_value(settings, f"{seat}_daily_tokens")
         if raw_tokens is not None:
             seats.setdefault(seat, {})["daily_tokens"] = config._check_daily_tokens(
