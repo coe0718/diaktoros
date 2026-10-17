@@ -356,6 +356,7 @@ def cmd_init(args) -> int:
         "attribution": cli_common._attribution_arg(args, d["attribution"]),
         "review_after_ci": cli_common._on_off(args, "review_after_ci", d["review_after_ci"]),
         "fix_ci": cli_common._on_off(args, "fix_ci", d["fix_ci"]),
+        "fixer_scope_lock": cli_common._on_off(args, "fixer_scope_lock", d["fixer_scope_lock"]),
         # Host merge pushes to a review-only author's branch: off unless asked for and acknowledged.
         "review_only_update": cli_common._on_off(args, "review_only_update", d["review_only_update"]),
         # The checks CI always runs, which a fixer running only its touched tests would miss.
@@ -792,6 +793,8 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     argv += [f"--review-only={name.strip()}" for name in reviewed]
     if getattr(args, "review_only_update", None) is not None:
         argv.append(f"--review-only-update={args.review_only_update}")
+    if getattr(args, "fixer_scope_lock", None) is not None:
+        argv.append(f"--fixer-scope-lock={args.fixer_scope_lock}")
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
     for flag in ("reviewer_max_steps", "fixer_max_steps", "reviewer_daily_tokens",
@@ -1004,6 +1007,10 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                       help="hand a failed required check on a fixer's PR to the fixer, one "
                            "turn per head; needs unattended fixer pushes "
                            f"(default {'on' if d['fix_ci'] else 'off'})")
+    init.add_argument("--fixer-scope-lock", choices=("on", "off"), default=None,
+                      help="hold a fix round that changes files its findings do not name for a "
+                           "maintainer; needs unattended fixer pushes "
+                           f"(default {'on' if d['fixer_scope_lock'] else 'off'})")
     init.add_argument("--attribution", choices=("on", "off"), default=None,
                       help="sign what the loop posts with 'Automated by Diaktoros' "
                            f"(default {'on' if d['attribution'] else 'off'})")
@@ -1121,6 +1128,9 @@ def add_setup(sub) -> None:  # noqa: ANN001
     first.add_argument("--fix-ci", choices=("on", "off"), default=None,
                        help="hand a failed required check on a fixer's PR to the fixer "
                             "(default: the plugin setting, off)")
+    first.add_argument("--fixer-scope-lock", choices=("on", "off"), default=None,
+                       help="hold a fix round that changes files its findings do not name for "
+                            "a maintainer (default: the plugin setting, off)")
     first.add_argument("--attribution", choices=("on", "off"), default=None,
                        help="sign what the loop posts with 'Automated by Diaktoros' "
                             "(default: the plugin setting, on)")

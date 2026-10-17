@@ -144,8 +144,12 @@ def _rows(loop: dict) -> list[_Row]:
     for key, off in (
             ("review_only_update", "a conflicting review-only PR gets a notice, no merge push"),
             ("review_after_ci", "a review starts at once, with whatever CI has finished"),
-            ("fix_ci", "red CI on fixer PRs waits for a review")):
+            ("fix_ci", "red CI on fixer PRs waits for a review"),
+            ("fixer_scope_lock", "a fix round may change any file")):
         schema(key, (key,), bool(loop[key]), on=bool(loop[key]), off=off)
+        if (key in ("fix_ci", "fixer_scope_lock") and loop[key]
+                and not config.unattended_fixer_push_enabled(loop)):
+            rows[-1].note = "on, but inert: needs unattended fixer pushes (hermes dk fixer-push)"
     if loop["fix_ci"] and not config.unattended_fixer_push_enabled(loop):
         rows[-1].note = "on, but inert: needs unattended fixer pushes (hermes dk fixer-push)"
     schema("attribution", ("attribution",), bool(loop["attribution"]), on=bool(loop["attribution"]),

@@ -207,6 +207,11 @@ config_schema:
     type: bool
     default: false
     description: "On: a failed required check on a fixer's PR becomes one fixer turn per head (needs unattended fixer pushes on). Off: a red check is only reported."
+  fixer_scope_lock:
+    label: "Hold fixes outside the findings' files"
+    type: bool
+    default: false
+    description: "On: a fix round that changes files the open findings do not name (other than their tests and docs) is held for a maintainer, with a notice listing the extra files; `hermes dk retry` lets it through. Only takes effect with unattended fixer pushes on. Off: no check."
   attribution:
     label: "Sign what the loop posts"
     type: bool

@@ -431,6 +431,13 @@ class RunBroker:
                         # durable audit. Failure to commit completion leaves intent.
                         supervisor.confirm_push(self.scope.run_id, self.scope.repo,
                                                 self.scope.number, self.scope.head)
+                    except safe_push.scope_lock.ScopeHold:
+                        # A hold (#482), raised before any write: the intent is withdrawn so the
+                        # run is not mistaken for one that may have written, and `retry` can
+                        # re-arm it once a maintainer releases the hold.
+                        supervisor.abort_push(self.scope.run_id, self.scope.repo,
+                                              self.scope.number, self.scope.head)
+                        raise
                     except Exception as exc:
                         # An explicit attempt boundary, not exception text, determines
                         # whether a failed push must occupy the host-side hold.
