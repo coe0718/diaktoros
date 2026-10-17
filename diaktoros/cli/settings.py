@@ -615,6 +615,18 @@ def cmd_set(args) -> int:
             return 2
         if names != (loop.get("generated") or []):
             changes["generated"] = names
+    if getattr(args, "no_shadow", False) or getattr(args, "shadow_profile", None) is not None \
+            or getattr(args, "shadow_every", None) is not None:
+        from ..config import settings_form
+        try:
+            shadow = settings_form.shadow_block(
+                loop.get("shadow"), "off" if args.no_shadow else args.shadow_profile,
+                args.shadow_every, "--shadow-profile/--shadow-every")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if shadow is not None and shadow != (loop.get("shadow") or {}):
+            changes["shadow"] = shadow
     if getattr(args, "review_only", None) is not None or getattr(args, "no_review_only", False):
         try:
             names = config.check_review_only([] if args.no_review_only else args.review_only,
@@ -1099,7 +1111,7 @@ def _apply(args) -> int:
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
                 "fix_ci", "fixer_scope_lock", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
-                "generated", "review_only", "review_only_cap", "review_only_daily"):
+                "generated", "review_only", "review_only_cap", "review_only_daily", "shadow"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -1758,6 +1770,14 @@ def add_set(sub) -> None:  # noqa: ANN001
                           help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates); replaces the list")
     required.add_argument("--no-required-checks", action="store_true",
                           help="clear the list: every check gates again")
+    shadows = change.add_mutually_exclusive_group()
+    shadows.add_argument("--shadow-profile", default=None,
+                         help="the Hermes profile shadow reviews run as (#218): a second reviewer "
+                              "model whose verdicts are recorded, never posted; 'off' turns them off")
+    shadows.add_argument("--no-shadow", action="store_true",
+                         help="turn shadow reviews off")
+    change.add_argument("--shadow-every", type=int, default=None,
+                        help="shadow one in this many reviewer turns, 1-1000 (needs a shadow profile)")
     humans = change.add_mutually_exclusive_group()
     humans.add_argument("--human-path", action="append", default=None,
                         help="a glob pattern for paths only a human may approve (repeat it); replaces the list")

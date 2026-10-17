@@ -564,7 +564,7 @@ def check_seat_models(loop: dict) -> list[Check]:
         checks.append(Check("model:shadow-independent", ABSENT,
                             f"the shadow runs as {shadow!r}, the reviewer's own profile",
                             "give shadow reviews a profile of their own (another model and "
-                            "account): set shadow.profile in the loop file"))
+                            f"account): `hermes dk set --loop {loop['id']} --shadow-profile P`"))
     return checks
 
 # Read-only: ``find_spec`` locates a module without importing (or installing) anything.

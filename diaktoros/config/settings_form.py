@@ -166,6 +166,16 @@ SETTINGS_SCHEMA: dict = {
                                        "lint'. Others are shown to the reviewer as optional and "
                                        "never block. Blank = not set here (an unset list means "
                                        "every check gates)"},
+    "shadow_profile": {"label": "Shadow review profile", "type": "str", "default": "",
+                       "description": "A second reviewer model in no-write mode (#218): the "
+                                      "Hermes profile it runs as, never the reviewer's own. Its "
+                                      "verdicts are recorded for comparison and never posted. "
+                                      "'off' turns shadow reviews off. Blank = not set here: the "
+                                      "loop keeps its own value (default: off)"},
+    "shadow_every": {"label": "Shadow one in N reviews", "type": "str", "default": "",
+                     "description": "How often a reviewer turn also gets a shadow review, 1-1000 "
+                                    "(1 = every one). Blank = not set here: the loop keeps its "
+                                    "own value (default 5)"},
     "human_paths": {"label": "Human-only paths (comma-separated globs)", "type": "str",
                     "default": "",
                     "description": "Glob patterns, e.g. '.github/**, scripts/release*'. If a "
@@ -266,6 +276,24 @@ def _form_value(settings: dict | None, key: str):
     return None if value is None or str(value).strip() == "" else value
 
 
+def shadow_block(current, profile, every, where: str) -> dict | None:
+    """The ``shadow`` block (#218) after a form, ``init``/``setup`` or ``set`` names a profile
+    and/or ``every``; None when neither was named. ``off`` as the profile turns shadow reviews
+    off. ``every`` alone needs a profile, already set or named with it."""
+    if profile is None and every is None:
+        return None
+    shadow = dict(current or {})
+    if profile is not None:
+        name = str(profile).strip()
+        shadow = {} if name.lower() == "off" else {**shadow, "profile": name}
+    if every is not None:
+        if not shadow.get("profile"):
+            raise config.ConfigError(f"{where}: a shadow review rate needs a shadow profile "
+                                     "(name one with it)")
+        shadow["every"] = config._form_int(every)
+    return config.normalize_shadow(shadow, where)
+
+
 def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     """The loop knobs the plugin settings own, overlaid on a raw (pre-``normalize``) loop dict.
 
@@ -348,6 +376,10 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
             config.split_generated(d["generated"]), "settings")
     if _form_value(settings, "fixer_check") is not None:
         overlaid["fixer_check"] = config.check_fixer_check(d["fixer_check"], "settings")
+    shadow = shadow_block(overlaid.get("shadow"), _form_value(settings, "shadow_profile"),
+                          _form_value(settings, "shadow_every"), "settings")
+    if shadow is not None:
+        overlaid["shadow"] = shadow
     # Turn knobs (#309): validated like the CLI/loop file, and only when the form names them.
     for seat in ("reviewer", "fixer"):
         raw_steps = _form_value(settings, f"{seat}_max_steps")

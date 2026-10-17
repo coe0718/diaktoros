@@ -187,6 +187,16 @@ config_schema:
     type: str
     default: ""
     description: "The check runs or status contexts that gate an approval, named exactly as GitHub shows them, e.g. 'tests (3.11), lint'. Others are shown to the reviewer as optional and never block. Blank = not set here (an unset list means every check gates)"
+  shadow_profile:
+    label: "Shadow review profile"
+    type: str
+    default: ""
+    description: "A second reviewer model in no-write mode (#218): the Hermes profile it runs as, never the reviewer's own. Its verdicts are recorded for comparison and never posted. 'off' turns shadow reviews off. Blank = not set here: the loop keeps its own value (default: off)"
+  shadow_every:
+    label: "Shadow one in N reviews"
+    type: str
+    default: ""
+    description: "How often a reviewer turn also gets a shadow review, 1-1000 (1 = every one). Blank = not set here: the loop keeps its own value (default 5)"
   human_paths:
     label: "Human-only paths (comma-separated globs)"
     type: str

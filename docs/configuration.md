@@ -412,6 +412,7 @@ A shadow review runs a second reviewer model on a head the real reviewer was que
 
 - `shadow.profile`: the Hermes profile shadow reviews run as. Its model and account are the shadow's. Without it, shadow reviews are off. Doctor fails a shadow that runs as the reviewer's own profile: it would compare a model with itself, and a 429 on the shared account would hold the real reviewer.
 - `shadow.every`: shadow one in this many reviewer turns, 1-1000, default 5. The choice is made from the repo, PR and head, so a redelivered event chooses the same way.
+- Set them with `hermes dk set --loop ID --shadow-profile P [--shadow-every N]` (`--no-shadow` turns it off), with the same flags on `init` and `setup`, or with the settings form's *Shadow review profile* and *Shadow one in N reviews* (`apply` pushes them; `off` as the profile turns it off).
 - `seats.shadow`: the seat's limits, like any seat's: `daily_turns`, `daily_tokens`, `turn_budget_s` (default: the loop's), `concurrency` (default 1, never the loop's) and `max_steps`. There is no route, login or token: a shadow never writes.
 
 A shadow turn gets the reviewer's prompt and change view at that head, minus any review posted after it was queued (the real one included). It is not part of the loop:
