@@ -376,6 +376,10 @@ def cmd_init(args) -> int:
         "human_paths": (config.split_human_paths(d["human_paths"])
                         if getattr(args, "human_path", None) is None
                         else [name for name in args.human_path if name.strip()]),
+        # Generated files the host regenerates on a conflict (#551).
+        "generated": config.parse_generated(
+            config.split_generated(d["generated"]) if getattr(args, "generated", None) is None
+            else args.generated, "--generated"),
         # Authors reviewed but never fixed (#191).
         "review_only": ([name.strip() for name in str(d["review_only"]).split(",") if name.strip()]
                         if getattr(args, "review_only", None) is None
@@ -792,6 +796,9 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                   "glob patterns for paths only a human may approve, comma-separated "
                   "(blank: none)", d["human_paths"], interactive)))
     argv += [f"--human-path={name}" for name in humans]
+    generated = (args.generated if getattr(args, "generated", None) is not None else
+                 config.split_generated(d["generated"]))
+    argv += [f"--generated={entry}" for entry in generated]
     shadow = (args.shadow_profile if getattr(args, "shadow_profile", None) is not None else
               _ask("a Hermes profile for shadow reviews: a second reviewer model whose verdicts "
                    "are recorded, never posted (blank: none)", d["shadow_profile"], interactive))
@@ -1047,6 +1054,8 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                      help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
     init.add_argument("--human-path", action="append", default=None,
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
+    init.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
+                      help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
     init.add_argument("--fixer-check", default=None,
                       help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
     init.add_argument("--turn-budget", type=int, default=d["turn_budget_s"],
@@ -1135,6 +1144,8 @@ def add_setup(sub) -> None:  # noqa: ANN001
                       help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
     first.add_argument("--human-path", action="append", default=None,
                        help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
+    first.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
+                       help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox on the merged tree (repeat it; none = off) (default: the plugin setting)")
     first.add_argument("--fixer-check", default=None,
                        help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting)")
     first.add_argument("--review-only-update", choices=("on", "off"), default=None,

@@ -184,6 +184,15 @@ SETTINGS_SCHEMA: dict = {
                                    "(the head is held, one notice per head); REQUEST_CHANGES "
                                    "still works. '*' also matches '/'. Blank = not set here (an "
                                    "unset list means no path is reserved)"},
+    "generated": {"label": "Generated files (PATH[,PATH]=COMMAND, ';;' between entries)",
+                  "type": "str", "default": "",
+                  "description": "Generated files the host regenerates when a PR's only merge "
+                                 "conflicts are in them, e.g. 'docs/commands.md=python3 "
+                                 "tests/commands_doc.py --write'. The command runs only in the "
+                                 "sandbox, on the merged tree, no network; its result is pushed "
+                                 "only if no conflict marker remains, else a fixer turn resolves "
+                                 "it. Takes effect only where a fixer pushes unattended. Blank = "
+                                 "not set here (an unset list means the shortcut is off)"},
     "fixer_check": {"label": "Fixer's always-run check (command)", "type": "str", "default": "",
                     "description": "One command the fixer runs in the checkout before every "
                                    "push or issue-fix PR, besides the tests it touched: the "
@@ -362,6 +371,9 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     if _form_value(settings, "human_paths") is not None:
         overlaid["human_paths"] = config.check_human_paths(
             config.split_human_paths(d["human_paths"]), "settings")
+    if _form_value(settings, "generated") is not None:
+        overlaid["generated"] = config.parse_generated(
+            config.split_generated(d["generated"]), "settings")
     if _form_value(settings, "fixer_check") is not None:
         overlaid["fixer_check"] = config.check_fixer_check(d["fixer_check"], "settings")
     shadow = shadow_block(overlaid.get("shadow"), _form_value(settings, "shadow_profile"),

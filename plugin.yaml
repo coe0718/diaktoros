@@ -202,6 +202,11 @@ config_schema:
     type: str
     default: ""
     description: "Glob patterns, e.g. '.github/**, scripts/release*'. If a reviewed diff touches one, the loop never approves it: when the reviewer would approve, the approval is left to a person (the head is held, one notice per head); REQUEST_CHANGES still works. '*' also matches '/'. Blank = not set here (an unset list means no path is reserved)"
+  generated:
+    label: "Generated files (PATH[,PATH]=COMMAND, ';;' between entries)"
+    type: str
+    default: ""
+    description: "Generated files the host regenerates when a PR's only merge conflicts are in them, e.g. 'docs/commands.md=python3 tests/commands_doc.py --write'. The command runs only in the sandbox, on the merged tree, no network; its result is pushed only if no conflict marker remains, else a fixer turn resolves it. Takes effect only where a fixer pushes unattended. Blank = not set here (an unset list means the shortcut is off)"
   fixer_check:
     label: "Fixer's always-run check (command)"
     type: str

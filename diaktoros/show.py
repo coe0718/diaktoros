@@ -158,6 +158,8 @@ def _rows(loop: dict) -> list[_Row]:
            on=bool(loop.get("required_checks")), off="every check gates an approval")
     schema("human_paths", ("human_paths",), list(loop.get("human_paths") or []),
            on=bool(loop.get("human_paths")), off="no path is reserved for a person")
+    schema("generated", ("generated",), config.generated_text(loop.get("generated")) or _UNSET,
+           on=bool(loop.get("generated")), off="a conflict in a generated file gets a fixer turn")
     schema("fixer_check", ("fixer_check",), loop.get("fixer_check") or _UNSET,
            on=bool(loop.get("fixer_check")), off="the fixer runs no always-run check")
 

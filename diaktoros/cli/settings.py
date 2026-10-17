@@ -606,6 +606,15 @@ def cmd_set(args) -> int:
             return 2
         if names != (loop.get("human_paths") or []):
             changes["human_paths"] = names
+    if getattr(args, "generated", None) is not None or getattr(args, "no_generated", False):
+        try:
+            names = config.parse_generated(
+                [] if args.no_generated else args.generated, "--generated")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        if names != (loop.get("generated") or []):
+            changes["generated"] = names
     if getattr(args, "no_shadow", False) or getattr(args, "shadow_profile", None) is not None \
             or getattr(args, "shadow_every", None) is not None:
         from ..config import settings_form
@@ -1102,7 +1111,7 @@ def _apply(args) -> int:
     for key in ("cap", "base", "host", "grace_min", "ttl_min", "inflight_ttl_min",
                 "turn_budget_s", "attribution", "fixer_check", "review_after_ci",
                 "fix_ci", "fixer_scope_lock", "ci_fix_cap", "review_only_update", "required_checks", "human_paths",
-                "review_only", "review_only_cap", "review_only_daily", "shadow"):
+                "generated", "review_only", "review_only_cap", "review_only_daily", "shadow"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
@@ -1774,6 +1783,11 @@ def add_set(sub) -> None:  # noqa: ANN001
                         help="a glob pattern for paths only a human may approve (repeat it); replaces the list")
     humans.add_argument("--no-human-paths", action="store_true",
                         help="clear the list: no path is reserved for a human")
+    generated = change.add_mutually_exclusive_group()
+    generated.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
+                           help="generated files the host regenerates when a PR's only merge conflicts are in them: PATH[,PATH...]=COMMAND, run in the sandbox (repeat it); replaces the list")
+    generated.add_argument("--no-generated", action="store_true",
+                           help="clear the list: the conflict shortcut is off")
     change.add_argument("--fixer-check", default=None, help="one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none)")
     change.add_argument("--reviewer-turn-budget", type=int, default=None,
                         help="the reviewer seat's own turn budget in seconds")
