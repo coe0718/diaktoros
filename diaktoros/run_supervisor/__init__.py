@@ -356,6 +356,13 @@ class FixerPushDisabled(ValueError):
         super().__init__(f"unattended fixer pushes are off for {repo}")
 
 
+class IssueIneligible(ValueError):
+    """An issue fix that may no longer run (closed, relabelled, author no longer allowed).
+
+    Raised before launch, so no model ran: the turn ends ``cancelled`` with this reason, not
+    ``failed`` (#723). A ``ValueError`` so the broker's publication check still denies on it."""
+
+
 class RetryableError(Exception):
     """A pre-write failure worth another attempt (an unreadable read, a transient outage)."""
 
@@ -518,15 +525,22 @@ def issue_fix_issue(loop: dict, number: int) -> dict:
     if 'pull_request' in issue:
         raise ValueError('not an issue (a pull request)')
     if issue.get('state') != 'open':
-        raise ValueError('issue no longer open')
+        raise IssueIneligible('no longer eligible: the issue is no longer open')
     if str((issue.get('user') or {}).get('login') or '').lower() not in triage.get('authors', ()):
-        raise ValueError('issue author is not in triage.authors')
+        raise IssueIneligible('no longer eligible: the issue author is not in triage.authors')
     present = {str((label or {}).get('name') or '').casefold()
                for label in issue.get('labels') or [] if isinstance(label, dict)}
     # A maintainer's fix label, or (#232) a triage label the loop auto-offers (never with P0-P2).
     if (triage['fix_label'].casefold() not in present
             and not config.auto_fix_eligible(loop, present)):
-        raise ValueError(f"the {triage['fix_label']!r} label is no longer on the issue")
+        offered = [str(x) for x in triage.get('auto_fix_labels') or []]
+        if offered and config.issue_fixes_enabled(loop):
+            raise IssueIneligible(
+                f"no longer eligible: neither the fix label ({triage['fix_label']!r}) nor an "
+                f"auto-offer label ({', '.join(offered)}) is on it (an auto-offer label never "
+                "counts beside a P0-P2 label)")
+        raise IssueIneligible(f"no longer eligible: the {triage['fix_label']!r} label is no "
+                              "longer on the issue")
     return issue
 
 
@@ -645,6 +659,43 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     for row in rows:
         row['write'] = write_evidence(con, row['id'])
     return rows
+
+
+# The watchdog sweeps every 15 minutes; a listing older than that is not trusted alone to say a
+# PR is closed (`retry` confirms with one PR read, #723).
+WATCH_INTERVAL_S = 900
+ISSUE_SEATS = ('triage', 'issue_fixer')
+
+
+def open_listing(loop: dict) -> dict | None:
+    """The watchdog's last COMPLETE open-PR listing for the loop: ``{'at', 'numbers'}``, or
+    None when no sweep has recorded one. Read from the loop's watch state, never GitHub."""
+    try:
+        from .. import state as state_mod
+        raw = state_mod.state_for(loop).watch().get('open_prs')
+    except Exception:
+        return None
+    if (not isinstance(raw, dict) or isinstance(raw.get('at'), bool)
+            or not isinstance(raw.get('at'), (int, float))
+            or not isinstance(raw.get('numbers'), list)):
+        return None
+    return {'at': float(raw['at']),
+            'numbers': {n for n in raw['numbers'] if isinstance(n, int) and not isinstance(n, bool)}}
+
+
+def closed_history(row: dict, listing: dict | None) -> bool:
+    """Whether a failed run is history: its PR is absent from the last complete open listing.
+    Issue seats are keyed by issue number and never judged by it. No listing: False."""
+    return (listing is not None and row.get('state') == 'failed'
+            and row.get('seat') not in ISSUE_SEATS and row.get('pr') not in listing['numbers'])
+
+
+def split_history(rows: list[dict], loop: dict) -> tuple[list[dict], list[dict], bool]:
+    """(rows still to act on, failed rows on closed PRs, whether openness is unknown) for
+    ``runs_view`` rows. Nothing is written: ``report`` and ``stats`` still count them failed."""
+    listing = open_listing(loop)
+    history = [row for row in rows if closed_history(row, listing)]
+    return [row for row in rows if row not in history], history, listing is None
 
 
 def read_only_connect(db: str | Path):
@@ -934,6 +985,7 @@ class _Turn:
     breach: tuple | None = None
     claim: object = None
     paced_until: float | None = None
+    cancel: bool = False       # ended before launch by a fact, not a fault: cancelled (#723)
     row: sqlite3.Row | None = None
     loop: dict | None = None
 
@@ -1999,7 +2051,8 @@ class Supervisor(records.LedgerRecords):
     def complete_uncertain(self, run_id: str, owner: str, rc: int | None,
                            error: str | None = None, *, stopped: bool = True,
                            retry: bool = False, detail: str | None = None,
-                           paced_until: float | None = None) -> str | None:
+                           paced_until: float | None = None,
+                           cancel: bool = False) -> str | None:
         """Record direct worker completion, including after lease expiry.
 
         Never use this for operator guesswork: only the owner after its child
@@ -2040,6 +2093,8 @@ class Supervisor(records.LedgerRecords):
                 state = 'uncertain'
                 error = (held['error'] if quarantined else
                          'post-write push quarantine: unresolved push intent') if post_write else error
+            elif cancel and error:
+                state = 'cancelled'   # no longer eligible before launch (#723): not a failure
             elif rc == 0 and error is None:
                 state = 'succeeded'
             elif policy_hold(error):
@@ -2273,6 +2328,9 @@ class Supervisor(records.LedgerRecords):
         except trusted_turn.TurnBudgetExceeded as exc:
             turn.error = self._budget_kill_error(turn, exc)
             turn.retry = False
+        except IssueIneligible as exc:
+            # Before launch, no model ran (#723): a cancellation, not a failure; never re-armed.
+            turn.error, turn.cancel, turn.retry = str(exc)[:600], True, False
         except Exception as exc:
             # The real reason, not just its type (#53). Messages here are host-generated
             # (no credential is ever formatted into one), and bounded.
@@ -2689,7 +2747,7 @@ class Supervisor(records.LedgerRecords):
         state = self.complete_uncertain(
             run_id, owner, turn.rc, turn.error, stopped=turn.stopped, retry=turn.retry,
             detail=output_detail(observed.get('stdout'), observed.get('stderr')),
-            paced_until=turn.paced_until)
+            paced_until=turn.paced_until, cancel=turn.cancel)
         if turn.breach is not None and state in ('waiting', 'failed'):
             # This run marked the breach 'adjudicating' and made no ruling: hand the
             # marker back so its retry (or a re-arm) can claim it again.
