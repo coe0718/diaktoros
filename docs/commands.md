@@ -348,6 +348,8 @@ keeps an existing loop; it does not automatically repair every missing hook/rout
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
+| `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
+| `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
 | `--review-only-update` | `on` \| `off` |  | push a clean merge of the base into a review-only author's PR branch (same repository only; off by default; turning it on needs --acknowledge-branch-push) |
@@ -467,6 +469,8 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--review-only-daily` | `N` |  | reviewer turns a day on review-only PRs, 1-1000 (default: the plugin setting, else no cap) |
 | `--review-only` | `REVIEW_ONLY` (repeatable) |  | a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting) |
+| `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none) |
+| `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting) |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) (default: the plugin setting) |
 | `--turn-budget` | `TURN_BUDGET` | `900` | seconds one isolated seat turn may run, build and tests included (default 900; the sandbox is killed past it) |
@@ -556,6 +560,9 @@ accepts these combinations, and the handler applies flags in order (unmute wins 
 | `--no-review-only` |  |  | clear the review-only list (one of `--review-only`, `--no-review-only`) |
 | `--required-check` | `REQUIRED_CHECK` (repeatable) |  | a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates); replaces the list (one of `--required-check`, `--no-required-checks`) |
 | `--no-required-checks` |  |  | clear the list: every check gates again (one of `--required-check`, `--no-required-checks`) |
+| `--shadow-profile` | `SHADOW_PROFILE` |  | the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted; 'off' turns them off (one of `--shadow-profile`, `--no-shadow`) |
+| `--no-shadow` |  |  | turn shadow reviews off (one of `--shadow-profile`, `--no-shadow`) |
+| `--shadow-every` | `SHADOW_EVERY` |  | shadow one in this many reviewer turns, 1-1000 (needs a shadow profile) |
 | `--human-path` | `HUMAN_PATH` (repeatable) |  | a glob pattern for paths only a human may approve (repeat it); replaces the list (one of `--human-path`, `--no-human-paths`) |
 | `--no-human-paths` |  |  | clear the list: no path is reserved for a human (one of `--human-path`, `--no-human-paths`) |
 | `--fixer-check` | `FIXER_CHECK` |  | one command the fixer runs before every push or issue-fix PR, besides its touched tests (chain several with &&; '' for none) |

@@ -343,6 +343,12 @@ def cmd_init(args) -> int:
         },
         "adjudicator": ({"route": args.adjudicator_route, "profile": adjudicator_profile}
                         if args.adjudicator_route else {}),
+        # Shadow reviews (#218): the flags win, else the plugin settings.
+        "shadow": settings_form.shadow_block(
+            {}, (args.shadow_profile if getattr(args, "shadow_profile", None) is not None
+                 else settings_form._form_value(d, "shadow_profile")),
+            (args.shadow_every if getattr(args, "shadow_every", None) is not None
+             else settings_form._form_value(d, "shadow_every")), "init") or {},
         "skill": args.skill,
         "tokens": tokens, "read_token": args.read_token,
         "clone": args.clone, "roots": args.root or [],
@@ -786,6 +792,13 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
                   "glob patterns for paths only a human may approve, comma-separated "
                   "(blank: none)", d["human_paths"], interactive)))
     argv += [f"--human-path={name}" for name in humans]
+    shadow = (args.shadow_profile if getattr(args, "shadow_profile", None) is not None else
+              _ask("a Hermes profile for shadow reviews: a second reviewer model whose verdicts "
+                   "are recorded, never posted (blank: none)", d["shadow_profile"], interactive))
+    if str(shadow or "").strip():
+        argv.append(f"--shadow-profile={str(shadow).strip()}")
+    if getattr(args, "shadow_every", None) is not None:
+        argv.append(f"--shadow-every={args.shadow_every}")
     reviewed = (args.review_only if getattr(args, "review_only", None) is not None else
                 [name for name in _ask("GitHub logins whose PRs the reviewer reviews but the fixer "
                                        "never touches, comma-separated (blank: none)",
@@ -1028,6 +1041,10 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                       help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
     init.add_argument("--required-check", action="append", default=None,
                       help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
+    init.add_argument("--shadow-profile", default=None,
+                     help="the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none)")
+    init.add_argument("--shadow-every", type=int, default=None,
+                     help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
     init.add_argument("--human-path", action="append", default=None,
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     init.add_argument("--fixer-check", default=None,
@@ -1112,6 +1129,10 @@ def add_setup(sub) -> None:  # noqa: ANN001
                        help="a GitHub login whose PRs the reviewer reviews but the fixer never touches (repeat it, or comma-separated) (default: the plugin setting)")
     first.add_argument("--required-check", action="append", default=None,
                        help="a check run or status context that gates an approval, exactly as GitHub names it (repeat it; none = every check gates) (default: the plugin setting)")
+    first.add_argument("--shadow-profile", default=None,
+                      help="the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none)")
+    first.add_argument("--shadow-every", type=int, default=None,
+                      help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
     first.add_argument("--human-path", action="append", default=None,
                        help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     first.add_argument("--fixer-check", default=None,
