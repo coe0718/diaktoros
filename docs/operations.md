@@ -408,7 +408,7 @@ commenting `/loop hold`. `/loop release` lifts either; removing the label lifts 
 hold, never a `/loop hold` comment. The latest
 event from a maintainer wins; anyone else's label or comment is ignored and logged.
 
-While held, no review, fix, CI-fix or conflict turn is claimed: queued turns stay pending
+While held, no review, adjudication, fix, CI-fix or conflict turn is claimed: queued turns stay pending
 and start after release (the next watchdog sweep re-arms the worker). A turn already
 running is not interrupted. `explain` and `status` show who held it and when, and the
 watchdog reports no stall for it. A hold that cannot be read is treated as held.
