@@ -370,6 +370,22 @@ def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> l
     return rows
 
 
+def _print_shadows(loop: dict, pr: int, prefix: str) -> None:
+    """This PR's shadow reviews (#218), each beside the real reviewer's verdict at its head.
+    Data for comparing models: nothing in the loop acts on them."""
+    from .. import stats
+    for item in stats.shadow_reviews_for(_ledger_path(), loop["repo"], pr):
+        real = ("no real verdict yet" if item["real"] is None else
+                f"reviewer {item['real']} ({'agrees' if item['agrees'] else 'disagrees'})")
+        held = f", left to a person: {item['held']}" if item["held"] else ""
+        print(f"{prefix}{item['model']} at {item['head']} would have {item['verdict']}{held}"
+              f" · {real} · recorded, never posted")
+        for finding in item["findings"]:
+            print(f"{' ' * len(prefix)}| {finding}")
+        if item["more"]:
+            print(f"{' ' * len(prefix)}| … {item['more']} more")
+
+
 def cmd_retry(args) -> int:
     """Re-arm a PR's isolated run that failed before any external write (issue #53).
 
@@ -996,6 +1012,7 @@ def cmd_explain(args) -> int:
         if not report.get("gate_failures"):
             print(f"  {'gates:':<12}no unresolved gate failure recorded for this PR")
         runs = _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
+        _print_shadows(loop, args.pr, f"  {'shadow:':<12}")
         # A ledgered turn at the current head that waits to retry, failed before any write, or
         # is quarantined holds the PR as surely as any gate guard (#53): it is the blocker, and
         # its step is next. A failed turn that did write is final; GitHub shows where it left off.

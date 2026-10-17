@@ -280,6 +280,58 @@ class Compare(Ledger):
         self.assertEqual(stats._match_findings(["no citation"], ["a.py:1: x"]), (0, 1, 1))
 
 
+class Display(Compare):
+    """Part 3 (#218): `explain` and the Desktop drawer show a PR's shadow reviews."""
+
+    def test_one_prs_shadows_beside_the_real_verdict(self):
+        b, c = "b" * 40, "c" * 40
+        self.shadow_at(8, b, "REQUEST_CHANGES",
+                       "F1: a.py:3: leaks\nF2: b.py: x\nF3: c.py: y\nF4: d.py: z")
+        self.real_at(8, b, "APPROVE")
+        self.shadow_at(8, c, "APPROVE", "fine")
+        self.shadow_at(9, c, "APPROVE", "other PR")
+        got = stats.shadow_reviews_for(self.db, "acme/widgets", 8)
+        self.assertEqual([(g["head"], g["verdict"], g["real"], g["agrees"]) for g in got],
+                         [("ccccccc", "approved", None, None), ("bbbbbbb", "changes", "approved", False)])
+        self.assertEqual((got[1]["findings"], got[1]["more"]),
+                         (["a.py:3: leaks", "b.py: x", "c.py: y"], 1))
+        self.assertEqual(stats.shadow_reviews_for(self.db.parent / "none", "acme/widgets", 8), [])
+
+    def test_a_failed_shadow_is_not_a_run_to_act_on(self):
+        self.add("shadow", "failed")
+        self.add("reviewer", "failed", pr=9)
+        with closing(sqlite3.connect(self.db)) as con:
+            con.row_factory = sqlite3.Row
+            seats = [r["seat"] for r in run_supervisor.runs_view(con, "acme/widgets")]
+        self.assertEqual(seats, ["reviewer"])
+
+    def test_explain_prints_them_and_the_drawer_carries_them(self):
+        import contextlib
+        import io
+        from diaktoros import desktop_api
+        from diaktoros.cli import operations
+        b = "b" * 40
+        self.shadow_at(8, b, "REQUEST_CHANGES", "F1: a.py:3: leaks the token")
+        self.real_at(8, b, "APPROVE")
+        out = io.StringIO()
+        with mock.patch.object(operations, "_ledger_path", return_value=self.db), \
+                contextlib.redirect_stdout(out):
+            operations._print_shadows({"repo": "acme/widgets"}, 8, "  shadow:     ")
+        self.assertIn("grok-x at bbbbbbb would have changes · reviewer approved (disagrees) · "
+                      "recorded, never posted", out.getvalue())
+        self.assertIn("| a.py:3: leaks the token", out.getvalue())
+        loop = {"id": "w", "repo": "acme/widgets", "cap": 3}
+        with mock.patch.object(desktop_api, "_loop", return_value=loop), \
+                mock.patch.object(run_supervisor, "production_ledger", return_value=self.db), \
+                mock.patch.object(desktop_api, "_findings", return_value=[]), \
+                mock.patch.object(desktop_api, "_decisions", return_value=[]), \
+                mock.patch.object(desktop_api, "_breach", return_value=None), \
+                mock.patch.object(desktop_api.pacing, "seats", return_value={}):
+            view = desktop_api.pr_view("w", 8)
+        self.assertEqual([(s["verdict"], s["real"]) for s in view["shadows"]],
+                         [("changes", "approved")])
+
+
 class ProductionTurn(unittest.TestCase):
     """The real ``_run_production`` for a shadow row, its turn faked."""
 

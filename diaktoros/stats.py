@@ -691,6 +691,52 @@ def _match_findings(shadow: list, real: list) -> tuple[int, int, int]:
     return matched, len(shadow) - matched, len(left)
 
 
+def _real_verdict(con, repo: str, pr: int, head: str) -> str | None:
+    """The real reviewer's posted verdict at this head (``approved``/``changes``), or None."""
+    got = con.execute(
+        "SELECT x.verdict FROM runs r JOIN review_receipts x ON x.run_id=r.id "
+        "WHERE r.repo=? AND r.pr=? AND r.head=? AND r.seat='reviewer' "
+        "AND x.state IN ('posted','confirmed') ORDER BY x.created DESC LIMIT 1",
+        (repo, pr, head)).fetchone()
+    return None if got is None else _VERDICT.get(str(got[0]), "other")
+
+
+SHADOW_SHOWN = 10
+
+
+def shadow_reviews_for(db: Path, repo: str, pr: int) -> list[dict]:
+    """One PR's shadow reviews (#218), newest first, for `explain` and the Desktop drawer: the
+    model, head, would-be verdict, its first new findings, a human_paths hold, and the real
+    reviewer's verdict at that head (None while there is none). Read-only; ``[]`` without a
+    ledger or a shadow review."""
+    from . import findings as findings_mod, run_supervisor
+    # Through the one read-only door: `explain` and the Desktop drawer create no -wal/-shm files.
+    con = run_supervisor.read_only_connect(db)
+    if con is None:
+        return []
+    try:
+        try:
+            rows = con.execute("SELECT * FROM shadow_reviews WHERE repo=? AND pr=? "
+                               "ORDER BY created DESC, run_id LIMIT ?",
+                               (repo, pr, SHADOW_SHOWN)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        out = []
+        for row in rows:
+            mine = _VERDICT.get(str(row["verdict"]), "other")
+            real = _real_verdict(con, repo, pr, row["head"])
+            own = [rest.lstrip(" :")[:200] for _, kind, rest
+                   in findings_mod.parse(row["body"] or "") if kind == "new"]
+            out.append({"model": str(row["model"] or "unknown"), "head": str(row["head"])[:7],
+                        "verdict": mine, "real": real,
+                        "agrees": None if real is None else real == mine,
+                        "findings": own[:3], "more": max(0, len(own) - 3),
+                        "held": str(row["held"] or ""), "created": row["created"]})
+        return out
+    finally:
+        con.close()
+
+
 def shadow_outcomes(db: Path, repo: str, since: float, until: float,
                     tracked: dict | None) -> dict | None:
     """Shadow reviews (#218) recorded in ``[since, until)``, each set beside the real review at
@@ -714,13 +760,9 @@ def shadow_outcomes(db: Path, repo: str, since: float, until: float,
             return {}
         real = {}
         for row in shadows:
-            got = con.execute(
-                "SELECT x.verdict FROM runs r JOIN review_receipts x ON x.run_id=r.id "
-                "WHERE r.repo=? AND r.pr=? AND r.head=? AND r.seat='reviewer' "
-                "AND x.state IN ('posted','confirmed') ORDER BY x.created DESC LIMIT 1",
-                (repo, row["pr"], row["head"])).fetchone()
-            if got is not None:
-                real[row["run_id"]] = _VERDICT.get(str(got["verdict"]), "other")
+            verdict = _real_verdict(con, repo, row["pr"], row["head"])
+            if verdict is not None:
+                real[row["run_id"]] = verdict
     finally:
         con.close()
     if not shadows:

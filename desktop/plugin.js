@@ -426,6 +426,34 @@ function Drawer({ loop, pr, onClose }) {
   const findings = (d && d.findings) || []
   const openFindings = findings.filter(item => item.open)
   const decisions = ((d && d.decisions) || []).slice().reverse()
+  // Shadow reviews (#218): a second model's would-be verdicts at heads the reviewer reviewed.
+  // Recorded for comparison and never posted; nothing in the loop acts on them.
+  const shadows = (d && Array.isArray(d.shadows) && d.shadows) || []
+  const shadowsBlock = shadows.map((item, i) =>
+    jsxs('div', {
+      className: 'flex flex-col gap-0.5 border-b border-(--ui-stroke-secondary) py-1.5 last:border-b-0',
+      children: [
+        jsxs('div', {
+          className: 'flex flex-wrap items-center gap-2',
+          children: [
+            jsx('span', { className: 'font-mono text-(--ui-text-quaternary)', children: item.head }),
+            jsx('span', { className: 'text-xs text-(--ui-text-secondary)', children: item.model }),
+            jsx(Badge, { size: 'xs', variant: 'muted', children: 'would have ' + item.verdict }),
+            jsx(Badge, {
+              size: 'xs',
+              variant: item.agrees === false ? 'warn' : 'muted',
+              children: item.real == null
+                ? 'no real verdict yet'
+                : 'reviewer ' + item.real + (item.agrees ? ' · agrees' : ' · disagrees')
+            })
+          ]
+        }),
+        item.held ? jsx(Muted, { text: 'Approval left to a person: ' + item.held }) : null,
+        ...(item.findings || []).map((text, j) =>
+          jsx('span', { className: 'text-xs text-(--ui-text-tertiary)', children: text }, j)),
+        item.more ? jsx(Muted, { text: '… ' + item.more + ' more' }) : null
+      ]
+    }, i))
 
   const findingsBlock = findings.length
     ? jsx('div', {
@@ -530,6 +558,12 @@ function Drawer({ loop, pr, onClose }) {
                   title: 'Findings (' + openFindings.length + ' open of ' + findings.length + ')',
                   children: findingsBlock
                 }),
+                shadows.length
+                  ? jsxs(Section, {
+                      title: 'Shadow reviews (' + shadows.length + ', recorded, never posted)',
+                      children: shadowsBlock
+                    })
+                  : null,
                 jsx(Section, { title: 'Why the loop did or did not react', children: decisionsBlock }),
                 d && d.breach
                   ? jsx(Muted, {

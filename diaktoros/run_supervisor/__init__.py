@@ -714,6 +714,9 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
                    f"(r.state='cancelled' AND r.error IN ({marks})) OR "
                    f"(r.state='failed' AND (r.error LIKE ? OR r.error LIKE ?)))"), \
         list(POLICY_CANCELLATIONS) + held
+    # A shadow run (#218) is never one to act on: status, explain and the Desktop's stuck list
+    # leave it out, and `explain` shows shadow reviews on their own line.
+    where += " AND r.seat != 'shadow'"
     if repo is not None:
         where += ' AND r.repo=?'
         args.append(repo)
