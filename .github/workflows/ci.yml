@@ -196,9 +196,31 @@ jobs:
   # them — which is how #110 reached main. Here a missing prerequisite fails the job
   # (DIAKTOROS_REQUIRE_HERMES_SOURCE), and a final step refuses any skip in these modules.
   # No credential is involved: every endpoint and token the tests touch is a fake.
+  #
+  # Two parts in parallel (#850), each with the same setup: `verticals` (the route, the worker,
+  # the sandboxed turn and the contained agent, about 2.5 minutes of tests) keeps the name loops
+  # already require, and `verticals (seats)` runs the seat wire formats, the inference proxy and
+  # doctor's resolver agreement (about 2). In one job they took 4.9 minutes, the slowest check.
+  # A module added to the verticals goes in exactly one part's list.
   verticals:
+    name: ${{ matrix.part == 'core' && 'verticals' || 'verticals (seats)' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: core
+            modules: >-
+              tests.test_route_vertical
+              tests.test_turn_vertical
+              tests.test_route_worker_vertical
+              tests.test_contained_agent
+          - part: seats
+            modules: >-
+              tests.test_inference_proxy
+              tests.test_oauth_seats
+              tests.test_seat_models.HermesAgreement
     env:
       HERMES_AGENT_SOURCE: ${{ github.workspace }}/hermes
       DIAKTOROS_REQUIRE_HERMES_SOURCE: "1"
@@ -271,15 +293,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/tests
         run: |
           set -o pipefail
-          python tests/leakguard.py -v \
-            tests.test_route_vertical \
-            tests.test_turn_vertical \
-            tests.test_route_worker_vertical \
-            tests.test_contained_agent \
-            tests.test_inference_proxy \
-            tests.test_oauth_seats \
-            tests.test_seat_models.HermesAgreement \
-            2>&1 | tee "$RUNNER_TEMP/verticals.log"
+          python tests/leakguard.py -v ${{ matrix.modules }} 2>&1 | tee "$RUNNER_TEMP/verticals.log"
       # DIAKTOROS_REQUIRE_HERMES_SOURCE already turns the known skips into failures; this catches
       # any other skip a later change adds to these modules.
       - name: Refuse any skipped vertical test
