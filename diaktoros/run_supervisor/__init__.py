@@ -627,6 +627,60 @@ def policy_hold(error: object) -> bool:
                                        or error.startswith(FIXER_PUSH_OFF))
 
 
+# Claim order (#481): finish work before starting more. Lower class goes first; a pending row
+# climbs one class per CLAIM_AGE_STEP_S waited, so the lowest class runs within
+# (classes - 1) * CLAIM_AGE_STEP_S of arrival even while higher classes keep arriving.
+CLAIM_CLASSES = ('CI-fix/conflict turn', 'fix round', 'review', 'new issue fix')
+CLAIM_AGE_STEP_S = 900.0
+
+
+def claim_class(row) -> int:
+    """The priority class (index into ``CLAIM_CLASSES``) of a run row."""
+    from .. import ci_fix
+    seat, key = row['seat'], str(row['turn_key'] or '')
+    if seat == 'fixer' and (key.startswith(CONFLICT_KEY) or ci_fix.is_ci_fix(key)):
+        return 0
+    if seat in ('fixer', 'adjudicator'):
+        return 1
+    return 3 if seat == 'issue_fixer' else 2
+
+
+def claim_rank(row, now: float) -> tuple:
+    """Sort key for a pending row: aged class, then arrival. The one definition the worker's
+    claim and the status/explain queue view share."""
+    aged = int(max(0.0, now - float(row['created'])) // CLAIM_AGE_STEP_S)
+    return (max(0, claim_class(row) - aged), row['created'], row['id'])
+
+
+def claim_order(rows, now: float | None = None) -> list:
+    now = time.time() if now is None else now
+    return sorted(rows, key=lambda r: claim_rank(r, now))
+
+
+def claim_why(row, now: float) -> str:
+    cls, eff = claim_class(row), claim_rank(row, now)[0]
+    text = CLAIM_CLASSES[cls]
+    if eff < cls:
+        text += f", aged up to {CLAIM_CLASSES[eff]} priority after {int(now - float(row['created']))}s"
+    return text
+
+
+def pending_view(db: str | Path, repo: str) -> list[dict] | None:
+    """The loop's pending runs in claim order, read-only, each with ``why``. None: unreadable."""
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return None
+        try:
+            now = time.time()
+            rows = con.execute("SELECT * FROM runs WHERE state='pending' AND repo=?", (repo,)).fetchall()
+            return [{**dict(r), 'why': claim_why(r, now)} for r in claim_order(rows, now)]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
 def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:
     """Up to 100 failed, waiting, uncertain and push-policy-cancelled runs, oldest first. Each
     row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
@@ -1804,7 +1858,7 @@ class Supervisor(records.LedgerRecords):
         with self._connect() as con:
             candidates = con.execute("SELECT * FROM runs WHERE state='pending' "
                                      "ORDER BY created,id").fetchall()
-        for row in candidates:
+        for row in claim_order(candidates):
             read = _ClaimRead()
             if self.production_config and row['seat'] == 'reviewer':
                 self._claim_read_reviewer(row, read)
