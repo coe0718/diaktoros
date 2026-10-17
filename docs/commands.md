@@ -103,6 +103,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
 | start a queued turn now | [`drain`](#drain) |
+| settle an observer notice whose delivery is uncertain | [`observer`](#observer) |
 | check the reviewer still catches known problems | [`corpus`](#corpus) |
 | see which models a seat can use | [`models`](#models) |
 | free disk space | [`cleanup`](#cleanup) |
@@ -1272,6 +1273,31 @@ and fixer-push policy; it does not force a blocked turn or wait for completion.
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--seat` | `reviewer` \| `fixer` | `reviewer` | which seat's queue to drain |
+<!-- /flags -->
+
+### observer
+
+Lists or settles the observer feed's `uncertain` notices: ones whose POST may have landed, so
+they are never re-sent on their own and stay owed (blocking some host changes) until a person
+checks the chat and settles them. See [Receipts and retries](observer.md#receipts-and-retries).
+
+```bash
+hermes dk observer --loop "<loop-id>" --list
+hermes dk observer --loop "<loop-id>" --settle KEY --delivered
+hermes dk observer --loop "<loop-id>" --settle KEY --not-delivered
+```
+
+`--delivered` records a receipt and sends nothing. `--not-delivered` lets the next watchdog
+sweep retry it once with its original delivery id. Only `uncertain` entries can be settled.
+
+<!-- flags:observer -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
+| `--list` |  |  | list the uncertain notices (default) |
+| `--settle` | `KEY` |  | settle one uncertain notice after checking the chat by hand |
+| `--delivered` |  |  | with --settle: it arrived; record a receipt, send nothing |
+| `--not-delivered` |  |  | with --settle: it did not arrive; the next sweep retries it once with its original delivery id |
 <!-- /flags -->
 
 ---

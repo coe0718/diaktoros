@@ -342,6 +342,64 @@ def owed(st) -> dict:
     return counts
 
 
+def owed_entries(st) -> list:
+    """The ``uncertain`` entries a person can settle: ``[(key, entry)]``, oldest first."""
+    with _lock(st.observations):
+        data = _read(st.observations)
+    rows = [(k, dict(e)) for k, e in data["entries"].items()
+            if isinstance(e, dict) and e.get("status") == "uncertain"]
+    return sorted(rows, key=lambda row: state.mark_at(row[1]) or 0)
+
+
+class SettleError(ValueError):
+    """The entry cannot be settled; the message names why."""
+
+
+def settle(st, key: str, delivered: bool, now: float | None = None) -> str:
+    """Settle one ``uncertain`` entry after a person checked the chat by hand (#724).
+
+    ``delivered``: record a receipt (status ``delivered``, ``settled_by`` operator); nothing is
+    sent. Otherwise the entry becomes a ``failed`` + ``retryable`` one with a single attempt left,
+    so the next sweep's ``retry`` sends it once with its original delivery id. Only ``uncertain``
+    entries qualify. Returns a one-line description; raises ``SettleError`` when refused.
+    """
+    now = time.time() if now is None else now
+    with _lock(st.observations):
+        data = _read(st.observations)
+        entries = data["entries"]
+        entry = entries.get(key)
+        if not isinstance(entry, dict):
+            owed_keys = sorted(k for k, e in entries.items()
+                               if isinstance(e, dict) and e.get("status") == "uncertain")
+            raise SettleError(f"no observer entry {key!r}; uncertain (settleable) keys: "
+                              + (", ".join(owed_keys) or "none"))
+        status = entry.get("status")
+        if status != "uncertain":
+            raise SettleError(f"{key!r} is {status!r}, not 'uncertain': only an uncertain "
+                              "entry can be settled")
+        for other, rec in entries.items():
+            if isinstance(rec, dict) and key in (rec.get("batch") or []):
+                raise SettleError(f"{key!r} belongs to the digest {other!r}: settle that key")
+        members = [m for m in entry.get("batch") or [] if isinstance(entries.get(m), dict)]
+        if delivered:
+            entry.update(status="delivered", error="", retryable=False, at=now,
+                         delivered_at=now, settled_by="operator", settled_at=now)
+            for m in members:
+                entries[m].update(status="delivered", error="", at=now)
+            result = f"{key}: recorded as delivered (nothing sent)"
+        else:
+            entry.update(status="failed", retryable=True, at=now, settled_by="operator",
+                         settled_at=now, error="operator: not delivered; one retry allowed",
+                         attempts=max(0, MAX_ATTEMPTS - 1))
+            for m in members:
+                if entries[m].get("status") == "uncertain":
+                    entries[m]["status"] = "digesting"
+            result = (f"{key}: will be sent once by the next sweep with its original "
+                      "delivery id")
+        _save(st.observations, data)
+    return result
+
+
 # -- the notice ----------------------------------------------------------------
 
 

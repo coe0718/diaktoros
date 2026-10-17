@@ -327,7 +327,7 @@ class ReaderIdentityTests(_Loop):
                  "review": ["--pr", "1"], "escalate": ["--pr", "1"],
                  "regression": ["--issue", "1", "--pr", "1"],
                  "restore": ["/nonexistent-backup.tar.gz", "--dry-run"],
-                 "init": ["--repo", "acme/other", "--dry-run"], "setup": ["--yes"]}
+                 "observer": ["--list"], "init": ["--repo", "acme/other", "--dry-run"], "setup": ["--yes"]}
         self.assertIn("uninstall", verbs)
         self.assertIn("cleanup", verbs)
         for verb, sub in verbs.items():
