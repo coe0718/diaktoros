@@ -108,6 +108,30 @@ class Claim(fg.Base):
             hold, error = pr_hold.read({**self.loop, "triage": {"maintainers": [BOSS]}}, 7)
         self.assertEqual((hold, error), (None, "event page 1: boom"))
 
+    def test_a_held_pr_starts_no_adjudicator_turn(self):
+        """#728: the adjudicator seat waits out a hold like the others."""
+        from diaktoros.run_supervisor import pr_facts
+        self.set_push(True)
+        settings = self.root / "runtime.json"
+        settings.write_text("{}")
+        settings.chmod(0o600)
+        sup = Supervisor(config.home() / "state" / "diaktoros-runs.sqlite",
+                         production_config=settings, hermes_home=self.root / "home")
+        with mock.patch.object(sup, "_spawn"):
+            sup.enqueue("adj", fg.REPO, 7, fg.HEAD, "adjudicator", turn_key="breach:1")
+        loop = {**self.loop, "triage": {"maintainers": [BOSS]}}
+        with mock.patch.object(config, "by_repo", return_value=loop), \
+             mock.patch.object(pr_facts, "adjudication_state", return_value=("ok", {})), \
+             mock.patch.object(gh, "issue_events_read", return_value=([label(BOSS)], "")), \
+             mock.patch.object(gh, "issue_comments_read", return_value=([], "")):
+            self.assertIsNone(sup._claim())
+        self.assertEqual(sup.get("adj")["state"], "pending")
+        with mock.patch.object(config, "by_repo", return_value=loop), \
+             mock.patch.object(pr_facts, "adjudication_state", return_value=("ok", {})), \
+             mock.patch.object(gh, "issue_events_read", return_value=([], "")), \
+             mock.patch.object(gh, "issue_comments_read", return_value=([], "")):
+            self.assertIsNotNone(sup._claim())
+
 
 class Drain(fg.Base):
     def test_the_drain_leaves_a_held_pr_queued(self):

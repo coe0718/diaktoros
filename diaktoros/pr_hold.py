@@ -85,5 +85,5 @@ def line(hold: dict) -> str:
     """The one sentence explain, status and the watchdog all use."""
     how = "the diaktoros:hold label" if hold.get("how") == "label" else "/loop hold"
     when = iso_at(epoch(hold.get("at"))) or "an unknown time"
-    return (f"held by {hold.get('by') or '?'} via {how} since {when}: no review, fix, CI-fix or "
+    return (f"held by {hold.get('by') or '?'} via {how} since {when}: no review, adjudication, fix, CI-fix or "
             f"conflict turn starts until {release_how(hold)}")

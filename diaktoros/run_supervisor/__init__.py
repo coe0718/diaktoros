@@ -774,7 +774,7 @@ def ruling_at(db: str | Path, repo: str, pr: int, head: str) -> str | None:
 
 
 # Seats whose turns a held PR (#477) waits out; an issue fix's number is an issue, not a PR.
-PR_HOLD_SEATS = ('reviewer', 'fixer')
+PR_HOLD_SEATS = ('reviewer', 'fixer', 'adjudicator')
 INFLIGHT_LABEL = {'reviewer': 'review', 'fixer': 'fix'}
 
 
@@ -1912,7 +1912,7 @@ class Supervisor(records.LedgerRecords):
             read.superseded = 'adjudication superseded' if status == 'superseded' else None
             if status == 'retry':
                 read.read_error = 'adjudication facts unreadable (GitHub read failed)'
-            read.retry_read = status == 'wait'
+            read.retry_read = read.retry_read or status == 'wait'   # keep a hold's wait (#728)
         except Exception as exc:
             read.read_error = f'{type(exc).__name__}: {exc}'[:200]
 
