@@ -204,6 +204,82 @@ class Reports(Ledger):
         self.assertEqual(list(window["models"]), ["m-reviewer"])
 
 
+class Compare(Ledger):
+    """Part 2 (#218): each shadow review set beside the real review at the same head."""
+
+    def shadow_at(self, pr, head, verdict, body, model="grok-x"):
+        run = self.add_at("shadow", pr, head)
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("INSERT INTO shadow_reviews(run_id,repo,pr,head,model,verdict,body,"
+                        "authorized,created) VALUES(?,?,?,?,?,?,?,1,?)",
+                        (run, "acme/widgets", pr, head, model, verdict, body, time.time()))
+
+    def real_at(self, pr, head, verdict):
+        run = self.add_at("reviewer", pr, head)
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.execute("INSERT INTO review_receipts(run_id,state,generation,principal_id,"
+                        "review_id,verdict,created) VALUES(?,'posted','g',1,1,?,?)",
+                        (run, verdict, time.time()))
+
+    def add_at(self, seat, pr, head):
+        delivery = f"acme/widgets:{pr}:{head}:{seat}"
+        self.sup.enqueue(delivery, "acme/widgets", pr, head, seat)
+        return self.sup.get(delivery)["id"]
+
+    def outcomes(self, tracked=None):
+        return stats.shadow_outcomes(self.db, "acme/widgets", 0, time.time() + 10, tracked or {})
+
+    def test_agreement_disagreement_both_ways_pending_and_findings(self):
+        b, c, d, e = "b" * 40, "c" * 40, "d" * 40, "e" * 40
+        # #8: both block; the shadow cites a.py:10, the reviewer a.py:14 (near enough) and z.py.
+        self.shadow_at(8, b, "REQUEST_CHANGES", "F1: a.py:10: no test\nF2: q.py: typo")
+        self.real_at(8, b, "REQUEST_CHANGES")
+        # #9: the shadow blocks what the reviewer approved.
+        self.shadow_at(9, c, "REQUEST_CHANGES", "F1: m.py:3: leaks the token")
+        self.real_at(9, c, "APPROVE")
+        # #10: the shadow approves what the reviewer blocked.
+        self.shadow_at(10, d, "APPROVE", "looks fine")
+        self.real_at(10, d, "REQUEST_CHANGES")
+        # #11: no real verdict at this head yet (one at another head does not count).
+        self.shadow_at(11, e, "APPROVE", "ok")
+        self.real_at(11, "f" * 40, "REQUEST_CHANGES")
+        tracked = {"8": {"findings": {"F1": {"text": "a.py:14: missing test", "head": b},
+                                      "F2": {"text": "z.py:1: unused", "head": b},
+                                      "F3": {"text": "a.py:10: older", "head": "0" * 40}}},
+                   "10": {"findings": {"F1": {"text": "k.py:2: off by one", "head": d}}}}
+        got = self.outcomes(tracked)
+        self.assertEqual((got["shadowed"], got["paired"], got["agreed"]), (4, 3, 1))
+        self.assertEqual(got["models"], {"grok-x": {"shadowed": 4, "paired": 3, "agreed": 1}})
+        self.assertEqual([c["pr"] for c in got["blocked_approved"]], [9])
+        self.assertEqual(got["blocked_approved"][0]["findings"], ["m.py:3: leaks the token"])
+        self.assertEqual([c["pr"] for c in got["approved_blocked"]], [10])
+        self.assertEqual(got["approved_blocked"][0]["findings"], ["k.py:2: off by one"])
+        self.assertEqual(got["findings"], {"matched": 1, "shadow_only": 2, "reviewer_only": 2})
+        text = stats.report_text({**stats.report({"repo": "acme/widgets", "id": "w"}, self.db,
+                                                 0, time.time() + 10, breaches={},
+                                                 pr_state=lambda n: None, tracked=tracked)})
+        self.assertIn("shadow reviews: 4 (3 beside a real verdict) · verdicts agreed 1/3", text)
+        self.assertIn("shadow blocked, reviewer approved: #9 at ccccccc (m.py:3: leaks the token)",
+                      text)
+        self.assertIn("shadow approved, reviewer blocked: #10 at ddddddd", text)
+
+    def test_no_shadow_reviews_shows_nothing(self):
+        self.assertEqual(self.outcomes(), {})
+        text = stats.report_text(stats.report({"repo": "acme/widgets", "id": "w"}, self.db, 0,
+                                              time.time() + 10, breaches={},
+                                              pr_state=lambda n: None, tracked={}))
+        self.assertNotIn("shadow", text)
+        self.assertIsNone(stats.shadow_outcomes(self.db.parent / "none.sqlite", "acme/widgets",
+                                                0, 1, {}))
+
+    def test_citations_match_by_file_and_nearby_line(self):
+        self.assertEqual(stats._match_findings(["a.py:10: x", "b.py: y", "c.py:5: v"],
+                                               ["a.py:40: z", "./b.py:99: w", "c.py:15: u"]),
+                         (2, 1, 1))
+        self.assertEqual(stats._match_findings(["a.py:10: x"], ["a.py: no line"]), (1, 0, 0))
+        self.assertEqual(stats._match_findings(["no citation"], ["a.py:1: x"]), (0, 1, 1))
+
+
 class ProductionTurn(unittest.TestCase):
     """The real ``_run_production`` for a shadow row, its turn faked."""
 

@@ -263,8 +263,13 @@ are `undated` and counted outside every window.
 
 The same report can go to the observer feed once a week: see
 [`observer.weekly_report`](observer.md#weekly-report). Approved, then broke: the bugs linked with
-[`regression`](#regression) in the window. Not in this command yet: shadow-review/override feeds
-(#218, #220). Request → verdict is measured from the review run's creation to its receipt.
+[`regression`](#regression) in the window. Shadow reviews (#218, when the loop has a
+[shadow profile](configuration.md#shadow-reviews)): each one set beside the real review at the same
+head, with verdict agreement per shadow model, the PRs where they disagreed (the shadow blocked
+what the reviewer approved, or the reverse), and findings matched by cited file and line (within 10
+lines; a citation with no line matches the file). A shadow whose head has no real verdict yet is
+counted, not compared. Not in this command yet: override feeds (#220). Request → verdict is
+measured from the review run's creation to its receipt.
 
 <!-- flags:report -->
 | flag | value | default | what it does |
