@@ -427,6 +427,13 @@ def cmd_init(args) -> int:
             if budget not in (0, ""):
                 raw["seats"][seat]["daily_tokens"] = config._check_daily_tokens(
                     budget, f"seats.{seat}.daily_tokens", "init")
+        # The shadow seat's token budget (#875): the flag, else the form.
+        flag = getattr(args, "shadow_daily_tokens", None)
+        budget = flag if flag is not None else config._form_int(
+            str(d.get("shadow_daily_tokens") or "").strip())
+        if budget not in (0, "", None):
+            raw["seats"].setdefault("shadow", {})["daily_tokens"] = config._check_daily_tokens(
+                budget, "seats.shadow.daily_tokens", "init")
         flag = getattr(args, "fix_daily_turns", None)
         cap = flag if flag is not None else config._form_int(d["fix_daily_turns"].strip())
         if cap not in (0, ""):
@@ -818,7 +825,7 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
     if getattr(args, "acknowledge_branch_push", False):
         argv.append("--acknowledge-branch-push")
     for flag in ("reviewer_max_steps", "fixer_max_steps", "reviewer_daily_tokens",
-                 "fixer_daily_tokens", "fix_daily_turns",
+                 "fixer_daily_tokens", "shadow_daily_tokens", "fix_daily_turns",
                  "review_only_cap", "review_only_daily", "ci_fix_cap"):
         if getattr(args, flag, None) is not None:
             argv.append(f"--{flag.replace('_', '-')}={getattr(args, flag)}")
@@ -1074,6 +1081,9 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     init.add_argument("--reviewer-daily-tokens", type=int, default=None,
                       help="most tokens the reviewer may spend per day; once spent the next "
                            "turn waits for midnight (0 = none) (default: the plugin setting)")
+    init.add_argument("--shadow-daily-tokens", type=int, default=None,
+                     help="most tokens shadow reviews may spend per day; once spent the next waits "
+                          "for midnight (0 = none) (default: the plugin setting)")
     init.add_argument("--fixer-daily-tokens", type=int, default=None,
                       help="most tokens the fixer (and issue fixes) may spend per day "
                            "(0 = none) (default: the plugin setting)")
@@ -1175,6 +1185,9 @@ def add_setup(sub) -> None:  # noqa: ANN001
     first.add_argument("--reviewer-daily-tokens", type=int, default=None,
                        help="most tokens the reviewer may spend per day; once spent the next "
                             "turn waits for midnight (0 = none) (default: the plugin setting)")
+    first.add_argument("--shadow-daily-tokens", type=int, default=None,
+                      help="most tokens shadow reviews may spend per day; once spent the next waits "
+                           "for midnight (0 = none) (default: the plugin setting)")
     first.add_argument("--fixer-daily-tokens", type=int, default=None,
                        help="most tokens the fixer (and issue fixes) may spend per day "
                             "(0 = none) (default: the plugin setting)")

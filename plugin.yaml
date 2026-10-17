@@ -132,6 +132,11 @@ config_schema:
     type: str
     default: ""
     description: "Tokens (in + out) the reviewer may spend per local day, a whole number. Once spent, the next turn waits for midnight; a turn in flight is not killed. Counted by the inference proxy from what the provider reports. Blank = not set here: the loop keeps its own value (default: no budget)"
+  shadow_daily_tokens:
+    label: "Shadow reviews' daily token budget"
+    type: str
+    default: ""
+    description: "Tokens (in + out) shadow reviews (#218) may spend per local day, a whole number. Once spent, the next shadow waits for midnight; a review in flight is not killed. Blank = not set here: the loop keeps its own value (default: no budget)"
   fixer_daily_tokens:
     label: "Fixer's daily token budget"
     type: str

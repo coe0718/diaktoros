@@ -521,6 +521,37 @@ class Cli(unittest.TestCase):
         rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"shadow_profile": "off"})
         self.assertEqual((rc, self.shadow()), (0, {}), out)
 
+    def seat(self) -> dict:
+        return json.loads(self.file.read_text()).get("seats", {}).get("shadow", {})
+
+    def test_the_shadow_seats_limits_in_every_path(self):
+        # #875: they were loop-file only, and show never listed daily_tokens.
+        rc, out = self.init("--shadow-profile", "grok", "--shadow-daily-tokens", "500000")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.seat(), {"daily_tokens": 500000})
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-daily-tokens", "2000000",
+                           "--shadow-daily-turns", "6", "--shadow-turn-budget", "1200",
+                           "--shadow-max-steps", "120")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.seat(), {"daily_tokens": 2000000, "daily_turns": 6,
+                                       "turn_budget_s": 1200, "max_steps": 120})
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-max-steps", "500")
+        self.assertEqual(rc, 2, out)                            # out of range: refused
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-daily-turns", "0",
+                           "--shadow-turn-budget", "0", "--shadow-max-steps", "0")
+        self.assertEqual((rc, self.seat()), (0, {"daily_tokens": 2000000}), out)
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"shadow_daily_tokens": "750000"})
+        self.assertEqual((rc, self.seat()), (0, {"daily_tokens": 750000}), out)
+        rc, out = self.cli("show", "--loop", LOOP_ID)
+        self.assertIn("750000", next(line for line in out.splitlines()
+                                     if line.strip().startswith("shadow_daily_tokens")))
+        from diaktoros.cli import install as cli_install
+        t = self.t
+        args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO,
+                                            "--shadow-daily-tokens", "9"])
+        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        self.assertIn("--shadow-daily-tokens=9", argv)
+
     def test_a_blank_form_moves_nothing(self):
         from diaktoros.config import settings_form
         raw = {**RAW, "shadow": {"profile": "grok"}}

@@ -759,6 +759,24 @@ def cmd_set(args) -> int:
             seats[seat]["daily_tokens"] = value
         else:
             seats[seat].pop("daily_tokens", None)
+    # The shadow seat's limits (#875, #218): `0` removes one (the default again). normalize
+    # refuses anything out of range.
+    for key, flag, now in (("daily_tokens", "shadow_daily_tokens", config.seat_daily_tokens),
+                           ("daily_turns", "shadow_daily_turns", config.seat_daily_turns),
+                           ("turn_budget_s", "shadow_turn_budget", None),
+                           ("max_steps", "shadow_max_steps", None)):
+        value = getattr(args, flag, None)
+        before = (seats.get("shadow") or {}).get(key)
+        if value is None or (value or None) == before:
+            continue
+        budget_changes[f"shadow {key.replace('_', ' ')}"] = (before, value or None)
+        shadow_seat = seats.setdefault("shadow", {})
+        if value:
+            shadow_seat[key] = value
+        else:
+            shadow_seat.pop(key, None)
+        if not shadow_seat:
+            seats.pop("shadow", None)
     # Agent steps per turn (#271); 0 goes back to the seat's default. An issue fix takes the
     # fixer's value. normalize refuses anything outside the range.
     for seat, value in (("reviewer", getattr(args, "reviewer_max_steps", None)),
@@ -1125,7 +1143,7 @@ def _apply(args) -> int:
         was, now = config.max_steps(loop, seat), config.max_steps(updated, seat)
         if was != now:
             changes.append((f"{seat} max steps", was, now))
-    for seat in ("reviewer", "fixer"):
+    for seat in ("reviewer", "fixer", "shadow"):
         was, now = config.seat_daily_tokens(loop, seat), config.seat_daily_tokens(updated, seat)
         if was != now:
             changes.append((f"{seat} daily tokens", was, now))
@@ -1804,6 +1822,15 @@ def add_set(sub) -> None:  # noqa: ANN001
     change.add_argument("--fixer-daily-tokens", type=int, default=None,
                         help="most tokens the fixer (and issue fixes) may spend per day on "
                              "this loop (0 removes it)")
+    change.add_argument("--shadow-daily-tokens", type=int, default=None,
+                        help="most tokens shadow reviews may spend per day on this loop; once "
+                             "spent, the next waits for midnight (0 removes it)")
+    change.add_argument("--shadow-daily-turns", type=int, default=None,
+                        help="most shadow reviews per day on this loop (0 removes the cap)")
+    change.add_argument("--shadow-turn-budget", type=int, default=None,
+                        help="a shadow review's own turn budget in seconds (0 = the loop's)")
+    change.add_argument("--shadow-max-steps", type=int, default=None,
+                        help="agent steps one shadow review may take, 8-200 (0 = default 100)")
     change.add_argument("--reviewer-max-steps", type=int, default=None,
                         help="agent steps one reviewer turn may take, 8-200 (0 = default 60)")
     change.add_argument("--fixer-max-steps", type=int, default=None,

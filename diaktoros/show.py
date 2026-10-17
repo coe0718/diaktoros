@@ -26,7 +26,7 @@ from .config import settings_form
 OBSERVER_KEYS = ("route", "profile", "deliver", "mute", "events", "digest_min", "weekly_report",
                  "urgent_route", "urgent_profile", "urgent_deliver")
 SEAT_FILE_KEYS = ("route", "profile", "login", "agent", "concurrency", "turn_budget_s",
-                  "daily_turns", "max_steps")
+                  "daily_turns", "daily_tokens", "max_steps")
 
 _UNSET = "(unset)"
 
@@ -194,8 +194,14 @@ def _rows(loop: dict) -> list[_Row]:
             if seat == "shadow" and key in ("route", "profile", "login", "agent"):
                 continue                       # the shadow block's rows cover these (#218)
             if seat == "adjudicator" and key not in ("login", "concurrency", "turn_budget_s",
-                                                     "daily_turns", "max_steps"):
+                                                     "daily_turns", "daily_tokens", "max_steps"):
                 continue
+            if key == "daily_tokens" and seat in ("reviewer", "fixer"):
+                continue                       # their form rows cover these
+            if key == "daily_tokens" and seat == "shadow":
+                schema("shadow_daily_tokens", ("seats", "shadow", "daily_tokens"),
+                       config.seat_daily_tokens(loop, "shadow") or "no budget")
+                continue                       # a form field keeps the form's name (#875)
             if seat == "triage" and key in ("route", "profile", "login", "agent"):
                 continue
             if key in ("login", "profile") and seat != "triage":
