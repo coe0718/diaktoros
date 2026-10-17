@@ -162,6 +162,11 @@ def group_parallel() -> None:
     # A finished turn releases precisely one slot. Another pending PR can then claim it.
     with ledger.connect(db) as con:
         con.execute("UPDATE runs SET state='succeeded' WHERE id=?", (first[0],))
+    # Claim order puts a fix round ahead of a review (#481), so the freed PR 7 would go to its
+    # own fixer row first. Retire the two same-PR rows to test the reviewer slot alone.
+    with ledger.connect(db) as con:
+        con.execute("UPDATE runs SET state='cancelled' WHERE id IN (?, ?)",
+                    (supervisor.get("new-head-7")["id"], supervisor.get("fix-7")["id"]))
     third = supervisor._claim()
     check("completed reviewer frees one slot", third is not None, True)
     check("waiting PR #11 claimed", supervisor.get("delivery-11")["state"], "claimed")

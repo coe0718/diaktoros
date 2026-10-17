@@ -326,11 +326,16 @@ def _ledger_path() -> pathlib.Path:
 def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> list[dict]:
     """The isolated run ledger's failed/waiting/uncertain rows for this loop, read-only (#53).
     Prints them and returns them ([] when there is no readable ledger)."""
-    from ..run_supervisor import describe_run, read_only_view, split_history
+    from ..run_supervisor import describe_run, pending_view, read_only_view, split_history
 
     ledger = _ledger_path()
     if not ledger.exists():
         return []
+    queue = pending_view(ledger, loop["repo"]) or []
+    for place, row in enumerate(queue, 1):
+        if pr is None or row["pr"] == pr:
+            print(f"{prefix}queue {place} of {len(queue)}: {row['seat']} #{row['pr']} "
+                  f"@ {str(row['head'])[:7]} — {row['why']}")
     rows = read_only_view(ledger, loop["repo"], pr)
     if rows is None:
         print(f"{prefix}run ledger unreadable ({ledger})")
