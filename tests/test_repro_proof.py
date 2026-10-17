@@ -103,6 +103,8 @@ class Broker(tif.Base):
                 return {"number": 40, "head": {"ref": "diaktoros/issue-12"}}
             if method == "POST":
                 return {"number": 40}
+            if path == f"/repos/{tif.REPO}/issues/12":
+                return tif.issue()
             return {}
         from diaktoros import broker, config, gh, safe_push
         for target, name, value in (
