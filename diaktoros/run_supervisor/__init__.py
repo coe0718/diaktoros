@@ -1381,7 +1381,11 @@ class Supervisor(records.LedgerRecords):
                 "`python -m diaktoros.run_supervisor reconcile DB RUN_ID "
                 "--reason REASON --acknowledge-no-live-worker` only after "
                 "establishing no worker remains. Failed writes require "
-                "manual inspection before any new turn.")
+                "manual inspection before any new turn."
+                + (f" Issue fix: `hermes dk continue --loop {loop_id} --run {row['id']}` "
+                   "inspects GitHub and finishes only the missing stage (never pushes); "
+                   f"a maintainer may reply `continue {row['id']}`."
+                   if row['seat'] == 'issue_fixer' else ""))
 
     def notify(self, deliver) -> int:
         """One bounded alert per failed/uncertain run, retried if delivery fails.

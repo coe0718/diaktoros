@@ -102,6 +102,7 @@ shared rules. Tables inside `flags:` markers are generated; implementation cavea
 | link a later bug to the approved PR that shipped it | [`regression`](#regression) |
 | find out why a webhook started nothing | [`trace`](#trace) |
 | run a failed turn again | [`retry`](#retry) |
+| finish a half-written issue fix | [`continue`](#continue) |
 | start a queued turn now | [`drain`](#drain) |
 | settle an observer notice whose delivery is uncertain | [`observer`](#observer) |
 | check the reviewer still catches known problems | [`corpus`](#corpus) |
@@ -1252,6 +1253,32 @@ and reconcile it instead.
 | `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
 | `--pr` | `PR` | **required** | the pull request whose failed run to re-arm |
 | `--seat` | `reviewer` \| `fixer` \| `adjudicator` \| `triage` \| `issue_fixer` |  | only that seat's run (default: whichever failed at the PR's newest head) |
+<!-- /flags -->
+
+### continue
+
+Finishes an issue fix that stopped between its branch push, its PR and its review request
+(#485). It compares the run's `issue_fixes` record with GitHub (branch head, PRs for the branch,
+requested reviewers and reviews), then does only the missing stage: open the PR, request the
+review. It **never pushes**, so nothing is pushed twice. If the records and GitHub disagree (a
+branch at another head, two PRs, a closed PR, an unreadable read) the run stays quarantined and
+the command prints what it found. `--dry-run` only inspects.
+
+```bash
+hermes dk continue --loop "<loop-id>" --run "<run-id>" --dry-run
+hermes dk continue --loop "<loop-id>" --run "<run-id>"
+```
+
+A reply `continue <run-id>` is honoured only from a login in `triage.maintainers`; any other
+sender is ignored. It needs a chat gateway that hands the reply to `continue_run.from_chat`;
+this repository ships no such gateway hook, so only the CLI fires today.
+
+<!-- flags:continue -->
+| flag | value | default | what it does |
+| --- | --- | --- | --- |
+| `--loop` | `LOOP` | **required** | loop id (its config file name; `list` shows them) |
+| `--run` | `RUN` | **required** | the issue-fix run id (`status` lists it) |
+| `--dry-run` |  |  | only inspect and say what the next step would be |
 <!-- /flags -->
 
 ### drain

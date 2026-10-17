@@ -77,6 +77,7 @@ from .operations import (
     cmd_depends,
     cmd_drain,
     cmd_observer,
+    cmd_continue,
     cmd_escalate,
     cmd_explain,
     cmd_list,
@@ -173,6 +174,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         cli_settings.add_triage(sub)
         cli_settings.add_fixer_push(sub)
         cli_operations.add_retry(sub)
+        cli_operations.add_continue(sub)
         cli_operations.add_drain(sub)
         cli_operations.add_observer(sub)
         cli_operations.add_cleanup(sub)
