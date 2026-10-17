@@ -802,6 +802,33 @@ test('page: the drawer is scoped to its loop and closes when the loop changes', 
   assert.doesNotMatch(h.text(tree), /hermes dk explain --pr 42/)
 })
 
+test('page: the drawer shows shadow reviews beside the real verdict, and none when there are none', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.now = h.good({ runs: [{ pr: 42, seat: 'reviewer', head: 'abcdef0', state: 'waiting', why: 'waiting to retry' }],
+    counts: { waiting: 1 }, pacing: {}, available: true })
+  const pr = { repo: 'acme/widgets', loop: 'widgets', pr: 42, cap: 3, stuck: [], turns: [],
+    verdicts: {}, rulings: [], breach: null, findings: [], decisions: [], read_at: 1800000000 }
+  h.queries.pr = h.good({ ...pr, shadows: [
+    { model: 'grok-4.7', head: 'abcdef0', verdict: 'changes', real: 'approved', agrees: false,
+      findings: ['a.py:3: leaks the token'], more: 1, held: '', created: 1 },
+    { model: 'grok-4.7', head: '1234567', verdict: 'approved', real: null, agrees: null,
+      findings: [], more: 0, held: 'it touches .github/ci.yml', created: 0 }] })
+  let tree = h.render('page')
+  h.buttons(tree).find(n => h.text([n]).includes('#42')).props.onClick()
+  let text = h.text(h.render('page'))
+  assert.match(text, /Shadow reviews \(2, recorded, never posted\)/)
+  assert.match(text, /would have changes/)
+  assert.match(text, /reviewer approved · disagrees/)
+  assert.match(text, /a\.py:3: leaks the token/)
+  assert.match(text, /… 1 more/)
+  assert.match(text, /no real verdict yet/)
+  assert.match(text, /Approval left to a person: it touches \.github\/ci\.yml/)
+  h.queries.pr = h.good(pr)
+  text = h.text(h.render('page'))
+  assert.doesNotMatch(text, /Shadow reviews/)
+})
+
 test('page: a /now read with no ledger renders unavailable, never nothing-running', async () => {
   const h = await harness()
   h.queries.now = h.good({ repo: 'fixture/repo', runs: [], counts: {}, pacing: {}, available: false })

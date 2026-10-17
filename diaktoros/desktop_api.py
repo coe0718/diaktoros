@@ -169,7 +169,7 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     repo = loop["repo"]
     view: dict = {"repo": repo, "loop": loop["id"], "pr": pr, "cap": loop.get("cap"),
                   "stuck": [], "turns": [], "verdicts": {}, "rulings": [], "breach": None,
-                  "findings": [], "decisions": [], "read_at": time.time()}
+                  "findings": [], "decisions": [], "shadows": [], "read_at": time.time()}
     # The loop's own state files, not the ledger: what the reviewer raised, and why each gate
     # did or did not act. Both read-only, both local.
     view["findings"] = _findings(loop, pr)
@@ -215,6 +215,9 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
         con.close()
     view["breach"] = _breach(loop, pr)
     view["pacing"] = pacing.seats(loop)
+    # Shadow reviews (#218): a second model's would-be verdicts, recorded and never posted.
+    from . import stats
+    view["shadows"] = stats.shadow_reviews_for(db, repo, pr)
     return view
 
 
