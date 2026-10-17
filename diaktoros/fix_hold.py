@@ -39,7 +39,7 @@ def _notice(loop: dict, number: int, event: str, pr: int, outcome: str) -> None:
                     outcome=outcome, issue=True)
 
 
-def queue_fix(loop: dict, number: int) -> tuple[str, str]:
+def queue_fix(loop: dict, number: int, turn_key: str = "issue-fix") -> tuple[str, str]:
     """Queue the fix turn from the base branch's current commit: ``(base, outcome)``.
 
     Raises ``RuntimeError`` when the base is unreadable, or whatever the enqueue raises.
@@ -50,10 +50,89 @@ def queue_fix(loop: dict, number: int) -> tuple[str, str]:
     if not isinstance(base, str) or len(base) != 40:
         raise RuntimeError(f"base branch {loop['base']} unreadable (GitHub read failed)")
     try:
-        return base, gate.enqueue_isolated(loop, "issue_fixer", number, base, turn_key="issue-fix")
+        return base, gate.enqueue_isolated(loop, "issue_fixer", number, base, turn_key=turn_key)
     except Exception as exc:
         exc.fix_base = base  # the caller's notice needs the base the enqueue failed at
         raise
+
+
+# -- the fixer's one question, and plan-first issues (#483) -------------------------------------
+
+PLAN_LABEL = "plan-first"
+PLAN_BODY_MAX = 4000        # an issue body longer than this counts as large: plan before fix
+ASK_MAX = 3                 # asks (questions and plans) per issue; each costs a fixer turn
+ASK_REPLY_MAX = 4000
+APPROVE = "/loop approve"
+ASK_KINDS = ("question", "plan")
+
+
+def plan_required(st, number: int, issue: dict | None) -> bool:
+    """Whether the issue needs an approved plan before a fix may be opened: it carries the
+    ``plan-first`` label or its body is large, and no maintainer has approved a plan yet. The one
+    rule the prompt, the broker's ``open_pr`` and ``explain`` all use."""
+    if st.fix_plan_approved(number) or not isinstance(issue, dict):
+        return False
+    labels = {str((x or {}).get("name") or "").casefold()
+              for x in issue.get("labels") or [] if isinstance(x, dict)}
+    return PLAN_LABEL in labels or len(str(issue.get("body") or "")) > PLAN_BODY_MAX
+
+
+def ask_line(number: int, ask: dict) -> str:
+    """The one sentence ``status`` and ``explain`` use for an issue waiting on a maintainer."""
+    what = ("approval of its plan (`/loop approve`)" if ask.get("kind") == "plan"
+            else "an answer to its question")
+    return f"issue #{number} fix waits for a maintainer: {what}; no fix turn starts until then"
+
+
+def check_ask(st, number: int) -> None:
+    """Raise ``ValueError`` when the issue already has an open ask or its asks are spent."""
+    if number in st.fix_ask_open():
+        raise ValueError("this issue already has an open question or plan: wait for the reply")
+    if st.fix_ask_count(number) >= ASK_MAX:
+        raise ValueError(f"this issue has used its {ASK_MAX} questions/plans; fix it, or say "
+                         "it cannot be fixed with a plain issue_comment")
+
+
+def reply_to(loop: dict, ask: dict, comments: list) -> tuple[str, str] | None:
+    """``(login, body)`` of the first maintainer comment after the ask that resumes it, else
+    ``None``. Anyone else's comment is ignored; a plan is resumed only by ``/loop approve``."""
+    allowed = config.maintainers(loop)
+    after = ask.get("comment_id") if type(ask.get("comment_id")) is int else 0
+    for comment in sorted((c for c in comments if isinstance(c, dict) and type(c.get("id")) is int),
+                          key=lambda c: c["id"]):
+        user = comment.get("user")
+        login = str(user.get("login") or "").lower() if isinstance(user, dict) else ""
+        body = str(comment.get("body") or "")
+        if comment["id"] <= after or login not in allowed:
+            continue
+        if ask.get("kind") == "plan" and body.strip().lower() != APPROVE:
+            continue
+        return login, body
+    return None
+
+
+def sweep_asks(loop: dict, st, lines: list[str]) -> None:
+    """Resume each open ask a maintainer answered: save the handoff, queue a fresh turn."""
+    from . import run_supervisor
+    for number, ask in sorted(st.fix_ask_open().items()):
+        comments, error = gh.issue_comments_read(loop, number)
+        if comments is None:
+            log(f"issue #{number}: replies unreadable, ask stays open: {error}")
+            continue
+        found = reply_to(loop, ask, comments)
+        if found is None:
+            continue
+        login, body = found
+        st.fix_ask_resolve(number, body[:ASK_REPLY_MAX], login, ask.get("kind") == "plan")
+        try:
+            run_supervisor.issue_fix_issue(loop, number)
+            base, outcome = queue_fix(loop, number, f"issue-fix:ask{st.fix_ask_count(number)}")
+        except Exception as exc:
+            lines.append(f"⚠️ issue #{number}: reply seen, fix not queued: "
+                         f"{type(exc).__name__}: {exc}")
+            continue                                # the ask stays open: retried next sweep
+        st.fix_ask_drop(number)
+        log(f"issue #{number}: {login} replied; fix turn resumed at {base[:7]}: {outcome}")
 
 
 def hold(loop: dict, st, number: int, pr: int, why: str = "") -> None:
@@ -98,6 +177,7 @@ def sweep(loop: dict, st) -> list[str]:
     lines: list[str] = []
     if not config.issue_fixes_enabled(loop):
         return lines
+    sweep_asks(loop, st, lines)
     for number, pr in sorted(st.fix_holds().items()):
         state = pr_state(loop, pr)
         if state is None:
@@ -256,6 +336,8 @@ def hand_off(loop: dict, number: int, issue: dict, auto: bool) -> tuple[str, str
         declared = declared_open_pr(loop, prs, str((issue or {}).get("body") or ""))
         origin, why = declared if declared else (None, "")
     st = state_mod.state_for(loop)
+    if number in st.fix_ask_open():               # #483: waiting for a maintainer's reply
+        return "held", "waits for a maintainer's reply to the fixer's question or plan", "", ""
     if origin is None:
         st.fix_hold_drop(number)                     # an earlier hold no longer applies (#686)
     else:

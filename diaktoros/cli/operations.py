@@ -212,6 +212,9 @@ def cmd_status(args) -> int:
             print(f"  deps:       {line}")
         for issue_no, origin in sorted(st.fix_holds().items()):
             print(f"  held:       issue #{issue_no} fix waits for PR #{origin} to merge")
+        from .. import fix_hold
+        for issue_no, ask in sorted(st.fix_ask_open().items()):
+            print(f"  held:       {fix_hold.ask_line(issue_no, ask)}")
         declared = st.issue_deps()
         for issue_no in st.dep_waits():
             names = ", ".join(f"#{a}" for a in sorted(declared.get(issue_no) or {})) or "?"

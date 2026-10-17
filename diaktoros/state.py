@@ -798,6 +798,65 @@ class LoopState:
             if number not in raw:
                 self._save(self.dir / "held-fixes-said.json", sorted(raw + [number]))
 
+    # -- the issue fixer's question or plan (#483): one open ask per issue ----------
+    # fix-asks.json: {"open": {issue: {kind, comment_id, text}}, "count": {issue: n},
+    # "approved": [issue], "handoff": {issue: {kind, text, reply, by}}}. No lock on read, like
+    # ``fix_holds``: writes are atomic replaces.
+
+    def _fix_asks(self) -> dict:
+        raw = self._load(self.dir / "fix-asks.json", {})
+        raw = raw if isinstance(raw, dict) else {}
+        out = {}
+        for name in ("open", "count", "handoff"):
+            part = raw.get(name)
+            out[name] = ({str(k): v for k, v in part.items() if str(k).isdigit()
+                          and (name == "count") == (type(v) is int)}
+                         if isinstance(part, dict) else {})
+        approved = raw.get("approved")
+        out["approved"] = [n for n in approved if type(n) is int] if isinstance(approved, list) else []
+        return out
+
+    def fix_ask_open(self) -> dict:
+        """``{issue: {"kind", "comment_id", "text"}}`` of the asks waiting for a maintainer."""
+        return {int(k): v for k, v in self._fix_asks()["open"].items() if isinstance(v, dict)}
+
+    def fix_ask_count(self, number: int) -> int:
+        return self._fix_asks()["count"].get(str(number), 0)
+
+    def fix_plan_approved(self, number: int) -> bool:
+        return number in self._fix_asks()["approved"]
+
+    def fix_handoff(self, number: int) -> dict | None:
+        value = self._fix_asks()["handoff"].get(str(number))
+        return value if isinstance(value, dict) else None
+
+    def _fix_ask_edit(self, change) -> None:
+        with self.locked():
+            data = self._fix_asks()
+            change(data)
+            self._save(self.dir / "fix-asks.json", data)
+
+    def fix_ask_set(self, number: int, kind: str, comment_id: int, text: str) -> None:
+        def change(data):
+            data["open"][str(number)] = {"kind": kind, "comment_id": comment_id, "text": text}
+            data["count"][str(number)] = data["count"].get(str(number), 0) + 1
+            data["handoff"].pop(str(number), None)
+        self._fix_ask_edit(change)
+
+    def fix_ask_resolve(self, number: int, reply: str, by: str, approve: bool) -> None:
+        """Save the handoff (the ask and its reply) for the resumed turn; the ask stays open until
+        ``fix_ask_drop`` (a resume that could not be queued is retried)."""
+        def change(data):
+            ask = data["open"].get(str(number)) or {}
+            data["handoff"][str(number)] = {"kind": ask.get("kind", ""), "text": ask.get("text", ""),
+                                            "reply": reply, "by": by}
+            if approve and number not in data["approved"]:
+                data["approved"].append(number)
+        self._fix_ask_edit(change)
+
+    def fix_ask_drop(self, number: int) -> None:
+        self._fix_ask_edit(lambda data: data["open"].pop(str(number), None))
+
     # -- issue dependencies (#671): {issue: {prerequisite issue: {"by", "at"}}} ----------
 
     def issue_deps(self) -> dict:
