@@ -574,7 +574,7 @@ class RunBroker:
                 # A clean head on a reserved path is a person's to approve: the turn ends here,
                 # done, with no GitHub write. Refusing instead would leave a reviewer with nothing
                 # to request changes for and no way to finish, so the turn would fail and retry.
-                return self._hold_for_person(held)
+                return self._hold_for_person(held, body)
         # Consume BEFORE an external write: a lost response cannot lead to a replay.
         self._used = True
         after_push = operation == "request_review" and bool(self._pushed_head)
@@ -687,13 +687,25 @@ class RunBroker:
         names = ", ".join(hits[:10]) + (f" and {len(hits) - 10} more" if len(hits) > 10 else "")
         return "", f"it touches {names}"
 
-    def _hold_for_person(self, why: str) -> dict:
+    def _hold_for_person(self, why: str, body: str = "") -> dict:
         """End this reviewer turn without approving: the head waits for a person (#478).
 
         The hold is recorded for this head (the gate starts no further review there, and the
         watchdog does not call it a stall); the operator gets one notice. The capability is spent
         and the turn is complete, so it is neither retried nor reported as a failure.
+
+        A no-write run (the selftest's live turn, a shadow review) records what would have
+        happened and touches neither: a hold set by a run that writes nothing would stop the
+        real reviewer at this head.
         """
+        if self._no_write:
+            self.recorded.append({"verdict": "APPROVE", "body": body, "authorized": False,
+                                  "denial": "", "held": why})
+            self._used = True
+            self.completed = True
+            return {"accepted": False, "held": "human_paths",
+                    "reason": f"approval left to a person: {why}. Your turn is done; do not "
+                              "retry."}
         from . import observer, state as state_mod
         st = state_mod.state_for(self._loop)
         st.human_hold_set(self.scope.number, self.scope.head, why)

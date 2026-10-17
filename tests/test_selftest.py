@@ -439,6 +439,20 @@ class LiveTurnTests(SelftestBase):
         self.assert_reads_only()
         self.assertFalse((pathlib.Path(self.fx.loop["state_dir"]) / "broker-audit.jsonl").exists())
 
+    def test_live_turn_held_for_a_person_passes_and_holds_nothing(self):
+        # A human_paths head (#478): the would-be APPROVE is left to a person. That is the loop
+        # working, not a denial, and a no-write run sets no hold.
+        def turn(loop, scope, **kwargs):
+            kwargs["observed"]["submissions"] = [{"verdict": "APPROVE", "body": "ok",
+                                                  "authorized": False, "denial": "",
+                                                  "held": "it touches .github/ci.yml"}]
+            return 0
+        with mock.patch.object(trusted_turn, "run_turn", side_effect=turn):
+            rc, text = self.run_selftest(pr=7, live_turn=True, timeout=30)
+        self.assertEqual(rc, 0, text)
+        self.assertIn("would submit APPROVE (held for a person: it touches .github/ci.yml)", text)
+        self.assertIn("✅ turn:reviewer", text)
+
     def test_live_turn_denied_verdict_fails(self):
         self.fx.pr["draft"] = True
         rc, text = self.live(self.agent())
