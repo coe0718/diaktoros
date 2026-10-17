@@ -187,8 +187,10 @@ def _rows(loop: dict) -> list[_Row]:
           "per-repository consent to unattended fixer pushes; never inherited from the form",
           on=bool(loop["unattended_fixer_push"]),
           off="a changes-requested verdict waits for you (hermes dk fixer-push --enable)")
-    for seat in ("reviewer", "fixer", "adjudicator", "triage"):
+    for seat in ("reviewer", "fixer", "adjudicator", "triage", "shadow"):
         for key in SEAT_FILE_KEYS:
+            if seat == "shadow" and key in ("route", "profile", "login", "agent"):
+                continue                       # the shadow block's rows cover these (#218)
             if seat == "adjudicator" and key not in ("login", "concurrency", "turn_budget_s",
                                                      "daily_turns", "max_steps"):
                 continue
@@ -215,6 +217,13 @@ def _rows(loop: dict) -> list[_Row]:
     plain("adjudicator.route", ("adjudicator", "route"), adj.get("route") or _UNSET,
           "route that wakes the adjudicator when the verdict budget is spent",
           on=bool(adj.get("route")), off="the review cap only writes a marker")
+    shadow = loop.get("shadow") or {}
+    plain("shadow.profile", ("shadow", "profile"), shadow.get("profile") or _UNSET,
+          "the Hermes profile shadow reviews run as (#218): a second reviewer model, no writes",
+          on=bool(shadow.get("profile")), off="no shadow reviews")
+    plain("shadow.every", ("shadow", "every"), config.shadow_every(loop),
+          "shadow one in this many reviewer turns", derived=f"default {config.DEFAULT_SHADOW_EVERY}"
+          if "every" not in shadow else None)
     plain("triage.enabled", ("triage", "route"), config.triage_enabled(loop),
           "issue triage (hermes dk triage)", on=config.triage_enabled(loop),
           off="new issues are not labelled")
