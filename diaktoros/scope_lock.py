@@ -69,7 +69,10 @@ def check(loop: dict, number: int, head: str, paths: list[str]) -> None:
 
 
 def release(loop: dict, number: int) -> dict | None:
-    """Release the hold on PR ``number`` for its held head; the hold, or ``None`` if none."""
+    """Release the hold on PR ``number`` for its held head; the hold, or ``None`` if none.
+    With the lock off no push is held, so there is nothing to release (and no state to open)."""
+    if not config.fixer_scope_lock(loop):
+        return None
     from . import state as state_mod
     st = state_mod.state_for(loop)
     held = st.scope_holds().get(number)
