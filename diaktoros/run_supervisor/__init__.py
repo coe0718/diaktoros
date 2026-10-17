@@ -92,6 +92,12 @@ CREATE TABLE IF NOT EXISTS issue_fixes (
  new_head TEXT, pr_number INTEGER, comment_id INTEGER, error TEXT,
  created REAL NOT NULL, updated REAL NOT NULL
 );
+-- The host's proof of an issue fix's reproduction tests (#484): run on the original head and on
+-- the fix, recorded with the fix's run before the write. proof is JSON (repro_proof).
+CREATE TABLE IF NOT EXISTS repro_proofs (
+ run_id TEXT PRIMARY KEY REFERENCES runs(id), repo TEXT NOT NULL, number INTEGER NOT NULL,
+ base TEXT NOT NULL, proof TEXT NOT NULL, created REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS review_receipts (
  run_id TEXT PRIMARY KEY REFERENCES runs(id), state TEXT NOT NULL,
  generation TEXT NOT NULL, principal_id INTEGER NOT NULL,

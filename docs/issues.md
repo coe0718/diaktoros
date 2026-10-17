@@ -146,6 +146,19 @@ solve the issue or complete all stages of the PR sequence.
 The host does not merge. GitHub's `Fixes #N` closing behavior applies when the PR is
 merged into the appropriate default-branch context, not merely because a PR was opened.
 
+### Reproduction proof
+
+The fixer names its reproduction test(s) with `open_pr --repro module.Class.test_name ...`
+(unittest ids). Before the write, the host runs only those tests in the sandbox against the
+original head with the fix's test files applied (they must fail) and against the fix (they must
+pass). The result is stored in the ledger (`repro_proofs`) and the reviewer is shown it as a host
+fact: `PROVEN`, `WEAK` (a named test passes on the original head, so it does not cover the fix),
+`UNPROVEN`, `NONE NAMED`, or `NOT RUN`.
+
+What cannot fire: the proof never blocks the PR. It runs only where the host has a sandbox
+(otherwise `NOT RUN`), only for Python `unittest` ids, and covers the fix commit, not later
+pushes to the PR. It is shown to the reviewer of an issue-fix PR only.
+
 ### When a hand-off waits for a PR
 
 A fix turn starts from the base branch, so the hand-off waits when the work isn't there yet.

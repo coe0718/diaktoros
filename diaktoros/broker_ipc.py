@@ -34,7 +34,7 @@ import stat
 import threading
 from dataclasses import dataclass
 
-from . import broker, config, safe_push
+from . import broker, config, repro_proof, safe_push
 
 MAX_REQUEST = 16 * 1024
 MAX_BODY = 12 * 1024
@@ -225,7 +225,11 @@ class RunBroker:
 
     def __init__(self, loop: dict, scope: RunScope, directory: str | Path,
                  *, require_push: bool = False, require_receipt: bool = False,
-                 no_write: bool = False):
+                 no_write: bool = False, prover=None):
+        # ``prover`` is host-only like ``no_write`` (#484): ``prover(manifest, ids)`` runs an issue
+        # fix's named reproduction tests on the old head and on the fix and returns the proof
+        # (``repro_proof``). None (a broker built without one) records ``unavailable``.
+        self._prover = prover
         # ``no_write`` is a host-only constructor argument (the selftest's live turn). It is
         # not a socket field: requests carry exactly operation/verdict/body (or a manifest),
         # so nothing inside the namespace can turn it on, off, or observe it.
@@ -949,8 +953,13 @@ class RunBroker:
             raise ProtocolError("operation out of scope")
         operation = request.get("operation")
         if operation == "open_pr":
-            if set(request) != {"operation", "manifest", "title", "body"}:
-                raise ProtocolError("open_pr takes manifest, title and body")
+            if not {"operation", "manifest", "title", "body"} <= set(request) <= {
+                    "operation", "manifest", "title", "body", "repro"}:
+                raise ProtocolError("open_pr takes manifest, title, body and optional repro")
+            try:
+                repro = repro_proof.valid_ids(request.get("repro"))
+            except ValueError as exc:
+                raise ProtocolError(f"{exc}; nothing was written, resubmit") from None
             title, body = request["title"], request["body"]
             if (not isinstance(title, str) or not title.strip()
                     or len(title) > broker.ISSUE_PR_TITLE_MAX
@@ -978,6 +987,7 @@ class RunBroker:
         self._used = True
         supervisor = Supervisor(self.scope.ledger_db, create=False)
         run_id, repo, number = self.scope.run_id, self.scope.repo, self.scope.number
+        proof = self._prove(request["manifest"], repro) if operation == "open_pr" else None
         with config.push_policy_lock():
             current = config.by_repo(repo)
             if (current is None or current.get("id") != self._loop.get("id")
@@ -999,6 +1009,13 @@ class RunBroker:
             supervisor.record_issue_fix(run_id, repo, number, self.scope.head,
                                         "pr" if operation == "open_pr" else "comment",
                                         self.scope.branch)
+            if proof is not None:
+                try:
+                    supervisor.record_repro_proof(run_id, repo, number, self.scope.head,
+                                                  repro_proof.dumps(proof))
+                except Exception as exc:    # the proof informs; it never blocks the write
+                    from .util import log
+                    log(f"repro proof for run {run_id} not recorded: {exc}")
             self.completed = True
             if operation == "issue_comment":
                 return self._issue_comment(current, supervisor, body.strip(), kind)
@@ -1033,6 +1050,18 @@ class RunBroker:
             return {"accepted": True}
         supervisor.issue_fix_status(run_id, "requested")
         return {"accepted": True}
+
+    def _prove(self, manifest: dict, ids: list[str]) -> dict:
+        """Run the named reproduction tests (#484) before the write; any failure to run them is
+        an ``unavailable`` record, never a refusal."""
+        if not ids:
+            return repro_proof.none_named()
+        if self._prover is None:
+            return repro_proof.unavailable("this host run has no sandbox to prove it in")
+        try:
+            return self._prover(manifest, ids)
+        except Exception as exc:
+            return repro_proof.unavailable(f"{type(exc).__name__}: {exc}")
 
     def _kick_review(self, pr: dict, head: str) -> None:
         """Start the review GitHub will not announce (#532). Best effort: the request itself
