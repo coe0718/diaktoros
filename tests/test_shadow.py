@@ -290,5 +290,103 @@ class ProductionTurn(unittest.TestCase):
         self.assertNotEqual(row["state"], "running")
 
 
+LOOP_ID = "shadows"
+
+
+class Cli(unittest.TestCase):
+    """Every path that sets the two shadow settings (#323): form, init, setup, set, apply."""
+
+    @classmethod
+    def setUpClass(cls):
+        import run_tests as t
+        cls.t = t
+        t.HOST = t.start_sink()
+        t.DATA["host"] = t.HOST
+        cls._env = dict(os.environ)
+        os.environ.update(t.env())
+
+    @classmethod
+    def tearDownClass(cls):
+        os.environ.clear()
+        os.environ.update(cls._env)
+
+    def setUp(self):
+        t = self.t
+        t.reset(prs={})
+        (t.LOOPS_DIR / "widgets.json").unlink(missing_ok=True)
+        self.file = t.LOOPS_DIR / f"{LOOP_ID}.json"
+        self.file.unlink(missing_ok=True)
+        self.addCleanup(self.file.unlink, missing_ok=True)
+
+    def cli(self, *argv, settings=None):
+        return self.t.run_cli(self.t.parser_for(settings).parse_args(list(argv)))
+
+    def init(self, *extra, settings=None):
+        t = self.t
+        return self.cli("init", "--repo", t.REPO, "--id", LOOP_ID, "--host", t.HOST,
+                        "--reviewer", t.REVIEWER, "--fixer", t.FIXER,
+                        "--reviewer-profile", "reviewer-profile", "--fixer-profile", "fixer-profile",
+                        "--token", f"{t.REVIEWER}={t.SEAT_PATS[0]}",
+                        "--token", f"{t.FIXER}={t.SEAT_PATS[1]}", *t.READER_ARGS, *extra,
+                        settings=settings)
+
+    def shadow(self) -> dict:
+        return json.loads(self.file.read_text()).get("shadow", {})
+
+    def test_init_from_the_form_and_the_flags_win(self):
+        form = {"shadow_profile": "grok", "shadow_every": "3"}
+        for extra, settings, want in (
+                ((), None, {}),
+                ((), form, {"profile": "grok", "every": 3}),
+                (("--shadow-profile", "other", "--shadow-every", "2"), form,
+                 {"profile": "other", "every": 2})):
+            with self.subTest(extra=extra, settings=settings):
+                self.file.unlink(missing_ok=True)
+                rc, out = self.init(*extra, settings=settings)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self.shadow(), want)
+
+    def test_set_turns_it_on_rates_it_off_and_refuses_and_apply_moves_it(self):
+        self.assertEqual(self.init()[0], 0)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-every", "2")
+        self.assertEqual(rc, 2, out)                      # a rate needs a profile
+        self.assertIn("needs a shadow profile", out)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-profile", "grok")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.shadow(), {"profile": "grok"})
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-every", "3")
+        self.assertEqual((rc, self.shadow()), (0, {"profile": "grok", "every": 3}), out)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-every", "0")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self.shadow(), {"profile": "grok", "every": 3})
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--no-shadow")
+        self.assertEqual((rc, self.shadow()), (0, {}), out)
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"shadow_profile": "grok",
+                                                                "shadow_every": "4"})
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.shadow(), {"profile": "grok", "every": 4})
+        rc, out = self.cli("apply", "--loop", LOOP_ID, settings={"shadow_profile": "off"})
+        self.assertEqual((rc, self.shadow()), (0, {}), out)
+
+    def test_a_blank_form_moves_nothing(self):
+        from diaktoros.config import settings_form
+        raw = {**RAW, "shadow": {"profile": "grok"}}
+        self.assertEqual(settings_form.apply_settings(dict(raw), {})["shadow"], {"profile": "grok"})
+        self.assertIn("shadow_profile", settings_form.SETTINGS_SCHEMA)
+        self.assertIn("shadow_every", settings_form.SETTINGS_SCHEMA)
+
+    def test_setup_hands_init_the_profile(self):
+        from diaktoros.cli import install as cli_install
+        t = self.t
+        args = t.parser_for({"shadow_profile": "grok"}).parse_args(["setup", "--repo", t.REPO])
+        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        self.assertEqual([a for a in argv if a.startswith("--shadow")], ["--shadow-profile=grok"])
+        args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--shadow-profile", "x",
+                                            "--shadow-every", "2"])
+        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        self.assertEqual([a for a in argv if a.startswith("--shadow")],
+                         ["--shadow-profile=x", "--shadow-every=2"])
+
+
 if __name__ == "__main__":
     unittest.main()

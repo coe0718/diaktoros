@@ -218,12 +218,13 @@ def _rows(loop: dict) -> list[_Row]:
           "route that wakes the adjudicator when the verdict budget is spent",
           on=bool(adj.get("route")), off="the review cap only writes a marker")
     shadow = loop.get("shadow") or {}
-    plain("shadow.profile", ("shadow", "profile"), shadow.get("profile") or _UNSET,
-          "the Hermes profile shadow reviews run as (#218): a second reviewer model, no writes",
+    plain("shadow.enabled", ("shadow", "profile"), bool(shadow.get("profile")),
+          "shadow reviews (#218): a second reviewer model, recorded and never posted",
           on=bool(shadow.get("profile")), off="no shadow reviews")
-    plain("shadow.every", ("shadow", "every"), config.shadow_every(loop),
-          "shadow one in this many reviewer turns", derived=f"default {config.DEFAULT_SHADOW_EVERY}"
-          if "every" not in shadow else None)
+    schema("shadow_profile", ("shadow", "profile"), shadow.get("profile") or _UNSET,
+           on=bool(shadow.get("profile")), off="no shadow reviews")
+    schema("shadow_every", ("shadow", "every"), config.shadow_every(loop),
+           derived="" if "every" in shadow else f"the default, {config.DEFAULT_SHADOW_EVERY}")
     plain("triage.enabled", ("triage", "route"), config.triage_enabled(loop),
           "issue triage (hermes dk triage)", on=config.triage_enabled(loop),
           off="new issues are not labelled")
