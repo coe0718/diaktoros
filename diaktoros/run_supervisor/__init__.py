@@ -2725,6 +2725,8 @@ class Supervisor(records.LedgerRecords):
         if self._policy_hold(turn):
             return None
         merged = conflict_merge(loop, row, head["ref"])
+        if self._settle_generated(turn, head, merged):
+            return None
         return _Launch(
             turn_prompts.conflict_prompt(loop, row, merged),
             broker_ipc.RunScope(
@@ -2734,6 +2736,64 @@ class Supervisor(records.LedgerRecords):
                        "base_sha": row['turn_key'][len(CONFLICT_KEY):],
                        "tree": merged["tree"]}),
             merged=merged)
+
+    def _settle_generated(self, turn: _Turn, head: dict, merged: dict) -> bool:
+        """#551: a conflict confined to registered generated files is settled here, with no
+        fixer turn. The loop's generator runs in the sandbox on the merged tree (``generated``),
+        and the result is pushed as the merge commit through the broker's own push path
+        (``safe_push.push``: live authorization, exact-head lease, intent and confirmation in the
+        ledger). True = the run is done (``turn.rc`` 0). False = the normal turn runs: the
+        shortcut is off, a non-registered path conflicts, the generator failed, or the push was
+        refused before it wrote anything (each logged). A push that may have written is
+        quarantined, exactly as the broker's."""
+        from .. import broker, config, generated, safe_push, seat_model
+        row, loop = turn.row, turn.loop
+        if generated.conflicted_entries(loop, merged['conflicted']) is None:
+            return False
+        try:
+            settings = seat_model.load_runtime(self.production_config)
+            files = generated.regenerate(loop, merged, settings,
+                                         work_root=config.state_dir(loop) / 'isolated-runs')
+        except Exception as exc:
+            util.log(f'generated files: not run ({type(exc).__name__}: {exc}); normal conflict turn')
+            return False
+        if not files:
+            return False
+        scope = {'base_ref': loop['base'], 'base_sha': row['turn_key'][len(CONFLICT_KEY):],
+                 'tree': merged['tree']}
+        manifest = generated.manifest(row['head'], loop['base'], files)
+        args = (row['id'], row['repo'], row['pr'], row['head'])
+        with config.push_policy_lock():
+            current = config.by_repo(row['repo'])
+            if (current is None or not config.unattended_fixer_push_enabled(current)
+                    or not self.push_admitted(*args)):
+                util.log('generated files: fixer push not authorized; normal conflict turn')
+                return False
+            self.begin_push(*args)
+            try:
+                safe_push.push(current, repo=row['repo'], number=row['pr'], head=row['head'],
+                               role='fixer', branch=head['ref'], manifest=manifest, merge=scope)
+                self.confirm_push(*args)
+            except safe_push.scope_lock.ScopeHold:
+                self.abort_push(*args)
+                util.log('generated files: push held by the scope lock; normal conflict turn')
+                return False
+            except Exception as exc:
+                if isinstance(exc, safe_push.PushFailure) or not isinstance(
+                        exc, broker.BrokerDenied):
+                    outcome = (exc.outcome if isinstance(exc, safe_push.PushFailure)
+                               and exc.outcome == 'published_pr_unverified' else 'unknown')
+                    self.quarantine_push(*args, outcome)
+                    turn.stopped = True
+                    turn.error = f'post-write push quarantine: {outcome}'
+                    return True
+                self.abort_push(*args)
+                util.log(f'generated files: push refused ({exc}); normal conflict turn')
+                return False
+        turn.rc = 0
+        util.log(f"generated files: settled {', '.join(sorted(files))} for PR #{row['pr']} "
+                 'without a fixer turn')
+        return True
 
     def _prepare_ci_fix_launch(self, turn: _Turn, head: dict) -> _Launch | None:
         # #306: a failed required check at this head, handed to the fixer. No verdict

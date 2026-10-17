@@ -77,7 +77,7 @@ class Worker(sm.Worker):
                         turn_key=f"{CONFLICT_KEY}{BASE_SHA}")
         with ledger.connect(sup.db) as con:
             con.execute("UPDATE runs SET state='launching', owner='w', generation='g', "
-                        "push_admitted=1 WHERE delivery='d-c'")
+                        "push_admitted=1, launch_intent=1 WHERE delivery='d-c'")
             run_id = con.execute("SELECT id FROM runs WHERE delivery='d-c'").fetchone()[0]
         seen = {}
 

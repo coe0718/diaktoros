@@ -234,6 +234,7 @@ DEFAULTS: dict = {
     "fixer_check": "",        # one command fixer turns always run before publishing; "" = none
     "required_checks": [],    # the checks that gate an approval (#368); [] = every check gates
     "human_paths": [],        # globs whose changes only a human may approve (#478)
+    "generated": [],          # generated files the host regenerates on a conflict (#551); [] = off
     "review_only": [],        # authors reviewed but never fixed (#191); [] = fixers only
     "review_only_update": False,  # push a clean merge of the base into a review-only PR (opt-in)
     "review_only_cap": None,   # verdicts per review-only PR; None = the loop's `cap`
@@ -473,6 +474,77 @@ def check_human_paths(value, where: str) -> list[str]:
         raise ConfigError(f"{where}: 'human_paths' must be at most {HUMAN_PATHS_MAX} unique "
                           f"patterns, each one printable line of 1-{HUMAN_PATH_MAX} characters")
     return names
+
+
+GENERATED_MAX = 20           # entries, and paths per entry
+GENERATED_PATH_MAX = 200
+GENERATED_COMMAND_MAX = 500
+
+
+def check_generated(value, where: str) -> list[dict]:
+    """The loop's generated files (#551): ``[{"paths": [...], "command": "..."}]``, [] = off.
+
+    Host-owned (the loop file), never read from a PR. Paths are repo-relative, with no ``..``,
+    ``.git`` or empty segment and no comma or ``=`` (the one-line forms use both); a path may
+    belong to one entry only. The command is one printable line."""
+    if value is None:
+        return []
+    bad = f"{where}: 'generated' must be a list of {{\"paths\": [...], \"command\": \"...\"}}"
+    if not isinstance(value, list) or len(value) > GENERATED_MAX:
+        raise ConfigError(f"{bad}, at most {GENERATED_MAX}")
+    out, seen = [], set()
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) != {"paths", "command"}:
+            raise ConfigError(bad)
+        paths, command = entry["paths"], entry["command"]
+        if (not isinstance(paths, list) or not 1 <= len(paths) <= GENERATED_MAX
+                or not all(isinstance(p, str) for p in paths) or not isinstance(command, str)):
+            raise ConfigError(bad)
+        paths = [p.strip() for p in paths]
+        command = command.strip()
+        for path in paths:
+            parts = path.split("/")
+            if (not 0 < len(path) <= GENERATED_PATH_MAX or not path.isprintable()
+                    or path.startswith("/") or "\\" in path or "," in path or "=" in path
+                    or any(part in ("", ".", "..") or part.lower() == ".git" for part in parts)):
+                raise ConfigError(f"{where}: 'generated' path {path!r} must be repo-relative "
+                                  "(no '..', '.git', empty segment, comma or '=')")
+            if path in seen:
+                raise ConfigError(f"{where}: 'generated' path {path!r} is listed twice")
+            seen.add(path)
+        if not command or len(command) > GENERATED_COMMAND_MAX or not command.isprintable():
+            raise ConfigError(f"{where}: a 'generated' command must be one printable line of "
+                              f"1-{GENERATED_COMMAND_MAX} characters")
+        out.append({"paths": paths, "command": command})
+    return out
+
+
+def parse_generated(entries, where: str) -> list[dict]:
+    """``PATH[,PATH...]=COMMAND`` strings (the CLI and the form's spelling) -> ``generated``."""
+    parsed = []
+    for text in entries:
+        left, sep, command = str(text).partition("=")
+        if not sep:
+            raise ConfigError(f"{where}: 'generated' entry {text!r} must be PATH[,PATH...]=COMMAND")
+        parsed.append({"paths": [p.strip() for p in left.split(",") if p.strip()],
+                       "command": command})
+    return check_generated(parsed, where)
+
+
+def split_generated(text) -> list[str]:
+    """The settings form's one line: entries separated by ``;;``."""
+    return [part.strip() for part in str(text or "").split(";;") if part.strip()]
+
+
+def generated_text(entries) -> str:
+    """The inverse of ``split_generated`` (for ``show``)."""
+    return " ;; ".join(f"{','.join(e['paths'])}={e['command']}" for e in entries or [])
+
+
+def generated(loop: dict) -> list[dict]:
+    """The generated-file entries; [] = the conflict shortcut is off."""
+    value = loop.get("generated")
+    return list(value) if isinstance(value, list) else []
 
 
 def split_human_paths(text) -> list[str]:
@@ -1299,6 +1371,7 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     loop["fixer_check"] = check_fixer_check(loop["fixer_check"], where)
     loop["required_checks"] = check_required_checks(loop["required_checks"], where)
     loop["human_paths"] = check_human_paths(loop["human_paths"], where)
+    loop["generated"] = check_generated(loop["generated"], where)
     if type(loop["review_after_ci"]) is not bool:
         raise ConfigError(f"{where}: 'review_after_ci' must be a JSON boolean (true holds a "
                           "review until the head's checks finish)")
