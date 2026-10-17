@@ -943,6 +943,7 @@ class RunBroker:
         branch to be absent. A write whose outcome is unknown is recorded as uncertain and never
         replayed.
         """
+        from . import fix_hold, run_supervisor, state as state_mod
         from .run_supervisor import Supervisor
         if self.scope.role != "issue_fixer" or not isinstance(request, dict):
             raise ProtocolError("operation out of scope")
@@ -959,8 +960,11 @@ class RunBroker:
                                     "written, resubmit")
             safe_push._manifest(request["manifest"])
         elif operation == "issue_comment":
-            if set(request) != {"operation", "body"} or len(raw) > MAX_REQUEST:
-                raise ProtocolError("issue_comment takes only a body")
+            if (set(request) not in ({"operation", "body"}, {"operation", "body", "kind"})
+                    or len(raw) > MAX_REQUEST
+                    or request.get("kind", "question") not in fix_hold.ASK_KINDS):
+                raise ProtocolError("issue_comment takes a body, and optionally kind "
+                                    "question or plan")
             body = request["body"]
         else:
             raise ProtocolError("operation out of scope")
@@ -980,12 +984,24 @@ class RunBroker:
                     or current.get("state_dir") != self._loop.get("state_dir")
                     or not config.issue_fixes_enabled(current)):
                 raise ProtocolError("issue fixes are not enabled by the host operator")
+            kind = request.get("kind") if operation == "issue_comment" else None
+            st = state_mod.state_for(current)
+            try:
+                if kind:
+                    fix_hold.check_ask(st, number)         # one open ask; the asks are capped
+                elif operation == "open_pr" and fix_hold.plan_required(
+                        st, number, run_supervisor.issue_fix_issue(current, number)):
+                    raise ValueError("this issue needs a plan first: post it with issue_comment "
+                                     "--ask plan and wait for a maintainer's /loop approve")
+            except (ValueError, run_supervisor.RetryableError) as exc:
+                self._used = False                         # refused before any write
+                raise ProtocolError(f"{exc}; nothing was written, your one write is unspent")
             supervisor.record_issue_fix(run_id, repo, number, self.scope.head,
                                         "pr" if operation == "open_pr" else "comment",
                                         self.scope.branch)
             self.completed = True
             if operation == "issue_comment":
-                return self._issue_comment(current, supervisor, body.strip())
+                return self._issue_comment(current, supervisor, body.strip(), kind)
             try:
                 pushed = safe_push.open_branch(current, repo=repo, number=number,
                                                base=self.scope.head, branch=self.scope.branch,
@@ -1121,7 +1137,8 @@ class RunBroker:
         supervisor.filed_issue_status(self.scope.run_id, seq, "posted", issue_number=issue)
         return {"accepted": True, "issue": issue}
 
-    def _issue_comment(self, loop: dict, supervisor, body: str) -> object:
+    def _issue_comment(self, loop: dict, supervisor, body: str, kind: str | None = None) -> object:
+        from . import state as state_mod
         run_id = self.scope.run_id
         try:
             login = broker.authorize_issue_fix(loop, repo=self.scope.repo, number=self.scope.number)
@@ -1136,6 +1153,8 @@ class RunBroker:
                                         error=f"POST outcome unknown: {_why(exc)}")
             raise ProtocolError("the comment's outcome is unknown: do not retry; say so")
         supervisor.issue_fix_status(run_id, "posted", comment_id=comment)
+        if kind:       # #483: the question or plan is open; the seat is released with this run
+            state_mod.state_for(loop).fix_ask_set(self.scope.number, kind, comment, body)
         return {"accepted": True}
 
 

@@ -213,6 +213,9 @@ def cmd_status(args) -> int:
             print(f"  deps:       {line}")
         for issue_no, origin in sorted(st.fix_holds().items()):
             print(f"  held:       issue #{issue_no} fix waits for PR #{origin} to merge")
+        from .. import fix_hold
+        for issue_no, ask in sorted(st.fix_ask_open().items()):
+            print(f"  held:       {fix_hold.ask_line(issue_no, ask)}")
         declared = st.issue_deps()
         for issue_no in st.dep_waits():
             names = ", ".join(f"#{a}" for a in sorted(declared.get(issue_no) or {})) or "?"
@@ -930,6 +933,10 @@ def cmd_explain(args) -> int:
         for issue_no, origin in sorted(st.fix_holds().items()):
             if origin == args.pr:
                 print(f"  {'held:':<12}issue #{issue_no} fix waits for this PR to merge")
+        from .. import fix_hold
+        ask = st.fix_ask_open().get(args.pr)   # the number may be an issue waiting on a maintainer
+        if ask:
+            print(f"  {'held:':<12}{fix_hold.ask_line(args.pr, ask)}")
         if report['chain']['status'] != 'direct':
             print(f"  {'chain:':<12}{report['chain']['status']} · "
                   f"parents {report['chain']['parents']} · {report['chain']['reason']}")
