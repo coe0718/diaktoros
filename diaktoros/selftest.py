@@ -1093,7 +1093,8 @@ def run_live_turn(report: Report, loop: dict, settings: dict | None, pr: dict | 
                                    proxy_model=reviewer.proxy_model,
                                    client_identity=reviewer.client_identity,
                                    timeout=timeout, work_root=_work_root(loop),
-                                   no_write=True, observed=observed)
+                                   no_write=True, observed=observed,
+                                   reasoning_effort=getattr(reviewer, "reasoning_effort", "") or "")
         error = ""
     except Exception as exc:
         rc, error = observed.get("returncode"), f"{type(exc).__name__}: {exc}"

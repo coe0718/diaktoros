@@ -505,6 +505,12 @@ Node is not a runtime-file key (#685). The host detects it itself (`~/.hermes/no
 
 These four keys are mandatory non-empty strings; extra top-level runtime keys are rejected. Path-shape parsing does not prove the installation is usable: detection/selftest check the filesystem and interpreter. Use absolute paths. Unlike GitHub token-path helpers, runtime host paths are not generally tilde-expanded by consumers.
 
+### Reasoning effort
+
+A seat thinks as hard as its own Hermes profile says: `agent.reasoning_effort` in the profile's `config.yaml` (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, or `none`), read with the seat's model and written into the sandboxed Hermes's config for every turn (#874). Unset, the turn takes Hermes's default (`medium`). Doctor's `model:<seat>` line names it (`· reasoning high`), refuses a value Hermes would not accept, and the ledger records what each turn's first request actually asked for (the thinking level, #513).
+
+Before #874 the sandbox config had no `agent:` section, so no seat's setting reached its turns: a reviewer set to `high` reviewed at `medium`, and a Claude-subscription fixer sent no reasoning at all.
+
 ### Model precedence
 
 For reviewer, fixer, adjudicator, and triage, resolution is:

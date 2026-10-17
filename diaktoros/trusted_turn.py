@@ -519,7 +519,7 @@ SEAT_PROVIDER = 'review-loop-seat'
 
 
 def sandbox_config(model: str, api_mode: str = 'chat_completions',
-                   client_identity: str = '') -> tuple[str, str, str]:
+                   client_identity: str = '', reasoning_effort: str = '') -> tuple[str, str, str]:
     """``(config.yaml, .env, --provider)`` for the sandboxed Hermes of one seat.
 
     The sandbox speaks the seat's wire format to the local bridge and holds only a dummy key:
@@ -533,16 +533,22 @@ def sandbox_config(model: str, api_mode: str = 'chat_completions',
       the bridge's ``/anthropic`` path with a dummy OAuth-shaped ``ANTHROPIC_TOKEN``, so Hermes
       applies the Claude Code system prefix and tool naming that subscription requests need.
     """
-    from . import inference_proxy
+    from . import inference_proxy, seat_model
     inference_proxy.contract_for(api_mode)
     base = f'http://127.0.0.1:{inference_proxy.BRIDGE_PORT}'
-    tail = 'plugins:\n  enabled: []\nmemory:\n  memory_enabled: false\n'
+    # The seat profile's agent.reasoning_effort (#874): without it every turn ran at Hermes's
+    # default — a reviewer set to high reviewed at medium, the fixer's subscription wire sent none.
+    if reasoning_effort and reasoning_effort not in seat_model.REASONING_EFFORTS:
+        raise TurnDenied('unsupported reasoning effort')
+    agent = f'agent:\n  reasoning_effort: {reasoning_effort}\n' if reasoning_effort else ''
+    tail = 'plugins:\n  enabled: []\nmemory:\n  memory_enabled: false\n' + agent
     name = json.dumps(model)
     if api_mode == 'chat_completions' and client_identity == 'directsdk':
         provider = 'review-loop-directsdk-wire'
         return ('model:\n  provider: ' + provider + '\n  default: ' + name +
                 f'\n  base_url: {base}/v1\n  api_key: {SANDBOX_KEY}\n'
-                + 'plugins:\n  enabled: [' + provider + ']\nmemory:\n  memory_enabled: false\n',
+                + 'plugins:\n  enabled: [' + provider + ']\nmemory:\n  memory_enabled: false\n'
+                + agent,
                 f'OPENAI_API_KEY={SANDBOX_KEY}\n', provider)
     if api_mode == 'chat_completions':
         return ('model:\n  provider: custom\n  default: ' + name + f'\n  base_url: {base}/v1\n'
@@ -564,7 +570,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
              api_mode: str = 'chat_completions', credential=None, proxy_model: str = '',
              client_identity: str = '', review_diff: str | None = None,
              prefetch_timeout: int = deps.FETCH_TIMEOUT, progress=None,
-             merged: dict | None = None, steps: int | None = None) -> int:
+             merged: dict | None = None, steps: int | None = None,
+             reasoning_effort: str = '') -> int:
     """Stage a live PR head, start host capabilities, execute Hermes within bwrap.
 
     ``api_mode`` picks the proxy contract and the sandbox's provider config; ``credential`` (a
@@ -620,7 +627,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
             turn.write_text(json.dumps({'head': scope.head}) + '\n')
             turn.chmod(0o444)
         home.mkdir(mode=0o700)
-        config_text, env_text, provider = sandbox_config(model, api_mode, client_identity)
+        config_text, env_text, provider = sandbox_config(model, api_mode, client_identity,
+                                                         reasoning_effort)
         (home / 'config.yaml').write_text(config_text)
         (home / 'config.yaml').chmod(0o600)
         if client_identity == 'directsdk':
