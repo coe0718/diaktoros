@@ -16,7 +16,9 @@ import re
 
 from . import ci, gh
 
-JOBS_MAX = 6
+# Required jobs whose logs are read per review. This repository's own loop requires 12 (#850: the
+# unit suite sharded per Python, plus the harness and four other checks); one log read each.
+JOBS_MAX = 16
 LOG_LIMIT = 4 * 1024 * 1024
 OK_SHOWN = 300
 SKIPPED_SHOWN = 60
@@ -52,19 +54,24 @@ def parse(log: str) -> dict[str, str]:
     return out
 
 
-def _job_at_head(loop: dict, job_id: int, head: str) -> bool:
-    """True only when GitHub says this job ran at ``head`` in a workflow run of this repository."""
+def _job_at_head(loop: dict, job_id: int, head: str, runs: dict | None = None) -> bool:
+    """True only when GitHub says this job ran at ``head`` in a workflow run of this repository.
+    ``runs`` caches each workflow run's verdict: a sharded matrix's jobs share one run."""
     job = gh.api(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}", login=loop.get("read_token"))
     if not isinstance(job, dict) or job.get("head_sha") != head:
         return False
     run_id = job.get("run_id")
     if type(run_id) is not int:
         return False
+    if runs is not None and run_id in runs:
+        return runs[run_id]
     run = gh.api(loop, f"/repos/{loop['repo']}/actions/runs/{run_id}", login=loop.get("read_token"))
-    if not isinstance(run, dict) or run.get("head_sha") != head:
-        return False
-    source = run.get("head_repository")
-    return isinstance(source, dict) and source.get("full_name") == loop["repo"]
+    source = run.get("head_repository") if isinstance(run, dict) else None
+    ok = (isinstance(run, dict) and run.get("head_sha") == head and isinstance(source, dict)
+          and source.get("full_name") == loop["repo"])
+    if runs is not None:
+        runs[run_id] = ok
+    return ok
 
 
 def read(loop: dict, state: ci.CIState | None, required, head: str) -> dict[str, str]:
@@ -76,10 +83,11 @@ def read(loop: dict, state: ci.CIState | None, required, head: str) -> dict[str,
     if state is None or not required or not head:
         return {}
     results: dict[str, str] = {}
+    runs: dict[int, bool] = {}
     gated = ci.gating(state, required)
     for name in (gated.passed if gated else [])[:JOBS_MAX]:
         job_id = state.ids.get(name)
-        if type(job_id) is not int or not _job_at_head(loop, job_id, head):
+        if type(job_id) is not int or not _job_at_head(loop, job_id, head, runs):
             continue
         log = gh.read_text(loop, f"/repos/{loop['repo']}/actions/jobs/{job_id}/logs",
                            login=loop.get("read_token"), limit=LOG_LIMIT)

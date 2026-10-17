@@ -393,6 +393,34 @@ class CITestsUnit(unittest.TestCase):
         self.assertEqual(ci_tests.parse(self.DUP), want)
         self.assertEqual(ci_tests.parse("".join(reversed(self.DUP.splitlines(True)))), want)
 
+    def test_every_sharded_required_job_is_read_and_their_run_once(self):
+        # #850: the unit suite runs as 3 shards per Python, so the loop requires 12 checks; a test
+        # that ran only in the last shard must still count, and the shared run is read once.
+        names = [f"unit (3.{v}, {s}/3)" for v in (11, 14) for s in (1, 2, 3)]
+        names += ["tests (3.11)", "tests (3.14)", "installed-mode", "verticals",
+                  "plugin-guard (pinned)", "plugin-validate"]
+        ids = {name: 100 + i for i, name in enumerate(names)}
+        calls = []
+
+        def api(loop, path, method="GET", body=None, login=None):
+            calls.append(path)
+            if "/actions/jobs/" in path:
+                return {"head_sha": HEAD, "run_id": 7}
+            if path.endswith("/actions/runs/7"):
+                return {"head_sha": HEAD, "head_repository": {"full_name": pv.REPO}}
+            raise AssertionError(path)
+
+        def log(loop, path, login=None, limit=None):
+            job = int(path.split("/actions/jobs/")[1].split("/")[0])
+            return f"test_j{job} (test_m.C.test_j{job}) ... ok\n"
+
+        state = ci.CIState(passed=list(names), ids=ids)
+        with mock.patch.object(gh, "api", side_effect=api), \
+             mock.patch.object(gh, "read_text", side_effect=log):
+            got = ci_tests.read(LOOP, state, names, HEAD)
+        self.assertEqual(set(got), {f"test_m.C.test_j{i}" for i in ids.values()})
+        self.assertEqual(sum(p.endswith("/actions/runs/7") for p in calls), 1)
+
     def test_refusal_ignores_an_ambiguous_short_name(self):
         res = ci_tests.parse(self.DUP)
         self.assertEqual(ci_tests.refusal(

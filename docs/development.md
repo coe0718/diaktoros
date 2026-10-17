@@ -67,6 +67,17 @@ python tests/leakguard.py discover -v -s tests -p 'test_safe_push.py'
 - `-s tests` sets the discovery directory. This avoids accidentally importing Hermes's own `tests` package when Hermes is on `PYTHONPATH`.
 - `-p 'test_*.py'` runs all matching test modules; the quoted glob is passed to discovery, not expanded by the shell. `-p 'test_safe_push.py'` narrows the run to that exact file.
 
+CI runs this suite in three shards per Python (the `unit (3.x, N/3)` jobs), and the harness alone in `tests (3.x)`. To run one shard as CI does:
+
+```sh
+python tests/leakguard.py -v $(python tests/shard.py 3 1)
+python tests/shard.py 3 --all
+```
+
+- `tests/shard.py 3 1` prints the modules of shard 1 of 3. Every `tests/test_*.py` is in exactly one shard, and `test_shard.py` fails otherwise, so a new test file needs no CI change.
+- `--all` prints each shard's file count and weight. The weights in `tests/shard_weights.json` are measured seconds per module, from a run with `--durations 0`. Refresh them when one shard's CI time drifts well past the others; a stale weight only unbalances the split, it never drops a test.
+- A loop that gates on this repository's CI must list the `unit` jobs and `installed-mode (resolver)` in `required_checks` (`hermes dk set --loop <id> --required-check NAME`, once per check; it replaces the list), or a red shard won't hold a review.
+
 Some sandbox tests skip without usable bubblewrap/user namespaces; real-Hermes tests can skip without source/venv/Rust prerequisites. A green standalone result with skips is not a complete integration result. Install bubblewrap using the host's package manager and check the host user-namespace policy before treating sandbox coverage as exercised. CI's Ubuntu sysctl adjustments are runner preparation, not instructions to disable a production security policy.
 
 The test guards in `tests/_home_guard.py`, `tests/_ledger_guard.py` and `tests/leakguard.py` isolate HOME/state, refuse the real ledger and detect resource leaks. Preserve their bootstrap ordering when adding tests. Fake network/token seams belong in tests; they must not become a production bypass.

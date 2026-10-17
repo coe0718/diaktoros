@@ -23,6 +23,8 @@ env:
   HERMES_PINNED: be5e9f72c6681af9dfb75bf480f08844f1499949
 
 jobs:
+  # The harness. The unit suite runs in the `unit` shards below (#850); this job keeps the
+  # `tests (3.x)` names that loops already list in required_checks.
   tests:
     runs-on: ubuntu-24.04
     strategy:
@@ -41,6 +43,24 @@ jobs:
         run: python -m compileall -q diaktoros scripts __init__.py tests
       - name: Loop tests (gates, budget, seats, watchdog, cleanup)
         run: python tests/run_tests.py
+
+  # The unit suite in three shards per Python (#850), about 3 minutes each instead of 9 in one
+  # job. tests/shard.py deals every tests/test_*.py into exactly one shard, balanced by
+  # tests/shard_weights.json; test_shard.py fails if a module is in no shard or in two. The shard
+  # count is in the matrix and the run line below: change both together.
+  unit:
+    name: unit (${{ matrix.python }}, ${{ matrix.shard }}/3)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
       # The sandbox tests skip without bubblewrap; a green run must mean they ran. Ubuntu
       # restricts unprivileged user namespaces by default, which bwrap needs.
       - name: Install bubblewrap
@@ -49,13 +69,14 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       # Through tests/leakguard.py: an unclosed database, file or socket, or a child left
       # running, fails the run (a ResourceWarning from a finalizer would otherwise only print).
-      # -v names every test, so a skip in the log says which test and why.
+      # -v names every test, so a skip in the log says which test and why; the loop reads these
+      # lines as per-test evidence (diaktoros/ci_tests.py).
       - name: Boundary tests (broker, push, fetch, proxy, supervisor, sandbox)
-        run: python tests/leakguard.py discover -v -s tests -p 'test_*.py'
-      # Scheduled runs repeat the boundary suite: a second pass doubles the chance to catch a timing flake.
+        run: python tests/leakguard.py -v $(python tests/shard.py 3 ${{ matrix.shard }})
+      # Scheduled runs repeat the shard: a second pass doubles the chance to catch a timing flake.
       - name: Boundary tests, second pass (scheduled only)
         if: github.event_name == 'schedule'
-        run: python tests/leakguard.py discover -s tests -p 'test_*.py'
+        run: python tests/leakguard.py $(python tests/shard.py 3 ${{ matrix.shard }})
 
   # Hermes blocks an install whose scan verdict is "dangerous", and --force cannot override it
   # (#37: the plugin passed every test here and still could not be installed). Scan each change
@@ -121,8 +142,16 @@ jobs:
   # installed machine is in, and not the one a stdlib-only image hands you. Only the other mode was
   # ever run here, so the harness could call itself "a complete installation" while nine checks were
   # red on a real box. Run the same suite once with the pinned Hermes on the interpreter.
+  # Two parts in parallel (#850): the harness keeps the `installed-mode` name loops already
+  # require, and the resolver tests run beside it as `installed-mode (resolver)`. In one job they
+  # ran one after the other, 5-7 minutes, the slowest check once `tests` was sharded.
   installed-mode:
+    name: ${{ matrix.part == 'harness' && 'installed-mode' || 'installed-mode (resolver)' }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [harness, resolver]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
@@ -152,9 +181,11 @@ jobs:
       - name: Confirm the suite will run in the installed mode
         run: python -c "import hermes_cli; print('installed mode:', hermes_cli.__file__)"
       - name: Loop tests (installed mode)
+        if: matrix.part == 'harness'
         run: python tests/run_tests.py
       # `discover -s tests`, not `-m unittest tests.…`: Hermes's own `tests` package is on PYTHONPATH.
       - name: Gateway resolver tests against the pinned Hermes (#105)
+        if: matrix.part == 'resolver'
         run: python tests/leakguard.py discover -v -s tests -p 'test_gate_shims.py'
 
   # The vertical tests drive the real Hermes (pinned) inside bubblewrap against local fakes: the
