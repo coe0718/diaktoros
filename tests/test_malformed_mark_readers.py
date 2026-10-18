@@ -134,6 +134,30 @@ class MalformedMarkReaders(unittest.TestCase):
                 self.assertNotIn(f"on {JUNK}", out)
                 self.assertNotIn(JUNK, t.load_state("locks.json").get("reviewer", {}))
 
+    def test_died_locks_reports_a_claim_dated_in_the_future(self):
+        """#794: a future ``at`` is not live, and the sweep still names it (never hides it)."""
+        now = time.time()
+        for shape, at in {"an hour ahead": now + HOUR, "a ms timestamp": now * 1000}.items():
+            with self.subTest(shape):
+                self.armed(prs={})
+                write_state("locks.json", {"reviewer": {
+                    GOOD: {"at": at, "head": t.HEAD_B, "why": "working"}}})
+                out = sweep()
+                self.assertEqual(
+                    len([line for line in out.splitlines()
+                         if "reviewer slot claim" in line and GOOD in line
+                         and "in the future" in line]), 1, out)
+                self.assertNotIn(GOOD, t.load_state("locks.json").get("reviewer", {}))
+
+    def test_status_does_not_show_a_future_claim_as_running(self):
+        t.reset(prs={})
+        write_state("locks.json", {"reviewer": {
+            GOOD: {"at": time.time() + HOUR, "head": t.HEAD_B, "why": "working"}}})
+        parsed = t.parser_for().parse_args(["status", "--loop", "widgets"])
+        _, out = t.run_cli(parsed)
+        self.assertNotIn(f"running:    reviewer on {GOOD}", out)
+        self.assertIn(f"reviewer mark for {GOOD} is dated in the future", out)
+
     # 4. diaktoros/cli/operations.py status: the "running:" line (and the queued lines under it).
     def test_status_marks_a_junk_lock_unreadable_and_still_shows_the_good_one(self):
         for shape, junk in junk_shapes({"at": time.time() - 600, "head": t.HEAD_A,
