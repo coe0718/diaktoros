@@ -698,6 +698,8 @@ class Surface(unittest.TestCase):
         # This slice's own named proof: the real registered page, clicked through confirm → post.
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: confirming posts the exact target, then shows the answer and the state read back$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: a refusal shows the backend reason, keeps the dialog open and invalidates nothing$")
+        # The drawer's truncation wording (#821): the named proof that a cut list says so.
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: the drawer says when its turns and rulings are the newest of more, and only then$")
         self.assertIn("palette only: unseen successful cache read expires", done.stdout)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed here")
