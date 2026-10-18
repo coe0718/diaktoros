@@ -63,6 +63,20 @@ class LaunchTests(unittest.TestCase):
         self.launch(self.argv)
         self.assertTrue(self.marker.exists())
 
+    def test_a_per_conversation_session_id_passes_and_only_as_a_uuid(self):
+        # Provider 0.3.3 adds `--session-id <uuid>` to every launch; the guard refused it, and every
+        # Claude-backed seat failed as "wire didn't answer".
+        self.launch(self.argv + ['--session-id', '0f8fad5b-d9cb-469f-a165-70867728950e'])
+        self.assertTrue(self.marker.exists())
+        self.marker.unlink()
+        for bad in ('../x', '0F8FAD5B-D9CB-469F-A165-70867728950E', '{0f8fad5b-d9cb-469f-a165-70867728950e}',
+                    '0f8fad5bd9cb469fa16570867728950e', '', '--resume'):
+            with self.subTest(value=bad), self.assertRaises(guard.NativeLaunchRefused):
+                self.launch(self.argv + ['--session-id', bad])
+        with self.assertRaises(guard.NativeLaunchRefused):     # once only
+            self.launch(self.argv + ['--session-id', '0f8fad5b-d9cb-469f-a165-70867728950e'] * 2)
+        self.assertFalse(self.marker.exists())
+
     def test_every_lockdown_omission_refuses_before_process_start(self):
         pairs = {'--tools', '--setting-sources', '--max-turns', '--permission-mode', '--mcp-config'}
         for flag in pairs | {'--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence'}:
