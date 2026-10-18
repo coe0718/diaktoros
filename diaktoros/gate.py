@@ -1382,7 +1382,11 @@ def take_seat(loop: dict, st: state_mod.LoopState, seat: str, number: int, head:
             log(f"{seat} at capacity {len(live)}/{capacity} ({held}) — queued #{number} @ {head[:7]}")
             silence(f"{seat} at capacity {len(live)}/{capacity} — queued", "queued")
 
-        st.acquire(seat, key, head, why)
+        try:
+            st.acquire(seat, key, head, why)
+        except Exception as exc:  # noqa: BLE001 - an unrecorded claim must not start a run (#726)
+            silence(f"could not record the {seat} claim on {key} "
+                    f"({type(exc).__name__}: {exc}) — not running", "held")
         st.queue_pop(seat, key)        # a direct event can outrun the drain: the entry is stale now
 
     workspace = isolation.ensure(loop, number, seat, head, login=login or "")

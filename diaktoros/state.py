@@ -175,10 +175,16 @@ class LoopState:
         except Exception:
             return default
 
+    def _save_strict(self, path: pathlib.Path, data) -> None:
+        """Publish ``data`` or raise: for a write the caller must not act without (#726)."""
+        hostdirs.ensure(path.parent)
+        _atomic_write(path, data)
+
     def _save(self, path: pathlib.Path, data) -> None:
+        """Best-effort publish: a failure is logged and swallowed. A caller that proceeds as if
+        the write landed (a seat claim) uses ``_save_strict`` instead."""
         try:
-            hostdirs.ensure(path.parent)
-            _atomic_write(path, data)
+            self._save_strict(path, data)
         except Exception as exc:
             log(f"state write failed ({path.name}): {exc}")
 
@@ -340,7 +346,8 @@ class LoopState:
                 budget: float | None = None, run: str | None = None) -> None:
         """Claim ``seat`` for ``key``. The isolated worker calls this at launch with its run's
         own budget and id (#98); the claim's TTL never shrinks below the budget it was taken
-        with, and only a release naming the same ``run`` may free it."""
+        with, and only a release naming the same ``run`` may free it.
+        Raises when the claim cannot be written (#726)."""
         with self.locked():
             data = _mapping(self._load(self.locks, {}))
             at = time.time()
@@ -349,7 +356,9 @@ class LoopState:
             if run is not None:
                 entry["run"] = run
             _seat(data, seat)[key] = entry
-            self._save(self.locks, data)
+            # A claim that did not reach disk is no claim: a second gate would take the same
+            # seat. Raise (#726) so the caller does not run, and never record it in CLAIMS.
+            self._save_strict(self.locks, data)
             CLAIMS.append((self, seat, key, at))
 
     def release_exact(self, seat: str, key: str, at: float) -> bool:
