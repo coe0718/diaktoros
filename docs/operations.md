@@ -398,7 +398,7 @@ not a historical reconstruction. An `issues` delivery replays through the triage
 `waiting` may mean provider usage-window/429 hold or daily cap, not failed work. Read
 `retry_at` and the reason. Pacing does not consume the pre-write failure-retry budget.
 Daily caps reset at local midnight; zero removes the cap. An armed scheduling path must
-still resume work. Status shows reviewer/fixer pacing; `triage --loop` shows triage settings.
+still resume work. Status shows reviewer/fixer daily counts and every closed usage window held for the reviewer, fixer, adjudicator or triage profile (a triage seat's window is listed too, though triage has no daily counts there); `triage --loop` shows triage settings.
 Issue fixes have concurrency one, their own daily cap (`triage.fix_daily_turns`, default 10, and issue fixes are always capped), and the loop-wide turn budget. Raising
 concurrency increases aggregate model/storage use, not individual turn speed.
 
