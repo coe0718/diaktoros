@@ -491,6 +491,36 @@ class Lifecycle(unittest.TestCase):
                 self.assertFalse(db.exists())
                 self.assertFalse(run_supervisor.ledger_marker(db).exists())
 
+    def test_read_commands_open_a_ledger_an_upgrade_has_not_migrated_yet(self):
+        # Review of #944: right after an upgrade adds a runs column, status/rulings/reconcile ran
+        # in worker mode and refused the operator's real ledger ("runs lacks cost") until some
+        # host open migrated it, exactly when status and reconcile are what you run.
+        db = self.root / "old" / "runs.sqlite"
+        Supervisor(db).enqueue("d", "o/r", 1, "a" * 40, "reviewer")
+        with contextlib.closing(sqlite3.connect(db)) as con, con:
+            con.execute("ALTER TABLE runs DROP COLUMN cost")
+        for argv in (["status", str(db)], ["rulings", str(db)]):
+            with self.subTest(argv[0]):
+                err, out = io.StringIO(), io.StringIO()
+                with patch.object(sys, "argv", ["run_supervisor", *argv]), \
+                        contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+                    try:
+                        run_supervisor.main()
+                    except SystemExit as exc:
+                        self.assertIn(exc.code, (0, None), err.getvalue())
+                self.assertNotIn("no ledger was created", err.getvalue())
+        # And an empty or foreign file is still refused, never turned into a ledger.
+        foreign = self.root / "foreign.sqlite"
+        foreign.write_bytes(b"")
+        err = io.StringIO()
+        with patch.object(sys, "argv", ["run_supervisor", "status", str(foreign)]), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()), \
+                self.assertRaises(SystemExit) as raised:
+            run_supervisor.main()
+        self.assertEqual(raised.exception.code, 2)
+        with contextlib.closing(sqlite3.connect(foreign)) as con:
+            self.assertEqual(con.execute("SELECT name FROM sqlite_master").fetchall(), [])
+
     def armed_then_wiped(self, home: Path) -> None:
         """An armed install under ``home`` whose whole state dir is then removed."""
         with patch.dict(os.environ, {"HERMES_HOME": str(home),

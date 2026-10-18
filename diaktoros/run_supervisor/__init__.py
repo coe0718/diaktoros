@@ -3077,6 +3077,22 @@ class Supervisor(records.LedgerRecords):
             pass                         # a notice never changes the run
 
 
+def _is_ledger(db: str | Path) -> bool:
+    """Whether ``db`` is a review-loop run ledger (a file with the ``runs`` table), read without
+    creating or changing anything; a missing, empty or foreign file is not one."""
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return False
+        try:
+            return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'"
+                               ).fetchone() is not None
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return False
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("operation", choices=["_fixture-worker", "_production-worker",
@@ -3093,11 +3109,14 @@ def main():
         # Reading a ledger never creates one (#798): status, rulings and reconcile open an
         # existing ledger only, so a mistyped path is an error, not an empty ledger plus a
         # `.present` marker. sweep and retry stay host-side creators.
-        try:
-            sup = Supervisor(a.db, create=a.operation not in ('status', 'rulings', 'reconcile'))
-        except LedgerMissing as exc:
-            print(f'diaktoros: {exc}; no ledger was created', file=sys.stderr)
+        # A ledger is a file with the runs table; one an upgrade has not migrated yet is still
+        # the operator's ledger, and opening it migrates it as any host open does (review on
+        # #944: worker mode refused it, "runs lacks cost", right after an upgrade).
+        if a.operation in ('status', 'rulings', 'reconcile') and not _is_ledger(a.db):
+            print(f'diaktoros: no run ledger at {a.db} (missing, empty or not a review-loop '
+                  'ledger); no ledger was created', file=sys.stderr)
             raise SystemExit(2)
+        sup = Supervisor(a.db)
         if a.operation == 'rulings':
             if a.command or a.reason or a.acknowledge_no_live_worker:
                 p.error('unexpected rulings arguments')
