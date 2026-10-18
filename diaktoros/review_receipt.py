@@ -17,7 +17,18 @@ class ReceiptDenied(ValueError):
     pass
 
 
-class ReviewedPrIneligible(ReceiptDenied):
+class ReviewPostUnconfirmed(ReceiptDenied):
+    """A failure after the review POST was sent: the review may well be on GitHub.
+
+    Never answered to the seat as a pre-write refusal ("write denied", i.e. nothing was
+    published): the claim is spent, so a retry is refused too. ``reason`` is fixed host wording.
+    """
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class ReviewedPrIneligible(ReviewPostUnconfirmed):
     """The review POST succeeded, then the PR read back closed, draft or retargeted.
 
     Final: the review exists on GitHub, so the run is never retried or replayed.
@@ -25,8 +36,8 @@ class ReviewedPrIneligible(ReceiptDenied):
     OUTCOME = 'reviewed_pr_ineligible'
 
     def __init__(self, reason):
-        super().__init__(f'{self.OUTCOME}: {reason}')
-        self.reason = reason
+        super().__init__(reason)
+        self.args = (f'{self.OUTCOME}: {reason}',)
 
 
 def ineligibility(pr, loop, number):
@@ -138,6 +149,38 @@ class ReceiptLedger:
             con.execute('COMMIT')
 
 
+def _post_and_confirm(loop, scope, ledger, verdict, body, state, principal_id, login, path,
+                      endpoint, reader):
+    """POST the review, read it back by exact ID, re-resolve the PR; return the review ID.
+
+    Everything here runs after the durable claim, so every failure is a post-POST failure:
+    ``submit`` answers each as ``ReviewPostUnconfirmed``, never as a pre-write refusal.
+    """
+    response = gh.api(loop, endpoint, method='POST', login=login,
+                      body={'commit_id': scope.head, 'event': verdict, 'body': body})
+    review_id = response.get('id') if isinstance(response, dict) else None
+    if type(review_id) is not int or review_id <= 0:
+        raise ReviewPostUnconfirmed('POST acknowledgement lacks exact review ID')
+    readback = gh.api(loop, endpoint + '/' + str(review_id), login=reader)
+    if (not isinstance(readback, dict) or type(readback.get('id')) is not int
+            or readback['id'] != review_id or readback.get('state') != state
+            or readback.get('commit_id') != scope.head or
+            not isinstance(readback.get('user'), dict) or
+            type(readback['user'].get('id')) is not int or
+            readback['user']['id'] != principal_id or
+            str(readback['user'].get('login', '')).casefold() != login.casefold()):
+        raise ReviewPostUnconfirmed('exact-ID readback mismatch')
+    final = gh.api(loop, path, login=reader)
+    reason = ineligibility(final, loop, scope.number)
+    if reason:
+        ledger.mark_posted(review_id, state, principal_id)
+        raise ReviewedPrIneligible(reason)
+    if generation_for(final, loop, scope.number, scope.head) != ledger.generation:
+        raise ReviewPostUnconfirmed('generation changed after POST')
+    ledger.confirm(review_id, state, principal_id)
+    return review_id
+
+
 def submit(loop, scope, ledger, verdict, body):
     """Claim before POST, read exact returned ID, then re-resolve generation."""
     from . import broker
@@ -163,28 +206,15 @@ def submit(loop, scope, ledger, verdict, body):
         raise ReceiptDenied(str(exc)) from None
     ledger.claim(principal_id, verdict)  # No retry after this durable point, even if POST throws.
     endpoint = path + '/reviews'
-    response = gh.api(loop, endpoint, method='POST', login=login,
-                      body={'commit_id': scope.head, 'event': verdict, 'body': body})
-    review_id = response.get('id') if isinstance(response, dict) else None
-    if type(review_id) is not int or review_id <= 0:
-        raise ReceiptDenied('POST acknowledgement lacks exact review ID')
-    readback = gh.api(loop, endpoint + '/' + str(review_id), login=reader)
-    if (not isinstance(readback, dict) or type(readback.get('id')) is not int
-            or readback['id'] != review_id or readback.get('state') != expected[verdict]
-            or readback.get('commit_id') != scope.head or
-            not isinstance(readback.get('user'), dict) or
-            type(readback['user'].get('id')) is not int or
-            readback['user']['id'] != principal_id or
-            str(readback['user'].get('login', '')).casefold() != login.casefold()):
-        raise ReceiptDenied('exact-ID readback mismatch')
-    final = gh.api(loop, path, login=reader)
-    reason = ineligibility(final, loop, scope.number)
-    if reason:
-        ledger.mark_posted(review_id, expected[verdict], principal_id)
-        raise ReviewedPrIneligible(reason)
-    if generation_for(final, loop, scope.number, scope.head) != ledger.generation:
-        raise ReceiptDenied('generation changed after POST')
-    ledger.confirm(review_id, expected[verdict], principal_id)
+    try:
+        review_id = _post_and_confirm(loop, scope, ledger, verdict, body, expected[verdict],
+                                      principal_id, login, path, endpoint, reader)
+    except ReviewPostUnconfirmed:
+        raise
+    except Exception as exc:
+        # The POST was sent (or its answer lost): whatever failed from here on, the review may
+        # exist on GitHub. Never let it surface as a refusal made before the write.
+        raise ReviewPostUnconfirmed(f'{type(exc).__name__} after the review POST') from exc
     broker._audit(loop, scope.repo, scope.number, scope.head, scope.branch,
                   'reviewer', 'review', login)
     return {'id': review_id}

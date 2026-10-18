@@ -52,6 +52,7 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
                    "head": {"sha": HEAD, "ref": "fix-7", "repo": {"full_name": REPO}},
                    "base": {"ref": "main", "sha": BASE, "repo": {"full_name": REPO}}}
         self.posts = []
+        self.mode = None
         patch = mock.patch.object(gh, "api", side_effect=_ci_green.green(self.api))
         patch.start()
         self.addCleanup(patch.stop)
@@ -69,8 +70,12 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
         if path == f"/repos/{REPO}/pulls/7/reviews/19":
             state = {"APPROVE": "APPROVED",
                      "REQUEST_CHANGES": "CHANGES_REQUESTED"}[self.posts[-1]["event"]]
+            if self.mode == "readback-mismatch":
+                state = "COMMENTED"
             return {"id": 19, "state": state, "commit_id": HEAD,
                     "user": {"id": 2, "login": "review"}}
+        if self.mode == "closed-after-post" and self.posts and path == f"/repos/{REPO}/pulls/7":
+            return dict(self.pr, state="closed")
         return self.pr
 
     def start(self, scope):
@@ -170,6 +175,37 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
         self.assertIn(REFUSAL, self.send(server, "APPROVE", body="  \n")["error"])
         self.assertEqual(self.posts, [])
         self.assertTrue(self.send(server, "APPROVE")["ok"])
+
+    def test_a_review_that_posted_is_never_answered_as_write_denied(self):
+        # Through the RunBroker entry point: the seat reads "write denied" as "nothing was
+        # published", and the capability is spent, so it could not retry either.
+        for mode, expect in (("closed-after-post", "review posted, but the PR is now closed"),
+                             ("readback-mismatch", "exact-ID readback mismatch")):
+            with self.subTest(mode):
+                self.posts.clear()
+                self.mode = mode
+                sup, scope = self.receipt_scope()
+                server = self.start(scope)
+                answer = self.send(server, "APPROVE")
+                self.assertEqual(len(self.posts), 1, "the review reached GitHub")
+                self.assertFalse(answer["ok"])
+                self.assertNotIn("write denied", answer["error"])
+                self.assertIn(expect, answer["error"])
+                self.assertIn("do not say it was not published", answer["error"])
+                self.assertEqual(self.send(server, "APPROVE")["error"],
+                                 "run capability already used")
+                server.close()
+                os.remove(sup.db)
+
+    def test_a_posted_review_whose_outcome_cannot_be_recorded_still_says_posted(self):
+        self.mode = "closed-after-post"
+        sup, scope = self.receipt_scope()
+        server = self.start(scope)
+        with mock.patch.object(Supervisor, "record_review_ineligible", side_effect=OSError):
+            answer = self.send(server, "APPROVE")
+        self.assertFalse(answer["ok"])
+        self.assertIn("review posted", answer["error"])
+        self.assertNotIn("write denied", answer["error"])
 
     def test_host_write_paths_refuse_comment_too(self):
         with self.assertRaises(broker.BrokerDenied):

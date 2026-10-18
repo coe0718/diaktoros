@@ -185,10 +185,29 @@ PUSH_UNKNOWN = ("push outcome unknown: the host could not confirm whether the br
                 "push's outcome is unknown and being checked by the host.")
 
 
+# A review whose POST was sent but did not finish confirmed: never "write denied" either, for
+# the same reason as a push. The reasons are fixed host wording (review_receipt), safe to show.
+REVIEW_POSTED_INELIGIBLE = (
+    "review posted, but the PR is now {reason}: the review is on GitHub. Do not retry. In your "
+    "summary, say the review was posted and the PR then became ineligible; do not say it was "
+    "not published.")
+REVIEW_UNCONFIRMED = (
+    "review outcome uncertain: the review was sent to GitHub but the host could not confirm it "
+    "({reason}), so it may be published. Do not retry. In your summary, say the review may be "
+    "posted and its outcome is being checked by the host; do not say it was not published.")
+REVIEW_POSTED_UNRECORDED = (
+    "review posted, but the host could not record its outcome: the review is on GitHub. Do not "
+    "retry. In your summary, say the review was posted; do not say it was not published.")
+
+
 def _denial_message(exc: Exception) -> str:
     if isinstance(exc, ProtocolError):
         return str(exc)
-    from . import safe_push
+    from . import review_receipt, safe_push
+    if isinstance(exc, review_receipt.ReviewedPrIneligible):
+        return REVIEW_POSTED_INELIGIBLE.format(reason=exc.reason)
+    if isinstance(exc, review_receipt.ReviewPostUnconfirmed):
+        return REVIEW_UNCONFIRMED.format(reason=exc.reason)
     if isinstance(exc, safe_push.PushFailure):
         return PUSH_UNCONFIRMED.get(exc.outcome, PUSH_UNKNOWN)
     if isinstance(exc, broker.BrokerDenied) and str(exc) in PUBLIC_DENIALS:
@@ -608,7 +627,7 @@ class RunBroker:
                     Supervisor(self.scope.ledger_db, create=False).record_review_ineligible(
                         self.scope.run_id, exc.reason)
                 except Exception as persistence_error:
-                    raise ProtocolError('review outcome persistence failed') from persistence_error
+                    raise ProtocolError(REVIEW_POSTED_UNRECORDED) from persistence_error
                 raise
         else:
             if operation == 'review' and self.require_receipt:
