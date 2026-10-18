@@ -38,5 +38,56 @@ class Plan(unittest.TestCase):
             prune_runs.plan([], set(), keep=-1)
 
 
+class Main(unittest.TestCase):
+    """The script end to end with GitHub faked (review on #903): a dry run deletes nothing."""
+
+    def api(self, runs, rate_limit_after=None):
+        import urllib.error
+        calls = []
+
+        def call(method, path, token):
+            calls.append((method, path))
+            if method == "DELETE":
+                if rate_limit_after is not None and sum(m == "DELETE" for m, _ in calls) > rate_limit_after:
+                    raise urllib.error.HTTPError(path, 403, "rate limited", {}, None)
+                return None
+            if path.startswith("/repos/o/r/pulls"):
+                return [{"head": {"sha": "open-pr-head"}}]
+            if path == "/repos/o/r":
+                return {"default_branch": "main"}
+            if path.startswith("/repos/o/r/branches/"):
+                return {"commit": {"sha": "main-head"}}
+            if path.startswith("/repos/o/r/actions/runs"):
+                return {"workflow_runs": runs if "page=1" in path else []}
+            raise AssertionError(path)
+        return calls, call
+
+    def main(self, argv, runs, **kwargs):
+        from unittest import mock
+        calls, call = self.api(runs, **kwargs)
+        with mock.patch.object(prune_runs, "_call", side_effect=call), \
+                mock.patch.dict("os.environ", {"GITHUB_REPOSITORY": "o/r", "GITHUB_TOKEN": "t"}):
+            rc = prune_runs.main(argv)
+        return rc, [path for method, path in calls if method == "DELETE"]
+
+    def test_a_dry_run_makes_no_delete_call(self):
+        runs = [run(i) for i in range(1, 11)] + [run(11, head="open-pr-head")]
+        rc, deleted = self.main(["--keep", "2", "--dry-run"], runs)
+        self.assertEqual((rc, deleted), (0, []))
+
+    def test_a_real_run_deletes_the_oldest_first_within_the_cap_and_spares_protected_heads(self):
+        runs = [run(i) for i in range(1, 11)] + [run(0 + 1, head="main-head") | {"id": 99}]
+        rc, deleted = self.main(["--keep", "2", "--max-delete", "3"], runs)
+        self.assertEqual(rc, 0)
+        self.assertEqual(deleted, ["/repos/o/r/actions/runs/1", "/repos/o/r/actions/runs/2",
+                                   "/repos/o/r/actions/runs/3"])
+        self.assertNotIn("/repos/o/r/actions/runs/99", deleted)
+
+    def test_a_rate_limit_stops_cleanly(self):
+        rc, deleted = self.main(["--keep", "0"], [run(i) for i in range(1, 6)], rate_limit_after=2)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(deleted), 3)        # two deleted, the third answered 403: stop
+
+
 if __name__ == "__main__":
     unittest.main()
