@@ -104,6 +104,16 @@ class PostWriteQuarantine(unittest.TestCase):
             self.assertIsNone(self.sup._claim())
         spawn.assert_not_called()
 
+    def test_published_push_failure_is_held_and_recorded_as_published(self):
+        """#824: the broker's hold records the host's own `published`, not `unknown`."""
+        self.dispatch_denied('published')
+        row = self.sup.get('fix')
+        self.assertEqual(row['state'], 'uncertain')
+        self.assertEqual(row['error'], 'post-write push quarantine: published')
+        self.assertTrue(self.sup.post_write_hold(self.scope.repo, 7))
+        self.assertTrue(broker_ipc._denial_message(
+            safe_push.PushFailure('published')).startswith('push published'))
+
     def test_failed_attempt_with_unchanged_ref_is_quarantined(self):
         self.dispatch_denied('unchanged')
         self.assertEqual(self.sup.get('fix')['state'], 'uncertain')

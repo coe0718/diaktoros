@@ -33,6 +33,18 @@ class DenialMessageTests(unittest.TestCase):
                 self.assertEqual(self.msg(safe_push.PushFailure(outcome)), broker_ipc.PUSH_UNKNOWN)
         self.assertNotIn("write denied", lagged)
 
+    def test_a_published_push_is_reported_as_published_not_unknown(self):
+        """#824: the transport errored, the ref read back at the new head; the audit says published."""
+        from diaktoros import safe_push
+        text = self.msg(safe_push.PushFailure("published"))
+        self.assertNotEqual(text, broker_ipc.PUSH_UNKNOWN)
+        self.assertTrue(text.startswith("push published"))
+        self.assertIn("do not say its outcome is unknown", text)
+        self.assertNotIn("could not confirm whether the branch moved", text)
+        self.assertEqual(safe_push.held_outcome(safe_push.PushFailure("published")), "published")
+        self.assertEqual(safe_push.held_outcome(safe_push.PushFailure("unchanged")), "unknown")
+        self.assertEqual(safe_push.held_outcome(RuntimeError("x")), "unknown")
+
     def test_every_public_reason_is_a_known_constant_string(self):
         for reason in broker_ipc.PUBLIC_DENIALS:
             self.assertNotIn("{", reason)
