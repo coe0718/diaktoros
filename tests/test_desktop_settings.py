@@ -87,8 +87,10 @@ class SettingsView(unittest.TestCase):
         sys.modules["hermes_cli.plugins_settings"] = module
 
     def _without_settings_surface(self):
-        sys.modules.pop("hermes_cli", None)
-        sys.modules.pop("hermes_cli.plugins_settings", None)
+        # Explicitly block the import even on hosts with Hermes installed. Removing the
+        # cache entry alone lets Python immediately re-import the real settings reader.
+        sys.modules["hermes_cli"] = None  # type: ignore[assignment]
+        sys.modules["hermes_cli.plugins_settings"] = None  # type: ignore[assignment]
 
     # ---- the schema is the whole form ------------------------------------------------
 
@@ -206,6 +208,22 @@ class SettingsView(unittest.TestCase):
     def write_loop(self, loop_id: str, **body) -> None:
         """One real loop file: ``LOOP`` as ``body`` overrides it, with the id its filename claims."""
         self.write_loops(**{loop_id: json.dumps({**LOOP, **body, "id": loop_id})})
+
+    def test_browser_fixture_matches_production_projection_of_loaded_loop(self):
+        """The JS tests consume the real loader/projection contract, not an imagined seat shape."""
+        self._install([{"key": "cap", "value": "4"}, {"key": "reviewer_profile", "value": "review"}])
+        self.write_loops(alpha=json.dumps({
+            "id": "alpha", "repo": "synthetic/alpha", "base": "main", "cap": 3,
+            "fix_ci": True, "review_after_ci": True, "fixer_check": "python3 tests/affected.py",
+            "read_token": "reader", "reviewers": ["review-bot"], "fixers": ["fix-bot"],
+            "seats": {"reviewer": {"route": "review-route", "profile": "review", "login": "review-bot"},
+                      "fixer": {"route": "fix-route", "profile": "fix", "login": "fix-bot"}},
+            "tokens": {"reader": "/synthetic/credentials/read.pat", "review-bot": "/synthetic/credentials/review.pat"},
+            "adjudicator": {"profile": "default", "route": "adjudicate-route"}}))
+        with mock.patch.object(desktop_api.time, "time", return_value=1800000000):
+            actual = desktop_api.settings_view()
+        fixture = json.loads((ROOT / "tests/fixtures/desktop_settings.json").read_text())
+        self.assertEqual(actual, fixture)
 
     def test_each_loop_reports_its_own_effective_answers(self):
         self._install([])

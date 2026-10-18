@@ -622,8 +622,14 @@ class Surface(unittest.TestCase):
         # replaced the operator's Node with a stub). Require reported tests, no failures, and a
         # named test.
         ok = re.findall(r"^ok \d+ - ", done.stdout, re.M)
-        self.assertGreaterEqual(len(ok), 40, done.stdout[-4000:])
+        self.assertGreaterEqual(len(ok), 70, done.stdout[-4000:])
         self.assertNotIn("not ok", done.stdout)
+        reported_pass = re.search(r"^# pass (\d+)$", done.stdout, re.M)
+        if reported_pass is None:
+            self.fail(done.stdout[-4000:])
+        self.assertEqual(int(reported_pass.group(1)), len(ok))
+        self.assertRegex(done.stdout, r"(?m)^# skipped 0$")
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - settings: production projection renders every schema field and dynamically added unknown type$")
         self.assertIn("palette only: unseen successful cache read expires", done.stdout)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed here")

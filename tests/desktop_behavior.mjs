@@ -7,6 +7,7 @@ import test from 'node:test'
 
 const source = await readFile(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
 // Pinned from real stats.collect with a missing disposable ledger; Python checks equality.
+const settingsFixture = JSON.parse(await readFile(new URL('./fixtures/desktop_settings.json', import.meta.url), 'utf8'))
 const noLedgerStats = JSON.parse(await readFile(new URL('./fixtures/desktop_no_ledger_stats.json', import.meta.url), 'utf8'))
 
 // One loop of an /overview read, for synthetic fixtures. needs_you defaults to its uncertain run
@@ -62,6 +63,7 @@ async function harness({ cachedAge = null } = {}) {
   queries.overview = good({ loops: [overviewLoop('fixture-loop')], read_at: time / 1000 })
   queries.stats = good({ turns: {} })
   queries.health = good({ checks: [], counts: {}, offline: true })
+  queries.settings = good(structuredClone(settingsFixture))
   if (cachedAge !== null) cacheRows.push({ queryKey: ['diaktoros', 'now', 'seeded'],
     state: { data: queries.now.data, dataUpdatedAt: time - cachedAge, status: 'success' } })
   const element = (type, props, key) => ({ type, props: props || {}, key })
@@ -175,6 +177,121 @@ async function harness({ cachedAge = null } = {}) {
       }
     } }
 }
+
+test('settings: production projection renders every schema field and dynamically added unknown type', async () => {
+  const h = await harness()
+  let text = h.text(h.render('page'))
+  for (const [key, spec] of Object.entries(settingsFixture.plugin.schema)) {
+    assert.ok(text.includes(key), key)
+    assert.ok(text.includes(spec.label), spec.label)
+    assert.ok(text.includes(spec.description), key + ' description')
+  }
+  assert.match(text, /Read-only.*Capabilities/)
+  assert.match(text, /Existing loops · effective settings/)
+  assert.match(text, /shadow/)
+  assert.match(text, /Set in plugin form/)
+  assert.match(text, /Effective plugin value 4 Source Set in plugin form Schema default \(reference\) 3/)
+  assert.match(text, /shadow_profile/)
+  assert.match(text, /shadow_every/)
+  assert.match(text, /Omitted settings, including shadow activation, are not reported as off/)
+  for (const seat of Object.values(settingsFixture.loops[0].seats)) {
+    assert.ok(text.includes('turn_budget_s ' + seat.turn_budget_s))
+    assert.ok(text.includes('max_steps ' + seat.max_steps))
+  }
+  assert.match(text, /Schema default/)
+  const data = structuredClone(settingsFixture)
+  data.plugin.schema.future_field = { label: 'Future setting', type: 'future', default: { secret: 'do-not-show' }, description: 'Added without page edits' }
+  data.plugin.values.future_field = { secret: 'do-not-show' }
+  data.plugin.sources.future_field = 'default'
+  h.respond(data)
+  const validated = await h.options.settings.queryFn()
+  h.queries.settings = h.good(validated)
+  text = h.text(h.render('page'))
+  assert.match(text, /future_field.*Added without page edits.*Unsupported structured value/)
+  assert.doesNotMatch(text, /do-not-show/)
+  assert.equal(h.calls.at(-1), '/settings')
+})
+
+test('settings: unavailable store is reference only, loop error isolated and reasons are never rendered', async () => {
+  const h = await harness()
+  const data = structuredClone(settingsFixture)
+  data.plugin.available = false
+  data.plugin.reason = 'credential-is-private'
+  data.loops.push({ id: 'broken-loop', repo: '', base: '', error: true, reason: 'credential-is-private', seats: {}, flags: {} })
+  h.respond(data)
+  h.render('page')
+  h.queries.settings = h.good(await h.options.settings.queryFn())
+  const text = h.text(h.render('page'))
+  assert.match(text, /Settings store unavailable.*reference only/)
+  assert.match(text, /Effective plugin value unavailable Not verified/)
+  assert.match(text, /alpha.*review-route/)
+  assert.match(text, /broken-loop.*Loop settings unavailable/)
+  assert.doesNotMatch(text, /credential-is-private|Set in plugin form/)
+})
+
+test('settings: loading, first failure, verified empty, cached failure, retry and elapsed freshness', async () => {
+  const h = await harness()
+  h.queries.settings = h.loading()
+  assert.match(h.text(h.render('page')), /Settings: loading/)
+  h.queries.settings = h.fail(undefined)
+  h.queries.settings.error = new Error('private transport secret')
+  assert.match(h.text(h.render('page')), /Settings: no verified data available/)
+  assert.doesNotMatch(h.text(h.tree()), /private transport secret/)
+  const data = structuredClone(settingsFixture)
+  data.plugin.schema = {}; data.plugin.values = {}; data.plugin.sources = {}; data.loops = []
+  h.queries.settings = h.good(data)
+  assert.match(h.text(h.render('page')), /verified-empty Settings: backend read succeeded/)
+  h.queries.settings = h.fail(structuredClone(settingsFixture))
+  assert.match(h.text(h.render('page')), /Settings: showing last good data/)
+  h.buttons(h.tree()).filter(button => button.props.children === 'Retry').at(-1).props.onClick()
+  assert.equal(h.calls.at(-1), 'refetch')
+  h.queries.settings = h.good(structuredClone(settingsFixture))
+  h.render('page')
+  h.advance(120000, -3600000)
+  assert.match(h.text(h.tree()), /Settings: showing last good data/)
+  h.queries.settings = h.good(structuredClone(settingsFixture))
+  assert.match(h.text(h.render('page')), /Settings: backend read succeeded/)
+  h.unmount()
+  assert.equal(h.timerCount(), 0)
+})
+
+test('settings: malformed nested successes rejected before caching', async () => {
+  const h = await harness()
+  h.render('page')
+  const mutations = [
+    d => { d.plugin = null }, d => { d.plugin.seats.reviewer = null },
+    d => { delete d.plugin.values.cap }, d => { d.plugin.sources.cap = 'guessed' },
+    d => { d.plugin.schema.cap = null }, d => { d.plugin.values.cap = '4' },
+    d => { d.loops[0].seats.reviewer.max_steps = -1 }, d => { d.loops[0].flags = [] },
+    d => { delete d.loops[0].flags.fix_ci }, d => { d.loops[0].flags.cap = -1 },
+    d => { delete d.loops[0].seats.reviewer }, d => { d.loops.push(d.loops[0]) },
+    d => { d.loops[0].seats.reviewer = null }, d => { d.read_at = 'now' }
+  ]
+  for (const mutate of mutations) {
+    const data = structuredClone(settingsFixture); mutate(data); h.respond(data)
+    await assert.rejects(h.options.settings.queryFn(), error => error.code === 'INVALID_RESPONSE')
+  }
+  h.respond(structuredClone(settingsFixture))
+  assert.equal((await h.options.settings.queryFn()).loops[0].id, 'alpha')
+})
+
+test('settings: secrets and invalid token paths withheld, token budgets and valid paths retained', async () => {
+  const h = await harness()
+  const data = structuredClone(settingsFixture)
+  for (const [key, value] of Object.entries({ api_key: 'private-api-value', password: 'private-password', future_token_file: 'private-token-value', future_daily_tokens: '1250', safe_token_file: '~/credentials/seat.pat' })) {
+    data.plugin.schema[key] = { label: key, description: '', type: 'str', default: value }
+    data.plugin.values[key] = value; data.plugin.sources[key] = 'set'
+  }
+  data.loops[0].seats.reviewer.token_file = 'ghp_privatePAT'
+  data.loops[0].reason = 'private-reason'
+  h.queries.settings = h.good(data)
+  const text = h.text(h.render('page'))
+  assert.doesNotMatch(text, /private-api-value|private-password|private-token-value|ghp_privatePAT|private-reason/)
+  assert.match(text, /1250/)
+  assert.match(text, /~\/credentials\/seat.pat/)
+  assert.match(text, /Invalid token path withheld/)
+  assert.equal(h.buttons(h.tree()).some(button => /save|apply|merge/i.test(String(button.props.children))), false)
+})
 
 test('palette only: unseen successful cache read expires despite backward wall clock', async () => {
   const h = await harness()
@@ -888,7 +1005,8 @@ test('page: the drawer shows shadow reviews beside the real verdict, and none wh
   assert.match(text, /no real verdict yet/)
   assert.match(text, /Approval left to a person: it touches \.github\/ci\.yml/)
   h.queries.pr = h.good(pr)
-  text = h.text(h.render('page'))
+  h.render('page')
+  text = h.text(h.flatten(h.tree()).filter(node => node.type === 'Dialog'))
   assert.doesNotMatch(text, /Shadow reviews/)
 })
 
