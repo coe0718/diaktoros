@@ -21,8 +21,27 @@ ADVICE = ("GitHub's \"Require branches to be up to date before merging\" protect
 _PR_REF = re.compile(r"\(#(\d+)\)\s*$|^Merge pull request #(\d+)")
 
 
-def merged_since(loop: dict, green: str, head: str) -> list[int] | None:
-    """PR numbers merged after ``green`` up to ``head`` (oldest first); None when unreadable."""
+class Merges(list):
+    """PR numbers read from one compare; ``seen``/``total`` are the commits read vs. reported.
+
+    ``partial`` is true unless GitHub's ``total_commits`` is present and equals the commits
+    returned: GitHub truncates the ``commits`` array (250) and reports the true count there.
+    """
+
+    def __init__(self, numbers=(), seen: int = 0, total=None):
+        super().__init__(numbers)
+        self.seen, self.total = seen, total
+
+    @property
+    def partial(self) -> bool:
+        return not (isinstance(self.total, int) and not isinstance(self.total, bool)
+                    and self.total == self.seen)
+
+
+def merged_since(loop: dict, green: str, head: str) -> Merges | None:
+    """PR numbers merged after ``green`` up to ``head`` (oldest first); None when unreadable.
+
+    The result's ``partial`` says the compare was truncated (or its count unreadable)."""
     if not green:
         return None
     data = gh.api(loop, f"/repos/{loop['repo']}/compare/{green}...{head}",
@@ -39,18 +58,28 @@ def merged_since(loop: dict, green: str, head: str) -> list[int] | None:
         number = int(match.group(1) or match.group(2)) if match else 0
         if number and number not in out:
             out.append(number)
-    return out
+    return Merges(out, len(commits), data.get("total_commits"))
 
 
 def _outcome(failed: list[str], merges: list[int] | None, url: str) -> str:
     if merges is None:
         since = "merged PRs unknown (no earlier green main head recorded or readable)"
-    elif not merges:
-        since = "no PR merges since main's last green head"
     else:
-        shown = ", ".join(f"#{n}" for n in merges[-PRS_MAX:])
-        more = f" (+{len(merges) - PRS_MAX} earlier)" if len(merges) > PRS_MAX else ""
-        since = f"merged since main's last green head: {shown}{more}"
+        partial = bool(getattr(merges, "partial", False))
+        if not merges:
+            since = ("no PR merges found in the part of the compare GitHub returned" if partial
+                     else "no PR merges since main's last green head")
+        else:
+            shown = ", ".join(f"#{n}" for n in merges[-PRS_MAX:])
+            more = f" (+{len(merges) - PRS_MAX} earlier)" if len(merges) > PRS_MAX else ""
+            since = ("merged PRs seen so far (partial list): " if partial
+                     else "merged since main's last green head: ") + f"{shown}{more}"
+        if partial:
+            total = getattr(merges, "total", None)
+            counted = (f"{merges.seen} of {total} commits" if isinstance(total, int)
+                       else f"{merges.seen} commits (total unreported)")
+            since += (f" — GitHub's compare was truncated ({counted} read), so other merged PRs "
+                      "are missing; this is not the full list")
     text = f"main: required check(s) failed: {ci._names(failed)} — {since}. {ADVICE}"
     return f"{text} — {url}" if url else text
 

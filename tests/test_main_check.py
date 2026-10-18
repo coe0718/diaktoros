@@ -20,7 +20,8 @@ RED = ci.CIState(failed=["tests"], passed=["lint"], urls={"tests": "https://x/ru
 GREEN = ci.CIState(passed=["tests", "lint"])
 COMPARE = {"commits": [{"commit": {"message": "Fix a (#11)\n\nbody"}},
                        {"commit": {"message": "Merge pull request #12 from a/b"}},
-                       {"commit": {"message": "direct push"}}]}
+                       {"commit": {"message": "direct push"}}],
+           "total_commits": 3}
 
 
 class FakeState:
@@ -98,6 +99,28 @@ class MainCheck(unittest.TestCase):
     def test_unreadable_ci_is_no_notice(self):
         self.assertFalse(self.run_sweep("b" * 40, None))
         self.assertEqual(self.notices, [])
+
+    def test_truncated_compare_is_reported_as_partial(self):
+        truncated = {**COMPARE, "total_commits": 400}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=truncated))
+        (_args, kw), = self.notices
+        for text in ("#11", "#12", "partial", "truncated", "3 of 400", "not the full list"):
+            self.assertIn(text, kw["outcome"])
+
+    def test_complete_compare_is_not_called_partial(self):
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED))
+        (_args, kw), = self.notices
+        self.assertNotIn("partial", kw["outcome"])
+        self.assertIn("merged since main's last green head: #11, #12", kw["outcome"])
+
+    def test_missing_total_commits_is_partial(self):
+        no_total = {"commits": COMPARE["commits"]}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=no_total))
+        (_args, kw), = self.notices
+        self.assertIn("partial", kw["outcome"])
 
     def test_unnamed_merges_notice_names_no_pr_zero(self):
         """Through the real sweep and notify: no merges to name means no #0 and no /pull/0."""
