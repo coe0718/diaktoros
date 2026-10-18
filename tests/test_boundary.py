@@ -83,6 +83,28 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(json.loads(records[0])["branch"], "fix-7")
         self.assertNotIn("dummy-", "".join(records))
 
+    def test_perform_refuses_authorized_operations_it_does_not_write(self):
+        # push, answers and file_issue pass `authorize` for their roles, but `perform` has no
+        # write for them: they must not fall through into a request-review POST (#737).
+        calls = []
+        def api(loop, path, method="GET", body=None, login=None):
+            calls.append((path, method))
+            if path == "/user":
+                return {"login": login, "id": {"read": 1, "review": 2, "fix": 3}[login]}
+            return self.pr if method == "GET" else {"id": 8}
+        reviews = [{'id': 41, 'state': 'CHANGES_REQUESTED', 'commit_id': self.head,
+                    'submitted_at': '2026-01-01T00:00:00Z', 'user': {'login': 'review'}}]
+        with mock.patch.object(gh, "api", side_effect=api), \
+             mock.patch.object(gh, 'reviews', return_value=reviews):
+            for role, operation in (("fixer", "push"), ("fixer", "answers"),
+                                    ("reviewer", "file_issue")):
+                with self.subTest(role=role, operation=operation):
+                    with self.assertRaisesRegex(broker.BrokerDenied, "not performed"):
+                        broker.perform(self.loop, **{**self.kw, "role": role,
+                                       "operation": operation, "verdict": "", "body": ""})
+        self.assertEqual([c for c in calls if c[1] == "POST"], [])
+        self.assertFalse((self.root / "broker-audit.jsonl").exists())
+
     def test_missing_explicit_mapping_fails_before_api(self):
         with mock.patch.object(gh, "api") as api:
             for loop in ({**self.loop, "read_token": "absent"},
