@@ -236,11 +236,12 @@ def _iso(text) -> float | None:
 
 def github(loop: dict, since: float) -> dict:
     """The PRs opened in the window and their reviews, read as the reader. ``partial`` says a
-    read failed, so the counts are a lower bound."""
+    read failed; ``capped`` says the window held more PRs than the GITHUB_PAGES_MAX pages
+    read, with no read failing. Either way the counts are a lower bound."""
     from . import gh
     repo, reader = loop["repo"], loop.get("read_token")
     reviewers = {login.lower() for login in loop.get("reviewers") or []}
-    prs, partial = [], False
+    prs, partial, capped = [], False, False
     for page in range(1, GITHUB_PAGES_MAX + 1):
         batch = gh.api(loop, f"/repos/{repo}/pulls?state=all&sort=created&direction=desc"
                              f"&per_page=100&page={page}", login=reader)
@@ -253,7 +254,7 @@ def github(loop: dict, since: float) -> dict:
         if len(batch) < 100 or len(fresh) < len(batch):
             break
     else:
-        partial = True
+        capped = True
     authors, merge_times, first, rounds = Counter(), defaultdict(list), defaultdict(list), Counter()
     verdicts, merged, still_open = Counter(), 0, 0
     for pr in prs:
@@ -297,7 +298,7 @@ def github(loop: dict, since: float) -> dict:
             "open_to_merge": {who: summary(times) for who, times in merge_times.items()},
             "reviewers": by_reviewer,
             "changes_requested_rounds": {str(k): v for k, v in sorted(rounds.items())},
-            "partial": partial}
+            "partial": partial, "capped": capped}
 
 
 def collect(loop: dict, db: Path, since: float, with_github: bool,
@@ -1029,7 +1030,9 @@ def _github_parts(gh_report: dict) -> tuple[list[str], list[tuple[str, list[str]
     """The GitHub section as notes and (title, head, rows) tables, for text and HTML alike."""
     notes = [f"PRs opened {gh_report['opened']} · merged {gh_report['merged']} · "
              f"open {gh_report['open']}"
-             + ("  (a GitHub read failed: these are lower bounds)" if gh_report["partial"] else "")]
+             + ("  (a GitHub read failed: these are lower bounds)" if gh_report["partial"] else "")
+             + (f"  (the window may hold more than the {GITHUB_PAGES_MAX * 100} newest PRs "
+                "read: these are lower bounds)" if gh_report.get("capped") else "")]
     if gh_report["authors"]:
         notes.append("by author: " + ", ".join(f"{who} {n}" for who, n in
                                                sorted(gh_report["authors"].items(),
