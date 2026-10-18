@@ -2169,8 +2169,10 @@ def check_branch_protection(loop: dict, offline: bool) -> Check | None:
     or they agree. A warning, not a failure: the loop runs, it just gates differently than GitHub.
     """
     wanted = config.required_checks(loop)
-    if not wanted or offline:
+    if not wanted:
         return None
+    if offline:
+        return Check("branch-protection", UNKNOWN, "not probed (--offline)")
     base = str(loop.get("base") or "main")
     # GitHub requires checks two ways: classic branch protection (its read needs admin access)
     # and rulesets (readable with plain read access). A base protected only by a ruleset answers
@@ -2225,16 +2227,18 @@ def installed_commit() -> str:
     return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else ""
 
 
-def check_plugin_version(loop: dict, offline: bool = False) -> Check | None:
-    """#556: is the installed plugin behind the latest release or ``main``? None with --offline.
+def check_plugin_version(loop: dict, offline: bool = False) -> Check:
+    """#556: is the installed plugin behind the latest release or ``main``?
+
+    With --offline it is reported as not probed (``unknown``), never left out of the report.
 
     Behind the latest release is a warning (``unknown``), never a failure. Either side
     unreadable is ``unknown`` too. Only a git checkout can be compared; a catalog install
     without ``.git`` reports unknown.
     """
-    if offline:
-        return None
     name = "plugin-version"
+    if offline:
+        return Check(name, UNKNOWN, "not probed (--offline)")
     sha = installed_commit()
     if not sha:
         return Check(name, UNKNOWN, "could not read the installed plugin's commit (not a git checkout)",
@@ -2312,9 +2316,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.append(check_gateway(loop, offline))
     checks.extend(check_hooks(loop, offline))
     checks.extend(check_environment(loop, offline))
-    version = check_plugin_version(loop, offline)
-    if version:
-        checks.append(version)
+    checks.append(check_plugin_version(loop, offline))
     return checks
 
 

@@ -320,7 +320,9 @@ def add_doctor(sub) -> None:  # noqa: ANN001
                                               "routes, hooks, scripts, cron, clone")
     preflight.add_argument("--loop", help="loop id (default: every configured loop)")
     preflight.add_argument("--offline", action="store_true",
-                           help="skip the two network probes (gateway reachability, repo hooks)")
+                           help="skip every network probe, each reported as not probed: gateway "
+                                "reachability, repo hooks, review-only push access, token expiry "
+                                "and scopes, triage labels, branch protection, plugin version")
     preflight.add_argument("--strict", action="store_true",
                            help="treat a check that could not be decided as a failure")
     preflight.add_argument("--repair", action="store_true",
