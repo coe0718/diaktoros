@@ -535,6 +535,13 @@ class Cli(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.seat(), {"daily_tokens": 2000000, "daily_turns": 6,
                                        "turn_budget_s": 1200, "max_steps": 120})
+        # Each change is named for what it is (the printer said "turn budget …s" for tokens).
+        self.assertIn("shadow daily tokens: 500000 → 2000000", out)
+        self.assertIn("shadow daily turns: no cap → 6", out)
+        self.assertIn(f"shadow turn budget: {config.DEFAULT_TURN_BUDGET_S}s → 1200s", out)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--reviewer-daily-tokens", "300000")
+        self.assertIn("reviewer daily tokens: no budget → 300000", out)
+        self.assertNotIn("tokens turn budget", out)
         rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-max-steps", "500")
         self.assertEqual(rc, 2, out)                            # out of range: refused
         rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-daily-turns", "0",

@@ -769,7 +769,12 @@ def cmd_set(args) -> int:
         before = (seats.get("shadow") or {}).get(key)
         if value is None or (value or None) == before:
             continue
-        budget_changes[f"shadow {key.replace('_', ' ')}"] = (before, value or None)
+        # Named so the printer below says what changed: "shadow" alone is the turn budget.
+        label = "shadow" if key == "turn_budget_s" else f"shadow {key.replace('_', ' ')}"
+        shown = config.turn_budget(loop, "shadow") if key == "turn_budget_s" else before
+        after = (value or config.turn_budget({**loop, "seats": {}}, "shadow")
+                 if key == "turn_budget_s" else value or None)
+        budget_changes[label] = (shown, after)
         shadow_seat = seats.setdefault("shadow", {})
         if value:
             shadow_seat[key] = value
@@ -979,6 +984,8 @@ def cmd_set(args) -> int:
     for seat, (was, value) in budget_changes.items():
         if seat.endswith(" daily turns"):
             print(f"  {seat}: {was or 'no cap'} → {value or 'no cap'}  (this seat only)")
+        elif seat.endswith(" daily tokens"):
+            print(f"  {seat}: {was or 'no budget'} → {value or 'no budget'}  (this seat only)")
         elif seat.endswith(" max steps"):
             print(f"  {seat}: {was} → {value}  (this seat only; an issue fix takes the fixer's)")
         else:
