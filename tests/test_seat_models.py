@@ -640,6 +640,21 @@ class DoctorAndModels(Base):
         self.assertIn("profile rev (seat reviewer)", text)
         self.assertNotIn(KEYS["rev"], text)
 
+    def test_models_seat_without_loop_distinguishes_zero_from_many_loops(self):
+        self.write_runtime(self.settings)
+        texts = {}
+        for name, loops in (("none", []), ("many", [self.loop, {**self.loop, "id": "other"}])):
+            out = io.StringIO()
+            args = argparse.Namespace(profile=None, seat="reviewer", loop=None)
+            with redirect_stdout(out), mock.patch.object(config, "all_loops", return_value=loops):
+                self.assertEqual(cli.cmd_models(args), 2)
+            texts[name] = out.getvalue()
+        self.assertIn("no loops configured", texts["none"])
+        self.assertIn("hermes dk setup", texts["none"])
+        self.assertNotIn("more than one", texts["none"])
+        self.assertIn("more than one loop is configured", texts["many"])
+        self.assertNotIn("no loops configured", texts["many"])
+
     def test_models_is_loud_about_unknown_providers_and_profiles(self):
         rc, text = self.models(profile="adj")
         self.assertEqual(rc, 1)

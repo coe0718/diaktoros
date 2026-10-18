@@ -146,7 +146,11 @@ def cmd_models(args) -> int:
             loop = config.load_id(args.loop) if args.loop else None
             if loop is None:
                 loops = config.all_loops()
-                if len(loops) != 1:
+                if not loops:
+                    print(f"no loops configured in {config.config_dir()} — run "
+                          "`hermes dk setup` to create one")
+                    return 2
+                if len(loops) > 1:
                     print("--seat needs --loop ID when more than one loop is configured")
                     return 2
                 loop = loops[0]
