@@ -56,14 +56,22 @@ class Conflict(RuntimeError):
 # presence is the signal, not the value: a header that is present but empty was still set by
 # something in front of us (#648 review, F1).
 LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
-FORWARDING_HEADERS = ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip")
+# `Forwarded`, every `X-Forwarded-*` (For, Host, Proto, Port, ...) and `X-Real-IP`: a proxy that sets
+# only X-Forwarded-Proto is still a proxy, so the family is matched by prefix, not by a fixed list.
+FORWARDING_HEADERS = ("forwarded", "x-real-ip")
+FORWARDING_PREFIXES = ("x-forwarded-",)
+
+
+def _is_forwarding_header(name) -> bool:
+    name = str(name).lower()
+    return name in FORWARDING_HEADERS or name.startswith(FORWARDING_PREFIXES)
 
 
 def probe_is_local(client_host: str | None, headers=None) -> bool:
     """Whether this caller may run the credential-reading probe: a local peer, and no forwarding
     header of any kind. An empty client_host (an in-process call) counts as local; a header that
     is present at all — even an empty one — does not."""
-    if headers is not None and any(name in headers for name in FORWARDING_HEADERS):
+    if headers is not None and any(_is_forwarding_header(name) for name in headers):
         return False
     return not client_host or client_host in LOCAL_HOSTS
 

@@ -739,5 +739,5 @@ that moved since the operator confirmed), and never calls GitHub or reads a toke
 `health?probe=1` is the one route that reads a credential: the loop's own tokens, to read GitHub for
 the hook, expiry and scope checks the offline pass leaves unprobed. It is refused unless the caller
 is on this machine — a non-loopback peer, or any forwarding header at all (`Forwarded`,
-`X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`; present is what counts, so an empty one refuses
+any `X-Forwarded-*` such as `-For`, `-Host` or `-Proto`, and `X-Real-IP`; present is what counts, so an empty one refuses
 too) gets 403 — because the dashboard is the surface Caddy exposes off-host. GitHub-side numbers stay with `stats --github`.
