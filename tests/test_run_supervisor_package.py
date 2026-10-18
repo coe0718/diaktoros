@@ -24,8 +24,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 class Entry(unittest.TestCase):
     def test_python_m_runs_the_operator_commands(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as tmp:
+            db = pathlib.Path(tmp) / "runs.sqlite"
+            run_supervisor.Supervisor(db)  # status reads a ledger that exists (#798)
             done = subprocess.run([sys.executable, "-m", "diaktoros.run_supervisor", "status",
-                                   str(pathlib.Path(tmp) / "runs.sqlite")],
+                                   str(db)],
                                   cwd=ROOT, capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout.strip(), "[]")

@@ -496,7 +496,8 @@ python -m diaktoros.run_supervisor reconcile "<ledger-path>" "<run-id>" --reason
 ```
 
 Use an environment where the module is installed, or run from the plugin checkout.
-`status` prints JSON for at most 100 problem rows, oldest first: failed, waiting,
+`status`, `rulings` and `reconcile` open an existing ledger only: a missing path exits 2 and
+creates nothing (#798). `status` prints JSON for at most 100 problem rows, oldest first: failed, waiting,
 uncertain and supported push-policy cancellations, not every run. `<ledger-path>` is the SQLite file, not a directory;
 the next positional argument is the exact run ID. `--reason` stores your investigation (nonempty, at most 512 characters);
 `--acknowledge-no-live-worker` is mandatory and cannot replace checking the child.
