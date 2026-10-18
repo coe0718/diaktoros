@@ -7,6 +7,7 @@ run (and the watchdog re-drove it into the same crash). Every reader and writer 
 against every junk shape: none may raise, and a write leaves a well-formed file behind.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -108,6 +109,52 @@ class Junk(unittest.TestCase):
                 # after sending must be healed, never indexed.
                 st.breach_deliver(7, dict(entry), lambda: True,
                                   lambda marker: (st.breach.write_text(json.dumps(junk)), True)[1])
+
+
+class QuarantineAtomic(unittest.TestCase):
+    """#735: quarantine() clears the in-flight marks and the breach marker as one step."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        self.addCleanup(temp.cleanup)
+        loop = {"id": "q", "repo": "acme/widgets", "base": "main", "cap": 3,
+                "inflight_ttl_min": 10, "ttl_min": 45, "turn_budget_s": 900,
+                "state_dir": str(Path(temp.name) / "state"), "fixers": ["f"], "reviewers": ["r"],
+                "seats": {"reviewer": {}, "fixer": {}}}
+        self.st = state.LoopState(loop)
+        self.st.dir.mkdir(parents=True, exist_ok=True)
+        self.st.inflight(f"review:7:{HEAD}", record=True)
+        self.st.breach.write_text(json.dumps(
+            {KEY: {"pr": 7, "head": HEAD, "status": "awaiting-adjudication"}}))
+
+    def test_state_lock_is_held_while_the_breach_marker_is_cleared(self):
+        st = self.st
+        real = st._breach_lock
+        probes = []
+
+        def probe():
+            fd = os.open(st.dir / "state.lock", os.O_CREAT | os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                probes.append("free")
+            except BlockingIOError:
+                probes.append("held")
+            finally:
+                os.close(fd)
+            return real()
+
+        with mock.patch.object(st, "_breach_lock", probe):
+            st.quarantine(7, HEAD)
+        self.assertEqual(probes, ["held"])
+        self.assertEqual(st.breach_get(7), {})
+        self.assertFalse(st.inflight(f"review:7:{HEAD}"))
+
+    def test_crash_between_the_two_writes_leaves_no_claimable_marker(self):
+        st = self.st
+        with mock.patch.object(st, "_save_strict", side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                st.quarantine(7, HEAD)
+        self.assertEqual(st.breach_get(7), {})
 
 
 class ExplainKinds(unittest.TestCase):

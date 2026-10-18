@@ -588,18 +588,24 @@ class LoopState:
         return _clock(_mapping(self._load(self.inflight_file, {})).get(key)) or 0.0
 
     def quarantine(self, number: int, head: str) -> None:
-        """Erase head-only run and escalation tokens after a base transition."""
-        with self.locked():
-            data = _mapping(self._load(self.inflight_file, {}))
-            for prefix in (f"review:{number}:{head}", f"fix:{number}:{head}"):
-                data.pop(prefix, None)
-            self._save_strict(self.inflight_file, data)
+        """Erase head-only run and escalation tokens after a base transition.
+
+        Both files are rewritten under one hold of the state lock and the breach lock (the
+        order ``migrate`` and ``cleanup`` take them), so no other process sees one cleared and
+        the other not. The breach marker goes first: it is the one that could be claimed
+        afterwards, while a surviving in-flight mark merely ages out. A crash between the two
+        writes cannot be made atomic across two files; this order makes it the harmless one.
+        """
         key = f"{self.loop['repo']}#{number}"
-        with self._breach_lock():
+        with self.locked(), self._breach_lock():
             markers = _mapping(self._load(self.breach, {}))
             if key in markers:
                 markers.pop(key)
                 self._breach_save(markers)
+            data = _mapping(self._load(self.inflight_file, {}))
+            for prefix in (f"review:{number}:{head}", f"fix:{number}:{head}"):
+                data.pop(prefix, None)
+            self._save_strict(self.inflight_file, data)
 
     # -- human_paths holds (#478) --------------------------------------------
 
