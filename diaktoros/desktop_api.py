@@ -57,20 +57,35 @@ def probe_is_local(client_host: str | None, headers=None) -> bool:
 
 
 def loops() -> list[dict]:
-    """The configured loops the page can show: id and repository only."""
-    found, _ = config.readable_loops()
-    return [{"id": loop["id"], "repo": loop["repo"]} for loop in found]
+    """Every configured loop the page can show: id and repository only.
+
+    **A loop whose file does not load is listed too**, with ``unreadable`` true, no repo and a
+    bounded ``reason`` (#701). It must be *named* here: the page decides "not read" by comparing
+    this list against ``/overview``, so a loop dropped from both would vanish from the chip
+    instead of showing as a loop that cannot be read. Every entry carries the same keys.
+    """
+    found, unreadable = config.readable_loops()
+    return [{"id": loop["id"], "repo": loop["repo"], "unreadable": False, "reason": ""}
+            for loop in found] + [
+        {"id": str(loop_id), "repo": "", "unreadable": True, "reason": _bounded(reason)}
+        for loop_id, reason in unreadable]
 
 
 def _loop(loop_id: str | None) -> dict:
-    found, _ = config.readable_loops()
+    found, unreadable = config.readable_loops()
     if loop_id:
         for loop in found:
             if loop["id"] == loop_id:
                 return loop
+        for bad_id, reason in unreadable:
+            if bad_id == loop_id:
+                raise NotFound("loop config unreadable: " + _bounded(reason))
         raise NotFound("no such loop")
-    if len(found) != 1:
-        raise NotFound("name a loop: " + (", ".join(loop["id"] for loop in found) or "none"))
+    # An unreadable loop is still a configured one: with one present the default is ambiguous,
+    # so the caller is told to name a loop rather than silently handed the one that loads.
+    if len(found) != 1 or unreadable:
+        names = [loop["id"] for loop in found] + [f"{bad} (unreadable)" for bad, _ in unreadable]
+        raise NotFound("name a loop: " + (", ".join(names) or "none"))
     return found[0]
 
 
@@ -106,14 +121,17 @@ def overview_view() -> dict:
     uncertain ("needs you") count when the ledger could be read, and whether it could be read at
     all — ``available`` false when there is no ledger, ``error`` true when the read raised. A
     missing ledger is unavailable, never a verified zero, exactly as ``/now`` reports it. One
-    loop failing is not the others' failure: it is reported on its own entry.
+    loop failing is not the others' failure: it is reported on its own entry. A loop whose config
+    file does not load has no repo and no ledger to read: it is listed with ``unreadable`` true
+    and a bounded ``reason`` (``available`` false, ``error`` true, no counts), so the page names
+    it instead of dropping it (#701).
     """
-    found, _ = config.readable_loops()
+    found, unreadable = config.readable_loops()
     db = run_supervisor.production_ledger()
     entries = []
     for loop in found:
         entry = {"id": loop["id"], "repo": loop["repo"], "available": True, "error": False,
-                 "counts": {}, "needs_you": 0}
+                 "unreadable": False, "reason": "", "counts": {}, "needs_you": 0}
         try:
             view = stats.now(db, loop["repo"])
         except Exception:                   # one loop's read failing must not blank the others
@@ -125,6 +143,9 @@ def overview_view() -> dict:
                 entry["counts"] = view["counts"]
                 entry["needs_you"] = view["counts"].get("uncertain", 0)
         entries.append(entry)
+    entries += [{"id": str(loop_id), "repo": "", "available": False, "error": True,
+                 "unreadable": True, "reason": _bounded(reason), "counts": {}, "needs_you": 0}
+                for loop_id, reason in unreadable]
     return {"loops": entries, "read_at": time.time()}
 
 
