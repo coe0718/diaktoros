@@ -149,13 +149,18 @@ def effective_reviews(loop, st, number, head, reviews, *, receipts=_UNREAD, ledg
     return kept
 
 
+class NotScheduled(Exception):
+    """``enqueue_isolated`` returned an outcome that scheduled no turn (``duplicate <state>…``)."""
+
+
 def start_fresh_review(loop, st, number, *, live=None):
     """Enqueue the transition's one fresh isolated reviewer turn; ``(status, detail)``.
 
     ``status`` is ``enqueued`` (durably in the ledger, worker armed), ``retry`` (a read or
-    the enqueue failed: the next sweep tries again, and the failure is kept on the hold for
-    ``explain``), or ``skip`` (nothing to start: no hold at the live head, a missing
-    baseline, or not an eligible trunk PR right now -- e.g. still a draft).
+    the enqueue failed, or the ledger answered ``duplicate <state>`` and scheduled nothing:
+    the next sweep tries again, and the reason is kept on the hold for ``explain``), or
+    ``skip`` (nothing to start: no hold at the live head, a missing baseline, or not an
+    eligible trunk PR right now -- e.g. still a draft).
 
     Always re-reads the live PR unless the caller just did: a webhook snapshot or an old
     listing never names the head that gets reviewed.
@@ -182,9 +187,14 @@ def start_fresh_review(loop, st, number, *, live=None):
     if isinstance(fresh, dict) and fresh.get("turn_key") == key and fresh.get("state") == "enqueued":
         return "enqueued", key
     try:
-        gate.enqueue_isolated(loop, "reviewer", number, head, turn_key=key)
+        outcome = gate.enqueue_isolated(loop, "reviewer", number, head, turn_key=key)
+        # Only enqueued/rearmed/pending scheduled anything; ``duplicate <state>`` (a row failed
+        # at the re-arm limit, or cancelled and not re-armable) did not.
+        if outcome not in gate.SCHEDULED_OUTCOMES:
+            raise NotScheduled(outcome)
     except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"[:300]
+        error = (f"not scheduled: {exc}" if isinstance(exc, NotScheduled)
+                 else f"{type(exc).__name__}: {exc}")[:300]
         st.transition_update(number, head, {"fresh_review": {
             "turn_key": key, "state": "retry", "error": error, "at": time.time()}})
         return "retry", error
