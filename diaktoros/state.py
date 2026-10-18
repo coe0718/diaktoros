@@ -367,7 +367,7 @@ class LoopState:
             return default
         try:
             value = float(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):   # an int past float's range overflows
             return default
         return value if math.isfinite(value) else default
 

@@ -106,8 +106,9 @@ class Junk(unittest.TestCase):
     def test_inflight_survives_a_wrong_typed_ttl_knob(self):
         """#793: a bad ``inflight_ttl_min`` heals to the default, as ``ttl_min`` does."""
         st, mark = self.st, f"review:7:{HEAD}"
-        for bad in ["abc", "", None, [10], {"a": 1}, True, float("nan"), float("inf")]:
-            with self.subTest(bad=bad):
+        # 10**400: float() raises OverflowError, not ValueError (the shadow review of #935).
+        for bad in ["abc", "", None, [10], {"a": 1}, True, float("nan"), float("inf"), 10**400]:
+            with self.subTest(bad=repr(bad)[:20]):
                 st.loop["inflight_ttl_min"] = bad
                 st.inflight_file.write_text(json.dumps({mark: time.time() - 5 * 60}))
                 self.assertTrue(st.inflight(mark))              # 5 min old, default TTL 10
