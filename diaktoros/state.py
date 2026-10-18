@@ -552,7 +552,7 @@ class LoopState:
                 # #545: an unageable mark is dropped, never subtracted from.
                 data = {k: v for k, v in data.items()
                         if _clock(v) is not None and now - _clock(v) < 24 * 3600}
-                self._save(self.inflight_file, data)
+                self._save_strict(self.inflight_file, data)
             return False
         at = _clock(_mapping(self._load(self.inflight_file, {})).get(key))
         return at is not None and now - at < self.loop["inflight_ttl_min"] * 60
@@ -578,7 +578,7 @@ class LoopState:
             data = _mapping(self._load(self.inflight_file, {}))
             for prefix in (f"review:{number}:{head}", f"fix:{number}:{head}"):
                 data.pop(prefix, None)
-            self._save(self.inflight_file, data)
+            self._save_strict(self.inflight_file, data)
         key = f"{self.loop['repo']}#{number}"
         with self._breach_lock():
             markers = _mapping(self._load(self.breach, {}))
@@ -597,7 +597,7 @@ class LoopState:
         with self.locked():
             data = self._human_holds()
             data[str(number)] = {"head": head, "why": str(why)[:300], "at": time.time()}
-            self._save(self.dir / "human-holds.json", data)
+            self._save_strict(self.dir / "human-holds.json", data)
 
     def human_hold(self, number: int, head: str) -> dict | None:
         """The hold at this exact head, or None; a new head is reviewed afresh."""
@@ -773,14 +773,14 @@ class LoopState:
             began = str(number) not in data
             if data.get(str(number)) != hold:
                 data[str(number)] = hold
-                self._save(self.dir / "held-prs.json", data)
+                self._save_strict(self.dir / "held-prs.json", data)
             return began
 
     def pr_hold_drop(self, number: int) -> None:
         with self.locked():
             data = {str(k): v for k, v in self.pr_holds().items()}
             if data.pop(str(number), None) is not None:
-                self._save(self.dir / "held-prs.json", data)
+                self._save_strict(self.dir / "held-prs.json", data)
 
     # -- fixer scope-lock holds (#482): {PR: {"head", "files", "released"}} ---
 
@@ -796,14 +796,14 @@ class LoopState:
             changed = data.get(str(number)) != hold
             if changed:
                 data[str(number)] = hold
-                self._save(self.dir / "held-scope.json", data)
+                self._save_strict(self.dir / "held-scope.json", data)
             return changed
 
     def scope_hold_drop(self, number: int) -> None:
         with self.locked():
             data = {str(k): v for k, v in self.scope_holds().items()}
             if data.pop(str(number), None) is not None:
-                self._save(self.dir / "held-scope.json", data)
+                self._save_strict(self.dir / "held-scope.json", data)
 
     # -- held issue-fix hand-offs (#324): {issue number: origin PR} ----------
 
@@ -824,13 +824,13 @@ class LoopState:
         with self.locked():
             data = {str(k): v for k, v in self.fix_holds().items()}
             data[str(number)] = pr
-            self._save(self.dir / "held-fixes.json", data)
+            self._save_strict(self.dir / "held-fixes.json", data)
 
     def fix_hold_drop(self, number: int) -> None:
         with self.locked():
             data = {str(k): v for k, v in self.fix_holds().items()}
             if data.pop(str(number), None) is not None:
-                self._save(self.dir / "held-fixes.json", data)
+                self._save_strict(self.dir / "held-fixes.json", data)
 
     def fix_hold_said(self, number: int) -> bool:
         """Whether the one "waiting for PR" comment was already posted for this issue."""
@@ -881,7 +881,7 @@ class LoopState:
         with self.locked():
             data = self._fix_asks()
             change(data)
-            self._save(self.dir / "fix-asks.json", data)
+            self._save_strict(self.dir / "fix-asks.json", data)
 
     def fix_ask_set(self, number: int, kind: str, comment_id: int, text: str) -> None:
         def change(data):
@@ -927,7 +927,7 @@ class LoopState:
             if str(prerequisite) in deps:
                 return False
             deps[str(prerequisite)] = dict(record)
-            self._save(self.dir / "issue-deps.json", data)
+            self._save_strict(self.dir / "issue-deps.json", data)
             return True
 
     def issue_dep_drop(self, issue: int, prerequisite: int) -> bool:
@@ -940,7 +940,7 @@ class LoopState:
                 return False
             if not deps:
                 data.pop(str(issue), None)
-            self._save(self.dir / "issue-deps.json", data)
+            self._save_strict(self.dir / "issue-deps.json", data)
             return True
 
     def dep_waits(self) -> list[int]:
@@ -951,13 +951,13 @@ class LoopState:
     def dep_wait_set(self, issue: int) -> None:
         with self.locked():
             waits = set(self.dep_waits()) | {issue}
-            self._save(self.dir / "dep-waits.json", sorted(waits))
+            self._save_strict(self.dir / "dep-waits.json", sorted(waits))
 
     def dep_wait_drop(self, issue: int) -> None:
         with self.locked():
             waits = set(self.dep_waits())
             if issue in waits:
-                self._save(self.dir / "dep-waits.json", sorted(waits - {issue}))
+                self._save_strict(self.dir / "dep-waits.json", sorted(waits - {issue}))
             said = self._load(self.dir / "dep-waits-said.json", [])
             said = [n for n in said if type(n) is int] if isinstance(said, list) else []
             if issue in said:
@@ -992,7 +992,7 @@ class LoopState:
             if entry.get("notified") == head:
                 return False
             data[str(number)] = {**entry, "notified": head}
-            self._save(self.dir / "review-only-caps.json", data)
+            self._save_strict(self.dir / "review-only-caps.json", data)
             return True
 
     def review_cap_grant(self, number: int, head: str, rounds: int) -> bool:
@@ -1006,7 +1006,7 @@ class LoopState:
             if entry.get("grant") == {"head": head, "rounds": rounds}:
                 return False
             data[str(number)] = {**entry, "grant": {"head": head, "rounds": rounds}}
-            self._save(self.dir / "review-only-caps.json", data)
+            self._save_strict(self.dir / "review-only-caps.json", data)
             return True
 
     def review_cap_granted(self, number: int, head: str, rounds: int) -> bool:
@@ -1027,7 +1027,7 @@ class LoopState:
         with self.locked():
             data = self.findings_all()
             data[str(number)] = entry
-            self._save(self.dir / "findings.json", data)
+            self._save_strict(self.dir / "findings.json", data)
 
     def github_failure_record(self, entry: dict) -> None:
         """Keep the most recent failed GitHub call (see ``gh.record_failure``)."""
