@@ -283,7 +283,7 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
         mounts += ["--dir", "/opt/inference", "--ro-bind", str(Path(inference_socket_dir)), "/opt/inference"]
     if broker_socket_dir is not None:
         mounts += ["--dir", "/run", "--dir", "/run/review-loop",
-                   "--ro-bind", str(Path(broker_socket_dir)), "/run/review-loop/broker"]
+                   "--ro-bind", str(Path(broker_socket_dir)), BROKER_MOUNT]
     if client_code is not None:
         mounts += ["--ro-bind", str(Path(client_code)), "/opt/client"]
     if review_dir is not None:
@@ -308,6 +308,10 @@ def command(*, code: Path, venv: Path, runtime: Path, home: Path,
             "--", *launch]
 
 
+# Where the broker's private socket directory appears in the sandbox. Every client connects to
+# BROKER_MOUNT + "/broker.sock"; the two shipped clients are stdlib-only and repeat the literal,
+# and tests/test_broker_ipc.py pins them to this value.
+BROKER_MOUNT = "/run/review-loop/broker"
 SANDBOX_USER = "agent"
 NODE_MOUNT = "/opt/node"
 

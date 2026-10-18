@@ -317,19 +317,59 @@ class BrokerIPCTests(unittest.TestCase):
         self.assertEqual(server.socket_path.parent.stat().st_mode & 0o777, 0o700)
         self.assertEqual(server.socket_path.stat().st_mode & 0o777, 0o600)
 
+    def test_every_client_and_the_launcher_use_one_socket_path(self):
+        from diaktoros import broker_client as sandbox_client, contained
+        expected = "/run/review-loop/broker/broker.sock"
+        self.assertEqual(contained.BROKER_MOUNT + "/broker.sock", expected)
+        self.assertEqual(sandbox_client.SOCKET, expected)
+        self.assertEqual(broker_client.SOCKET, expected)
+        import inspect
+        self.assertEqual(inspect.signature(broker_ipc.request).parameters["socket_path"].default, expected)
+        # The launcher mounts the socket directory there, so the socket file lands at that path.
+        server = self.start()
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as scratch:
+            scratch = Path(scratch)
+            kwargs = {}
+            for name in ("code", "home", "export", "client"):
+                (scratch / name).mkdir()
+                kwargs[name] = scratch / name
+            (scratch / "client" / "diaktoros").mkdir()
+            (scratch / "client" / "diaktoros" / "broker_client.py").write_text("")
+            (scratch / "query.txt").write_text("q\n")
+            argv = contained.command(code=kwargs["code"], venv=Path("/usr"), runtime=Path("/usr"),
+                                     home=kwargs["home"], checkout=kwargs["export"], rust=Path("/usr"),
+                                     query=scratch / "query.txt", entry=["/usr/bin/true"],
+                                     broker_socket_dir=server.socket_path.parent,
+                                     client_code=kwargs["client"])
+        index = argv.index(str(server.socket_path.parent))
+        self.assertEqual(argv[index - 1:index + 2], ["--ro-bind", str(server.socket_path.parent), contained.BROKER_MOUNT])
+
     @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap unavailable")
     def test_constrained_namespace_socket_round_trip(self):
+        """Run the client that is copied into the sandbox, at the mount the launcher makes."""
+        from diaktoros import contained
         server = self.start()
+        # Staged the way trusted_turn stages it: diaktoros/{__init__,broker_client,wire}.py only.
+        staged = self.root / "client" / "diaktoros"
+        staged.mkdir(parents=True)
+        (staged / "__init__.py").touch()
+        for name in ("broker_client.py", "wire.py"):
+            shutil.copyfile(ROOT / "diaktoros" / name, staged / name)
+        body = self.root / "body.txt"
+        body.write_text("verified\nNot verified: nothing")
         cmd = ["bwrap", "--unshare-all", "--die-with-parent", "--ro-bind", "/usr", "/usr",
                "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib",
-               "--ro-bind", "/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
+               "--ro-bind-try", "/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
                "--tmpfs", "/tmp", "--dir", "/run", "--dir", "/run/review-loop",
-               "--ro-bind", str(server.socket_path), broker_client.SOCKET,
-               "--ro-bind", str(ROOT / "scripts/broker_client.py"), "/client.py",
+               "--ro-bind", str(server.socket_path.parent), contained.BROKER_MOUNT,
+               "--ro-bind", str(self.root / "client"), "/opt/client",
+               "--ro-bind", str(body), "/tmp/body.txt",
                "--setenv", "HOME", "/tmp", "--setenv", "HOST_PAT", self.loop["tokens"]["review"],
+               "--setenv", "PYTHONPATH", "/opt/client",
                "--chdir", "/tmp", "--", "/usr/bin/python3", "-c",
                "import os,runpy,sys; assert not os.path.exists(os.environ['HOST_PAT']); "
-               "sys.argv=['/client.py','review','APPROVE','verified\\nNot verified: nothing']; runpy.run_path('/client.py',run_name='__main__')"]
+               "sys.argv=['broker_client','review','--verdict','APPROVE','--body-file','/tmp/body.txt']; "
+               "runpy.run_module('diaktoros.broker_client',run_name='__main__')"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
                                 env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"})
         if "Creating new namespace failed" in result.stderr:

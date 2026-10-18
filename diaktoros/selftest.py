@@ -197,6 +197,8 @@ def _private_file(path: Path) -> tuple[bool, str, str]:
     mode = info.st_mode & 0o777
     if mode & 0o077:
         return False, f"{path} is mode {mode:03o} (group/other can read it)", f"chmod 600 {path}"
+    if not mode & 0o400:
+        return False, f"{path} is mode {mode:03o} (you cannot read it)", f"chmod 600 {path}"
     return True, f"{path} (mode {mode:03o}, owned by you)", ""
 
 
@@ -243,8 +245,16 @@ def _check_override(report: Report, step: str, prefix: str, block: dict) -> bool
                    f"https://{parts.hostname}{parts.path} (model {block['model']})")
     key_path = Path(block["key_file"]).expanduser()
     good, detail, fix = _private_file(key_path)
-    if good and not key_path.read_text().strip():
-        good, detail, fix = False, f"{key_path} is empty", f"write the provider API key into {key_path}"
+    if good:
+        try:
+            empty = not key_path.read_text().strip()
+        except OSError as exc:
+            good, detail, fix = (False, f"{key_path} cannot be read ({type(exc).__name__})",
+                                 f"chmod 600 {key_path}")
+        else:
+            if empty:
+                good, detail, fix = (False, f"{key_path} is empty",
+                                     f"write the provider API key into {key_path}")
     if not good:
         ok = False
         report.add(step, prefix + "key_file", FAIL, detail,
@@ -309,7 +319,8 @@ def check_runtime(report: Report, path: Path) -> dict | None:
         report.add(step, "runtime:source", PASS, f"{source} (Git checkout with run_agent.py)")
 
     venv = Path(settings["venv"])
-    missing = [name for name in ("bin/python", "bin/hermes") if not (venv / name).exists()]
+    from .runtime_detect import venv_missing
+    missing = venv_missing(venv)
     if missing:
         usable = False
         report.add(step, "runtime:venv", FAIL, f"{venv} lacks {', '.join(missing)}",
@@ -325,10 +336,17 @@ def check_runtime(report: Report, path: Path) -> dict | None:
                    "set runtime to the Python installation the venv was created from")
     elif outside:
         usable = False
+        from . import runtime_detect
+        # The same root ``setup`` would write; None when the install is not under any directory
+        # of its own (never advise "/").
+        install = runtime_detect.runtime_for(venv)
+        where = (f"set runtime to {install} (the directory holding the interpreter's install)"
+                 if install is not None else
+                 "set runtime to the directory holding the interpreter's install (none of its "
+                 "own was found: recreate the venv from a Python installation in its own directory)")
         report.add(step, "runtime:runtime", FAIL,
                    f"the venv interpreter points to {outside}, outside {runtime}",
-                   f"set runtime to {Path(outside).parents[2]} (the directory holding the "
-                   "interpreter's install): the sandbox mounts runtime at its own path and "
+                   f"{where}: the sandbox mounts runtime at its own path and "
                    "nothing else, so a link leaving it cannot start")
     else:
         report.add(step, "runtime:runtime", PASS, f"{runtime}")

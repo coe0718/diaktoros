@@ -1050,7 +1050,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         # A marker at this head is the escalation: whether it is a stall is its own question
         # (parked_kind), and it is never "no escalation marker" while it is young (#98).
         parked = parked_kind(loop, marker, number, head, marker_grace)
-        # A review-only PR has no fixer and no cap: changes requested is back with its author (#191).
+        # A review-only PR has no fixer and no adjudication: changes requested is back with its author (#191).
         review_only = author in config.review_only(loop)
         if parked is not None:
             kind = parked
@@ -1475,12 +1475,17 @@ def run(args: argparse.Namespace, budget: float) -> None:
     # is reported by name, like any other per-loop failure, and every other loop still sweeps.
     refused: list[tuple[str, str]] = []
     if args.loop:
-        loops = [config.load_id(args.loop)]
+        try:
+            loops = [config.load_id(args.loop)]
+        except config.ConfigError as exc:
+            # A scripted drain or cron call with a bad --loop must not look successful.
+            if (config.config_dir() / f"{args.loop}.json").exists():
+                print(f"⚠️ Diaktoros [{args.loop}] watchdog failed: ConfigError: {exc}")
+            else:
+                print(f"no loop config named {args.loop}")
+            sys.exit(1)
     else:
         loops, refused = config.readable_loops()
-    if not loops and args.loop:
-        print(f"no loop config named {args.loop}")
-        return
 
     if args.drain:
         for loop_id, reason in refused:

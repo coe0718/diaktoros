@@ -402,110 +402,54 @@ def cmd_retry(args) -> int:
     older head's run. A run that may have written —
     uncertain, quarantined, reconciled, or with a receipt claim, push intent or ruling on
     record — is refused with the reconcile instructions; it is never replayed.
+
+    The selection and the re-arm are ``retry_action``'s, which the Desktop page's Retry button
+    calls too (#371): this function only supplies the CLI's two GitHub reads and prints the
+    result. Its PR read is the supersession tiebreaker (#126) and the #723 open check; the
+    Desktop, which has neither, uses the ledger-only head those answers fall back to.
     """
-    from ..run_supervisor import Supervisor
+    from .. import gh, retry_action
 
     try:
         loop = config.load_id(args.loop)
     except config.ConfigError as exc:
         print(f"no such loop: {exc}")
         return 2
-    released = scope_lock.release(loop, args.pr)      # #482: retry is the release command
+
+    def read_pr():
+        return gh.pr(loop, args.pr)
+
+    def resolve_head():
+        pr = read_pr()
+        return ((pr or {}).get("head") or {}).get("sha") if isinstance(pr, dict) else None
+
+    result = retry_action.perform(loop, args.pr, args.seat, ledger=_ledger_path(),
+                                  resolve_head=resolve_head, read_pr=read_pr, reveal_errors=True)
+    released = result["released"]
     if released:
         print(f"[{loop['id']}] #{args.pr}: scope lock released for "
               f"{', '.join(released.get('files') or [])}; the fixer's next push of that head "
               "goes through")
-    ledger = _ledger_path()
-    if not ledger.exists():
-        print(f"no run ledger at {ledger} — nothing to retry")
+    if result["message"]:
+        print(result["message"])
         return 2
-    sup = Supervisor(ledger)
-    with sup._connect() as con:
-        rows = [dict(row) for row in con.execute(
-            "SELECT id,seat,head,turn_key,state,error,updated FROM runs WHERE repo=? AND pr=? "
-            "ORDER BY created,id", (loop["repo"], args.pr))]
-    # A shadow run (#218) is retried only by name: it is no part of the PR's loop.
-    rows = [row for row in rows if row["seat"] == args.seat
-            or (not args.seat and row["seat"] != "shadow")]
-    if not rows:
-        print(f"[{loop['id']}] #{args.pr}: no isolated run on record"
-              + (f" for the {args.seat} seat" if args.seat else ""))
-        return 2
-    # Not a timestamp: the claim path bumps `updated` when it supersedes a row for a head the PR
-    # has since left, so `max(updated)` can name an abandoned head and offer nothing (#126).
-    # The newest head that still has an offerable row is the ledger-only answer; the PR's own head
-    # is the tiebreaker when a supersession bump makes those two disagree (a gh read, or — when
-    # that read fails — the newest offerable head: never the rewritten timestamp).
-    from ..run_supervisor import policy_cancelled
-    from .. import gh
-
-    def offerable(row: dict) -> bool:
-        return row["state"] in ("failed", "waiting", "uncertain") or (
-            row["state"] == "cancelled" and policy_cancelled(row["error"]))
-
-    offerable_rows = [row for row in rows if offerable(row)]
-
-    def newest(rws):
-        return max(rws, key=lambda row: (row["updated"] or 0, row["id"]))["head"]
-
-    ledger_head = newest(offerable_rows) if offerable_rows else newest(rows)
-    bumped_head = newest(rows)
-    # The PR read is only a tiebreaker: reach for it when a supersession bump made the two ledger
-    # answers disagree. Otherwise stay on the ledger — no network round-trip for the common case
-    # (and none when nothing is offerable: the "nothing to retry" path answers from the ledger).
-    if offerable_rows and ledger_head != bumped_head:
-        pr = gh.pr(loop, args.pr)
-        pr_head = ((pr or {}).get("head") or {}).get("sha") if isinstance(pr, dict) else None
-        head = pr_head or ledger_head
-    else:
-        head = ledger_head
-    # A fixer run the push policy cancelled at claim is recovered here, under the policy in
-    # force now; any other cancellation is superseded and is not offered (runs_view draws the
-    # same line: a new head gets its own turn).
-    candidates = [row for row in rows if row["head"] == head and offerable(row)]
-    # A failed PR run whose PR the watchdog's last complete listing does not show open is history
-    # (#723). The listing is trusted only when fresh and agreeing; otherwise one PR read confirms.
-    from ..run_supervisor import WATCH_INTERVAL_S, ISSUE_SEATS, open_listing
-    listing = open_listing(loop)
-    if listing is not None and any(r["state"] == "failed" and r["seat"] not in ISSUE_SEATS
-                                   for r in candidates):
-        absent = args.pr not in listing["numbers"]
-        if absent or time.time() - listing["at"] > WATCH_INTERVAL_S:
-            live = gh.pr(loop, args.pr)
-            if isinstance(live, dict):
-                is_open = live.get("state") == "open"
-            else:
-                is_open = not absent          # unreadable: the listing alone decides
-            if not is_open:
-                print(f"[{loop['id']}] PR #{args.pr} is not open (merged or closed); nothing to re-arm")
-                return 2
-    if not candidates:
-        print(f"[{loop['id']}] #{args.pr} @ {head[:7]}: nothing to retry — "
-              + ", ".join(f"{row['seat']} {row['state']}" for row in rows if row["head"] == head))
-        return 2
-    rearmed, refused = 0, 0
-    for row in candidates:
-        label = f"{row['seat']} #{args.pr} @ {head[:7]}" + (f" ({row['turn_key']})" if row["turn_key"] else "")
-        try:
-            # The loop's budget now (#49): a turn killed at its budget reruns on the raised one.
-            sup.retry(row["id"], budget=config.turn_budget(loop, row["seat"]))
-        except ValueError as exc:
-            refused += 1
-            print(f"[{loop['id']}] {label} {row['state']}: {exc}")
-            continue
-        rearmed += 1
-        print(f"[{loop['id']}] {label} re-armed (was {row['state']}: {row['error'] or 'no reason'})")
-    if rearmed:
-        sup.record_operator_action(loop["repo"], args.pr, "retry")
-        try:
-            started = gate.resume_isolated(loop)
-        except Exception as exc:
-            print(f"worker not started: {type(exc).__name__}: {exc} — the next event or armed "
-                  "watchdog sweep starts it")
+    for entry in result["rearmed"]:
+        label = (f"{entry['seat']} #{args.pr} @ {entry['head7']}"
+                 + (f" ({entry['turn_key']})" if entry.get("turn_key") else ""))
+        print(f"[{loop['id']}] {label} re-armed (was {entry['state']}: "
+              f"{entry.get('error') or 'no reason'})")
+    for entry in result["refused"]:
+        label = (f"{entry['seat']} #{args.pr} @ {entry['head7']}"
+                 + (f" ({entry['turn_key']})" if entry.get("turn_key") else ""))
+        print(f"[{loop['id']}] {label} {entry['state']}: {entry['reason']}")
+    if result["rearmed"] and result["worker"]:
+        if result["worker"] == "started":
+            print("worker started")
         else:
-            print("worker started" if started else
-                  "no private runtime file — the run stays pending until one exists")
-    return 0 if rearmed and not refused else 2
+            print(result["worker"] + (" — the next event or armed watchdog sweep starts it"
+                                      if result["worker"].startswith("worker not started")
+                                      else ""))
+    return 0 if result["ok"] else 2
 
 
 def cmd_continue(args) -> int:

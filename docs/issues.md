@@ -82,7 +82,10 @@ hermes dk triage --loop "<loop-id>" --enable --triage-profile "<triage-profile>"
 | `--dry-run` | Validate and print planned settings without changing state |
 
 If the writer is not mapped, add `--token "<triage-login>=<absolute-token-file>"` to the
-same command. `--token` is repeatable and refers to files, never literal credentials.
+same command. `--token` is repeatable and refers to files, never literal credentials. It applies the same
+checks as `set --token`: an absolute path to a regular file you own that group/other cannot
+read (`chmod 600`), and never a seat or the reader login (their files move through the plugin
+settings, `apply` and `set --read-token`). A refusal writes nothing.
 
 Run the preview command again **without `--dry-run`**. Configuration, route and shim
 are installed; with `--admin-token`, the issues hook is created **paused**. Without that
