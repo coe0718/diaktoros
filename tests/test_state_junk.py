@@ -15,6 +15,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -87,6 +88,20 @@ class Junk(unittest.TestCase):
                 self.assertTrue(st.inflight(mark))
                 st.inflight_clear(mark)
                 st.quarantine(7, HEAD)
+
+    def test_record_keeps_marks_within_a_ttl_longer_than_a_day(self):
+        """#736: the arming prune must not discard a mark the read path still honors."""
+        st = self.st
+        st.loop["inflight_ttl_min"] = 3 * 24 * 60
+        old = f"review:7:{HEAD}"
+        st.inflight_file.write_text(json.dumps({old: time.time() - 30 * 3600}))
+        self.assertTrue(st.inflight(old))
+        st.inflight(f"review:8:{HEAD}", record=True)          # arming another head prunes
+        self.assertTrue(st.inflight(old))                    # the 30h-old mark survives
+        st.loop["inflight_ttl_min"] = 10                     # default TTL: still pruned at 24h
+        st.inflight_file.write_text(json.dumps({old: time.time() - 30 * 3600}))
+        st.inflight(f"review:8:{HEAD}", record=True)
+        self.assertNotIn(old, json.loads(st.inflight_file.read_text()))
 
     def test_breach_markers_survive_every_shape(self):
         st = self.st

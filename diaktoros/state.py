@@ -47,6 +47,7 @@ _HELD = threading.local()
 # A line is cut at LOG_LINE_MAX characters and a prune also drops the oldest lines until the
 # log fits LOG_PRUNE_BYTES, so a few oversized lines cannot hold it above the bound.
 LOG_KEEP = 1000
+INFLIGHT_PRUNE_S = 24 * 3600     # floor for how long a recorded in-flight mark is kept (#736)
 LOG_PRUNE_BYTES = 256 * 1024
 LOG_LINE_MAX = 4096
 
@@ -560,17 +561,21 @@ class LoopState:
         before the first verdict lands. TTL-bounded so a crashed run cannot wedge the head.
         """
         now = time.time()
+        ttl_s = self.loop["inflight_ttl_min"] * 60
         if record:
             with self.locked():
                 data = _mapping(self._load(self.inflight_file, {}))
                 data[key] = now
-                # #545: an unageable mark is dropped, never subtracted from.
+                # #545: an unageable mark is dropped, never subtracted from. #736: keep a mark
+                # at least as long as the read path honors it, so a configured TTL beyond a
+                # day is not cut short here.
+                keep_s = max(INFLIGHT_PRUNE_S, ttl_s)
                 data = {k: v for k, v in data.items()
-                        if _clock(v) is not None and now - _clock(v) < 24 * 3600}
+                        if _clock(v) is not None and now - _clock(v) < keep_s}
                 self._save_strict(self.inflight_file, data)
             return False
         at = _clock(_mapping(self._load(self.inflight_file, {})).get(key))
-        return at is not None and now - at < self.loop["inflight_ttl_min"] * 60
+        return at is not None and now - at < ttl_s
 
     def inflight_clear(self, key: str) -> None:
         """Drop one in-flight mark: its run has ended (the isolated worker's release, #98)."""
