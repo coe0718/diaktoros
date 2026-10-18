@@ -70,13 +70,22 @@ def release_process_claims() -> list[str]:
 
 
 def _atomic_write(path: pathlib.Path, data) -> None:
-    """Publish ``data`` to ``path`` whole or not at all, and durably before returning."""
+    """Publish ``data`` as JSON to ``path`` whole or not at all, and durably before returning."""
+    _atomic_publish(path, json.dumps(data, indent=2))
+
+
+def _atomic_publish(path: pathlib.Path, text: str) -> None:
+    """Publish ``text`` to ``path``: temp file, fsync, ``os.replace``, fsync of the directory.
+
+    The one place the module's durability rule lives; ``_save_queue`` and ``_prune_log`` call it
+    rather than repeating the dance, so neither can skip a step.
+    """
     name = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=f".{path.stem}-",
                                          delete=False) as file:
             name = file.name
-            json.dump(data, file, indent=2)
+            file.write(text)
             file.flush()
             os.fsync(file.fileno())
         os.replace(name, path)
@@ -234,9 +243,7 @@ class LoopState:
         size = sum(len(l.encode()) for l in lines)
         while len(lines) > 1 and size > LOG_PRUNE_BYTES:
             size -= len(lines.pop(0).encode())
-        tmp = self.log.with_name(self.log.name + ".tmp")
-        tmp.write_text("".join(lines))
-        os.replace(tmp, self.log)
+        _atomic_publish(self.log, "".join(lines))
 
     # -- active runs per seat (the concurrency ledger) ----------------------
 
@@ -408,16 +415,7 @@ class LoopState:
 
     def _save_queue(self, data: dict) -> None:
         """Publish queue bytes atomically so unlocked readers never see a partial file."""
-        fd, temp = tempfile.mkstemp(prefix=".pending-", dir=self.dir)
-        try:
-            with os.fdopen(fd, "w") as output:
-                json.dump(data, output, indent=2)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temp, self.pending)
-        finally:
-            if os.path.exists(temp):
-                os.unlink(temp)
+        _atomic_write(self.pending, data)
 
     def queue_add(self, seat: str, key: str, head: str, url: str, reason: str) -> None:
         with self._queue_lock():

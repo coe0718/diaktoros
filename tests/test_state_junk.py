@@ -10,9 +10,11 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import gate, state  # noqa: E402
@@ -154,6 +156,39 @@ class WatchdogLog(unittest.TestCase):
         for i in range(5):
             self.st.note(f"m{i}")
         self.assertEqual(len(self.st.log.read_text().splitlines()), 5)
+
+
+class Durability(unittest.TestCase):
+    """#733: every state write is temp file, fsync, replace, then an fsync of the directory."""
+
+    setUp = Junk.setUp  # the same throwaway loop state; none of Junk's tests
+
+    def fsyncs_during(self, action):
+        """Run ``action``; name what was fsynced, as ``file`` or ``dir``."""
+        real, seen = os.fsync, []
+
+        def spy(fd):
+            seen.append("dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+            return real(fd)
+
+        with mock.patch.object(state.os, "fsync", spy):
+            action()
+        return seen
+
+    def test_queue_write_fsyncs_file_then_directory(self):
+        seen = self.fsyncs_during(
+            lambda: self.st.queue_add("reviewer", KEY, HEAD, "u", "busy"))
+        self.assertEqual(seen, ["file", "dir"])
+        self.assertIn(KEY, json.loads(self.st.pending.read_text())["reviewer"])
+
+    def test_log_prune_fsyncs_file_then_directory(self):
+        self.st.log.write_text("old line\n" * (state.LOG_PRUNE_BYTES // 9 + 10))
+        seen = self.fsyncs_during(lambda: self.st.note("fresh"))
+        self.assertEqual(seen, ["file", "dir"])
+        lines = self.st.log.read_text().splitlines()
+        self.assertTrue(lines[-1].endswith("fresh"))
+        self.assertLessEqual(len(lines), state.LOG_KEEP)
+        self.assertEqual([p.name for p in self.st.dir.iterdir() if p.name.endswith(".tmp")], [])
 
 
 if __name__ == "__main__":
