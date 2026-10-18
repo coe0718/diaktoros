@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Credentialless agent-side client. Launcher mounts only this run's UDS at SOCKET.
+"""Credentialless agent-side client. The launcher mounts only this run's socket directory at
+/run/review-loop/broker (contained.BROKER_MOUNT), so the socket is SOCKET.
 
 Examples: broker_client.py review APPROVE "Reviewed exact head";
           broker_client.py request_review
@@ -11,7 +12,7 @@ import json
 import socket
 import sys
 
-SOCKET = "/run/review-loop/broker.sock"
+SOCKET = "/run/review-loop/broker/broker.sock"  # contained.BROKER_MOUNT + "/broker.sock"
 MAX_RESPONSE = 16 * 1024
 # A push or review is several GitHub calls plus git fetch/push (each up to 90s), all
 # host-side. Wait for the answer instead of timing out mid-write; the turn deadline is
