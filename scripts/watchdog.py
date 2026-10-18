@@ -62,6 +62,7 @@ from diaktoros import (  # noqa: E402
     pr_hold,
     route_intent,
     routes,
+    run_supervisor,
     situation,
     stale_approval,
     state as state_mod,
@@ -1087,6 +1088,37 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                 kind = (f"{PUSH_OFF_KIND} — changes requested {ago(mins)} at head "
                         f"{head[:7]} waits for you: run "
                         f"`{config.fixer_push_enable_command(loop)}` (or fix it by hand)")
+        elif at_head and (disputed := run_supervisor.dispute_at(
+                run_supervisor.production_ledger(), loop["repo"], number, head)) is not None \
+                and disputed > epoch(latest.get("submitted_at")) \
+                and not live_turn(loop, number, head, "fixer"):
+            # The fixer answered the verdict with a dispute (#401): every finding "not a defect",
+            # nothing pushed. That is an answer, not a stall (#895). With an adjudicator it goes
+            # for a ruling, as `hermes dk escalate` would send it (#894): the head is parked, so a
+            # later sweep sees it awaiting a ruling. Without one, it is the operator's to decide.
+            handed = ""
+            if (loop.get("adjudicator") or {}).get("route"):
+                try:
+                    handed = gate.breach(
+                        loop, st, number, head, len(changes),
+                        "escalated: the fixer disputed the review (every finding answered as "
+                        "not a defect, nothing pushed)",
+                        escalated={"by": "dispute", "at": now_iso(),
+                                   "reason": "the fixer disputed the review at this head"})
+                except Exception as exc:
+                    log(f"#{number} @ {head[:7]}: dispute hand-off failed: "
+                        f"{type(exc).__name__}: {exc}")
+            if handed == "new":
+                log(f"#{number} @ {head[:7]}: the fixer disputed the review — handed to "
+                    "adjudication")
+            elif handed not in ("retry", "stale") and past(age_min(latest.get("submitted_at")),
+                                                           grace["fixer"]):
+                kind = (f"disputed {ago((now - disputed) / 60)} at head {head[:7]} — the fixer "
+                        "answered every finding as no defect and pushed nothing; waiting for you: "
+                        "dismiss the review and `hermes dk review --pr "
+                        f"{number}`, `hermes dk escalate --pr {number}`, or merge on its evidence"
+                        if not handed else
+                        f"disputed at head {head[:7]}: hand-off to adjudication {handed}")
         elif at_head:
             mins = age_min(latest.get("submitted_at"))
             # A fix turn queued or running at this head is not a stall: the grace covers a turn's

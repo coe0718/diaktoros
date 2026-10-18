@@ -1373,7 +1373,10 @@ def breach(loop: dict, st: state_mod.LoopState, number: int, head: str, rounds: 
 
     route = loop.get("adjudicator", {}).get("route")
     def observe_reserved(marker: dict) -> None:
-        outcome = (f"escalated by the operator at {marker['rounds']}/{loop['cap']} verdicts"
+        by = str((marker.get("escalated") or {}).get("by") or "operator")
+        outcome = ((f"the fixer disputed the review at {marker['rounds']}/{loop['cap']} verdicts"
+                    if by == "dispute" else
+                    f"escalated by the operator at {marker['rounds']}/{loop['cap']} verdicts")
                    if marker.get("escalated") else
                    f"{marker['rounds']}/{loop['cap']} verdicts, no approval")
         observer.notify(loop, st, "escalation", number, head, identity=str(marker["rounds"]),
