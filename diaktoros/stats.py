@@ -1143,7 +1143,9 @@ def as_html(report: dict) -> str:
             f'<div class="card"><b>{esc(value)}</b><span>{esc(label)}</span></div>'
             for value, label in cards) + "</div>")
     parts.append("<h2>Seat turns</h2>")
-    if turns:
+    if report.get("turns") is None:
+        parts.append('<p class="sub">Turns: no run ledger yet.</p>')
+    elif turns:
         parts.append(_html_table(TURN_HEAD, _turn_rows(report)))
     else:
         parts.append('<p class="sub">No turns in this window.</p>')
