@@ -219,14 +219,31 @@ class LoopState:
             hostdirs.ensure(self.dir)
             if len(message) > LOG_LINE_MAX:
                 message = message[:LOG_LINE_MAX] + "...[truncated]"
-            with self.log.open("a") as fh:
-                fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {message}\n")
-            self._prune_log()
+            # The append and the prune's read-and-replace are one step to every other writer:
+            # a line appended between the prune's read and its replace would be lost (#732).
+            with self._log_lock():
+                with self.log.open("a") as fh:
+                    fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {message}\n")
+                self._prune_log()
         except Exception:
             pass
 
+    @contextlib.contextmanager
+    def _log_lock(self):
+        """Serialize ``note`` across processes. A leaf lock of its own, never the state lock:
+        ``note`` is called from inside ``locked()`` sections and must not wait on others."""
+        fd = os.open(self.dir / "watchdog.log.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)  # closing releases the flock
+
     def _prune_log(self) -> None:
-        """Past ``LOG_PRUNE_BYTES``, keep the last ``LOG_KEEP`` lines that fit in that many bytes."""
+        """Past ``LOG_PRUNE_BYTES``, keep the last ``LOG_KEEP`` lines that fit in that many bytes.
+
+        The caller holds ``_log_lock``: that is what keeps appends out of the read-to-replace
+        window and gives the fixed temp name a single writer."""
         if self.log.stat().st_size <= LOG_PRUNE_BYTES:
             return
         lines = self.log.read_text(errors="replace").splitlines(keepends=True)
