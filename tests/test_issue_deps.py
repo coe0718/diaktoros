@@ -237,6 +237,43 @@ class Deps(GateFixture):
         self.assertEqual((list(again.issue_deps()), again.dep_waits()), ([12], [12]))
         self.assertTrue(again.dep_wait_said(12))
 
+    def concurrent_second_caller(self, again):
+        """Patch gh.api so a second process runs ``again()`` while the first one's comment POST is
+        in flight (after its check, before its write): the window the issue describes."""
+        inner, ran = gh.api, []
+
+        def api(loop, path, method="GET", body=None, login=None):
+            if method == "POST" and not ran:
+                ran.append(1)
+                again()
+            return inner(loop, path, method, body, login)
+        patcher = mock.patch.object(gh, "api", api)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_two_processes_waiting_post_the_dependency_comment_once(self):
+        blockers = [(5, "#5 is still open")]
+        other = state_mod.state_for(self.loop)                   # the other process's view
+        self.concurrent_second_caller(lambda: issue_deps.wait(self.loop, other, 12, blockers))
+        issue_deps.wait(self.loop, self.st, 12, blockers)
+        self.assertEqual(len([p for p, _b, _l in self.posted if p.endswith("/issues/12/comments")]), 1)
+        self.assertTrue(self.st.dep_wait_said(12))
+
+    def test_a_failed_dependency_comment_is_released_for_a_retry(self):
+        blockers = [(5, "#5 is still open")]
+        with mock.patch.object(gh, "api", lambda *a, **k: None):
+            issue_deps.wait(self.loop, self.st, 12, blockers)
+        self.assertFalse(self.st.dep_wait_said(12))
+        issue_deps.wait(self.loop, self.st, 12, blockers)
+        self.assertEqual(len(self.posted), 1)
+
+    def test_two_processes_holding_post_the_pr_wait_comment_once(self):
+        other = state_mod.state_for(self.loop)
+        self.concurrent_second_caller(lambda: fix_hold.hold(self.loop, other, 12, 7))
+        fix_hold.hold(self.loop, self.st, 12, 7)
+        self.assertEqual(len([p for p, _b, _l in self.posted if p.endswith("/issues/12/comments")]), 1)
+        self.assertTrue(self.st.fix_hold_said(12))
+
     def test_status_names_the_wait(self):
         self.depends(12, on=5)
         self.run_gate(self.labeled())

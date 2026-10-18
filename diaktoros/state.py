@@ -808,18 +808,37 @@ class LoopState:
             if data.pop(str(number), None) is not None:
                 self._save(self.dir / "held-fixes.json", data)
 
+    def _said_claim(self, name: str, number: int) -> bool:
+        """Record ``number`` in the one-time-notice ledger ``name``; True only for the caller that
+        recorded it. The check and the write are one step under the lock."""
+        with self.locked():
+            raw = self._load(self.dir / name, [])
+            raw = [n for n in raw if type(n) is int] if isinstance(raw, list) else []
+            if number in raw:
+                return False
+            self._save(self.dir / name, sorted(raw + [number]))
+            return True
+
+    def _said_release(self, name: str, number: int) -> None:
+        with self.locked():
+            raw = self._load(self.dir / name, [])
+            raw = [n for n in raw if type(n) is int] if isinstance(raw, list) else []
+            if number in raw:
+                self._save(self.dir / name, [n for n in raw if n != number])
+
     def fix_hold_said(self, number: int) -> bool:
-        """Whether the one "waiting for PR" comment was already posted for this issue."""
+        """Whether the one "waiting for PR" comment was claimed for this issue."""
         with self.locked():
             raw = self._load(self.dir / "held-fixes-said.json", [])
         return number in (raw if isinstance(raw, list) else ())
 
-    def fix_hold_say(self, number: int) -> None:
-        with self.locked():
-            raw = self._load(self.dir / "held-fixes-said.json", [])
-            raw = [n for n in raw if type(n) is int] if isinstance(raw, list) else []
-            if number not in raw:
-                self._save(self.dir / "held-fixes-said.json", sorted(raw + [number]))
+    def fix_hold_say(self, number: int) -> bool:
+        """Claim the one "waiting for PR" comment *before* posting it: True only for the first
+        caller, so two processes cannot both post. Call ``fix_hold_unsay`` if the post fails."""
+        return self._said_claim("held-fixes-said.json", number)
+
+    def fix_hold_unsay(self, number: int) -> None:
+        self._said_release("held-fixes-said.json", number)
 
     # -- the issue fixer's question or plan (#483): one open ask per issue ----------
     # fix-asks.json: {"open": {issue: {kind, comment_id, text}}, "count": {issue: n},
@@ -940,15 +959,17 @@ class LoopState:
                 self._save(self.dir / "dep-waits-said.json", [n for n in said if n != issue])
 
     def dep_wait_said(self, issue: int) -> bool:
-        raw = self._load(self.dir / "dep-waits-said.json", [])
-        return issue in (raw if isinstance(raw, list) else ())
-
-    def dep_wait_say(self, issue: int) -> None:
         with self.locked():
             raw = self._load(self.dir / "dep-waits-said.json", [])
-            raw = [n for n in raw if type(n) is int] if isinstance(raw, list) else []
-            if issue not in raw:
-                self._save(self.dir / "dep-waits-said.json", sorted(raw + [issue]))
+        return issue in (raw if isinstance(raw, list) else ())
+
+    def dep_wait_say(self, issue: int) -> bool:
+        """Claim the one dependency-wait comment *before* posting it: True only for the first
+        caller. Call ``dep_wait_unsay`` if the post fails."""
+        return self._said_claim("dep-waits-said.json", issue)
+
+    def dep_wait_unsay(self, issue: int) -> None:
+        self._said_release("dep-waits-said.json", issue)
 
     # -- review-only verdict cap: its one notice and granted rounds ----------
 

@@ -139,10 +139,10 @@ def hold(loop: dict, st, number: int, pr: int, why: str = "") -> None:
     """Record the held hand-off and say so once; ``why`` is the person's own words that declared
     the dependency, quoted in the comment (empty for a reviewer's finding)."""
     st.fix_hold_set(number, pr)
-    if not st.fix_hold_said(number):
+    if st.fix_hold_say(number):                   # claimed under the lock: only one process posts
         if not _wait_comment(loop, number, pr, why):
-            return                                # POST failed: not "said"; a later sweep retries
-        st.fix_hold_say(number)
+            st.fix_hold_unsay(number)             # POST failed: not "said"; a later sweep retries
+            return
         _notice(loop, number, "held", pr,
                 f"#{number} waits for PR #{pr} to merge: its finding is about code only there")
 
