@@ -52,8 +52,8 @@ permission may be needed to retrieve it. A local payload is an alternative:
 hermes dk trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_request --route "<reviewer-route>"
 ```
 
-`--payload` is a JSON-object file, `--event` is `pull_request` (default),
-`pull_request_review` or `issues`, and `--route` selects the intended route. None of these trace
+`--payload` is a JSON-object file, `--event` names the event (`pull_request`,
+`pull_request_review` or `issues`; by default read from the payload), and `--route` selects the intended route. None of these trace
 examples starts a production model or writes GitHub. Use status for local queues/runs:
 
 ```bash

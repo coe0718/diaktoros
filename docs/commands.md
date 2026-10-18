@@ -1245,7 +1245,8 @@ The last line is the outcome: `would start a reviewer run` (or `would queue a �
 `held — <why>` or `declined — <why>`. Anything the gate would send out (GitHub writes, a run
 starting, a notice) is listed as `would …` and never done. Your real state is untouched.
 
-`trace` cannot replay `issues` deliveries (issue triage and issue fixes) yet (#230). For those, see
+`trace` replays `issues` deliveries too (issue triage and issue fixes): the gate runs as the triage
+route would, and its outcome is the last line. When a triage still looks wrong, see
 [an issue opened and nothing was labelled](troubleshooting.md).
 
 <!-- flags:trace -->
