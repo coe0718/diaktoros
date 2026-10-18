@@ -209,6 +209,31 @@ class Gate(Base):
         fix_hold.sweep(self.loop, st)
         self.assertEqual(len(self.posted), 1)
 
+    def test_a_later_hold_on_the_same_issue_says_so_again_after_a_drop(self):
+        self.origin = 7
+        self.run_gate(self.labeled())                   # hold: one wait comment
+        st = state_mod.state_for(self.loop)
+        self.assertEqual((st.fix_holds(), len(self.posted), st.fix_hold_said(12)), ({12: 7}, 1, True))
+        self.origin = None                              # re-labelled with no origin: hold dropped
+        self.run_gate(self.labeled())
+        self.assertEqual((st.fix_holds(), st.fix_hold_said(12)), ({}, False))
+        self.enqueued.clear()
+        self.origin, self.origin_pr = 9, {"number": 9, "state": "open", "merged": False}
+        self.run_gate(self.labeled())                   # a new origin PR: hold again
+        self.assertEqual(st.fix_holds(), {12: 9})
+        waits = [b for p, b, _l in self.posted if p.endswith("/issues/12/comments")
+                 and "waiting for #" in b["body"]]
+        self.assertEqual(len(waits), 2)
+        self.assertIn("#9", waits[1]["body"])
+
+    def test_the_sweep_dropping_a_closed_pr_hold_clears_the_said_flag(self):
+        st = state_mod.state_for(self.loop)
+        fix_hold.hold(self.loop, st, 12, 7)
+        self.assertTrue(st.fix_hold_said(12))
+        self.origin_pr = {"number": 7, "state": "closed", "merged": False}
+        fix_hold.sweep(self.loop, st)
+        self.assertEqual((st.fix_holds(), st.fix_hold_said(12)), ({}, False))
+
     def test_a_finding_from_an_open_pr_is_held_until_it_merges(self):
         self.origin = 7
         self.run_gate(self.labeled())
