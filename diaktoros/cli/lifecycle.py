@@ -534,7 +534,8 @@ def _restore(args, manifest: dict, archive: pathlib.Path) -> int:
     lines += [f"restore: writes a loop state directory outside the Hermes home: {path}"
               for path in backup.outside_state_dirs(manifest)]
     problems = backup.unsafe(manifest,
-                             allowed_state_dirs=getattr(args, "allow_state_dir", None) or ())
+                             allowed_state_dirs=getattr(args, "allow_state_dir", None) or (),
+                             archive=archive)
     if problems:
         print("\n".join(lines + [f"restore: REFUSED — {p}" for p in problems[:20]]
                          + ["nothing was written"]))
