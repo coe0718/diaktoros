@@ -434,7 +434,8 @@ class Health(unittest.TestCase):
         # as a filled one, and this is the case the first version of the guard let through.
         proxied = ({"x-forwarded-for": "203.0.113.9"}, {"x-forwarded-for": ""},
                    {"forwarded": "for=203.0.113.9"}, {"x-real-ip": "203.0.113.9"},
-                   {"x-forwarded-host": "hermes.example"})
+                   {"x-forwarded-host": "hermes.example"}, {"x-forwarded-proto": "https"},
+                   {"X-Forwarded-Port": "443"})
         cases = [("10.0.0.5", None), (None, {"x-forwarded-for": "203.0.113.9"})]
         cases += [("127.0.0.1", headers) for headers in proxied]      # loopback, but proxied
         with self.loops([{"id": "widgets", "repo": REPO}]), \
@@ -456,6 +457,15 @@ class Health(unittest.TestCase):
         self.assertFalse(desktop_api.probe_is_local("10.0.0.5", None))
         for headers in ({"x-forwarded-for": "203.0.113.9"}, {"x-forwarded-for": ""}):
             self.assertFalse(desktop_api.probe_is_local("127.0.0.1", headers), headers)
+
+    def test_probe_is_local_refuses_any_x_forwarded_header(self):
+        # A proxy that sets only X-Forwarded-Proto (or any other member of the family) is a proxy.
+        for headers in ({"x-forwarded-proto": "https"}, {"X-Forwarded-Proto": ""},
+                        {"x-forwarded-port": "443"}, {"x-forwarded-prefix": "/a"},
+                        {"host": "localhost", "x-forwarded-proto": "https"}):
+            self.assertFalse(desktop_api.probe_is_local("127.0.0.1", headers), headers)
+        # Unrelated headers do not refuse.
+        self.assertTrue(desktop_api.probe_is_local("127.0.0.1", {"host": "localhost", "x-forwarding": "1"}))
 
 
 DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings"}
