@@ -702,10 +702,13 @@ It refreshes every 30–60 seconds. Both halves ship **off**:
 2. **The Desktop half:** turn on **Diaktoros** under **Capabilities → Plugins**.
 
 The backend (`dashboard/plugin_api.py`, mounted at `/api/plugins/diaktoros/` behind the
-gateway's own auth) has five GET routes: `loops`, `stats`, `now`, `pr` and `health`. They read the
-loop's config, the run ledger and — for `health` — the installation's own files, and nothing writes.
-`health?probe=1` is the one route that reads a credential: the loop's own tokens, to read GitHub for
-the hook, expiry and scope checks the offline pass leaves unprobed. It is refused unless the caller
+gateway's own auth) has six GET routes: `loops`, `stats`, `now`, `pr`, `health` and `settings`.
+They read the loop's config, the run ledger and — for `health` — the installation's own files, and
+nothing writes. `settings` returns the plugin form's schema and effective values plus each loop's
+effective seats, budgets and flags, so the Desktop form can render what a loop runs as without
+applying anything; a token field is a path and the file is never opened. `health?probe=1` is the
+one route that reads a credential: the loop's own tokens, to read GitHub for the hook, expiry and
+scope checks the offline pass leaves unprobed. It is refused unless the caller
 is on this machine — a non-loopback peer, or any forwarding header at all (`Forwarded`,
 `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`; present is what counts, so an empty one refuses
 too) gets 403 — because the dashboard is the surface Caddy exposes off-host. GitHub-side numbers stay with `stats --github`.
