@@ -12,7 +12,9 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import gate, state  # noqa: E402
@@ -149,6 +151,32 @@ class WatchdogLog(unittest.TestCase):
             self.st.note("y" * state.LOG_LINE_MAX)
         self.assertLessEqual(self.st.log.stat().st_size,
                              state.LOG_PRUNE_BYTES + state.LOG_LINE_MAX + 100)
+
+    def test_note_during_prune_is_not_lost(self):
+        # #732: a line another writer appends while a prune is between its read and its
+        # replace must survive. The late writer runs in a thread, started right after the
+        # pruner's read of the log.
+        self.st.log.parent.mkdir(parents=True, exist_ok=True)
+        self.st.log.write_text("".join(f"old {i} " + "x" * 300 + "\n" for i in range(1000)))
+        self.assertGreater(self.st.log.stat().st_size, state.LOG_PRUNE_BYTES)
+        real, late = Path.read_text, []
+
+        def racing_read(path, *args, **kwargs):
+            text = real(path, *args, **kwargs)
+            if path == self.st.log and not late:
+                t = threading.Thread(target=self.st.note, args=("late writer",))
+                late.append(t)
+                t.start()
+                t.join(0.5)  # unlocked: the append lands after the read; locked: it waits
+            return text
+
+        with mock.patch.object(Path, "read_text", racing_read):
+            self.st.note("pruner")
+        late[0].join(10)
+        text = self.st.log.read_text()
+        self.assertIn("pruner", text)
+        self.assertIn("late writer", text)
+        self.assertLess(len(text.splitlines()), 1000)  # the prune did run
 
     def test_small_watchdog_log_is_kept_whole(self):
         for i in range(5):
