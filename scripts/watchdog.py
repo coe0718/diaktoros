@@ -1158,7 +1158,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         if kind and due(stall_key(number, head, kind)):
             alerts.append((number, kind, (pr.get("title") or "")[:60]))
 
-    stuck: list[tuple[str, str]] = died_locks(loop, st._load(st.locks, {}) or {}, now)
+    # A fresh clock (review on #937): ``now`` was taken before this sweep's GitHub reads and
+    # hand-offs, so a claim made since would look dated in the future and be reported dead.
+    stuck: list[tuple[str, str]] = died_locks(loop, st._load(st.locks, {}) or {}, time.time())
     queue = st.queue_all()
     for seat, items in (queue if isinstance(queue, dict) else {}).items():
         for key, entry in (items if isinstance(items, dict) else {}).items():
@@ -1394,7 +1396,7 @@ def died_locks(loop: dict, locks: dict, now: float) -> list[tuple[str, str]]:
             # On the budget the claim was taken with, if longer than the loop's now (#98).
             # This seat's own turn: another seat's longer budget never keeps it alive (#98).
             recorded = config.claim_budget(entry)   # None: a legacy claim gets its seat's own
-            if age < 0:
+            if age < -state_mod.FUTURE_SLACK_S:
                 # Dated ahead of the clock: ``state._mark_live`` treats it as expired, so report
                 # it as a dead claim too — a bad clock must raise the stall, not hide it (#794).
                 lines.append((f"lock:{seat}:{key}",
