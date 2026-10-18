@@ -208,6 +208,11 @@ def cmd_status(args) -> int:
                           "not counted as running; the next sweep prunes it")
                     continue
                 held = (time.time() - at) / 60
+                if held < 0:
+                    # Not live (#794): no reader counts it, and the next sweep prunes it.
+                    print(f"  ⚠️  lock:    {seat} mark for {key} is dated in the future — "
+                          "not counted as running; the next sweep prunes it")
+                    continue
                 print(f"  running:    {seat} on {key} for {held:.0f}m")
         for line in _dependency_lines(loop):
             print(f"  deps:       {line}")

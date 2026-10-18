@@ -362,6 +362,22 @@ class ExclusiveAcquire(unittest.TestCase):
         self.assertTrue(st.acquire("reviewer", KEY, HEAD, "again", run="r2", exclusive=True))
         self.assertEqual(st.live_locks("reviewer")[KEY]["run"], "r2")
 
+    def test_a_claim_dated_ahead_of_the_clock_is_expired_not_live_forever(self):
+        """#794: a negative age used to sit inside every TTL, holding the seat unseen."""
+        st = self.st
+        for ahead in (5.0, 30.0, 120.0, 10 * 365 * 86400.0, time.time() * 1000):   # incl. a ms timestamp
+            with self.subTest(ahead=ahead):
+                st.acquire("reviewer", KEY, HEAD, "old", run="r1")
+                data = json.loads(st.locks.read_text())
+                data["reviewer"][KEY]["at"] = time.time() + ahead
+                st.locks.write_text(json.dumps(data))
+                self.assertEqual(st.live_locks("reviewer"), {})
+                self.assertEqual(st.active("reviewer"), {})          # and the ledger is healed
+                self.assertNotIn(KEY, json.loads(st.locks.read_text()).get("reviewer", {}))
+                # the seat is free again for a fresh claim
+                self.assertTrue(st.acquire("reviewer", KEY, HEAD, "new", run="r2", exclusive=True))
+                st.release_all("reviewer")
+
     def test_take_seat_does_not_evict_a_claim_made_while_it_decided(self):
         from unittest import mock
         st = self.st

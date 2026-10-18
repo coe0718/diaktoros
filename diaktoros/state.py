@@ -110,9 +110,13 @@ def _mark_live(entry, now: float, ttl: float) -> bool:
     makes ``explain`` raise instead of reporting. Only a plain number is aged, because the readers
     that take a live set do their own arithmetic on ``at`` — a numeric string is expired, never
     guessed at. ``active`` then writes the drop, so the next read sees a ledger it can read.
+
+    A mark dated *after* ``now`` (a clock stepped back, a hand edit, a milliseconds stamp) has a
+    negative age that would sit inside any TTL forever, holding the seat at capacity where no
+    report could see it (#794): it is expired, like a mark that cannot be aged.
     """
     at = mark_at(entry)
-    return at is not None and now - at <= ttl
+    return at is not None and 0 <= now - at <= ttl
 
 
 def mark_at(entry) -> float | None:
