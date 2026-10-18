@@ -143,6 +143,26 @@ changes. Attribution is added unless disabled. If a fix is not possible, the tur
 post one explanation on the issue instead of opening a PR. It is not guaranteed to
 solve the issue or complete all stages of the PR sequence.
 
+The issue is a work order, not a confirmed bug: the fixer checks the claim against the code
+first, and comments instead of "fixing" a claim that does not hold.
+
+### When the fixer asks a question or needs a plan
+
+An issue-fix turn may answer on the issue instead of opening a PR: one question, or a plan. Each
+ask costs a fixer turn, an issue gets at most three (questions and plans together), and an open
+ask blocks another until it is answered.
+
+- A **question** resumes on the first comment after it from a loop maintainer
+  (`triage.maintainers`). Anyone else's reply is ignored.
+- A **plan** resumes only on a comment that is exactly `/loop approve` (case-insensitive).
+- After the reply, the watchdog sweep queues a fresh fix turn from the base branch. Until then,
+  `status` and `explain` say the issue is waiting for a maintainer.
+
+An issue is **plan-first** when it carries the `plan-first` label or its body is longer than
+4,000 characters. It must have an approved plan before any PR: the broker refuses `open_pr` until
+a maintainer posts `/loop approve`, and the fixer's prompt says so. The approval is remembered per
+issue, so later fix turns may publish.
+
 The host does not merge. GitHub's `Fixes #N` closing behavior applies when the PR is
 merged into the appropriate default-branch context, not merely because a PR was opened.
 
@@ -252,8 +272,8 @@ for the comment path; `denied` and `uncertain` expose refused/unknown outcomes. 
 can exist even though requesting review failed. Inspect its branch, PR and request
 separately; a nonterminal record is not proof that nothing was published.
 
-After the push, the host reads the new branch back and waits out GitHub's lag (a few
-re-reads over about 15 seconds) before it calls the push unknown. When the push's or the
+After the push, the host reads the new branch back and waits out GitHub's lag (re-reads
+after 1, 2, 4, 8 and 8 seconds — about 23 seconds in all) before it calls the push unknown. When the push's or the
 PR's outcome is still unknown, the run itself ends `uncertain` (`post-write push
 quarantine: unknown` or `…: pr_create_unknown`), never `succeeded`: `run_supervisor
 status` lists it, and after you inspect the branch and issue, `reconcile` releases it.
@@ -301,10 +321,12 @@ never delete receipts or safety history to bypass this boundary.
 
 ## Current limits
 
-- Trace supports `pull_request` and `pull_request_review`, **not `issues`**.
-- Explain evaluates PRs, not issues; use it on the PR after a successful issue fix.
-- No observer events for triage/issue fixes. Failed isolated runs may reach the
-  watchdog operator outbox; absence of chat output proves nothing about issue success.
+- `trace` replays `pull_request`, `pull_request_review` and `issues`; `explain` evaluates PRs,
+  not issues, so use it on the PR after a successful issue fix.
+- Observer events cover triage and issue fixes (`triaged`, `fixing`, `fixed`, and `failed`
+  with the issue link). With no observer configured, or those events filtered out, failed
+  isolated runs may still reach the watchdog operator outbox; absence of chat output proves
+  nothing about issue success.
 - Status lacks a dedicated triage-settings/pacing summary; use `triage --loop` and
   ledger queries. Generic run diagnostics are not a complete issue-results view.
 - Triage reads one bounded issue without repository code or a duplicate-issue search feed.

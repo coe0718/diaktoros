@@ -224,6 +224,20 @@ REQUEST_CHANGES verdict in the same turn can still be submitted. Checks still ru
 not block an approval. With `review_after_ci` on, a review waits up to an hour for checks to
 finish before starting.
 
+### What every review body needs
+
+The broker checks the body before spending the review write (#427, #687):
+
+- **`Not verified:` line.** Every review ends with one listing what the reviewer did not check,
+  or `Not verified: nothing`. A review without it is refused.
+- **A test for every fix.** A fix must come with a test that fails without it and passes with it.
+  A fix "verified by reading" with no such test is unfinished, and the next review blocks on it;
+  if the defect truly cannot be tested in the repository, the fixer's answers must say why.
+- **Tests CI already ran.** A test the reviewer cannot run locally is looked up in the head's
+  per-test results. `ok` there counts as executed, and the reviewer cites the check; `skipped` or
+  absent goes under `Not verified:` and is not a block unless the requirement is that it runs. A
+  block that rests only on "could not run" is refused when CI ran that test `ok` at the head.
+
 ### Automatic repair for failed required checks
 
 The watchdog can ask the fixer to repair a red required check without waiting for a
@@ -374,10 +388,10 @@ hermes dk trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_
 
 The two sources are alternatives. `--delivery` selects a numeric hook-delivery ID or
 `X-GitHub-Delivery` GUID; `--admin-token` chooses a mapped login able to read deliveries.
-`--payload` reads a local JSON object; `--event` supplies `pull_request` (default) or
-`pull_request_review`; `--route` selects the destination. Trace runs the actual gate
+`--payload` reads a local JSON object; `--event` supplies `pull_request` (default),
+`pull_request_review` or `issues`; `--route` selects the destination. Trace runs the actual gate
 on a copied home without production writes or model launch. It uses **current** facts,
-not a historical reconstruction. `issues` deliveries are unsupported.
+not a historical reconstruction. An `issues` delivery replays through the triage gate.
 
 ## Pacing: usage windows and daily caps
 
@@ -385,7 +399,7 @@ not a historical reconstruction. `issues` deliveries are unsupported.
 `retry_at` and the reason. Pacing does not consume the pre-write failure-retry budget.
 Daily caps reset at local midnight; zero removes the cap. An armed scheduling path must
 still resume work. Status shows reviewer/fixer pacing; `triage --loop` shows triage settings.
-Issue fixes have concurrency one, no daily cap, and the loop-wide turn budget. Raising
+Issue fixes have concurrency one, their own daily cap (`triage.fix_daily_turns`, default 10, and issue fixes are always capped), and the loop-wide turn budget. Raising
 concurrency increases aggregate model/storage use, not individual turn speed.
 
 ## Issue triage
@@ -500,6 +514,11 @@ Reviewer/fixer concurrency defaults to one. Excess work queues; live GitHub chec
 closed, retargeted and superseded queued heads before launch. JSON seat marks and the
 supervisor cooperate; a mark alone is not proof of a live process. Long budgets extend
 stale-lock thresholds so a healthy long turn is not prematurely declared dead.
+
+Queued turns are claimed by class, not arrival: a CI-fix or conflict turn first, then a fix
+round, then a review, then a new issue fix. A waiting row climbs one class every 15 minutes
+(900 s), so the lowest class starts within 45 minutes even while higher classes keep arriving.
+`status` prints the queue in claim order and says when a row was aged up (#481).
 
 The shared watchdog requires no model conversation. It drains eligible queues, resumes
 due pre-write retries, restores recorded routes/shims, reports stalls/read failures,
@@ -702,10 +721,13 @@ It refreshes every 30–60 seconds. Both halves ship **off**:
 2. **The Desktop half:** turn on **Diaktoros** under **Capabilities → Plugins**.
 
 The backend (`dashboard/plugin_api.py`, mounted at `/api/plugins/diaktoros/` behind the
-gateway's own auth) has five GET routes: `loops`, `stats`, `now`, `pr` and `health`. They read the
-loop's config, the run ledger and — for `health` — the installation's own files, and nothing writes.
-`health?probe=1` is the one route that reads a credential: the loop's own tokens, to read GitHub for
-the hook, expiry and scope checks the offline pass leaves unprobed. It is refused unless the caller
+gateway's own auth) has six GET routes: `loops`, `stats`, `now`, `pr`, `health` and `settings`.
+They read the loop's config, the run ledger and — for `health` — the installation's own files, and
+nothing writes. `settings` returns the plugin form's schema and effective values plus each loop's
+effective seats, budgets and flags, so the Desktop form can render what a loop runs as without
+applying anything; a token field is a path and the file is never opened. `health?probe=1` is the
+one route that reads a credential: the loop's own tokens, to read GitHub for the hook, expiry and
+scope checks the offline pass leaves unprobed. It is refused unless the caller
 is on this machine — a non-loopback peer, or any forwarding header at all (`Forwarded`,
 `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`; present is what counts, so an empty one refuses
 too) gets 403 — because the dashboard is the surface Caddy exposes off-host. GitHub-side numbers stay with `stats --github`.

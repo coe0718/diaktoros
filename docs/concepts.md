@@ -63,6 +63,76 @@ Gates answer `[SILENT]` so Hermes does **not** launch a normal gateway agent for
 
 Explicit `review_requested` events must name the configured reviewer seat and come from an allowlisted fixer/reviewer sender, or from a loop maintainer (`triage.maintainers`). A maintainer's request asks for a fresh review at the current head; unlike the fixer's own request, it is not a hand-back, so it never frees a fixer that still holds the PR (the review queues behind it). Anyone else's request is ignored. Without maintainers, toggling the PR to draft and back starts a review too (`ready_for_review`). Out-of-scope authors, fork PRs, draft PRs and wrong-base PRs do not qualify for the ordinary loop. Stacked PR/retarget handling has additional reconciliation rules; see [architecture](architecture.md), not assumptions based only on this simplified lifecycle.
 
+### When the fixer disputes the review
+
+A fixer turn may answer a changes-requested verdict with a **dispute** instead of a fix: it marks
+every finding `not a defect` in its answers file and passes `--dispute` with its review request,
+pushing nothing. The host publishes the answers, records the dispute in the ledger's `disputes`
+table, and requests no review. Those findings read `disputed` in the report rather than `upheld`
+or `overruled`.
+
+The watchdog does not call the head a stall. With an adjudicator route it hands the head to a
+ruling (`escalated: the fixer disputed the review …`, `by: dispute`); without one, the notice
+names the operator's choices: dismiss the review and ask for a fresh one, `escalate`, or merge on
+the evidence. A maintainer's review request after a dispute still gets one fresh review at that
+head. A dispute alone is not a false positive; only a ruling decides.
+
+### Findings across rounds
+
+The reviewer numbers each blocking finding, one per line in the review body:
+
+```
+F1: src/a.py:12: the retry loop never resets the counter
+F2: tests/test_a.py: missing: no test covers the reset
+```
+
+A later round states what became of each open finding instead of restating it:
+
+```
+F1: fixed
+F2: open — still no test
+F3: missed earlier: src/b.py:40: the same leak here
+```
+
+The broker enforces these rules before it spends the review write (#475):
+
+- From the second review on, every finding still open must be given `fixed`, `open` or
+  `withdrawn`. Leaving one out refuses the review.
+- At a later head, a new finding must cite a file changed in that round (the host compares the
+  previous head with this one), or say `missed earlier`; the report counts those against the
+  reviewer.
+- An `APPROVE` is refused while any finding is open (not `fixed`/`withdrawn`) and while the
+  review raises a new one. Mark them fixed or withdrawn, or request changes.
+- A state for an id that was never recorded is refused, as is restating a known id as a new
+  finding or repeating an id within one review.
+
+A blocking finding's citation (#476) is `path:12`, `path:12-20` or `path#L12` inside the PR's
+diff, and the path must match as a whole token (`a.py` does not match `data.py`). For a missing
+test or docs update, name a changed file and say `missing` (or `absent`, `not tested`,
+`undocumented`). Naming a failed or missing required check also counts, because CI is the
+evidence. A REQUEST_CHANGES with no numbered finding, or with one outside the diff, is refused:
+anything outside the diff is an issue to file, not a block. A seat shown only part of the change
+is exempt from the citation check and may block while saying what it could not see.
+
+### PRs that close an issue: the Requirements check
+
+When a PR body says `Fixes #N` (or `Closes`/`Resolves`), the host gives the reviewer and the
+fixer the closing issues' title and body, plus the loop maintainers' comments, as data. Bounds:
+at most three issues; title 256 bytes and body 8,000 bytes; the 20 newest maintainer comments,
+4,000 bytes each and 16 KiB in total. Anyone else's comment is not shown. Maintainers' comments
+on the PR itself are read too, so a deferral can live there (#666).
+
+A review of such a PR must contain a `Requirements` section with one line per requirement, each
+marked:
+
+- `met`, with the evidence;
+- `not met` — a blocking finding (number it `F<n>`) and therefore REQUEST_CHANGES;
+- `deferred to #N`, where `#N` is an existing issue other than the ones this PR closes.
+
+The broker refuses a review with no Requirements section, one with no status at all, a deferral
+to a missing issue or to one of the issues the PR closes, and an APPROVE containing `not met`. A
+PR that closes no issue is unaffected.
+
 ### Verdict budget, not a timer
 
 `cap` defaults to 3 and must be at least 2. The gate counts **CHANGES_REQUESTED** reviews by allowlisted reviewers from GitHub history. Approvals end the relevant situation; a comment neither counts nor wakes the fixer. With cap 3, the ordinary path permits three changes-requested verdicts and at most two intervening fixes. The third escalates instead of buying a third fix. A new commit does not erase the accumulated review budget.

@@ -43,7 +43,7 @@ hermes dk trace --loop "<loop-id>" --delivery "<delivery-id>" --admin-token "<ho
 | --- | --- | --- |
 | Doctor | Is the install wired correctly? | Credential-file checks do not prove token scopes |
 | Explain | Why is this PR not moving now? | PRs only; depends on readable live state |
-| Trace | What would this delivery do now? | Copied-home gate dry run; not original-time reconstruction; no issues events |
+| Trace | What would this delivery do now? | Copied-home gate dry run; not original-time reconstruction; `issues` replays the triage gate |
 
 Trace's `--delivery` takes numeric delivery ID or `X-GitHub-Delivery` GUID; hook-admin
 permission may be needed to retrieve it. A local payload is an alternative:
@@ -52,8 +52,8 @@ permission may be needed to retrieve it. A local payload is an alternative:
 hermes dk trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_request --route "<reviewer-route>"
 ```
 
-`--payload` is a JSON-object file, `--event` is `pull_request` (default) or
-`pull_request_review`, and `--route` selects the intended route. None of these trace
+`--payload` is a JSON-object file, `--event` is `pull_request` (default),
+`pull_request_review` or `issues`, and `--route` selects the intended route. None of these trace
 examples starts a production model or writes GitHub. Use status for local queues/runs:
 
 ```bash
@@ -370,8 +370,9 @@ hermes dk triage --loop "<loop-id>"
 | Model selected no labels and no comment | `triage_results` state `nothing` | Valid no-write outcome; comment-only triage is not `nothing` |
 | Write denied/uncertain | Result error/stage | Fix authorization or reconcile; never blindly replay |
 
-Use the read-only queries in [issues](issues.md#inspect-results). There is no issues trace
-or issue explain. A safe failed pre-write triage run can use:
+Use the read-only queries in [issues](issues.md#inspect-results). `explain` is PR-only, so
+there is no issue explain; `trace --event issues` replays an issues delivery through the
+triage gate. A safe failed pre-write triage run can use:
 
 ```bash
 hermes dk retry --loop "<loop-id>" --pr "<issue-number>" --seat triage

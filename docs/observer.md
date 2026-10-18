@@ -66,6 +66,7 @@ and a PR link. It does not contain the diff, review body, GitHub credentials or 
 | `handoff` | Fix published and review requested | The new review has completed |
 | `verdict` | Changes requested | The fixer will run when pushes are off |
 | `approved` | Approval transition at a recorded head | Approval is still live or the PR can safely be merged now |
+| `stale_approval` | A loop PR is approved at head H, and a required check at H is then red, cancelled, or never reported within 30 minutes of the approval. One notice per PR and head ("approval at H is stale: <check> is red"), found by the watchdog sweep, which writes nothing to GitHub (#473). `explain` shows it as a blocker and its `next` is an operator decision (do not merge) | A person has looked at it: re-run the check or push a fix. A new head clears it. A PR not approved at its head is never flagged. "Never reported" can only fire when `required_checks` names checks (with none, every reported check gates and none can be missing). `hermes dk ready` excludes a PR whose approval is stale at its head (#479) |
 | `escalation` | Durable cap marker | Adjudicator received/finished its turn |
 | `ruling` | Host recorded ACCEPT/REJECT/RESPEC | Code merged or the cap was reset |
 | `stall` | Watchdog decided a stall warrants reporting | The watchdog repaired the underlying defect |
@@ -169,8 +170,8 @@ The tier is fixed per event in `diaktoros/observer.py` (`URGENT_EVENTS`):
 
 | Tier | Events | With a digest set |
 | --- | --- | --- |
-| Urgent | `failed` (first attempt and final), `held`, `escalation`, `ruling`, `stall`, `conflict`, and any notice whose outcome is `uncertain` | Sent immediately, never batched |
-| Routine | `opened`, `handoff`, `verdict`, `approved`, `triaged`, `fixing`, `fixed`, `closed` | Queued for the digest |
+| Urgent | `failed` (first attempt and final), `held`, `escalation`, `ruling`, `stall`, `conflict`, `main_red`, `stale_approval`, `human_paths`, and any notice whose outcome is `uncertain` | Sent immediately, never batched |
+| Routine | `opened`, `handoff`, `verdict`, `approved`, `triaged`, `fixing`, `fixed`, `ci_failed`, `closed`, `updated`, `ready_set` | Queued for the digest |
 
 With no `digest_min`, nothing changes: every event is sent at once. With
 `observer.urgent_route` set, urgent notices go to that route (own profile and platform via
@@ -260,7 +261,3 @@ Implementation boundaries: `diaktoros/observer.py` (`route_contract`, `_target`,
 `notify`, `_deliver`, `retry`, `flush`), `scripts/observe.py`, CLI observer setters,
 `diaktoros/state.py` receipt paths, and `scripts/watchdog.py` sweep callers.
 For run recovery rather than feed recovery, see [operations](operations.md#when-an-isolated-run-fails).
-
-### `stale_approval` (#473)
-
-| `stale_approval` | A loop PR is approved at head H, and a required check at H is then red, cancelled, or never reported within 30 minutes of the approval. One notice per PR and head ("approval at H is stale: <check> is red"); `explain` shows it as a blocker and its `next` is an operator decision (do not merge), not "a human merges it". Found by the watchdog sweep; writes nothing to GitHub | You: re-run the check or push a fix. A new head clears it. A PR that is not approved at its head is never flagged. "Never reported" can only fire when `required_checks` names checks (with none, every reported check gates and none can be missing). The ready-to-merge queue (#479) is not in this repository yet; it should skip a PR for which `stale_approval.is_stale(watch, pr, head)` is true |

@@ -221,17 +221,17 @@ Full options and exit codes: [Command reference](commands.md).
 
 ## Safety and implementation limits
 
-- **Attribution-only apply gap:** `apply_settings` produces a changed attribution value, but
-  CLI `_apply` does not include it in its change list. A form change affecting attribution
-  alone can report “already matches” without saving it. Use this direct path and verify status:
+- **Attribution follows the form and `set`.** `apply_settings` moves attribution only when the
+  form explicitly stores a value, and `apply` includes it in its change list, so a form change
+  affecting attribution alone is written and reported. `set --attribution` is the direct path
+  for one loop:
 
   ```bash
   hermes dk set --loop "<loop-id>" --attribution off
   ```
 
   `--loop` names the repository loop; `--attribution off` disables its plugin-added signatures.
-  Use `on` to restore them. A change accompanied by another persisted form change may carry
-  attribution too; do not rely on that incidental behavior.
+  Use `on` to restore them. Verify with `status` after either path.
 - **No implicit push consent.** Arming hooks, selecting a fixer or increasing concurrency never
   enables unattended pushes. `fixer-push --enable` requires its separate race acknowledgement.
 - **Selective validation.** Apply checks moved/rebound roles; an unchanged legacy profile may

@@ -38,6 +38,7 @@ python tests/run_tests.py watchdog
 - `tests/run_tests.py` runs all registered harness groups when no selector is supplied. It uses stubbed GitHub state, a local webhook server and real disposable Git operations.
 - `--list` lists area/group selectors without executing them.
 - `watchdog` is a positional area selector, not a flag or live watchdog launch. Other area/group names must come from `--list`.
+- `python3 tests/affected.py PATH…` lists the test modules a change depends on; `--run` runs them one module at a time and `--budget SECONDS` (default 360) stops starting new ones past that budget, naming what it skipped. This repository's own `fixer_check` is `python3 tests/affected.py --run $CHANGED` (#362), so a fixer turn runs the dependents of its change while CI still runs everything.
 
 The harness also validates fenced `hermes dk` command examples in README/docs/skill against the CLI parser. Keep commands valid and explain every option next to the example; parser acceptance alone does not verify operational effects.
 
@@ -171,8 +172,10 @@ Enabling unattended fixer push is a separate policy decision with a documented P
 | Job | What it actually exercises |
 |---|---|
 | `tests` | Python 3.11/3.14 syntax and behavioral harness; installs bubblewrap before full leak-guarded discovery; scheduled runs repeat boundary discovery |
+| `unit` | The unit suite sharded 3 ways across Python 3.11/3.14, so one slow test file does not serialize the lane |
 | `plugin-guard` | The Hermes install scanner at the pinned version; also Hermes `main` on scheduled/manual runs |
-| `installed-mode` | Pinned Hermes importability, model/cron resolver harness and gateway shim tests on Python 3.14 |
+| `plugin-validate` | Hermes's own catalog validation action against the manifest and the pinned Hermes checkout |
+| `installed-mode` | Two parts: the harness with the pinned Hermes importable (model/cron resolver checks and gateway shims), and the `installed-mode (resolver)` tests, both on Python 3.14 |
 | `verticals` | Prepared real Hermes/uv runtime/Rust/bubblewrap with local fakes, required prerequisites and no-skips enforcement |
 
 CI runs for main-branch pushes, pull requests, its weekly schedule and manual dispatch. Use the current workflow's pin and dependency recipe rather than assuming the moving upstream `main` is the supported runtime.

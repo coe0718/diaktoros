@@ -78,6 +78,12 @@ Your turn runs in a sandbox, not on the operator's machine:
    itself: when the "Build environment" note at the top of your prompt says dependencies are
    unavailable, the failed build is not a finding. Judge by reading, say what you could not run,
    and give the verdict the code earns.
+
+   **End the body with a `Not verified:` line** listing what you did not check, or
+   `Not verified: nothing`. The broker refuses a review without it. A test the head's required
+   checks ran `ok` counts as executed (cite the check) — check the per-test results before
+   calling it unverified; skipped or absent goes under `Not verified:`, and is not a block
+   unless the requirement is that it runs.
 4. Finish with a 3-5 line summary: verdict, what you verified, what you did not.
 
 **Never approve what you did not verify.** Stacked PRs (based on another open PR's branch) are not
@@ -90,7 +96,10 @@ You are only woken when the operator has opted this repository in to unattended 
 operator and no fixer turn starts. Your one publish is a push followed by the review request.
 
 1. Read the verdict. Fix what was found — a rewrite that dodges the finding is not a fix, and the
-   next round will say so.
+   next round will say so. **Every fix comes with a test that fails without it and passes with
+   it**: reproduce exactly what the finding described, run it both ways where you can, and name
+   the test in your answers. A fix verified only by reading is unfinished, and the next review
+   blocks on it. If the defect truly cannot be tested here, say why in your answers.
 2. Edit files in `/work`. It is a plain checkout with **no `.git`**, so keep your own list of the
    files you changed.
 3. Check, then publish with the helper — it builds the manifest, fills in the head commit from the
