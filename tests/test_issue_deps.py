@@ -279,9 +279,21 @@ class Deps(GateFixture):
         self.assertEqual(len([p for p, _b, _l in self.posted if p.endswith("/issues/12/comments")]), 1)
         self.assertTrue(self.st.fix_hold_said(12))
 
+    def claim_write_fails(self):
+        """Only the one-time-notice claim's own write fails (``*-said.json``). Other state writes
+        go through: the hold record is written strictly since #888/#889, so failing every write
+        would test that write, not the claim (Tuck's ruling on #887)."""
+        real = state_mod._atomic_write
+
+        def write(path, data):
+            if str(path).endswith("-said.json"):
+                raise OSError("disk full")
+            return real(path, data)
+        return mock.patch.object(state_mod, "_atomic_write", side_effect=write)
+
     def test_a_dependency_comment_is_not_posted_when_the_claim_cannot_be_written(self):
         blockers = [(5, "#5 is still open")]
-        with mock.patch.object(state_mod, "_atomic_write", side_effect=OSError("disk full")):
+        with self.claim_write_fails():
             self.assertFalse(self.st.dep_wait_say(12))
             issue_deps.wait(self.loop, self.st, 12, blockers)
         self.assertEqual(self.posted, [])
@@ -293,7 +305,7 @@ class Deps(GateFixture):
         patcher = mock.patch.object(fix_hold, "_notice")
         patcher.start()
         self.addCleanup(patcher.stop)
-        with mock.patch.object(state_mod, "_atomic_write", side_effect=OSError("disk full")):
+        with self.claim_write_fails():
             self.assertFalse(self.st.fix_hold_say(12))
             fix_hold.hold(self.loop, self.st, 12, 7)
         self.assertEqual([p for p, _b, _l in self.posted if p.endswith("/issues/12/comments")], [])
