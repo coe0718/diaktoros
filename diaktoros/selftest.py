@@ -309,7 +309,8 @@ def check_runtime(report: Report, path: Path) -> dict | None:
         report.add(step, "runtime:source", PASS, f"{source} (Git checkout with run_agent.py)")
 
     venv = Path(settings["venv"])
-    missing = [name for name in ("bin/python", "bin/hermes") if not (venv / name).exists()]
+    from .runtime_detect import venv_missing
+    missing = venv_missing(venv)
     if missing:
         usable = False
         report.add(step, "runtime:venv", FAIL, f"{venv} lacks {', '.join(missing)}",
