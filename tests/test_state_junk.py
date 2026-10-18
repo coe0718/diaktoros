@@ -7,12 +7,17 @@ run (and the watchdog re-drove it into the same crash). Every reader and writer 
 against every junk shape: none may raise, and a write leaves a well-formed file behind.
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import fcntl
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diaktoros import gate, state  # noqa: E402
@@ -84,6 +89,20 @@ class Junk(unittest.TestCase):
                 st.inflight_clear(mark)
                 st.quarantine(7, HEAD)
 
+    def test_record_keeps_marks_within_a_ttl_longer_than_a_day(self):
+        """#736: the arming prune must not discard a mark the read path still honors."""
+        st = self.st
+        st.loop["inflight_ttl_min"] = 3 * 24 * 60
+        old = f"review:7:{HEAD}"
+        st.inflight_file.write_text(json.dumps({old: time.time() - 30 * 3600}))
+        self.assertTrue(st.inflight(old))
+        st.inflight(f"review:8:{HEAD}", record=True)          # arming another head prunes
+        self.assertTrue(st.inflight(old))                    # the 30h-old mark survives
+        st.loop["inflight_ttl_min"] = 10                     # default TTL: still pruned at 24h
+        st.inflight_file.write_text(json.dumps({old: time.time() - 30 * 3600}))
+        st.inflight(f"review:8:{HEAD}", record=True)
+        self.assertNotIn(old, json.loads(st.inflight_file.read_text()))
+
     def test_breach_markers_survive_every_shape(self):
         st = self.st
         entry = {"pr": 7, "head": HEAD, "rounds": 3, "cap": 3, "reason": "cap", "at": "now"}
@@ -105,6 +124,52 @@ class Junk(unittest.TestCase):
                 # after sending must be healed, never indexed.
                 st.breach_deliver(7, dict(entry), lambda: True,
                                   lambda marker: (st.breach.write_text(json.dumps(junk)), True)[1])
+
+
+class QuarantineAtomic(unittest.TestCase):
+    """#735: quarantine() clears the in-flight marks and the breach marker as one step."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        self.addCleanup(temp.cleanup)
+        loop = {"id": "q", "repo": "acme/widgets", "base": "main", "cap": 3,
+                "inflight_ttl_min": 10, "ttl_min": 45, "turn_budget_s": 900,
+                "state_dir": str(Path(temp.name) / "state"), "fixers": ["f"], "reviewers": ["r"],
+                "seats": {"reviewer": {}, "fixer": {}}}
+        self.st = state.LoopState(loop)
+        self.st.dir.mkdir(parents=True, exist_ok=True)
+        self.st.inflight(f"review:7:{HEAD}", record=True)
+        self.st.breach.write_text(json.dumps(
+            {KEY: {"pr": 7, "head": HEAD, "status": "awaiting-adjudication"}}))
+
+    def test_state_lock_is_held_while_the_breach_marker_is_cleared(self):
+        st = self.st
+        real = st._breach_lock
+        probes = []
+
+        def probe():
+            fd = os.open(st.dir / "state.lock", os.O_CREAT | os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                probes.append("free")
+            except BlockingIOError:
+                probes.append("held")
+            finally:
+                os.close(fd)
+            return real()
+
+        with mock.patch.object(st, "_breach_lock", probe):
+            st.quarantine(7, HEAD)
+        self.assertEqual(probes, ["held"])
+        self.assertEqual(st.breach_get(7), {})
+        self.assertFalse(st.inflight(f"review:7:{HEAD}"))
+
+    def test_crash_between_the_two_writes_leaves_no_claimable_marker(self):
+        st = self.st
+        with mock.patch.object(st, "_save_strict", side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                st.quarantine(7, HEAD)
+        self.assertEqual(st.breach_get(7), {})
 
 
 class ExplainKinds(unittest.TestCase):
@@ -150,10 +215,115 @@ class WatchdogLog(unittest.TestCase):
         self.assertLessEqual(self.st.log.stat().st_size,
                              state.LOG_PRUNE_BYTES + state.LOG_LINE_MAX + 100)
 
+    def test_note_during_prune_is_not_lost(self):
+        # #732: a line another writer appends while a prune is between its read and its
+        # replace must survive. The late writer runs in a thread, started right after the
+        # pruner's read of the log.
+        self.st.log.parent.mkdir(parents=True, exist_ok=True)
+        self.st.log.write_text("".join(f"old {i} " + "x" * 300 + "\n" for i in range(1000)))
+        self.assertGreater(self.st.log.stat().st_size, state.LOG_PRUNE_BYTES)
+        real, late = Path.read_text, []
+
+        def racing_read(path, *args, **kwargs):
+            text = real(path, *args, **kwargs)
+            if path == self.st.log and not late:
+                t = threading.Thread(target=self.st.note, args=("late writer",))
+                late.append(t)
+                t.start()
+                t.join(0.5)  # unlocked: the append lands after the read; locked: it waits
+            return text
+
+        with mock.patch.object(Path, "read_text", racing_read):
+            self.st.note("pruner")
+        late[0].join(10)
+        text = self.st.log.read_text()
+        self.assertIn("pruner", text)
+        self.assertIn("late writer", text)
+        self.assertLess(len(text.splitlines()), 1000)  # the prune did run
+
     def test_small_watchdog_log_is_kept_whole(self):
         for i in range(5):
             self.st.note(f"m{i}")
         self.assertEqual(len(self.st.log.read_text().splitlines()), 5)
+
+
+class Durability(unittest.TestCase):
+    """#733: every state write is temp file, fsync, replace, then an fsync of the directory."""
+
+    setUp = Junk.setUp  # the same throwaway loop state; none of Junk's tests
+
+    def fsyncs_during(self, action):
+        """Run ``action``; name what was fsynced, as ``file`` or ``dir``."""
+        real, seen = os.fsync, []
+
+        def spy(fd):
+            seen.append("dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+            return real(fd)
+
+        with mock.patch.object(state.os, "fsync", spy):
+            action()
+        return seen
+
+    def test_queue_write_fsyncs_file_then_directory(self):
+        seen = self.fsyncs_during(
+            lambda: self.st.queue_add("reviewer", KEY, HEAD, "u", "busy"))
+        self.assertEqual(seen, ["file", "dir"])
+        self.assertIn(KEY, json.loads(self.st.pending.read_text())["reviewer"])
+
+    def test_log_prune_fsyncs_file_then_directory(self):
+        self.st.log.write_text("old line\n" * (state.LOG_PRUNE_BYTES // 9 + 10))
+        seen = self.fsyncs_during(lambda: self.st.note("fresh"))
+        self.assertEqual(seen, ["file", "dir"])
+        lines = self.st.log.read_text().splitlines()
+        self.assertTrue(lines[-1].endswith("fresh"))
+        self.assertLessEqual(len(lines), state.LOG_KEEP)
+        self.assertEqual([p.name for p in self.st.dir.iterdir() if p.name.endswith(".tmp")], [])
+
+
+class ExclusiveAcquire(unittest.TestCase):
+    """#727: acquisition has a compare-and-swap form, and the gate's claim uses it."""
+
+    setUp = Junk.setUp
+
+    def test_exclusive_acquire_never_evicts_a_live_claim(self):
+        st = self.st
+        self.assertTrue(st.acquire("reviewer", KEY, HEAD, "first", run="r1", exclusive=True))
+        first = st.live_locks("reviewer")[KEY]
+        # A second check-then-act caller (another run, or the gate) loses and writes nothing.
+        self.assertFalse(st.acquire("reviewer", KEY, HEAD, "second", run="r2", exclusive=True))
+        self.assertFalse(st.acquire("reviewer", KEY, HEAD, "gate", exclusive=True))
+        self.assertEqual(st.live_locks("reviewer")[KEY], first)
+        # Default stays last-writer-wins for callers that mean to replace.
+        self.assertTrue(st.acquire("reviewer", KEY, HEAD, "forced", run="r3"))
+        self.assertEqual(st.live_locks("reviewer")[KEY]["run"], "r3")
+
+    def test_exclusive_acquire_replaces_expired_and_stamps_the_gates_claim(self):
+        st = self.st
+        st.acquire("reviewer", KEY, HEAD, "old")
+        self.assertTrue(st.acquire("reviewer", KEY, HEAD, "run stamp", run="r1", exclusive=True))
+        self.assertEqual(st.live_locks("reviewer")[KEY]["run"], "r1")
+        data = json.loads(st.locks.read_text())
+        data["reviewer"][KEY]["at"] = 1.0                      # long expired
+        st.locks.write_text(json.dumps(data))
+        self.assertTrue(st.acquire("reviewer", KEY, HEAD, "again", run="r2", exclusive=True))
+        self.assertEqual(st.live_locks("reviewer")[KEY]["run"], "r2")
+
+    def test_take_seat_does_not_evict_a_claim_made_while_it_decided(self):
+        from unittest import mock
+        st = self.st
+        loop = st.loop
+        # The race: the gate's checks all passed, then another process claimed the PR.
+        real = st.acquire
+
+        def rival_first(*a, **kw):
+            real("reviewer", gate.seat_key(loop, 7), HEAD, "rival", run="rival")
+            return real(*a, **kw)
+        with mock.patch.object(st, "acquire", side_effect=rival_first), \
+                mock.patch.object(gate.isolation, "ensure", return_value=None) as ensure:
+            with self.assertRaises(SystemExit):
+                gate.take_seat(loop, st, "reviewer", 7, HEAD, "mine")
+        ensure.assert_not_called()                               # no second workspace/run
+        self.assertEqual(st.live_locks("reviewer")[gate.seat_key(loop, 7)]["run"], "rival")
 
 
 if __name__ == "__main__":

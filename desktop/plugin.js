@@ -57,7 +57,8 @@ function call(path) {
 function useLoops() {
   return useQuery({ queryKey: [ID, 'loops'], queryFn: async () => {
     const data = await call('/loops')
-    if (!Array.isArray(data?.loops) || data.loops.some(loop => !loop || typeof loop.id !== 'string' || !loop.id)) throw invalidResponse('loops')
+    if (!Array.isArray(data?.loops) || data.loops.some(loop => !loop || typeof loop.id !== 'string' || !loop.id ||
+      (loop.unreadable !== undefined && typeof loop.unreadable !== 'boolean'))) throw invalidResponse('loops')
     return data
   }, staleTime: 60000 })
 }
@@ -119,7 +120,12 @@ async function readView(path, kind) {
   // One loop of the /overview read: its identity, whether its ledger could be read at all, and —
   // only then — its counts. Unavailable or failed must carry no counts, so a missing ledger can
   // never be read as a verified zero.
-  const loop = value => object(value) && text(value.id) && text(value.repo) &&
+  // A loop whose config file did not load (#701) has no repo and no ledger: it is named with
+  // ``unreadable`` true and a reason, and can never be available or carry counts.
+  const loop = value => object(value) && text(value.id) &&
+    (value.unreadable === undefined || typeof value.unreadable === 'boolean') &&
+    (value.unreadable === true ? value.repo === '' && typeof value.reason === 'string' &&
+      value.available === false && value.error === true : text(value.repo)) &&
     typeof value.available === 'boolean' && typeof value.error === 'boolean' &&
     counts(value.counts) && count(value.needs_you) &&
     (value.available && !value.error
@@ -626,6 +632,9 @@ function Drawer({ loop, pr, onClose }) {
 
 /** One loop's live state as a short phrase: its run counts, or why they could not be read. */
 function loopLine(entry) {
+  // The config file did not load: fix the file. Distinct from ``not read`` (this read did not
+  // name a loop that is configured): wait or retry.
+  if (entry.unreadable) return 'config unreadable'
   if (entry.missing) return 'not read'
   if (entry.error) return 'read failed'
   if (!entry.available) return 'no ledger'
@@ -653,8 +662,11 @@ function StatusChip() {
   entries.forEach(entry => { byId[entry.id] = entry })
   // A configured loop the read did not name is unknown, not idle: it keeps its own line rather
   // than disappearing from the chip.
-  const live = list.map(loop => byId[loop.id] ||
-    { id: loop.id, repo: loop.repo, available: false, error: true, missing: true, counts: {}, needs_you: 0 })
+  // An unreadable loop is named by /loops itself, whatever this overview read says about it.
+  const live = list.map(loop => loop.unreadable
+    ? { id: loop.id, repo: '', available: false, error: true, unreadable: true, reason: loop.reason || '', counts: {}, needs_you: 0 }
+    : byId[loop.id] ||
+      { id: loop.id, repo: loop.repo, available: false, error: true, missing: true, counts: {}, needs_you: 0 })
   const total = needsYouTotal(entries)
   // Announce a rise in any loop's uncertain count, once, naming the loop. The first read of a
   // session only records each loop's baseline, so a reload is never news; a loop whose ledger
@@ -682,7 +694,10 @@ function StatusChip() {
     : live.length ? state + ' · ' + loopLine(live[0])
     : state
   // The chip reports the loop that needs you first, else the first loop; the page opens it.
-  const focus = live.find(entry => entry.available && !entry.error && entry.needs_you > 0) || live[0] || list[0]
+  // The page can only open a loop whose config loads, so an unreadable one is never the focus
+  // unless nothing else exists.
+  const focus = live.find(entry => entry.available && !entry.error && entry.needs_you > 0) ||
+    live.find(entry => !entry.unreadable) || live[0] || list[0]
   const retryQuery = loopsState === 'stale' || !loops.data || noLoops ? loops : overview
   const names = named ? list.map(loop => loop.id).join(', ') : (focus?.id || 'no loop selected')
   return jsxs('div', {
@@ -841,7 +856,11 @@ function Page() {
   const [openPr, setOpenPr] = useState(null)
   const loops = useLoops()
   const overview = useOverview()
-  const list = (loops.data && loops.data.loops) || []
+  const configured = (loops.data && loops.data.loops) || []
+  // A loop whose config file did not load (#701) is shown by name and reason, but it is never
+  // selectable: it has no repo, so every per-loop read for it would only fail.
+  const list = configured.filter(l => !l.unreadable)
+  const unreadable = configured.filter(l => l.unreadable)
   useEffect(() => {
     const id = focus.data && focus.data.loop
     if (id) setChosen(id)
@@ -876,7 +895,7 @@ function Page() {
       duration(w && w.median)]
   })
   const runs = (now.data && now.data.runs) || []
-  const loopsState = useViewState(loops, !list.length)
+  const loopsState = useViewState(loops, !configured.length)
   const overviewState = useViewState(overview, false, 60000)
   const nowState = useViewState(now, !runs.length && !Object.values(now.data?.counts || {}).some(n => n > 0), 60000)
   // /now carries whether its own ledger could be read; a missing ledger renders unavailable,
@@ -913,17 +932,29 @@ function Page() {
     ]
   })
 
+  // Names every loop whose config did not load, with the host's bounded reason: the operator's
+  // next action is to fix the file, which is not what ``not read`` (wait/retry) asks for.
+  const unreadableBlock = unreadable.length
+    ? jsx(Section, {
+        title: 'Config unreadable',
+        children: jsx(Muted, { text: 'Could not load the config of: ' +
+          unreadable.map(l => l.id + (l.reason ? ' (' + l.reason + ')' : '')).join(', ') +
+          '. Fix the file, then run: hermes dk list.' })
+      })
+    : null
   let body
   if (!list.length) body = jsxs('div', {
     className: 'flex flex-col gap-4',
     children: [jsx(QueryStatus, { query: loops, state: loopsState, label: 'Configured loops' }),
+      unreadableBlock,
       loopsState === 'verified-empty' ? jsx(Muted, { text: 'No loops configured. Run: hermes dk setup, in a terminal.' }) : null]
   })
   else body = jsxs('div', {
     className: 'flex flex-col gap-5',
     children: [
       loopsState === 'stale' ? jsx(QueryStatus, { query: loops, state: loopsState, label: 'Configured loops' }) : null,
-      list.length > 1
+      unreadableBlock,
+      configured.length > 1
         ? jsx(NeedsYou, { overview, state: overviewState, onPick: setChosen })
         : null,
       jsx(Section, {

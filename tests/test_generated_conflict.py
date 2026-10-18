@@ -142,6 +142,23 @@ class Settled(tct.Worker):
                 self.assertIn("prompt", seen)
                 self.assertEqual(self.pushes, [])
 
+    def test_a_duplicate_output_record_falls_back_to_the_turn(self):
+        b64 = __import__("base64").b64encode
+        for label, second in (("different", REGENERATED + b"extra\n"), ("identical", REGENERATED)):
+            with self.subTest(label):
+                self.pushes.clear()
+                out = ("docs/commands.md " + b64(REGENERATED).decode() + "\n"
+                       "docs/commands.md " + b64(second).decode() + "\n")
+                seen, *_ = self.settle(
+                    merged_of({"docs/commands.md": CONFLICT}, ["docs/commands.md"]),
+                    sandbox=lambda **kw: subprocess.CompletedProcess([], 0, out, ""))
+                self.assertIn("prompt", seen)
+                self.assertEqual(self.pushes, [])
+
+    def test_parse_rejects_a_duplicate_record(self):
+        with self.assertRaisesRegex(ValueError, "duplicate output for a"):
+            generated._parse("a eA==\na eA==\n", ["a"])
+
     def test_a_push_refused_before_it_wrote_falls_back_to_the_turn(self):
         from diaktoros import broker
         seen, *_ = self.settle(merged_of({"docs/commands.md": CONFLICT}, ["docs/commands.md"]),

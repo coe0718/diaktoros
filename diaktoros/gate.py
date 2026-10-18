@@ -133,6 +133,24 @@ def isolated_supervisor(loop: dict):
     return supervisor
 
 
+# The ``enqueue_isolated`` outcomes that scheduled (or re-armed) a turn; any other outcome
+# (``duplicate <state>…``) left nothing to run and must not be reported as a fresh enqueue.
+SCHEDULED_OUTCOMES = ("enqueued", "rearmed", "pending")
+
+# A queue row the gate kept after declining to schedule (``duplicate <state>``) starts with this:
+# a confirmed terminal answer, not a delivery the watchdog should replay or call uncertain.
+DECLINED_PREFIX = "turn declined — "
+
+
+def declined_reason(seat: str, outcome: str) -> str:
+    return f"{DECLINED_PREFIX}{seat} turn {outcome}; nothing scheduled, not retried"
+
+
+def is_declined_hold(entry: object) -> bool:
+    reason = entry.get("reason") if isinstance(entry, dict) else None
+    return isinstance(reason, str) and reason.startswith(DECLINED_PREFIX)
+
+
 def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key: str = '') -> str:
     """Commit one isolated turn to the host run ledger, then arm its detached worker.
 
@@ -269,12 +287,24 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
     if not push_off:
         try:
             outcome = enqueue_isolated(loop, seat, number, head, turn_key=turn_key)
-            st.queue_pop_if(seat, key, queued)
-            final = (f"{seat} turn {outcome}",
-                     "accepted" if outcome in ("enqueued", "rearmed", "pending") else "queued")
+            scheduled = outcome in SCHEDULED_OUTCOMES
+            if scheduled:
+                # Only the gate removes its observed queue entry, and only once a turn is
+                # really armed (#729): a ``duplicate <state>`` scheduled nothing.
+                st.queue_pop_if(seat, key, queued)
+            else:
+                on_queued = None   # no "queued" notice for a turn that will never run
+                # Keep the observed row, but say why: the watchdog must tell this confirmed
+                # decline from an acknowledged POST the gate never answered. Only a row that
+                # exists is reworded; a decline never creates one.
+                if isinstance(queued, dict) and queued.get("reason") != declined_reason(seat, outcome):
+                    st.queue_replace_if(seat, key, queued, queued.get("head") or head,
+                                        queued.get("url") or pr_url(loop, number),
+                                        declined_reason(seat, outcome))
+            final = (f"{seat} turn {outcome}", "accepted" if scheduled else "declined")
             if outcome == "enqueued":
                 log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")
-            elif outcome in ("rearmed", "pending"):
+            elif scheduled:
                 log(f"#{number} @ {head[:7]} {seat} {outcome}: isolated worker re-armed")
             else:
                 # Nothing was scheduled (#73): say so, instead of reporting a fresh enqueue.
@@ -528,6 +558,13 @@ def escalated(marker, head: str) -> bool:
     then parked for a ruling as if its verdict cap were spent. A new head supersedes it."""
     return (isinstance(marker, dict) and marker.get("head") == head
             and isinstance(marker.get("escalated"), dict) and marker.get("status") in STANDING)
+
+
+def breach_holds(marker, head: str, spent: int | None, cap: int) -> bool:
+    """Whether a breach marker at ``head`` still holds it for a ruling: the live verdict count
+    is at the cap, or the operator's escalation stands. The one predicate the watchdog's retry,
+    its stall scan and ``explain`` share: a raised cap or a dismissed verdict ends it."""
+    return (spent is not None and spent >= cap) or escalated(marker, head)
 
 
 def breach_delivery_status(marker: dict, head: str) -> str:
@@ -888,7 +925,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     # A dismissed verdict can lower the live count after a failed POST. The
     # watchdog only retries a pending marker while the cap remains spent.
     pending_delivery = (local["delivery_status"] == "delivery-pending"
-                        and ((spent is not None and spent >= cap) or escalated(marker, head)))
+                        and breach_holds(marker, head, spent, cap))
     stale_held = {seat for seat, entry in held.items() if entry.get("head") != head}
     # An isolated turn already in the ledger at this head (queued, held for CI, running) is
     # the gate's answer, not a missing one (#509): the run itself is reported as the blocker.
@@ -1075,6 +1112,12 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             action = ("fresh review after retarget: the reviewer is not queued yet (still a "
                       "draft, or not swept since the retarget) — the next armed watchdog sweep "
                       "enqueues it; then awaiting its receipted verdict")
+    elif approved and stale_line:
+        # The sweep's notice and the ready-to-merge queue (`stale_approval.is_stale`) both say
+        # this approval no longer vouches for the head; do not recommend merging it.
+        kind = "operator"
+        action = (f"your decision: {stale_line} — do not merge head {short}; re-run the check "
+                  "or push a fix")
     elif approved:
         kind = "none"
         action = f"nothing — head {short} is approved; a human merges it"
@@ -1276,10 +1319,14 @@ def wake_adjudicator(loop: dict, number: int, head: str, rounds: int, reason: st
     ledger's unique turn index, and a re-breach at a new head is a new turn. The worker
     re-reads every fact before it runs, so the reason here is only a label.
 
-    Returns True only once the turn is durably enqueued and its worker armed, which moves the
-    marker to ``awaiting-adjudication``. Anything else returns False: the marker stays
+    Returns True only once a turn is durably enqueued with its worker armed, or the ledger's
+    existing turn for this key is live or has run (a ``duplicate`` of a claimed, running,
+    waiting, uncertain or succeeded turn), which moves the marker to ``awaiting-adjudication``.
+    Anything else returns False — including a ``duplicate failed`` / ``duplicate cancelled``
+    turn the ledger did not re-arm, where no adjudicator is coming: the marker stays
     ``delivery-pending`` and the watchdog's retry comes back through ``breach()`` — whose
-    live-head check under the breach lock keeps a stale head from being re-armed.
+    live-head check under the breach lock keeps a stale head from being re-armed — until
+    ``hermes dk retry`` re-arms the dead turn.
     """
     try:
         outcome = enqueue_isolated(loop, "adjudicator", number, head,
@@ -1291,8 +1338,14 @@ def wake_adjudicator(loop: dict, number: int, head: str, rounds: int, reason: st
     if outcome == "enqueued":
         log(f"#{number} @ {head[:7]} adjudicator enqueued for isolated worker ({reason})")
     else:
-        # A duplicate is still durable (the ledger owns the turn), so the marker may advance.
         log(f"#{number} @ {head[:7]} adjudicator {outcome} ({reason})")
+    # A duplicate of a live or finished turn is durable (the ledger owns it). A duplicate of a
+    # dead one (failed/cancelled and not re-armed) is not: nothing is coming, so don't advance.
+    if outcome.startswith("duplicate ") and outcome[len("duplicate "):].split(":")[0].strip() \
+            in ("failed", "cancelled"):
+        log(f"#{number} @ {head[:7]} adjudicator turn is dead and was not re-armed — marker "
+            "stays delivery-pending (`hermes dk retry` re-arms it)")
+        return False
     return True
 
 
@@ -1382,7 +1435,16 @@ def take_seat(loop: dict, st: state_mod.LoopState, seat: str, number: int, head:
             log(f"{seat} at capacity {len(live)}/{capacity} ({held}) — queued #{number} @ {head[:7]}")
             silence(f"{seat} at capacity {len(live)}/{capacity} — queued", "queued")
 
-        st.acquire(seat, key, head, why)
+        # The checks above hold the same lock, but the claim is itself a compare-and-swap so a
+        # live claim can never be evicted, whatever the checks saw (#727).
+        try:
+            claimed = st.acquire(seat, key, head, why, exclusive=True)
+        except Exception as exc:  # noqa: BLE001 - an unrecorded claim must not start a run (#726)
+            silence(f"could not record the {seat} claim on {key} "
+                    f"({type(exc).__name__}: {exc}) — not running", "held")
+        if not claimed:
+            log(f"{seat} claimed {key} while this gate decided — refusing a second run")
+            silence(f"{seat} is already running {key}", "held")
         st.queue_pop(seat, key)        # a direct event can outrun the drain: the entry is stale now
 
     workspace = isolation.ensure(loop, number, seat, head, login=login or "")

@@ -866,8 +866,12 @@ def claim_seat(loop: dict, row, budget: float):
         from .. import gate, state as state_mod
         st = state_mod.state_for(loop)
         key = gate.seat_key(loop, row['pr'])
-        st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}", budget=budget,
-                   run=row['id'])
+        # Exclusive (#727): it stamps the gate's run-less claim, but never evicts another live
+        # run's. Then that run keeps the entry, this one has nothing of its own to release, and
+        # the run ledger is what refuses the duplicate.
+        if not st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}",
+                          budget=budget, run=row['id'], exclusive=True):
+            return None
     except Exception:
         return None
     # The claim is written: from here on its release must stay reachable, whatever the mark
@@ -1693,6 +1697,14 @@ class Supervisor(records.LedgerRecords):
                     outcome += (": fixer push not admitted — a redelivered event never upgrades "
                                 "admission; after opting in, `hermes dk retry` "
                                 "re-admits it")
+                elif (prior['error'] == FIXER_PUSH_REVOKED and self.production_config
+                      and seat == 'fixer' and not admitted):
+                    # Pushes are still off (``admitted`` is this event's fresh policy read, taken
+                    # under the push-policy lock): the claim would cancel it again. Once they are
+                    # back on, an event re-arms it.
+                    outcome += (": fixer push revoked — unattended fixer pushes are still off, so "
+                                "a re-armed run would only be cancelled again; turn them on, then "
+                                "a redelivered event or `hermes dk retry` re-arms it")
                 elif (prior['retries'] or 0) >= MAX_REARMS:
                     outcome += (f": {prior['retries']} failed attempts — only "
                                 "`hermes dk retry` re-arms it")

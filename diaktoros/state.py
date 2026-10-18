@@ -47,6 +47,7 @@ _HELD = threading.local()
 # A line is cut at LOG_LINE_MAX characters and a prune also drops the oldest lines until the
 # log fits LOG_PRUNE_BYTES, so a few oversized lines cannot hold it above the bound.
 LOG_KEEP = 1000
+INFLIGHT_PRUNE_S = 24 * 3600     # floor for how long a recorded in-flight mark is kept (#736)
 LOG_PRUNE_BYTES = 256 * 1024
 LOG_LINE_MAX = 4096
 
@@ -70,13 +71,22 @@ def release_process_claims() -> list[str]:
 
 
 def _atomic_write(path: pathlib.Path, data) -> None:
-    """Publish ``data`` to ``path`` whole or not at all, and durably before returning."""
+    """Publish ``data`` as JSON to ``path`` whole or not at all, and durably before returning."""
+    _atomic_publish(path, json.dumps(data, indent=2))
+
+
+def _atomic_publish(path: pathlib.Path, text: str) -> None:
+    """Publish ``text`` to ``path``: temp file, fsync, ``os.replace``, fsync of the directory.
+
+    The one place the module's durability rule lives; ``_save_queue`` and ``_prune_log`` call it
+    rather than repeating the dance, so neither can skip a step.
+    """
     name = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=f".{path.stem}-",
                                          delete=False) as file:
             name = file.name
-            json.dump(data, file, indent=2)
+            file.write(text)
             file.flush()
             os.fsync(file.fileno())
         os.replace(name, path)
@@ -175,10 +185,16 @@ class LoopState:
         except Exception:
             return default
 
+    def _save_strict(self, path: pathlib.Path, data) -> None:
+        """Publish ``data`` or raise: for a write the caller must not act without (#726)."""
+        hostdirs.ensure(path.parent)
+        _atomic_write(path, data)
+
     def _save(self, path: pathlib.Path, data) -> None:
+        """Best-effort publish: a failure is logged and swallowed. A caller that proceeds as if
+        the write landed (a seat claim) uses ``_save_strict`` instead."""
         try:
-            hostdirs.ensure(path.parent)
-            _atomic_write(path, data)
+            self._save_strict(path, data)
         except Exception as exc:
             log(f"state write failed ({path.name}): {exc}")
 
@@ -219,14 +235,31 @@ class LoopState:
             hostdirs.ensure(self.dir)
             if len(message) > LOG_LINE_MAX:
                 message = message[:LOG_LINE_MAX] + "...[truncated]"
-            with self.log.open("a") as fh:
-                fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {message}\n")
-            self._prune_log()
+            # The append and the prune's read-and-replace are one step to every other writer:
+            # a line appended between the prune's read and its replace would be lost (#732).
+            with self._log_lock():
+                with self.log.open("a") as fh:
+                    fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {message}\n")
+                self._prune_log()
         except Exception:
             pass
 
+    @contextlib.contextmanager
+    def _log_lock(self):
+        """Serialize ``note`` across processes. A leaf lock of its own, never the state lock:
+        ``note`` is called from inside ``locked()`` sections and must not wait on others."""
+        fd = os.open(self.dir / "watchdog.log.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)  # closing releases the flock
+
     def _prune_log(self) -> None:
-        """Past ``LOG_PRUNE_BYTES``, keep the last ``LOG_KEEP`` lines that fit in that many bytes."""
+        """Past ``LOG_PRUNE_BYTES``, keep the last ``LOG_KEEP`` lines that fit in that many bytes.
+
+        The caller holds ``_log_lock``: that is what keeps appends out of the read-to-replace
+        window and gives the fixed temp name a single writer."""
         if self.log.stat().st_size <= LOG_PRUNE_BYTES:
             return
         lines = self.log.read_text(errors="replace").splitlines(keepends=True)
@@ -234,9 +267,7 @@ class LoopState:
         size = sum(len(l.encode()) for l in lines)
         while len(lines) > 1 and size > LOG_PRUNE_BYTES:
             size -= len(lines.pop(0).encode())
-        tmp = self.log.with_name(self.log.name + ".tmp")
-        tmp.write_text("".join(lines))
-        os.replace(tmp, self.log)
+        _atomic_publish(self.log, "".join(lines))
 
     # -- active runs per seat (the concurrency ledger) ----------------------
 
@@ -337,20 +368,38 @@ class LoopState:
         return None
 
     def acquire(self, seat: str, key: str, head: str = "", why: str = "",
-                budget: float | None = None, run: str | None = None) -> None:
+                budget: float | None = None, run: str | None = None,
+                exclusive: bool = False) -> bool:
         """Claim ``seat`` for ``key``. The isolated worker calls this at launch with its run's
         own budget and id (#98); the claim's TTL never shrinks below the budget it was taken
-        with, and only a release naming the same ``run`` may free it."""
+        with, and only a release naming the same ``run`` may free it.
+
+        By default the claim overwrites whatever is there (last writer wins). With ``exclusive``
+        it is a compare-and-swap (#727): under the state lock, a *live* claim on ``(seat, key)``
+        is left untouched, nothing is written and the answer is ``False``, so two check-then-act
+        callers that both saw the seat free cannot evict the claim that won. The one claim a
+        caller may replace is the gate's own run-less claim, and only when it names a ``run``
+        (the worker stamping its run on the claim the gate made at launch), or its own earlier
+        claim. An expired claim is not live and is replaced. Returns whether it was written.
+
+        Raises when the claim cannot be written (#726)."""
         with self.locked():
             data = _mapping(self._load(self.locks, {}))
+            if exclusive:
+                held = self.live_locks(seat).get(key)
+                if held is not None and not (run is not None and held.get("run") in (None, run)):
+                    return False
             at = time.time()
             entry = {"at": at, "head": head, "why": why,
                      "budget": budget if budget is not None else config.turn_budget(self.loop, seat)}
             if run is not None:
                 entry["run"] = run
             _seat(data, seat)[key] = entry
-            self._save(self.locks, data)
+            # A claim that did not reach disk is no claim: a second gate would take the same
+            # seat. Raise (#726) so the caller does not run, and never record it in CLAIMS.
+            self._save_strict(self.locks, data)
             CLAIMS.append((self, seat, key, at))
+            return True
 
     def release_exact(self, seat: str, key: str, at: float) -> bool:
         """Free one claim only if it is still the very claim made at ``at``."""
@@ -408,16 +457,7 @@ class LoopState:
 
     def _save_queue(self, data: dict) -> None:
         """Publish queue bytes atomically so unlocked readers never see a partial file."""
-        fd, temp = tempfile.mkstemp(prefix=".pending-", dir=self.dir)
-        try:
-            with os.fdopen(fd, "w") as output:
-                json.dump(data, output, indent=2)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temp, self.pending)
-        finally:
-            if os.path.exists(temp):
-                os.unlink(temp)
+        _atomic_write(self.pending, data)
 
     def queue_add(self, seat: str, key: str, head: str, url: str, reason: str) -> None:
         with self._queue_lock():
@@ -521,17 +561,21 @@ class LoopState:
         before the first verdict lands. TTL-bounded so a crashed run cannot wedge the head.
         """
         now = time.time()
+        ttl_s = self.loop["inflight_ttl_min"] * 60
         if record:
             with self.locked():
                 data = _mapping(self._load(self.inflight_file, {}))
                 data[key] = now
-                # #545: an unageable mark is dropped, never subtracted from.
+                # #545: an unageable mark is dropped, never subtracted from. #736: keep a mark
+                # at least as long as the read path honors it, so a configured TTL beyond a
+                # day is not cut short here.
+                keep_s = max(INFLIGHT_PRUNE_S, ttl_s)
                 data = {k: v for k, v in data.items()
-                        if _clock(v) is not None and now - _clock(v) < 24 * 3600}
-                self._save(self.inflight_file, data)
+                        if _clock(v) is not None and now - _clock(v) < keep_s}
+                self._save_strict(self.inflight_file, data)
             return False
         at = _clock(_mapping(self._load(self.inflight_file, {})).get(key))
-        return at is not None and now - at < self.loop["inflight_ttl_min"] * 60
+        return at is not None and now - at < ttl_s
 
     def inflight_clear(self, key: str) -> None:
         """Drop one in-flight mark: its run has ended (the isolated worker's release, #98)."""
@@ -549,18 +593,24 @@ class LoopState:
         return _clock(_mapping(self._load(self.inflight_file, {})).get(key)) or 0.0
 
     def quarantine(self, number: int, head: str) -> None:
-        """Erase head-only run and escalation tokens after a base transition."""
-        with self.locked():
-            data = _mapping(self._load(self.inflight_file, {}))
-            for prefix in (f"review:{number}:{head}", f"fix:{number}:{head}"):
-                data.pop(prefix, None)
-            self._save(self.inflight_file, data)
+        """Erase head-only run and escalation tokens after a base transition.
+
+        Both files are rewritten under one hold of the state lock and the breach lock (the
+        order ``migrate`` and ``cleanup`` take them), so no other process sees one cleared and
+        the other not. The breach marker goes first: it is the one that could be claimed
+        afterwards, while a surviving in-flight mark merely ages out. A crash between the two
+        writes cannot be made atomic across two files; this order makes it the harmless one.
+        """
         key = f"{self.loop['repo']}#{number}"
-        with self._breach_lock():
+        with self.locked(), self._breach_lock():
             markers = _mapping(self._load(self.breach, {}))
             if key in markers:
                 markers.pop(key)
                 self._breach_save(markers)
+            data = _mapping(self._load(self.inflight_file, {}))
+            for prefix in (f"review:{number}:{head}", f"fix:{number}:{head}"):
+                data.pop(prefix, None)
+            self._save_strict(self.inflight_file, data)
 
     # -- human_paths holds (#478) --------------------------------------------
 
@@ -573,7 +623,7 @@ class LoopState:
         with self.locked():
             data = self._human_holds()
             data[str(number)] = {"head": head, "why": str(why)[:300], "at": time.time()}
-            self._save(self.dir / "human-holds.json", data)
+            self._save_strict(self.dir / "human-holds.json", data)
 
     def human_hold(self, number: int, head: str) -> dict | None:
         """The hold at this exact head, or None; a new head is reviewed afresh."""
@@ -666,6 +716,21 @@ class LoopState:
         return "new" if new else "retry"
 
 
+    def breach_clear_pending(self, number: int, head: str) -> bool:
+        """Drop a ``delivery-pending`` marker at ``head`` that no longer holds it (a raised cap
+        or a dismissed verdict). Only that status, that head, and no delivery in flight."""
+        key = f"{self.loop['repo']}#{number}"
+        with self._breach_lock():
+            data = _mapping(self._load(self.breach, {}))
+            marker = _mapping(data.get(key))
+            if (marker.get("head") != head or marker.get("status") != "delivery-pending"
+                    or (marker.get("delivery_token")
+                        and time.time() - (_clock(marker.get("delivery_at")) or 0) < 60)):
+                return False
+            data.pop(key)
+            self._breach_save(data)
+            return True
+
     def breach_claim(self, number: int, head: str) -> dict | None:
         """Claim exactly one wake for this PR/head across gateway processes."""
         key = f"{self.loop['repo']}#{number}"
@@ -749,14 +814,14 @@ class LoopState:
             began = str(number) not in data
             if data.get(str(number)) != hold:
                 data[str(number)] = hold
-                self._save(self.dir / "held-prs.json", data)
+                self._save_strict(self.dir / "held-prs.json", data)
             return began
 
     def pr_hold_drop(self, number: int) -> None:
         with self.locked():
             data = {str(k): v for k, v in self.pr_holds().items()}
             if data.pop(str(number), None) is not None:
-                self._save(self.dir / "held-prs.json", data)
+                self._save_strict(self.dir / "held-prs.json", data)
 
     # -- fixer scope-lock holds (#482): {PR: {"head", "files", "released"}} ---
 
@@ -772,14 +837,14 @@ class LoopState:
             changed = data.get(str(number)) != hold
             if changed:
                 data[str(number)] = hold
-                self._save(self.dir / "held-scope.json", data)
+                self._save_strict(self.dir / "held-scope.json", data)
             return changed
 
     def scope_hold_drop(self, number: int) -> None:
         with self.locked():
             data = {str(k): v for k, v in self.scope_holds().items()}
             if data.pop(str(number), None) is not None:
-                self._save(self.dir / "held-scope.json", data)
+                self._save_strict(self.dir / "held-scope.json", data)
 
     # -- held issue-fix hand-offs (#324): {issue number: origin PR} ----------
 
@@ -800,13 +865,13 @@ class LoopState:
         with self.locked():
             data = {str(k): v for k, v in self.fix_holds().items()}
             data[str(number)] = pr
-            self._save(self.dir / "held-fixes.json", data)
+            self._save_strict(self.dir / "held-fixes.json", data)
 
     def fix_hold_drop(self, number: int) -> None:
         with self.locked():
             data = {str(k): v for k, v in self.fix_holds().items()}
             if data.pop(str(number), None) is not None:
-                self._save(self.dir / "held-fixes.json", data)
+                self._save_strict(self.dir / "held-fixes.json", data)
 
     def _said_claim(self, name: str, number: int) -> bool:
         """Record ``number`` in the one-time-notice ledger ``name``; True only for the caller that
@@ -882,7 +947,7 @@ class LoopState:
         with self.locked():
             data = self._fix_asks()
             change(data)
-            self._save(self.dir / "fix-asks.json", data)
+            self._save_strict(self.dir / "fix-asks.json", data)
 
     def fix_ask_set(self, number: int, kind: str, comment_id: int, text: str) -> None:
         def change(data):
@@ -928,7 +993,7 @@ class LoopState:
             if str(prerequisite) in deps:
                 return False
             deps[str(prerequisite)] = dict(record)
-            self._save(self.dir / "issue-deps.json", data)
+            self._save_strict(self.dir / "issue-deps.json", data)
             return True
 
     def issue_dep_drop(self, issue: int, prerequisite: int) -> bool:
@@ -941,7 +1006,7 @@ class LoopState:
                 return False
             if not deps:
                 data.pop(str(issue), None)
-            self._save(self.dir / "issue-deps.json", data)
+            self._save_strict(self.dir / "issue-deps.json", data)
             return True
 
     def dep_waits(self) -> list[int]:
@@ -952,13 +1017,13 @@ class LoopState:
     def dep_wait_set(self, issue: int) -> None:
         with self.locked():
             waits = set(self.dep_waits()) | {issue}
-            self._save(self.dir / "dep-waits.json", sorted(waits))
+            self._save_strict(self.dir / "dep-waits.json", sorted(waits))
 
     def dep_wait_drop(self, issue: int) -> None:
         with self.locked():
             waits = set(self.dep_waits())
             if issue in waits:
-                self._save(self.dir / "dep-waits.json", sorted(waits - {issue}))
+                self._save_strict(self.dir / "dep-waits.json", sorted(waits - {issue}))
             said = self._load(self.dir / "dep-waits-said.json", [])
             said = [n for n in said if type(n) is int] if isinstance(said, list) else []
             if issue in said:
@@ -995,7 +1060,7 @@ class LoopState:
             if entry.get("notified") == head:
                 return False
             data[str(number)] = {**entry, "notified": head}
-            self._save(self.dir / "review-only-caps.json", data)
+            self._save_strict(self.dir / "review-only-caps.json", data)
             return True
 
     def review_cap_grant(self, number: int, head: str, rounds: int) -> bool:
@@ -1009,7 +1074,7 @@ class LoopState:
             if entry.get("grant") == {"head": head, "rounds": rounds}:
                 return False
             data[str(number)] = {**entry, "grant": {"head": head, "rounds": rounds}}
-            self._save(self.dir / "review-only-caps.json", data)
+            self._save_strict(self.dir / "review-only-caps.json", data)
             return True
 
     def review_cap_granted(self, number: int, head: str, rounds: int) -> bool:
@@ -1030,7 +1095,7 @@ class LoopState:
         with self.locked():
             data = self.findings_all()
             data[str(number)] = entry
-            self._save(self.dir / "findings.json", data)
+            self._save_strict(self.dir / "findings.json", data)
 
     def github_failure_record(self, entry: dict) -> None:
         """Keep the most recent failed GitHub call (see ``gh.record_failure``)."""

@@ -698,6 +698,69 @@ test('chip: aggregate across all loops, naming each and showing a per-loop read 
   assert.match(h.buttons(tree)[0].props.title, /Diaktoros · widgets, gadgets/)
 })
 
+// #701: a loop whose config file did not load is named by /loops and /overview, and reads as
+// "config unreadable" (fix the file), never as "not read" (wait or retry) and never absent.
+const UNREADABLE = { id: 'typo', repo: '', unreadable: true, reason: 'bad json' }
+const unreadableOverview = id => ({ id, repo: '', available: false, error: true, unreadable: true,
+  reason: 'bad json', counts: {}, needs_you: 0 })
+
+test('chip: an unreadable loop is named as config unreadable beside the loop that loads', async () => {
+  const h = await harness()
+  h.queries.loops = h.good({ loops: [{ id: 'widgets', repo: 'acme/widgets' }, UNREADABLE] })
+  h.queries.overview = h.good(overview(overviewLoop('widgets', { counts: { running: 1 } }), unreadableOverview('typo')))
+  const text = h.text(h.render('status'))
+  assert.equal(text, 'loops: verified · widgets 1 running · typo config unreadable')
+  assert.doesNotMatch(text, /not read/)
+})
+
+test('chip: an unreadable loop is named even when the overview read omits it', async () => {
+  const h = await harness()
+  h.queries.loops = h.good({ loops: [{ id: 'widgets', repo: 'acme/widgets' }, UNREADABLE] })
+  h.queries.overview = h.good(overview(overviewLoop('widgets')))
+  const text = h.text(h.render('status'))
+  assert.match(text, /typo config unreadable/)
+})
+
+test('chip: a configured loop the overview did not name still reads not read', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.overview = h.good(overview(overviewLoop('widgets')))
+  assert.match(h.text(h.render('status')), /gadgets not read/)
+})
+
+test('page: an unreadable loop is listed with its reason, is not selectable, and the other loop still shows', async () => {
+  const h = await harness()
+  h.queries.loops = h.good({ loops: [{ id: 'widgets', repo: 'acme/widgets' }, UNREADABLE] })
+  h.queries.overview = h.good(overview(overviewLoop('widgets'), unreadableOverview('typo')))
+  const tree = h.render('page')
+  const text = h.text(tree)
+  assert.match(text, /Config unreadable/)
+  assert.match(text, /typo \(bad json\)/)
+  assert.doesNotMatch(text, /No run in any loop is waiting on you/)
+  assert.equal(h.options.now.enabled, true)
+  assert.match(h.options.now.queryKey.join('/'), /widgets/)
+})
+
+test('page: only unreadable loops configured still names them rather than "No loops configured"', async () => {
+  const h = await harness()
+  h.queries.loops = h.good({ loops: [UNREADABLE] })
+  const text = h.text(h.render('page'))
+  assert.match(text, /typo \(bad json\)/)
+  assert.doesNotMatch(text, /No loops configured/)
+})
+
+test('overview responses accept an unreadable loop and reject one that claims counts or a repo', async () => {
+  const h = await harness()
+  h.render('status')
+  h.respond({ loops: [unreadableOverview('typo')], read_at: 1 })
+  await h.options.overview.queryFn()
+  for (const bad of [{ ...unreadableOverview('typo'), repo: 'a/b' }, { ...unreadableOverview('typo'), available: true },
+    { ...unreadableOverview('typo'), reason: 5 }, { ...unreadableOverview('typo'), unreadable: 'yes' }]) {
+    h.respond({ loops: [bad], read_at: 1 })
+    await assert.rejects(h.options.overview.queryFn(), /Invalid overview/)
+  }
+})
+
 test('chip: a loop with no ledger reads as no ledger, not verified idle', async () => {
   const h = await harness()
   h.queries.overview = h.good(overview(overviewLoop('fixture-loop', { available: false })))

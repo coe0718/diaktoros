@@ -294,7 +294,7 @@ hermes dk set --loop "<loop-id>" \
 
 The gate writes a durable breach marker, then enqueues a ruling keyed by `breach:<rounds>` at the head. The worker rechecks PR state, draft/base/head/author, spent cap, approval, and marker before exporting the head read-only. The adjudicator may record one `ACCEPT`, `REJECT`, or `RESPEC` ruling through the broker; it never merges, pushes, or submits a review. The host records the ruling, issues the observer notice, and optionally posts the PR comment. The watchdog's operator outbox carries every ruling's reason even with no feed, a muted feed, or event filtering.
 
-Without a route, only the marker is written and the operator decides what to do; run `set --loop ID --adjudicator-profile PROFILE` (above) to add adjudication later. Failed enqueue leaves `delivery-pending` for watchdog retry; ledger uniqueness deduplicates re-delivery. An ambiguous ruling-comment POST is `uncertain` and is not automatically retried.
+Without a route, only the marker is written and the operator decides what to do; run `set --loop ID --adjudicator-profile PROFILE` (above) to add adjudication later. Failed enqueue leaves `delivery-pending` for watchdog retry while the head is still held (verdict count at the cap, or an operator escalation); once a raised `cap` or a dismissed verdict ends that, the watchdog clears the pending marker (unless a delivery is in flight) and the head is judged by the ordinary stall scan again; ledger uniqueness deduplicates re-delivery. An ambiguous ruling-comment POST is `uncertain` and is not automatically retried.
 
 ## Observer configuration
 

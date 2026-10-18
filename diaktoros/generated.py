@@ -46,7 +46,9 @@ def _parse(stdout: str, paths: list[str]) -> dict[str, bytes]:
     out: dict[str, bytes] = {}
     for line in stdout.splitlines():
         name, _, encoded = line.partition(" ")
-        if name in paths and name not in out:        # anything else on stdout is ignored
+        if name in paths:                            # anything else on stdout is ignored
+            if name in out:                          # one record per path: fail closed
+                raise ValueError(f"duplicate output for {name}")
             try:
                 out[name] = base64.b64decode(encoded, validate=True)
             except (ValueError, binascii.Error):
