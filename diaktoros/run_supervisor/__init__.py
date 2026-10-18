@@ -703,6 +703,24 @@ def pending_view(db: str | Path, repo: str) -> list[dict] | None:
         return None
 
 
+def dispute_at(db: str | Path, repo: str, pr: int, head: str) -> float | None:
+    """When the fixer's latest dispute (#401) at this head was recorded, if its answers comment
+    was posted (or may have been: ``uncertain``); None otherwise or when the ledger can't be read.
+    Read-only: the watchdog's sweep (#894) decides from it, the dispute's own notice is apart."""
+    try:
+        con = read_only_connect(db)
+        if con is None:
+            return None
+        try:
+            row = con.execute("SELECT MAX(created) FROM disputes WHERE repo=? AND pr=? AND head=? "
+                              "AND comment IN ('posted','uncertain')", (repo, pr, head)).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    return float(row[0]) if row and row[0] is not None else None
+
+
 def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]:
     """Up to 100 failed, waiting, uncertain and push-policy-cancelled runs, oldest first. Each
     row carries ``write``: why it may have written (never re-armed), or None — then ``retry``
