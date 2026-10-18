@@ -1,11 +1,14 @@
-// diaktoros: the Hermes Desktop half (#369, #630). A read-only Diaktoros page, a status-bar
-// summary, a drawer showing what would move one PR, and the installation's own preflight —
-// all fed by this plugin's own backend (dashboard/plugin_api.py) through ctx.rest. Plain ESM,
-// loaded uncompiled: jsx() calls, not JSX syntax, and only the three specifiers the loader
-// allows. Theme variables only, never a hardcoded color.
+// diaktoros: the Hermes Desktop half (#369, #630, #371). A Diaktoros page, a status-bar summary,
+// a drawer showing what would move one PR, and the installation's own preflight — all fed by
+// this plugin's own backend (dashboard/plugin_api.py) through ctx.rest. Every read is read-only.
+// One control writes: Retry re-arms a run the CLI's retry would re-arm, only for a row the
+// backend marks retryable, always behind a confirmation, and it shows the backend's own answer.
+// Plain ESM, loaded uncompiled: jsx() calls, not JSX syntax, and only the three specifiers the
+// loader allows. Theme variables only, never a hardcoded color.
 import {
   Badge,
   Button,
+  ConfirmDialog,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -20,7 +23,7 @@ import {
   queryClient,
   useQuery
 } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'diaktoros'
@@ -49,9 +52,9 @@ function useFocus() {
     refetchOnMount: false, refetchOnWindowFocus: false })
 }
 
-function call(path) {
+function call(path, options) {
   if (!rest) return Promise.reject(new Error('plugin not loaded'))
-  return rest(path)
+  return rest(path, options)
 }
 
 function useLoops() {
@@ -111,10 +114,18 @@ async function readView(path, kind) {
       ['turns_cap', 'tokens_cap'].every(key => entry[key] == null || count(entry[key]))))) &&
     (value.holds === undefined || (Array.isArray(value.holds) && value.holds.every(hold =>
       object(hold) && text(hold.provider) && text(hold.profile) && nonnegative(hold.until) && typeof hold.reason === 'string'))))
+  // The backend's retry verdict for one row (#371): whether a click would re-arm it, the head a
+  // retry would target, and — when it would not — the host's own bounded reason. The page draws
+  // the button from this and decides nothing itself.
+  const sha = value => typeof value === 'string' && /^[0-9a-f]{7,40}$/.test(value)
+  const retry = value => value === undefined || (object(value) &&
+    typeof value.eligible === 'boolean' && typeof value.reason === 'string' &&
+    (value.eligible ? sha(value.head) : (value.head === '' || sha(value.head))))
   const run = value => object(value) && count(value.pr) && value.pr > 0 &&
     text(value.seat) && text(value.head) && text(value.state) &&
-    ['pending', 'claimed', 'launching', 'running', 'waiting', 'uncertain', 'failed'].includes(value.state) &&
-    typeof value.why === 'string'
+    ['pending', 'claimed', 'launching', 'running', 'waiting', 'uncertain', 'failed',
+      'cancelled'].includes(value.state) &&
+    typeof value.why === 'string' && retry(value.retry)
   const turn = value => object(value) && count(value.turns) && count(value.retried) &&
     counts(value.states) && durationStats(value.ran) && durationStats(value.waited)
   // One loop of the /overview read: its identity, whether its ledger could be read at all, and —
@@ -142,6 +153,41 @@ async function readView(path, kind) {
   } else if (data.turns !== null && (!object(data.turns) || !Object.values(data.turns).every(turn))) throw invalidResponse(kind)
   return data
 }
+
+// The page's one write (#371): POST /retry {loop, pr, seat, head}. The head is what the operator
+// confirmed — not a claim about the run. The backend re-reads the ledger and refuses a confirmation
+// whose head has moved, so a stale click can never re-arm a different run.
+function postRetry(payload) {
+  return call('/retry', { method: 'POST', body: payload })
+}
+
+// The Desktop transport rejects across IPC with "<status>: <json body>"; anything else (a dead
+// gateway, a shape nobody promised) becomes a safe category. The raw message is never rendered.
+function retryFailure(error) {
+  const message = typeof error?.message === 'string' ? error.message : ''
+  const match = /(?:^|\s)(\d{3}):\s*(\{[\s\S]*\})\s*$/.exec(message)
+  if (!match) return { status: 0, detail: '' }
+  let detail = ''
+  try {
+    const body = JSON.parse(match[2])
+    if (body && typeof body.detail === 'string') detail = body.detail.slice(0, 400)
+  } catch {
+    detail = ''
+  }
+  return { status: Number(match[1]), detail }
+}
+
+// A successful answer must carry the host's own line and the state it read back. Anything less is
+// not a verified write and is never shown as one.
+function verifiedRetry(data) {
+  const object = value => value && typeof value === 'object' && !Array.isArray(value)
+  return object(data) && typeof data.answer === 'string' && data.answer.length > 0 &&
+    typeof data.head === 'string' && Array.isArray(data.rearmed) && data.rearmed.length > 0 &&
+    Array.isArray(data.runs) &&
+    data.runs.every(run => object(run) && typeof run.seat === 'string' &&
+      typeof run.state === 'string')
+}
+
 
 // Query cache timestamps are the last successful fetch, not the latest failed attempt.
 function viewState(q, empty, maxAge = 120000) {
@@ -313,6 +359,8 @@ function summary(counts) {
   if (counts.running) parts.push(counts.running + ' running')
   if (counts.held) parts.push(counts.held + ' held')
   if (counts.uncertain) parts.push(counts.uncertain + ' need you')
+  // A fixer run the push policy cancelled waits for an operator: listed, never "idle" (#371).
+  if (counts.cancelled) parts.push(counts.cancelled + ' cancelled')
   if (counts.failed) parts.push(counts.failed + ' failed')
   return parts.length ? parts.join(' · ') : 'idle'
 }
@@ -397,20 +445,44 @@ function Muted({ text }) {
   return jsx('div', { className: 'text-xs text-(--ui-text-tertiary)', children: text })
 }
 
-/** One live run, clickable: the drawer answers "why is this not moving". */
-function RunRow({ run, onOpen }) {
-  return jsxs('button', {
-    type: 'button',
+/** One live run: the row opens the drawer that answers "why is this not moving", and a run the
+ *  backend says retry would re-arm carries the page's one write control (issue 371). The page decides
+ *  nothing about eligibility itself: the verdict, the target head and the reason a row has no
+ *  button all come from the backend, and the reason is shown on hover rather than invented. */
+function RunRow({ run, onOpen, onRetry }) {
+  const retry = run.retry
+  const canRetry = !!(retry && retry.eligible)
+  return jsxs('div', {
     className:
-      'flex w-full flex-wrap items-center gap-x-3 gap-y-1 border-b border-(--ui-stroke-secondary) px-2 py-1.5 text-left text-xs ' +
-      'last:border-b-0 hover:text-(--ui-accent)',
-    onClick: () => onOpen(run.pr),
+      'flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-(--ui-stroke-secondary) px-2 py-1.5 ' +
+      'last:border-b-0',
     children: [
-      jsx('span', { className: 'w-14 shrink-0 font-mono text-(--ui-accent)', children: '#' + run.pr }),
-      jsx('span', { className: 'w-20 shrink-0 text-(--ui-text-tertiary)', children: run.seat }),
-      jsx('span', { className: 'w-16 shrink-0 font-mono text-(--ui-text-quaternary)', children: run.head }),
-      jsx(Badge, { size: 'xs', variant: 'muted', children: run.state }),
-      jsx('span', { className: 'min-w-0 basis-full break-words text-(--ui-text-tertiary) sm:basis-auto sm:flex-1 sm:truncate', children: run.why })
+      jsxs('button', {
+        type: 'button',
+        className:
+          'flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-left text-xs ' +
+          'hover:text-(--ui-accent)',
+        onClick: () => onOpen(run.pr),
+        children: [
+          jsx('span', { className: 'w-14 shrink-0 font-mono text-(--ui-accent)', children: '#' + run.pr }),
+          jsx('span', { className: 'w-20 shrink-0 text-(--ui-text-tertiary)', children: run.seat }),
+          jsx('span', { className: 'w-16 shrink-0 font-mono text-(--ui-text-quaternary)', children: run.head }),
+          jsx('span', {
+            title: retry && !canRetry && retry.reason ? retry.reason : undefined,
+            children: jsx(Badge, { size: 'xs', variant: 'muted', children: run.state })
+          }),
+          jsx('span', { className: 'min-w-0 basis-full break-words text-(--ui-text-tertiary) sm:basis-auto sm:flex-1 sm:truncate', children: run.why })
+        ]
+      }),
+      canRetry
+        ? jsx(Button, {
+            size: 'xs',
+            variant: 'ghost',
+            title: 'Re-arm this run — you will be asked to confirm',
+            onClick: () => onRetry(run),
+            children: 'Retry'
+          })
+        : null
     ]
   })
 }
@@ -953,6 +1025,13 @@ function Page() {
   // The drawer remembers which loop it was opened on, so switching loops closes it rather than
   // showing another loop's record for the same PR number.
   const [openPr, setOpenPr] = useState(null)
+  // The run the operator asked to re-arm, holding the exact target the confirmation names; the
+  // backend's answer to the last attempt; and whether one is in flight (no double submission).
+  const [pendingRetry, setPendingRetry] = useState(null)
+  const [retryAnswer, setRetryAnswer] = useState(null)
+  // A ref, not state: two clicks in the same tick both read the render's state, and only a ref
+  // that is set synchronously stops the second request (#371: no double submission).
+  const retryInFlight = useRef(false)
   const loops = useLoops()
   const overview = useOverview()
   const configured = (loops.data && loops.data.loops) || []
@@ -1004,6 +1083,85 @@ function Page() {
   const statsReadState = useViewState(stats, total === 0)
   const noLedger = stats.data?.turns === null
   const statsState = noLedger ? 'unavailable' : statsReadState
+
+  // Every Retry click goes through the SDK's ConfirmDialog, which names the real target: the loop,
+  // PR, seat and head the backend would re-arm. The handler throws the backend's own refusal so the
+  // dialog keeps it in view; on success the page shows the host's answer and the state read back,
+  // and invalidates the reads that are now out of date.
+  const askRetry = run => {
+    if (!run.retry || !run.retry.eligible) return
+    setRetryAnswer(null)
+    setPendingRetry({ loop, pr: run.pr, seat: run.seat, head: run.retry.head, state: run.state })
+  }
+  const confirmRetry = async () => {
+    const target = pendingRetry
+    if (!target || retryInFlight.current) return
+    retryInFlight.current = true
+    try {
+      const answer = await postRetry({ loop: target.loop, pr: target.pr, seat: target.seat,
+        head: target.head })
+      if (!verifiedRetry(answer)) throw invalidResponse('retry')
+      setRetryAnswer({ ok: true, text: answer.answer,
+        runs: (answer.runs || []).map(run => run.seat + ' ' + run.state).join(' · ') })
+      queryClient.invalidateQueries({ queryKey: [ID, 'now', target.loop] })
+      queryClient.invalidateQueries({ queryKey: [ID, 'pr', target.loop, target.pr] })
+      queryClient.invalidateQueries({ queryKey: [ID, 'overview'] })
+    } catch (error) {
+      const failure = retryFailure(error)
+      const text = error?.code === 'INVALID_RESPONSE'
+        ? 'The retry answer could not be verified. Read the run again.'
+        : failure.detail || 'Retry failed: the backend refused or did not answer.'
+      setRetryAnswer({ ok: false, runs: '',
+        text: (failure.status ? 'HTTP ' + failure.status + ' · ' : '') + text })
+      throw new Error(text)
+    } finally {
+      retryInFlight.current = false
+    }
+  }
+  const retryTarget = pendingRetry
+  // Mounted only while a target exists: a closed dialog in the tree would put its text into the
+  // page for a reader (and a test) to trip over.
+  const retryDialog = retryTarget ? jsx(ConfirmDialog, {
+    open: true,
+    title: 'Re-arm this run?',
+    // The target first, then what it means; the equivalent command on its own line (the dialog
+    // keeps paragraph breaks) so a long command is never broken mid-flag by wrapping.
+    description: 'Retry the ' + retryTarget.seat + ' on #' + retryTarget.pr + ' @ ' +
+        String(retryTarget.head).slice(0, 7) + ' in loop ' + retryTarget.loop +
+        '. It re-runs that seat at that head, under the loop budget in force now, and asks the ' +
+        'host to start a worker. A run that may have written is refused, and the host says ' +
+        'why.\nSame as: hermes dk retry --loop ' + retryTarget.loop + ' --pr ' +
+        retryTarget.pr + ' --seat ' + retryTarget.seat,
+    confirmLabel: 'Retry run',
+    busyLabel: 'Re-arming…',
+    cancelLabel: 'Cancel',
+    onClose: () => setPendingRetry(null),
+    onConfirm: confirmRetry
+  }) : null
+  const retryAnswerLine = retryAnswer
+    ? jsxs('div', {
+        role: 'status',
+        className:
+          'flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-md border border-(--ui-stroke-secondary) ' +
+          'px-2 py-1.5 text-xs',
+        children: [
+          jsx('span', {
+            className: 'font-medium ' + (retryAnswer.ok ? 'text-(--ui-accent)' : 'text-(--ui-red)'),
+            children: retryAnswer.ok ? 'Re-armed' : 'Retry refused'
+          }),
+          jsx('span', {
+            className: 'min-w-0 flex-1 break-words text-(--ui-text-secondary)',
+            children: retryAnswer.text
+          }),
+          retryAnswer.runs
+            ? jsx('span', {
+                className: 'font-mono text-(--ui-text-quaternary)',
+                children: 'now: ' + retryAnswer.runs
+              })
+            : null
+        ]
+      })
+    : null
 
   const header = jsxs('div', {
     className: 'flex flex-wrap items-center gap-2',
@@ -1064,7 +1222,8 @@ function Page() {
             jsx(QueryStatus, { query: now, state: nowDisplayState, label: 'Right now',
               noLedger: nowNoLedger ? 'No run ledger available in the last successful backend read. Run counts are unavailable, not zero.' : false }),
             now.data && !nowNoLedger ? jsx(Muted, { text: summary(now.data.counts) }) : null,
-            jsx(Pacing, { pacing: now.data && now.data.pacing }), runs.length
+            jsx(Pacing, { pacing: now.data && now.data.pacing }),
+            retryAnswerLine, runs.length
           ? jsxs('div', {
               className: 'flex flex-col',
               children: [
@@ -1072,10 +1231,11 @@ function Page() {
                   className: 'rounded-md border border-(--ui-stroke-secondary)',
                   children: runs.map(run => jsx(RunRow, {
                     run,
-                    onOpen: pr => setOpenPr({ loop, pr })
+                    onOpen: pr => setOpenPr({ loop, pr }),
+                    onRetry: askRetry
                   }, run.pr + run.seat + run.head + run.state))
                 }),
-                jsx(Muted, { text: 'Click a row for what would move it.' })
+                jsx(Muted, { text: 'Click a row for what would move it. Retry re-arms a failed run that never wrote; it asks first.' })
               ]
             })
             : nowDisplayState === 'verified-empty'
@@ -1101,7 +1261,7 @@ function Page() {
         })
       }),
       jsx(Health, { loop }),
-      jsx(Muted, { text: 'Read-only, from this machine\'s run ledger. For PRs and reviews from GitHub, run: hermes dk stats --github' })
+      jsx(Muted, { text: 'Read-only except Retry, which re-arms a run that never wrote and always asks first. Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
     ]
   })
 
@@ -1111,6 +1271,7 @@ function Page() {
       header,
       body,
       jsx(Settings, {}),
+      retryDialog,
       openPr && openPr.loop === loop
         ? jsx(Drawer, { loop, pr: openPr.pr, onClose: () => setOpenPr(null) }, 'drawer-' + openPr.loop + '-' + openPr.pr)
         : null

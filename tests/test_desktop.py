@@ -459,6 +459,9 @@ class Health(unittest.TestCase):
 
 
 DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings"}
+# The page stopped being read-only for one confirmed action (#371): POST /retry. Every other route
+# is a read, and this set is enumerated so a new route cannot ship unlisted.
+DASHBOARD_WRITE_ROUTES = {"/retry"}
 
 
 class RouteListing(unittest.TestCase):
@@ -470,13 +473,18 @@ class RouteListing(unittest.TestCase):
     def decorators(self):
         return re.findall(r"^@router\.(\w+)\(\s*(?:\"([^\"]*)\")?", self.source(), re.M)
 
-    def test_every_route_is_a_listed_get(self):
+    def test_every_route_is_a_listed_get_except_the_one_confirmed_write(self):
         found = self.decorators()
         self.assertTrue(found)
-        self.assertEqual({verb for verb, _ in found}, {"get"})
+        writes = {path for verb, path in found if verb != "get"}
+        self.assertEqual(writes, DASHBOARD_WRITE_ROUTES)
+        self.assertEqual({verb for verb, _ in found}, {"get", "post"})
+        for verb, path in found:
+            if verb == "post":
+                self.assertIn(path, DASHBOARD_WRITE_ROUTES)
         paths = [path for _, path in found]
         self.assertEqual(sorted(paths), sorted(set(paths)))
-        self.assertEqual(set(paths), DASHBOARD_ROUTES)
+        self.assertEqual(set(paths), DASHBOARD_ROUTES | DASHBOARD_WRITE_ROUTES)
 
     def test_no_route_is_registered_another_way(self):
         text = self.source()
@@ -495,12 +503,14 @@ class Routes(unittest.TestCase):
         return types.SimpleNamespace(client=types.SimpleNamespace(host=host),
                                      headers=dict(headers or {}))
 
-    def test_only_reads_and_maps_errors(self):
+    def test_reads_are_get_and_the_one_write_is_a_mapped_post(self):
         from fastapi import HTTPException
-        methods = {m for route in self.api.router.routes for m in route.methods}
-        self.assertEqual(methods, {"GET"})
+        verbs = {(m, route.path) for route in self.api.router.routes for m in route.methods}
+        self.assertEqual({method for method, _ in verbs}, {"GET", "POST"})
+        self.assertEqual({path for method, path in verbs if method == "POST"},
+                         DASHBOARD_WRITE_ROUTES)
         paths = {route.path for route in self.api.router.routes}
-        self.assertEqual(paths, DASHBOARD_ROUTES)
+        self.assertEqual(paths, DASHBOARD_ROUTES | DASHBOARD_WRITE_ROUTES)
         with mock.patch.object(desktop_api, "now_view", side_effect=desktop_api.NotFound("no")), \
              self.assertRaises(HTTPException) as caught:
             self.api.now("x")
@@ -515,6 +525,26 @@ class Routes(unittest.TestCase):
              self.assertRaises(HTTPException) as caught:
             self.api.health(self.request(), "widgets", True)
         self.assertEqual(caught.exception.status_code, 403)
+
+    def test_the_retry_route_passes_the_confirmation_and_maps_every_refusal(self):
+        from fastapi import HTTPException
+        payload = {"loop": "widgets", "pr": 356, "seat": "reviewer", "head": "a" * 40}
+        with mock.patch.object(desktop_api, "retry_view", return_value={"ok": True}) as retry_view:
+            self.assertEqual(self.api.retry(dict(payload)), {"ok": True})
+        self.assertEqual(retry_view.call_args.args, ("widgets", 356, "reviewer", "a" * 40))
+        # A retry the ledger refuses is a 409 carrying the host's own reason — never a 500, and
+        # never a 2xx with a hidden failure.
+        with mock.patch.object(desktop_api, "retry_view",
+                               side_effect=desktop_api.Conflict("refused: run is uncertain")), \
+             self.assertRaises(HTTPException) as caught:
+            self.api.retry(dict(payload))
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.detail, "refused: run is uncertain")
+        with mock.patch.object(desktop_api, "retry_view",
+                               side_effect=desktop_api.BadRequest("seat must be one of reviewer")), \
+             self.assertRaises(HTTPException) as caught:
+            self.api.retry({**payload, "seat": "nope"})
+        self.assertEqual(caught.exception.status_code, 400)
 
     def test_the_overview_route_takes_no_argument(self):
         with mock.patch.object(desktop_api, "overview_view", return_value={"loops": []}) as overview_view:
@@ -622,7 +652,7 @@ class Surface(unittest.TestCase):
         # replaced the operator's Node with a stub). Require reported tests, no failures, and a
         # named test.
         ok = re.findall(r"^ok \d+ - ", done.stdout, re.M)
-        self.assertGreaterEqual(len(ok), 70, done.stdout[-4000:])
+        self.assertGreaterEqual(len(ok), 77, done.stdout[-4000:])
         self.assertNotIn("not ok", done.stdout)
         reported_pass = re.search(r"^# pass (\d+)$", done.stdout, re.M)
         if reported_pass is None:
@@ -630,6 +660,9 @@ class Surface(unittest.TestCase):
         self.assertEqual(int(reported_pass.group(1)), len(ok))
         self.assertRegex(done.stdout, r"(?m)^# skipped 0$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - settings: production projection renders every schema field and dynamically added unknown type$")
+        # This slice's own named proof: the real registered page, clicked through confirm → post.
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: confirming posts the exact target, then shows the answer and the state read back$")
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: a refusal shows the backend reason, keeps the dialog open and invalidates nothing$")
         self.assertIn("palette only: unseen successful cache read expires", done.stdout)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed here")

@@ -7,7 +7,9 @@ description: >-
   adjudicator, rounds are capped, and the loop never merges. Disclosure — creates webhook routes and (optionally) a
   cron job, calls the GitHub API with repo-scope tokens you provide, deletes local review
   artifacts for merged or closed PRs, and — only when a loop is given an observer feed — posts
-  short read-only notices about that loop's transitions to the chat the feed names.
+  short read-only notices about that loop's transitions to the chat the feed names. Its optional
+  Desktop page re-arms a failed run the CLI's retry would re-arm: same checks, the loop's own
+  ledger only, and never a GitHub read.
 author: Jeremy Coe
 homepage: https://github.com/coe0718/diaktoros
 license: MIT

@@ -840,6 +840,28 @@ class LoopState:
                 self._save_strict(self.dir / "held-scope.json", data)
             return changed
 
+    def scope_hold_snapshot(self, number: int) -> dict | None:
+        """Read the hold approved by a retry, separately from any ledger operation."""
+        with self.locked():
+            return self.scope_holds().get(number)
+
+    def scope_hold_release(self, number: int, expected: dict | None) -> dict | None:
+        """Release only an unchanged snapshot; never approve a new head or file set.
+
+        The compare and save share the writers' state-file lock. Do not call this while
+        holding a ledger transaction: workers can take that lock before the state lock.
+        """
+        if not expected:
+            return None
+        with self.locked():
+            data = {str(k): v for k, v in self.scope_holds().items()}
+            if data.get(str(number)) != expected:
+                return None
+            held = {**expected, "released": True}
+            data[str(number)] = held
+            self._save_strict(self.dir / "held-scope.json", data)
+            return held
+
     def scope_hold_drop(self, number: int) -> None:
         with self.locked():
             data = {str(k): v for k, v in self.scope_holds().items()}
