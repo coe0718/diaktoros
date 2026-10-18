@@ -279,6 +279,27 @@ class Deps(GateFixture):
         self.assertEqual(len([p for p, _b, _l in self.posted if p.endswith("/issues/12/comments")]), 1)
         self.assertTrue(self.st.fix_hold_said(12))
 
+    def test_a_dependency_comment_is_not_posted_when_the_claim_cannot_be_written(self):
+        blockers = [(5, "#5 is still open")]
+        with mock.patch.object(state_mod, "_atomic_write", side_effect=OSError("disk full")):
+            self.assertFalse(self.st.dep_wait_say(12))
+            issue_deps.wait(self.loop, self.st, 12, blockers)
+        self.assertEqual(self.posted, [])
+        self.assertFalse(self.st.dep_wait_said(12))
+        issue_deps.wait(self.loop, self.st, 12, blockers)       # disk back: the retry posts once
+        self.assertEqual(len(self.posted), 1)
+
+    def test_a_pr_wait_comment_is_not_posted_when_the_claim_cannot_be_written(self):
+        patcher = mock.patch.object(fix_hold, "_notice")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        with mock.patch.object(state_mod, "_atomic_write", side_effect=OSError("disk full")):
+            self.assertFalse(self.st.fix_hold_say(12))
+            fix_hold.hold(self.loop, self.st, 12, 7)
+        self.assertEqual([p for p, _b, _l in self.posted if p.endswith("/issues/12/comments")], [])
+        fix_hold.hold(self.loop, self.st, 12, 7)
+        self.assertEqual(len([p for p, _b, _l in self.posted if p.endswith("/issues/12/comments")]), 1)
+
     def test_status_names_the_wait(self):
         self.depends(12, on=5)
         self.run_gate(self.labeled())

@@ -810,13 +810,19 @@ class LoopState:
 
     def _said_claim(self, name: str, number: int) -> bool:
         """Record ``number`` in the one-time-notice ledger ``name``; True only for the caller that
-        recorded it. The check and the write are one step under the lock."""
+        recorded it. The check and the write are one step under the lock. A claim that did not reach
+        disk is not a claim (False), so nothing is posted and a later sweep retries."""
         with self.locked():
             raw = self._load(self.dir / name, [])
             raw = [n for n in raw if type(n) is int] if isinstance(raw, list) else []
             if number in raw:
                 return False
-            self._save(self.dir / name, sorted(raw + [number]))
+            try:
+                hostdirs.ensure(self.dir)
+                _atomic_write(self.dir / name, sorted(raw + [number]))   # raises, unlike _save
+            except Exception as exc:
+                log(f"state write failed ({name}): {exc}")
+                return False                  # fail closed: an unrecorded claim must not post
             return True
 
     def _said_release(self, name: str, number: int) -> None:
