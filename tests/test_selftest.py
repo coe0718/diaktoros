@@ -289,6 +289,28 @@ class ChecklistTests(SelftestBase):
         self.assertIn("❌ bwrap:userns", text)
         self.assertIn("unprivileged_userns", text)
 
+    def test_bwrap_only_on_operator_path_fails_and_names_launch_path(self):
+        def which(cmd, mode=os.F_OK | os.X_OK, path=None):
+            # Present on the operator's PATH (path=None), absent from the launcher's.
+            return "/usr/local/bin/bwrap" if path is None else None
+        with mock.patch.object(selftest.shutil, "which", side_effect=which):
+            rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 1)
+        self.assertIn("❌ bwrap:installed", text)
+        self.assertIn(contained.LAUNCH_PATH, text)
+        self.assertNotIn("bwrap:userns", text)
+
+    def test_bwrap_probe_uses_launch_path_and_the_binary_found_there(self):
+        def which(cmd, mode=os.F_OK | os.X_OK, path=None):
+            return "/usr/sbin/bwrap" if path == contained.LAUNCH_PATH else None
+        with mock.patch.object(selftest.shutil, "which", side_effect=which), \
+                mock.patch.object(selftest.subprocess, "run",
+                                  return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            self.run_selftest(model=False)
+        probe = run.call_args_list[0]
+        self.assertEqual(probe.args[0][0], "/usr/sbin/bwrap")
+        self.assertEqual(probe.kwargs["env"], {"PATH": contained.LAUNCH_PATH})
+
     def test_sandbox_reading_a_host_secret_fails(self):
         self.fx.probe["readable"] = [self.fx.settings["key_file"]]
         self.fx.probe["network"] = True
