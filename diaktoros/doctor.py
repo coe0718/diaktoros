@@ -438,9 +438,13 @@ def check_runtime_paths(loop: dict) -> list[Check]:
                                 f"{key} = {raw} does not exist",
                                 f"update {key} in {path} to the current path (a Hermes "
                                 "upgrade may have moved it)"))
-        elif key == "source" and not (p / "run_agent.py").exists():
+        elif key == "source" and (not (p / "run_agent.py").is_file()
+                                  or not (p / ".git").exists()):
+            # Same requirement as `selftest`: every isolated turn snapshots this directory
+            # with git and refuses anything that is not a committed Git checkout.
             checks.append(Check(f"runtime:{key}", MISMATCH,
-                                f"{key} = {raw} exists but has no run_agent.py",
+                                f"{key} = {raw} is not a hermes-agent Git checkout "
+                                "(run_agent.py and .git required)",
                                 f"point {key} at the hermes-agent Git checkout"))
         elif key == "venv" and not (p / "bin" / "python").exists():
             checks.append(Check(f"runtime:{key}", MISMATCH,

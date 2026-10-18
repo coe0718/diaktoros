@@ -194,6 +194,16 @@ class RuntimePaths(unittest.TestCase):
         self.assertEqual(checks["runtime:source"].status, doctor.MISMATCH)
         self.assertIn("run_agent.py", checks["runtime:source"].detail)
 
+    def test_source_without_git_is_mismatch(self):
+        # run_agent.py alone is not enough: turns snapshot the source with git (selftest agrees).
+        plain = self.root / "plain-source"
+        plain.mkdir()
+        (plain / "run_agent.py").write_text("")
+        self.write_runtime(source=str(plain))
+        checks = self.checks_by_name()
+        self.assertEqual(checks["runtime:source"].status, doctor.MISMATCH)
+        self.assertIn(".git", checks["runtime:source"].detail)
+
     def test_venv_without_python_is_mismatch(self):
         bare = self.root / "bare-venv"
         bare.mkdir()
