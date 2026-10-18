@@ -1075,6 +1075,12 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             action = ("fresh review after retarget: the reviewer is not queued yet (still a "
                       "draft, or not swept since the retarget) — the next armed watchdog sweep "
                       "enqueues it; then awaiting its receipted verdict")
+    elif approved and stale_line:
+        # The sweep's notice and the ready-to-merge queue (`stale_approval.is_stale`) both say
+        # this approval no longer vouches for the head; do not recommend merging it.
+        kind = "operator"
+        action = (f"your decision: {stale_line} — do not merge head {short}; re-run the check "
+                  "or push a fix")
     elif approved:
         kind = "none"
         action = f"nothing — head {short} is approved; a human merges it"

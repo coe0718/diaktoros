@@ -87,6 +87,25 @@ class Stale(unittest.TestCase):
         self.assertIn("approval at aaaaaaa is stale", report["stale_approval"])
         self.assertIn(report["stale_approval"], report["blockers"])
 
+    def explain(self):
+        facts = {"pr": self.pr(), "reviews": self.approved(), "armed": True, "read_at": NOW}
+        with mock.patch.object(gate.gate_failures, "open_for", return_value=[]):
+            return gate.explain(self.loop, self.st, 7, facts)
+
+    def test_explain_next_does_not_recommend_merging_a_stale_approved_head(self):
+        self.sweep(ci.CIState(failed=["tests"]), self.approved())
+        nxt = self.explain()["next"]
+        self.assertNotIn("a human merges it", nxt["action"])
+        self.assertEqual(nxt["kind"], "operator")
+        self.assertIn("is stale", nxt["action"])
+        self.assertIn("do not merge", nxt["action"])
+
+    def test_explain_next_still_says_a_human_merges_a_healthy_approved_head(self):
+        self.sweep(ci.CIState(passed=["tests"]), self.approved())
+        nxt = self.explain()["next"]
+        self.assertEqual(nxt["kind"], "none")
+        self.assertIn("a human merges it", nxt["action"])
+
     def test_the_notice_is_not_repeated_on_the_next_sweep(self):
         red = ci.CIState(failed=["tests"])
         self.sweep(red, self.approved())
