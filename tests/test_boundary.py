@@ -126,6 +126,39 @@ class BoundaryTests(unittest.TestCase):
                                      "GIT_ASKPASS": "/usr/bin/false", "SSH_ASKPASS": "/usr/bin/false"})
         self.assertNotIn("dummy-seat-token", result.stdout + result.stderr)
 
+    def _isolation_loop(self):
+        source = self.root / "source"
+        (source / ".git").mkdir(parents=True)
+        return {**self.loop, "id": "widgets", "clone": str(source),
+                "state_dir": str(self.root / "state")}
+
+    def test_isolation_refuses_when_clone_is_inside_root(self):
+        loop = self._isolation_loop()
+        root = isolation.paths(loop, 7, "reviewer")["root"]
+        loop["clone"] = str(root / "repo")
+        (root / "repo" / ".git").mkdir(parents=True)
+        logged = []
+        with mock.patch.object(isolation, "log", logged.append), \
+                mock.patch.object(isolation, "_git") as git:
+            self.assertIsNone(isolation.ensure(loop, 7, "reviewer"))
+        git.assert_not_called()
+        self.assertIn("is inside", logged[-1])
+
+    def test_isolation_refuses_when_path_resolution_raises(self):
+        # A symlink loop in the artifacts path makes resolve() raise; the clone-inside-root
+        # check cannot be made, so isolation must be refused, not continued.
+        loop = self._isolation_loop()
+        artifacts = self.root / "state" / "artifacts"
+        artifacts.mkdir(parents=True)
+        (artifacts / "7").symlink_to(artifacts / "7")
+        logged = []
+        with mock.patch.object(isolation, "log", logged.append), \
+                mock.patch.object(isolation, "_git") as git:
+            self.assertIsNone(isolation.ensure(loop, 7, "reviewer"))
+        git.assert_not_called()
+        self.assertEqual(len(logged), 1, logged)
+        self.assertIn("cannot tell whether", logged[0])
+
     @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap unavailable")
     def test_credentialless_rust_namespace_probe(self):
         stable = _home_guard.RUST

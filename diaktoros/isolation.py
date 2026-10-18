@@ -119,13 +119,19 @@ def ensure(loop: dict, number: int, seat: str, head: str = "", login: str = "") 
     root, clone = p["root"], p["clone"]
 
     # A rail with teeth: the configured clone must never live inside the isolation root, or a
-    # cleanup would delete the developer's working copy.
+    # cleanup would delete the developer's working copy. Fails closed: when a path cannot be
+    # resolved (a symlink loop, a permission error) the check cannot be made, so isolation is
+    # refused — never skipped.
     try:
-        if str(source.resolve()).startswith(str(root.resolve()) + os.sep) or source == clone:
-            log(f"refusing to isolate #{number}: the configured clone is inside {root}")
-            return None
-    except Exception:
-        pass
+        inside = (str(source.resolve()).startswith(str(root.resolve()) + os.sep)
+                  or source == clone)
+    except Exception as exc:
+        log(f"refusing to isolate #{number}: cannot tell whether the configured clone is inside "
+            f"{root} ({exc})")
+        return None
+    if inside:
+        log(f"refusing to isolate #{number}: the configured clone is inside {root}")
+        return None
 
     try:
         for d in (root, p["target"], p["tmp"]):
