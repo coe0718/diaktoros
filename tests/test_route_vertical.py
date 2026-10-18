@@ -186,6 +186,32 @@ class RouteSubprocess(unittest.TestCase):
                 fire.assert_called_once()
             self.assertIn("manual reconciliation", st.queue_items("reviewer")[key]["reason"])
 
+    def test_declined_duplicate_is_not_rewritten_as_uncertain_delivery(self):
+        """#885: the gate kept the row for a ``duplicate failed`` turn; an acknowledged POST
+        must not turn that confirmed decline into 'delivery uncertain'."""
+        from diaktoros import config, gate, gh, routes, state
+        from scripts import watchdog
+        with mock.patch.dict(os.environ, self.env), \
+             mock.patch.object(gh, "pr", return_value=self.pr), \
+             mock.patch.object(gh, "reviews", return_value=[]):
+            loop = config.load_id("widgets")
+            st = state.LoopState(loop)
+            key = "acme/widgets#7"
+            st.queue_add("reviewer", key, HEAD, "url", "waiting for a slot")
+            with mock.patch.object(gate, "enqueue_isolated", return_value="duplicate failed"), \
+                 mock.patch.object(gate, "silence", side_effect=SystemExit):
+                with self.assertRaises(SystemExit):
+                    gate.block_pr_agent(loop, st, "reviewer", 7, HEAD)
+            reason = st.queue_items("reviewer")[key]["reason"]
+            self.assertIn("duplicate failed", reason)
+            self.assertTrue(gate.is_declined_hold(st.queue_items("reviewer")[key]))
+            with mock.patch.object(routes, "fire", return_value=True) as fire:
+                self.assertEqual(watchdog.drain(loop, st, "reviewer", quiet=True), 0)
+                self.assertEqual(watchdog.drain(loop, st, "reviewer", quiet=True), 0)
+                fire.assert_not_called()
+            self.assertEqual(st.queue_items("reviewer")[key]["reason"], reason)
+            self.assertNotIn("manual reconciliation", reason)
+
     def test_pre_post_route_failure_remains_retryable(self):
         from diaktoros import config, gh, routes, state
         from scripts import watchdog

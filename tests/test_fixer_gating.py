@@ -145,7 +145,10 @@ class GateHold(Base):
         with mock.patch.object(gate_decisions, "record") as record:
             enqueue, notify = self.run_gate(outcome="duplicate failed")
         enqueue.assert_called_once()
-        self.assertEqual(self.st.queue_items("fixer")[key]["reason"], "waiting for a slot")
+        # #885: the row is kept, now naming the confirmed decline for the watchdog and operator.
+        entry = self.st.queue_items("fixer")[key]
+        self.assertEqual(entry["reason"], gate.declined_reason("fixer", "duplicate failed"))
+        self.assertTrue(gate.is_declined_hold(entry))
         notify.assert_not_called()
         self.assertEqual([c.args[3:] for c in record.call_args_list],
                          [("declined", "fixer turn duplicate failed")])
