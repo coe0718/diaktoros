@@ -73,6 +73,27 @@ class Now(unittest.TestCase):
     def test_no_ledger(self):
         self.assertIsNone(stats.now(self.db.with_name("missing.sqlite"), REPO))
 
+    def test_counts_and_stuck_cover_every_live_run_past_the_page(self):
+        # The oldest runs (an uncertain one, a held one) fall off the newest-100 page.
+        self.row("uncertain", NOW - 5000, SECRET, seat="fixer")
+        self.row("waiting", NOW - 4000, "held: waiting for CI")
+        for i in range(stats.NOW_PAGE + 20):
+            self.row("running", NOW - 100 + i * 0.01)
+        view = stats.now(self.db, REPO, at=NOW)
+        self.assertEqual(len(view["runs"]), stats.NOW_PAGE)
+        self.assertTrue(view["truncated"])
+        self.assertEqual(view["total"], stats.NOW_PAGE + 22)
+        self.assertEqual(view["counts"], {"running": stats.NOW_PAGE + 20, "held": 1, "uncertain": 1})
+        self.assertNotIn("uncertain", [run["state"] for run in view["runs"]])
+        oldest = stats.stuck(self.db, REPO, NOW)
+        self.assertEqual((oldest["state"], oldest["since"]), ("uncertain", NOW - 5000))
+
+    def test_a_short_list_is_not_truncated(self):
+        self.row("running", NOW - 10)
+        view = stats.now(self.db, REPO, at=NOW)
+        self.assertFalse(view["truncated"])
+        self.assertEqual(view["total"], 1)
+
 
 class Api(unittest.TestCase):
     LOOPS = [{"id": "widgets", "repo": REPO}, {"id": "gadgets", "repo": "acme/gadgets"}]
@@ -101,6 +122,24 @@ class Api(unittest.TestCase):
         self.assertEqual(typo["repo"], "")
         self.assertLessEqual(len(typo["reason"]), 200)
         self.assertNotIn("\n", typo["reason"])
+
+    def test_overview_needs_you_counts_uncertain_runs_beyond_the_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = pathlib.Path(tmp) / "runs.sqlite"
+            sup = Supervisor(db)
+            with mock.patch.object(sup, "_spawn"):
+                for i in range(stats.NOW_PAGE + 5):
+                    sup.enqueue(f"d{i}", REPO, 400 + i, "a" * 40, "reviewer")
+            with ledger.connect(db) as con:
+                con.execute("UPDATE runs SET state='running', updated=? ", (NOW,))
+                con.execute("UPDATE runs SET state='uncertain', updated=? WHERE delivery='d0'",
+                            (NOW - 9000,))
+            with mock.patch.object(desktop_api.config, "readable_loops",
+                                   return_value=(self.LOOPS[:1], [])), \
+                 mock.patch.object(desktop_api.run_supervisor, "production_ledger",
+                                   return_value=db):
+                [widgets] = desktop_api.overview_view()["loops"]
+        self.assertEqual(widgets["needs_you"], 1)
 
     def test_overview_names_an_unreadable_loop_beside_the_readable_one(self):
         with self.broken(self.LOOPS[:1], ("typo", "bad json")), \
