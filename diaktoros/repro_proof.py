@@ -110,7 +110,35 @@ def resolve(tree: Path, wanted: str) -> tuple[str, str] | None:
                   if ".git" not in path.parts)
     if len(hits) == 1:
         return wanted, hits[0].parent.relative_to(tree).as_posix()
+    # A bare method name: the one test class defining it, in the checkout's test files.
+    if len(parts) == 1:
+        found = _method_homes(tree, wanted)
+        if len(found) == 1:
+            directory, module, cls = found[0]
+            return f"{module}.{cls}.{wanted}", directory
     return None
+
+
+def _method_homes(tree: Path, method: str) -> list[tuple[str, str, str]]:
+    """``(directory, module, class)`` for every test class defining ``method`` in the checkout's
+    ``test_*.py`` files, the root and two levels down. A file that doesn't parse is skipped."""
+    import ast
+    homes = []
+    for depth in ("", "*/", "*/*/"):
+        for path in sorted(tree.glob(f"{depth}test_*.py")):
+            if ".git" in path.parts:
+                continue
+            try:
+                module = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, SyntaxError, ValueError):
+                continue
+            for node in module.body:
+                if isinstance(node, ast.ClassDef) and any(
+                        isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and item.name == method for item in node.body):
+                    homes.append((path.parent.relative_to(tree).as_posix() or ".",
+                                  path.stem, node.name))
+    return homes
 
 
 def status(results: dict[str, str], wanted: str) -> str:

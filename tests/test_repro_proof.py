@@ -98,6 +98,24 @@ class Proof(unittest.TestCase):
         self.assertIn('(ran as "test_it.Case.test_value")',
                       repro_proof.section(self.prove_plain(["tests.test_it.Case.test_value"])))
 
+    def test_a_unique_bare_method_name_is_found_and_proven(self):
+        # #893's "accept a bare method name when it is unique" (review on #898).
+        proof = self.prove_plain(["test_value"])
+        self.assertEqual(proof["overall"], repro_proof.PROVEN, proof)
+        self.assertEqual(proof["ids"][0]["ran_as"], "test_it.Case.test_value")
+
+    def test_a_bare_method_name_two_classes_define_is_not_guessed(self):
+        twice = ("import _helper  # noqa: F401\n" + TEST + "\n\nclass Other(unittest.TestCase):\n"
+                 "    def test_value(self):\n        self.assertEqual(c.value(), 2)\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "_helper.py").write_text("import os\n")
+            (base / "widget.py").write_text(OLD_CODE)
+            fix = manifest({"widget.py": NEW_CODE, "tests/test_it.py": twice})
+            proof = repro_proof.prove(base, fix, ["test_value"], run_unittest)
+        self.assertEqual(proof["overall"], repro_proof.UNRESOLVED)
+
     def test_an_id_matching_no_test_file_is_not_found_never_unproven(self):
         proof = self.prove_plain(["tests.test_nothing.Case.test_value"])
         self.assertEqual(proof["overall"], repro_proof.UNRESOLVED)
