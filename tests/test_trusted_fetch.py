@@ -85,12 +85,16 @@ class CommittedSourceSnapshotTests(unittest.TestCase):
         self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.org',
                  'commit', '-qm', 'submodule')
         skipped = []
-        trusted_turn._safe_code_snapshot(self.source, self.destination, skipped)
+        returned = trusted_turn._safe_code_snapshot(self.source, self.destination, skipped)
         self.assertEqual(skipped, ['vendor/sub'])
+        self.assertEqual(returned, ['vendor/sub'])         # what the real callers record (#800)
+        self.assertIn('vendor/sub', trusted_turn.skipped_gitlinks_note(returned))
+        self.assertEqual(trusted_turn.skipped_gitlinks_note([]), '')
         self.assertFalse((self.destination / 'vendor').exists())
         self.assertEqual((self.destination / 'module.py').read_text(), 'original\n')
         # The caller may ignore the record.
-        trusted_turn._safe_code_snapshot(self.source, self.root / 'again')
+        self.assertEqual(trusted_turn._safe_code_snapshot(self.source, self.root / 'again'),
+                         ['vendor/sub'])
         self.assertTrue((self.root / 'again' / 'run_agent.py').is_file())
 
     def test_destination_directory_swap_cannot_write_through_symlink(self):

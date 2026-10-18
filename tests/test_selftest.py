@@ -376,6 +376,18 @@ GIT_LOCK = ('[[package]]\nname = "x"\nversion = "1.0.0"\n'
 PATH_ONLY_LOCK = '[[package]]\nname = "tiny"\nversion = "0.1.0"\n'
 
 
+class SourceSnapshotTests(SelftestBase):
+    def test_the_snapshot_line_names_a_submodule_it_left_out(self):
+        """#800: a gitlink in the Hermes checkout is skipped, and selftest says so."""
+        with mock.patch.object(trusted_turn, "_safe_code_snapshot",
+                               side_effect=lambda source, dest: dest.mkdir() or ["vendor/sub"]):
+            rc, text = self.run_selftest(pr=7)
+        self.assertEqual(rc, 0, text)
+        (line,) = [line for line in text.splitlines() if "committed source snapshot" in line]
+        self.assertIn("1 submodule(s) not exported", line)
+        self.assertIn("vendor/sub", line)
+
+
 class BuildCheckTests(SelftestBase):
     """Step 5 (cont.): whether the seat can build the PR head (issue #51)."""
 

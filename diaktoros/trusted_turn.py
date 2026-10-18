@@ -26,7 +26,7 @@ import tempfile
 import time
 
 from . import (broker, broker_client, broker_ipc, config, contained, deps, gh, hostdirs,
-               inference_proxy, repro_proof, runtime_detect, safe_push, trusted_fetch)
+               inference_proxy, repro_proof, runtime_detect, safe_push, trusted_fetch, util)
 
 
 def dependency_cache(loop: dict) -> Path | None:
@@ -146,11 +146,14 @@ def _report(progress, text: str) -> None:
         pass
 
 
-def _safe_code_snapshot(source: Path, destination: Path, skipped: list | None = None) -> None:
+def _safe_code_snapshot(source: Path, destination: Path,
+                        skipped: list | None = None) -> list[str]:
     """Export blobs from a pinned commit, never the index or mutable worktree.
 
     Gitlinks (submodules) are not exported, as in the PR exporter: the snapshot goes on without
-    them and appends their paths to ``skipped`` when given."""
+    them and returns their paths (also appended to ``skipped`` when given), for the caller to
+    record with ``skipped_gitlinks_note``."""
+    skipped = [] if skipped is None else skipped
     source = Path(source).absolute()
     try:
         source_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -160,6 +163,18 @@ def _safe_code_snapshot(source: Path, destination: Path, skipped: list | None = 
         _export_committed_source(source_fd, destination, skipped)
     finally:
         os.close(source_fd)
+    return skipped
+
+
+def skipped_gitlinks_note(skipped) -> str:
+    """The record of the Hermes checkout's submodules a snapshot left out ('' for none). This is
+    the Hermes source, not the PR: the PR tree's own skipped entries go in the seat's notice."""
+    if not skipped:
+        return ''
+    shown = ', '.join(list(skipped)[:5]) + (f' (+{len(skipped) - 5} more)' if len(skipped) > 5
+                                            else '')
+    return (f'Hermes source snapshot: {len(skipped)} submodule(s) not exported (gitlinks are '
+            f'never followed): {shown}')
 
 
 # -- what a snapshot may export ------------------------------------------------------------------
@@ -626,7 +641,8 @@ def run_turn(loop: dict, scope: broker_ipc.RunScope, *, source: Path, venv: Path
     with tempfile.TemporaryDirectory(prefix='turn-', dir=parent) as tmp:
         root = Path(tmp)
         code, home = root / 'code', root / 'home'
-        _safe_code_snapshot(Path(source), code)
+        if note := skipped_gitlinks_note(_safe_code_snapshot(Path(source), code)):
+            util.log(note)                    # <ledger>.workers.log keeps it (#800)
         client = root / 'client' / 'diaktoros'
         client.mkdir(mode=0o700, parents=True)
         (client / '__init__.py').touch()
