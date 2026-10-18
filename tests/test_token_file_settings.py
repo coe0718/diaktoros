@@ -346,6 +346,18 @@ class TokenFileSettingsTests(unittest.TestCase):
             self.assertEqual(credentials.token_file_problem("~/keys/rev.pat"), "")
             self.assertIn("absolute", credentials.token_file_problem("keys/rev.pat"))
 
+    def test_doctor_token_line_refuses_a_foreign_owned_private_file(self):
+        path = self.pats["rev"]
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(doctor.check_token("rev-bot", str(path)).status, doctor.VERIFIED)
+        with patch.object(credentials.os, "getuid", return_value=os.getuid() + 1):
+            check = doctor.check_token("rev-bot", str(path))
+            loop_checks = doctor.check_tokens({"tokens": {"rev-bot": str(path)}})
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn("owned by uid", check.detail)
+        self.assertEqual([c.status for c in loop_checks], [doctor.MISMATCH])
+        self.assertNotIn(SENTINEL, check.detail + check.fix)
+
 
 if __name__ == "__main__":
     unittest.main()
