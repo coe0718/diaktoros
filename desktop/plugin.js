@@ -181,7 +181,7 @@ function observeFreshness(query) {
   if (query.queryKey[0] !== ID) return
   const kind = query.queryKey[1]
   if (kind === 'now' || kind === 'overview') freshRead(query.state, 60000)
-  else if (kind === 'loops' || kind === 'stats') freshRead(query.state, 120000)
+  else if (kind === 'loops' || kind === 'stats' || kind === 'settings') freshRead(query.state, 120000)
 }
 
 function useViewState(q, empty, maxAge = 120000) {
@@ -845,6 +845,105 @@ function Health({ loop }) {
   })
 }
 
+// Settings is a read projection, not another editor. Unknown schema fields are enumerated,
+// but structured/secret values are never stringified into the page.
+const settingsObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+const settingsScalar = value => value === null || typeof value === 'string' || typeof value === 'boolean' ||
+  (typeof value === 'number' && Number.isFinite(value))
+
+function validateSettings(data) {
+  const object = settingsObject
+  const strings = value => Array.isArray(value) && value.every(item => typeof item === 'string')
+  const fields = (value, keys) => object(value) && keys.every(key => typeof value[key] === 'string')
+  const limit = value => Number.isSafeInteger(value) && value >= 0
+  const p = data?.plugin
+  if (!object(data) || !object(p) || typeof p.available !== 'boolean' || typeof p.reason !== 'string' ||
+      !object(p.schema) || !object(p.values) || !object(p.sources) || !object(p.seats) ||
+      !strings(p.roles) || !strings(p.routed_roles) || !Array.isArray(data.loops) ||
+      typeof data.read_at !== 'number' || !Number.isFinite(data.read_at) || data.read_at < 0) throw invalidResponse('settings')
+  const sameKeys = value => Object.keys(value).length === Object.keys(p.schema).length &&
+    Object.keys(p.schema).every(key => Object.hasOwn(value, key))
+  if (!sameKeys(p.values) || !sameKeys(p.sources)) throw invalidResponse('settings')
+  for (const [key, spec] of Object.entries(p.schema)) {
+    if (!fields(spec, ['label', 'type', 'description']) || !Object.hasOwn(spec, 'default') ||
+        !['set', 'default'].includes(p.sources[key])) throw invalidResponse('settings')
+    const valid = value => spec.type === 'int' ? Number.isSafeInteger(value) :
+      spec.type === 'bool' ? typeof value === 'boolean' : spec.type === 'str' ? typeof value === 'string' : true
+    if (!valid(p.values[key]) || !valid(spec.default)) throw invalidResponse('settings')
+  }
+  if (!p.roles.every(role => Object.hasOwn(p.seats, role)) ||
+      !Object.values(p.seats).every(seat => fields(seat, ['profile', 'login', 'token_file']) && typeof seat.set === 'boolean')) throw invalidResponse('settings')
+  const ids = new Set()
+  for (const loop of data.loops) {
+    if (!fields(loop, ['id', 'repo', 'base', 'reason']) || !loop.id || ids.has(loop.id) ||
+        typeof loop.error !== 'boolean' || !object(loop.seats) || !object(loop.flags)) throw invalidResponse('settings')
+    ids.add(loop.id)
+    if (!loop.error && (!loop.repo || typeof loop.flags.review_after_ci !== 'boolean' ||
+        typeof loop.flags.fix_ci !== 'boolean' || typeof loop.flags.fixer_check !== 'string' ||
+        !limit(loop.flags.cap) || typeof loop.flags.base !== 'string')) throw invalidResponse('settings')
+    if (!Object.values(loop.flags).every(settingsScalar) || !Object.values(loop.seats).every(seat =>
+      fields(seat, ['profile', 'login', 'token_file', 'route']) && limit(seat.turn_budget_s) && limit(seat.max_steps)) ||
+      (!loop.error && !p.roles.every(role => Object.hasOwn(loop.seats, role)))) throw invalidResponse('settings')
+  }
+  return data
+}
+
+function settingsText(value) {
+  // Defense in depth for recognizable credentials accidentally returned in a non-secret field.
+  return String(value).replace(/(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+|Bearer\s+\S+)/gi, '[redacted]')
+}
+
+function settingValue(key, value) {
+  if (/(?:password|secret|credential|api[_-]?key|access[_-]?token|^token$)/i.test(key)) return 'Sensitive value withheld'
+  if (/(?:^|_)token_file$/.test(key) && value !== '' &&
+      (typeof value !== 'string' || !/^(?:\/|~\/)[^\r\n]+$/.test(value))) return 'Invalid token path withheld'
+  if (!settingsScalar(value)) return 'Unsupported structured value (withheld)'
+  return value === '' || value === null ? 'Not set here' : settingsText(value)
+}
+
+function Settings() {
+  const query = useQuery({ queryKey: [ID, 'settings'], queryFn: async () => validateSettings(await call('/settings')),
+    staleTime: 120000, refetchOnWindowFocus: false })
+  const state = useViewState(query, !!query.data && !Object.keys(query.data.plugin.schema).length && !query.data.loops.length)
+  const p = query.data?.plugin
+  const row = (label, value) => jsxs('div', { className: 'flex min-w-0 flex-col gap-1', children: [
+    jsx('dt', { className: 'text-xs text-(--ui-text-tertiary)', children: label }),
+    jsx('dd', { className: 'm-0 break-words text-xs', children: value })] }, label)
+  return jsx(Section, { title: 'Settings', children: jsxs('div', { className: 'flex min-w-0 flex-col gap-4', children: [
+    jsx(Muted, { text: 'Read-only. Edit plugin defaults in Settings → Capabilities → Plugins. Existing loops keep their own effective settings until explicitly applied; reading changes nothing.' }),
+    jsx(QueryStatus, { query, state: p?.available === false && state !== 'stale' ? 'unavailable' : state, label: 'Settings' }),
+    !p ? null : jsxs('div', { className: 'flex min-w-0 flex-col gap-4', children: [
+      jsx('h3', { className: 'text-sm font-medium', children: 'Plugin defaults' }),
+      !p.available ? jsx('div', { role: 'status', className: 'text-xs text-(--ui-text-secondary)', children: 'Settings store unavailable. Schema defaults below are reference only, not verified effective plugin values.' }) : null,
+      !Object.keys(p.schema).length ? jsx(Muted, { text: 'No settings fields returned in this read.' }) : null,
+      jsx('div', { className: 'grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-2', children: Object.entries(p.schema).map(([key, spec]) =>
+        jsxs('article', { className: 'min-w-0 rounded-md border border-(--ui-stroke-secondary) p-4', children: [
+          jsxs('div', { className: 'flex flex-wrap items-start gap-2', children: [
+            jsx('h4', { className: 'min-w-0 flex-1 break-words text-sm font-medium', children: settingsText(spec.label) }),
+            jsx(Badge, { size: 'xs', variant: 'muted', children: settingsText(spec.type) })] }),
+          jsx('div', { className: 'mt-1 break-words font-mono text-xs text-(--ui-text-tertiary)', children: settingsText(key) }),
+          jsx('p', { className: 'my-2 break-words text-xs text-(--ui-text-secondary)', children: settingsText(spec.description) }),
+          jsx('dl', { className: 'm-0 flex flex-col gap-2', children: [
+            row(p.available ? 'Effective plugin value' : 'Effective plugin value unavailable', p.available ? settingValue(key, p.values[key]) : 'Not verified'),
+            row('Source', p.available ? p.sources[key] === 'set' ? 'Set in plugin form' : 'Schema default' : 'Unavailable'),
+            row('Schema default (reference)', settingValue(key, spec.default))] })
+        ] }, key)) }),
+      jsx('h3', { className: 'text-sm font-medium', children: 'Existing loops · effective settings' }),
+      jsx(Muted, { text: 'These are each loop’s own projected answers, not the plugin defaults above. Omitted settings, including shadow activation, are not reported as off. Token files are paths only; credentials are never read or displayed.' }),
+      !query.data.loops.length ? jsx(Muted, { text: 'No loops returned in this settings read.' }) : null,
+      query.data.loops.map(loop => jsxs('article', { className: 'min-w-0 rounded-md border border-(--ui-stroke-secondary) p-4', children: [
+        jsx('h4', { className: 'break-words text-sm font-medium', children: settingsText(loop.id) + (loop.repo ? ' · ' + settingsText(loop.repo) : '') }),
+        loop.error ? jsx('div', { role: 'status', className: 'mt-2 text-xs', children: 'Loop settings unavailable: config or effective settings could not be read. Other loops are unaffected.' }) : jsxs('div', { className: 'mt-4 flex min-w-0 flex-col gap-4', children: [
+          jsx('dl', { className: 'm-0 grid grid-cols-1 gap-2 sm:grid-cols-2', children: Object.entries(loop.flags).map(([key, value]) => row(settingsText(key), settingValue(key, value))) }),
+          Object.entries(loop.seats).map(([role, seat]) => jsxs('div', { className: 'min-w-0 border-t border-(--ui-stroke-secondary) pt-4', children: [
+            jsx('h5', { className: 'mb-2 text-xs font-medium', children: settingsText(role) }),
+            jsx('dl', { className: 'm-0 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3', children: Object.entries(seat).map(([key, value]) => row(settingsText(key), settingValue(key, value))) })
+          ] }, role))] })
+      ] }, loop.id))
+    ] })
+  ] }) })
+}
+
 function Page() {
   const [since, setSince] = useState('7d')
   const focus = useFocus()
@@ -1011,6 +1110,7 @@ function Page() {
     children: [
       header,
       body,
+      jsx(Settings, {}),
       openPr && openPr.loop === loop
         ? jsx(Drawer, { loop, pr: openPr.pr, onClose: () => setOpenPr(null) }, 'drawer-' + openPr.loop + '-' + openPr.pr)
         : null

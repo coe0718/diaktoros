@@ -5,6 +5,14 @@ Hermes profile that saved them. It is not a live editor for every repository. A 
 JSON file remains its effective configuration; changes reach an existing loop only through
 an explicit `apply --loop "<loop-id>"`.
 
+The **Diaktoros page → Settings** section is a read-only inspection of `GET /settings`:
+all schema fields show their type, description, effective plugin value and source, alongside
+reference defaults. Existing loops have a separate projected seat/flag view; omitted settings
+(such as shadow activation) are not inferred to be off. This page has no save or apply action.
+An unavailable settings store shows reference defaults only, while failed refreshes retain the
+last good read with a stale disclosure. Token-file fields display paths, never file contents.
+Editing remains in the native Capabilities → Plugins form and the checked CLI operations below.
+
 ## Contents
 
 - [The three configuration surfaces](#the-three-configuration-surfaces)
