@@ -133,7 +133,8 @@ def isolated_supervisor(loop: dict):
     return supervisor
 
 
-# The ``Supervisor.submit`` outcomes that scheduled a turn; any ``duplicate <state>…`` did not.
+# The ``enqueue_isolated`` outcomes that scheduled (or re-armed) a turn; any other outcome
+# (``duplicate <state>…``) left nothing to run and must not be reported as a fresh enqueue.
 SCHEDULED_OUTCOMES = ("enqueued", "rearmed", "pending")
 
 

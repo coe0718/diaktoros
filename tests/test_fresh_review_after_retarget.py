@@ -65,6 +65,7 @@ class FreshReviewTest(unittest.TestCase):
         self.baseline_error = ""
         self.enqueued = []
         self.enqueue_error = None
+        self.enqueue_outcome = "enqueued"  # what enqueue_isolated returns (Supervisor.submit)
 
     # -- fixtures ------------------------------------------------------------------------------
 
@@ -75,6 +76,7 @@ class FreshReviewTest(unittest.TestCase):
             raise self.enqueue_error
         delivery = f"{loop['repo']}:{number}:{head}:{seat}" + (f":{turn_key}" if turn_key else "")
         self.ledger.enqueue(delivery, loop["repo"], number, head, seat, turn_key=turn_key)
+        return self.enqueue_outcome
 
     def ledger_rows(self, seat="reviewer"):
         with ledger.connect(self.db) as con:
@@ -222,6 +224,37 @@ class FreshReviewTest(unittest.TestCase):
         self.assertEqual(len(self.ledger_rows()), 1)
         self.sweep([self.child])
         self.assertEqual(len(self.enqueued), 2)
+
+    def test_unscheduled_outcome_is_never_recorded_as_enqueued(self):
+        # A row failed at the re-arm limit / cancelled and not re-armable comes back as
+        # ``duplicate <state>…`` with no exception: nothing was scheduled.
+        for outcome in ("duplicate failed: 8 failed attempts — only `hermes dk retry` re-arms it",
+                        "duplicate cancelled"):
+            with self.subTest(outcome=outcome):
+                self.setUp()
+                self.enqueue_outcome = outcome
+                lines = self.merge_parent_and_retarget()
+                fresh = transition.hold(self.st, 184, C)["fresh_review"]
+                self.assertEqual(fresh["state"], "retry", fresh)
+                self.assertIn(outcome, fresh["error"])
+                self.assertTrue(any("fresh review: retry" in line and outcome in line
+                                    for line in lines), lines)
+                self.assertEqual(
+                    transition.start_fresh_review(self.loop, self.st, 184)[0], "retry")
+                report = gate.explain(self.loop, self.st, 184, {
+                    "pr": self.child, "reviews": self.reviews, "receipts": {}, "armed": True})
+                self.assertEqual(report["next"]["kind"], "retry")
+                self.assertNotIn("reviewer queued", report["next"]["action"])
+                # The sweep re-drives it (it is not skipped as "already enqueued") and a
+                # scheduling outcome then records enqueued.
+                before = len(self.enqueued)
+                self.sweep([self.child])
+                self.assertGreater(len(self.enqueued), before)
+                self.assertEqual(transition.hold(self.st, 184, C)["fresh_review"]["state"], "retry")
+                self.enqueue_outcome = "rearmed"
+                self.sweep([self.child])
+                self.assertEqual(transition.hold(self.st, 184, C)["fresh_review"]["state"],
+                                 "enqueued")
 
     def test_draft_retarget_waits_until_ready_then_enqueues_once(self):
         self.sweep([self.parent, self.child])
