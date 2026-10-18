@@ -1370,7 +1370,7 @@ class Supervisor(records.LedgerRecords):
         ``uncertain`` (listed by ``status``, released by ``reconcile``), not ``succeeded``.
         """
         allowed = {'fixer': ('unknown', 'published', 'published_pr_unverified'),
-                   'issue_fixer': ('unknown', 'pr_create_unknown')}
+                   'issue_fixer': ('unknown', 'published', 'pr_create_unknown')}
         if outcome not in allowed.get(seat, ()):
             raise ValueError('not a post-write hold outcome')
         with self._connect() as con:

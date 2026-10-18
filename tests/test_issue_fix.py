@@ -485,6 +485,18 @@ class BrokerWrite(Base):
         # it never ends `succeeded` with its write unknown.
         self.assertEqual(self.run_row(), ("uncertain", "post-write push quarantine: unknown"))
 
+    def test_a_published_push_is_reported_as_published_and_opens_no_pr(self):
+        # #824 on the issue-fix seat (shadow review of #989): the transport errored but the host
+        # read the branch back at the commit. The seat is told it published, never "unknown".
+        safe_push.open_branch.side_effect = safe_push.PushFailure("published")
+        with self.assertRaises(broker_ipc.ProtocolError) as said:
+            self.server._dispatch(self.open_pr())
+        self.assertIn("push published", str(said.exception))
+        self.assertNotIn("the push's outcome is unknown", str(said.exception))
+        self.assertEqual(self.sup.issue_fix_result(self.run_id)["state"], "uncertain")
+        self.assertEqual(self.posts(), [])
+        self.assertEqual(self.run_row(), ("uncertain", "post-write push quarantine: published"))
+
     def test_an_oserror_in_the_reconciled_audit_holds_the_run_uncertain(self):
         self.reconciled_audit_fails(OSError("disk full"))
 

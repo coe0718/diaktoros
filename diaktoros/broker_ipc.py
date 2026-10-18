@@ -173,6 +173,12 @@ PUBLIC_DENIALS = frozenset({
 
 # A push whose attempt began but did not finish confirmed (#351): never "write denied", which
 # reads as "nothing was published" — the branch may well hold the commit. Host-worded, by outcome.
+# An issue fix's branch push the host confirmed, though the transport errored (#824).
+ISSUE_PUSH_PUBLISHED = (
+    "push published: the git transport reported an error, but the host read the new branch back "
+    "at your commit, so the push is published. No PR was opened from this turn. Do not retry. In "
+    "your summary, say the branch was published and the host confirmed it, and that no PR was "
+    "opened; do not say its outcome is unknown.")
 PUSH_UNCONFIRMED = {
     "published": (
         "push published: the git transport reported an error, but the host read the branch back "
@@ -1030,6 +1036,11 @@ class RunBroker:
                                                manifest=request["manifest"])
             except safe_push.PushFailure as exc:
                 supervisor.issue_fix_status(run_id, "uncertain", error=f"push {exc.outcome}")
+                if exc.outcome == "published":
+                    # #824: the host read the new branch back at the commit — published, not
+                    # unknown. Still held: no PR was opened from this turn.
+                    self._hold_issue_fix(supervisor, "published")
+                    raise ProtocolError(ISSUE_PUSH_PUBLISHED)
                 self._hold_issue_fix(supervisor, "unknown")
                 raise ProtocolError("the push's outcome is unknown: do not retry; say so")
             except broker.BrokerDenied as exc:
