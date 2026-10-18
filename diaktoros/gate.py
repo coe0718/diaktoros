@@ -530,6 +530,13 @@ def escalated(marker, head: str) -> bool:
             and isinstance(marker.get("escalated"), dict) and marker.get("status") in STANDING)
 
 
+def breach_holds(marker, head: str, spent: int | None, cap: int) -> bool:
+    """Whether a breach marker at ``head`` still holds it for a ruling: the live verdict count
+    is at the cap, or the operator's escalation stands. The one predicate the watchdog's retry,
+    its stall scan and ``explain`` share: a raised cap or a dismissed verdict ends it."""
+    return (spent is not None and spent >= cap) or escalated(marker, head)
+
+
 def breach_delivery_status(marker: dict, head: str) -> str:
     """Only a marker for the live head can park or retry this PR."""
     return str(marker.get("status") or "") if marker.get("head") == head else ""
@@ -888,7 +895,7 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     # A dismissed verdict can lower the live count after a failed POST. The
     # watchdog only retries a pending marker while the cap remains spent.
     pending_delivery = (local["delivery_status"] == "delivery-pending"
-                        and ((spent is not None and spent >= cap) or escalated(marker, head)))
+                        and breach_holds(marker, head, spent, cap))
     stale_held = {seat for seat, entry in held.items() if entry.get("head") != head}
     # An isolated turn already in the ledger at this head (queued, held for CI, running) is
     # the gate's answer, not a missing one (#509): the run itself is reported as the blocker.
