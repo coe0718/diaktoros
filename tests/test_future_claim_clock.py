@@ -2,7 +2,8 @@
 
 ``now`` is taken at the top of the sweep, before its GitHub reads and hand-offs. A claim taken
 while the sweep ran is dated after that ``now``: aged against it, the claim looked dated in the
-future and was reported dead. A claim a little ahead of the clock (``FUTURE_SLACK_S``) is not.
+future and was reported dead. A claim ahead of the sweep's fresh clock is still named: no slack, the same rule as
+``state._mark_live`` (#794).
 """
 from __future__ import annotations
 
@@ -69,12 +70,11 @@ class SweepClock(fg.Base):
         self.assertNotIn("in the future", text)
         self.assertNotIn("slot held", text)
 
-    def test_a_claim_a_little_ahead_is_quiet_and_far_ahead_is_named(self):
+    def test_a_claim_ahead_of_the_fresh_clock_is_named_however_little(self):
         self.sweep(lambda: None)                      # the first sweep only snapshots heads
-        self.claim_at(time.time() + 30.0)
-        self.assertNotIn("in the future", self.sweep(lambda: None))
-        self.claim_at(time.time() + 120.0)
-        self.assertIn(f"claim on {KEY} is dated", self.sweep(lambda: None))
+        for ahead in (30.0, 120.0):                   # no slack: the same rule as _mark_live
+            self.claim_at(time.time() + ahead)
+            self.assertIn(f"claim on {KEY} is dated", self.sweep(lambda: None))
 
 
 if __name__ == "__main__":

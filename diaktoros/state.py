@@ -116,13 +116,7 @@ def _mark_live(entry, now: float, ttl: float) -> bool:
     report could see it (#794): it is expired, like a mark that cannot be aged.
     """
     at = mark_at(entry)
-    return at is not None and -FUTURE_SLACK_S <= now - at <= ttl
-
-
-# How far ahead of the reader's clock a mark may be dated and still be live: two processes'
-# clocks, or one clock stepped back a little, never expire a claim just taken (review on #937:
-# with no slack a small step back let a second gate take a held seat). Further ahead is junk.
-FUTURE_SLACK_S = 60.0
+    return at is not None and 0 <= now - at <= ttl
 
 
 def mark_at(entry) -> float | None:

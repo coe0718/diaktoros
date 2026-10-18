@@ -1396,7 +1396,7 @@ def died_locks(loop: dict, locks: dict, now: float) -> list[tuple[str, str]]:
             # On the budget the claim was taken with, if longer than the loop's now (#98).
             # This seat's own turn: another seat's longer budget never keeps it alive (#98).
             recorded = config.claim_budget(entry)   # None: a legacy claim gets its seat's own
-            if age < -state_mod.FUTURE_SLACK_S:
+            if age < 0:
                 # Dated ahead of the clock: ``state._mark_live`` treats it as expired, so report
                 # it as a dead claim too — a bad clock must raise the stall, not hide it (#794).
                 lines.append((f"lock:{seat}:{key}",
