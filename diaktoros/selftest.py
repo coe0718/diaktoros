@@ -27,9 +27,10 @@ exits 1 if anything failed:
 7. with ``--live-turn --pr N``: one real isolated reviewer turn whose broker runs in its host-only
    no-write mode — the verdict and body the agent *would* have submitted are printed, never posted.
 
-Guarantees: **no step writes to GitHub** (every GitHub call made while the selftest runs goes
-through a GET-only guard, on top of the broker's no-write mode), and no token or key is printed
-(every line passes a redactor that knows the configured secrets).
+Guarantees: **no step writes to GitHub unless ``--ping`` is set** (every GitHub call made while
+the selftest runs goes through a GET-only guard, on top of the broker's no-write mode; ``--ping``
+is the one write, a POST to the hook's ``pings`` endpoint made outside that guard), and no token
+or key is printed (every line passes a redactor that knows the configured secrets).
 """
 from __future__ import annotations
 
@@ -1228,8 +1229,10 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
     for raw in (loop.get("tokens") or {}).values():
         redact.add_file(raw)
     report = Report(out, redact)
+    github_scope = ("GitHub: reads only, plus one write: --ping asks GitHub to ping each loop hook"
+                    if ping else "GitHub: reads only, nothing is posted")
     report.text(f"[{loop['id']}] {loop['repo']} — isolated-path selftest "
-                "(GitHub: reads only, nothing is posted; no token or key is printed)")
+                f"({github_scope}; no token or key is printed)")
     if envnames.get("GH_STUB"):
         report.add("preconditions", "github:stub", FAIL, "DIAKTOROS_GH_STUB is set: GitHub is faked",
                    "unset DIAKTOROS_GH_STUB / REVIEW_LOOP_GH_STUB — the selftest must talk to the real API")

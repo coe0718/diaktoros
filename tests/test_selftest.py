@@ -619,6 +619,43 @@ class NoWriteBrokerTests(unittest.TestCase):
                                   key="k", model="m", prompt="p", no_write=True)
 
 
+class GitHubWriteWordingTests(SelftestBase):
+    """Reads only unless --ping is set; --ping is named as the write (#810)."""
+
+    def header(self, **kwargs):
+        with mock.patch.object(selftest, "check_hook_signatures"):
+            rc, text = self.run_selftest(model=False, **kwargs)
+        return text.splitlines()[0]
+
+    def test_header_says_nothing_is_posted_without_ping(self):
+        line = self.header()
+        self.assertIn("reads only, nothing is posted", line)
+        self.assertNotIn("--ping", line)
+
+    def test_header_names_ping_as_the_write_when_set(self):
+        line = self.header(ping=True)
+        self.assertIn("--ping", line)
+        self.assertNotIn("nothing is posted", line)
+
+    def test_cli_help_and_docstring_do_not_claim_never_writes(self):
+        captured = {}
+
+        class Ctx:
+            def register_cli_command(self, name, help_text, setup, description=""):
+                captured["setup"] = setup
+        cli.register_cli(Ctx())
+        parser = argparse.ArgumentParser()
+        captured["setup"](parser)
+        sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        help_text = next(a.help for a in sub._choices_actions if a.dest == "selftest")
+        self.assertNotIn("never writes", help_text)
+        self.assertIn("--ping", help_text)
+        for text in (cli.cmd_selftest.__doc__, selftest.__doc__):
+            self.assertNotIn("never writes to GitHub", text)
+            self.assertIn("--ping", text)
+        self.assertNotIn("**no step writes to GitHub**", selftest.__doc__)
+
+
 class RegistrationTests(unittest.TestCase):
     def test_selftest_subcommand_is_registered(self):
         captured = {}
