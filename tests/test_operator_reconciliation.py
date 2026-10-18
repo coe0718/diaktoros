@@ -13,6 +13,8 @@ import unittest
 from diaktoros import ledger
 from diaktoros.run_supervisor import Supervisor
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 class OperatorReconciliation(unittest.TestCase):
     def setUp(self):
@@ -35,8 +37,22 @@ class OperatorReconciliation(unittest.TestCase):
         self.sup.recover()
 
     def cli(self, *args):
+        # Independent of the caller's cwd: `-m diaktoros...` must find the checkout whether the
+        # suite is started from the repo root or from tests/ (#743).
+        env = dict(os.environ)
+        env['PYTHONPATH'] = os.pathsep.join(
+            [str(ROOT)] + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else []))
         return subprocess.run([sys.executable, '-m', 'diaktoros.run_supervisor',
-                               *args], text=True, capture_output=True, check=True)
+                               *args], text=True, capture_output=True, check=True,
+                              cwd=ROOT, env=env)
+
+    def test_cli_works_when_the_suite_is_started_outside_the_repo_root(self):
+        old = os.getcwd()
+        self.addCleanup(os.chdir, old)
+        os.chdir(self.temp.name)
+        self.crash()
+        self.assertEqual(json.loads(self.cli('status', str(self.db)).stdout)[0]['id'],
+                         self.row['id'])
 
     def test_crash_stale_lease_failed_notification_repeated_sweep_and_reconcile(self):
         self.crash()
