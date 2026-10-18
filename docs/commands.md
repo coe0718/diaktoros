@@ -788,7 +788,10 @@ hermes dk doctor --loop "<loop-id>" --offline
 ```
 
 - Exit `1` means at least one ❌. With `--strict`, a ⚠️ counts as a failure too.
-- `--offline` skips the two network checks (gateway reachability and the repo hooks).
+- `--offline` skips every network probe and lists each as `not probed (--offline)`: gateway
+  reachability, repo hooks, review-only push access, token expiry and scopes, triage labels,
+  branch protection and the plugin-version comparison. Triage labels, branch protection and
+  review-only push access only appear when the loop enables them.
 - `--repair` is the one write `doctor` can make: it puts this loop's own routes back from the
   plugin's record of them (same secret), and heals plugin-owned gate shims, when another tool overwrote or removed them.
 
@@ -800,7 +803,7 @@ a real isolated seat turn. To prove the isolated path end to end, use [`selftest
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id (default: every configured loop) |
-| `--offline` |  |  | skip the two network probes (gateway reachability, repo hooks) |
+| `--offline` |  |  | skip every network probe, each reported as not probed: gateway reachability, repo hooks, review-only push access, token expiry and scopes, triage labels, branch protection, plugin version |
 | `--strict` |  |  | treat a check that could not be decided as a failure |
 | `--repair` |  |  | restore this loop's own routes from the plugin's intent record (same secret) before checking; the only write doctor makes |
 <!-- /flags -->

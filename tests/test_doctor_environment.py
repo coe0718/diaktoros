@@ -203,8 +203,29 @@ class Environment(unittest.TestCase):
             c = doctor.check_plugin_version(self.loop)
         self.assertEqual(c.status, doctor.UNKNOWN)
 
-    def test_plugin_version_offline_is_skipped(self):
-        self.assertIsNone(self.version_check(offline=True))
+    def test_plugin_version_offline_says_it_was_not_probed(self):
+        # through check_loop: the version line must be in the report, not silently absent
+        c = self.version_check(offline=True)
+        self.assertIsNotNone(c)
+        self.assertEqual(c.status, doctor.UNKNOWN)
+        self.assertIn("not probed (--offline)", c.detail)
+
+    def test_offline_branch_protection_says_it_was_not_probed(self):
+        with mock.patch.object(gh, "request", side_effect=AssertionError("network")):
+            c = {x.name: x for x in doctor.check_environment(self.loop, True)}["branch-protection"]
+        self.assertEqual(c.status, doctor.UNKNOWN)
+        self.assertIn("not probed (--offline)", c.detail)
+
+    def test_offline_help_names_every_skipped_probe(self):
+        import argparse
+        from diaktoros.cli import checks as cli_checks
+        parser = argparse.ArgumentParser()
+        cli_checks.add_doctor(parser.add_subparsers())
+        sub = parser._subparsers._group_actions[0].choices["doctor"]
+        text = next(a.help for a in sub._actions if "--offline" in a.option_strings)
+        for word in ("gateway", "hooks", "push", "token expiry", "scopes", "labels",
+                     "branch protection", "plugin version"):
+            self.assertIn(word, text)
 
     def test_check_loop_runs_them(self):
         names = self.run_check("loop")
