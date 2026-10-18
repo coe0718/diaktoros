@@ -2,7 +2,7 @@
 observer's delivery ledger.
 
 All of it lives under the loop's own ``state_dir`` (default
-``~/.hermes/state/review-loops/<id>/``), so two loops never share a file and a loop can
+``~/.hermes/state/diaktoros/<id>/``), so two loops never share a file and a loop can
 be deleted by removing one directory.
 
 Two rules the shapes below encode:

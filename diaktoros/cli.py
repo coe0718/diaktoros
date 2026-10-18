@@ -4837,7 +4837,7 @@ def register_cli(ctx, settings: dict | None = None) -> None:
         init.add_argument("--root", action="append", default=[], help="a directory reviews may clean (repeatable)")
         init.add_argument("--state-dir", default="",
                           help="where this loop keeps its state files (default: "
-                               "~/.hermes/state/review-loops/<id>)")
+                             "~/.hermes/state/diaktoros/<id>)")
         init.add_argument("--token", action="append", default=[], help="login=/path/to/pat (repeatable)")
         init.add_argument("--read-token", default="",
                           help="required: login whose token reads GitHub — its own account, never "
