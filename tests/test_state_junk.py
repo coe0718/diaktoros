@@ -156,5 +156,51 @@ class WatchdogLog(unittest.TestCase):
         self.assertEqual(len(self.st.log.read_text().splitlines()), 5)
 
 
+class ExclusiveAcquire(unittest.TestCase):
+    """#727: acquisition has a compare-and-swap form, and the gate's claim uses it."""
+
+    setUp = Junk.setUp
+
+    def test_exclusive_acquire_never_evicts_a_live_claim(self):
+        st = self.st
+        self.assertTrue(st.acquire("reviewer", KEY, HEAD, "first", run="r1", exclusive=True))
+        first = st.live_locks("reviewer")[KEY]
+        # A second check-then-act caller (another run, or the gate) loses and writes nothing.
+        self.assertFalse(st.acquire("reviewer", KEY, HEAD, "second", run="r2", exclusive=True))
+        self.assertFalse(st.acquire("reviewer", KEY, HEAD, "gate", exclusive=True))
+        self.assertEqual(st.live_locks("reviewer")[KEY], first)
+        # Default stays last-writer-wins for callers that mean to replace.
+        self.assertTrue(st.acquire("reviewer", KEY, HEAD, "forced", run="r3"))
+        self.assertEqual(st.live_locks("reviewer")[KEY]["run"], "r3")
+
+    def test_exclusive_acquire_replaces_expired_and_stamps_the_gates_claim(self):
+        st = self.st
+        st.acquire("reviewer", KEY, HEAD, "old")
+        self.assertTrue(st.acquire("reviewer", KEY, HEAD, "run stamp", run="r1", exclusive=True))
+        self.assertEqual(st.live_locks("reviewer")[KEY]["run"], "r1")
+        data = json.loads(st.locks.read_text())
+        data["reviewer"][KEY]["at"] = 1.0                      # long expired
+        st.locks.write_text(json.dumps(data))
+        self.assertTrue(st.acquire("reviewer", KEY, HEAD, "again", run="r2", exclusive=True))
+        self.assertEqual(st.live_locks("reviewer")[KEY]["run"], "r2")
+
+    def test_take_seat_does_not_evict_a_claim_made_while_it_decided(self):
+        from unittest import mock
+        st = self.st
+        loop = st.loop
+        # The race: the gate's checks all passed, then another process claimed the PR.
+        real = st.acquire
+
+        def rival_first(*a, **kw):
+            real("reviewer", gate.seat_key(loop, 7), HEAD, "rival", run="rival")
+            return real(*a, **kw)
+        with mock.patch.object(st, "acquire", side_effect=rival_first), \
+                mock.patch.object(gate.isolation, "ensure", return_value=None) as ensure:
+            with self.assertRaises(SystemExit):
+                gate.take_seat(loop, st, "reviewer", 7, HEAD, "mine")
+        ensure.assert_not_called()                               # no second workspace/run
+        self.assertEqual(st.live_locks("reviewer")[gate.seat_key(loop, 7)]["run"], "rival")
+
+
 if __name__ == "__main__":
     unittest.main()

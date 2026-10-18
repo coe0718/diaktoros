@@ -866,8 +866,12 @@ def claim_seat(loop: dict, row, budget: float):
         from .. import gate, state as state_mod
         st = state_mod.state_for(loop)
         key = gate.seat_key(loop, row['pr'])
-        st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}", budget=budget,
-                   run=row['id'])
+        # Exclusive (#727): it stamps the gate's run-less claim, but never evicts another live
+        # run's. Then that run keeps the entry, this one has nothing of its own to release, and
+        # the run ledger is what refuses the duplicate.
+        if not st.acquire(row['seat'], key, row['head'], f"isolated run {row['id']}",
+                          budget=budget, run=row['id'], exclusive=True):
+            return None
     except Exception:
         return None
     # The claim is written: from here on its release must stay reachable, whatever the mark

@@ -1382,7 +1382,11 @@ def take_seat(loop: dict, st: state_mod.LoopState, seat: str, number: int, head:
             log(f"{seat} at capacity {len(live)}/{capacity} ({held}) — queued #{number} @ {head[:7]}")
             silence(f"{seat} at capacity {len(live)}/{capacity} — queued", "queued")
 
-        st.acquire(seat, key, head, why)
+        # The checks above hold the same lock, but the claim is itself a compare-and-swap so a
+        # live claim can never be evicted, whatever the checks saw (#727).
+        if not st.acquire(seat, key, head, why, exclusive=True):
+            log(f"{seat} claimed {key} while this gate decided — refusing a second run")
+            silence(f"{seat} is already running {key}", "held")
         st.queue_pop(seat, key)        # a direct event can outrun the drain: the entry is stale now
 
     workspace = isolation.ensure(loop, number, seat, head, login=login or "")

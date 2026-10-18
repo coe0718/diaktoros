@@ -337,12 +337,25 @@ class LoopState:
         return None
 
     def acquire(self, seat: str, key: str, head: str = "", why: str = "",
-                budget: float | None = None, run: str | None = None) -> None:
+                budget: float | None = None, run: str | None = None,
+                exclusive: bool = False) -> bool:
         """Claim ``seat`` for ``key``. The isolated worker calls this at launch with its run's
         own budget and id (#98); the claim's TTL never shrinks below the budget it was taken
-        with, and only a release naming the same ``run`` may free it."""
+        with, and only a release naming the same ``run`` may free it.
+
+        By default the claim overwrites whatever is there (last writer wins). With ``exclusive``
+        it is a compare-and-swap (#727): under the state lock, a *live* claim on ``(seat, key)``
+        is left untouched, nothing is written and the answer is ``False``, so two check-then-act
+        callers that both saw the seat free cannot evict the claim that won. The one claim a
+        caller may replace is the gate's own run-less claim, and only when it names a ``run``
+        (the worker stamping its run on the claim the gate made at launch), or its own earlier
+        claim. An expired claim is not live and is replaced. Returns whether it was written."""
         with self.locked():
             data = _mapping(self._load(self.locks, {}))
+            if exclusive:
+                held = self.live_locks(seat).get(key)
+                if held is not None and not (run is not None and held.get("run") in (None, run)):
+                    return False
             at = time.time()
             entry = {"at": at, "head": head, "why": why,
                      "budget": budget if budget is not None else config.turn_budget(self.loop, seat)}
@@ -351,6 +364,7 @@ class LoopState:
             _seat(data, seat)[key] = entry
             self._save(self.locks, data)
             CLAIMS.append((self, seat, key, at))
+            return True
 
     def release_exact(self, seat: str, key: str, at: float) -> bool:
         """Free one claim only if it is still the very claim made at ``at``."""
