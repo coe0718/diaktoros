@@ -1697,6 +1697,14 @@ class Supervisor(records.LedgerRecords):
                     outcome += (": fixer push not admitted — a redelivered event never upgrades "
                                 "admission; after opting in, `hermes dk retry` "
                                 "re-admits it")
+                elif (prior['error'] == FIXER_PUSH_REVOKED and self.production_config
+                      and seat == 'fixer' and not admitted):
+                    # Pushes are still off (``admitted`` is this event's fresh policy read, taken
+                    # under the push-policy lock): the claim would cancel it again. Once they are
+                    # back on, an event re-arms it.
+                    outcome += (": fixer push revoked — unattended fixer pushes are still off, so "
+                                "a re-armed run would only be cancelled again; turn them on, then "
+                                "a redelivered event or `hermes dk retry` re-arms it")
                 elif (prior['retries'] or 0) >= MAX_REARMS:
                     outcome += (f": {prior['retries']} failed attempts — only "
                                 "`hermes dk retry` re-arms it")
