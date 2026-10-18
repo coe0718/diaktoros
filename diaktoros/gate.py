@@ -1276,10 +1276,14 @@ def wake_adjudicator(loop: dict, number: int, head: str, rounds: int, reason: st
     ledger's unique turn index, and a re-breach at a new head is a new turn. The worker
     re-reads every fact before it runs, so the reason here is only a label.
 
-    Returns True only once the turn is durably enqueued and its worker armed, which moves the
-    marker to ``awaiting-adjudication``. Anything else returns False: the marker stays
+    Returns True only once a turn is durably enqueued with its worker armed, or the ledger's
+    existing turn for this key is live or has run (a ``duplicate`` of a claimed, running,
+    waiting, uncertain or succeeded turn), which moves the marker to ``awaiting-adjudication``.
+    Anything else returns False — including a ``duplicate failed`` / ``duplicate cancelled``
+    turn the ledger did not re-arm, where no adjudicator is coming: the marker stays
     ``delivery-pending`` and the watchdog's retry comes back through ``breach()`` — whose
-    live-head check under the breach lock keeps a stale head from being re-armed.
+    live-head check under the breach lock keeps a stale head from being re-armed — until
+    ``hermes dk retry`` re-arms the dead turn.
     """
     try:
         outcome = enqueue_isolated(loop, "adjudicator", number, head,
@@ -1291,8 +1295,14 @@ def wake_adjudicator(loop: dict, number: int, head: str, rounds: int, reason: st
     if outcome == "enqueued":
         log(f"#{number} @ {head[:7]} adjudicator enqueued for isolated worker ({reason})")
     else:
-        # A duplicate is still durable (the ledger owns the turn), so the marker may advance.
         log(f"#{number} @ {head[:7]} adjudicator {outcome} ({reason})")
+    # A duplicate of a live or finished turn is durable (the ledger owns it). A duplicate of a
+    # dead one (failed/cancelled and not re-armed) is not: nothing is coming, so don't advance.
+    if outcome.startswith("duplicate ") and outcome[len("duplicate "):].split(":")[0].strip() \
+            in ("failed", "cancelled"):
+        log(f"#{number} @ {head[:7]} adjudicator turn is dead and was not re-armed — marker "
+            "stays delivery-pending (`hermes dk retry` re-arms it)")
+        return False
     return True
 
 
