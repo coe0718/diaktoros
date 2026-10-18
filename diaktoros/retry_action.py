@@ -215,6 +215,9 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
         out["message"] = f"no run ledger at {ledger} — nothing to retry"
         return out
     sup = Supervisor(ledger)
+    # Snapshot before planning or re-arming. Never hold the JSON lock across a ledger
+    # transaction (workers may take the locks in the opposite order).
+    held = scope_lock.snapshot(loop, pr)
     with sup._connect() as con:
         found = plan(con, loop["repo"], pr, seat, resolve_head=resolve_head)
     out["head"], out["head7"] = found["head"], found["head7"]
@@ -256,7 +259,10 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
         # on CLI partial success. The plan is only a preview: retry re-checks write evidence
         # and policy under its transaction and can still refuse every offered row. It never
         # spawns; release before asking resume_isolated to start this retry's worker.
-        out["released"] = scope_lock.release(loop, pr)
+        # A worker may already have replaced the hold: approve only the exact snapshot
+        # at this retry's head, atomically compared under the state-file writers' lock.
+        expected = held if held and held.get("head") == found["head"] else None
+        out["released"] = scope_lock.release(loop, pr, expected=expected)
         # Best effort by its own contract (a ledger that refuses the note never fails the step);
         # an unknown action name is the only thing it raises for, and "retry" is one of them.
         sup.record_operator_action(loop["repo"], pr, "retry")

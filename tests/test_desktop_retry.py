@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import builtins
+import fcntl
 import io
 import json
 import os
@@ -434,18 +435,23 @@ class ScopeLock(Fixture):
 
         def rearm(sup, *args, **kwargs):
             self.assertFalse(st.scope_holds()[356]["released"])
+            # The JSON lock must not span a SQLite transaction (opposite worker ordering).
+            with (st.dir / "state.lock").open("r+") as contender:
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
             result = real_retry(sup, *args, **kwargs)
             self.assertEqual(self.state_of(row["id"])["state"], "pending")
             events.append("rearmed")
             return result
 
-        def release(*args):
+        def release(*args, **kwargs):
             self.assertEqual(events, ["rearmed"])
             events.append("released")
-            return real_release(*args)
+            return real_release(*args, **kwargs)
 
         def start(loop):
             self.assertTrue(st.scope_holds()[356]["released"])
+            with (st.dir / "state.lock").open("r+") as contender:
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.assertEqual(events, ["rearmed", "released"])
             events.append("worker")
             return False
@@ -473,6 +479,85 @@ class ScopeLock(Fixture):
         worker.assert_called_once()
         self.assertEqual(self.state_of(allowed["id"])["state"], "pending")
         self.assertEqual(self.state_of(blocked["id"])["state"], "failed")
+
+    def assert_changed_hold_preserved(self, replacement, *, cli=False, initially_held=True):
+        row = self.row("failed", seat="fixer")
+        if cli:
+            self.row("failed", seat="reviewer", push_confirmed=1)
+        st = self.hold()
+        if not initially_held:
+            st.scope_hold_drop(356)
+        real_retry = Supervisor.retry
+
+        def rearm(sup, *args, **kwargs):
+            result = real_retry(sup, *args, **kwargs)
+            self.assertEqual(self.state_of(row["id"])["state"], "pending")
+            # Another worker's real JSON write, deterministically after the SQLite commit
+            # and before retry releases anything. No fake hold read or release implementation.
+            from diaktoros import state as state_mod
+            state_mod.state_for(self.loop).scope_hold_set(356, replacement)
+            return result
+
+        with mock.patch.object(Supervisor, "retry", autospec=True, side_effect=rearm), \
+             mock.patch.object(retry_action.gate, "resume_isolated", return_value=False) as worker:
+            if cli:
+                code, output = self.cli_retry()
+                self.assertEqual(code, 2, output)
+                self.assertIn("fixer #356 @ aaaaaaa re-armed", output)
+                self.assertIn("refused:", output)
+                self.assertNotIn("scope lock released", output)
+            else:
+                view = self.retry(seat="fixer")
+                self.assertTrue(view["rearmed"])
+        worker.assert_called_once()
+        self.assertEqual(st.scope_holds()[356], replacement)
+        self.assertEqual(self.state_of(row["id"])["state"], "pending")
+
+    def test_changed_head_after_rearm_preserves_hold_desktop(self):
+        self.assert_changed_hold_preserved(
+            {"head": OTHER, "files": ["src/lib.rs"], "released": False})
+
+    def test_changed_files_after_rearm_preserves_hold_desktop(self):
+        self.assert_changed_hold_preserved(
+            {"head": HEAD, "files": ["src/lib.rs", "src/new.rs"], "released": False})
+
+    def test_changed_files_after_partial_cli_rearm_preserves_hold(self):
+        self.assert_changed_hold_preserved(
+            {"head": HEAD, "files": ["src/new.rs"], "released": False}, cli=True)
+
+    def test_new_hold_after_rearm_when_snapshot_absent_is_not_released(self):
+        self.assert_changed_hold_preserved(
+            {"head": HEAD, "files": ["src/lib.rs"], "released": False}, initially_held=False)
+
+    def test_success_without_a_hold_does_not_create_a_release(self):
+        self.row("failed", seat="fixer")
+        st = self.hold()
+        st.scope_hold_drop(356)
+        self.retry(seat="fixer")
+        self.assertEqual(st.scope_holds(), {})
+
+    def test_a_hold_at_another_head_is_not_approved_by_this_retry(self):
+        self.row("failed", seat="fixer")
+        st = self.hold()
+        hold = {"head": OTHER, "files": ["src/lib.rs"], "released": False}
+        st.scope_hold_set(356, hold)
+        self.retry(seat="fixer")
+        self.assertEqual(st.scope_holds()[356], hold)
+
+    def test_hold_changed_during_plan_is_not_approved(self):
+        self.row("failed", seat="fixer")
+        st = self.hold()
+        replacement = {"head": HEAD, "files": ["src/new.rs"], "released": False}
+        real_plan = retry_action.plan
+
+        def plan(*args, **kwargs):
+            found = real_plan(*args, **kwargs)
+            st.scope_hold_set(356, replacement)
+            return found
+
+        with mock.patch.object(retry_action, "plan", side_effect=plan):
+            self.retry(seat="fixer")
+        self.assertEqual(st.scope_holds()[356], replacement)
 
     def test_a_refused_click_never_releases_a_hold(self):
         # Every refusal decided before the re-arm — an unknown PR, a stale confirmation — leaves
