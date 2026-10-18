@@ -733,10 +733,16 @@ def retry_pending_breaches(loop: dict, st: state_mod.LoopState, prs: list,
         if latest is not None and gh.review_state(latest) == "APPROVED":
             continue
         changes = gate.verdicts(reviews, loop)
-        if len(changes) >= loop["cap"] or gate.escalated(marker, head):
-            gate.breach(loop, st, number, head, marker.get("rounds", len(changes)),
-                        marker.get("reason", "review cap reached"),
-                        escalated=marker.get("escalated") if gate.escalated(marker, head) else None)
+        if not gate.breach_holds(marker, head, len(changes), loop["cap"]):
+            # A raised cap or a dismissed verdict: the head is no longer parked, so the stale
+            # marker must not hide it from the stall scan. Clear it (#780).
+            if st.breach_clear_pending(number, head):
+                log(f"#{number} @ {head[:7]}: pending breach no longer holds "
+                    f"({len(changes)}/{loop['cap']} verdicts) — cleared")
+            continue
+        gate.breach(loop, st, number, head, marker.get("rounds", len(changes)),
+                    marker.get("reason", "review cap reached"),
+                    escalated=marker.get("escalated") if gate.escalated(marker, head) else None)
 
 
 def finish_reads(loop: dict, watch: dict, now: float, health: Health | None,
@@ -1033,8 +1039,9 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                    else [])
         changes = gate.verdicts(reviews, loop)
         marker = breach.get(f"{loop['repo']}#{number}") or {}
-        if gate.breach_delivery_status(marker, head) == "delivery-pending":
-            continue  # failed delivery is not a silent stall
+        if (gate.breach_delivery_status(marker, head) == "delivery-pending"
+                and gate.breach_holds(marker, head, len(changes), loop["cap"])):
+            continue  # failed delivery is not a silent stall; the retry owns it while it holds
         observed_at = current_heads[str(number)]["observed_at"]
         head_postdates_arming = TEST or observed_at is not None
         kind = ""

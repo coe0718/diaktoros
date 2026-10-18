@@ -716,6 +716,21 @@ class LoopState:
         return "new" if new else "retry"
 
 
+    def breach_clear_pending(self, number: int, head: str) -> bool:
+        """Drop a ``delivery-pending`` marker at ``head`` that no longer holds it (a raised cap
+        or a dismissed verdict). Only that status, that head, and no delivery in flight."""
+        key = f"{self.loop['repo']}#{number}"
+        with self._breach_lock():
+            data = _mapping(self._load(self.breach, {}))
+            marker = _mapping(data.get(key))
+            if (marker.get("head") != head or marker.get("status") != "delivery-pending"
+                    or (marker.get("delivery_token")
+                        and time.time() - (_clock(marker.get("delivery_at")) or 0) < 60)):
+                return False
+            data.pop(key)
+            self._breach_save(data)
+            return True
+
     def breach_claim(self, number: int, head: str) -> dict | None:
         """Claim exactly one wake for this PR/head across gateway processes."""
         key = f"{self.loop['repo']}#{number}"
