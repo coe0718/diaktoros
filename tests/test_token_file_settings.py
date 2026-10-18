@@ -358,6 +358,17 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.assertEqual([c.status for c in loop_checks], [doctor.MISMATCH])
         self.assertNotIn(SENTINEL, check.detail + check.fix)
 
+    def test_doctor_token_line_refuses_a_relative_path(self):
+        # Review on #979: through token_file_problem the token line now refuses a relative
+        # entry, which the old mode-only check verified from whatever the cwd happened to be.
+        path = self.pats["rev"]
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(path.parent)
+        check = doctor.check_token("rev-bot", path.name)        # a 0600 file you own
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn("not an absolute path", check.detail)
+        self.assertEqual(doctor.check_token("rev-bot", str(path)).status, doctor.VERIFIED)
+
 
 if __name__ == "__main__":
     unittest.main()
