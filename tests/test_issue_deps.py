@@ -269,6 +269,11 @@ class Deps(GateFixture):
 
     def test_two_processes_holding_post_the_pr_wait_comment_once(self):
         other = state_mod.state_for(self.loop)
+        # The observer logs to stderr, which splits the `... ok` line `unittest -v` prints and
+        # makes a reproduction proof read this test as missing; the notice is not under test.
+        patcher = mock.patch.object(fix_hold, "_notice")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.concurrent_second_caller(lambda: fix_hold.hold(self.loop, other, 12, 7))
         fix_hold.hold(self.loop, self.st, 12, 7)
         self.assertEqual(len([p for p, _b, _l in self.posted if p.endswith("/issues/12/comments")]), 1)
