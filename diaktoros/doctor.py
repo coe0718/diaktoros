@@ -68,8 +68,9 @@ MARKS = {VERIFIED: "✅", ABSENT: "❌", MISMATCH: "❌", UNKNOWN: "⚠️", SKI
 # import ``cli``) and `tests/run_tests.py` asserts the two spellings agree — a preflight that
 # looks for a filename nothing writes would report a healthy install as broken.
 SHIM_NAME = "diaktoros-watchdog.py"      # a fresh install's; see shim_path() for the live one
-PLUGIN_SCRIPTS = ("watchdog.py", "gate_reviewer.py", "gate_fixer.py",
-                  "gate_adjudicator.py", "gate_triage.py", "cleanup.py")
+# Every file a route runs by name (route_intent.GATE_SCRIPT, observe.py included) plus the
+# watchdog and cleanup scripts, so a route script cannot be added without doctor checking it.
+PLUGIN_SCRIPTS = ("watchdog.py", *dict.fromkeys(route_intent.GATE_SCRIPT.values()), "cleanup.py")
 GATE_SCRIPT = {"reviewer": "gate_reviewer.py", "fixer": "gate_fixer.py",
                "triage": "gate_triage.py"}
 GATE_EVENT = config.HOOK_EVENT
@@ -1187,7 +1188,7 @@ def check_scripts() -> Check:
         return Check("scripts", ABSENT, "missing from the plugin: " + ", ".join(missing),
                      "reinstall the plugin: the routes and the cron shim run these files by name, "
                      "so a missing one is a seat that can never be woken")
-    return Check("scripts", VERIFIED, f"{scripts_dir()} (watchdog, three gates, cleanup)")
+    return Check("scripts", VERIFIED, f"{scripts_dir()} (watchdog, gates, observer, cleanup)")
 
 
 def gate_timeout_profiles(loop: dict) -> dict[str, list[str]]:

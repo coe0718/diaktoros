@@ -212,5 +212,32 @@ class Environment(unittest.TestCase):
             self.assertIn(name, names)
 
 
+class PluginScripts(unittest.TestCase):
+    """#817: the `scripts` check covers every file a route runs by name, observe.py included."""
+
+    def scripts_in(self, names):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = pathlib.Path(temp.name)
+        for name in names:
+            (root / name).write_text("")
+        return mock.patch.object(doctor, "scripts_dir", lambda: root)
+
+    def test_every_route_script_is_checked(self):
+        from diaktoros import route_intent
+        self.assertLessEqual(set(route_intent.GATE_SCRIPT.values()), set(doctor.PLUGIN_SCRIPTS))
+        self.assertIn("observe.py", doctor.PLUGIN_SCRIPTS)
+
+    def test_missing_observe_script_fails_the_check(self):
+        with self.scripts_in([n for n in doctor.PLUGIN_SCRIPTS if n != "observe.py"]):
+            check = doctor.check_scripts()
+        self.assertEqual(check.status, doctor.ABSENT)
+        self.assertIn("observe.py", check.detail)
+
+    def test_all_scripts_present_is_verified(self):
+        with self.scripts_in(doctor.PLUGIN_SCRIPTS):
+            self.assertEqual(doctor.check_scripts().status, doctor.VERIFIED)
+
+
 if __name__ == "__main__":
     unittest.main()
