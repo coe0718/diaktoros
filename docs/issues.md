@@ -143,6 +143,26 @@ changes. Attribution is added unless disabled. If a fix is not possible, the tur
 post one explanation on the issue instead of opening a PR. It is not guaranteed to
 solve the issue or complete all stages of the PR sequence.
 
+The issue is a work order, not a confirmed bug: the fixer checks the claim against the code
+first, and comments instead of "fixing" a claim that does not hold.
+
+### When the fixer asks a question or needs a plan
+
+An issue-fix turn may answer on the issue instead of opening a PR: one question, or a plan. Each
+ask costs a fixer turn, an issue gets at most three (questions and plans together), and an open
+ask blocks another until it is answered.
+
+- A **question** resumes on the first comment after it from a loop maintainer
+  (`triage.maintainers`). Anyone else's reply is ignored.
+- A **plan** resumes only on a comment that is exactly `/loop approve` (case-insensitive).
+- After the reply, the watchdog sweep queues a fresh fix turn from the base branch. Until then,
+  `status` and `explain` say the issue is waiting for a maintainer.
+
+An issue is **plan-first** when it carries the `plan-first` label or its body is longer than
+4,000 characters. It must have an approved plan before any PR: the broker refuses `open_pr` until
+a maintainer posts `/loop approve`, and the fixer's prompt says so. The approval is remembered per
+issue, so later fix turns may publish.
+
 The host does not merge. GitHub's `Fixes #N` closing behavior applies when the PR is
 merged into the appropriate default-branch context, not merely because a PR was opened.
 

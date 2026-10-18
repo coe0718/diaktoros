@@ -224,6 +224,20 @@ REQUEST_CHANGES verdict in the same turn can still be submitted. Checks still ru
 not block an approval. With `review_after_ci` on, a review waits up to an hour for checks to
 finish before starting.
 
+### What every review body needs
+
+The broker checks the body before spending the review write (#427, #687):
+
+- **`Not verified:` line.** Every review ends with one listing what the reviewer did not check,
+  or `Not verified: nothing`. A review without it is refused.
+- **A test for every fix.** A fix must come with a test that fails without it and passes with it.
+  A fix "verified by reading" with no such test is unfinished, and the next review blocks on it;
+  if the defect truly cannot be tested in the repository, the fixer's answers must say why.
+- **Tests CI already ran.** A test the reviewer cannot run locally is looked up in the head's
+  per-test results. `ok` there counts as executed, and the reviewer cites the check; `skipped` or
+  absent goes under `Not verified:` and is not a block unless the requirement is that it runs. A
+  block that rests only on "could not run" is refused when CI ran that test `ok` at the head.
+
 ### Automatic repair for failed required checks
 
 The watchdog can ask the fixer to repair a red required check without waiting for a
@@ -500,6 +514,11 @@ Reviewer/fixer concurrency defaults to one. Excess work queues; live GitHub chec
 closed, retargeted and superseded queued heads before launch. JSON seat marks and the
 supervisor cooperate; a mark alone is not proof of a live process. Long budgets extend
 stale-lock thresholds so a healthy long turn is not prematurely declared dead.
+
+Queued turns are claimed by class, not arrival: a CI-fix or conflict turn first, then a fix
+round, then a review, then a new issue fix. A waiting row climbs one class every 15 minutes
+(900 s), so the lowest class starts within 45 minutes even while higher classes keep arriving.
+`status` prints the queue in claim order and says when a row was aged up (#481).
 
 The shared watchdog requires no model conversation. It drains eligible queues, resumes
 due pre-write retries, restores recorded routes/shims, reports stalls/read failures,
