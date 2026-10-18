@@ -1107,7 +1107,7 @@ class LoopState:
         return entry if isinstance(entry, dict) else {}
 
     def transition_get(self, number: int) -> dict:
-        return (self._load(self.transitions_file, {}) or {}).get(str(number)) or {}
+        return _mapping(_mapping(self._load(self.transitions_file, {})).get(str(number)))
 
     def transition_set(self, number: int, entry: dict) -> dict:
         """Separate durable ledger: whole-watchdog snapshots cannot erase holds."""
@@ -1133,7 +1133,7 @@ class LoopState:
         hostdirs.ensure(self.dir)
         with (self.dir / "stack-transitions.lock").open("a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            data = self._load(self.transitions_file, {}) or {}
+            data = _mapping(self._load(self.transitions_file, {}))
             prior = data.get(str(number))
             entry = change(prior)
             if entry is None:
