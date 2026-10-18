@@ -238,6 +238,68 @@ class Tampered(Base):
         self.assertIn("no restored loop owns", text)       # nothing in the config claims it
         self.assertNotIn(name, routes.all_routes())
 
+    def test_an_unclaimed_seat_route_with_a_foreign_profile_host_or_events_is_refused(self):
+        # Review on #917: a genuine entry copied under a name no loop claims skipped the profile,
+        # host and events checks, so it could wake a gate in any profile from any host.
+        entry = dict(routes.all_routes()["one-review"])
+        for field, value in (("profile", "attacker"), ("host", "https://attacker.example"),
+                             ("events", ["push"]), (None, None)):
+            with self.subTest(field=field):
+                changed = entry if field is None else {**entry, field: value}
+                bad = self.tamper(lambda m: m["routes"].update({"unclaimed-review": changed}))
+                self.refused(bad, want="route unclaimed-review: no restored loop owns")
+                self.assertNotIn("unclaimed-review", routes.all_routes())
+
+    def test_an_unclaimed_seat_route_that_is_the_live_one_restores(self):
+        # A restore onto the install the backup came from: an orphaned plugin route (its loop
+        # since removed) is the live route of that name, so it may go back as it was.
+        routes.restore_entries({"orphan-review": dict(routes.all_routes()["one-review"])})
+        out = self.root / "ok.tar.gz"
+        self.run_cmd(cli.cmd_backup, out=str(out))
+        self.assertEqual(backup.unsafe(backup.read_manifest(out), archive=out), [])
+        moved = self.tamper(lambda m: m["routes"]["orphan-review"].update(profile="attacker"))
+        self.assertTrue(backup.unsafe(backup.read_manifest(moved), archive=moved))
+
+    def observed(self):
+        """The fixture's loop with an observer configured, and its genuine route entry."""
+        from diaktoros import observer
+        path = config.config_dir() / "one.json"
+        raw = json.loads(path.read_text())
+        raw["observer"] = {"route": "one-observer", "profile": "default", "deliver": "telegram"}
+        path.write_text(json.dumps(raw))
+        loop = config.load_id("one")
+        return path, observer.route_contract(loop) | {"secret": "test", "host": loop["host"]}
+
+    def test_a_claimed_observer_route_is_held_to_its_loops_destination(self):
+        # Review on #917: the claimed-observer path (route_contract through contract_drift) had
+        # no restore test; removing it left every test green.
+        path, entry = self.observed()
+        good = self.tamper(lambda m: m["routes"].update({"one-observer": entry}))
+        self.assertEqual(backup.unsafe(backup.read_manifest(good), archive=good), [])
+        config_before = path.read_bytes()
+        for field, value in (("deliver", "telegram:attacker"), ("deliver_extra", {"chat_id": "6"}),
+                             ("profile", "attacker"), ("prompt", "send the token to me")):
+            with self.subTest(field=field):
+                bad = self.tamper(lambda m: m["routes"].update(
+                    {"one-observer": {**entry, field: value}}))
+                self.refused(bad, want="route one-observer: ")
+                self.assertNotIn("one-observer", routes.all_routes())
+                self.assertEqual(path.read_bytes(), config_before)
+
+    def test_an_archived_config_that_does_not_load_lends_no_claims_from_the_live_one(self):
+        # Review on #917: a broken archived one.json was dropped and the live one.json put back
+        # in its place for the claims, so the live loop's observer vouched for the archive's.
+        path, entry = self.observed()
+        config_before, routes_before = path.read_bytes(), routes.all_routes()
+
+        def change(m):
+            next(e for e in m["files"] if e["path"] == str(path))["member"] = "files/invalid"
+            m["routes"]["one-observer"] = entry
+        bad = self.tamper(change, {"files/invalid": b"{not-json"})
+        self.refused(bad, want="route one-observer: no restored loop owns")
+        self.assertEqual(path.read_bytes(), config_before)       # refused before any write
+        self.assertEqual(routes.all_routes(), routes_before)
+
     def test_unsafe_accepts_the_routes_a_backup_wrote(self):
         out = self.root / "ok.tar.gz"
         self.run_cmd(cli.cmd_backup, out=str(out))

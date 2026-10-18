@@ -179,13 +179,17 @@ def outside_state_dirs(manifest: dict) -> list[str]:
 def archived_loops(archive: pathlib.Path, manifest: dict) -> list[dict]:
     """The loop configs that will be in place once this archive is restored: the archive's own
     loop files, plus every live loop it does not replace. An archived loop file that does not
-    load is left out, so the routes it would have claimed are judged as unclaimed (stricter)."""
+    load is left out, so the routes it would have claimed are judged as unclaimed (stricter) —
+    and it still replaces the live loop file of that name, so that loop's claims do not count
+    either (review on #917: a broken archived file borrowed the live loop's routes)."""
     loops: dict = {}
+    replaced: set[str] = set()
     with tarfile.open(archive, "r:gz") as tar:
         for entry in manifest["files"]:
             target = pathlib.Path(entry["path"])
             if target.suffix != ".json" or target.parent != config.config_dir():
                 continue
+            replaced.add(target.stem)        # a live loop's id is its file's stem
             try:
                 loop = config.normalize(json.load(tar.extractfile(tar.getmember(entry["member"]))),
                                         target)
@@ -195,7 +199,7 @@ def archived_loops(archive: pathlib.Path, manifest: dict) -> list[dict]:
             if loop["id"] == target.stem:
                 loops[loop["id"]] = loop
     live, _ = config.readable_loops()
-    return list(loops.values()) + [loop for loop in live if loop["id"] not in loops]
+    return list(loops.values()) + [loop for loop in live if loop["id"] not in replaced]
 
 
 def route_problems(entry: dict, live, claims: list) -> list[str]:
@@ -206,8 +210,11 @@ def route_problems(entry: dict, live, claims: list) -> list[str]:
     ``events`` decide who is woken. ``claims`` is ``[(loop, role)]``, the restored loops that own
     the route's name; the entry must honour one of them (``gate_shims.contract_drift`` plus the
     seat's profile and delivery). A route no loop claims is held to what needs no config: its
-    script's prompt, no delivery-only mode, not switched off, no extra destination — and an
-    observer route nobody claims is refused, since its destination cannot be checked. A seat's
+    script's prompt, no delivery-only mode, not switched off, no extra destination — and its
+    ``profile``, ``host`` and ``events`` must be the live route's of that name (a restore onto the
+    install it came from), since no config says what they should be (review on #917). An
+    unclaimed route with no live route to match, and an unclaimed observer route (its destination
+    cannot be checked), are refused. A seat's
     ``deliver``/``deliver_extra`` may also equal the live route's own (a restore onto the install
     the backup came from keeps an operator's choice). Returns [] when the entry is fine.
     """
@@ -216,6 +223,15 @@ def route_problems(entry: dict, live, claims: list) -> list[str]:
     if not claims:
         if script == route_intent.GATE_SCRIPT["observer"]:
             return ["no restored loop owns this observer route, so its destination cannot be checked"]
+        if not live:
+            return ["no restored loop owns this route and none is live under its name, so its "
+                    "profile, host and events cannot be checked"]
+        differ = [key for key in ("profile", "host", "events") if key == "profile"
+                  and routes.route_profile(entry) != routes.route_profile(live)
+                  or key != "profile" and entry.get(key) != live.get(key)]
+        if differ:
+            return [f"no restored loop owns this route, and its {', '.join(differ)} differ from "
+                    "the live route's"]
         claims = [({}, role) for role in route_intent.GATE_SCRIPT
                   if script == route_intent.GATE_SCRIPT[role]
                   or script in config.LEGACY_GATE_SCRIPTS.get(role, ())]

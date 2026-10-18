@@ -884,9 +884,12 @@ An archive is treated as outside input. `restore` refuses it (exit `2`, nothing 
   fields the plugin would not write for it (#783): a different `prompt`, `events`, `profile`,
   `host`, `deliver` or `deliver_extra`, delivery-only mode on a seat, or `enabled: false`. The
   entry is judged against the loop files being restored (the archive's, plus any live loop it
-  does not replace); a seat route's `deliver`/`deliver_extra` may also equal the live route's
-  own. An observer route no restored loop owns is refused, because its destination cannot be
-  checked;
+  does not replace; an archived loop file that does not load still replaces the live one, and
+  claims nothing); a seat route's `deliver`/`deliver_extra` may also equal the live route's
+  own. A route no restored loop owns must have the live route's `profile`, `host` and `events`
+  under the same name (a restore onto the install it came from), and is refused when there is
+  no such live route; an observer route no restored loop owns is refused, because its
+  destination cannot be checked;
 - a live route of the same name belongs to something else (even with `--force`);
 - a run is in flight or uncertain.
 
