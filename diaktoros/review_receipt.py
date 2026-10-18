@@ -215,8 +215,13 @@ def submit(loop, scope, ledger, verdict, body):
         # The POST was sent (or its answer lost): whatever failed from here on, the review may
         # exist on GitHub. Never let it surface as a refusal made before the write.
         raise ReviewPostUnconfirmed(f'{type(exc).__name__} after the review POST') from exc
-    broker._audit(loop, scope.repo, scope.number, scope.head, scope.branch,
-                  'reviewer', 'review', login)
+    try:
+        broker._audit(loop, scope.repo, scope.number, scope.head, scope.branch,
+                      'reviewer', 'review', login)
+    except Exception as exc:
+        # The review is confirmed on GitHub; a failed audit write must not read as a refusal.
+        raise ReviewPostUnconfirmed(f'{type(exc).__name__} writing the audit record after '
+                                    'the review POST') from exc
     return {'id': review_id}
 
 

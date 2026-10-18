@@ -207,6 +207,18 @@ class VerdictOnlyBrokerTests(unittest.TestCase):
         self.assertIn("review posted", answer["error"])
         self.assertNotIn("write denied", answer["error"])
 
+    def test_a_posted_review_whose_audit_write_fails_is_not_answered_as_a_failed_write(self):
+        sup, scope = self.receipt_scope()
+        server = self.start(scope)
+        with mock.patch.object(broker, "_audit", side_effect=OSError("disk full")):
+            answer = self.send(server, "APPROVE")
+        self.assertEqual(len(self.posts), 1, "the review reached GitHub")
+        self.assertFalse(answer["ok"])
+        self.assertNotIn("write failed", answer["error"])
+        self.assertNotIn("write denied", answer["error"])
+        self.assertIn("audit record", answer["error"])
+        self.assertIn("do not say it was not published", answer["error"])
+
     def test_host_write_paths_refuse_comment_too(self):
         with self.assertRaises(broker.BrokerDenied):
             broker.perform(self.loop, repo=REPO, number=7, head=HEAD, role="reviewer",
