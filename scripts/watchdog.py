@@ -1050,7 +1050,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         # A marker at this head is the escalation: whether it is a stall is its own question
         # (parked_kind), and it is never "no escalation marker" while it is young (#98).
         parked = parked_kind(loop, marker, number, head, marker_grace)
-        # A review-only PR has no fixer and no cap: changes requested is back with its author (#191).
+        # A review-only PR has no fixer and no adjudication: changes requested is back with its author (#191).
         review_only = author in config.review_only(loop)
         if parked is not None:
             kind = parked
