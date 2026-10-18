@@ -103,6 +103,31 @@ class Junk(unittest.TestCase):
         st.inflight(f"review:8:{HEAD}", record=True)
         self.assertNotIn(old, json.loads(st.inflight_file.read_text()))
 
+    def test_inflight_survives_a_wrong_typed_ttl_knob(self):
+        """#793: a bad ``inflight_ttl_min`` heals to the default, as ``ttl_min`` does."""
+        st, mark = self.st, f"review:7:{HEAD}"
+        for bad in ["abc", "", None, [10], {"a": 1}, True, float("nan"), float("inf")]:
+            with self.subTest(bad=bad):
+                st.loop["inflight_ttl_min"] = bad
+                st.inflight_file.write_text(json.dumps({mark: time.time() - 5 * 60}))
+                self.assertTrue(st.inflight(mark))              # 5 min old, default TTL 10
+                st.inflight_file.write_text(json.dumps({mark: time.time() - 20 * 60}))
+                self.assertFalse(st.inflight(mark))             # 20 min old: expired
+                self.assertFalse(st.inflight(mark, record=True))
+                self.assertTrue(st.inflight(mark))
+        del st.loop["inflight_ttl_min"]                         # missing key: no KeyError
+        st.inflight_file.write_text(json.dumps({mark: time.time() - 5 * 60}))
+        self.assertTrue(st.inflight(mark))
+        st.loop["inflight_ttl_min"] = "30"                      # a numeric string is its number
+        st.inflight_file.write_text(json.dumps({mark: time.time() - 20 * 60}))
+        self.assertTrue(st.inflight(mark))
+
+    def test_seat_ttl_survives_a_non_finite_ttl_min(self):
+        for bad in [float("nan"), float("inf"), "inf"]:
+            with self.subTest(bad=bad):
+                self.st.loop["ttl_min"] = bad
+                self.assertEqual(self.st._seat_ttl("reviewer"), 45 * 60)
+
     def test_breach_markers_survive_every_shape(self):
         st = self.st
         entry = {"pr": 7, "head": HEAD, "rounds": 3, "cap": 3, "reason": "cap", "at": "now"}

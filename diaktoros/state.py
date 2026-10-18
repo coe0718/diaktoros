@@ -334,16 +334,26 @@ class LoopState:
         age arithmetic and stop the readers either. ``recorded`` is the budget the claim was taken
         with, which keeps a lowered ``turn_budget_s`` from shortening it.
         """
-        default = float(settings_form.SETTINGS_SCHEMA["ttl_min"]["default"])
-        raw = self.loop.get("ttl_min")
-        if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
-            raw = default
-        try:
-            ttl_min = float(raw)
-        except (TypeError, ValueError):
-            ttl_min = default
-        return config.seat_ttl_s({**self.loop, "ttl_min": ttl_min}, seat=seat,
+        return config.seat_ttl_s({**self.loop, "ttl_min": self._minutes("ttl_min")}, seat=seat,
                                  recorded=recorded)
+
+    def _minutes(self, key: str) -> float:
+        """A minutes knob (``ttl_min``, ``inflight_ttl_min``) as a finite number, never an error.
+
+        ``normalize()`` does not coerce these and the settings form can write them raw, so a
+        string that is not a number, ``None``, a bool, a non-finite number or a missing key
+        falls back to the setting's default (``settings_form.SETTINGS_SCHEMA``); a numeric
+        string reads as its number. One healing rule for every reader of a TTL.
+        """
+        default = float(settings_form.SETTINGS_SCHEMA[key]["default"])
+        raw = self.loop.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+            return default
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return default
+        return value if math.isfinite(value) else default
 
     def active_count(self, seat: str) -> int:
         return len(self.active(seat))
@@ -561,7 +571,7 @@ class LoopState:
         before the first verdict lands. TTL-bounded so a crashed run cannot wedge the head.
         """
         now = time.time()
-        ttl_s = self.loop["inflight_ttl_min"] * 60
+        ttl_s = self._minutes("inflight_ttl_min") * 60
         if record:
             with self.locked():
                 data = _mapping(self._load(self.inflight_file, {}))
