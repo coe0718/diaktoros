@@ -142,6 +142,32 @@ class Enqueue(Base):
             gate.breach(self.loop, self.st, 7, "d" * 40, 3, "cap")
         self.assertEqual([r[1] for r in self.rows()], [HEAD])
 
+    def test_duplicate_of_a_dead_turn_keeps_marker_delivery_pending(self):
+        # Through breach(): a re-fired breach at the same head and key meets a dead ledger row.
+        self.runtime()
+        with mock.patch.object(gh, "pr", return_value=pull()), \
+             mock.patch.object(Supervisor, "_spawn"):
+            gate.breach(self.loop, self.st, 7, HEAD, 3, "cap")
+        self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
+        for dead in ("failed", "cancelled"):
+            with ledger.connect(self.ledger) as con:
+                con.execute("UPDATE runs SET state=?, error='boom', retries=8", (dead,))
+            # The operator clears the parked marker; the cap re-fires breach() at the same head.
+            self.st.breach.unlink(missing_ok=True)
+            with self.subTest(dead=dead), mock.patch.object(gh, "pr", return_value=pull()), \
+                 mock.patch.object(Supervisor, "_spawn"):
+                self.assertFalse(gate.wake_adjudicator(self.loop, 7, HEAD, 3, "cap"))
+                gate.breach(self.loop, self.st, 7, HEAD, 3, "cap")
+                self.assertEqual(self.st.breach_get(7)["status"], "delivery-pending")
+
+    def test_duplicate_of_a_live_or_finished_turn_is_true(self):
+        for outcome in ("duplicate running", "duplicate claimed", "duplicate succeeded",
+                        "duplicate uncertain", "duplicate waiting (retry 1 due in 5s)",
+                        "pending", "rearmed"):
+            with self.subTest(outcome=outcome), \
+                 mock.patch.object(gate, "enqueue_isolated", return_value=outcome):
+                self.assertTrue(gate.wake_adjudicator(self.loop, 7, HEAD, 3, "cap"))
+
     def test_capacity_includes_every_seat(self):
         self.runtime()
         seen = {}
