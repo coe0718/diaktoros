@@ -1187,7 +1187,12 @@ def check_scripts() -> Check:
         return Check("scripts", ABSENT, "missing from the plugin: " + ", ".join(missing),
                      "reinstall the plugin: the routes and the cron shim run these files by name, "
                      "so a missing one is a seat that can never be woken")
-    return Check("scripts", VERIFIED, f"{scripts_dir()} (watchdog, three gates, cleanup)")
+    # Counted from the tuple the check just verified, so the line cannot drift from it.
+    gates = [name for name in PLUGIN_SCRIPTS if name.startswith("gate_")]
+    others = [name.removesuffix(".py") for name in PLUGIN_SCRIPTS if name not in gates]
+    return Check("scripts", VERIFIED,
+                 f"{scripts_dir()} ({len(PLUGIN_SCRIPTS)} files: "
+                 f"{', '.join(others[:1] + [f'{len(gates)} gates'] + others[1:])})")
 
 
 def gate_timeout_profiles(loop: dict) -> dict[str, list[str]]:
