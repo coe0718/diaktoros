@@ -211,6 +211,26 @@ class Environment(unittest.TestCase):
         for name in ("token-expiry:rev", "token-expiry:fix", "token-expiry:reader", "labels"):
             self.assertIn(name, names)
 
+    def _clone_loop(self):
+        source = self.root / "source"
+        (source / ".git").mkdir(parents=True)
+        return {**self.loop, "clone": str(source)}
+
+    def test_clone_check_is_green_for_a_clone_outside_the_artifacts_root(self):
+        self.assertEqual(doctor.check_clone(self._clone_loop()).status, doctor.VERIFIED)
+
+    def test_clone_check_fails_closed_when_path_resolution_raises(self):
+        # A symlink loop at the artifacts root: isolation.ensure refuses (cannot tell), so the
+        # doctor must not report the clone as verified (#828 review F1).
+        loop = self._clone_loop()
+        artifacts = self.root / "state" / "artifacts"
+        artifacts.parent.mkdir(parents=True)
+        artifacts.symlink_to(artifacts)
+        check = doctor.check_clone(loop)
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn("cannot tell whether", check.detail)
+        self.assertIn(check.status, doctor.FAILURES)
+
 
 if __name__ == "__main__":
     unittest.main()

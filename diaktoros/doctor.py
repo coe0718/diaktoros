@@ -50,7 +50,7 @@ import time
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from . import config, gh, observer, route_intent, routes
+from . import config, gh, isolation, observer, route_intent, routes
 from .config import host_guards
 from .config import credentials
 
@@ -1449,10 +1449,16 @@ def check_clone(loop: dict) -> Check:
     # The tree the cleanup deletes, derived from config rather than re-spelled here — a clone that
     # lives inside it is a working copy the cleanup would take with the artifacts.
     root = config.artifacts_dir(loop, 1).parent
+    # Same check, same fail-closed rule as isolation.ensure: a path that cannot be resolved is
+    # not "outside" — the rail cannot be shown to hold, so this is a failure, not a green.
     try:
-        inside = str(path.resolve()).startswith(str(root.resolve()) + os.sep)
-    except Exception:
-        inside = False
+        inside = isolation.clone_inside_root(path, root)
+    except Exception as exc:
+        return Check("clone", MISMATCH, f"cannot tell whether {path} is inside the loop's "
+                                        f"artifacts root {root} ({exc})",
+                     "fix the unresolvable path (a symlink loop or a permission error): isolation "
+                     "refuses to run while it cannot tell, and the cleanup deletes everything "
+                     "under artifacts/")
     if inside:
         return Check("clone", MISMATCH, f"{path} lives inside the loop's artifacts root {root}",
                      "move the clone out of the state directory: the cleanup deletes everything "

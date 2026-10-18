@@ -120,6 +120,16 @@ def _resolve(path: pathlib.Path) -> pathlib.Path:
         return _resolve(path.parent) / path.name
 
 
+def clone_inside_root(source: pathlib.Path, root: pathlib.Path) -> bool:
+    """True when ``source`` lives inside ``root``. Raises when either cannot be resolved.
+
+    The one place that decides the clone-inside-the-isolation-root question, shared by ``ensure``
+    (which refuses) and ``doctor`` (which reports). Callers must treat a raise as "cannot tell",
+    never as "not inside".
+    """
+    return str(_resolve(source)).startswith(str(_resolve(root)) + os.sep)
+
+
 def ensure(loop: dict, number: int, seat: str, head: str = "", login: str = "") -> dict | None:
     """Create or reuse this PR-and-seat workspace and check out ``head`` in it.
 
@@ -138,8 +148,7 @@ def ensure(loop: dict, number: int, seat: str, head: str = "", login: str = "") 
     # resolved (a symlink loop, a permission error) the check cannot be made, so isolation is
     # refused — never skipped.
     try:
-        inside = (str(_resolve(source)).startswith(str(_resolve(root)) + os.sep)
-                  or source == clone)
+        inside = clone_inside_root(source, root) or source == clone
     except Exception as exc:
         log(f"refusing to isolate #{number}: cannot tell whether the configured clone is inside "
             f"{root} ({exc})")
