@@ -156,8 +156,25 @@ def main() -> None:
     reviews = transition.effective_reviews(loop, st, number, head, gate.fetch_reviews(loop, number))
     if not isinstance(reviews, list):
         silence("host review receipts unreadable — not guessing which reviews count")
+    dispute_key = ""
     if gate.reviewed_at_head(reviews, loop, head):
-        silence(f"head {head[:7]} already has a reviewer's verdict")
+        # #894: after the fixer disputed the verdict at this head, a maintainer's request asks
+        # for one review there, keyed by the dispute so it runs once per dispute. Everything
+        # else at a reviewed head is still refused (#401: a dispute itself never re-requests).
+        disputed = None
+        if action == "review_requested" and sender in config.maintainers(loop):
+            from diaktoros import run_supervisor
+            from diaktoros.util import epoch
+            disputed = run_supervisor.dispute_at(run_supervisor.production_ledger(),
+                                                 loop["repo"], number, head)
+            latest = gate.latest_effective_review_at_head(reviews, loop, head)
+            if (disputed is not None and latest is not None
+                    and disputed <= epoch(latest.get("submitted_at"))):
+                disputed = None
+        if disputed is None:
+            silence(f"head {head[:7]} already has a reviewer's verdict")
+        from diaktoros.run_supervisor import DISPUTE_KEY
+        dispute_key = f"{DISPUTE_KEY}{int(disputed)}"
     held = st.human_hold(number, head)
     if isinstance(held, dict):
         # #478: the loop's review of this head ended with its approval left to a person.
@@ -165,11 +182,13 @@ def main() -> None:
                 f"{held.get('why') or 'reserved paths'})")
     dismissed = [int(r['id']) for r in gate.reviews_at_head(reviews, loop, head)
                  if gh.review_state(r) == 'DISMISSED' and type(r.get('id')) is int and r['id'] > 0]
-    turn_key = f'dismissed:{max(dismissed)}' if dismissed else fresh_key
+    turn_key = dispute_key or (f'dismissed:{max(dismissed)}' if dismissed else fresh_key)
     if st.inflight(f"review:{number}:{head}"):
         silence(f"a review for head {head[:7]} is already out")
 
-    if gate.escalated(st.breach_get(number), head):
+    marker = st.breach_get(number)
+    if gate.escalated(marker, head) and not (
+            dispute_key and ((marker or {}).get("escalated") or {}).get("by") == "dispute"):
         silence(f"#{number} @ {head[:7]} is escalated to adjudication — no further review here")
     rounds = len(gate.verdicts(reviews, loop))
     # A review-only author's PR (#191) has no verdict cap: no fixer rounds are spent, the author

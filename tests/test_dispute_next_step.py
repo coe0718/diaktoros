@@ -83,5 +83,92 @@ class Dispute(fg.Base):
                 self.assertIn("fixer never pushed", self.sweep(VERDICT))
 
 
+class MaintainerRerequest(Dispute):
+    """#894: after a dispute, a maintainer's re-request gets one review at the reviewed head."""
+
+    def gate(self, sender="boss", reviews=VERDICT):
+        import contextlib
+        import io
+        import json
+        from scripts import gate_reviewer
+        payload = {"action": "review_requested", "number": 7, "pull_request": fg.LIVE,
+                   "repository": {"full_name": fg.REPO}, "sender": {"login": sender},
+                   "requested_reviewer": {"login": "reviewer"}}
+        with mock.patch.object(gate_reviewer.sys, "stdin", io.StringIO(json.dumps(payload))), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as err, \
+                mock.patch.object(gate_reviewer.config, "maintainers", return_value={"boss"}), \
+                mock.patch.object(gate_reviewer.gh, "pr", return_value=fg.LIVE), \
+                mock.patch.object(gate_reviewer.gate, "fetch_reviews", return_value=list(reviews)), \
+                mock.patch.object(gate_reviewer.gate, "block_pr_agent") as block, \
+                mock.patch.object(gate_reviewer.observer, "notify"):
+            try:
+                gate_reviewer.main()
+            except SystemExit:
+                pass                      # a refusal exits; an accepted request returns
+        return block, err.getvalue()
+
+    def test_a_maintainers_rerequest_after_a_dispute_gets_one_review_keyed_by_it(self):
+        self.dispute()
+        block, _ = self.gate()
+        block.assert_called_once()
+        self.assertTrue(block.call_args.kwargs["turn_key"].startswith(
+            run_supervisor.DISPUTE_KEY))
+
+    def test_no_dispute_or_not_a_maintainer_is_still_refused(self):
+        block, err = self.gate()                                   # no dispute
+        block.assert_not_called()
+        self.assertIn("already has a reviewer's verdict", err)
+        self.dispute(created=1.0)                                  # older than the verdict
+        block, err = self.gate()
+        block.assert_not_called()
+        self.assertIn("already has a reviewer's verdict", err)
+        self.setUp()
+        self.dispute()
+        block, err = self.gate(sender="fixer")                     # not a maintainer
+        block.assert_not_called()
+
+    def test_a_dispute_escalation_still_takes_it_but_an_operator_escalation_does_not(self):
+        self.dispute()
+        self.loop["adjudicator"] = {"route": "one-breach"}
+        with mock.patch.object(gate, "wake_adjudicator", return_value=True), \
+                mock.patch.object(gate.gh, "pr", return_value=fg.LIVE):
+            outcome = gate.breach(self.loop, self.st, 7, fg.HEAD, 1, "disputed",
+                                  escalated={"by": "dispute", "at": "now", "reason": "r"})
+        self.assertEqual(outcome, "new")
+        self.assertTrue(gate.escalated(self.st.breach_get(7), fg.HEAD))
+        block, _ = self.gate()
+        block.assert_called_once()
+        marker = self.st.breach_get(7)
+        marker["escalated"]["by"] = "operator"
+        from diaktoros import state as state_mod
+        state_mod._atomic_write(self.st.breach, {f"{fg.REPO}#7": marker})
+        block, err = self.gate()
+        block.assert_not_called()
+        self.assertIn("escalated to adjudication", err)
+
+    def test_the_claim_does_not_cancel_the_rereview(self):
+        settings = self.root / "runtime.json"
+        settings.write_text("{}")
+        settings.chmod(0o600)
+        sup = run_supervisor.Supervisor(run_supervisor.production_ledger(),
+                                        production_config=settings, hermes_home=self.root / "home")
+        from diaktoros import gh
+        pr = {**fg.LIVE, "head": {"sha": fg.HEAD, "ref": "fix-7"}}
+
+        def claim(delivery, turn_key):
+            with mock.patch.object(sup, "_spawn"):
+                sup.enqueue(delivery, fg.REPO, 7, fg.HEAD, "reviewer", turn_key=turn_key)
+            with mock.patch.object(gh, "api", return_value=pr), \
+                    mock.patch.object(gh, "reviews", return_value=list(VERDICT)), \
+                    mock.patch("diaktoros.review_receipt.generation_for", return_value="g"):
+                sup._claim()
+            return sup.get(delivery)
+        # A plain reviewer row at a reviewed head is retired, as before ...
+        self.assertIn("reviewed at this head", str(claim("plain", "")["error"] or ""))
+        # ... the dispute re-review is claimed.
+        self.assertEqual(claim("rr", "dispute:1")["state"], "claimed")
+
+
 if __name__ == "__main__":
     unittest.main()
