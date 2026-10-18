@@ -475,14 +475,16 @@ def check_bwrap(report: Report, loop: dict, settings: dict | None, runtime_file:
         root = Path(tmp)
         code, home, work = root / "code", root / "home", root / "work"
         try:
-            trusted_turn._safe_code_snapshot(Path(settings["source"]), code)
+            skipped = trusted_turn._safe_code_snapshot(Path(settings["source"]), code)
         except Exception as exc:
             report.add(step, "sandbox:snapshot", FAIL,
                        f"source snapshot refused: {exc}",
                        "commit the hermes-agent checkout (the turn exports its HEAD commit, never "
                        "the worktree) and make sure run_agent.py is committed")
             return
-        report.add(step, "sandbox:snapshot", PASS, "committed source snapshot staged")
+        note = trusted_turn.skipped_gitlinks_note(skipped)
+        report.add(step, "sandbox:snapshot", PASS,
+                   "committed source snapshot staged" + (f"; {note}" if note else ""))
         violations, advisories = trusted_turn.exported_secrets(code)
         if violations:
             report.add(step, "sandbox:secret-files", FAIL,

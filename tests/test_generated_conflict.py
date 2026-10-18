@@ -69,8 +69,9 @@ class Settled(tct.Worker):
             if push_error:
                 raise push_error
             return {"new_head": "d" * 40}
+        source_skips = list(getattr(self, "source_skips", []))   # the Hermes tree's gitlinks
         with mock.patch.object(trusted_turn, "_safe_code_snapshot",
-                               side_effect=lambda src, dst: dst.mkdir()), \
+                               side_effect=lambda src, dst: dst.mkdir() or source_skips), \
              mock.patch.object(contained, "run", side_effect=sandbox or self.fake_sandbox(generator)), \
              mock.patch.object(safe_push, "push", side_effect=push):
             return self.conflict_run(merged=merged)
@@ -88,6 +89,15 @@ class Settled(tct.Worker):
         import base64
         self.assertEqual(base64.b64decode(entry["content_b64"]), REGENERATED)
         self.assertEqual(push["manifest"]["base_head"], sm.HEAD)
+
+    def test_a_submodule_the_source_snapshot_left_out_is_logged(self):
+        """#800: regeneration's snapshot records the Hermes checkout's skipped gitlinks."""
+        self.source_skips = ["vendor/sub"]
+        with mock.patch.object(generated.util, "log") as log:
+            self.settle(merged_of({"docs/commands.md": CONFLICT}, ["docs/commands.md"]))
+        self.assertTrue([c for c in log.call_args_list
+                         if "submodule" in c.args[0] and "vendor/sub" in c.args[0]],
+                        log.call_args_list)
 
     def test_removing_the_regeneration_turns_it_red(self):
         with mock.patch.object(generated, "regenerate", return_value=None):

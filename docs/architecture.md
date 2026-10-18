@@ -67,7 +67,7 @@ Profiles, GitHub logins, credentials and webhook routes are distinct pieces of s
 
 There are two different source trees:
 
-- **Hermes executable source:** `trusted_turn._safe_code_snapshot` exports allowed regular blobs from the configured Git repository's committed `HEAD`, not its mutable worktree or index. It verifies blob hashes, filters paths/content, and mounts the snapshot as `/opt/code`. Uncommitted Hermes changes therefore do not enter a turn by this path.
+- **Hermes executable source:** `trusted_turn._safe_code_snapshot` exports allowed regular blobs from the configured Git repository's committed `HEAD`, not its mutable worktree or index. It verifies blob hashes, filters paths/content, skips gitlink (submodule) entries rather than refusing the snapshot and records their paths (in the worker log `<ledger>.workers.log`, the regeneration log and selftest's `sandbox:snapshot` line), and mounts the snapshot as `/opt/code`. Uncommitted Hermes changes therefore do not enter a turn by this path.
 - **Repository under review:** `trusted_fetch.stage` validates identity and live head, obtains commit/tree metadata and a bounded tarball, verifies every file against the Git tree, rechecks the head, then publishes the export without replacing an existing directory. It carries no `.git` checkout or remote.
 
 The latter accepts regular files and executable regular files, not symlinks, submodules or `.gitmodules`; a truncated tree, unsafe path or blob mismatch refuses the export. Bounds are 10,000 tree entries and 100 MiB of file bytes, with separate metadata/response bounds. Triage uses an empty read-only directory instead; issue fixing stages a commit still on the configured base branch.

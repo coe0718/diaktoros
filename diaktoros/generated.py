@@ -76,7 +76,10 @@ def regenerate(loop: dict, merged: dict, settings: dict, *, work_root) -> dict[s
             export.mkdir(mode=0o700)
             checkout = export / "repo"
             checkout.mkdir(mode=0o700)
-            trusted_turn._safe_code_snapshot(Path(settings["source"]), code)
+            note = trusted_turn.skipped_gitlinks_note(
+                trusted_turn._safe_code_snapshot(Path(settings["source"]), code))
+            if note:
+                util.log(note)
             trusted_fetch._extract(merged["archive"], checkout, merged["entries"],
                                    frozenset(merged["skipped"]))
             query = root / "query.txt"

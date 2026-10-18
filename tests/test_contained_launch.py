@@ -187,8 +187,9 @@ class ProductionLaunch(Base):
 
         scope = broker_ipc.RunScope(REPO, 7, HEAD, role, "fix-7", "rid",
                                     str(self.root / "runs.sqlite"))
+        source_skips = list(getattr(self, "source_skips", []))   # the Hermes tree's gitlinks
         with mock.patch.object(trusted_turn, "_safe_code_snapshot",
-                               side_effect=lambda src, dst: dst.mkdir()), \
+                               side_effect=lambda src, dst: dst.mkdir() or source_skips), \
              mock.patch.object(trusted_turn.trusted_fetch, "stage", side_effect=stage), \
              mock.patch.object(trusted_turn.inference_proxy, "InferenceCapability", Inference), \
              mock.patch.object(contained.Path, "is_socket", return_value=True), \
@@ -205,6 +206,19 @@ class ProductionLaunch(Base):
                                   observed=observed)
         self.assertIn("argv", seen, "run_turn never reached the launcher")
         return seen
+
+    def test_a_submodule_the_source_snapshot_left_out_is_logged(self):
+        """#800: the turn's run log records the Hermes checkout's skipped gitlinks."""
+        self.source_skips = ["vendor/sub"]
+        with mock.patch.object(trusted_turn.util, "log") as log:
+            self.launch("reviewer")
+        notes = [call.args[0] for call in log.call_args_list if "submodule" in call.args[0]]
+        self.assertEqual(len(notes), 1, log.call_args_list)
+        self.assertIn("vendor/sub", notes[0])
+        self.source_skips = []
+        with mock.patch.object(trusted_turn.util, "log") as log:
+            self.launch("reviewer")
+        self.assertFalse([c for c in log.call_args_list if "submodule" in c.args[0]])
 
     def test_launch_has_no_network_and_a_fresh_namespace(self):
         for role in ("reviewer", "fixer", "adjudicator"):
