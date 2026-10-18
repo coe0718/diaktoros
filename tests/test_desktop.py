@@ -317,6 +317,31 @@ class Pr(unittest.TestCase):
         self.assertEqual([r["verdict"] for r in view["rulings"]], ["REJECT"])
         self.assertEqual(view["rulings"][0]["head"], head[:7])
 
+    def test_a_long_review_shows_the_newest_turns_and_rulings_and_the_true_totals(self):
+        extra = 7
+        with mock.patch.object(desktop_api, "TURNS_MAX", 5):
+            for _ in range(5 + extra):
+                self.row("succeeded")
+            with ledger.connect(self.db) as con:
+                rows = con.execute("SELECT id, head FROM runs ORDER BY id").fetchall()
+                # created is the order the page shows: stamp it so the oldest row is first.
+                for n, (run_id, head) in enumerate(rows):
+                    con.execute("UPDATE runs SET created=? WHERE id=?", (1000.0 + n, run_id))
+                    con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,"
+                                "created,updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                                (run_id, REPO, 626, head, f"t{n}", f"V{n}", "x", 1000.0 + n,
+                                 1000.0 + n))
+            loops, prod = self.patch_all()
+            with loops, prod:
+                view = desktop_api.pr_view("widgets", 626)
+        last = 5 + extra - 1
+        self.assertEqual([t["created"] for t in view["turns"]],
+                         [1000.0 + n for n in range(last - 4, last + 1)])     # newest, oldest first
+        self.assertEqual(view["turns_total"], 5 + extra)
+        self.assertEqual([r["verdict"] for r in view["rulings"]],
+                         [f"V{n}" for n in range(last - 4, last + 1)])
+        self.assertEqual(view["rulings_total"], 5 + extra)
+
     def test_findings_come_from_the_loops_own_state_with_the_hosts_open_flag(self):
         from diaktoros import state as state_mod
         state_mod.state_for(self.loops[0]).findings_put(626, {"last_head": "a" * 40, "findings": {
