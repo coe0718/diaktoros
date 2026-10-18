@@ -1199,6 +1199,8 @@ def gate_timeout_profiles(loop: dict) -> dict[str, list[str]]:
         profile = config.seat_profile(loop, role)
         if profile:
             hosted.setdefault(profile, []).append(role)
+    if config.triage_enabled(loop):      # gate_triage.py fits its budget to this gateway too
+        hosted.setdefault(config.seat_profile(loop, "triage") or "default", []).append("triage")
     observer = loop.get("observer") if isinstance(loop.get("observer"), dict) else {}
     if observer.get("route"):
         hosted.setdefault(str(observer.get("profile") or "default"), []).append("observer")
