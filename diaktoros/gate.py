@@ -1403,7 +1403,12 @@ def take_seat(loop: dict, st: state_mod.LoopState, seat: str, number: int, head:
 
         # The checks above hold the same lock, but the claim is itself a compare-and-swap so a
         # live claim can never be evicted, whatever the checks saw (#727).
-        if not st.acquire(seat, key, head, why, exclusive=True):
+        try:
+            claimed = st.acquire(seat, key, head, why, exclusive=True)
+        except Exception as exc:  # noqa: BLE001 - an unrecorded claim must not start a run (#726)
+            silence(f"could not record the {seat} claim on {key} "
+                    f"({type(exc).__name__}: {exc}) — not running", "held")
+        if not claimed:
             log(f"{seat} claimed {key} while this gate decided — refusing a second run")
             silence(f"{seat} is already running {key}", "held")
         st.queue_pop(seat, key)        # a direct event can outrun the drain: the entry is stale now
