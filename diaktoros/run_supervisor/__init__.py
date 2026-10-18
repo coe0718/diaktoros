@@ -3090,7 +3090,14 @@ def main():
     p.add_argument('--acknowledge-no-live-worker', action='store_true')
     a = p.parse_args()
     if a.operation in ('status', 'sweep', 'reconcile', 'rulings', 'retry'):
-        sup = Supervisor(a.db)
+        # Reading a ledger never creates one (#798): status, rulings and reconcile open an
+        # existing ledger only, so a mistyped path is an error, not an empty ledger plus a
+        # `.present` marker. sweep and retry stay host-side creators.
+        try:
+            sup = Supervisor(a.db, create=a.operation not in ('status', 'rulings', 'reconcile'))
+        except LedgerMissing as exc:
+            print(f'diaktoros: {exc}; no ledger was created', file=sys.stderr)
+            raise SystemExit(2)
         if a.operation == 'rulings':
             if a.command or a.reason or a.acknowledge_no_live_worker:
                 p.error('unexpected rulings arguments')

@@ -458,8 +458,11 @@ class Lifecycle(unittest.TestCase):
         self.assertTrue(run_supervisor.presence_marker().is_file())
         shutil.rmtree(home / "state")
         err, out = io.StringIO(), io.StringIO()
-        with patch.object(sys, "argv", ["run_supervisor", "status", str(db)]), \
-                contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+        # `status` no longer creates (#798); `retry` of an unknown run is the operator command
+        # that still opens the ledger as a host and exits 2 without touching a run.
+        with patch.object(sys, "argv", ["run_supervisor", "retry", str(db), "no-such-run"]), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(out), \
+                self.assertRaises(SystemExit):
             run_supervisor.main()
         self.assertEqual(len([line for line in own_lines(err) if "vanished" in line]), 1,
                          err.getvalue())
@@ -468,6 +471,25 @@ class Lifecycle(unittest.TestCase):
             watchdog.sweep_ledger(db, presence=run_supervisor.presence_marker())
             watchdog.sweep_ledger(db, presence=run_supervisor.presence_marker())
         self.assertEqual(swept.getvalue().count("vanished"), 1, swept.getvalue())
+
+    def test_read_commands_on_a_missing_ledger_error_and_create_nothing(self):
+        # #798: status, rulings and reconcile open an existing ledger only, through main().
+        db = self.root / "typo" / "runs.sqlite"
+        for argv in (["status", str(db)], ["rulings", str(db)],
+                     ["reconcile", str(db), "r1", "--reason", "x",
+                      "--acknowledge-no-live-worker"]):
+            with self.subTest(argv[0]):
+                err, out = io.StringIO(), io.StringIO()
+                with patch.object(sys, "argv", ["run_supervisor", *argv]), \
+                        contextlib.redirect_stderr(err), contextlib.redirect_stdout(out), \
+                        self.assertRaises(SystemExit) as raised:
+                    run_supervisor.main()
+                self.assertEqual(raised.exception.code, 2)
+                self.assertEqual(out.getvalue(), "")
+                self.assertIn("no ledger was created", err.getvalue())
+                self.assertFalse(db.parent.exists())
+                self.assertFalse(db.exists())
+                self.assertFalse(run_supervisor.ledger_marker(db).exists())
 
     def armed_then_wiped(self, home: Path) -> None:
         """An armed install under ``home`` whose whole state dir is then removed."""
@@ -480,8 +502,9 @@ class Lifecycle(unittest.TestCase):
         from scripts import watchdog
         err, swept = io.StringIO(), io.StringIO()
         with patch.dict(os.environ, env), \
-                patch.object(sys, "argv", ["run_supervisor", "status", db_arg]), \
-                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                patch.object(sys, "argv", ["run_supervisor", "retry", db_arg, "no-such-run"]), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()), \
+                self.assertRaises(SystemExit):
             run_supervisor.main()
         with patch.dict(os.environ, env), contextlib.redirect_stderr(io.StringIO()), \
                 contextlib.redirect_stdout(swept):
