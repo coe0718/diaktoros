@@ -894,6 +894,7 @@ class LoopState:
             data = {str(k): v for k, v in self.fix_holds().items()}
             if data.pop(str(number), None) is not None:
                 self._save_strict(self.dir / "held-fixes.json", data)
+            self.fix_hold_unsay(number)       # a later hold on this issue says so again (#796)
 
     def _said_claim(self, name: str, number: int) -> bool:
         """Record ``number`` in the one-time-notice ledger ``name``; True only for the caller that
