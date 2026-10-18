@@ -181,6 +181,26 @@ class AdjudicatorCycleTest(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
 
+    def test_future_delivery_stamp_does_not_hold_the_lease(self):
+        # #795: a delivery_at ahead of the clock made `now - at` negative, so the lease never
+        # elapsed and every retry answered "already".
+        import time
+        entry = {"pr": 7, "head": HEAD_A, "rounds": 3, "reason": "cap"}
+        self.st.breach_set(7, {**entry, "status": "delivery-pending",
+                               "delivery_token": "dead", "delivery_at": time.time() + 86400})
+        sent = []
+        self.assertEqual(self.st.breach_deliver(7, entry, lambda: True,
+                                               lambda marker: sent.append(marker) or True), "retry")
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(self.st.breach_get(7)["status"], "awaiting-adjudication")
+
+    def test_live_delivery_stamp_still_holds_the_lease(self):
+        import time
+        entry = {"pr": 7, "head": HEAD_A, "rounds": 3, "reason": "cap"}
+        self.st.breach_set(7, {**entry, "status": "delivery-pending",
+                               "delivery_token": "live", "delivery_at": time.time() - 5})
+        self.assertEqual(self.st.breach_deliver(7, entry, lambda: True, lambda _: True), "already")
+
 
 if __name__ == "__main__":
     unittest.main()

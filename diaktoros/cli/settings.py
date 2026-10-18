@@ -691,8 +691,7 @@ def cmd_set(args) -> int:
         login = login.strip()
         owner = next((name for name in (adj_after, read_after if read_wanted is not None else "")
                       if name and login.lower() == name.lower()), "")
-        seat_logins = {config.seat_login(loop, seat).lower() for seat in config.SEAT_KEYS} - {""}
-        if not owner and login.lower() in seat_logins | {str(loop.get("read_token") or "").lower()}:
+        if not owner and _is_seat_or_reader_login(loop, login):
             print(f"refused: `set --token` maps the token file of the login named by --read-token "
                   f"or --adjudicator-login, or of an extra login such as a hook admin "
                   f"(--admin-token); {login!r} is a seat or the current reader — seat token files "
@@ -1459,6 +1458,14 @@ def _triage_change_flags(args) -> list[str]:
             if getattr(args, name, None) not in (None, "", [])]
 
 
+def _is_seat_or_reader_login(loop: dict, login: str) -> bool:
+    """Whether ``login`` is a seat (reviewer, fixer) or the current reader: the accounts whose
+    token files `set --token` and `triage --token` never rebind (a seat's moves through the
+    plugin settings and `apply`, the reader's with `--read-token`)."""
+    seat_logins = {config.seat_login(loop, seat).lower() for seat in config.SEAT_KEYS} - {""}
+    return login.lower() in seat_logins | {str(loop.get("read_token") or "").lower()}
+
+
 def cmd_triage(args) -> int:
     """Turn issue triage (#213) on or off for one loop, or show it.
 
@@ -1572,7 +1579,22 @@ def cmd_triage(args) -> int:
             print(f"--token expects login=/path/to/pat, got {pair!r}")
             return 2
         who, file = pair.split("=", 1)
-        tokens[who] = str(pathlib.Path(file).expanduser())
+        who = who.strip()
+        # The same refusals as `set --token`: never a seat or the reader, and a private file.
+        if _is_seat_or_reader_login(loop, who):
+            print(f"refused: `triage --token` maps the token file of the triage login or of an "
+                  f"extra login such as a hook admin; {who!r} is a seat or the current reader — "
+                  "seat token files move through the plugin settings and `apply`, and a reader "
+                  "moves with `set --read-token`")
+            return 2
+        try:
+            credentials.check_token_file(file, f"--token {who}")
+        except config.ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        for key in [k for k in tokens if str(k).lower() == who.lower()]:
+            del tokens[key]
+        tokens[who] = str(pathlib.Path(file.strip()).expanduser())
     seats = dict(loop.get("seats") or {})
     if args.daily_turns is not None:
         seat = {k: v for k, v in (seats.get("triage") or {}).items() if k != "daily_turns"}

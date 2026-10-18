@@ -938,8 +938,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     # Parked for a ruling (or its delivery pending), both gates stop on purpose: no "gate did not
     # start one" line, which would read as something stuck while the ruling is the next event.
     ruling = parked or pending_delivery
-    # A review-only author's PR (#191) never needs the fixer and has no cap: a verdict at the
-    # head is the author's to answer.
+    # A review-only author's PR (#191) never needs the fixer and spends no fixer rounds: a verdict
+    # at the head is the author's to answer. Its verdicts still have a cap (review_only_cap,
+    # default `cap`); past it the loop waits for a maintainer's --another-round (below).
     review_only = author in config.review_only(loop)
     needed_seat = ("" if at_head and review_only else "fixer" if at_head
                    else "reviewer" if request_pending else "")
@@ -1137,7 +1138,9 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
     elif review_only and at_head:
         kind = "author-push"
         action = (f"the author {author} pushes a fix and re-requests review of the new head — a "
-                  f"review-only PR has no fixer and no verdict cap")
+                  f"review-only PR has no fixer, but its verdicts are capped at "
+                  f"{config.review_only_cap(loop)} (`review_only_cap`, default the loop's "
+                  f"`cap`); a maintainer's `--another-round` lifts it once reached")
     elif pending_delivery and not (loop.get("adjudicator") or {}).get("route"):
         kind = "adjudication"
         action = _adjudication_next(loop, head)

@@ -232,6 +232,7 @@ def resolver_venv(dest: pathlib.Path) -> str:
     """
     import sysconfig
     (dest / "bin").mkdir(parents=True, exist_ok=True)
+    (dest / "bin" / "hermes").write_text("")   # the seat turn runs it; runtime:venv wants it (#787)
     python = dest / "bin" / "python"
     if not python.exists():
         python.symlink_to(sys.executable)

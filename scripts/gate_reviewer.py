@@ -191,8 +191,8 @@ def main() -> None:
             dispute_key and ((marker or {}).get("escalated") or {}).get("by") == "dispute"):
         silence(f"#{number} @ {head[:7]} is escalated to adjudication — no further review here")
     rounds = len(gate.verdicts(reviews, loop))
-    # A review-only author's PR (#191) has no verdict cap: no fixer rounds are spent, the author
-    # answers each verdict by pushing and asking again, so there is nothing to adjudicate.
+    # A review-only author's PR (#191) spends no fixer rounds and is never adjudicated: the author
+    # answers each verdict by pushing and asking again.
     if author in config.review_only(loop):
         # ...but it does have its own verdict cap (review_only_cap, default `cap`). At the cap
         # the gate declines with nothing spent, whoever asks: the author re-requesting their own

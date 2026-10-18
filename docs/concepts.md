@@ -100,7 +100,8 @@ The broker enforces these rules before it spends the review write (#475):
   `withdrawn`. Leaving one out refuses the review.
 - At a later head, a new finding must cite a file changed in that round (the host compares the
   previous head with this one), or say `missed earlier`; the report counts those against the
-  reviewer.
+  reviewer. GitHub cuts a compare's file list at 300 files without saying so, so a list that
+  reaches 300 is not trusted: the whole PR's files count as changed that round.
 - An `APPROVE` is refused while any finding is open (not `fixed`/`withdrawn`) and while the
   review raises a new one. Mark them fixed or withdrawn, or request changes.
 - A state for an id that was never recorded is refused, as is restating a known id as a new

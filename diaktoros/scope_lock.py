@@ -68,19 +68,33 @@ def check(loop: dict, number: int, head: str, paths: list[str]) -> None:
         f"`hermes dk retry --loop {loop.get('id')} --pr {number}`")
 
 
-def release(loop: dict, number: int) -> dict | None:
-    """Release the hold on PR ``number`` for its held head; the hold, or ``None`` if none.
-    With the lock off no push is held, so there is nothing to release (and no state to open)."""
+def snapshot(loop: dict, number: int) -> dict | None:
+    """The exact hold a retry may release later, or no approval when none exists."""
+    if not config.fixer_scope_lock(loop):
+        return None
+    from . import state as state_mod
+    return state_mod.state_for(loop).scope_hold_snapshot(number)
+
+
+_CURRENT_HOLD = object()
+
+
+def release(loop: dict, number: int, *, expected=_CURRENT_HOLD) -> dict | None:
+    """Release only ``expected`` if unchanged, returning the released hold or ``None``.
+
+    An explicit ``None`` means no hold was approved, NOT permission to release a new hold.
+    Direct callers may omit the snapshot to approve the current hold; even then the compare
+    and write are atomic, so a concurrent replacement can never be overwritten or approved.
+    With the lock off there is no state to open.
+    """
     if not config.fixer_scope_lock(loop):
         return None
     from . import state as state_mod
     st = state_mod.state_for(loop)
-    held = st.scope_holds().get(number)
-    if not held:
-        return None
-    held = {**held, "released": True}
-    st.scope_hold_set(number, held)
-    return held
+    if expected is _CURRENT_HOLD:
+        expected = st.scope_hold_snapshot(number)
+    assert expected is None or isinstance(expected, dict)
+    return st.scope_hold_release(number, expected)
 
 
 def _notice(loop: dict, st, number: int, head: str, out: list[str]) -> None:

@@ -1,5 +1,6 @@
 """Fixer scope lock (#482): a fix round outside its findings' files holds for a maintainer."""
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
+import fcntl
 import os
 from pathlib import Path
 import sys
@@ -94,6 +95,38 @@ class ScopeLock(unittest.TestCase):
         scope_lock.release(self.loop, 7)
         with self.assertRaises(scope_lock.ScopeHold):
             self.push("src/other.py")
+
+    def test_compare_release_holds_the_writers_lock_through_save(self):
+        hold = {"head": HEAD, "files": ["src/helper.py"], "released": False}
+        self.st.scope_hold_set(7, hold)
+        self.st.scope_hold_set(8, hold)
+        expected = self.st.scope_hold_snapshot(7)
+        real_save = self.st._save_strict
+
+        def save(path, data):
+            # An independently opened descriptor uses the same flock as another worker.
+            # Nonblocking acquisition makes a missing compare/write lock fail without sleeps.
+            with (self.st.dir / "state.lock").open("r+") as contender:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return real_save(path, data)
+
+        with mock.patch.object(self.st, "_save_strict", side_effect=save) as saved:
+            released = self.st.scope_hold_release(7, expected)
+            self.assertIsNotNone(released)
+            assert released is not None
+            self.assertTrue(released["released"])
+        saved.assert_called_once()
+        self.assertEqual(self.st.scope_holds()[8], hold)
+        with (self.st.dir / "state.lock").open("r+") as contender:
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_compare_release_never_recreates_a_dropped_hold(self):
+        self.st.scope_hold_set(7, {"head": HEAD, "files": ["src/helper.py"], "released": False})
+        expected = scope_lock.snapshot(self.loop, 7)
+        self.st.scope_hold_drop(7)
+        self.assertIsNone(scope_lock.release(self.loop, 7, expected=expected))
+        self.assertNotIn(7, self.st.scope_holds())
 
     def test_off_by_default_no_check(self):
         self.loop["fixer_scope_lock"] = False

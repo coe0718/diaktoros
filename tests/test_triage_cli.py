@@ -92,6 +92,37 @@ class TriageVerb(unittest.TestCase):
         self.assertEqual(LOOP_FILE.read_bytes(), before)
         self.assertIsNone(routes.route(ROUTE))
 
+    def _pat(self, mode):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = pathlib.Path(tmp.name) / "extra.pat"
+        path.write_text("pat-fixture\n")
+        path.chmod(mode)
+        return path
+
+    def test_token_gets_the_same_file_and_login_checks_as_set_token(self):
+        """`triage --token` refuses a group/world-readable file and a seat or reader login,
+        writes nothing, and still maps a private file for an extra login."""
+        before = LOOP_FILE.read_bytes()
+        loose = self._pat(0o644)
+        for who, path, why in (("hook-admin", loose, "group/other can read it"),
+                               (t.REVIEWER, t.SEAT_PATS[1], "is a seat or the current reader"),
+                               (t.FIXER, t.SEAT_PATS[0], "is a seat or the current reader"),
+                               (t.READ_LOGIN, t.SEAT_PATS[0], "is a seat or the current reader"),
+                               ("hook-admin", "keys/relative.pat", "not an absolute path")):
+            with self.subTest(who=who, path=str(path)):
+                rc, out = self.enable("--token", f"{who}={path}")
+                self.assertEqual(rc, 2, out)
+                self.assertIn("refused", out)
+                self.assertIn(why, out)
+                self.assertEqual(LOOP_FILE.read_bytes(), before)
+                self.assertIsNone(routes.route(ROUTE))
+        good = self._pat(0o600)
+        rc, out = self.enable("--token", f"hook-admin={good}")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(config.load_id(LOOP_ID)["tokens"]["hook-admin"], str(good))
+
     def test_change_flag_without_enable_applies_when_on_and_refuses_when_off(self):
         # Off: refused, names --enable, writes nothing (#527).
         before = LOOP_FILE.read_bytes()

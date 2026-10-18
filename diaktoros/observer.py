@@ -475,7 +475,8 @@ def summarize(loop: dict, event: str, number, head: str, *, outcome: str = "",
     emoji = EMOJI.get(event, "•")
     # An issue has no head of its own: the notice names the issue alone.
     at = "" if issue else f" `{(head or '')[:7]}`"
-    parts = [f"{emoji} [{loop.get('id')}] #{number}{at} {LABEL.get(event, event)}"]
+    ref = f" #{number}" if has_pr(number) else ""      # a main-level notice names no PR
+    parts = [f"{emoji} [{loop.get('id')}]{ref}{at} {LABEL.get(event, event)}"]
     if outcome:
         parts.append(f" — {outcome}")
     if actor:
@@ -489,7 +490,7 @@ def summarize(loop: dict, event: str, number, head: str, *, outcome: str = "",
 
 def render(loop: dict, event: str, number, head: str, **fields) -> str:
     """The full notice: the summary, then the direct PR link on its own line."""
-    return f"{summarize(loop, event, number, head, **fields)}\n{gh.pr_url(loop, number)}"
+    return f"{summarize(loop, event, number, head, **fields)}\n{link(loop, number)}"
 
 
 # How a transition reads inside a digest line: short, in order, outcome only where it matters.
@@ -535,7 +536,7 @@ def render_digest(loop: dict, entries: list) -> str:
     span = f"last {window}m" if window else "Diaktoros digest"
     lines = [f"🗂 [{loop.get('id')}] {span} — {', '.join(counts)}"]
     for (issue, number), group in list(groups.items())[:DIGEST_LIMIT]:
-        label = f"#{number} (issue)" if issue else f"#{number}"
+        label = (f"#{number} (issue)" if issue else f"#{number}") if has_pr(number) else "main"
         lines.append(f"{label} {' → '.join(group['words'])} · {group['url']}")
     if len(groups) > DIGEST_LIMIT:
         lines.append(f"…and {len(groups) - DIGEST_LIMIT} more")
@@ -581,8 +582,19 @@ def verified_base_sha(loop: dict, pr: object) -> str:
     return sha if sha and base_tip(loop) == sha else ""
 
 
+def has_pr(number) -> bool:
+    """Does this notice name a real PR (or issue)? ``0``, ``None`` and ``""`` mean it does not."""
+    return bool(number) and str(number) != "0"
+
+
 def link(loop: dict, number, issue: bool = False) -> str:
-    """Where a notice points: the issue for an issue-side notice, else the PR."""
+    """Where a notice points: the issue for an issue-side notice, else the PR.
+
+    A notice about no PR (main went red and the merges cannot be named) points at the
+    repository, as the weekly report does, never at ``/pull/0``.
+    """
+    if not has_pr(number):
+        return f"https://github.com/{loop['repo']}"
     return gh.issue_url(loop, number) if issue else gh.pr_url(loop, number)
 
 
@@ -593,8 +605,9 @@ def block_for(loop: dict, event: str, number, head: str, text: str, url: str = "
     a template against this payload, so everything the message needs must be in here and nothing
     the message must not carry (credentials, diffs) may be.
     """
-    return {"event": event, "loop": loop.get("id"), "pr": number, "head": head,
-            "url": url or gh.pr_url(loop, number), "at": now_iso(), "message": text}
+    return {"event": event, "loop": loop.get("id"),
+            "pr": number if has_pr(number) else "", "head": head,
+            "url": url or link(loop, number), "at": now_iso(), "message": text}
 
 
 # -- delivery ------------------------------------------------------------------
