@@ -134,7 +134,7 @@ def wait(loop: dict, st, issue: int, blockers: list[tuple[int, str]]) -> None:
     """Record that ``issue``'s hand-off waits, and say so once on the issue."""
     from . import config
     st.dep_wait_set(issue)
-    if st.dep_wait_said(issue):
+    if not st.dep_wait_say(issue):                    # claimed under the lock: only one process posts
         return
     login = config.triage_login(loop)
     if login:
@@ -146,5 +146,4 @@ def wait(loop: dict, st, issue: int, blockers: list[tuple[int, str]]) -> None:
                                       f"the implementation isn't merged into {loop['base']} yet "
                                       f"({reasons})."}, login=login)
         if posted is None:
-            return                                    # not said: a later sweep retries
-    st.dep_wait_say(issue)
+            st.dep_wait_unsay(issue)                  # not said: a later sweep retries
