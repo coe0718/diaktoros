@@ -1469,12 +1469,17 @@ def run(args: argparse.Namespace, budget: float) -> None:
     # is reported by name, like any other per-loop failure, and every other loop still sweeps.
     refused: list[tuple[str, str]] = []
     if args.loop:
-        loops = [config.load_id(args.loop)]
+        try:
+            loops = [config.load_id(args.loop)]
+        except config.ConfigError as exc:
+            # A scripted drain or cron call with a bad --loop must not look successful.
+            if (config.config_dir() / f"{args.loop}.json").exists():
+                print(f"⚠️ Diaktoros [{args.loop}] watchdog failed: ConfigError: {exc}")
+            else:
+                print(f"no loop config named {args.loop}")
+            sys.exit(1)
     else:
         loops, refused = config.readable_loops()
-    if not loops and args.loop:
-        print(f"no loop config named {args.loop}")
-        return
 
     if args.drain:
         for loop_id, reason in refused:
