@@ -325,10 +325,17 @@ def check_runtime(report: Report, path: Path) -> dict | None:
                    "set runtime to the Python installation the venv was created from")
     elif outside:
         usable = False
+        from . import runtime_detect
+        # The same root ``setup`` would write; None when the install is not under any directory
+        # of its own (never advise "/").
+        install = runtime_detect.runtime_for(venv)
+        where = (f"set runtime to {install} (the directory holding the interpreter's install)"
+                 if install is not None else
+                 "set runtime to the directory holding the interpreter's install (none of its "
+                 "own was found: recreate the venv from a Python installation in its own directory)")
         report.add(step, "runtime:runtime", FAIL,
                    f"the venv interpreter points to {outside}, outside {runtime}",
-                   f"set runtime to {Path(outside).parents[2]} (the directory holding the "
-                   "interpreter's install): the sandbox mounts runtime at its own path and "
+                   f"{where}: the sandbox mounts runtime at its own path and "
                    "nothing else, so a link leaving it cannot start")
     else:
         report.add(step, "runtime:runtime", PASS, f"{runtime}")
