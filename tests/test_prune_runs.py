@@ -49,7 +49,8 @@ class Main(unittest.TestCase):
             calls.append((method, path))
             if method == "DELETE":
                 if rate_limit_after is not None and sum(m == "DELETE" for m, _ in calls) > rate_limit_after:
-                    raise urllib.error.HTTPError(path, 403, "rate limited", {}, None)
+                    import io
+                    raise urllib.error.HTTPError(path, 403, "rate limited", {}, io.BytesIO(b""))
                 return None
             if path.startswith("/repos/o/r/pulls"):
                 return [{"head": {"sha": "open-pr-head"}}]

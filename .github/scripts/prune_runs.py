@@ -99,6 +99,7 @@ def main(argv: list[str]) -> int:
             _call("DELETE", f"/repos/{repo}/actions/runs/{run['id']}", token)
             deleted += 1
         except urllib.error.HTTPError as exc:
+            exc.close()                  # it holds the error response's open body
             if exc.code in (403, 429):
                 print(f"  rate limited after {deleted} deletions (HTTP {exc.code}): the rest "
                       "wait for the next prune", file=sys.stderr)
