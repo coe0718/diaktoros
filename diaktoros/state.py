@@ -139,6 +139,22 @@ def _clock(value) -> float | None:
     return float(value)
 
 
+DELIVERY_LEASE_S = 60.0
+
+
+def _delivery_in_flight(marker: dict, now: float | None = None) -> bool:
+    """Whether a breach marker's delivery lease is still live: it holds an attempt token stamped
+    within the last ``DELIVERY_LEASE_S`` seconds. A stamp that is missing, junk or *ahead* of the
+    clock holds nothing, so a bad ``delivery_at`` can never wedge the retry on ``already``."""
+    if not marker.get("delivery_token"):
+        return False
+    at = _clock(marker.get("delivery_at"))
+    if at is None:
+        return False
+    age = (time.time() if now is None else now) - at
+    return 0 <= age < DELIVERY_LEASE_S
+
+
 def _mapping(raw) -> dict:
     """A state file's top level as a dict: a file that is not a mapping holds nothing (#80)."""
     return raw if isinstance(raw, dict) else {}
@@ -683,8 +699,7 @@ class LoopState:
             prior = _mapping(data.get(key))
             new = prior.get("head") != head
             if not new and (prior.get("status") != "delivery-pending"
-                            or (prior.get("delivery_token")
-                                and time.time() - (_clock(prior.get("delivery_at")) or 0) < 60)):
+                            or _delivery_in_flight(prior)):
                 return "already"
             # Keep the original reason/rounds when retrying a pending marker.
             marker = {**(entry if new else prior), "status": "delivery-pending",
@@ -724,8 +739,7 @@ class LoopState:
             data = _mapping(self._load(self.breach, {}))
             marker = _mapping(data.get(key))
             if (marker.get("head") != head or marker.get("status") != "delivery-pending"
-                    or (marker.get("delivery_token")
-                        and time.time() - (_clock(marker.get("delivery_at")) or 0) < 60)):
+                    or _delivery_in_flight(marker)):
                 return False
             data.pop(key)
             self._breach_save(data)
