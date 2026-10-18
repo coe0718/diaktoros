@@ -973,11 +973,19 @@ def next_step(row: dict, loop_id: str = 'LOOP') -> str:
         return (f"attempt {(row['retries'] or 0) + 1} of {MAX_RETRIES} due in {due}s "
                 "(starts on the next event or armed watchdog sweep)")
     if (row['state'] == 'cancelled' and policy_cancelled(row['error'])) or policy_hold(row['error']):
+        # The retry names the row's own seat: `retry --seat fixer` filters an issue_fixer row out.
+        if row['seat'] == 'issue_fixer':
+            return (f"no external write — issue fixes are off or no longer allowed: they need "
+                    f"triage on, a fix label (`hermes dk triage --loop {loop_id} --fix-label "
+                    f"LABEL --maintainer LOGIN`) and unattended fixer pushes (`hermes dk "
+                    f"fixer-push --loop {loop_id} --enable --acknowledge-pr-race`); once they "
+                    f"are on, re-admit it: `hermes dk retry --loop {loop_id} --pr "
+                    f"{row['pr']} --seat issue_fixer` (a redelivered event never does)")
         return (f"no external write — if unattended fixer pushes are off, turn them on "
                 f"(`hermes dk fixer-push --loop {loop_id} --enable "
                 f"--acknowledge-pr-race`), then re-admit it: `hermes dk retry --loop "
-                f"{loop_id} --pr {row['pr']} --seat fixer` (an operator retry admits it under the "
-                f"policy then in force; a redelivered event never does)")
+                f"{loop_id} --pr {row['pr']} --seat {row['seat']}` (an operator retry admits it "
+                f"under the policy then in force; a redelivered event never does)")
     if row['write'] is None:
         rearm = (f"re-arm: hermes dk retry --loop {loop_id} "
                  f"--pr {row['pr']} --seat {row['seat']}")

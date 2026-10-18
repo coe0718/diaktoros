@@ -282,6 +282,24 @@ class CancelledFixer(unittest.TestCase):
             con.row_factory = sqlite3.Row
             return dict(con.execute("SELECT * FROM runs WHERE seat=?", (seat,)).fetchone())
 
+    def test_an_issue_fix_cancellation_names_its_own_seat_and_the_issue_fix_policy(self):
+        # #807: the worker cancels an issue_fixer row with FIXER_PUSH_REVOKED when issue fixes go
+        # off; the printed remedy was `retry --seat fixer`, which filters that row out.
+        self.sup.submit("fix-1", REPO, 7, HEAD, "issue_fixer")
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='cancelled', error=? WHERE seat='issue_fixer'",
+                        (FIXER_PUSH_REVOKED,))
+        [view] = read_only_view(self.db, REPO, 7)
+        self.assertEqual(view["seat"], "issue_fixer")
+        line = describe_run(view, "widgets")
+        self.assertIn("hermes dk retry --loop widgets --pr 7 --seat issue_fixer", line)
+        self.assertNotIn("--seat fixer", line)
+        self.assertIn("issue fixes", line)
+        self.assertIn("--fix-label", line)
+        # The command it prints is one `retry` can act on: it finds the row.
+        code, out = self.cli(cli.cmd_retry, loop="widgets", pr=7, seat="issue_fixer")
+        self.assertNotIn("no isolated run on record", out)
+
     def test_a_superseded_cancellation_stays_out_of_the_view(self):
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
         with ledger.connect(self.db) as con:
