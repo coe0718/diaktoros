@@ -180,6 +180,33 @@ class Junk(unittest.TestCase):
         self.assertEqual(transition.hold(st, 7, HEAD), entry)
 
 
+class JunkWatch(unittest.TestCase):
+    """#831: a watchdog.json that is not a mapping holds nothing, as the other state files."""
+
+    setUp = Junk.setUp
+
+    def test_watch_reads_a_non_mapping_as_empty(self):
+        for junk in ["junk-string", ["a", "b"], 7, None, True, 0, "", []]:
+            with self.subTest(junk=junk):
+                self.st.watch_file.write_text(json.dumps(junk))
+                self.assertEqual(self.st.watch(), {})
+        self.st.watch_file.write_text("{not json")
+        self.assertEqual(self.st.watch(), {})
+        self.st.watch_file.write_text(json.dumps({"last_run": 5}))
+        self.assertEqual(self.st.watch(), {"last_run": 5})
+
+    def test_callers_of_watch_survive_a_non_mapping(self):
+        from diaktoros import doctor
+        st = self.st
+        for junk in ["junk-string", ["a", "b"], 7]:
+            with self.subTest(junk=junk):
+                st.watch_file.write_text(json.dumps(junk))
+                with mock.patch.object(state, "state_for", return_value=st):
+                    doctor.check_watchdog_last_run(st.loop)       # must not raise
+                with mock.patch.object(transition.gh, "reviews_read", return_value=([], None)):
+                    self.assertIsNone(transition.record(st.loop, st, 7, HEAD, "main"))
+
+
 class QuarantineAtomic(unittest.TestCase):
     """#735: quarantine() clears the in-flight marks and the breach marker as one step."""
 
