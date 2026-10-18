@@ -118,24 +118,49 @@ def _rust() -> Path | None:
 _NODE_VISIBLE = (Path("/"), Path("/usr"), Path("/usr/local"))
 
 
+# Directories under the home that hold credentials or state, never a Node prefix. A Node tree
+# *inside* one (``~/.hermes/node``, ``~/.local/share/fnm/...``) is fine; the directory itself is not.
+_NODE_UNSAFE_UNDER_HOME = (".local", ".hermes", ".config", ".cache", ".ssh", ".gnupg", ".aws",
+                           ".local/share", ".local/state")
+
+
+def _node_root_is_unsafe(root: Path) -> bool:
+    """True for a root that is a home directory (or above it) or a credential store in it (#779).
+
+    ``<root>/bin/node`` placed at ``~/bin/node`` or ``~/.local/bin/node`` would otherwise stage
+    the whole home or ``~/.local`` read-only into the seat.
+    """
+    for raw in {_real_home(), Path.home()}:
+        for home in {raw, raw.resolve()}:
+            if root == home or (root in home.parents and root not in _NODE_VISIBLE):
+                return True
+            if any(root == home / sub for sub in _NODE_UNSAFE_UNDER_HOME):
+                return True
+    return False
+
+
 def _node_install() -> Path | None:
     """The host Node install root wherever it lives (``/usr`` included), or ``None``.
 
     Looked for without trusting the caller's PATH alone: Hermes's own ``~/.hermes/node`` (the
     ``~/.local/bin/node`` link points into it), then ``node`` on PATH. A candidate counts only
-    when it resolves to ``<root>/bin/node`` that is an executable regular file.
+    when it resolves to ``<root>/bin/node`` that is an executable regular file whose root is a
+    Node prefix: never a home directory, ``~/.local``, ``~/.hermes`` or another credential store.
     """
     candidates = [_real_home() / ".hermes" / "node" / "bin" / "node",
                   _real_home() / ".local" / "bin" / "node"]
-    found = shutil.which("node")
-    if found:
-        candidates.append(Path(found))
+    # Every ``node`` on PATH, not only the first: a rejected one must not hide a real install.
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        found = shutil.which("node", path=entry) if entry else None
+        if found:
+            candidates.append(Path(found))
     for candidate in candidates:
         try:
             binary = candidate.resolve(strict=True)
         except OSError:
             continue
-        if binary.is_file() and os.access(binary, os.X_OK) and binary.parent.name == "bin":
+        if (binary.is_file() and os.access(binary, os.X_OK) and binary.parent.name == "bin"
+                and not _node_root_is_unsafe(binary.parent.parent)):
             return binary.parent.parent
     return None
 
