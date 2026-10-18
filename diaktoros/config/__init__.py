@@ -31,7 +31,7 @@ File shape (all keys except ``repo`` have defaults)::
       "tokens": {"reader-bot": "~/.hermes/keys/reader-bot-pat",
                  "rev-bot": "~/.hermes/keys/rev-bot-pat",
                  "dev-account": "~/.hermes/keys/dev-account-pat"},
-      "state_dir": "~/.hermes/state/review-loops/name",
+      "state_dir": "~/.hermes/state/diaktoros/name",
       "clone": "~/projects/name",
       "roots": ["~/reviews", "~/.hermes/cache/scratch"],
       "grace_min": 35, "marker_grace_min": 60, "cooldown_h": 6,
