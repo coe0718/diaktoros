@@ -968,7 +968,8 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
     init.add_argument("--root", action="append", default=[], help="a directory reviews may clean (repeatable)")
     init.add_argument("--state-dir", default="",
                       help="where this loop keeps its state files (default: "
-                           "~/.hermes/state/review-loops/<id>)")
+                           "~/.hermes/state/diaktoros/<id>; ~/.hermes/state/review-loops/<id> "
+                           "is only a leftover until `migrate` moves it)")
     init.add_argument("--token", action="append", default=[], help="login=/path/to/pat (repeatable)")
     init.add_argument("--read-token", default="",
                       help="required: login whose token reads GitHub — its own account, never "

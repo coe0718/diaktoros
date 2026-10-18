@@ -445,7 +445,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--base` | `BASE` | `main` | the branch PRs target; only PRs against it are reviewed |
 | `--clone` | `CLONE` |  | local clone the runs may use |
 | `--root` | `ROOT` (repeatable) |  | a directory reviews may clean (repeatable) |
-| `--state-dir` | `STATE_DIR` |  | where this loop keeps its state files (default: ~/.hermes/state/review-loops/<id>) |
+| `--state-dir` | `STATE_DIR` |  | where this loop keeps its state files (default: ~/.hermes/state/diaktoros/<id>; ~/.hermes/state/review-loops/<id> is only a leftover until `migrate` moves it) |
 | `--token` | `TOKEN` (repeatable) |  | login=/path/to/pat (repeatable) |
 | `--read-token` | `READ_TOKEN` |  | required: login whose token reads GitHub — its own account, never a seat or the adjudicator login (the four-identity rule) |
 | `--skill` | `SKILL` |  | skill the seats are told to load. A plugin-provided skill is qualified, e.g. diaktoros:review-loop |
