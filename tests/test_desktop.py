@@ -82,7 +82,74 @@ class Api(unittest.TestCase):
 
     def test_loops_lists_only_ids_and_repos(self):
         with self.loops([{**self.LOOPS[0], "tokens": {"x": "/secret"}}]):
-            self.assertEqual(desktop_api.loops(), [{"id": "widgets", "repo": REPO}])
+            self.assertEqual(desktop_api.loops(),
+                             [{"id": "widgets", "repo": REPO, "unreadable": False, "reason": ""}])
+
+    # ---- #701: a loop whose config does not load is named, never dropped ----------------
+
+    def broken(self, found, *unreadable):
+        return mock.patch.object(config, "readable_loops", return_value=(found, list(unreadable)))
+
+    def test_loops_names_an_unreadable_loop_with_a_bounded_reason(self):
+        with self.broken(self.LOOPS[:1], ("typo", "bad json\n" + "x" * 5000)):
+            listed = desktop_api.loops()
+        self.assertEqual([entry["id"] for entry in listed], ["widgets", "typo"])
+        self.assertEqual(len({frozenset(entry) for entry in listed}), 1)    # same keys
+        self.assertFalse(listed[0]["unreadable"])
+        typo = listed[1]
+        self.assertTrue(typo["unreadable"])
+        self.assertEqual(typo["repo"], "")
+        self.assertLessEqual(len(typo["reason"]), 200)
+        self.assertNotIn("\n", typo["reason"])
+
+    def test_overview_names_an_unreadable_loop_beside_the_readable_one(self):
+        with self.broken(self.LOOPS[:1], ("typo", "bad json")), \
+             mock.patch.object(stats, "now",
+                               return_value={"repo": REPO, "runs": [], "counts": {"uncertain": 1}}) as now:
+            widgets, typo = desktop_api.overview_view()["loops"]
+        self.assertEqual(widgets["needs_you"], 1)
+        self.assertFalse(widgets["unreadable"])
+        self.assertEqual(typo, {"id": "typo", "repo": "", "available": False, "error": True,
+                                "unreadable": True, "reason": "bad json", "counts": {},
+                                "needs_you": 0})
+        now.assert_called_once()                    # the unreadable loop has no repo to read
+
+    def test_loops_and_overview_agree_on_which_loops_exist(self):
+        with self.broken(self.LOOPS, ("typo", "bad json")), \
+             mock.patch.object(stats, "now", return_value=None):
+            configured = [entry["id"] for entry in desktop_api.loops()]
+            read = [entry["id"] for entry in desktop_api.overview_view()["loops"]]
+        self.assertEqual(sorted(configured), sorted(read))
+        self.assertIn("typo", configured)
+
+    def test_a_per_loop_view_explains_an_unreadable_loop_instead_of_no_such_loop(self):
+        with self.broken(self.LOOPS[:1], ("typo", "bad json")), \
+             self.assertRaises(desktop_api.NotFound) as caught:
+            desktop_api.now_view("typo")
+        self.assertIn("unreadable", str(caught.exception))
+        self.assertIn("bad json", str(caught.exception))
+        # the default is not silently the one loop that loads while another is configured
+        with self.broken(self.LOOPS[:1], ("typo", "bad json")), \
+             self.assertRaises(desktop_api.NotFound) as caught:
+            desktop_api.now_view(None)
+        self.assertIn("typo (unreadable)", str(caught.exception))
+
+    def test_a_real_unparsable_file_is_named_by_loops_and_overview(self):
+        directory = config.config_dir()
+        created = not directory.exists()
+        directory.mkdir(parents=True, exist_ok=True)
+        broken = directory / "typo.json"
+        broken.write_text("{ not json\n")
+
+        def cleanup():
+            broken.unlink(missing_ok=True)
+            if created and directory.exists() and not any(directory.iterdir()):
+                directory.rmdir()
+        self.addCleanup(cleanup)
+        self.assertIn("typo", [e["id"] for e in desktop_api.loops() if e["unreadable"]])
+        with mock.patch.object(stats, "now", return_value=None):
+            view = desktop_api.overview_view()
+        self.assertIn("typo", [e["id"] for e in view["loops"] if e["unreadable"]])
 
     def test_a_loop_must_exist_and_one_is_the_default(self):
         with self.loops(self.LOOPS), self.assertRaises(desktop_api.NotFound):
@@ -127,9 +194,11 @@ class Api(unittest.TestCase):
         self.assertEqual([loop["id"] for loop in view["loops"]], ["widgets", "gadgets"])
         widgets, gadgets = view["loops"]
         self.assertEqual(widgets, {"id": "widgets", "repo": REPO, "available": True, "error": False,
+                                   "unreadable": False, "reason": "",
                                    "counts": {"uncertain": 2, "running": 1}, "needs_you": 2})
         self.assertEqual(gadgets, {"id": "gadgets", "repo": "acme/gadgets", "available": False,
-                                   "error": False, "counts": {}, "needs_you": 0})
+                                   "error": False, "unreadable": False, "reason": "",
+                                   "counts": {}, "needs_you": 0})
         self.assertIsInstance(view["read_at"], float)
 
     def test_overview_keeps_the_other_loops_when_one_read_fails(self):
