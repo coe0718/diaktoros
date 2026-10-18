@@ -388,8 +388,8 @@ hermes dk trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_
 
 The two sources are alternatives. `--delivery` selects a numeric hook-delivery ID or
 `X-GitHub-Delivery` GUID; `--admin-token` chooses a mapped login able to read deliveries.
-`--payload` reads a local JSON object; `--event` supplies `pull_request` (default),
-`pull_request_review` or `issues`; `--route` selects the destination. Trace runs the actual gate
+`--payload` reads a local JSON object; `--event` names the event it was (`pull_request`,
+`pull_request_review` or `issues`; by default it is read from the payload); `--route` selects the destination. Trace runs the actual gate
 on a copied home without production writes or model launch. It uses **current** facts,
 not a historical reconstruction. An `issues` delivery replays through the triage gate.
 
@@ -721,7 +721,7 @@ It refreshes every 30–60 seconds. Both halves ship **off**:
 2. **The Desktop half:** turn on **Diaktoros** under **Capabilities → Plugins**.
 
 The backend (`dashboard/plugin_api.py`, mounted at `/api/plugins/diaktoros/` behind the
-gateway's own auth) has six GET routes: `loops`, `stats`, `now`, `pr`, `health` and `settings`.
+gateway's own auth) has seven GET routes: `loops`, `stats`, `now`, `overview`, `pr`, `health` and `settings`.
 They read the loop's config, the run ledger and — for `health` — the installation's own files, and
 nothing writes. `settings` returns the plugin form's schema and effective values plus each loop's
 effective seats, budgets and flags, so the Desktop form can render what a loop runs as without
