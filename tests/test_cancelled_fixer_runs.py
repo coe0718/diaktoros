@@ -136,6 +136,29 @@ class CancelledFixer(unittest.TestCase):
         self.assertEqual(self.row()["push_admitted"], 1)
         self.assertIsNotNone(self.claim())
 
+    def test_a_redelivery_does_not_rearm_a_revoked_run_while_pushes_are_still_off(self):
+        # #741: FIXER_NOT_ADMITTED was refused a re-arm, FIXER_PUSH_REVOKED fell through to
+        # "rearmed" and the claim cancelled it again — a futile cycle reported as progress.
+        self.sup.submit("fix-1", REPO, 7, HEAD, "fixer", require_push_admission=True)
+        self.pushes(False)
+        self.assertIsNone(self.claim())
+        self.assertEqual(self.row()["error"], FIXER_PUSH_REVOKED)
+        spawn = mock.Mock()
+        self.sup._spawn = spawn
+        outcome = self.sup.submit("fix-2", REPO, 7, HEAD, "fixer")
+        self.assertTrue(outcome.startswith("duplicate cancelled"), outcome)
+        self.assertIn("hermes dk retry", outcome)
+        spawn.assert_not_called()
+        self.assertEqual((self.row()["state"], self.row()["error"]),
+                         ("cancelled", FIXER_PUSH_REVOKED))
+        self.assertIsNone(self.claim())               # nothing pending to claim
+        # Pushes back on: the same redelivery re-arms it, and it runs.
+        self.pushes(True)
+        self.assertEqual(self.sup.submit("fix-3", REPO, 7, HEAD, "fixer"), "rearmed")
+        spawn.assert_called_once()
+        self.assertEqual(self.row()["state"], "pending")
+        self.assertIsNotNone(self.claim())
+
     def test_explain_names_it_as_the_blocker(self):
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
         self.pushes(False)
