@@ -71,6 +71,31 @@ class Findings(unittest.TestCase):
                                     "F1: fixed\nF2: open\nF3: src/a.py: x\n")
         self.assertIn("could not read", reason)
 
+    def _check_with_compare(self, compare_files, pr_files, body):
+        compare = {"files": [{"filename": n} for n in compare_files]}
+        with mock.patch("diaktoros.gh.api", return_value=compare), \
+                mock.patch("diaktoros.gh.pr_files_read",
+                           return_value=([{"filename": n} for n in pr_files], "")):
+            return findings.check(self.loop, self.st.findings_get(7), 7, H2, body)
+
+    def test_capped_compare_listing_is_not_taken_as_the_whole_round(self):
+        capped = [f"f{i}.py" for i in range(300)]
+        body = "F1: fixed\nF2: open\nF3: zz/late.py: regression\n"
+        self.assertEqual(self._check_with_compare(capped, capped + ["zz/late.py"], body), "")
+
+    def test_complete_compare_listing_still_refuses_an_unchanged_file(self):
+        short = [f"f{i}.py" for i in range(300 - 1)]
+        body = "F1: fixed\nF2: open\nF3: zz/late.py: regression\n"
+        self.assertIn("cites no file", self._check_with_compare(short, short + ["zz/late.py"], body))
+
+    def test_capped_compare_with_unreadable_pr_files_is_a_read_failure(self):
+        capped = {"files": [{"filename": f"f{i}.py"} for i in range(300)]}
+        with mock.patch("diaktoros.gh.api", return_value=capped), \
+                mock.patch("diaktoros.gh.pr_files_read", return_value=(None, "HTTP 500")):
+            reason = findings.check(self.loop, self.st.findings_get(7), 7, H2,
+                                    "F1: fixed\nF2: open\nF3: f1.py: x\n")
+        self.assertIn("could not read", reason)
+
     def test_approve_with_an_open_finding_is_refused(self):
         entry = self.st.findings_get(7)
         with mock.patch.object(findings, "changed_files", return_value={"src/a.py"}):

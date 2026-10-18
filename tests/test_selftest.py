@@ -250,6 +250,37 @@ class ChecklistTests(SelftestBase):
         self.assertRegex(text, r"❌ runtime:key_file .*mode 640")
         self.assert_no_secrets(text)
 
+    def test_key_file_mode_000_fails_instead_of_crashing(self):
+        pathlib.Path(self.fx.settings["key_file"]).chmod(0o000)
+        rc, text = self.run_selftest()
+        self.assertEqual(rc, 1)
+        self.assertRegex(text, r"❌ runtime:key_file .*mode 000")
+        self.assertIn(f"fix: chmod 600 {self.fx.settings['key_file']}", text)
+        self.assert_no_secrets(text)
+
+    def test_key_file_read_error_fails_instead_of_crashing(self):
+        key = pathlib.Path(self.fx.settings["key_file"])
+        real = pathlib.Path.read_text
+
+        def read_text(path, *a, **kw):
+            if path == key:
+                raise PermissionError(13, "denied")
+            return real(path, *a, **kw)
+
+        with mock.patch.object(pathlib.Path, "read_text", read_text):
+            rc, text = self.run_selftest()
+        self.assertEqual(rc, 1)
+        self.assertRegex(text, r"❌ runtime:key_file .*PermissionError")
+        self.assertIn(f"fix: chmod 600 {key}", text)
+
+    def test_runtime_file_mode_000_names_the_mode_not_bad_json(self):
+        self.fx.runtime_file.chmod(0o000)
+        rc, text = self.run_selftest()
+        self.assertEqual(rc, 1)
+        self.assertRegex(text, r"❌ runtime:file .*mode 000")
+        self.assertNotIn("not valid JSON", text)
+        self.assertIn(f"fix: chmod 600 {self.fx.runtime_file}", text)
+
     def test_userns_refused_is_actionable(self):
         refused = subprocess.CompletedProcess([], 1, "", "bwrap: No permissions to creating new namespace")
         with mock.patch.object(selftest.subprocess, "run", return_value=refused):

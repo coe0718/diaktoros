@@ -213,6 +213,11 @@ def detect() -> dict[str, str]:
     return {key: str(value) for key, value in found.items() if value is not None}
 
 
+def venv_missing(venv: Path) -> list[str]:
+    """The files a venv must hold for a turn to start (``bin/hermes`` is what the seat runs)."""
+    return [n for n in ("bin/python", "bin/hermes") if not (venv / n).exists()]
+
+
 def problems(settings: dict) -> dict[str, str]:
     """Why each host path would fail ``selftest``'s runtime step; an empty dict when none would."""
     from .selftest import _interpreter_outside
@@ -226,7 +231,7 @@ def problems(settings: dict) -> dict[str, str]:
             out["source"] = f"{source} is not a hermes-agent Git checkout"
     if "venv" not in out:
         venv = Path(settings["venv"])
-        missing = [n for n in ("bin/python", "bin/hermes") if not (venv / n).exists()]
+        missing = venv_missing(venv)
         if missing:
             out["venv"] = f"{venv} lacks {', '.join(missing)}"
     if "runtime" not in out:

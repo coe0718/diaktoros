@@ -187,26 +187,35 @@ def _why(state: str, error) -> str:
         return text[:WHY_MAX]
     return {"waiting": "waiting to retry", "uncertain": "needs an operator: may have written",
             "failed": "failed: see explain", "pending": "queued", "claimed": "starting",
-            "launching": "starting", "running": "running"}.get(state, state)
+            "launching": "starting", "running": "running",
+            "cancelled": "cancelled before any write — retry re-arms it"}.get(state, state)
 
 
 def now(db: Path, repo: str, at: float | None = None) -> dict | None:
     """What the loop is doing right now, for the Desktop page: every live run (queued, running,
-    held, uncertain) and the last day's failures, newest first. None when there is no ledger.
-    Opened read-only."""
+    held, uncertain), the fixer runs the push policy cancelled (dead for their head until an
+    operator ``retry`` recovers them, which is a thing to act on now), and the last day's
+    failures, newest first. None when there is no ledger. Opened read-only.
+    """
     db = Path(db)
     if not db.exists():
         return None
     at = time.time() if at is None else at
+    # The one cancellation an operator retry recovers (``retry_action.offered`` draws the same
+    # line); any other cancelled run is superseded and only history.
+    from .run_supervisor import POLICY_CANCELLATIONS
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
     try:
         con.row_factory = sqlite3.Row
         marks = ",".join("?" * len(LIVE_STATES))
+        cancelled = ",".join("?" * len(POLICY_CANCELLATIONS))
         rows = con.execute(f"SELECT pr, seat, head, state, error, updated FROM runs WHERE repo=? "
                            "AND seat!='shadow' "
-                           f"AND (state IN ({marks}) OR (state='failed' AND updated>=?)) "
+                           f"AND (state IN ({marks}) OR (state='cancelled' AND error IN ({cancelled})) "
+                           "OR (state='failed' AND updated>=?)) "
                            "ORDER BY updated DESC LIMIT 100",
-                           (repo, *LIVE_STATES, at - RECENT_FAILED_S)).fetchall()
+                           (repo, *LIVE_STATES, *POLICY_CANCELLATIONS,
+                            at - RECENT_FAILED_S)).fetchall()
     finally:
         con.close()
     runs = [{"pr": row["pr"], "seat": row["seat"], "head": str(row["head"] or "")[:7],
@@ -1134,7 +1143,9 @@ def as_html(report: dict) -> str:
             f'<div class="card"><b>{esc(value)}</b><span>{esc(label)}</span></div>'
             for value, label in cards) + "</div>")
     parts.append("<h2>Seat turns</h2>")
-    if turns:
+    if report.get("turns") is None:
+        parts.append('<p class="sub">Turns: no run ledger yet.</p>')
+    elif turns:
         parts.append(_html_table(TURN_HEAD, _turn_rows(report)))
     else:
         parts.append('<p class="sub">No turns in this window.</p>')

@@ -398,7 +398,7 @@ not a historical reconstruction. An `issues` delivery replays through the triage
 `waiting` may mean provider usage-window/429 hold or daily cap, not failed work. Read
 `retry_at` and the reason. Pacing does not consume the pre-write failure-retry budget.
 Daily caps reset at local midnight; zero removes the cap. An armed scheduling path must
-still resume work. Status shows reviewer/fixer pacing; `triage --loop` shows triage settings.
+still resume work. Status shows reviewer/fixer daily counts and every closed usage window held for the reviewer, fixer, adjudicator or triage profile (a triage seat's window is listed too, though triage has no daily counts there); `triage --loop` shows triage settings.
 Issue fixes have concurrency one, their own daily cap (`triage.fix_daily_turns`, default 10, and issue fixes are always capped), and the loop-wide turn budget. Raising
 concurrency increases aggregate model/storage use, not individual turn speed.
 
@@ -701,7 +701,13 @@ summary such as `loop: 1 running · 1 held`. The page shows:
   their state — open first, resolved dimmed — and **Why the loop did or did not react** is the
   gate's own decision log (#209): the gate, the event and action, who sent it, and its reason
   (`declined: issues labeled maintainer: not the fix label`), which is the answer to "why did
-  nothing happen when I labelled that?".
+  nothing happen when I labelled that?". **Retry** sits on a row the host says `retry` would
+  re-arm — a failed, waiting or push-policy-cancelled run that never wrote. It always asks first,
+  naming the loop, PR, seat and head it will re-arm, and then shows the host's own answer and the
+  state it read back. A run that may have written (an uncertain run, or one with a receipt, push
+  intent or ruling on record) has no button: inspect the PR and reconcile from the CLI. A moved
+  head is refused rather than retried, and a fixer run is only offered while unattended fixer
+  pushes are on, with the command that turns them on as its hover reason..
 - **Seat turns** for the last 24 hours, 7 days or 30 days: the run ledger's half of
   [`stats`](commands.md#stats).
 - **Health:** [`doctor`](commands.md#doctor)'s checks for this loop. It opens **offline**: the
@@ -723,12 +729,16 @@ It refreshes every 30–60 seconds. Both halves ship **off**:
 
 The backend (`dashboard/plugin_api.py`, mounted at `/api/plugins/diaktoros/` behind the
 gateway's own auth) has seven GET routes: `loops`, `stats`, `now`, `overview`, `pr`, `health` and `settings`.
-They read the loop's config, the run ledger and — for `health` — the installation's own files, and
-nothing writes. `settings` returns the plugin form's schema and effective values plus each loop's
-effective seats, budgets and flags, so the Desktop form can render what a loop runs as without
-applying anything; a token field is a path and the file is never opened. `health?probe=1` is the
-one route that reads a credential: the loop's own tokens, to read GitHub for the hook, expiry and
-scope checks the offline pass leaves unprobed. It is refused unless the caller
+They read the loop's config, the run ledger and — for `health` — the installation's own files,
+without mutating loop state. `settings` returns the plugin form's schema and effective values plus
+each loop's effective seats, budgets and flags, so the Desktop form can render what a loop runs
+as without applying anything; a token field is a path and the file is never opened.
+Its one write is `POST /retry` with `{loop, pr, seat, head}`, the Retry button's confirmation:
+it re-reads the ledger, runs the same `retry_action` / `Supervisor.retry` path `hermes dk retry`
+runs, answers 409 with the host's own reason for anything that retry refuses (including a head
+that moved since the operator confirmed), and never calls GitHub or reads a token.
+`health?probe=1` is the one route that reads a credential: the loop's own tokens, to read GitHub for
+the hook, expiry and scope checks the offline pass leaves unprobed. It is refused unless the caller
 is on this machine — a non-loopback peer, or any forwarding header at all (`Forwarded`,
-`X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`; present is what counts, so an empty one refuses
+any `X-Forwarded-*` such as `-For`, `-Host` or `-Proto`, and `X-Real-IP`; present is what counts, so an empty one refuses
 too) gets 403 — because the dashboard is the surface Caddy exposes off-host. GitHub-side numbers stay with `stats --github`.

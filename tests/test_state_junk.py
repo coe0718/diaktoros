@@ -20,7 +20,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diaktoros import gate, state  # noqa: E402
+from diaktoros import gate, state, transition  # noqa: E402
 
 HEAD = "a" * 40
 KEY = "acme/widgets#7"
@@ -124,6 +124,34 @@ class Junk(unittest.TestCase):
                 # after sending must be healed, never indexed.
                 st.breach_deliver(7, dict(entry), lambda: True,
                                   lambda marker: (st.breach.write_text(json.dumps(junk)), True)[1])
+
+    def test_transition_ledger_survives_every_shape(self):
+        """#790: a stack-transitions.json that is not a mapping holds nothing."""
+        st = self.st
+        entry = {"head": HEAD, "from_base": "feat", "observed_stacked_head": "b" * 40,
+                 "at": 1.0, "old_review_ids": []}
+        for junk in JUNK + [{"7": "junk"}, {"7": ["x"]}, ["x"], "junk"]:
+            with self.subTest(junk=junk):
+                st.transitions_file.write_text(json.dumps(junk))
+                self.assertEqual(st.transition_get(7), {})
+                self.assertIsNone(transition.hold(st, 7, HEAD))
+                self.assertIsNone(st.transition_update(7, HEAD, {"x": 1}))
+                self.assertEqual(st.transition_set(7, dict(entry)), entry)
+                self.assertEqual(st.transition_get(7), entry)
+                self.assertEqual(transition.hold(st, 7, HEAD), entry)
+                written = json.loads(st.transitions_file.read_text())
+                self.assertIsInstance(written, dict)
+                self.assertEqual(written["7"], entry)
+
+    def test_record_survives_a_junk_ledger(self):
+        """#790: the reviewer gate's entry point (transition.record) must not raise."""
+        st = self.st
+        st.transitions_file.write_text(json.dumps(["junk"]))
+        watch = {"stacked_wait": {"7": {"head": "b" * 40, "base": "feat"}}}
+        with mock.patch.object(transition.gh, "reviews_read", return_value=([], None)):
+            entry = transition.record(st.loop, st, 7, HEAD, "main", watch=watch)
+        self.assertEqual(entry["head"], HEAD)
+        self.assertEqual(transition.hold(st, 7, HEAD), entry)
 
 
 class QuarantineAtomic(unittest.TestCase):

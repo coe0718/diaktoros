@@ -325,9 +325,10 @@ def seats(loop: dict, now: float | None = None) -> dict:
                        "tokens": tokens_today(loop["id"], seat, now),
                        "tokens_cap": config.seat_daily_tokens(loop, seat)}
                 for seat in names}
-    profiles = {str(((loop.get("seats") or {}).get(seat) or {}).get("profile") or "")
-                for seat in ("reviewer", "fixer")} | {
-                str((loop.get("adjudicator") or {}).get("profile") or "")} - {""}
+    # The triage seat is paced on the same path (the supervisor holds its account on a 429), so
+    # its profile belongs here too (#806); a loop without triage has none ("").
+    profiles = ({config.seat_profile(loop, seat) for seat in ("reviewer", "fixer", "triage")}
+                | {str((loop.get("adjudicator") or {}).get("profile") or "")}) - {""}
     holds = []
     for key, entry in sorted((_load(path()).get("holds") or {}).items()):
         until = entry.get("until") if isinstance(entry, dict) else None
