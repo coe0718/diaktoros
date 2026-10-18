@@ -2,8 +2,8 @@
 
 ``hermes dk retry`` and the Desktop page's Retry button both come through this module, so the two
 cannot drift apart: one selection rule (the newest head that still has an offerable row), one
-refusal rule (``Supervisor.retry``'s own, called unchanged), one order of side effects (release
-the fixer scope lock, re-arm, record the operator action, start a worker).
+refusal rule (``Supervisor.retry``'s own, called unchanged), one order of side effects (re-arm,
+release the fixer scope lock only if a row was re-armed, record the operator action, start a worker).
 
 The caller supplies the three answers only it can give:
 
@@ -234,10 +234,6 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
         if pr_open(loop, pr, listing, read_pr) is False:
             out["message"] = f"[{loop['id']}] PR #{pr} is not open (merged or closed); nothing to re-arm"
             return out
-    # #482: retry is the release command. Released only once this is really a retry — every
-    # refusal above (a moved head, a closed PR, nothing to offer) leaves the hold exactly where it
-    # was, so a refused click changes nothing on either surface.
-    out["released"] = scope_lock.release(loop, pr)
     rearmed, refused = 0, 0
     for row in found["offered"]:
         entry = {"id": row["id"], "seat": row["seat"], "head": found["head"],
@@ -256,6 +252,11 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
         rearmed += 1
         out["rearmed"].append(entry)
     if rearmed:
+        # #482: retry releases the PR's hold only after at least one committed re-arm, even
+        # on CLI partial success. The plan is only a preview: retry re-checks write evidence
+        # and policy under its transaction and can still refuse every offered row. It never
+        # spawns; release before asking resume_isolated to start this retry's worker.
+        out["released"] = scope_lock.release(loop, pr)
         # Best effort by its own contract (a ledger that refuses the note never fails the step);
         # an unknown action name is the only thing it raises for, and "retry" is one of them.
         sup.record_operator_action(loop["repo"], pr, "retry")

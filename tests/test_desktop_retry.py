@@ -361,6 +361,119 @@ class ScopeLock(Fixture):
         self.assertTrue(st.scope_holds()[356]["released"])
         self.assertTrue(view["rearmed"])
 
+    def cli_retry(self, seat=None):
+        import argparse
+        from diaktoros.cli import operations
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            code = operations.cmd_retry(argparse.Namespace(loop="widgets", pr=356, seat=seat))
+        return code, output.getvalue()
+
+    def assert_held_refusal(self, state="failed", *, policy=True, race=False, cli=False,
+                            **columns):
+        row = self.row(state, seat="fixer", **columns)
+        st = self.hold()
+        if not policy:
+            path = pathlib.Path(os.environ["DIAKTOROS_CONFIG_DIR"]) / "widgets.json"
+            path.write_text(json.dumps({**self.loop, "fixer_scope_lock": True,
+                                        "unattended_fixer_push": False}))
+        before = st.scope_holds()
+        real_plan = retry_action.plan
+
+        def raced_plan(*args, **kwargs):
+            found = real_plan(*args, **kwargs)
+            if race:
+                self.assertEqual([r["id"] for r in found["rearmable"]], [row["id"]])
+                # A second connection commits evidence after the preview read. The real retry
+                # must refuse it under BEGIN IMMEDIATE, not trust plan.rearmable.
+                with ledger.connect(self.db) as con:
+                    con.execute("UPDATE runs SET push_confirmed=1 WHERE id=?", (row["id"],))
+            return found
+
+        with mock.patch.object(retry_action, "plan", side_effect=raced_plan), \
+             mock.patch.object(retry_action.gate, "resume_isolated") as worker, \
+             mock.patch.object(Supervisor, "_spawn", side_effect=AssertionError("unexpected spawn")):
+            if cli:
+                code, output = self.cli_retry("fixer")
+                self.assertEqual(code, 2, output)
+                self.assertIn("refused:", output)
+                self.assertNotIn("scope lock released", output)
+            else:
+                with self.assertRaises(desktop_api.Conflict):
+                    self.retry(seat="fixer")
+            worker.assert_not_called()
+        self.assertEqual(st.scope_holds(), before)
+        self.assertEqual(self.state_of(row["id"])["state"], state)
+        with ledger.connect(self.db) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM operator_actions").fetchone()[0], 0)
+
+    def test_written_fixer_refusal_preserves_hold_desktop(self):
+        self.assert_held_refusal(push_confirmed=1)
+
+    def test_written_fixer_refusal_preserves_hold_cli(self):
+        self.assert_held_refusal(push_confirmed=1, cli=True)
+
+    def test_uncertain_refusal_preserves_hold(self):
+        self.assert_held_refusal("uncertain")
+
+    def test_push_policy_refusal_preserves_hold(self):
+        self.assert_held_refusal(policy=False)
+
+    def test_transaction_refusal_after_rearmable_plan_preserves_hold_desktop(self):
+        self.assert_held_refusal(race=True)
+
+    def test_transaction_refusal_after_rearmable_plan_preserves_hold_cli(self):
+        self.assert_held_refusal(race=True, cli=True)
+
+    def test_release_follows_committed_rearm_and_precedes_worker_start(self):
+        row = self.row("failed", seat="fixer")
+        st = self.hold()
+        real_retry = Supervisor.retry
+        real_release = retry_action.scope_lock.release
+        events = []
+
+        def rearm(sup, *args, **kwargs):
+            self.assertFalse(st.scope_holds()[356]["released"])
+            result = real_retry(sup, *args, **kwargs)
+            self.assertEqual(self.state_of(row["id"])["state"], "pending")
+            events.append("rearmed")
+            return result
+
+        def release(*args):
+            self.assertEqual(events, ["rearmed"])
+            events.append("released")
+            return real_release(*args)
+
+        def start(loop):
+            self.assertTrue(st.scope_holds()[356]["released"])
+            self.assertEqual(events, ["rearmed", "released"])
+            events.append("worker")
+            return False
+
+        with mock.patch.object(Supervisor, "retry", autospec=True, side_effect=rearm), \
+             mock.patch.object(retry_action.scope_lock, "release", side_effect=release), \
+             mock.patch.object(retry_action.gate, "resume_isolated", side_effect=start), \
+             mock.patch.object(Supervisor, "_spawn", side_effect=AssertionError("unexpected spawn")):
+            self.retry(seat="fixer")
+        self.assertEqual(events, ["rearmed", "released", "worker"])
+
+    def test_cli_partial_success_releases_once_and_still_reports_refusal(self):
+        blocked = self.row("failed", seat="fixer", push_confirmed=1)
+        allowed = self.row("failed", seat="reviewer")
+        st = self.hold()
+        real_release = retry_action.scope_lock.release
+        with mock.patch.object(retry_action.scope_lock, "release", wraps=real_release) as release, \
+             mock.patch.object(retry_action.gate, "resume_isolated", return_value=False) as worker:
+            code, output = self.cli_retry()
+        self.assertEqual(code, 2, output)  # partial success retains the CLI's refusal status
+        self.assertIn("reviewer #356 @ aaaaaaa re-armed", output)
+        self.assertIn("fixer push recorded", output)
+        self.assertTrue(st.scope_holds()[356]["released"])
+        release.assert_called_once()
+        worker.assert_called_once()
+        self.assertEqual(self.state_of(allowed["id"])["state"], "pending")
+        self.assertEqual(self.state_of(blocked["id"])["state"], "failed")
+
     def test_a_refused_click_never_releases_a_hold(self):
         # Every refusal decided before the re-arm — an unknown PR, a stale confirmation — leaves
         # the hold exactly where it was.
