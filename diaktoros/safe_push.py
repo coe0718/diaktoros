@@ -223,8 +223,7 @@ def _audit(loop: dict, record: dict) -> None:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             line = (json.dumps({**record, "at": time.time()}, sort_keys=True) + "\n").encode()
-            if os.write(fd, line) != len(line):
-                raise OSError("short audit write")
+            broker.append_audit_line(fd, line)
             os.fsync(fd)
             # A new audit file's directory entry must survive a crash too.
             os.fsync(dirfd)

@@ -215,10 +215,28 @@ def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
         fcntl.flock(fd, fcntl.LOCK_EX)
         record = {"at": time.time(), "repo": repo, "pr": number, "head": head,
                   "branch": branch, "role": role, "operation": operation, "login": login}
-        os.write(fd, (json.dumps(record, sort_keys=True) + "\n").encode())
+        append_audit_line(fd, (json.dumps(record, sort_keys=True) + "\n").encode())
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def append_audit_line(fd: int, line: bytes) -> None:
+    """Append one whole line to the audit file or fail (shared with safe_push._audit).
+
+    The caller holds the exclusive flock. A short write is an error, and the partial bytes are
+    cut off again so a truncated JSON line is never left as the record of a write."""
+    start = os.fstat(fd).st_size
+    try:
+        written = os.write(fd, line)
+    except OSError:
+        written = -1
+    if written != len(line):
+        try:
+            os.ftruncate(fd, start)
+        except OSError:
+            pass
+        raise OSError("short audit write")
 
 
 # The fixer's answers to the findings: one bounded PR comment, posted by the host as the fixer
