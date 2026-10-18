@@ -240,6 +240,16 @@ class Ledger(unittest.TestCase):
         self.assertEqual((before["proposed"], before["outcomes"]["merged"]), (1, 1))
         self.assertEqual(before["turns_per_merged"]["median"], 2)   # its later review counts
 
+    def test_steps_from_is_this_repos_first_operator_action(self):
+        self.proposal(20, "pr", 120, NOW - 4000)
+        self.action(120, "retry", NOW - 3500)
+        self.sup.record_operator_action("other/repo", 5, "hold")
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE operator_actions SET created=? WHERE repo='other/repo'",
+                        (NOW - 6000,))
+        data = stats.fix_outcomes(self.db, REPO, NOW - 7 * DAY, NOW, lambda number: "open")
+        self.assertEqual(data["steps_from"], NOW - 3500)
+
     def reviewed(self, pr, head, model):
         run_id = self.turn(pr, "reviewer", NOW - 5000)
         with ledger.connect(self.db) as con:
