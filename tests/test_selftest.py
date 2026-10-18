@@ -258,6 +258,17 @@ class ChecklistTests(SelftestBase):
         self.assertIn(f"fix: chmod 600 {self.fx.settings['key_file']}", text)
         self.assert_no_secrets(text)
 
+    def test_multi_line_key_file_fails_like_the_production_reader(self):
+        key = pathlib.Path(self.fx.settings["key_file"])
+        for body in (MODEL_KEY + "\nsecond-line\n", MODEL_KEY + "\r\nsecond-line"):
+            key.write_text(body)
+            key.chmod(0o600)
+            rc, text = self.run_selftest()
+            self.assertEqual(rc, 1)
+            self.assertRegex(text, r"❌ runtime:key_file .*more than one line")
+            self.assertNotRegex(text, r"✅ runtime:key_file")
+            self.assert_no_secrets(text)
+
     def test_key_file_read_error_fails_instead_of_crashing(self):
         key = pathlib.Path(self.fx.settings["key_file"])
         real = pathlib.Path.read_text

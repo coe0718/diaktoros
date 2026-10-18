@@ -222,6 +222,7 @@ def _interpreter_outside(link: Path, runtime: Path) -> str:
 
 def _check_override(report: Report, step: str, prefix: str, block: dict) -> bool:
     """An explicit model override's upstream and key file; True when both are usable."""
+    from . import seat_model
     from .inference_proxy import UPSTREAM_SUFFIX, _NoRedirectConnection
     ok = True
     upstream = block["upstream"]
@@ -247,14 +248,18 @@ def _check_override(report: Report, step: str, prefix: str, block: dict) -> bool
     good, detail, fix = _private_file(key_path)
     if good:
         try:
-            empty = not key_path.read_text().strip()
+            text = key_path.read_text().strip()
         except OSError as exc:
             good, detail, fix = (False, f"{key_path} cannot be read ({type(exc).__name__})",
                                  f"chmod 600 {key_path}")
         else:
-            if empty:
+            if not text:
                 good, detail, fix = (False, f"{key_path} is empty",
                                      f"write the provider API key into {key_path}")
+            elif not seat_model.key_text_is_one_line(text):
+                good, detail, fix = (False, f"{key_path} has more than one line "
+                                     "(the production reader refuses it)",
+                                     f"leave only the provider API key, on one line, in {key_path}")
     if not good:
         ok = False
         report.add(step, prefix + "key_file", FAIL, detail,
