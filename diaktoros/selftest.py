@@ -197,6 +197,8 @@ def _private_file(path: Path) -> tuple[bool, str, str]:
     mode = info.st_mode & 0o777
     if mode & 0o077:
         return False, f"{path} is mode {mode:03o} (group/other can read it)", f"chmod 600 {path}"
+    if not mode & 0o400:
+        return False, f"{path} is mode {mode:03o} (you cannot read it)", f"chmod 600 {path}"
     return True, f"{path} (mode {mode:03o}, owned by you)", ""
 
 
@@ -243,8 +245,16 @@ def _check_override(report: Report, step: str, prefix: str, block: dict) -> bool
                    f"https://{parts.hostname}{parts.path} (model {block['model']})")
     key_path = Path(block["key_file"]).expanduser()
     good, detail, fix = _private_file(key_path)
-    if good and not key_path.read_text().strip():
-        good, detail, fix = False, f"{key_path} is empty", f"write the provider API key into {key_path}"
+    if good:
+        try:
+            empty = not key_path.read_text().strip()
+        except OSError as exc:
+            good, detail, fix = (False, f"{key_path} cannot be read ({type(exc).__name__})",
+                                 f"chmod 600 {key_path}")
+        else:
+            if empty:
+                good, detail, fix = (False, f"{key_path} is empty",
+                                     f"write the provider API key into {key_path}")
     if not good:
         ok = False
         report.add(step, prefix + "key_file", FAIL, detail,
