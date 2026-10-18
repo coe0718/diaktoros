@@ -137,6 +137,19 @@ def isolated_supervisor(loop: dict):
 # (``duplicate <state>…``) left nothing to run and must not be reported as a fresh enqueue.
 SCHEDULED_OUTCOMES = ("enqueued", "rearmed", "pending")
 
+# A queue row the gate kept after declining to schedule (``duplicate <state>``) starts with this:
+# a confirmed terminal answer, not a delivery the watchdog should replay or call uncertain.
+DECLINED_PREFIX = "turn declined — "
+
+
+def declined_reason(seat: str, outcome: str) -> str:
+    return f"{DECLINED_PREFIX}{seat} turn {outcome}; nothing scheduled, not retried"
+
+
+def is_declined_hold(entry: object) -> bool:
+    reason = entry.get("reason") if isinstance(entry, dict) else None
+    return isinstance(reason, str) and reason.startswith(DECLINED_PREFIX)
+
 
 def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key: str = '') -> str:
     """Commit one isolated turn to the host run ledger, then arm its detached worker.
@@ -281,6 +294,13 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
                 st.queue_pop_if(seat, key, queued)
             else:
                 on_queued = None   # no "queued" notice for a turn that will never run
+                # Keep the observed row, but say why: the watchdog must tell this confirmed
+                # decline from an acknowledged POST the gate never answered. Only a row that
+                # exists is reworded; a decline never creates one.
+                if isinstance(queued, dict) and queued.get("reason") != declined_reason(seat, outcome):
+                    st.queue_replace_if(seat, key, queued, queued.get("head") or head,
+                                        queued.get("url") or pr_url(loop, number),
+                                        declined_reason(seat, outcome))
             final = (f"{seat} turn {outcome}", "accepted" if scheduled else "declined")
             if outcome == "enqueued":
                 log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")

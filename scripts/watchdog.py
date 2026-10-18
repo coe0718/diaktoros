@@ -434,6 +434,11 @@ def drain(loop: dict, st: state_mod.LoopState, seat: str, quiet: bool = False) -
             st.queue_pop_if(seat, key, entry)
             log(f"drain: PR #{number} moved since queued — stale head dropped")
             continue
+        if gate.is_declined_hold(entry):
+            # The gate answered and declined (a duplicate of a terminal turn): nothing to
+            # replay, and not an unverified POST. A new head or a closed PR clears it above.
+            log(f"drain: {key} was declined by the gate ({entry.get('reason')}) — left as is")
+            continue
         base = (pr.get("base") or {}).get("ref") or ""
         stacked = (st.watch().get("stacked_wait") or {}).get(str(number))
         if isinstance(stacked, dict) and stacked.get("base") != base:
