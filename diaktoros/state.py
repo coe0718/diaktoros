@@ -139,6 +139,22 @@ def _clock(value) -> float | None:
     return float(value)
 
 
+DELIVERY_LEASE_S = 60.0
+
+
+def _delivery_in_flight(marker: dict, now: float | None = None) -> bool:
+    """Whether a breach marker's delivery lease is still live: it holds an attempt token stamped
+    within the last ``DELIVERY_LEASE_S`` seconds. A stamp that is missing, junk or *ahead* of the
+    clock holds nothing, so a bad ``delivery_at`` can never wedge the retry on ``already``."""
+    if not marker.get("delivery_token"):
+        return False
+    at = _clock(marker.get("delivery_at"))
+    if at is None:
+        return False
+    age = (time.time() if now is None else now) - at
+    return 0 <= age < DELIVERY_LEASE_S
+
+
 def _mapping(raw) -> dict:
     """A state file's top level as a dict: a file that is not a mapping holds nothing (#80)."""
     return raw if isinstance(raw, dict) else {}
@@ -693,8 +709,7 @@ class LoopState:
             prior = _mapping(data.get(key))
             new = prior.get("head") != head
             if not new and (prior.get("status") != "delivery-pending"
-                            or (prior.get("delivery_token")
-                                and time.time() - (_clock(prior.get("delivery_at")) or 0) < 60)):
+                            or _delivery_in_flight(prior)):
                 return "already"
             # Keep the original reason/rounds when retrying a pending marker.
             marker = {**(entry if new else prior), "status": "delivery-pending",
@@ -734,8 +749,7 @@ class LoopState:
             data = _mapping(self._load(self.breach, {}))
             marker = _mapping(data.get(key))
             if (marker.get("head") != head or marker.get("status") != "delivery-pending"
-                    or (marker.get("delivery_token")
-                        and time.time() - (_clock(marker.get("delivery_at")) or 0) < 60)):
+                    or _delivery_in_flight(marker)):
                 return False
             data.pop(key)
             self._breach_save(data)
@@ -850,6 +864,28 @@ class LoopState:
                 self._save_strict(self.dir / "held-scope.json", data)
             return changed
 
+    def scope_hold_snapshot(self, number: int) -> dict | None:
+        """Read the hold approved by a retry, separately from any ledger operation."""
+        with self.locked():
+            return self.scope_holds().get(number)
+
+    def scope_hold_release(self, number: int, expected: dict | None) -> dict | None:
+        """Release only an unchanged snapshot; never approve a new head or file set.
+
+        The compare and save share the writers' state-file lock. Do not call this while
+        holding a ledger transaction: workers can take that lock before the state lock.
+        """
+        if not expected:
+            return None
+        with self.locked():
+            data = {str(k): v for k, v in self.scope_holds().items()}
+            if data.get(str(number)) != expected:
+                return None
+            held = {**expected, "released": True}
+            data[str(number)] = held
+            self._save_strict(self.dir / "held-scope.json", data)
+            return held
+
     def scope_hold_drop(self, number: int) -> None:
         with self.locked():
             data = {str(k): v for k, v in self.scope_holds().items()}
@@ -882,6 +918,7 @@ class LoopState:
             data = {str(k): v for k, v in self.fix_holds().items()}
             if data.pop(str(number), None) is not None:
                 self._save_strict(self.dir / "held-fixes.json", data)
+            self.fix_hold_unsay(number)       # a later hold on this issue says so again (#796)
 
     def _said_claim(self, name: str, number: int) -> bool:
         """Record ``number`` in the one-time-notice ledger ``name``; True only for the caller that
@@ -1117,7 +1154,7 @@ class LoopState:
         return entry if isinstance(entry, dict) else {}
 
     def transition_get(self, number: int) -> dict:
-        return (self._load(self.transitions_file, {}) or {}).get(str(number)) or {}
+        return _mapping(_mapping(self._load(self.transitions_file, {})).get(str(number)))
 
     def transition_set(self, number: int, entry: dict) -> dict:
         """Separate durable ledger: whole-watchdog snapshots cannot erase holds."""
@@ -1143,7 +1180,7 @@ class LoopState:
         hostdirs.ensure(self.dir)
         with (self.dir / "stack-transitions.lock").open("a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            data = self._load(self.transitions_file, {}) or {}
+            data = _mapping(self._load(self.transitions_file, {}))
             prior = data.get(str(number))
             entry = change(prior)
             if entry is None:

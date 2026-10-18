@@ -409,7 +409,7 @@ def check_runtime_paths(loop: dict) -> list[Check]:
     on every turn while doctor says nothing. Each path is checked independently so the
     operator sees exactly which one is wrong; a missing runtime file is reported as such.
     """
-    from . import seat_model
+    from . import runtime_detect, seat_model
     path = config.host_path("runtime")
     if not path.exists():
         return [Check("runtime:file", ABSENT,
@@ -438,14 +438,20 @@ def check_runtime_paths(loop: dict) -> list[Check]:
                                 f"{key} = {raw} does not exist",
                                 f"update {key} in {path} to the current path (a Hermes "
                                 "upgrade may have moved it)"))
-        elif key == "source" and not (p / "run_agent.py").exists():
+        elif key == "source" and (not (p / "run_agent.py").is_file()
+                                  or not (p / ".git").exists()):
+            # Same requirement as `selftest`: every isolated turn snapshots this directory
+            # with git and refuses anything that is not a committed Git checkout.
             checks.append(Check(f"runtime:{key}", MISMATCH,
-                                f"{key} = {raw} exists but has no run_agent.py",
+                                f"{key} = {raw} is not a hermes-agent Git checkout "
+                                "(run_agent.py and .git required)",
                                 f"point {key} at the hermes-agent Git checkout"))
-        elif key == "venv" and not (p / "bin" / "python").exists():
+        elif key == "venv" and runtime_detect.venv_missing(p):
             checks.append(Check(f"runtime:{key}", MISMATCH,
-                                f"{key} = {raw} exists but has no bin/python",
-                                f"point {key} at the virtualenv Hermes is installed in"))
+                                f"{key} = {raw} exists but has no "
+                                f"{', '.join(runtime_detect.venv_missing(p))}",
+                                f"point {key} at the virtualenv Hermes is installed in "
+                                "(it must hold bin/python and bin/hermes)"))
         elif key == "rust" and not (p / "bin" / "cargo").exists():
             checks.append(Check(f"runtime:{key}", MISMATCH,
                                 f"{key} = {raw} exists but has no bin/cargo",

@@ -55,7 +55,7 @@ class Ready(unittest.TestCase):
             if not self.approved[number]:
                 return [], ""
             return [{"id": number, "state": "APPROVED", "commit_id": HEAD[number],
-                     "submitted_at": "2026-01-01T00:00:00Z", "user": {"login": "rev"}}], ""
+                     "submitted_at": "2026-01-01T00:00:00Z", "user": {"login": "rev", "id": 7}}], ""
 
         def fetch(_loop, path, *a, **k):
             return self.mergeable[int(path.rsplit("/", 1)[1])], ""
@@ -166,6 +166,43 @@ class Ready(unittest.TestCase):
                 text = self.run_ready()
                 self.assertNotIn("1. #1", text)
                 self.assertIn("changed since listing", text)
+
+    def retarget_ready(self, receipts, baseline=()):
+        """Run ready on PR 3 held by a same-head retarget; ``receipts`` is the host receipt read."""
+        self.add(3)
+        # A hold's baseline is immutable, so every call starts from its own state directory.
+        self.loop["state_dir"] = tempfile.mkdtemp(dir=self.tmp.name)
+        self.st = state_mod.state_for(self.loop)
+        self.st.transition_set(3, {"head": HEAD[3], "from_base": "b1", "at": 1.0,
+                                   "old_review_ids": list(baseline)})
+        with mock.patch.object(ready.transition, "read_receipts", return_value=receipts):
+            return self.run_ready()
+
+    def test_retarget_hold_with_receipted_approval_is_ready(self):
+        """#791: the hold is owed a fresh review; a receipted approval at the head ends the veto."""
+        text = self.retarget_ready({3: {"principal_id": 7, "verdict": "APPROVED"}})
+        self.assertIn("1. #3", text)
+        self.assertNotIn("retarget hold", text)
+
+    def test_retarget_hold_without_receipted_approval_still_blocks(self):
+        cases = (("no receipt", {}, ()),
+                 ("receipt for another verdict",
+                  {3: {"principal_id": 7, "verdict": "CHANGES_REQUESTED"}}, ()),
+                 ("approval predates the retarget",
+                  {3: {"principal_id": 7, "verdict": "APPROVED"}}, (3,)))
+        for label, receipts, baseline in cases:
+            with self.subTest(label):
+                text = self.retarget_ready(receipts, baseline)
+                self.assertNotIn("1. #3", text)
+                self.assertIn("same-head base retarget hold", text)
+
+    def test_retarget_hold_without_baseline_never_ready(self):
+        self.add(3)
+        self.st.transition_set(3, {"head": HEAD[3], "from_base": "b1", "at": 1.0,
+                                   "old_review_ids": None})
+        text = self.run_ready()
+        self.assertNotIn("1. #3", text)
+        self.assertIn("same-head base retarget hold", text)
 
 
 if __name__ == "__main__":

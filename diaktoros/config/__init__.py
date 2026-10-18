@@ -597,6 +597,16 @@ REVIEW_ONLY_MAX = 50
 _LOGIN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38})\Z")
 
 
+def _check_logins(value, key: str, where: str) -> list[str]:
+    """``fixers`` / ``reviewers``: a list of logins, lowercased. A bare string would be read one
+    character at a time (``"rev-bot"`` -> ``r``, ``e``, ...), so any non-list is refused."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
+        raise ConfigError(f"{where}: {key!r} must be a list of GitHub logins")
+    return [name.lower() for name in value]
+
+
 def check_review_only(value, loop: dict, where: str) -> list[str]:
     """Review-only authors (#191): GitHub logins, lowercased, unique, and neither a fixer nor a
     reviewer — a fixer's PR is fixed, and a reviewer never reviews its own."""
@@ -1398,8 +1408,8 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
 
     loop["id"] = str(loop.get("id") or repo.split("/")[-1]).strip()
     loop["repo"] = repo.lower()
-    loop["fixers"] = [str(x).lower() for x in loop.get("fixers") or []]
-    loop["reviewers"] = [str(x).lower() for x in loop.get("reviewers") or []]
+    loop["fixers"] = _check_logins(loop.get("fixers"), "fixers", where)
+    loop["reviewers"] = _check_logins(loop.get("reviewers"), "reviewers", where)
     if not loop["fixers"]:
         raise ConfigError(f"{where}: 'fixers' must list at least one GitHub login")
     if not loop["reviewers"]:
