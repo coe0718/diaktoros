@@ -135,6 +135,7 @@ class RuntimePaths(unittest.TestCase):
         venv = self.root / "venv"
         (venv / "bin").mkdir(parents=True, exist_ok=True)
         (venv / "bin" / "python").write_text("")
+        (venv / "bin" / "hermes").write_text("")
         runtime = self.root / "python"
         (runtime / "bin").mkdir(parents=True, exist_ok=True)
         rust = self.root / "rust"
@@ -201,6 +202,14 @@ class RuntimePaths(unittest.TestCase):
         checks = self.checks_by_name()
         self.assertEqual(checks["runtime:venv"].status, doctor.MISMATCH)
         self.assertIn("bin/python", checks["runtime:venv"].detail)
+
+    def test_venv_without_hermes_is_mismatch(self):
+        # The seat turn runs <venv>/bin/hermes; bin/python alone must not read verified (#787).
+        self.write_runtime()
+        (self.root / "venv" / "bin" / "hermes").unlink()
+        checks = self.checks_by_name()
+        self.assertEqual(checks["runtime:venv"].status, doctor.MISMATCH)
+        self.assertIn("bin/hermes", checks["runtime:venv"].detail)
 
     def test_rust_without_cargo_is_mismatch(self):
         bare = self.root / "bare-rust"
