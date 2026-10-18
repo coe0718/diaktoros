@@ -236,12 +236,23 @@ def remove_tree_fd(fd: int) -> None:
                 os.unlink(entry.name, dir_fd=fd)
 
 
+def evidence_skip(path: pathlib.Path, quiet: bool) -> bool:
+    """True (and logged) when the path is evidence-named and must never be touched.
+
+    One rule for both modes: ``clean_pr`` asks it before counting a candidate, so a dry run
+    skips what a real run skips, and ``remove_path`` asks it again before deleting.
+    """
+    if NEVER_TOUCH.search(str(path)):
+        log(f"    SKIP (evidence pattern): {path}", quiet)
+        return True
+    return False
+
+
 def remove_path(path: pathlib.Path, quiet: bool,
                 expected: tuple[tuple[int, int], tuple[int, int]] | None = None,
                 size: int | None = None) -> int:
     """Remove by pinned parent fd, rejecting a changed candidate or root."""
-    if NEVER_TOUCH.search(str(path)):
-        log(f"    SKIP (evidence pattern): {path}", quiet)
+    if evidence_skip(path, quiet):
         return 0
     if size is None:
         size = du(path)
@@ -388,6 +399,8 @@ def clean_pr(loop: dict, number: int, dry: bool, quiet: bool, force: bool = Fals
         # on a parent would remove a nested branch checkout and uncommitted work.
         if overlaps_branch_worktree(cand, protected):
             log(f"    SKIP (branch worktree): {cand}", quiet)
+            continue
+        if evidence_skip(cand, quiet):
             continue
         size = du(cand)
         if dry:

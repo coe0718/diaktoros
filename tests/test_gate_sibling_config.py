@@ -10,6 +10,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import unittest
 
@@ -83,6 +84,24 @@ class SiblingConfigTest(unittest.TestCase):
         self.assertNotIn("Traceback", err)
         self.assertIn(f"loop config refused for {t.REPO}", err)
         self.assertIn("unattended writes denied until it loads", err)
+
+    def watchdog(self, *args: str):
+        return subprocess.run([sys.executable, str(t.ROOT / "scripts" / "watchdog.py"), *args],
+                              capture_output=True, text=True, env=t.env(), timeout=120)
+
+    def test_a_missing_loop_name_prints_the_line_and_exits_nonzero(self):
+        for extra in ((), ("--drain",)):
+            proc = self.watchdog("--loop", "nosuchloop", *extra)
+            self.assertEqual(proc.stdout.strip(), "no loop config named nosuchloop", (extra, proc))
+            self.assertEqual(proc.returncode, 1, (extra, proc))
+            self.assertNotIn("Traceback", proc.stderr)
+
+    def test_a_refused_named_loop_is_named_and_exits_nonzero(self):
+        self.sibling("acme/legacy")
+        proc = self.watchdog("--loop", "legacy")
+        self.assertIn("⚠️ Diaktoros [legacy] watchdog failed: ConfigError: ", proc.stdout)
+        self.assertIn("'read_token' is not set", proc.stdout)
+        self.assertEqual(proc.returncode, 1, proc)
 
 
 if __name__ == "__main__":

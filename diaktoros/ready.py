@@ -6,8 +6,9 @@ the reason for every PR it leaves out. The loop never merges.
 A PR is ready when it is approved at its head (the same effective-review predicate the gates use),
 that approval is not stale (#473, ``stale_approval.is_stale``), the required checks at the head are
 green (``ci.gating``), GitHub calls it mergeable, and nothing holds it: no draft, open gate failure,
-human-paths hold, escalation or same-head retarget quarantine. Anything unreadable is an
-exclusion, never a guess. An issue-fix hold (``st.fix_holds()``) is not a hold on a PR: it means
+human-paths hold, escalation or same-head retarget quarantine. A retarget quarantine blocks only
+while its fresh review is owed: a host-receipted approval at the head ends it (#791). Anything
+unreadable is an exclusion, never a guess. An issue-fix hold (``st.fix_holds()``) is not a hold on a PR: it means
 the issue waits for its origin PR to merge, so it never excludes that PR (#759).
 
 Order: a stacked PR (its base is another PR's branch) comes after that parent, and is excluded
@@ -54,6 +55,7 @@ def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> 
     (it carries ``mergeable_state``), ``None`` when unreadable. Stacking is judged by the caller.
     """
     why: list[str] = []
+    approved = False
     number = pr.get("number")
     head = (pr.get("head") or {}).get("sha") or ""
     author = str((pr.get("user") or {}).get("login") or "").lower()
@@ -74,8 +76,10 @@ def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> 
             why.append("review receipts unreadable: approval unknown")
         elif latest is None or gh.review_state(latest) != "APPROVED":
             why.append(f"not approved at head {head[:7]}")
-        elif stale_approval.is_stale(st.watch(), number, head):
-            why.append(stale_approval.line(stale_approval.record(st.watch(), number)))
+        else:
+            approved = True
+            if stale_approval.is_stale(st.watch(), number, head):
+                why.append(stale_approval.line(stale_approval.record(st.watch(), number)))
 
     gating = ci.gating(ci_state, config.required_checks(loop))
     if gating is None:
@@ -111,7 +115,10 @@ def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> 
             marker if isinstance(marker, dict) else {}, head) in {"awaiting-adjudication",
                                                                   "adjudicating"}:
         why.append("escalated: parked awaiting adjudication")
-    if transition.hold(st, number, head):
+    # The hold blocks only while the fresh review is still owed. ``reviews`` above are already the
+    # host-receipted post-boundary ones, so an approval found there ends the hold's veto, as in
+    # the gates (#791). An unreadable review list never counts as approved.
+    if not approved and transition.hold(st, number, head):
         why.append("same-head base retarget hold")
     return why
 
