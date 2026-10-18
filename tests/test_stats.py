@@ -581,6 +581,19 @@ class GitHub(unittest.TestCase):
         self.assertIn("&lt;script&gt;", page)
 
 
+class HtmlMissingLedger(unittest.TestCase):
+    def page(self, turns):
+        return stats.as_html({"repo": REPO, "loop": "w", "since": NOW - DAY, "until": NOW,
+                              "turns": turns})
+
+    def test_missing_ledger_is_unavailable_not_empty(self):
+        missing, empty = self.page(None), self.page({})
+        self.assertIn("no run ledger yet", missing)
+        self.assertNotIn("No turns in this window", missing)
+        self.assertIn("No turns in this window", empty)
+        self.assertNotIn("no run ledger yet", empty)
+
+
 class Cli(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
