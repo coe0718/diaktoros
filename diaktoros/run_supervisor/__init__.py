@@ -1109,8 +1109,14 @@ class Supervisor(records.LedgerRecords):
                  lease_seconds: float = 60, child_timeout: float = DEFAULT_TURN_BUDGET_S,
                  production_config: str | Path | None = None,
                  hermes_home: str | Path | None = None, create: bool = True,
-                 presence: str | Path | None = None):
-        """``create=False`` is the detached worker's mode: it opens an existing ledger only.
+                 presence: str | Path | None = None, existing_only: bool = False):
+        """``existing_only`` is the operator read commands' mode (#798): a host open (it
+        migrates) of a ledger that must already exist. The file is opened ``mode=rw`` and must
+        hold the ``runs`` table, on that one connection, so a missing, emptied, replaced or
+        foreign file is ``LedgerMissing`` and nothing is created: no file, directory, schema or
+        marker.
+
+        ``create=False`` is the detached worker's mode: it opens an existing ledger only.
 
         Hardening: a worker must never create host state. Only host-side callers (gate
         enqueue, CLI, init, watchdog) create, schema or migrate the ledger and its directory;
@@ -1130,10 +1136,10 @@ class Supervisor(records.LedgerRecords):
         # A literal '~/…' (unexpanded by any shell) names the home's ledger, never ./~ here.
         db = Path(os.path.expanduser(str(db)))
         # First, before any other check: no ledger at all is a quiet exit, not an error.
-        if not create and not _has_content(db):
+        if (not create or existing_only) and not _has_content(db):
             raise LedgerMissing(f"run ledger {db} is gone, empty or not SQLite")
         vanished = False
-        if create:
+        if create and not existing_only:
             empty = db.is_file() and db.stat().st_size == 0
             if presence is None and _canonical(db) == _canonical(production_ledger()):
                 presence = presence_marker()
@@ -1174,11 +1180,13 @@ class Supervisor(records.LedgerRecords):
         self.lease_seconds = lease_seconds
         self.child_timeout = child_timeout
         self.create = create
+        self.existing_only = existing_only
         if not create:
             with self._connect():  # validates; a worker never schemas or migrates
                 pass
             return
-        self.db.parent.mkdir(parents=True, exist_ok=True)
+        if not existing_only:
+            self.db.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as con:
             con.executescript(SCHEMA)
             con.execute('BEGIN IMMEDIATE')
@@ -1199,6 +1207,8 @@ class Supervisor(records.LedgerRecords):
                              f"empty: earlier runs, holds and undelivered notices are lost. "
                              f"Check what removed it before trusting seat state.", time.time()))
             con.execute('COMMIT')
+        if existing_only:
+            return                       # it existed: its marker is not this open's to write
         marker = ledger_marker(self.db)
         if not marker.is_file():
             os.close(os.open(marker, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
@@ -1254,12 +1264,37 @@ class Supervisor(records.LedgerRecords):
 
     def _connect(self):
         pragmas = (ledger.BUSY_TIMEOUT, "journal_mode=WAL", "synchronous=FULL")
+        if self.create and self.existing_only:
+            return ledger.connect(self.db, opener=self._existing_connect, row_factory=sqlite3.Row,
+                                  pragmas=pragmas)
         if self.create:
             return ledger.connect(self.db, timeout=ledger.LOCK_WAIT_S, isolation_level=None,
                                   row_factory=sqlite3.Row, pragmas=pragmas)
         # A worker opens and vets the host's ledger itself; it closes what it refuses.
         return ledger.connect(self.db, opener=self._worker_connect, row_factory=sqlite3.Row,
                               pragmas=pragmas)
+
+    def _existing_connect(self) -> sqlite3.Connection:
+        """Open a ledger that must exist, for a host that migrates it: ``mode=rw`` never creates
+        a file, and the ``runs`` table is checked on the connection it then uses."""
+        uri = "file:" + urllib.request.pathname2url(str(self.db.resolve())) + "?mode=rw"
+        try:
+            con = sqlite3.connect(uri, uri=True, timeout=ledger.LOCK_WAIT_S, isolation_level=None)
+        except sqlite3.DatabaseError as exc:
+            raise LedgerMissing(f"run ledger {self.db} cannot be opened: {exc}") from exc
+        try:
+            try:
+                has_runs = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                       "AND name='runs'").fetchone()
+            except sqlite3.DatabaseError as exc:
+                raise LedgerMissing(f"run ledger {self.db} is unreadable: {exc}") from exc
+            if not has_runs:
+                raise LedgerMissing(f"run ledger {self.db} is not a review-loop ledger "
+                                    "(no runs table)")
+        except BaseException:
+            con.close()
+            raise
+        return con
 
     def _worker_connect(self) -> sqlite3.Connection:
         """Open the host's ledger, or raise LedgerMissing having written nothing to the file.
@@ -3077,22 +3112,6 @@ class Supervisor(records.LedgerRecords):
             pass                         # a notice never changes the run
 
 
-def _is_ledger(db: str | Path) -> bool:
-    """Whether ``db`` is a review-loop run ledger (a file with the ``runs`` table), read without
-    creating or changing anything; a missing, empty or foreign file is not one."""
-    try:
-        con = read_only_connect(db)
-        if con is None:
-            return False
-        try:
-            return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'"
-                               ).fetchone() is not None
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return False
-
-
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("operation", choices=["_fixture-worker", "_production-worker",
@@ -3111,12 +3130,14 @@ def main():
         # `.present` marker. sweep and retry stay host-side creators.
         # A ledger is a file with the runs table; one an upgrade has not migrated yet is still
         # the operator's ledger, and opening it migrates it as any host open does (review on
-        # #944: worker mode refused it, "runs lacks cost", right after an upgrade).
-        if a.operation in ('status', 'rulings', 'reconcile') and not _is_ledger(a.db):
-            print(f'diaktoros: no run ledger at {a.db} (missing, empty or not a review-loop '
-                  'ledger); no ledger was created', file=sys.stderr)
+        # #944: worker mode refused it, "runs lacks cost", right after an upgrade). The check
+        # and the open are one step (``existing_only``): a ledger that goes missing in between
+        # is refused, never recreated.
+        try:
+            sup = Supervisor(a.db, existing_only=a.operation in ('status', 'rulings', 'reconcile'))
+        except LedgerMissing as exc:
+            print(f'diaktoros: {exc}; no ledger was created', file=sys.stderr)
             raise SystemExit(2)
-        sup = Supervisor(a.db)
         if a.operation == 'rulings':
             if a.command or a.reason or a.acknowledge_no_live_worker:
                 p.error('unexpected rulings arguments')

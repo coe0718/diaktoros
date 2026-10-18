@@ -491,6 +491,37 @@ class Lifecycle(unittest.TestCase):
                 self.assertFalse(db.exists())
                 self.assertFalse(run_supervisor.ledger_marker(db).exists())
 
+    def test_read_commands_never_recreate_a_ledger_that_vanishes_before_the_open(self):
+        # Review of #944 (F1): a check separate from the open left a window; a ledger removed
+        # after being found was recreated with a schema and a marker. The ledger is removed
+        # right after each step that finds it, whichever step the code uses to look.
+        def vanishing(real, db):
+            def wrapper(*args, **kwargs):
+                result = real(*args, **kwargs)
+                if result:
+                    for suffix in ("", "-wal", "-shm", ".present"):
+                        Path(f"{db}{suffix}").unlink(missing_ok=True)
+                return result
+            return wrapper
+        for argv in (["status"], ["rulings"],
+                     ["reconcile", "r1", "--reason", "x", "--acknowledge-no-live-worker"]):
+            with self.subTest(argv[0]):
+                db = self.root / f"race-{argv[0]}" / "runs.sqlite"
+                Supervisor(db)
+                err, out = io.StringIO(), io.StringIO()
+                with patch.object(sys, "argv", ["run_supervisor", argv[0], str(db), *argv[1:]]), \
+                        patch.object(run_supervisor, "_has_content",
+                                     vanishing(run_supervisor._has_content, db)), \
+                        patch.object(run_supervisor, "read_only_connect",
+                                     vanishing(run_supervisor.read_only_connect, db)), \
+                        contextlib.redirect_stderr(err), contextlib.redirect_stdout(out), \
+                        self.assertRaises(SystemExit) as raised:
+                    run_supervisor.main()
+                self.assertEqual(raised.exception.code, 2, err.getvalue())
+                self.assertFalse(db.exists())
+                self.assertFalse(run_supervisor.ledger_marker(db).exists())
+                self.assertIn("no ledger was created", err.getvalue())
+
     def test_read_commands_open_a_ledger_an_upgrade_has_not_migrated_yet(self):
         # Review of #944: right after an upgrade adds a runs column, status/rulings/reconcile ran
         # in worker mode and refused the operator's real ledger ("runs lacks cost") until some
@@ -499,7 +530,9 @@ class Lifecycle(unittest.TestCase):
         Supervisor(db).enqueue("d", "o/r", 1, "a" * 40, "reviewer")
         with contextlib.closing(sqlite3.connect(db)) as con, con:
             con.execute("ALTER TABLE runs DROP COLUMN cost")
-        for argv in (["status", str(db)], ["rulings", str(db)]):
+        for argv in (["status", str(db)], ["rulings", str(db)],
+                     ["reconcile", str(db), "r1", "--reason", "x",
+                      "--acknowledge-no-live-worker"]):
             with self.subTest(argv[0]):
                 err, out = io.StringIO(), io.StringIO()
                 with patch.object(sys, "argv", ["run_supervisor", *argv]), \
