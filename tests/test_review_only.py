@@ -113,7 +113,7 @@ class Gates(fg.Base):
              mock.patch.object(gate_fixer.gate, "fetch_reviews",
                                return_value=self.verdicts(prior + 1)), \
              mock.patch.object(gate_fixer.gate, "drain_seat"), \
-             mock.patch.object(gate, "enqueue_isolated") as enqueue, \
+             mock.patch.object(gate, "enqueue_isolated", return_value="enqueued") as enqueue, \
              mock.patch.object(gate, "breach") as breach, \
              mock.patch.object(gate_fixer.observer, "notify") as notify, \
              contextlib.redirect_stderr(io.StringIO()):

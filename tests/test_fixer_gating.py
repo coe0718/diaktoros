@@ -83,7 +83,7 @@ class Base(unittest.TestCase):
 class GateHold(Base):
     """gate_fixer end to end, with GitHub, the worker spawn and the observer mocked."""
 
-    def run_gate(self, rid: int = 5):
+    def run_gate(self, rid: int = 5, outcome: str = "enqueued"):
         payload = {"action": "submitted", "repository": {"full_name": REPO},
                    "pull_request": LIVE, "review": verdict(rid) | {"state": "changes_requested"}}
         with mock.patch.object(gate_fixer.sys, "stdin", io.StringIO(json.dumps(payload))), \
@@ -91,7 +91,7 @@ class GateHold(Base):
              mock.patch.object(gate_fixer.gh, "pr", return_value=LIVE), \
              mock.patch.object(gate_fixer.gate, "fetch_reviews", return_value=[verdict(rid)]), \
              mock.patch.object(gate_fixer.gate, "drain_seat"), \
-             mock.patch.object(gate, "enqueue_isolated") as enqueue, \
+             mock.patch.object(gate, "enqueue_isolated", return_value=outcome) as enqueue, \
              mock.patch.object(gate_fixer.observer, "notify") as notify, \
              contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
@@ -134,6 +134,21 @@ class GateHold(Base):
         self.assertEqual(enqueue.call_args.args[1:4], ("fixer", 7, HEAD))
         self.assertEqual(notify.call_args.kwargs["next_turn"], "fixer queued")
         self.assertEqual(self.st.queue_items("fixer"), {})
+
+    def test_duplicate_of_a_terminal_turn_keeps_the_queue_entry_and_says_nothing_queued(self):
+        """#729: ``duplicate failed`` scheduled nothing, so the gate neither drops its queue
+        entry, nor announces "fixer queued", nor records a queued decision."""
+        from diaktoros import gate_decisions
+        self.set_push(True)
+        key = f"{REPO}#7"
+        self.st.queue_add("fixer", key, HEAD, "url", "waiting for a slot")
+        with mock.patch.object(gate_decisions, "record") as record:
+            enqueue, notify = self.run_gate(outcome="duplicate failed")
+        enqueue.assert_called_once()
+        self.assertEqual(self.st.queue_items("fixer")[key]["reason"], "waiting for a slot")
+        notify.assert_not_called()
+        self.assertEqual([c.args[3:] for c in record.call_args_list],
+                         [("declined", "fixer turn duplicate failed")])
 
     def test_policy_flip_under_the_admission_lock_is_the_same_hold(self):
         self.set_push(True)
