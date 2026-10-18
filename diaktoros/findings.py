@@ -53,12 +53,22 @@ def open_ids(entry: dict) -> list[str]:
                   key=lambda k: int(k[1:]))
 
 
+# GitHub lists at most 300 files in a /compare response and sets no flag when it cut the list.
+COMPARE_FILES_CAP = 300
+
+
 def changed_files(loop: dict, number: int, prev_head: str | None, head: str) -> set[str] | None:
-    """Files changed in this round (the whole PR in the first), or None when unreadable."""
+    """Files changed in this round (the whole PR in the first), or None when unreadable.
+
+    A compare listing that reaches GitHub's cap may be cut, so it is not a complete set: the
+    round's files are then taken as the whole PR's (paginated, like the first round). That is a
+    superset, so a finding is never refused for citing a changed file past the cap."""
     from . import gh
     if prev_head:
         data = gh.api(loop, f"/repos/{loop['repo']}/compare/{prev_head}...{head}")
         files = data.get("files") if isinstance(data, dict) else None
+        if isinstance(files, list) and len(files) >= COMPARE_FILES_CAP:
+            files, _ = gh.pr_files_read(loop, number)
     else:
         files, _ = gh.pr_files_read(loop, number)
     if not isinstance(files, list):
