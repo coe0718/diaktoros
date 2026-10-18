@@ -146,15 +146,18 @@ def _report(progress, text: str) -> None:
         pass
 
 
-def _safe_code_snapshot(source: Path, destination: Path) -> None:
-    """Export blobs from a pinned commit, never the index or mutable worktree."""
+def _safe_code_snapshot(source: Path, destination: Path, skipped: list | None = None) -> None:
+    """Export blobs from a pinned commit, never the index or mutable worktree.
+
+    Gitlinks (submodules) are not exported, as in the PR exporter: the snapshot goes on without
+    them and appends their paths to ``skipped`` when given."""
     source = Path(source).absolute()
     try:
         source_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as exc:
         raise TurnDenied('invalid source') from exc
     try:
-        _export_committed_source(source_fd, destination)
+        _export_committed_source(source_fd, destination, skipped)
     finally:
         os.close(source_fd)
 
@@ -318,7 +321,8 @@ def exported_secrets(root: Path) -> tuple[list[str], list[str]]:
     return violations, advisories
 
 
-def _export_committed_source(source_fd: int, destination: Path) -> None:
+def _export_committed_source(source_fd: int, destination: Path,
+                             skipped: list | None = None) -> None:
     """Keep the repository directory pinned while Git reads the committed tree."""
     env = {'PATH': '/usr/bin:/bin', 'HOME': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
            'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_NO_REPLACE_OBJECTS': '1',
@@ -370,13 +374,19 @@ def _export_committed_source(source_fd: int, destination: Path) -> None:
             mode, kind, blob, size = metadata.split()
             name = name_bytes.decode('utf-8')
             parts = name.split('/')
-            length = int(size)
+            # A gitlink's size column is `-`, so only a blob's size is parsed.
+            gitlink = (kind, mode) == (b'commit', b'160000')
+            length = 0 if gitlink else int(size)
         except (ValueError, UnicodeError) as exc:
             raise TurnDenied('invalid source tree entry') from exc
         if (any(not part or part in ('.', '..') or '\\' in part or
                 any(ord(char) < 32 or ord(char) == 127 for char in part)
                 for part in parts) or len(name_bytes) > 4096):
             raise TurnDenied('unsafe source path')
+        if gitlink:
+            if skipped is not None:
+                skipped.append(name)
+            continue
         if any(part.startswith('.') or part.casefold() in _EXCLUDED_COMPONENTS for part in parts):
             continue
         suffix = Path(parts[-1]).suffix.casefold()

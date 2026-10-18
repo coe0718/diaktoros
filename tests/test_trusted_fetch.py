@@ -79,6 +79,20 @@ class CommittedSourceSnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(trusted_turn.TurnDenied, 'invalid source'):
             trusted_turn._safe_code_snapshot(alias, self.root / 'other')
 
+    def test_gitlink_is_skipped_and_recorded(self):
+        # A submodule's `git ls-tree -l` size column is `-`; it used to refuse the whole snapshot.
+        self.git('update-index', '--add', '--cacheinfo', '160000,' + '1' * 40 + ',vendor/sub')
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.org',
+                 'commit', '-qm', 'submodule')
+        skipped = []
+        trusted_turn._safe_code_snapshot(self.source, self.destination, skipped)
+        self.assertEqual(skipped, ['vendor/sub'])
+        self.assertFalse((self.destination / 'vendor').exists())
+        self.assertEqual((self.destination / 'module.py').read_text(), 'original\n')
+        # The caller may ignore the record.
+        trusted_turn._safe_code_snapshot(self.source, self.root / 'again')
+        self.assertTrue((self.root / 'again' / 'run_agent.py').is_file())
+
     def test_destination_directory_swap_cannot_write_through_symlink(self):
         (self.source / 'pkg').mkdir()
         (self.source / 'pkg/normal.py').write_text('safe\n')
