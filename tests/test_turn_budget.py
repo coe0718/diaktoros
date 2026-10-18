@@ -871,7 +871,11 @@ class GateToProductionWorker(unittest.TestCase):
         run_supervisor.release_seat(older, "failed")
         self.assertEqual(st.live_locks("fixer").get(key, {}).get("run"), "newer")
         self.assertTrue(st.inflight(mark))
+        # A run that claims while another run's claim is live no longer evicts it (#727).
+        self.assertIsNone(run_supervisor.claim_seat(self.loop, {**row, "id": "blocked"}, 2700))
+        self.assertEqual(st.live_locks("fixer").get(key, {}).get("run"), "newer")
         # Its own claim is still freed when nobody replaced it.
+        self.assertTrue(st.release_if("fixer", key, HEAD, run="newer"))
         run_supervisor.release_seat(run_supervisor.claim_seat(self.loop, {**row, "id": "again"},
                                                                2700), "failed")
         self.assertNotIn(key, st.live_locks("fixer"))
