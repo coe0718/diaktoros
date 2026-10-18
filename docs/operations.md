@@ -374,10 +374,10 @@ hermes dk trace --loop "<loop-id>" --payload "<payload-json-file>" --event pull_
 
 The two sources are alternatives. `--delivery` selects a numeric hook-delivery ID or
 `X-GitHub-Delivery` GUID; `--admin-token` chooses a mapped login able to read deliveries.
-`--payload` reads a local JSON object; `--event` supplies `pull_request` (default) or
-`pull_request_review`; `--route` selects the destination. Trace runs the actual gate
+`--payload` reads a local JSON object; `--event` supplies `pull_request` (default),
+`pull_request_review` or `issues`; `--route` selects the destination. Trace runs the actual gate
 on a copied home without production writes or model launch. It uses **current** facts,
-not a historical reconstruction. `issues` deliveries are unsupported.
+not a historical reconstruction. An `issues` delivery replays through the triage gate.
 
 ## Pacing: usage windows and daily caps
 
@@ -385,7 +385,7 @@ not a historical reconstruction. `issues` deliveries are unsupported.
 `retry_at` and the reason. Pacing does not consume the pre-write failure-retry budget.
 Daily caps reset at local midnight; zero removes the cap. An armed scheduling path must
 still resume work. Status shows reviewer/fixer pacing; `triage --loop` shows triage settings.
-Issue fixes have concurrency one, no daily cap, and the loop-wide turn budget. Raising
+Issue fixes have concurrency one, their own daily cap (`triage.fix_daily_turns`, default 10, and issue fixes are always capped), and the loop-wide turn budget. Raising
 concurrency increases aggregate model/storage use, not individual turn speed.
 
 ## Issue triage

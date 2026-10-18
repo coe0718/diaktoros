@@ -252,8 +252,8 @@ for the comment path; `denied` and `uncertain` expose refused/unknown outcomes. 
 can exist even though requesting review failed. Inspect its branch, PR and request
 separately; a nonterminal record is not proof that nothing was published.
 
-After the push, the host reads the new branch back and waits out GitHub's lag (a few
-re-reads over about 15 seconds) before it calls the push unknown. When the push's or the
+After the push, the host reads the new branch back and waits out GitHub's lag (re-reads
+after 1, 2, 4, 8 and 8 seconds — about 23 seconds in all) before it calls the push unknown. When the push's or the
 PR's outcome is still unknown, the run itself ends `uncertain` (`post-write push
 quarantine: unknown` or `…: pr_create_unknown`), never `succeeded`: `run_supervisor
 status` lists it, and after you inspect the branch and issue, `reconcile` releases it.
@@ -301,10 +301,12 @@ never delete receipts or safety history to bypass this boundary.
 
 ## Current limits
 
-- Trace supports `pull_request` and `pull_request_review`, **not `issues`**.
-- Explain evaluates PRs, not issues; use it on the PR after a successful issue fix.
-- No observer events for triage/issue fixes. Failed isolated runs may reach the
-  watchdog operator outbox; absence of chat output proves nothing about issue success.
+- `trace` replays `pull_request`, `pull_request_review` and `issues`; `explain` evaluates PRs,
+  not issues, so use it on the PR after a successful issue fix.
+- Observer events cover triage and issue fixes (`triaged`, `fixing`, `fixed`, and `failed`
+  with the issue link). With no observer configured, or those events filtered out, failed
+  isolated runs may still reach the watchdog operator outbox; absence of chat output proves
+  nothing about issue success.
 - Status lacks a dedicated triage-settings/pacing summary; use `triage --loop` and
   ledger queries. Generic run diagnostics are not a complete issue-results view.
 - Triage reads one bounded issue without repository code or a duplicate-issue search feed.

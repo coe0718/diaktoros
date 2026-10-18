@@ -253,8 +253,10 @@ Enabling is **host-operator consent**, not proof that a PR owner or repository m
 | `seats.adjudicator.concurrency` | `1` | Independent capacity, not inherited from loop concurrency. |
 | `seats.adjudicator.turn_budget_s` | Loop budget | Ruling-turn budget override. |
 | `seats.adjudicator.daily_turns` | No cap | Optional local-day cap, 1–1000. |
+| `seats.adjudicator.daily_tokens` | No cap | Optional local-day token budget, 1–10,000,000,000. |
+| `seats.adjudicator.max_steps` | `40` | Agent step ceiling for a ruling turn, 8–200. |
 
-`seats.adjudicator` accepts only `login`, `concurrency`, `turn_budget_s`, `daily_turns`, and `max_steps`. Its profile and enabling route belong in the separate `adjudicator` block, not in that seat object.
+`seats.adjudicator` accepts only `login`, `concurrency`, `turn_budget_s`, `daily_turns`, `daily_tokens`, and `max_steps`. Its profile and enabling route belong in the separate `adjudicator` block, not in that seat object.
 
 ```json
 {
@@ -305,8 +307,8 @@ The `observer` block is an optional **delivery-only feed**, not a model seat. It
 | `observer.route` | None | Required for a hand-written active feed. CLI `init`/`set` can generate `<id>-observe` when only a profile is named. |
 | `observer.profile` | `default` | Hermes profile supplying the delivery destination. |
 | `observer.deliver` | `telegram` | Gateway-supported real delivery target, such as `telegram` or `discord`. `init`/`set` refuse `log`: a delivery-only file/log destination cannot provide the feed. |
-| `observer.events` | All eighteen events | List or comma/whitespace-separated string. Missing or empty means **all**, not none. Normalization lowercases, deduplicates, and sorts strings. Unknown names remain stored without a misconfiguration warning; unknown-only input silently matches no transitions. Use the event names below. |
-| `observer.urgent_route` | unset | Second delivery-only route for urgent notices (`failed`, `held`, `escalation`, `ruling`, `stall`, `conflict`, uncertain); must differ from `observer.route`. Unset: one feed. `urgent_profile` and `urgent_deliver` default to the feed's. |
+| `observer.events` | All twenty events | List or comma/whitespace-separated string. Missing or empty means **all**, not none. Normalization lowercases, deduplicates, and sorts strings. Unknown names remain stored without a misconfiguration warning; unknown-only input silently matches no transitions. Use the event names below. |
+| `observer.urgent_route` | unset | Second delivery-only route for urgent notices (`failed`, `held`, `escalation`, `ruling`, `stall`, `conflict`, `main_red`, `stale_approval`, `human_paths`, uncertain); must differ from `observer.route`. Unset: one feed. `urgent_profile` and `urgent_deliver` default to the feed's. |
 | `observer.digest_min` | `0` | Positive integer minutes batch routine notices (urgent ones are never batched) for a watchdog flush. Unparseable/non-positive values silently normalize to immediate mode, not a misconfigured feed. CLI flags require integers. No explicit upper bound. |
 | `observer.weekly_report` | unset | A weekday and a UTC time, `mon 09:00`, at which the watchdog sends the week's report to the feed (see [observer](observer.md#weekly-report)). Normalized to lower case. An unreadable value in the file misconfigures the feed (said by `status`); `init`/`set` refuse it by name. The settings form's **Weekly report** field is `init`'s default for a new feed and what `apply` pushes (`off` clears it; blank leaves the loop's value; refused for a loop with no feed). Blank or missing: no weekly report. |
 | `observer.mute` | `false` | Stop delivery while retaining configuration. Use a JSON boolean: this lenient loader uses truthiness, so the string `"false"` is truthy and would mute it. |
@@ -382,8 +384,10 @@ Delivery is durably keyed by transition. Only definite **pre-POST** failures wit
 | `seats.triage.concurrency` | `1` | Whole number at least `1`. |
 | `seats.triage.turn_budget_s` | Loop budget | 60–14400 seconds. |
 | `seats.triage.daily_turns` | No cap | JSON integer 1–1000. |
+| `seats.triage.daily_tokens` | No cap | JSON integer 1–10,000,000,000. |
+| `seats.triage.max_steps` | `24` | Agent step ceiling for a triage turn, 8–200. |
 
-Only the listed keys are allowed in `triage`. `seats.triage` accepts only capacity, turn budget, daily cap, and `max_steps`; put its identity in `triage.login` and model profile in `triage.profile`.
+Only the listed keys are allowed in `triage`. `seats.triage` accepts only `concurrency`, `turn_budget_s`, `daily_turns`, `daily_tokens`, and `max_steps`; put its identity in `triage.login` and model profile in `triage.profile`.
 Concurrency and turn budget must be edited in the loop file; the `triage` command exposes
 `--daily-turns` but no capacity or budget flags.
 
@@ -640,6 +644,16 @@ State is operational data, not additional user configuration. Do not hand-edit l
 | `github-reads.json` | Failed GitHub-read evidence used by diagnostics. |
 | `stack-transitions.json` | Same-head base-retarget holds/fresh-review boundaries; old approvals and verdicts cannot authorize the new situation. |
 | `observations.json` | Observer delivery ledger, receipts, attempts, destination binding, digest membership, and uncertain outcomes. |
+| `held-prs.json` | PRs a maintainer holds (#477): `{PR: {by, at, how}}`. A held PR gets no further ordinary turns until the hold is released. |
+| `held-scope.json` | Fixer scope-lock holds (#482): `{PR: {head, files, released}}` for a fix round that changed files its findings do not name. |
+| `human-holds.json` | `human_paths` holds (#478): a head whose diff touches an operator-named glob waits for a person. |
+| `review-only-caps.json` | Per review-only PR, a maintainer-granted extra round (`{head, rounds}`) and its one notice state. |
+| `review-situations.json` | Per-PR base situation for counting reviews. It has no webhook writer, so an externally posted review event cannot create an association. |
+| `findings.json` | The reviewer's numbered findings (`F1`, `F2`, …) and their latest state (#475). |
+| `fix-asks.json` | The issue fixer's one open question or plan per issue (#483): `open`, `count`, `approved`, `handoff`. |
+| `held-fixes.json`, `held-fixes-said.json` | Issue-fix hand-offs waiting for their origin PR to merge (#324), and the one "waiting for PR" comment already posted for an issue. |
+| `issue-deps.json`, `dep-waits.json`, `dep-waits-said.json` | Declared issue dependencies (#671): `{issue: {prerequisite: {by, at}}}`, the issues whose hand-off waits on one, and the one dependency-wait comment already posted. |
+| `*.lock` | Advisory lock files (`state.lock`, `breach.lock`, `stack-transitions.lock`, `watchdog.log.lock`). Never delete one while a process may be running. |
 | `artifacts/<PR>/` | Legacy per-PR workspaces still eligible for cleanup; production isolated turns do not use a shared clone-per-run workspace here. |
 | `isolated-runs/`, `deps/` | Host-created private run work roots and dependency caches for isolated workers. |
 

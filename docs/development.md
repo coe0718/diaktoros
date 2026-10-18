@@ -171,8 +171,10 @@ Enabling unattended fixer push is a separate policy decision with a documented P
 | Job | What it actually exercises |
 |---|---|
 | `tests` | Python 3.11/3.14 syntax and behavioral harness; installs bubblewrap before full leak-guarded discovery; scheduled runs repeat boundary discovery |
+| `unit` | The unit suite sharded 3 ways across Python 3.11/3.14, so one slow test file does not serialize the lane |
 | `plugin-guard` | The Hermes install scanner at the pinned version; also Hermes `main` on scheduled/manual runs |
-| `installed-mode` | Pinned Hermes importability, model/cron resolver harness and gateway shim tests on Python 3.14 |
+| `plugin-validate` | Hermes's own catalog validation action against the manifest and the pinned Hermes checkout |
+| `installed-mode` | Two parts: the harness with the pinned Hermes importable (model/cron resolver checks and gateway shims), and the `installed-mode (resolver)` tests, both on Python 3.14 |
 | `verticals` | Prepared real Hermes/uv runtime/Rust/bubblewrap with local fakes, required prerequisites and no-skips enforcement |
 
 CI runs for main-branch pushes, pull requests, its weekly schedule and manual dispatch. Use the current workflow's pin and dependency recipe rather than assuming the moving upstream `main` is the supported runtime.

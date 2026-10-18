@@ -63,6 +63,20 @@ Gates answer `[SILENT]` so Hermes does **not** launch a normal gateway agent for
 
 Explicit `review_requested` events must name the configured reviewer seat and come from an allowlisted fixer/reviewer sender, or from a loop maintainer (`triage.maintainers`). A maintainer's request asks for a fresh review at the current head; unlike the fixer's own request, it is not a hand-back, so it never frees a fixer that still holds the PR (the review queues behind it). Anyone else's request is ignored. Without maintainers, toggling the PR to draft and back starts a review too (`ready_for_review`). Out-of-scope authors, fork PRs, draft PRs and wrong-base PRs do not qualify for the ordinary loop. Stacked PR/retarget handling has additional reconciliation rules; see [architecture](architecture.md), not assumptions based only on this simplified lifecycle.
 
+### When the fixer disputes the review
+
+A fixer turn may answer a changes-requested verdict with a **dispute** instead of a fix: it marks
+every finding `not a defect` in its answers file and passes `--dispute` with its review request,
+pushing nothing. The host publishes the answers, records the dispute in the ledger's `disputes`
+table, and requests no review. Those findings read `disputed` in the report rather than `upheld`
+or `overruled`.
+
+The watchdog does not call the head a stall. With an adjudicator route it hands the head to a
+ruling (`escalated: the fixer disputed the review …`, `by: dispute`); without one, the notice
+names the operator's choices: dismiss the review and ask for a fresh one, `escalate`, or merge on
+the evidence. A maintainer's review request after a dispute still gets one fresh review at that
+head. A dispute alone is not a false positive; only a ruling decides.
+
 ### Verdict budget, not a timer
 
 `cap` defaults to 3 and must be at least 2. The gate counts **CHANGES_REQUESTED** reviews by allowlisted reviewers from GitHub history. Approvals end the relevant situation; a comment neither counts nor wakes the fixer. With cap 3, the ordinary path permits three changes-requested verdicts and at most two intervening fixes. The third escalates instead of buying a third fix. A new commit does not erase the accumulated review budget.
