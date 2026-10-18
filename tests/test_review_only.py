@@ -286,6 +286,12 @@ class Gates(fg.Base):
         self.assertFalse(any("did not start one" in line or "cap may not have fired" in line
                              for line in report["blockers"]), report["blockers"])
 
+    def test_explain_under_the_cap_does_not_say_there_is_no_cap(self):
+        action = self.explain(self.loop["cap"] - 1)["next"]["action"]
+        self.assertNotIn("no verdict cap", action)
+        self.assertIn("review_only_cap", action)
+        self.assertIn(f"capped at {config.review_only_cap(self.loop)}", action)
+
     def sweep(self, reviews):
         with mock.patch.object(watchdog, "TEST", True), \
              mock.patch.object(gate, "hooks_armed", return_value=True), \

@@ -71,6 +71,45 @@ class Detection(unittest.TestCase):
         (venv / "bin" / "python").write_text("")
         self.assertEqual(runtime_detect.runtime_for(venv), venv)
 
+    def runtime_advice(self, venv: pathlib.Path, runtime: pathlib.Path) -> tuple[str, str]:
+        """``selftest.check_runtime``'s FAIL (detail, fix) for ``runtime:runtime`` (#788)."""
+        from diaktoros import selftest
+        settings = {key: str(value) for key, value in self.paths.items()}
+        settings.update(venv=str(venv), runtime=str(runtime))
+        file = self.root / "runtime.json"
+        file.write_text(json.dumps(settings))
+        file.chmod(0o600)
+        report = selftest.Report(out=io.StringIO())
+        selftest.check_runtime(report, file)
+        row = next(r for r in report.results if r[1] == "runtime:runtime")
+        self.assertEqual(row[2], selftest.FAIL, row)
+        return row[3], row[4]
+
+    def test_selftest_advises_the_install_root_runtime_for_derives(self):
+        # <root>/usr/bin/python3: the install is <root>/usr, one level above bin/, not its parent.
+        system = self.root / "sys" / "usr"
+        (system / "bin").mkdir(parents=True)
+        (system / "bin" / "python3").write_text("")
+        venv = self.root / "outside-venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "bin" / "python").symlink_to(system / "bin" / "python3")
+        (venv / "bin" / "hermes").write_text("")
+        _, fix = self.runtime_advice(venv, self.paths["runtime"])
+        self.assertEqual(runtime_detect.runtime_for(venv), system)
+        self.assertIn(f"set runtime to {system} ", fix)
+
+    def test_selftest_never_advises_the_filesystem_root(self):
+        from unittest.mock import patch as mock_patch
+        # A target like /usr/bin/python3 (or a shallower one) has no install directory of its own
+        # to derive; the report must still render and must not name "/".
+        for target in ("/usr/bin/python3", "/python3"):
+            with self.subTest(target=target), \
+                    mock_patch("diaktoros.selftest._interpreter_outside", return_value=target), \
+                    mock_patch.object(runtime_detect, "runtime_for", return_value=None):
+                _, fix = self.runtime_advice(self.paths["venv"], self.paths["runtime"])
+                self.assertNotIn("set runtime to / ", fix)
+                self.assertNotIn("set runtime to None", fix)
+
     def test_rustups_default_toolchain_wins_and_the_proxy_never_counts(self):
         rustup = self.root / "rustup"
         nightly = rustup / "toolchains" / "nightly-x86_64-unknown-linux-gnu"

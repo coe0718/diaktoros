@@ -122,6 +122,33 @@ class MainCheck(unittest.TestCase):
         (_args, kw), = self.notices
         self.assertIn("partial", kw["outcome"])
 
+    def test_unnamed_merges_notice_names_no_pr_zero(self):
+        """Through the real sweep and notify: no merges to name means no #0 and no /pull/0."""
+        sent = []
+        loop = {**LOOP, "id": "w", "observer": {"url": "https://hook.example/x"}}
+        self.st.observations = self.st.dir / "observations.json"
+
+        def api(_loop, path, **_kw):
+            return {"sha": "b" * 40} if "/commits/" in path else {"commits": []}
+        with mock.patch.object(gh, "api", side_effect=api), \
+             mock.patch.object(ci, "read", return_value=RED), \
+             mock.patch.object(observer, "configured", return_value=""), \
+             mock.patch.object(observer, "subscribes", return_value=True), \
+             mock.patch.object(observer, "_deliver",
+                               side_effect=lambda *a, **kw: sent.append(a) or True):
+            self.assertTrue(main_check.sweep(loop, self.st))
+        (args,), = [(a,) for a in sent]
+        text, url = args[3], args[9]
+        self.assertNotIn("#0", text)
+        self.assertNotIn("/pull/0", text + url)
+        self.assertEqual(url, "https://github.com/acme/widgets")
+        self.assertEqual(observer.block_for(loop, "main_red", 0, "h", text)["pr"], "")
+
+    def test_a_real_pr_notice_still_links_the_pull_request(self):
+        self.assertEqual(observer.link({"repo": "a/b"}, 7), "https://github.com/a/b/pull/7")
+        self.assertEqual(observer.link({"repo": "a/b"}, 7, True), "https://github.com/a/b/issues/7")
+        self.assertIn("#7", observer.summarize({"id": "w"}, "main_red", 7, "h" * 7))
+
     def test_event_is_registered(self):
         for table in (observer.EMOJI, observer.LABEL):
             self.assertIn("main_red", table)

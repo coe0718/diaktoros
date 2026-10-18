@@ -1,8 +1,9 @@
 """One-run, credential-owning Unix socket broker for review-loop REST writes.
 
 The trusted launcher constructs RunScope from gate-verified data, starts this server
-outside the agent's mount namespace, then bind-mounts ONLY its socket (or its private
-socket directory) at /run/review-loop/broker.sock inside that namespace. Do not mount
+outside the agent's mount namespace, then bind-mounts ONLY its private socket
+directory at /run/review-loop/broker (contained.BROKER_MOUNT), so the socket is
+/run/review-loop/broker/broker.sock inside that namespace. Do not mount
 this module's host config, state, token files or socket parent into the agent.
 
 The socket is a bearer capability, and that is all it is: reaching the path is the credential, and
@@ -34,7 +35,7 @@ import stat
 import threading
 from dataclasses import dataclass
 
-from . import broker, config, repro_proof, safe_push
+from . import broker, config, contained, repro_proof, safe_push
 
 MAX_REQUEST = 16 * 1024
 MAX_BODY = 12 * 1024
@@ -1373,7 +1374,7 @@ WRITE_TIMEOUT = 900
 
 def request(operation: str, *, verdict: str = "", body: str = "",
             manifest: object = None,
-            socket_path: str = "/run/review-loop/broker/broker.sock") -> dict:
+            socket_path: str = contained.BROKER_MOUNT + "/broker.sock") -> dict:
     """Credentialless in-namespace caller; never accepts a target repo or token."""
     if operation == "push":
         payload = {"operation": operation, "manifest": manifest}
