@@ -28,7 +28,7 @@ import time
 
 from .ledger import LOCK_WAIT_S
 from .config import credentials
-from . import config, route_intent, routes, run_supervisor
+from . import config, gate_shims, route_intent, routes, run_supervisor
 
 VERSION = 1
 MANIFEST = "manifest.json"
@@ -176,13 +176,106 @@ def outside_state_dirs(manifest: dict) -> list[str]:
     return sorted(set(out))
 
 
-def unsafe(manifest: dict, *, allowed_state_dirs=()) -> list[str]:
+def archived_loops(archive: pathlib.Path, manifest: dict) -> list[dict]:
+    """The loop configs that will be in place once this archive is restored: the archive's own
+    loop files, plus every live loop it does not replace. An archived loop file that does not
+    load is left out, so the routes it would have claimed are judged as unclaimed (stricter) —
+    and it still replaces the live loop file of that name, so that loop's claims do not count
+    either (review on #917: a broken archived file borrowed the live loop's routes)."""
+    loops: dict = {}
+    replaced: set[str] = set()
+    with tarfile.open(archive, "r:gz") as tar:
+        for entry in manifest["files"]:
+            target = pathlib.Path(entry["path"])
+            if target.suffix != ".json" or target.parent != config.config_dir():
+                continue
+            replaced.add(target.stem)        # a live loop's id is its file's stem
+            try:
+                loop = config.normalize(json.load(tar.extractfile(tar.getmember(entry["member"]))),
+                                        target)
+            except (KeyError, OSError, ValueError, TypeError, AttributeError, tarfile.TarError,
+                    config.ConfigError):
+                continue
+            if loop["id"] == target.stem:
+                loops[loop["id"]] = loop
+    live, _ = config.readable_loops()
+    return list(loops.values()) + [loop for loop in live if loop["id"] not in replaced]
+
+
+def route_problems(entry: dict, live, claims: list) -> list[str]:
+    """The fields of an archived route entry that are not what this plugin writes (#783).
+
+    Naming one of the plugin's scripts is not enough to be trusted: ``prompt`` is the observer's
+    message, ``deliver``/``deliver_extra`` its destination, and ``profile``, ``host`` and
+    ``events`` decide who is woken. ``claims`` is ``[(loop, role)]``, the restored loops that own
+    the route's name; the entry must honour one of them (``gate_shims.contract_drift`` plus the
+    seat's profile and delivery). A route no loop claims is held to what needs no config: its
+    script's prompt, no delivery-only mode, not switched off, no extra destination — and its
+    ``profile``, ``host`` and ``events`` must be the live route's of that name (a restore onto the
+    install it came from), since no config says what they should be (review on #917). An
+    unclaimed route with no live route to match, and an unclaimed observer route (its destination
+    cannot be checked), are refused. A seat's
+    ``deliver``/``deliver_extra`` may also equal the live route's own (a restore onto the install
+    the backup came from keeps an operator's choice). Returns [] when the entry is fine.
+    """
+    live = live if isinstance(live, dict) else {}
+    script = entry.get("script")
+    if not claims:
+        if script == route_intent.GATE_SCRIPT["observer"]:
+            return ["no restored loop owns this observer route, so its destination cannot be checked"]
+        if not live:
+            return ["no restored loop owns this route and none is live under its name, so its "
+                    "profile, host and events cannot be checked"]
+        differ = [key for key in ("profile", "host", "events") if key == "profile"
+                  and routes.route_profile(entry) != routes.route_profile(live)
+                  or key != "profile" and entry.get(key) != live.get(key)]
+        if differ:
+            return [f"no restored loop owns this route, and its {', '.join(differ)} differ from "
+                    "the live route's"]
+        claims = [({}, role) for role in route_intent.GATE_SCRIPT
+                  if script == route_intent.GATE_SCRIPT[role]
+                  or script in config.LEGACY_GATE_SCRIPTS.get(role, ())]
+    best: list[str] | None = None
+    for loop, role in claims:
+        if script != route_intent.GATE_SCRIPT[role] \
+                and script not in config.LEGACY_GATE_SCRIPTS.get(role, ()):
+            wrong = ["script"]
+        elif loop:
+            wrong = gate_shims.contract_drift(loop, role, entry)
+            profile = config.seat_profile(loop, role)
+            if profile and routes.route_profile(entry) != profile:
+                wrong.append("profile")
+        else:
+            wrong = [key for key, bad in (
+                ("prompt", entry.get("prompt") != route_intent.ROUTE_PROMPT[role]),
+                ("deliver_only", bool(entry.get("deliver_only"))),
+                ("enabled", entry.get("enabled", True) is False)) if bad]
+        if role not in ("observer", "observer_urgent"):
+            adjudicator = (loop.get("adjudicator") or {}) if loop else {}
+            written = (adjudicator.get("deliver", "telegram") if role == "adjudicator"
+                       else "discord")
+            # "discord" is what every seat route is written with (and what older adjudicator
+            # routes carry); "telegram" is the adjudicator's config default.
+            allowed = {"discord", written, live.get("deliver")} | (
+                set() if loop else {"telegram"})
+            if entry.get("deliver") not in allowed:
+                wrong.append("deliver")
+            if entry.get("deliver_extra") and entry["deliver_extra"] != live.get("deliver_extra"):
+                wrong.append("deliver_extra")
+        if not wrong:
+            return []                    # one claim it honours is enough
+        best = sorted(set(wrong)) if best is None else best
+    return [f"{', '.join(best or [])} not what this plugin writes for this route"]
+
+
+def unsafe(manifest: dict, *, allowed_state_dirs=(), archive=None) -> list[str]:
     """Why this archive must not be restored here, or [] (#496 hardening).
 
     An archive is input from outside: a tampered one must not write outside what this plugin
     owns, install a route that runs anything but this plugin's gates, or replace a route that is
     someone else's. Every file must land inside the Hermes home or the loop files' directory,
-    with no symlink in its path; every route must be one of this plugin's gates; a live route of
+    with no symlink in its path; every route must be one of this plugin's gates *and* carry the fields this
+    plugin writes for it (prompt, events, profile, host, delivery: ``route_problems``); a live route of
     the same name that is not this plugin's is never overwritten, even with --force.
 
     A loop's ``state_dir`` may lie elsewhere. The archive declares it, and the archive is not
@@ -223,11 +316,20 @@ def unsafe(manifest: dict, *, allowed_state_dirs=()) -> list[str]:
         real = pathlib.Path(os.path.realpath(target))
         judge(target, real, real != target, "a directory")
     live = routes.all_routes()
+    loops = (archived_loops(pathlib.Path(archive), manifest) if archive
+             else config.readable_loops()[0])
+    claims: dict = {}
+    for loop in loops:
+        for role, route_name in route_intent.routes_of(loop).items():
+            claims.setdefault(route_name, []).append((loop, role))
     for name, entry in (manifest.get("routes") or {}).items():
         if not isinstance(entry, dict) or not route_intent.owned(entry):
             problems.append(f"route {name}: not one of this plugin's gates")
         elif name in live and isinstance(live[name], dict) and not route_intent.owned(live[name]):
             problems.append(f"route {name}: a live route of that name belongs to something else")
+        else:
+            problems += [f"route {name}: {why}"
+                         for why in route_problems(entry, live.get(name), claims.get(name, []))]
     return problems
 
 
