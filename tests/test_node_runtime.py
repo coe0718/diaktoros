@@ -38,6 +38,32 @@ class NodeRuntime(unittest.TestCase):
         self.assertEqual(runtime_detect.node_root(), root)
         self.assertEqual(runtime_detect.node_version(), (root, "v22.3.0"))
 
+    def test_home_or_credential_store_is_never_a_node_root(self):
+        for rel in ("bin", ".local/bin", ".hermes/bin", ".config/bin"):
+            with self.subTest(rel=rel):
+                node = self.home / rel / "node"
+                node.parent.mkdir(parents=True, exist_ok=True)
+                node.write_text("#!/bin/sh\necho v22.3.0\n")
+                node.chmod(0o755)
+                with mock.patch.dict(os.environ, {"PATH": str(node.parent)}):
+                    self.assertIsNone(runtime_detect.node_root())
+                    self.assertIsNone(runtime_detect.node_version()[0])
+                node.unlink()
+
+    def test_node_tree_inside_a_dot_directory_is_still_accepted(self):
+        root = self.install(self.home / ".local" / "share" / "node-v22")
+        with mock.patch.dict(os.environ, {"PATH": str(root / "bin")}):
+            self.assertEqual(runtime_detect.node_root(), root)
+
+    def test_unsafe_candidate_does_not_hide_a_later_real_install(self):
+        bad = self.home / "bin"
+        bad.mkdir()
+        (bad / "node").write_text("#!/bin/sh\n")
+        (bad / "node").chmod(0o755)
+        root = self.install(self.home / "opt" / "node")
+        with mock.patch.dict(os.environ, {"PATH": f"{bad}:{root / 'bin'}"}):
+            self.assertEqual(runtime_detect.node_root(), root)
+
     def test_no_node_is_a_reported_skip_not_a_failure(self):
         self.assertIsNone(runtime_detect.node_root())
         check = doctor.check_node()
