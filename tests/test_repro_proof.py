@@ -37,9 +37,11 @@ def manifest(files):
                       for p, d in files.items()]}
 
 
-def run_unittest(tree, ids):
+def run_unittest(tree, ids, pythonpath="."):
+    import os
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     done = subprocess.run([sys.executable, "-m", "unittest", "-v", *ids], cwd=tree,
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, env={**env, "PYTHONPATH": pythonpath})
     return done.stdout + done.stderr
 
 
@@ -71,6 +73,41 @@ class Proof(unittest.TestCase):
         self.assertEqual(self.prove(TEST.replace("2)", "3)"))["overall"], repro_proof.UNPROVEN)
         self.assertEqual(self.prove(TEST, ("tests.test_it.Case.test_nope",))["overall"],
                          repro_proof.UNPROVEN)
+
+    def prove_plain(self, ids):
+        """#893: this repository's own layout. tests/ is a plain directory (no __init__.py) whose
+        modules import a helper from it, so `python -m unittest tests.test_it...` cannot import,
+        and -v prints `test_it.Case.test_value`. The fixer may name either spelling."""
+        helper = "import os\n"
+        plain = "import _helper  # noqa: F401\n" + TEST
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "_helper.py").write_text(helper)
+            (base / "widget.py").write_text(OLD_CODE)
+            fix = manifest({"widget.py": NEW_CODE, "tests/test_it.py": plain})
+            return repro_proof.prove(base, fix, list(ids), run_unittest)
+
+    def test_both_spellings_of_an_id_in_a_plain_tests_directory_are_proven(self):
+        for wanted in ("tests.test_it.Case.test_value", "test_it.Case.test_value",
+                       "tests.test_it.Case", "test_it"):
+            with self.subTest(wanted=wanted):
+                proof = self.prove_plain([wanted])
+                self.assertEqual(proof["overall"], repro_proof.PROVEN, proof)
+                self.assertEqual(proof["ids"][0]["id"], wanted)      # the fixer's words, kept
+        self.assertIn('(ran as "test_it.Case.test_value")',
+                      repro_proof.section(self.prove_plain(["tests.test_it.Case.test_value"])))
+
+    def test_an_id_matching_no_test_file_is_not_found_never_unproven(self):
+        proof = self.prove_plain(["tests.test_nothing.Case.test_value"])
+        self.assertEqual(proof["overall"], repro_proof.UNRESOLVED)
+        self.assertEqual((proof["ids"][0]["old"], proof["ids"][0]["verdict"]),
+                         (repro_proof.NOT_FOUND, "id_not_found"))
+        self.assertIn("ID NOT FOUND", repro_proof.section(proof))
+        self.assertNotIn("UNPROVEN", repro_proof.section(proof))
+        # Beside a real failure it is still unproven: the real failure is what matters.
+        both = self.prove_plain(["tests.test_nothing.C.t", "test_it.Case.test_nope"])
+        self.assertEqual(both["overall"], repro_proof.UNPROVEN)
 
     def test_none_named_is_reported_as_such(self):
         proof = repro_proof.prove(Path("."), manifest({"a.py": "x"}), [], run_unittest)

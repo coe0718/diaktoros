@@ -30,6 +30,10 @@ UNAVAILABLE = "unavailable"
 PROVEN = "proven"
 WEAK = "weak"
 UNPROVEN = "unproven"
+# A named id that matches no test file in the checkout (#893): a wrong spelling of the id, not
+# evidence about the fix, so it is reported apart and never as "unproven".
+UNRESOLVED = "unresolved"
+NOT_FOUND = "not found"
 
 
 def valid_ids(value: object) -> list[str]:
@@ -80,6 +84,35 @@ def apply_manifest(tree: Path, manifest: dict, *, only_tests: bool) -> None:
                 raise ValueError("the fix's diff does not apply to the original head")
 
 
+def resolve(tree: Path, wanted: str) -> tuple[str, str] | None:
+    """The id as ``unittest -v`` runs and prints it, and the directory that must be on the path
+    for it to import (``"."`` for the checkout root), or None when no test file matches (#893).
+
+    ``tests.test_x.C.y`` and ``test_x.C.y`` name the same test when ``tests/`` is a plain
+    directory on the path, as in a suite whose modules import their helpers absolutely: run it
+    as ``test_x.C.y`` with ``tests`` on ``PYTHONPATH``, which is also how ``-v`` prints it. A
+    package chain (every directory with an ``__init__.py``) keeps the id as written.
+    """
+    parts = wanted.split(".")
+    for k in range(len(parts), 0, -1):
+        if (tree / Path(*parts[:k])).with_suffix(".py").is_file():
+            dirs = parts[:k - 1]
+            # The outermost directory that is not a package goes on the path; inside a package
+            # chain the id is already importable from the root.
+            plain = [i for i in range(len(dirs))
+                     if not (tree / Path(*dirs[:i + 1]) / "__init__.py").is_file()]
+            if not plain:
+                return wanted, "."
+            cut = plain[-1] + 1
+            return ".".join(parts[cut:]), "/".join(parts[:cut])
+    # A bare module name: the one test file of that name in the checkout (two levels down).
+    hits = sorted(path for depth in ("*", "*/*") for path in tree.glob(f"{depth}/{parts[0]}.py")
+                  if ".git" not in path.parts)
+    if len(hits) == 1:
+        return wanted, hits[0].parent.relative_to(tree).as_posix()
+    return None
+
+
 def status(results: dict[str, str], wanted: str) -> str:
     """ok / fail / skipped / missing for the tests an id names (a method, class or module)."""
     found = [r for name, r in results.items() if name == wanted or name.startswith(wanted + ".")]
@@ -91,6 +124,8 @@ def status(results: dict[str, str], wanted: str) -> str:
 
 
 def judge(old: str, new: str) -> str:
+    if NOT_FOUND in (old, new):
+        return "id_not_found"
     if new != "ok":
         return "fails_with_fix"
     if old == "ok":
@@ -98,15 +133,27 @@ def judge(old: str, new: str) -> str:
     return "fail_then_pass" if old == "fail" else "unproven"
 
 
-def summarize(ids: list[str], old_out: str, new_out: str) -> dict:
+def summarize(ids: list[str], old_out: str, new_out: str,
+              resolved: dict[str, str | None] | None = None) -> dict:
+    """``resolved`` maps each named id to the id it ran as (None: no test file matched)."""
     old, new = ci_tests.parse(old_out), ci_tests.parse(new_out)
+    resolved = resolved if resolved is not None else {wanted: wanted for wanted in ids}
     rows = []
     for wanted in ids:
-        o, n = status(old, wanted), status(new, wanted)
-        rows.append({"id": wanted, "old": o, "new": n, "verdict": judge(o, n)})
+        ran = resolved.get(wanted)
+        if ran is None:
+            o = n = NOT_FOUND
+        else:
+            o, n = status(old, ran), status(new, ran)
+        row = {"id": wanted, "old": o, "new": n, "verdict": judge(o, n)}
+        if ran is not None and ran != wanted:
+            row["ran_as"] = ran
+        rows.append(row)
     verdicts = {r["verdict"] for r in rows}
     overall = (PROVEN if verdicts == {"fail_then_pass"}
-               else WEAK if "passes_on_old_head" in verdicts else UNPROVEN)
+               else WEAK if "passes_on_old_head" in verdicts
+               else UNRESOLVED if verdicts <= {"fail_then_pass", "id_not_found"}
+               else UNPROVEN)
     return {"overall": overall, "ids": rows,
             "old_tail": old_out.strip()[-OUTPUT_SHOWN:], "new_tail": new_out.strip()[-OUTPUT_SHOWN:]}
 
@@ -120,8 +167,10 @@ def unavailable(why: str) -> dict:
 
 
 def prove(base_dir: Path, manifest: dict, ids: list[str], run) -> dict:
-    """Run ``ids`` on the old head (plus the fix's tests) and on the fix. ``run(tree, ids)``
-    returns the test runner's combined output for a tree (the host's sandbox in production)."""
+    """Run ``ids`` on the old head (plus the fix's tests) and on the fix. ``run(tree, ids,
+    pythonpath)`` returns the test runner's combined output for a tree (the host's sandbox in
+    production); each id is first resolved to the test file it names in the fix (#893), and an
+    id that names none is reported as not found rather than run."""
     if not ids:
         return none_named()
     with tempfile.TemporaryDirectory(prefix="repro-proof-") as temp:
@@ -130,7 +179,15 @@ def prove(base_dir: Path, manifest: dict, ids: list[str], run) -> dict:
             trees[name] = Path(temp) / name
             shutil.copytree(base_dir, trees[name], symlinks=True)
             apply_manifest(trees[name], manifest, only_tests=only_tests)
-        return summarize(ids, run(trees["old"], ids), run(trees["new"], ids))
+        found = {wanted: resolve(trees["new"], wanted) for wanted in ids}
+        resolved = {wanted: (hit[0] if hit else None) for wanted, hit in found.items()}
+        runs = [hit[0] for hit in found.values() if hit]
+        # Each test's directory, then the checkout root (the code under test imports from there).
+        path = ":".join(dict.fromkeys([*(hit[1] for hit in found.values() if hit), "."]))
+        if not runs:
+            return summarize(ids, "", "", resolved)
+        return summarize(ids, run(trees["old"], runs, path), run(trees["new"], runs, path),
+                         resolved)
 
 
 def dumps(proof: dict) -> str:
@@ -141,6 +198,9 @@ _WORDS = {
     PROVEN: "PROVEN — every named test failed on the original head and passes with the fix.",
     WEAK: "WEAK — a named test PASSES on the original head, so it does not cover the fix.",
     UNPROVEN: "UNPROVEN — a named test did not show fail-then-pass (see the rows).",
+    UNRESOLVED: ("ID NOT FOUND — a named id matches no test file in this checkout, so it was not "
+                 "run: the id's spelling is wrong, which says nothing about the fix. Ask for the "
+                 "id as `python -m unittest -v` prints it."),
     NONE_NAMED: "NONE NAMED — the fixer named no reproduction test, so nothing was run.",
     UNAVAILABLE: "NOT RUN — the host could not run the proof.",
 }
@@ -156,7 +216,8 @@ def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
             "cover the fix: treat it as a missing test. The ids are the fixer's words.\n"
             f"- {_WORDS[proof['overall']]}\n")
     for row in proof.get("ids") or []:
-        text += (f"- {json.dumps(str(row.get('id'))[:120])}: original head {row.get('old')}, "
+        ran = f" (ran as {json.dumps(str(row['ran_as'])[:120])})" if row.get("ran_as") else ""
+        text += (f"- {json.dumps(str(row.get('id'))[:120])}{ran}: original head {row.get('old')}, "
                  f"fix {row.get('new')} → {row.get('verdict')}\n")
     if proof.get("why"):
         text += f"- reason: {json.dumps(str(proof['why'])[:200])}\n"

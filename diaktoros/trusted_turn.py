@@ -54,12 +54,14 @@ def sandbox_prover(*, checkout: Path, code: Path, venv: Path, runtime: Path, hom
     copies the staged original head twice, applies the fix's test files to one and the whole fix
     to the other, and runs only the named ``unittest`` ids in the same network-less sandbox a
     seat uses. Only a Python ``unittest`` id is understood (what ``ci_tests`` parses)."""
-    def run(tree: Path, ids: list[str]) -> str:
+    def run(tree: Path, ids: list[str], pythonpath: str = ".") -> str:
+        # The test directory on the path (#893): a suite whose modules import their helpers
+        # absolutely (``import _home_guard``) only imports with its tests/ there.
         result = contained.run(
             code=code, venv=venv, runtime=runtime, home=home, checkout=tree, rust=rust,
             query=query, timeout=timeout,
-            entry=['/bin/sh', '-c', 'exec /opt/venv/bin/python -m unittest -v "$@" 2>&1', 'sh',
-                   *ids])
+            entry=['/bin/sh', '-c', 'p="$1"; shift; PYTHONPATH="$p" exec /opt/venv/bin/python '
+                   '-m unittest -v "$@" 2>&1', 'sh', pythonpath, *ids])
         return result.stdout + result.stderr
 
     def prover(manifest: dict, ids: list[str]) -> dict:
