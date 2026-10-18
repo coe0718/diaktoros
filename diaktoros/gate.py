@@ -133,6 +133,10 @@ def isolated_supervisor(loop: dict):
     return supervisor
 
 
+# The ``Supervisor.submit`` outcomes that scheduled a turn; any ``duplicate <state>…`` did not.
+SCHEDULED_OUTCOMES = ("enqueued", "rearmed", "pending")
+
+
 def enqueue_isolated(loop: dict, seat: str, number: int, head: str, *, turn_key: str = '') -> str:
     """Commit one isolated turn to the host run ledger, then arm its detached worker.
 
@@ -269,12 +273,17 @@ def block_pr_agent(loop: dict, st: state_mod.LoopState, seat: str,
     if not push_off:
         try:
             outcome = enqueue_isolated(loop, seat, number, head, turn_key=turn_key)
-            st.queue_pop_if(seat, key, queued)
-            final = (f"{seat} turn {outcome}",
-                     "accepted" if outcome in ("enqueued", "rearmed", "pending") else "queued")
+            scheduled = outcome in SCHEDULED_OUTCOMES
+            if scheduled:
+                # Only the gate removes its observed queue entry, and only once a turn is
+                # really armed (#729): a ``duplicate <state>`` scheduled nothing.
+                st.queue_pop_if(seat, key, queued)
+            else:
+                on_queued = None   # no "queued" notice for a turn that will never run
+            final = (f"{seat} turn {outcome}", "accepted" if scheduled else "declined")
             if outcome == "enqueued":
                 log(f"#{number} @ {head[:7]} {seat} enqueued for isolated worker")
-            elif outcome in ("rearmed", "pending"):
+            elif scheduled:
                 log(f"#{number} @ {head[:7]} {seat} {outcome}: isolated worker re-armed")
             else:
                 # Nothing was scheduled (#73): say so, instead of reporting a fresh enqueue.
