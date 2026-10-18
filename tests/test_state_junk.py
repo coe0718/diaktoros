@@ -151,7 +151,7 @@ class QuarantineAtomic(unittest.TestCase):
 
     def test_crash_between_the_two_writes_leaves_no_claimable_marker(self):
         st = self.st
-        with mock.patch.object(st, "_save", side_effect=RuntimeError("crash")):
+        with mock.patch.object(st, "_save_strict", side_effect=RuntimeError("crash")):
             with self.assertRaises(RuntimeError):
                 st.quarantine(7, HEAD)
         self.assertEqual(st.breach_get(7), {})
