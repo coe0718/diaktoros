@@ -30,6 +30,8 @@ async function harness({ cachedAge = null } = {}) {
   const navigations = []
   const effects = []
   const states = []
+  const refs = []
+  let refCursor = 0
   const timers = new Map()
   let time = 1800000000000
   let elapsed = 0
@@ -68,8 +70,8 @@ async function harness({ cachedAge = null } = {}) {
     state: { data: queries.now.data, dataUpdatedAt: time - cachedAge, status: 'success' } })
   const element = (type, props, key) => ({ type, props: props || {}, key })
   const ui = name => props => element(name, props)
-  const sdk = Object.fromEntries(['Badge', 'Button', 'Dialog', 'DialogContent', 'DialogDescription',
-    'DialogHeader', 'DialogTitle', 'StatusDot'].map(name => [name, ui(name)]))
+  const sdk = Object.fromEntries(['Badge', 'Button', 'ConfirmDialog', 'Dialog', 'DialogContent',
+    'DialogDescription', 'DialogHeader', 'DialogTitle', 'StatusDot'].map(name => [name, ui(name)]))
   Object.assign(sdk, {
     PALETTE_AREA: 'palette', ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'nav', STATUSBAR_AREAS: { right: 'status' },
     host: { notify: n => notices.push(n), navigate: p => navigations.push(p) },
@@ -92,6 +94,11 @@ async function harness({ cachedAge = null } = {}) {
         effects[index] = { deps, pending: fn }
       }
     },
+    useRef: initial => {
+      const index = refCursor++
+      if (!(index in refs)) refs[index] = { current: typeof initial === 'function' ? initial() : initial }
+      return refs[index]
+    },
     useState: initial => {
       const index = cursor++
       // React calls a function initializer; the harness models it so a lazy seed behaves the same.
@@ -111,8 +118,19 @@ async function harness({ cachedAge = null } = {}) {
     }, { context })
   })
   await module.evaluate()
+  // The page's one write (#371) is recorded on its own list, with its options, so a test can
+  // assert the exact payload and that a refusal never turns into a visible success.
+  const retryCalls = []
+  let retryResult = { ok: false, error: new Error('fixture retry not configured') }
   module.namespace.default.register({
-    rest: path => { calls.push(path); return Promise.resolve(response) },
+    rest: (path, opts) => {
+      if (path === '/retry') {
+        retryCalls.push(opts || {})
+        return retryResult.ok ? Promise.resolve(retryResult.data) : Promise.reject(retryResult.error)
+      }
+      calls.push(path)
+      return Promise.resolve(response)
+    },
     storage: { get: key => store.get(key), set: (key, value) => store.set(key, value) },
     onDispose: fn => disposers.push(fn), registerMany: rows => registrations.push(...rows)
   })
@@ -128,10 +146,12 @@ async function harness({ cachedAge = null } = {}) {
       effects.forEach(effect => effect.cleanup?.())
       effects.length = 0
       states.length = 0
+      refs.length = 0
     }
     mountedId = id
     cursor = 0
     effectCursor = 0
+    refCursor = 0
     currentTree = resolve(registrations.find(r => r.id === id).render())
     effects.forEach(effect => {
       if (effect.pending) {
@@ -148,6 +168,8 @@ async function harness({ cachedAge = null } = {}) {
   const fail = data => ({ ...good(data), isError: true, error: new Error('fixture backend offline') })
   const loading = () => ({ ...good(undefined), isLoading: true, isFetching: true })
   return { queries, options, calls, notices, navigations, store, good, fail, loading,
+    retryCalls, retryAnswer: data => { retryResult = { ok: true, data } },
+    retryFails: error => { retryResult = { ok: false, error } },
     render, text, buttons, flatten, respond: value => { response = value },
     tree: () => currentTree, timerCount: () => timers.size,
     detail: () => registrations.find(r => r.id === 'open').data.detail(),
@@ -1067,4 +1089,166 @@ test('page: an unread overview never claims nothing is waiting', async () => {
   const text = h.text(h.render('page'))
   assert.match(text, /Across all loops: no verified data available/)
   assert.doesNotMatch(text, /No run in any loop is waiting on you/)
+})
+
+// ---- Desktop slice (#371): a checked, confirmed Retry ------------------------------------------
+// The backend owns eligibility and the retry itself; the page draws the button from the verdict
+// it is given, always confirms, sends the exact target, and shows the backend's own answer.
+
+const HEX = 'a'.repeat(40)
+const RETRY_TITLE = 'Re-arm this run — you will be asked to confirm'
+
+function retrying(extra = {}) {
+  return { pr: 356, seat: 'reviewer', head: HEX.slice(0, 7), state: 'failed',
+    why: 'failed: see explain', retry: { eligible: true, head: HEX, reason: '' }, ...extra }
+}
+
+// The counts line is the host's own derivation (stats.now): one per run state, with a held
+// waiting run counted as held. Built from the rows so a fixture can never claim a count the
+// rows contradict — the page renders "idle" from an empty counts map, not from an empty list.
+function stalled(states) {
+  const counts = {}
+  for (const run of states) {
+    const key = run.state === 'waiting' && run.why.startsWith('held:') ? 'held' : run.state
+    counts[key] = (counts[key] || 0) + 1
+  }
+  return { runs: states, counts, pacing: null, available: true }
+}
+
+const dialogOf = h => h.flatten(h.tree()).find(node => node.type === 'ConfirmDialog')
+const retryButtons = h => h.buttons(h.tree())
+  .filter(node => node.type === 'Button' && node.props.title === RETRY_TITLE)
+
+test('page: Retry is drawn only for a row the backend says a retry would re-arm', async () => {
+  const h = await harness()
+  h.queries.now = h.good(stalled([
+    retrying(),
+    retrying({ seat: 'fixer', state: 'uncertain',
+      retry: { eligible: false, head: HEX, reason: 'run is uncertain (a worker may have written)' } }),
+    retrying({ seat: 'fixer', state: 'cancelled', why: 'cancelled before any write — retry re-arms it',
+      retry: { eligible: false, head: '', reason: 'unattended fixer pushes are off for fixture/repo' } })
+  ]))
+  h.render('page')
+  const buttons = retryButtons(h)
+  assert.equal(buttons.length, 1, 'exactly the retryable row carries the control')
+  // The reason a row has no button is the backend's own, never a state the page matched on.
+  const badges = h.flatten(h.tree()).filter(node => node.type === 'span' && node.props.title)
+  assert.ok(badges.some(node => node.props.title === 'run is uncertain (a worker may have written)'))
+  assert.ok(badges.some(node => /unattended fixer pushes are off/.test(node.props.title)))
+  // Cancelled rows are listed (a push-policy cancellation is an operator's to recover), not hidden,
+  // and the counts line names them instead of calling the loop idle.
+  assert.match(h.text(h.tree()), /cancelled before any write — retry re-arms it/)
+  assert.match(h.text(h.tree()), /1 cancelled/)
+  // The loop never merges, and no control on the page may imply it might: no button does.
+  assert.ok(!h.buttons(h.tree()).some(node => /merge/i.test(h.text([node]))), 'no merge affordance')
+})
+
+test('page: every click confirms first, and cancel sends nothing', async () => {
+  const h = await harness()
+  h.queries.now = h.good(stalled([retrying()]))
+  h.render('page')
+  assert.equal(dialogOf(h), undefined, 'no dialog before a click')
+  retryButtons(h)[0].props.onClick()
+  const dialog = dialogOf(h)
+  assert.ok(dialog, 'the click opens the confirmation')
+  // The preview names the real target: loop, PR, seat and head, and the command it equals.
+  assert.match(dialog.props.description, /Retry the reviewer on #356 @ aaaaaaa in loop fixture-loop/)
+  assert.match(dialog.props.description, /hermes dk retry --loop fixture-loop --pr 356 --seat reviewer/)
+  assert.equal(dialog.props.confirmLabel, 'Retry run')
+  assert.equal(dialog.props.open, true)
+  assert.equal(h.retryCalls.length, 0, 'nothing is sent before the operator confirms')
+  dialog.props.onClose()
+  assert.equal(dialogOf(h), undefined, 'cancel closes it')
+  assert.equal(h.retryCalls.length, 0)
+  assert.doesNotMatch(h.text(h.tree()), /Re-armed/)
+})
+
+test('page: confirming posts the exact target, then shows the answer and the state read back', async () => {
+  const h = await harness()
+  h.queries.now = h.good(stalled([retrying()]))
+  h.retryAnswer({ ok: true, loop: 'fixture-loop', pr: 356, seat: 'reviewer', head: HEX, head7: 'aaaaaaa',
+    answer: 'reviewer #356 @ aaaaaaa re-armed (was failed) · no private runtime file — the run stays pending until one exists',
+    rearmed: [{ seat: 'reviewer', head7: 'aaaaaaa', state: 'failed' }], refused: [],
+    worker: 'no private runtime file — the run stays pending until one exists',
+    runs: [{ seat: 'reviewer', head7: 'aaaaaaa', state: 'pending' }], read_at: 1800000000 })
+  h.render('page')
+  retryButtons(h)[0].props.onClick()
+  await dialogOf(h).props.onConfirm()
+  assert.equal(h.retryCalls.length, 1)
+  // The full head the backend would re-arm is what it is asked to confirm — not the 7-char preview.
+  assert.deepEqual(JSON.parse(JSON.stringify(h.retryCalls[0])), { method: 'POST',
+    body: { loop: 'fixture-loop', pr: 356, seat: 'reviewer', head: HEX } })
+  const text = h.text(h.tree())
+  assert.match(text, /Re-armed/)
+  assert.match(text, /reviewer #356 @ aaaaaaa re-armed \(was failed\)/)
+  assert.match(text, /no private runtime file — the run stays pending until one exists/)
+  assert.match(text, /now: reviewer pending/, 'the ledger state is read back after the write')
+  // The reads that are now out of date are invalidated: the live list, the PR record and the chip.
+  const keys = h.calls.filter(call => call && call.queryKey).map(call => call.queryKey.join('/'))
+  assert.deepEqual(keys.sort(), ['diaktoros/now/fixture-loop', 'diaktoros/overview',
+    'diaktoros/pr/fixture-loop/356'])
+})
+
+test('page: a refusal shows the backend reason, keeps the dialog open and invalidates nothing', async () => {
+  const h = await harness()
+  h.queries.now = h.good(stalled([retrying()]))
+  const detail = 'refused: run is uncertain (a worker may have written). A run that may have written ' +
+    'is never replayed. Inspect the PR for its external writes'
+  h.retryFails(new Error('Error invoking remote method hermes:api: Error: 409: ' +
+    JSON.stringify({ detail })))
+  h.render('page')
+  retryButtons(h)[0].props.onClick()
+  await assert.rejects(dialogOf(h).props.onConfirm(), error => error.message === detail)
+  const text = h.text(h.tree())
+  assert.match(text, /Retry refused/)
+  assert.match(text, /HTTP 409 · refused: run is uncertain \(a worker may have written\)/)
+  assert.doesNotMatch(text, /Error invoking remote method|hermes:api|PRIVATE_TRANSPORT_SECRET/)
+  assert.equal(dialogOf(h).props.open, true, 'the dialog stays open on the host own refusal')
+  assert.deepEqual(h.calls.filter(call => call && call.queryKey), [], 'a refusal changes nothing to re-read')
+})
+
+test('page: one confirm is one request even when the button is hit twice', async () => {
+  const h = await harness()
+  h.queries.now = h.good(stalled([retrying()]))
+  h.retryAnswer({ ok: true, answer: 'reviewer #356 @ aaaaaaa re-armed (was failed)', head: HEX,
+    rearmed: [{ seat: 'reviewer', head7: 'aaaaaaa', state: 'failed' }],
+    runs: [{ seat: 'reviewer', head7: 'aaaaaaa', state: 'pending' }] })
+  h.render('page')
+  retryButtons(h)[0].props.onClick()
+  const dialog = dialogOf(h)
+  await Promise.all([dialog.props.onConfirm(), dialog.props.onConfirm()])
+  assert.equal(h.retryCalls.length, 1, 'the in-flight guard prevents a double submission')
+})
+
+test('page: an unverified answer is never shown as a re-arm', async () => {
+  const h = await harness()
+  h.queries.now = h.good(stalled([retrying()]))
+  h.retryAnswer({ ok: true, answer: '', rearmed: [], runs: [] })
+  h.render('page')
+  retryButtons(h)[0].props.onClick()
+  await assert.rejects(dialogOf(h).props.onConfirm())
+  const text = h.text(h.tree())
+  assert.match(text, /Retry refused/)
+  assert.match(text, /The retry answer could not be verified/)
+  assert.doesNotMatch(text, /Re-armed\b/)
+  assert.deepEqual(h.calls.filter(call => call && call.queryKey), [])
+})
+
+test('page: /now accepts a retry verdict and rejects a malformed one before caching', async () => {
+  const h = await harness()
+  h.render('page')
+  h.respond(stalled([retrying()]))
+  const validated = await h.options.now.queryFn()
+  assert.equal(validated.runs[0].retry.head, HEX)
+  const malformed = [
+    stalled([retrying({ retry: { eligible: 'yes', head: HEX, reason: '' } })]),
+    stalled([retrying({ retry: { eligible: true, head: '', reason: '' } })]),
+    stalled([retrying({ retry: { eligible: false, head: HEX } })]),
+    stalled([retrying({ retry: { eligible: false, head: 'not-a-sha', reason: '' } })]),
+    stalled([retrying({ state: 'quarantined' })])
+  ]
+  for (const payload of malformed) {
+    h.respond(payload)
+    await assert.rejects(h.options.now.queryFn(), /Invalid now response/)
+  }
 })

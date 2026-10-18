@@ -1,9 +1,11 @@
 {
   "name": "diaktoros",
   "label": "Diaktoros",
-  "description": "Read-only loop activity for the Hermes Desktop page: seat turns, timings and live runs.",
+  "description": "Loop activity for the Hermes Desktop page \u2014 seat turns, timings and live runs \u2014 and a confirmed Retry that re-arms a failed run which never wrote.",
   "icon": "Activity",
-  "tab": {"hidden": true},
+  "tab": {
+    "hidden": true
+  },
   "entry": "dist/index.js",
   "api": "plugin_api.py"
 }

@@ -1,21 +1,29 @@
-"""The Desktop page's backend logic (#369, #630): read-only views over one loop, for
+"""The Desktop page's backend logic (#369, #630, #371): views over one loop, for
 ``dashboard/plugin_api.py``. Kept free of FastAPI so it is tested without it.
 
-Nothing here writes, calls GitHub or reads a token: ``stats`` is the run ledger's half of
+Every read is here and none of them writes: ``stats`` is the run ledger's half of
 ``hermes dk stats`` (totals and timings only), ``now`` lists live runs with host-written
-reasons, ``overview`` is that same live state for every configured loop at once (for the status
-chip and the cross-loop block), ``pr`` adds the host's own "what moves it" line
-(``run_supervisor.next_step``) plus what the ledger recorded, ``health`` is ``doctor``'s
-checks with the network reads left unprobed, and ``settings`` is the plugin-level form and each
-loop's effective answers. Never a turn's output, never a run's error text.
+reasons and, per row, whether a retry would re-arm it, ``overview`` is that same live state for
+every configured loop at once (for the status chip and the cross-loop block), ``pr`` adds the
+host's own "what moves it" line (``run_supervisor.next_step``) plus what the ledger recorded,
+``health`` is ``doctor``'s checks with the network reads left unprobed, and ``settings`` is the
+plugin-level form and each loop's effective answers. Never a turn's output, never a run's error
+text.
+
+**One action, and it is a write (#371):** ``retry`` re-arms a run the CLI's ``retry`` would
+re-arm. It is not a second implementation of anything: ``retry_action`` owns which run that is
+and ``Supervisor.retry`` owns re-arming it, and this function only re-reads the ledger, refuses a
+confirmation whose head has moved, and answers with the host's own words. It calls no GitHub API
+and reads no token, so the retry it performs is the ledger-only one — the CLI's own fallback when
+its PR read is unavailable.
 """
 from __future__ import annotations
 
 import pathlib
 import time
 
-from . import (config, doctor, findings, gate_decisions, pacing, route_intent, run_supervisor,
-               stats)
+from . import (config, doctor, findings, gate_decisions, pacing, retry_action, route_intent,
+               run_supervisor, stats)
 from .config import settings_form
 
 SINCE_CHOICES = ("24h", "7d", "30d")
@@ -36,6 +44,10 @@ class BadRequest(ValueError):
 
 class Forbidden(PermissionError):
     pass
+
+
+class Conflict(RuntimeError):
+    """A retry the host refuses: the ledger says this run is not one to re-arm (#371)."""
 
 
 # The probe reads a credential and calls GitHub, so it answers only a caller on this machine.
@@ -99,7 +111,8 @@ def stats_view(loop_id: str | None, since: str = "7d") -> dict:
 
 def now_view(loop_id: str | None) -> dict:
     loop = _loop(loop_id)
-    view = stats.now(run_supervisor.production_ledger(), loop["repo"])
+    ledger = run_supervisor.production_ledger()
+    view = stats.now(ledger, loop["repo"])
     # A missing ledger is not a verified zero: ``stats.now`` returns None when there is no
     # ledger, so the view carries ``available`` and the page renders unavailable, never "nothing
     # running". The empty runs and counts below are placeholders for that case only.
@@ -107,10 +120,108 @@ def now_view(loop_id: str | None) -> dict:
     if view is None:
         view = {"repo": loop["repo"], "runs": [], "counts": {}}
     view["available"] = available
+    # Per row, the one question the page's Retry button asks: would ``retry`` re-arm this run?
+    # Answered by the same plan the POST and the CLI run, so a button the page draws is a button
+    # the host would honour — and no row gets one for a run that may have written.
+    view["runs"] = _with_retry(ledger, loop["repo"], view["runs"], loop)
     # Beside the runs, the live usage-window state: a run's own held line is a snapshot from the
     # moment it was held, and it can outlive the window it names (#650).
     view["pacing"] = pacing.seats(loop)
     return view
+
+
+def _with_retry(db, repo: str, runs: list[dict], loop: dict) -> list[dict]:
+    """Each ``/now`` row with ``retry``: whether a retry would re-arm it, its head, and why not.
+
+    The verdict is ``retry_action``'s — never a state the page matches on its own. A row with no
+    ledger row behind it (or an unreadable ledger) carries ``eligible`` false with the reason,
+    so the page shows no button rather than a button that would fail.
+    """
+    def without(reason: str) -> list[dict]:
+        return [dict(run, retry={"eligible": False, "head": "", "reason": reason})
+                for run in runs]
+    out = without("no run ledger to read")
+    if not runs:
+        return out
+    try:
+        con = run_supervisor.read_only_connect(db)
+        if con is None:
+            return out
+        try:
+            found = retry_action.page_targets(con, repo, loop)
+        finally:
+            con.close()
+    except Exception:
+        # A read that failed is not the same answer as a ledger that is not there, and neither
+        # offers an action: the reason says which, so no row grows a button on a guess.
+        return without("the retry state could not be read")
+    for run in out:
+        entry = found.get((run["pr"], run["seat"], run["head"], run["state"]))
+        if entry is not None:
+            run["retry"] = {"eligible": bool(entry["eligible"]),
+                            "head": str(entry["head"] or ""),
+                            "reason": _bounded(entry["reason"])}
+    return out
+
+
+def retry_view(loop_id: str | None, pr: int, seat: str, head: str | None = None) -> dict:
+    """Re-arm the run ``hermes dk retry --loop … --pr … --seat …`` would re-arm (#371).
+
+    This is the page's one write. It re-reads the ledger and decides from that alone — the
+    client's view is never trusted beyond ``head``, which is only a *confirmation*: when the head
+    that would be re-armed is no longer the head the operator saw, the retry is refused with
+    ``Conflict`` instead of silently re-arming a different run. Eligibility, the refusals and the
+    re-arm itself are ``retry_action.perform``'s, which is the CLI's code path; nothing here
+    calls GitHub, reads a token or invents a second rule. The response carries the host's own
+    answer line and the state read back from the ledger after the write, so the page shows what
+    happened rather than what it asked for.
+    """
+    if isinstance(pr, bool) or not isinstance(pr, int) or pr <= 0:
+        raise BadRequest("pr must be a positive integer")
+    seat = str(seat or "")
+    if seat not in retry_action.SEATS:
+        raise BadRequest("seat must be one of " + ", ".join(retry_action.SEATS))
+    head = str(head or "").strip().lower()
+    if not head:
+        raise BadRequest("head is required: the retry re-arms the head the operator confirmed")
+    if len(head) < 7 or len(head) > 40 or any(c not in "0123456789abcdef" for c in head):
+        raise BadRequest("head must be a commit SHA (7 to 40 hex characters)")
+    loop = _loop(loop_id)
+    ledger = run_supervisor.production_ledger()
+    result = retry_action.perform(loop, pr, seat, ledger=ledger, confirm_head=head or None)
+    view = {"loop": loop["id"], "repo": loop["repo"], "pr": pr, "seat": seat,
+            "head": result["head"], "head7": result["head7"],
+            "rearmed": [{"seat": e["seat"], "head7": e["head7"], "state": e["state"]}
+                        for e in result["rearmed"]],
+            "refused": [{"seat": e["seat"], "head7": e["head7"], "state": e["state"],
+                         "reason": retry_action.bounded(e["reason"])} for e in result["refused"]],
+            "worker": retry_action.bounded(result["worker"]),
+            "answer": retry_action.answer(result),
+            "runs": _runs_after(ledger, loop["repo"], pr), "read_at": time.time()}
+    # ``perform``'s no-ledger line names the file, which a terminal wants and a page must not
+    # render (the same rule the read views follow): the page gets the fact, not the path.
+    refusal = retry_action.bounded(str(result["message"]).replace(str(ledger), "the run ledger"))
+    if result["message"]:
+        raise Conflict(refusal)
+    if not result["rearmed"]:
+        raise Conflict(retry_action.answer(result))
+    return view
+
+
+def _runs_after(db, repo: str, pr: int) -> list[dict]:
+    """This PR's ledger rows as they stand now — the read-back a successful retry answers with."""
+    try:
+        con = run_supervisor.read_only_connect(db)
+        if con is None:
+            return []
+        try:
+            rows = retry_action.rows_for(con, repo, pr)
+        finally:
+            con.close()
+    except Exception:
+        return []
+    return [{"seat": row["seat"], "head7": str(row["head"] or "")[:7], "state": row["state"]}
+            for row in rows]
 
 
 def overview_view() -> dict:
