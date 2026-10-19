@@ -538,6 +538,27 @@ class GateFailureTest(unittest.TestCase):
         self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": "x"}}})
         self.assertEqual(self.doctor_lines()["gate:timeout:default"].status, doctor.UNKNOWN)
 
+    def test_doctor_checks_the_triage_routes_profile_gateway(self):
+        from diaktoros import doctor
+        self.gateway_config(None)
+        home = self.profile_config("triage-profile", {
+            "gateway": {"standalone": True},
+            "platforms": {"webhook": {"script_timeout_seconds": 5}}})
+        loop = config.load_id("widgets")
+        self.assertNotIn("triage", doctor.gate_timeout_profiles(loop).get("triage-profile", []))
+        with_triage = {**loop, "triage": {"route": "widgets-triage", "profile": "triage-profile"}}
+        self.assertEqual(doctor.gate_timeout_profiles(with_triage)["triage-profile"], ["triage"])
+        checks = {c.name: c for c in doctor.check_gate_timeouts(with_triage)}
+        low = checks["gate:timeout:triage-profile"]
+        self.assertEqual(low.status, doctor.MISMATCH)
+        self.assertIn("serves triage", low.detail)
+        self.assertIn(f"in {home / 'config.yaml'}", low.fix)
+        self.assertNotIn("gate:timeout:triage-profile",
+                         {c.name for c in doctor.check_gate_timeouts(loop)})
+        # No profile named: the route runs as the default profile, which shares that line.
+        bare = {**loop, "triage": {"route": "widgets-triage"}}
+        self.assertIn("triage", doctor.gate_timeout_profiles(bare)["default"])
+
     def test_gate_reads_the_gateway_it_runs_under(self):
         self.gateway_config({"platforms": {"webhook": {"script_timeout_seconds": 45}}})
         solo = self.profile_config("solo", {"gateway": {"standalone": True},
