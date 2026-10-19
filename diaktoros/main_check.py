@@ -33,9 +33,13 @@ class Merges(list):
         self.seen, self.total = seen, total
 
     @property
+    def reported(self) -> bool:
+        """True when GitHub gave a usable ``total_commits`` (an int, not a bool)."""
+        return isinstance(self.total, int) and not isinstance(self.total, bool)
+
+    @property
     def partial(self) -> bool:
-        return not (isinstance(self.total, int) and not isinstance(self.total, bool)
-                    and self.total == self.seen)
+        return not (self.reported and self.total == self.seen)
 
 
 def merged_since(loop: dict, green: str, head: str) -> Merges | None:
@@ -75,9 +79,9 @@ def _outcome(failed: list[str], merges: list[int] | None, url: str) -> str:
             since = ("merged PRs seen so far (partial list): " if partial
                      else "merged since main's last green head: ") + f"{shown}{more}"
         if partial:
-            total, seen = getattr(merges, "total", None), merges.seen
-            if isinstance(total, int) and not isinstance(total, bool):
-                said = f"GitHub's compare was truncated ({seen} of {total} commits read)"
+            seen = merges.seen
+            if getattr(merges, "reported", False):
+                said = f"GitHub's compare was truncated ({seen} of {merges.total} commits read)"
             else:                          # count absent/unreadable: say only what was observed
                 said = (f"could not confirm GitHub's compare was complete "
                         f"({seen} commit{'' if seen == 1 else 's'} read, total unreported)")

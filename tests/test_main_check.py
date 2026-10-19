@@ -140,6 +140,24 @@ class MainCheck(unittest.TestCase):
         self.assertIn("(1 of 400 commits read)", outcome(1, 400))
         self.assertIn("truncated", outcome(1, 400))
 
+    def assert_unreported_total_is_not_truncation(self, total):
+        no_total = {"commits": COMPARE["commits"], "total_commits": total}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=no_total))
+        (_args, kw), = self.notices
+        text = kw["outcome"]
+        self.assertIn("could not confirm GitHub's compare was complete "
+                      "(3 commits read, total unreported)", text)
+        self.assertIn("may be missing", text)
+        for banned in ("truncated", "are missing", "of True"):
+            self.assertNotIn(banned, text)
+
+    def test_missing_total_does_not_claim_truncation(self):
+        self.assert_unreported_total_is_not_truncation(None)
+
+    def test_bool_total_is_unreported_not_a_count(self):
+        self.assert_unreported_total_is_not_truncation(True)
+
     def test_truncated_compare_without_pr_merges_is_not_called_complete(self):
         """Truncated slice, no commit names a PR: must not claim "no PR merges since ..."."""
         direct = {"commits": [{"commit": {"message": "direct push"}}], "total_commits": 400}
