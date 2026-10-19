@@ -258,6 +258,47 @@ class ChecklistTests(SelftestBase):
         self.assertIn(f"fix: chmod 600 {self.fx.settings['key_file']}", text)
         self.assert_no_secrets(text)
 
+    def test_key_file_in_unreadable_directory_fails_instead_of_crashing(self):
+        keys = pathlib.Path(self.fx.root) / "keys"
+        keys.mkdir()
+        key = keys / "model.key"
+        key.write_text(MODEL_KEY)
+        key.chmod(0o600)
+        self.fx.write_runtime(key_file=str(key))
+        keys.chmod(0o000)
+        self.addCleanup(keys.chmod, 0o700)
+        rc, text = self.run_selftest()
+        self.assertEqual(rc, 1)
+        self.assertRegex(text, r"❌ runtime:key_file .*model\.key")
+        self.assertIn(f"fix: chmod 700 {keys}", text)
+        self.assert_no_secrets(text)
+
+    def test_runtime_file_in_unreadable_directory_fails_instead_of_crashing(self):
+        self.fx.home.chmod(0o000)
+        self.addCleanup(self.fx.home.chmod, 0o700)
+        rc, text = self.run_selftest()
+        self.assertEqual(rc, 1)
+        self.assertRegex(text, r"❌ runtime:file .*cannot open")
+        self.assertIn(f"fix: chmod 700 {self.fx.home}", text)
+
+    def test_non_utf8_key_file_fails_instead_of_crashing(self):
+        key = pathlib.Path(self.fx.settings["key_file"])
+        key.write_bytes(b"\xff\xfe\x80key\n")
+        key.chmod(0o600)
+        rc, text = self.run_selftest()
+        self.assertEqual(rc, 1)
+        self.assertRegex(text, r"❌ runtime:key_file .*not UTF-8")
+        self.assertIn(f"fix: rewrite the key file as text", text)
+        self.assertIn(str(key), text)
+
+    def test_production_reader_refuses_non_utf8_key_file_cleanly(self):
+        from diaktoros import seat_model
+        key = pathlib.Path(self.fx.settings["key_file"])
+        key.write_bytes(b"\xff\xfe\x80key\n")
+        key.chmod(0o600)
+        with self.assertRaisesRegex(seat_model.SeatModelError, "not UTF-8"):
+            seat_model._read_key_file(str(key), "seat")
+
     def test_multi_line_key_file_fails_like_the_production_reader(self):
         key = pathlib.Path(self.fx.settings["key_file"])
         for body in (MODEL_KEY + "\nsecond-line\n", MODEL_KEY + "\r\nsecond-line"):
