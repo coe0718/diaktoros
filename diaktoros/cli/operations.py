@@ -6,7 +6,6 @@ every command here, so ``cli.cmd_status`` and the parser's dispatch are unchange
 """
 from __future__ import annotations
 
-import json
 import pathlib
 import subprocess
 import sys
@@ -25,8 +24,6 @@ from .. import (
 )
 from ..config import credentials
 from .common import _budget_line, _credential_lines, _routes_of
-from ..ledger import LOCK_WAIT_S
-from ..util import logged
 
 
 def _route_state(loop: dict, role: str) -> str:
@@ -511,116 +508,21 @@ def _pacing_lines(loop: dict) -> list[str]:
 
 
 def _reviewer_runs(repo: str, number: int, head: str) -> int:
-    """How many reviewer runs the ledger holds for this head (read-only; 0 without a ledger)."""
-    import sqlite3
-    from .. import run_supervisor
-    db = run_supervisor.production_ledger()
-    if not db.exists():
-        return 0
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
-    try:
-        return con.execute("SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND head=? AND "
-                           "seat='reviewer'", (repo, number, head)).fetchone()[0]
-    finally:
-        con.close()
+    """Compatibility accessor; the shared action owns the ledger read."""
+    from ..one_shot_action import _reviewer_runs as count
+    return count(repo, number, head)
 
 
 def cmd_escalate(args) -> int:
-    """Send one PR to the adjudicator now, whatever its verdict count (#459), as the operator.
-
-    The same breach marker and isolated ruling turn a spent cap starts, marked ``escalated``: the
-    PR is parked at this head as if its cap were spent (no further review or fix there), and the
-    worker re-reads every fact before the ruling runs. Exit 1 when refused, with the reason;
-    2 when the question cannot be asked.
-    """
-    from .. import run_supervisor, state as state_mod, transition
-    from ..util import now_iso
-    if args.loop:
-        try:
-            loop = config.load_id(args.loop)
-        except config.ConfigError as exc:
-            print(f"no such loop: {exc}")
-            return 2
-    else:
-        loops, refused = config.readable_loops()
-        for loop_id, reason in refused:
-            print(f"skipping {loop_id}.json: {reason}")
-        names = [lp["id"] for lp in loops] + [loop_id for loop_id, _ in refused]
-        if len(names) > 1:
-            print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
-            return 2
-        if refused:
-            return 2
-        if not loops:
-            print(f"no loops configured in {config.config_dir()}")
-            return 2
-        loop = loops[0]
-    number = args.pr
-    say = f"#{number}"
-    if not str((loop.get("adjudicator") or {}).get("route") or ""):
-        print(f"{say}: refused — this loop has no adjudicator; turn it on with "
-              f"`hermes dk set --loop {loop['id']} --adjudicator-profile PROFILE`")
-        return 1
-    pr = gh.pr(loop, number)
-    if not isinstance(pr, dict) or pr.get("number") != number:
-        print(f"{say}: the PR could not be read from GitHub — nothing escalated")
+    """Thin I/O wrapper for the shared host-owned escalate operation."""
+    from .. import one_shot_action
+    loop = _one_loop(args)
+    if loop is None:
         return 2
-    head = str((pr.get("head") or {}).get("sha") or "")
-    author = str((pr.get("user") or {}).get("login") or "").lower()
-    say = f"#{number} @ {head[:7]}"
-    if (pr.get("state") != "open" or pr.get("draft") or not head
-            or (pr.get("base") or {}).get("ref") != loop["base"] or author not in loop["fixers"]):
-        print(f"{say}: refused — only an open, ready PR by a fixer ({', '.join(loop['fixers'])}) "
-              f"on {loop['base']} can be escalated")
-        return 1
-    st = state_mod.state_for(loop)
-    reviews = transition.effective_reviews(loop, st, number, head, gh.reviews(loop, number))
-    if not isinstance(reviews, list):
-        print(f"{say}: the reviews could not be read — nothing escalated")
-        return 2
-    latest = gate.latest_effective_review_at_head(reviews, loop, head)
-    if latest is not None and gh.review_state(latest) == "APPROVED":
-        print(f"{say}: refused — approved at this head; there is nothing to rule on")
-        return 1
-    verdicts = len(gate.verdicts(reviews, loop))
-    if verdicts < 1:
-        print(f"{say}: refused — no verdict yet; there is nothing to rule on")
-        return 1
-    marker = st.breach_get(number)
-    if isinstance(marker, dict) and marker.get("head") == head and marker.get("status") in gate.STANDING:
-        print(f"{say}: already awaiting a ruling ({marker.get('status')})")
-        return 1
-    db = run_supervisor.production_ledger()
-    if db.exists():
-        import sqlite3
-        # A queued review or fix is retired by the escalation itself (the worker's claim); only
-        # a turn already running must finish first, since it may still write at this head.
-        busy = run_supervisor.ACTIVE
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
-        try:
-            # A shadow turn (#218) never writes at the head: it does not hold an escalation.
-            out = con.execute(f"SELECT COUNT(*) FROM runs WHERE repo=? AND pr=? AND seat!='shadow' "
-                              f"AND state IN ({','.join('?' * len(busy))})",
-                              (loop["repo"], number, *busy)).fetchone()[0]
-        finally:
-            con.close()
-        if out:
-            print(f"{say}: refused — {out} run(s) for this PR are in flight; escalate once "
-                  "they finish (a queued review or fix is retired by the escalation)")
-            return 1
-    why = " ".join(str(args.reason or "").split())[:200] or "the operator asked for a ruling"
-    outcome = gate.breach(loop, st, number, head, verdicts, f"escalated: {why}",
-                          escalated={"by": "operator", "at": now_iso(), "reason": why})
-    if outcome == "stale":
-        print(f"{say}: the PR moved while escalating — nothing escalated")
-        return 1
-    if outcome == "new":
-        from ..run_supervisor import record_operator_action
-        record_operator_action(loop["repo"], number, "escalate")
-    print(f"{say}: escalated at {verdicts}/{loop['cap']} verdicts — adjudicator turn "
-          f"{'enqueued' if outcome in ('new', 'retry') else outcome}; the PR is parked at this "
-          f"head (`hermes dk explain --loop {loop['id']} --pr {number}` follows it)")
-    return 0
+    result = one_shot_action.perform_escalate(loop, args.pr, getattr(args, "reason", ""))
+    for line in result["lines"]:
+        print(line)
+    return result["code"]
 
 
 def cmd_depends(args) -> int:
@@ -779,104 +681,15 @@ def cmd_regression(args) -> int:
 
 
 def cmd_review(args) -> int:
-    """Ask for a fresh review of a PR's current head (#375), as the operator.
-
-    The real reviewer gate decides, fed a ``ready_for_review`` event built from the live PR: the
-    same rules as a webhook (open, not a draft, a fixer's PR on the loop's base, no verdict or
-    run already at this head, the verdict cap), so this command cannot start a review the gate
-    would not. No GitHub write: the review itself is the only one, as usual. Exit 1 when the
-    gate declines, with its own reason; 2 when the question cannot be asked.
-    """
-    if args.loop:
-        try:
-            loop = config.load_id(args.loop)
-        except config.ConfigError as exc:
-            print(f"no such loop: {exc}")
-            return 2
-    else:
-        loops, refused = config.readable_loops()
-        for loop_id, reason in refused:
-            print(f"skipping {loop_id}.json: {reason}")
-        names = [lp["id"] for lp in loops] + [loop_id for loop_id, _ in refused]
-        if len(names) > 1:
-            print(f"{len(names)} loops are configured ({', '.join(names)}) — name one with --loop")
-            return 2
-        if refused:
-            return 2
-        if not loops:
-            print(f"no loops configured in {config.config_dir()}")
-            return 2
-        loop = loops[0]
-    pr = gh.pr(loop, args.pr)
-    if not isinstance(pr, dict) or pr.get("number") != args.pr:
-        print(f"#{args.pr}: the PR could not be read from GitHub — nothing started")
+    """Thin I/O wrapper for the shared host-owned review operation."""
+    from .. import one_shot_action
+    loop = _one_loop(args)
+    if loop is None:
         return 2
-    head = (pr.get("head") or {}).get("sha") or ""
-    from .. import state as state_mod
-    st = state_mod.state_for(loop)
-    key = gate.seat_key(loop, args.pr)
-    if getattr(args, "another_round", False):
-        # One more verdict on a review-only PR that hit its cap. The operator running this on the
-        # host is the maintainer; the grant is recorded against this head and verdict count, so it
-        # buys exactly one verdict and a repeat of the command changes nothing.
-        author = ((pr.get("user") or {}).get("login") or "").lower()
-        if author not in config.review_only(loop):
-            print(f"#{args.pr}: {author or 'its author'} is not review-only — only a review-only "
-                  "PR has a review cap to lift; nothing granted")
-            return 1
-        reviews = gh.reviews(loop, args.pr)
-        if not isinstance(reviews, list):
-            print(f"#{args.pr}: the reviews could not be read — nothing granted")
-            return 2
-        rounds = len(gate.verdicts(reviews, loop))
-        if rounds < config.review_only_cap(loop):
-            print(f"#{args.pr}: {rounds} of {config.review_only_cap(loop)} verdicts spent — the "
-                  "cap is not reached; nothing to grant")
-            return 1
-        if gate.reviewed_at_head(reviews, loop, head):
-            # The gate declines a head that already has a verdict before it looks at the cap, so a
-            # grant here would be spent on nothing and not match the author's next push.
-            print(f"#{args.pr} @ {head[:7]}: head already has a verdict — push the change, then "
-                  "grant another round; nothing granted")
-            return 1
-        if not st.review_cap_grant(args.pr, head, rounds):
-            print(f"#{args.pr} @ {head[:7]}: another round is already granted for this head")
-        else:
-            print(f"#{args.pr} @ {head[:7]}: another round granted — one more verdict")
-
-    def queued():
-        entry = (st.queue_all().get("reviewer") or {}).get(key) or {}
-        return entry if entry.get("head") == head else None
-    before = (_reviewer_runs(loop["repo"], args.pr, head), queued())
-    payload = {"action": "ready_for_review", "number": args.pr, "pull_request": pr,
-               "repository": {"full_name": loop["repo"]},
-               "sender": {"login": loop.get("read_token") or "operator"}}
-    script = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "gate_reviewer.py"
-    try:
-        done = subprocess.run([sys.executable, str(script)], input=json.dumps(payload),
-                              text=True, capture_output=True, timeout=120)
-    except subprocess.TimeoutExpired:
-        print(f"#{args.pr} @ {head[:7]}: the gate did not finish within 120s — "
-              "no answer; check `explain` before asking again")
-        return 2
-    if _reviewer_runs(loop["repo"], args.pr, head) > before[0]:
-        from ..run_supervisor import record_operator_action
-        record_operator_action(loop["repo"], args.pr, "review")
-        print(f"#{args.pr} @ {head[:7]}: review queued for the isolated worker "
-              f"(`hermes dk explain --loop {loop['id']} --pr {args.pr}` follows it)")
-        return 0
-    waiting = queued()
-    if waiting and waiting != before[1]:
-        from ..run_supervisor import record_operator_action
-        record_operator_action(loop["repo"], args.pr, "review")
-        reason = waiting.get("reason") or "the reviewer seat is busy"
-        print(f"#{args.pr} @ {head[:7]}: review queued, waiting — {reason}")
-        return 0
-    reasons = logged(done.stderr.splitlines())
-    print(f"#{args.pr} @ {head[:7]}: no review started — "
-          + (reasons[-1] if reasons else "the reviewer gate declined without a reason"
-             + (f" (exit {done.returncode})" if done.returncode else "")))
-    return 1
+    result = one_shot_action.perform_review(loop, args.pr, getattr(args, "another_round", False))
+    for line in result["lines"]:
+        print(line)
+    return result["code"]
 
 
 def cmd_explain(args) -> int:
@@ -1038,14 +851,15 @@ def cmd_ready(args) -> int:
 
 
 def cmd_drain(args) -> int:
-    try:
-        config.load_id(args.loop)          # the watchdog reports a bad file but exits 0 (cron)
-    except config.ConfigError as exc:
-        print(f"cannot drain: {exc}")
+    """Thin I/O wrapper for the shared host-owned drain operation."""
+    from .. import one_shot_action
+    loop = _one_loop(args)
+    if loop is None:
         return 2
-    watchdog = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "watchdog.py"
-    cmd = [sys.executable, str(watchdog), "--loop", args.loop, "--drain", "--seat", args.seat]
-    return subprocess.run(cmd).returncode
+    result = one_shot_action.perform_drain(loop, args.seat)
+    for line in result["lines"]:
+        print(line)
+    return result["code"]
 
 
 def cmd_cleanup(args) -> int:

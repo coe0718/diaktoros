@@ -95,6 +95,31 @@ are unknown, never inferred paused. A partial write/readback or failed resume pi
 Pausing stops webhook delivery, not running turns; sweeps may still recover events. This is
 not a global stop, drain, rollback or merge permission. Diaktoros never merges.
 
+**Confirmed one-shot control (#644):** `GET /actions` reads a PR using the host's existing
+credential selection and returns only a per-target offer. `POST /actions` accepts exactly
+`{loop, action, pr, seat, confirmation}`, never a token, path, arbitrary reason, grant or command.
+Both use gateway auth, not the local-only probe restriction. `one_shot_action` owns selection
+and execution for CLI and Desktop; CLI commands are I/O wrappers, not a second rulebook.
+Currently only escalation is offered: the confirmation names the exact head being parked
+against further reviews/fixes and the adjudicator turn being spent. Its process-local HMAC
+binds config, PR, effective reviews, marker and ledger identity; a backend restart invalidates
+it. Revalidation occurs again at the breach reservation under its existing lock, and a changed
+identity vetoes the reservation rather than applying the latest identity. GitHub observations
+are not a globally atomic remote transaction; existing core claim/publish guards still apply.
+The host reads back the exact operation marker, including its operation ID. A verified marker
+means parked awaiting adjudication, not that a ruling completed; delivery-pending is partial,
+and missing, replaced or unreadable read-back is unknown. No success from launch alone.
+The renderer consumes the preview on submission and requires a new safe preview for follow-up.
+Errors use bounded fixed categories, not transport diagnostics or configured token paths.
+
+Re-review and drain are deliberate Desktop refusals until their core entry points can bind safe
+confirmed identities: the reviewer script owns process-global context; the drain watchdog
+selects a changing whole-seat queue. No route invokes a subprocess CLI or monkeypatches the
+host to make a button work. Their CLI paths remain available through the shared owner, with
+`--another-round` restricted to CLI; unconfirmed drain completion exits 2, not success. The
+selector also refuses corrupt markers and uncertain/quarantined ledger outcomes for escalation.
+Existing retry, pause/resume and seat configuration are unchanged. Diaktoros never merges.
+
 Host-recorded incomplete change views block reviewer approval and fixer pushes before writing. So does CI: the broker re-reads the head's check runs and commit statuses and refuses an APPROVE while one has failed or CI cannot be read. The review receipt claim repeats the approval check in its transaction. A reviewer may still request changes. A no-write reviewer broker exists for the live selftest: its host-only constructor flag records the proposed verdict and runs authorization reads without a POST. A socket request cannot enable or disable that mode.
 
 Capability consumption and write-ahead records precede external writes. Invalid input can be rejected before consumption; an attempted external write with a lost reply cannot simply be replayed. Sandbox replies contain only acceptance/safe status, not arbitrary GitHub response fields or host exception details. These restrictions do not determine whether review prose is accurate or appropriate.

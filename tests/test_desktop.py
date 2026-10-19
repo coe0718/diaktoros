@@ -550,10 +550,10 @@ class Health(unittest.TestCase):
         called.assert_not_called()
 
 
-DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings", "/hooks"}
-# Confirmed writes only: retry (#371) and host-owned hook pause/resume (#645).
-# Enumerate the boundary deliberately; hooks is the sole GET+POST resource.
-DASHBOARD_WRITE_ROUTES = {"/retry", "/hooks"}
+DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings", "/hooks", "/actions"}
+# Confirmed writes only: retry, hook pause/resume, and host-owned one-shot escalation.
+# Review/drain previews are refusals until the core can bind a safe identity.
+DASHBOARD_WRITE_ROUTES = {"/retry", "/hooks", "/actions"}
 
 
 class RouteListing(unittest.TestCase):
@@ -576,7 +576,7 @@ class RouteListing(unittest.TestCase):
                 self.assertIn(path, DASHBOARD_WRITE_ROUTES)
         paths = [path for _, path in found]
         self.assertEqual(len(found), len(set(found)))
-        self.assertEqual({path for path in paths if paths.count(path) > 1}, {"/hooks"})
+        self.assertEqual({path for path in paths if paths.count(path) > 1}, {"/hooks", "/actions"})
         self.assertEqual(set(paths), DASHBOARD_ROUTES | DASHBOARD_WRITE_ROUTES)
 
     def test_no_route_is_registered_another_way(self):

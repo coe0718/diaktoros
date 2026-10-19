@@ -4,7 +4,9 @@
 Reads cover loop config, the run ledger, installation health and GitHub hook state.
 ``POST /retry`` re-arms a run via ``retry_action``; ``POST /hooks`` confirms a pause/resume
 via the same ``arm_action`` operation as CLI ``arm``. Hooks use the existing host credential
-resolution and return no credentials or paths. ``/health?probe=1`` remains local-only.
+resolution and return no credentials or paths. ``GET /actions`` previews host-owned eligibility;
+``POST /actions`` performs confirmed escalation and reads back its exact marker. Review/drain
+currently refuse unsafe confirmations. ``/health?probe=1`` remains local-only.
 The logic lives in ``diaktoros.desktop_api``; this module maps exceptions and validates body shape.
 """
 from __future__ import annotations
@@ -91,6 +93,26 @@ def hooks_action(payload: Any = Body(None)):
         raise HTTPException(status_code=422, detail='Expected loop, action and confirmation.')
     return _answer(desktop_api.hooks_action_view, payload['loop'], payload['action'],
                    payload['confirmation'])
+
+
+@router.get("/actions")
+def actions(loop: str | None = None, action: str = '', pr: str | None = None,
+            seat: str | None = None):
+    # A plain string here lets this boundary return only bounded validation errors rather
+    # than FastAPI's raw input-echoing integer diagnostics.
+    if pr is not None:
+        if not isinstance(pr, str) or not pr.isascii() or not pr.isdigit() or len(pr) > 12:
+            raise HTTPException(status_code=422, detail='PR must be a positive integer.')
+    number = int(pr) if pr is not None else None
+    return _answer(desktop_api.action_view, loop, action, number, seat)
+
+
+@router.post("/actions")
+def actions_perform(payload: Any = Body(None)):
+    if not isinstance(payload, dict) or set(payload) != {'loop', 'action', 'pr', 'seat', 'confirmation'}:
+        raise HTTPException(status_code=422, detail='Expected loop, action, pr, seat and confirmation.')
+    return _answer(desktop_api.action_perform_view, payload['loop'], payload['action'],
+                   payload['pr'], payload['seat'], payload['confirmation'])
 
 
 @router.post("/retry")
