@@ -441,18 +441,24 @@ def check_bwrap(report: Report, loop: dict, settings: dict | None, runtime_file:
     """Step 2."""
     from . import contained, trusted_turn
     step = "bubblewrap"
-    if not shutil.which("bwrap"):
-        report.add(step, "bwrap:installed", FAIL, "bwrap is not on PATH",
-                   "install bubblewrap (`sudo dnf install bubblewrap` / `sudo apt install bubblewrap`)")
+    # The launcher starts the child with LAUNCH_PATH only, so that is where bwrap must be found,
+    # not on the operator's PATH (a bwrap in /usr/local/bin would pass here and fail every turn).
+    bwrap = shutil.which("bwrap", path=contained.LAUNCH_PATH)
+    if not bwrap:
+        report.add(step, "bwrap:installed", FAIL,
+                   f"bwrap is not in {contained.LAUNCH_PATH}, the only PATH the launcher uses "
+                   "(the operator's PATH does not count)",
+                   "install bubblewrap (`sudo dnf install bubblewrap` / `sudo apt install bubblewrap`) "
+                   f"so that bwrap is in {contained.LAUNCH_PATH}")
         return
-    report.add(step, "bwrap:installed", PASS, shutil.which("bwrap"))
-    probe = ["bwrap", "--unshare-all", "--die-with-parent", "--ro-bind", "/usr", "/usr",
+    report.add(step, "bwrap:installed", PASS, bwrap)
+    probe = [bwrap, "--unshare-all", "--die-with-parent", "--ro-bind", "/usr", "/usr",
              "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib",
              "--ro-bind-try", "/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
              "--", "/usr/bin/true"]
     try:
         result = subprocess.run(probe, capture_output=True, text=True, timeout=30,
-                                env={"PATH": "/usr/bin:/bin"})
+                                env={"PATH": contained.LAUNCH_PATH})
     except Exception as exc:
         report.add(step, "bwrap:userns", FAIL, f"bwrap did not run ({type(exc).__name__})",
                    _USERNS_FIX)
