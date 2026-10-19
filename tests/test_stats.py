@@ -190,6 +190,7 @@ class Ledger(unittest.TestCase):
                         "pr_number,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (run_id, repo, issue, "e" * 40, kind, f"diaktoros/issue-{issue}",
                          "requested" if pr else "uncertain", pr, created, created))
+        return run_id
 
     def action(self, pr, action, created):
         self.sup.record_operator_action(REPO, pr, action)
@@ -239,6 +240,26 @@ class Ledger(unittest.TestCase):
         before = stats.fix_outcomes(self.db, REPO, since - 7 * DAY, since, pr_state)
         self.assertEqual((before["proposed"], before["outcomes"]["merged"]), (1, 1))
         self.assertEqual(before["turns_per_merged"]["median"], 2)   # its later review counts
+
+    def test_the_report_counts_the_hunk_check_of_the_windows_fixes(self):
+        # #1043: each fix's stored proof carries its per-hunk check; the report totals it.
+        import json as json_
+        hunks = lambda *states: json_.dumps({"overall": "proven", "ids": [],
+                                             "hunks": [{"status": s} for s in states]})
+        a = self.proposal(20, "pr", 120, NOW - 4000)
+        b = self.proposal(21, "pr", 121, NOW - 3000)
+        old = self.proposal(22, "pr", 122, NOW - 30 * DAY)               # outside the window
+        for run_id, proof in ((a, hunks("guarded", "unguarded", "unguarded")),
+                              (b, hunks("guarded", "not checked")),
+                              (old, hunks("unguarded"))):
+            self.sup.record_repro_proof(run_id, REPO, 1, "e" * 40, proof)
+        data = stats.fix_outcomes(self.db, REPO, NOW - 7 * DAY, NOW, lambda number: "open")
+        self.assertEqual(data["hunks"], {"guarded": 2, "unguarded": 2, "not checked": 1,
+                                         "fixes_unguarded": 1})
+        out = stats.report_text(stats.report({"repo": REPO, "id": "w"}, self.db, NOW - 7 * DAY,
+                                             NOW, breaches={}, pr_state=lambda n: "open"))
+        self.assertIn("hunk check: 2 unguarded hunk(s) in 1 fix(es) · guarded 2 · not checked 1",
+                      out)
 
     def test_steps_from_is_this_repos_first_operator_action(self):
         self.proposal(20, "pr", 120, NOW - 4000)

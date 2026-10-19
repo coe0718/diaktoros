@@ -116,6 +116,138 @@ class Proof(unittest.TestCase):
         self.assertEqual(proof["overall"], repro_proof.UNPROVEN)
         self.assertIn("did not import on the original head", repro_proof.section(proof))
 
+    # -- the hunk guard (#1043) ---------------------------------------------------------------
+    def guard(self, new_code, test=TEST):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            fix = manifest({"widget.py": new_code, "tests/test_it.py": test})
+            return repro_proof.prove(base, fix, ["tests.test_it.Case.test_value"], run_unittest)
+
+    def test_a_hunk_the_tests_notice_is_guarded_and_one_they_do_not_is_unguarded(self):
+        both = "def extra():\n    return 5\n\n\n" + NEW_CODE        # extra() is untested
+        proof = self.guard(both)
+        rows = {(h["path"], h["status"]) for h in proof["hunks"]}
+        self.assertEqual(rows, {("widget.py", repro_proof.GUARDED),
+                                ("widget.py", repro_proof.UNGUARDED)}, proof["hunks"])
+        text = repro_proof.section(proof)
+        self.assertIn("1 guarded, 1 unguarded, 0 not checked", text)
+        self.assertIn("unguarded: \"widget.py\" lines 1-4", text)
+        self.assertIn("is a missing test", text)
+
+    def test_comment_only_hunks_are_not_checked_and_a_red_fix_reverts_nothing(self):
+        commented = NEW_CODE + "\n# a note about value\n"
+        self.assertEqual([h["status"] for h in self.guard(commented)["hunks"]],
+                         [repro_proof.GUARDED])                 # the comment is not a hunk
+        self.assertEqual(self.guard(NEW_CODE, TEST.replace("2)", "3)"))["hunks"], [])
+
+    def test_the_cap_and_the_time_budget_leave_hunks_not_checked(self):
+        both = "def extra():\n    return 5\n\n\n" + NEW_CODE
+        with mock.patch.object(repro_proof, "HUNKS_MAX", 1):
+            rows = self.guard(both)["hunks"]
+        self.assertEqual([h["status"] for h in rows][1:], [repro_proof.NOT_CHECKED])
+        self.assertIn("past the first 1 hunks", rows[1]["why"])
+        with mock.patch.object(repro_proof, "HUNKS_BUDGET_S", -1.0):
+            rows = self.guard(both)["hunks"]
+        self.assertEqual({h["status"] for h in rows}, {repro_proof.NOT_CHECKED})
+        self.assertIn("not checked", repro_proof.section(
+            {"overall": repro_proof.PROVEN, "ids": [], "hunks": rows}))
+
+    def test_a_revert_that_breaks_the_import_is_not_checked_never_guarded(self):
+        # Review on #1048 (both seats): #1043 says a revert that doesn't import is "not checked"
+        # and never counts as guarded: a broken partial revert proves nothing about coverage.
+        adds = NEW_CODE + "\n\nLIMIT = 3\n"
+        test = TEST.replace("import widget as c\n", "import widget as c\nfrom widget import LIMIT\n")
+        rows = self.guard(adds, test)["hunks"]
+        limit = [h for h in rows if h["status"] == repro_proof.NOT_CHECKED]
+        self.assertTrue(limit, rows)
+        self.assertIn("does not import", limit[0]["why"])
+        self.assertNotIn(repro_proof.UNGUARDED, {h["status"] for h in rows})
+
+    def trees(self, tmp, base_files, new_files):
+        base, new = Path(tmp) / "base", Path(tmp) / "new"
+        for root, files in ((base, base_files), (new, new_files)):
+            (root / "tests").mkdir(parents=True)
+            (root / "tests" / "__init__.py").write_text("")
+            for name, text in files.items():
+                (root / name).write_text(text)
+        return base, new
+
+    def test_a_deleted_source_file_and_a_deletion_hunk_are_checked_and_labelled(self):
+        # Review on #1048: only the fix's tree was walked, so a deleted file was invisible; and a
+        # pure deletion was labelled with a line the fix doesn't have.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, new = self.trees(tmp, {"widget.py": "OLDER = 1\n\n\n" + OLD_CODE,
+                                         "helper.py": "def h():\n    return 1\n"},
+                                   {"widget.py": NEW_CODE, "tests/test_it.py": TEST})
+            (base / "tests" / "test_it.py").write_text(TEST)
+            ids = ["tests.test_it.Case.test_value"]
+            out = run_unittest(new, ids)
+            rows = repro_proof.hunk_guard(base, new, ids, ".", out, run_unittest)
+            self.assertFalse((new / "helper.py").exists(), "the reverted deletion was undone")
+        got = {(h["path"], h["lines"], h["status"]) for h in rows}
+        self.assertIn(("helper.py", "original lines 1-2 (deleted)", repro_proof.UNGUARDED), got)
+        self.assertIn(("widget.py", "original lines 1-3 (deleted)", repro_proof.UNGUARDED), got)
+        self.assertIn(("widget.py", "lines 2-2", repro_proof.GUARDED), got)
+
+    def test_a_same_size_revert_never_runs_the_fixs_stale_bytecode(self):
+        # Found building #1048: `return 2` back to `return 1` is the same size, and Python reuses
+        # a .pyc whose source has the same size and mtime, so the revert ran the fix's code and
+        # read as unguarded. Pin the mtime on every run to make that certain, not timing luck.
+        import os
+
+        def run(tree, ids, pythonpath="."):
+            os.utime(Path(tree) / "widget.py", (1_000_000_000, 1_000_000_000))
+            return run_unittest(tree, ids, pythonpath)
+        with tempfile.TemporaryDirectory() as tmp:
+            base, new = self.trees(tmp, {"widget.py": OLD_CODE},
+                                   {"widget.py": NEW_CODE, "tests/test_it.py": TEST})
+            ids = ["tests.test_it.Case.test_value"]
+            rows = repro_proof.hunk_guard(base, new, ids, ".", run(new, ids), run)
+        self.assertEqual([h["status"] for h in rows], [repro_proof.GUARDED])
+
+    def test_the_check_selects_every_non_test_python_file_and_nothing_else(self):
+        # Review on #1048 (F3): the selection rule, pinned. Every changed .py outside test paths
+        # and hidden directories is source, wherever it lives (the plugin reviews any repo, so no
+        # directory of this one is hard-coded); tests, specs, hidden dirs and non-Python are not.
+        change = ("def f():\n    return 1\n", "def f():\n    return 2\n")
+        paths = {"pkg/mod.py": True, "tool.py": True, "docs/site/build.py": True,
+                 "tests/test_x.py": False, "pkg/test_mod.py": False, "spec/a.py": False,
+                 "pkg/a_test.py": False, ".github/scripts/s.py": False, "README.md": False,
+                 "pkg/data.json": False}
+        with tempfile.TemporaryDirectory() as tmp:
+            base, new = Path(tmp) / "base", Path(tmp) / "new"
+            for root, text in ((base, change[0]), (new, change[1])):
+                for path in paths:
+                    (root / path).parent.mkdir(parents=True, exist_ok=True)
+                    (root / path).write_text(text)
+            selected = {h["path"] for h in repro_proof.source_hunks(base, new)}
+        self.assertEqual(selected, {p for p, source in paths.items() if source})
+
+    def test_a_hunk_run_that_raises_is_not_checked_and_keeps_the_proof(self):
+        # Shadow review of #1048: a revert that hangs the tests (a guard or a loop bound) raised
+        # out of prove(), and the broker showed the reviewer "NOT RUN" for the whole proof.
+        calls = []
+
+        def run(tree, ids, pythonpath="."):
+            calls.append(1)
+            if len(calls) > 2:                      # the old and new runs pass through
+                raise subprocess.TimeoutExpired("unittest", 300)
+            return run_unittest(tree, ids, pythonpath)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            fix = manifest({"widget.py": NEW_CODE, "tests/test_it.py": TEST})
+            proof = repro_proof.prove(base, fix, ["tests.test_it.Case.test_value"], run)
+        self.assertEqual(proof["overall"], repro_proof.PROVEN)
+        self.assertEqual([(h["status"], h["why"]) for h in proof["hunks"]],
+                         [(repro_proof.NOT_CHECKED,
+                           "the tests did not finish with it reverted (TimeoutExpired)")])
+
     def test_a_test_failing_on_the_fix_or_missing_is_unproven(self):
         self.assertEqual(self.prove(TEST.replace("2)", "3)"))["overall"], repro_proof.UNPROVEN)
         self.assertEqual(self.prove(TEST, ("tests.test_it.Case.test_nope",))["overall"],
