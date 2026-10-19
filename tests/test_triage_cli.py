@@ -123,6 +123,15 @@ class TriageVerb(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(config.load_id(LOOP_ID)["tokens"]["hook-admin"], str(good))
 
+    def test_padded_token_login_satisfies_the_admin_token_precheck(self):
+        """#945: `--token` strips the login it maps, so the `--admin-token` pre-check must
+        see the same stripped login, not refuse a mapping the command would write."""
+        good = self._pat(0o600)
+        rc, out = self.enable("--admin-token", "hook-admin", "--token", f" hook-admin ={good}")
+        self.assertNotIn("has no token file mapped", out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(config.load_id(LOOP_ID)["tokens"]["hook-admin"], str(good))
+
     def test_change_flag_without_enable_applies_when_on_and_refuses_when_off(self):
         # Off: refused, names --enable, writes nothing (#527).
         before = LOOP_FILE.read_bytes()

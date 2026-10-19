@@ -1507,7 +1507,7 @@ def cmd_triage(args) -> int:
         args.enable = True      # triage is on: apply the flags as --enable would (#527)
     admin = args.admin_token or None
     if admin and gh.token_path(loop, admin) is None and admin.lower() not in {
-            str(pair.split("=", 1)[0]).lower() for pair in args.token or []}:
+            str(pair.split("=", 1)[0]).strip().lower() for pair in args.token or []}:
         print(f"refused: --admin-token {admin!r} has no token file mapped on this loop")
         return 2
     path = config.config_dir() / f"{loop['id']}.json"
