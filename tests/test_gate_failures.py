@@ -1024,14 +1024,15 @@ class GateFailureTest(unittest.TestCase):
 
     # -- one event, one ledger (Arbiter on faf21e9) ---------------------------------------------
 
-    def fault_gate(self, patch: str) -> subprocess.CompletedProcess:
-        """A gate that crashes, with ``patch`` applied inside its process first."""
+    def fault_gate(self, patch: str, body: str = "raise RuntimeError('boom')"
+                   ) -> subprocess.CompletedProcess:
+        """A gate that crashes (or runs ``body``), with ``patch`` applied inside its process first."""
         script = t.TMP / "fault_gate.py"
         script.write_text(
             f"import sys\nsys.path.insert(0, {str(t.ROOT)!r})\n"
-            "from diaktoros import gate_failures, state\n"
+            "from diaktoros import config, gate_failures, gh, state\n"
             f"{patch}\n"
-            "def main():\n    raise RuntimeError('boom')\n"
+            f"def main():\n    {body}\n"
             "gate_failures.run('gate_reviewer', main)\n")
         return subprocess.run([sys.executable, str(script)], input=json.dumps(t.pr_payload(7)),
                               capture_output=True, text=True, timeout=30, env=t.env())
@@ -1100,6 +1101,25 @@ class GateFailureTest(unittest.TestCase):
         self.assertEqual(failure.get("owned_in"), str(gate_failures.fallback_ledger().path))
         local = gate._explain_state(loop, state_mod.LoopState(loop), f"{t.REPO}#7", 7, "", time.time())
         self.assertIn(str(gate_failures.fallback_ledger().path), local["github"])
+
+    def test_a_claim_cut_off_by_the_record_alarm_is_made_again(self):
+        # The claim is the last step of the record phase; on a slow disk the one-shot record
+        # alarm fires inside its write, which swallows it. The read must still end up owned.
+        proc = self.fault_gate(
+            "import time\nreal = state._atomic_publish\nstalled = []\n"
+            "def slow(path, text):\n"
+            "    if 'owned_by' in text and not stalled:\n"
+            "        stalled.append(1)\n"
+            "        time.sleep(gate_failures.RECORD_S + 1)\n"
+            "    return real(path, text)\n"
+            "state._atomic_publish = slow\n",
+            body="gh.record_failures()\n"
+                 "    gh.record_failure(config.load_id('widgets'), 'GET', '/pulls/7', 'HTTP 502')\n"
+                 "    raise RuntimeError('boom')")
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        (key, _), = gate_failures.Ledger(t.STATE_DIR).entries().items()
+        failure = state_mod.LoopState(config.load_id("widgets")).github_failure()
+        self.assertEqual(failure.get("owned_by"), f"gate-failures:{key}", proc.stderr)
 
     def test_the_alert_marks_the_attempt_it_said_not_a_later_one(self):
         ledger = self.redrivable_entry()
