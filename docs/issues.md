@@ -181,8 +181,8 @@ fact: `PROVEN`, `WEAK` (a named test passes on the original head, so it does not
 **Hunk check (#1043).** When the fix passes its named tests, the host also reverts each changed
 hunk of its non-test Python source **on its own** and runs the named tests again. A hunk whose
 revert still passes them all is **unguarded**: a behaviour change no test notices. The reviewer
-and the shadow see a guarded, unguarded and not-checked count, and each unguarded hunk's file and
-lines. They're told to treat an unguarded behaviour change as a missing test, unless the hunk
+and the shadow see a guarded, unguarded and not-checked count, and the file and lines of the
+first 20 unguarded hunks (the rest are counted). They're told to treat an unguarded behaviour change as a missing test, unless the hunk
 changes no behaviour.
 
 The check is bounded:

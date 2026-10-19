@@ -331,6 +331,37 @@ class Proof(unittest.TestCase):
                 "patch_b64": b64.b64encode(patch).decode(), "sha256": hl.sha256(patch).hexdigest()}
         self.assertEqual(repro_proof.changed_test_modules(diff), ["pkg.q_test", "tests.test_p"])
 
+    def test_a_changed_test_file_with_no_unittest_test_is_left_out_not_voiding(self):
+        # Shadow review of #1092's approved head: a changed tests/test_*.py that is a script (no
+        # TestCase) ran no test, read as not passing, and voided the check for the real test file.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            both = "def extra():\n    return 5\n\n\n" + NEW_CODE
+            proof = repro_proof.prove(base, manifest({
+                "widget.py": both, "tests/test_it.py": TEST,
+                "tests/test_script.py": "def main():\n    print('hi')\n"}), [], run_unittest)
+        self.assertEqual(proof["hunk_tests"], ["tests.test_it"])
+        self.assertEqual(proof["hunk_no_tests"], ["tests.test_script"])
+        self.assertEqual(sorted(h["status"] for h in proof["hunks"]),
+                         [repro_proof.GUARDED, repro_proof.UNGUARDED])
+        self.assertIn("hold no unittest test: \"tests.test_script\"", repro_proof.section(proof))
+
+    def test_with_nothing_run_the_section_never_says_tests_ran(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            base.mkdir()
+            (base / "widget.py").write_text(OLD_CODE)
+            proof = repro_proof.prove(base, manifest({"widget.py": NEW_CODE}), [],
+                                      lambda *a: self.fail("nothing to run"))
+        text = repro_proof.section(proof)
+        self.assertIn("no test ran, so no source hunk could be noticed", text)
+        self.assertIn("(no test could notice it)", text)
+        self.assertNotIn("ran the named tests", text)
+        self.assertNotIn("fails none of the named tests", text)
+
     def test_with_no_test_named_or_changed_every_source_hunk_is_unguarded(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "base"

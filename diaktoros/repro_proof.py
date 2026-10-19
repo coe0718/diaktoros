@@ -373,7 +373,9 @@ def changed_test_modules(manifest: dict) -> list[str]:
 
 def _unnamed_hunks(base_dir: Path, manifest: dict, run) -> dict:
     """NONE NAMED, with the hunk check still run (#1043): against the test files the fix changed,
-    or, with none of those either, every source hunk listed unguarded (nothing could notice it)."""
+    or, with none of those either, every source hunk listed unguarded (nothing could notice it).
+    A changed ``test_*.py`` that holds no unittest test (a script) is left out rather than
+    voiding the check for the others; it is named in the proof."""
     proof = none_named()
     with tempfile.TemporaryDirectory(prefix="repro-proof-") as temp:
         tree = Path(temp) / "new"
@@ -381,18 +383,28 @@ def _unnamed_hunks(base_dir: Path, manifest: dict, run) -> dict:
         apply_manifest(tree, manifest, only_tests=False)
         found = [hit for hit in (resolve(tree, module) for module in changed_test_modules(manifest))
                  if hit]
-        runs = [hit[0] for hit in found]
+        runs, out = [hit[0] for hit in found], ""
         if runs:
             path = ":".join(dict.fromkeys([*(hit[1] for hit in found), "."]))
+            out = run(tree, runs, path)
+            results = ci_tests.parse(out)
+            ran = [wanted for wanted in runs
+                   if any(name == wanted or name.startswith(wanted + ".") for name in results)
+                   or status(results, wanted) == IMPORT_ERROR]
+            if len(ran) < len(runs):
+                proof["hunk_no_tests"] = [wanted for wanted in runs if wanted not in ran]
+            runs = ran
+        if runs:
             proof["hunk_tests"] = runs
-            proof["hunks"] = hunk_guard(base_dir, tree, runs, path, run(tree, runs, path), run)
+            proof["hunks"] = hunk_guard(base_dir, tree, runs, path, out, run)
             if not proof["hunks"] and source_hunks(base_dir, tree):
                 proof["hunk_why"] = "the fix's changed tests do not all pass on the fix"
         else:
             proof["hunks"] = [{"path": h["path"], "lines": _where(h), "status": UNGUARDED,
                                "why": "no test named or changed"}
                               for h in source_hunks(base_dir, tree)]   # nothing runs: no cap
-            proof["hunk_why"] = "the fix names no reproduction test and changes no test file"
+            proof["hunk_why"] = ("the fix names no reproduction test and changes no test file "
+                                 "with a test in it, so nothing ran")
     return proof
 
 
@@ -438,18 +450,26 @@ def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
         text += ("- hunk check ran against the test files the fix changed (no reproduction test was "
                  "named): " + ", ".join(json.dumps(str(t)[:80]) for t in proof["hunk_tests"][:6])
                  + "\n")
+    if proof.get("hunk_no_tests"):
+        text += ("- hunk check left out changed test files that hold no unittest test: "
+                 + ", ".join(json.dumps(str(t)[:80]) for t in proof["hunk_no_tests"][:6]) + "\n")
     if proof.get("hunk_why"):
         text += f"- hunk check: {proof['hunk_why']}\n"
     if hunks:
         tests_word = ("fix's changed tests" if proof.get("hunk_tests") else "named tests")
+        nothing_ran = (proof.get("overall") == NONE_NAMED and not proof.get("hunk_tests"))
         unguarded = [h for h in hunks if h.get("status") == UNGUARDED]
         unchecked = [h for h in hunks if h.get("status") == NOT_CHECKED]
-        text += (f"- hunk check (#1043): the host reverted each changed source hunk on its own and "
-                 f"ran the {tests_word}: {len(hunks) - len(unguarded) - len(unchecked)} guarded, "
+        text += ((f"- hunk check (#1043): no test ran, so no source hunk could be noticed: "
+                  if nothing_ran else
+                  f"- hunk check (#1043): the host reverted each changed source hunk on its own and "
+                  f"ran the {tests_word}: ")
+                 + f"{len(hunks) - len(unguarded) - len(unchecked)} guarded, "
                  f"{len(unguarded)} unguarded, {len(unchecked)} not checked.\n")
         for h in unguarded[:UNGUARDED_SHOWN]:
             text += (f"  - unguarded: {json.dumps(str(h.get('path'))[:120])} {h.get('lines')} "
-                     f"(reverting it alone fails none of the {tests_word})\n")
+                     + ("(no test could notice it)\n" if nothing_ran else
+                        f"(reverting it alone fails none of the {tests_word})\n"))
         if len(unguarded) > UNGUARDED_SHOWN:
             text += f"  - and {len(unguarded) - UNGUARDED_SHOWN} more unguarded hunk(s)\n"
         for h in unchecked[:5]:
