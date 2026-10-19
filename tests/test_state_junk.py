@@ -89,6 +89,19 @@ class Junk(unittest.TestCase):
                 st.inflight_clear(mark)
                 st.quarantine(7, HEAD)
 
+    def test_inflight_mark_ahead_of_the_clock_is_expired_and_pruned(self):
+        """#940: a future-dated mark (clock stepped back, ms stamp) is not inside every TTL."""
+        st, mark = self.st, f"review:7:{HEAD}"
+        for ahead in (3600, 10 * 365 * 86400, 1000 * time.time()):
+            with self.subTest(ahead=ahead):
+                st.inflight_file.write_text(json.dumps({mark: time.time() + ahead}))
+                self.assertFalse(st.inflight(mark))          # read: expired, not held forever
+                st.inflight("other#1", record=True)          # write-path prune drops it
+                self.assertNotIn(mark, json.loads(st.inflight_file.read_text()))
+                self.assertIn("other#1", json.loads(st.inflight_file.read_text()))
+        st.inflight_file.write_text(json.dumps({mark: time.time()}))
+        self.assertTrue(st.inflight(mark))                   # a current mark still holds
+
     def test_record_keeps_marks_within_a_ttl_longer_than_a_day(self):
         """#736: the arming prune must not discard a mark the read path still honors."""
         st = self.st

@@ -143,6 +143,17 @@ def _clock(value) -> float | None:
     return float(value)
 
 
+def _inflight_live(value, now: float, ttl_s: float) -> bool:
+    """Is this in-flight mark one we can age, and is it inside ``ttl_s``?
+
+    The one rule for the read and the write-path prune. As in ``_mark_live`` (#794), a mark dated
+    *after* ``now`` (a clock stepped back, a hand edit, a milliseconds stamp) has a negative age
+    that would sit inside any TTL forever: it is expired, never held and never kept (#940).
+    """
+    at = _clock(value)
+    return at is not None and 0 <= now - at < ttl_s
+
+
 DELIVERY_LEASE_S = 60.0
 
 
@@ -600,12 +611,10 @@ class LoopState:
                 # at least as long as the read path honors it, so a configured TTL beyond a
                 # day is not cut short here.
                 keep_s = max(INFLIGHT_PRUNE_S, ttl_s)
-                data = {k: v for k, v in data.items()
-                        if _clock(v) is not None and now - _clock(v) < keep_s}
+                data = {k: v for k, v in data.items() if _inflight_live(v, now, keep_s)}
                 self._save_strict(self.inflight_file, data)
             return False
-        at = _clock(_mapping(self._load(self.inflight_file, {})).get(key))
-        return at is not None and now - at < ttl_s
+        return _inflight_live(_mapping(self._load(self.inflight_file, {})).get(key), now, ttl_s)
 
     def inflight_clear(self, key: str) -> None:
         """Drop one in-flight mark: its run has ended (the isolated worker's release, #98)."""
