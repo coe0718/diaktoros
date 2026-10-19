@@ -92,6 +92,20 @@ class Sweep(fg.Base):
         self.assertEqual([line for line in lines if "queued late" in line], [])
         self.assertEqual(self.st.late_triage(), {})
 
+    def test_an_issue_a_maintainer_sent_to_the_fixer_is_left_alone(self):
+        # Shadow review of #1005 (F2): the fix label is not a triage label, so triage_blocker
+        # lets it through; only the sweep's own fix_label check keeps it out. Disabling that
+        # check left every test green.
+        self.loop = {**self.loop, "triage": {**self.loop["triage"], "fix_label": "agent-fix"}}
+        self.sweep([issue(1, labels=["Agent-Fix"]),     # handed to the fixer (case-insensitive)
+                    issue(2, labels=["unrelated"])])    # a label that is neither: still triaged
+        self.assertEqual([e[1] for e in self.enqueued], [2])
+        self.enqueued.clear()
+        self.loop = {**self.loop, "triage": {k: v for k, v in self.loop["triage"].items()
+                                             if k != "fix_label"}}
+        self.sweep([issue(3, labels=["agent-fix"])])    # no fix label configured: triaged
+        self.assertEqual([e[1] for e in self.enqueued], [3])
+
     def test_a_second_sweep_does_not_queue_it_again_and_the_sweep_is_bounded(self):
         many = [issue(n, age=7200.0 + n) for n in range(100, 100 + triage_sweep.PER_SWEEP + 4)]
         self.sweep(many)
