@@ -506,7 +506,7 @@ The isolated worker requires a private regular host runtime file at `$HERMES_HOM
 
 | Key | Requirements and detection |
 |---|---|
-| `source` | Hermes Git checkout with `run_agent.py` and `.git`. Detection uses the imported `hermes_cli` location, then the virtualenv's parent. |
+| `source` | Hermes Git checkout with `run_agent.py` committed in HEAD (turns snapshot HEAD, not the working tree; `doctor` checks this, `selftest` catches it in `sandbox:snapshot`). Detection uses the imported `hermes_cli` location, then the virtualenv's parent. |
 | `venv` | Has `bin/python` and `bin/hermes`. Detection tries the running interpreter's prefix, Hermes on `PATH`, then checkout `venv/` or `.venv/`. Packaged Hermes may run on a bundled interpreter outside this venv. |
 | `runtime` | Directory containing both the venv interpreter's literal symlink target and its resolved installation. Detection finds their common installation root, not `/`. This path is bound at its same absolute location in the sandbox. |
 | `rust` | Toolchain directory with `bin/cargo`. Detection prefers rustup's default, then stable/available toolchains, then a system cargo prefix; not the `~/.cargo/bin` rustup proxy. |
