@@ -22,7 +22,9 @@ from . import state as state_mod
 
 # Long enough for a run of merges to settle and for GitHub to start computing mergeability.
 DELAY_S = 45.0
-# A scanner never outlives this, whatever keeps pushing the due time.
+# A scanner never outlives this, whatever keeps pushing the due time. The watchdog passes a
+# shorter one: its GitHub reads share one budget for the whole process (half of it, so the
+# last scan still has time to read).
 MAX_LIFETIME_S = 1800.0
 
 
@@ -48,7 +50,7 @@ def request(st, now: float | None = None) -> float:
     return at
 
 
-def run(st, scan, *, clock=time.time, sleep=time.sleep) -> int:
+def run(st, scan, *, clock=time.time, sleep=time.sleep, lifetime: float = MAX_LIFETIME_S) -> int:
     """Wait for the requested scan and run ``scan()``, again while new requests arrive. Returns
     how many scans ran; 0 when another scanner holds the lock (it will see the request)."""
     lock_path = path(st).with_suffix(".lock")
@@ -61,7 +63,7 @@ def run(st, scan, *, clock=time.time, sleep=time.sleep) -> int:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return ran
-            while clock() - started < MAX_LIFETIME_S:
+            while clock() - started < lifetime:
                 at = due(st)
                 if at is None or at <= handled:
                     break
@@ -76,5 +78,5 @@ def run(st, scan, *, clock=time.time, sleep=time.sleep) -> int:
         # A request written just as the lock was released: take it rather than leave it to
         # a scanner that may already have given up on the lock.
         at = due(st)
-        if at is None or at <= handled or clock() - started >= MAX_LIFETIME_S:
+        if at is None or at <= handled or clock() - started >= lifetime:
             return ran

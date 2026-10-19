@@ -558,7 +558,9 @@ later (`watchdog.py --loop <id> --conflicts`, started detached). A run of merges
 check after the last of them. The check does only the sweep's conflict step: the same PRs, the same
 notice, the same turn, deduplicated the same way. GitHub works out mergeability lazily, so a read
 that answers "unknown" is read again once after a few seconds, in the sweep too. A push straight to
-the base, or a check that never ran, is still caught by the regular sweep.
+the base, or a check that never ran, is still caught by the regular sweep. One checker runs at a
+time and stops after about five minutes (half the watchdog's GitHub budget); a merge after that
+starts another.
 
 The loop does not resolve, and hands to you instead (the run ends `failed` with
 `conflict needs a person: …`):

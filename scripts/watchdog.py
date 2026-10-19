@@ -1589,7 +1589,8 @@ def run(args: argparse.Namespace, budget: float) -> None:
         from diaktoros import conflict_scan
         for loop in loops:
             st = state_mod.state_for(loop)
-            conflict_scan.run(st, lambda: scan_conflicts(loop, st))
+            # Inside this process's GitHub budget (main's begin_gate), with half left for a scan.
+            conflict_scan.run(st, lambda: scan_conflicts(loop, st), lifetime=budget / 2)
         return
 
     if args.drain:

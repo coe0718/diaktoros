@@ -34,14 +34,15 @@ class Detection(fg.Base):
         super().setUp()
         self.set_push(True)
 
-    def patches(self, reads, hold=(None, "")):
+    def patches(self, reads, hold=(None, ""), prs=None, armed=True):
         from scripts import watchdog
         enqueue = mock.patch.object(gate, "enqueue_isolated", return_value="queued")
         return watchdog, enqueue, [
-            mock.patch.object(watchdog, "TEST", True),
+            mock.patch.object(watchdog, "TEST", armed is True),
+            mock.patch.object(gate, "hooks_read", return_value=(armed, "")),
             mock.patch.object(gate, "hooks_armed", return_value=True),
             mock.patch.object(watchdog.route_intent, "heal", return_value=[]),
-            mock.patch.object(gh, "open_prs", return_value=[fg.LIVE]),
+            mock.patch.object(gh, "open_prs", return_value=[fg.LIVE] if prs is None else prs),
             mock.patch.object(gh, "pr", side_effect=list(reads)),
             mock.patch.object(gh, "reviews", return_value=[fg.verdict()]),
             mock.patch.object(pr_hold, "read", return_value=hold),
@@ -87,6 +88,41 @@ class Detection(fg.Base):
         queued.assert_not_called()
 
 
+class ScanFilters(Detection):
+    """Review on #1001: the scan acts only on the PRs the sweep does, and stops when it can't
+    tell (paused hooks, an unreadable listing). Each condition removed turns this red."""
+
+    def scan(self, prs, reads, **kw):
+        found = []
+        queued = self.run_with(lambda w: found.append(w.scan_conflicts(self.loop, self.st)),
+                               reads, prs=prs, **kw)
+        return found[0], queued
+
+    def test_drafts_strangers_and_other_bases_get_no_turn_and_a_loop_pr_still_does(self):
+        others = {"draft": {**fg.LIVE, "number": 8, "draft": True},
+                  "stranger": {**fg.LIVE, "number": 9, "user": {"login": "someone"}},
+                  "other base": {**fg.LIVE, "number": 10,
+                                 "base": {"ref": "release", "sha": "b" * 40}}}
+        for name, pr in others.items():
+            with self.subTest(name):
+                found, queued = self.scan([pr], [{**DIRTY, "number": pr["number"]}] * 2)
+                self.assertEqual(found, 0)
+                queued.assert_not_called()
+        found, queued = self.scan(list(others.values()) + [fg.LIVE], [DIRTY])
+        self.assertEqual(found, 1)
+        self.assertEqual([c.args[2] for c in queued.call_args_list], [7])
+
+    def test_paused_hooks_or_an_unreadable_listing_scan_nothing(self):
+        found, queued = self.scan([fg.LIVE], [], armed=False)
+        self.assertEqual(found, 0)
+        queued.assert_not_called()
+        with mock.patch.object(gh, "open_prs", return_value=None):
+            from scripts import watchdog
+            with mock.patch.object(watchdog, "TEST", True), \
+                    mock.patch.object(gh, "pr", side_effect=AssertionError("no PR read")):
+                self.assertEqual(watchdog.scan_conflicts(self.loop, self.st), 0)
+
+
 class Plumbing(fg.Base):
     def setUp(self):
         super().setUp()
@@ -114,9 +150,11 @@ class Plumbing(fg.Base):
                                   conflicts=True)
         with mock.patch.object(conflict_scan, "run", return_value=1) as ran, \
                 mock.patch.object(watchdog, "sweep_loop") as swept:
-            watchdog.run(args, 60.0)
+            watchdog.run(args, 600.0)
         ran.assert_called_once()
         swept.assert_not_called()
+        # Review on #1001: inside the process's GitHub budget, with half left for a scan.
+        self.assertEqual(ran.call_args.kwargs["lifetime"], 300.0)
 
 
 class Debounce(unittest.TestCase):
@@ -177,8 +215,10 @@ class Debounce(unittest.TestCase):
             self.during_sleep.append(keep_pushing)
         conflict_scan.request(self.st, now=self.now)
         self.during_sleep = [keep_pushing]
-        self.assertEqual(self.run_scan(lambda: self.fail("never due")), 0)
-        self.assertGreaterEqual(self.now - 1000.0, conflict_scan.MAX_LIFETIME_S)
+        self.assertEqual(conflict_scan.run(self.st, lambda: self.fail("never due"),
+                                           clock=self.clock, sleep=self.sleep, lifetime=300.0), 0)
+        self.assertGreaterEqual(self.now - 1000.0, 300.0)
+        self.assertLess(self.now - 1000.0, 300.0 + 31)
 
 
 if __name__ == "__main__":
