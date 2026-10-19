@@ -1097,7 +1097,14 @@ class RunBroker:
         """Run the named reproduction tests (#484) before the write; any failure to run them is
         an ``unavailable`` record, never a refusal."""
         if not ids:
-            return repro_proof.none_named()
+            # Nothing named, but the hunk check (#1043) still runs against the test files the
+            # fix changed, when there is a sandbox to run it in; it never blocks either way.
+            if self._prover is None:
+                return repro_proof.none_named()
+            try:
+                return self._prover(manifest, [])
+            except Exception:
+                return repro_proof.none_named()
         if self._prover is None:
             return repro_proof.unavailable("this host run has no sandbox to prove it in")
         try:

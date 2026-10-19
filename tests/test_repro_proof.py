@@ -138,7 +138,10 @@ class Proof(unittest.TestCase):
         self.assertIn("is a missing test", text)
 
     def test_comment_only_hunks_are_not_checked_and_a_red_fix_reverts_nothing(self):
-        commented = NEW_CODE + "\n# a note about value\n"
+        # The comment sits apart from the code change (an unchanged `def` line between), so it
+        # is its own hunk; adjacent, difflib folds it into the code hunk and nothing is tested
+        # (shadow review of #1048, F4).
+        commented = "# a note about value\n\n" + NEW_CODE
         self.assertEqual([h["status"] for h in self.guard(commented)["hunks"]],
                          [repro_proof.GUARDED])                 # the comment is not a hunk
         self.assertEqual(self.guard(NEW_CODE, TEST.replace("2)", "3)"))["hunks"], [])
@@ -225,6 +228,120 @@ class Proof(unittest.TestCase):
                     (root / path).write_text(text)
             selected = {h["path"] for h in repro_proof.source_hunks(base, new)}
         self.assertEqual(selected, {p for p, source in paths.items() if source})
+
+    def test_with_no_test_named_the_changed_test_files_are_used(self):
+        # Shadow review of #1048: #1043 falls back to the test files the fix changed; prove()
+        # returned "none named" before the hunk check, so such a fix got no check at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            both = "def extra():\n    return 5\n\n\n" + NEW_CODE
+            proof = repro_proof.prove(base, manifest({"widget.py": both, "tests/test_it.py": TEST}),
+                                      [], run_unittest)
+        self.assertEqual(proof["overall"], repro_proof.NONE_NAMED)
+        self.assertEqual(proof["hunk_tests"], ["tests.test_it"])
+        self.assertEqual(sorted(h["status"] for h in proof["hunks"]),
+                         [repro_proof.GUARDED, repro_proof.UNGUARDED])
+        self.assertIn("against the test files the fix changed", repro_proof.section(proof))
+
+    def test_with_no_test_every_source_hunk_is_listed_past_the_cap(self):
+        # Review on #1092 (F2, P1): the no-test fallback cut the list at HUNKS_MAX, and the rest
+        # vanished from the proof. Nothing runs there, so every hunk is listed; the section shows
+        # the first ones by line and counts the rest.
+        many = 25
+        old = "".join(f"def f{n}():\n    return 1\n\n\n" for n in range(many))
+        new = "".join(f"def f{n}():\n    return 2\n\n\n" for n in range(many))
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            base.mkdir()
+            (base / "mod.py").write_text(old)
+            proof = repro_proof.prove(base, manifest({"mod.py": new}), [],
+                                      lambda *a: self.fail("nothing to run"))
+        self.assertEqual(len(proof["hunks"]), many)
+        self.assertEqual({h["status"] for h in proof["hunks"]}, {repro_proof.UNGUARDED})
+        text = repro_proof.section(proof)
+        self.assertIn(f"0 guarded, {many} unguarded, 0 not checked", text)
+        self.assertIn(f"and {many - repro_proof.UNGUARDED_SHOWN} more unguarded hunk(s)", text)
+
+    def test_the_fallback_takes_both_test_naming_conventions_and_no_helpers(self):
+        # Review on #1092 (P1): `*_test.py` is a test file to TEST_PATH, but the fallback took
+        # only `test*`, then said no test changed. A helper under tests/ runs no test and stays out.
+        files = {"tests/test_a.py": "", "pkg/b_test.py": "", "tests/helpers.py": "",
+                 "tests/conftest.py": "", "widget.py": NEW_CODE}
+        self.assertEqual(repro_proof.changed_test_modules(manifest(files)),
+                         ["pkg.b_test", "tests.test_a"])
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            base.mkdir()
+            (base / "widget.py").write_text(OLD_CODE)
+            proof = repro_proof.prove(base, manifest({"widget.py": NEW_CODE,
+                                                      "widget_test.py": TEST}), [], run_unittest)
+        self.assertEqual(proof["hunk_tests"], ["widget_test"])
+        self.assertEqual([h["status"] for h in proof["hunks"]], [repro_proof.GUARDED])
+
+    def fallback(self, test_text, new_code=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            code = new_code or ("def extra():\n    return 5\n\n\n" + NEW_CODE)
+            return repro_proof.prove(base, manifest({"widget.py": code,
+                                                     "tests/test_it.py": test_text}),
+                                     [], run_unittest)
+
+    def test_a_skipped_test_in_a_changed_module_does_not_void_the_fallback(self):
+        # Shadow review of #1092 (F3): the module ran whole, one test was skipped, the module read
+        # "skipped" not "ok", and the check silently ran nothing with a false reason.
+        skipped = TEST + ("\n    @unittest.skip('not on this platform')\n"
+                          "    def test_other(self):\n        pass\n")
+        proof = self.fallback(skipped)
+        self.assertEqual(sorted(h["status"] for h in proof["hunks"]),
+                         [repro_proof.GUARDED, repro_proof.UNGUARDED], proof)
+        self.assertNotIn("hunk_why", proof)
+
+    def test_a_module_whose_tests_are_all_skipped_checks_nothing(self):
+        # Nothing ran, so nothing could notice a revert: not "unguarded", and said so.
+        all_skipped = TEST.replace("    def test_value(self):",
+                                   "    @unittest.skip('off')\n    def test_value(self):")
+        proof = self.fallback(all_skipped)
+        self.assertEqual(proof["hunks"], [])
+        self.assertIn("do not all pass", proof["hunk_why"])
+
+    def test_the_fallback_wording_names_the_changed_tests_not_named_ones(self):
+        text = repro_proof.section(self.fallback(TEST))
+        self.assertIn("so no fail-then-pass proof was run", text)          # not "nothing was run"
+        self.assertIn("ran the fix's changed tests", text)
+        self.assertIn("fails none of the fix's changed tests", text)
+        self.assertNotIn("the named tests", text)
+
+    def test_a_diff_manifest_names_its_changed_test_files(self):
+        # Shadow review of #1092 (I3): the patch_b64 manifest shape was untested.
+        import base64 as b64
+        import hashlib as hl
+        patch = ("diff --git a/tests/test_p.py b/tests/test_p.py\n--- a/tests/test_p.py\n"
+                 "+++ b/tests/test_p.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+                 "diff --git a/pkg/q_test.py b/pkg/q_test.py\n--- a/pkg/q_test.py\n"
+                 "+++ b/pkg/q_test.py\n@@ -1 +1 @@\n-y = 1\n+y = 2\n"
+                 "diff --git a/widget.py b/widget.py\n--- a/widget.py\n+++ b/widget.py\n"
+                 "@@ -1 +1 @@\n-a\n+b\n").encode()
+        diff = {"base_head": tif.BASE, "message": "fix",
+                "patch_b64": b64.b64encode(patch).decode(), "sha256": hl.sha256(patch).hexdigest()}
+        self.assertEqual(repro_proof.changed_test_modules(diff), ["pkg.q_test", "tests.test_p"])
+
+    def test_with_no_test_named_or_changed_every_source_hunk_is_unguarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            base.mkdir()
+            (base / "widget.py").write_text(OLD_CODE)
+            proof = repro_proof.prove(base, manifest({"widget.py": NEW_CODE}), [],
+                                      lambda *a: self.fail("nothing to run"))
+        self.assertEqual([h["status"] for h in proof["hunks"]], [repro_proof.UNGUARDED])
+        text = repro_proof.section(proof)
+        self.assertIn("names no reproduction test and changes no test file", text)
+        self.assertIn("1 unguarded", text)
 
     def test_a_hunk_run_that_raises_is_not_checked_and_keeps_the_proof(self):
         # Shadow review of #1048: a revert that hangs the tests (a guard or a loop bound) raised
@@ -385,10 +502,23 @@ class Broker(tif.Base):
         self.assertEqual(self.stored()[0]["overall"], "weak")
         self.assertEqual(self.sup.issue_fix_result(self.run_id)["state"], "requested")
 
-    def test_none_named_is_recorded_and_the_prover_is_not_run(self):
-        prover = mock.Mock()
+    def test_none_named_still_runs_the_hunk_check_and_is_recorded(self):
+        # #1043 (shadow review of #1048): with nothing named the prover still runs, with no ids,
+        # so the hunk check falls back to the fix's changed test files.
+        seen = []
+
+        def prover(manifest, ids):
+            seen.append(ids)
+            return {"overall": "none_named", "ids": [], "hunks": [{"status": "unguarded"}]}
         self.server(prover)._dispatch(self.request())
-        prover.assert_not_called()
+        self.assertEqual(seen, [[]])
+        self.assertEqual(self.stored()[0]["hunks"], [{"status": "unguarded"}])
+        self.setUp()
+        self.server(None)._dispatch(self.request())             # no sandbox: none named
+        self.assertEqual(self.stored()[0]["overall"], "none_named")
+        self.setUp()
+        broken = mock.Mock(side_effect=RuntimeError("no bwrap"))
+        self.server(broken)._dispatch(self.request())           # a broken one never blocks
         self.assertEqual(self.stored()[0]["overall"], "none_named")
 
     def test_without_a_sandbox_or_when_it_breaks_the_record_says_unavailable(self):

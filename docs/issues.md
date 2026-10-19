@@ -190,7 +190,11 @@ The check is bounded:
   `*_test.*`) and hidden directories, wherever it lives in the repository;
 - comment- and blank-only hunks are skipped;
 - a source file the fix deletes is checked too, as one hunk, labelled by its original lines;
-- the largest 12 hunks are checked, within 240 s inside the fixer's turn;
+- the largest 12 hunks are checked, inside the fixer's turn; no new revert starts after 240 s, so the
+  check ends within that plus one run's own sandbox timeout (300 s), plus, when no test is named,
+  the first run of the changed tests that comes before it;
+- when the fixer names no reproduction test, the test files the fix changed are run instead; with
+  none of those either, every source hunk is listed unguarded;
 - `not checked`, never "guarded", covers a hunk past the cap or the budget, a revert that stops
   the test module importing, and a run that didn't finish (a timeout). One hunk's run failing
   never discards the rest of the proof;

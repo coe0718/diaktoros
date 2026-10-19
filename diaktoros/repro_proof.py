@@ -39,10 +39,13 @@ NOT_FOUND = "not found"
 
 # Hunk guard (#1043): each changed hunk of the fix's Python source is reverted on its own and the
 # named tests run again; a hunk whose revert fails none of them is unguarded, a behaviour change
-# no test notices. Bounded: the largest hunks first, at most HUNKS_MAX, within HUNKS_BUDGET_S.
+# no test notices. Bounded: the largest hunks first, at most HUNKS_MAX; no new revert starts once
+# HUNKS_BUDGET_S has passed, so the check ends within it plus one run's own sandbox timeout (and,
+# with no test named, plus the first run of the fix's changed tests that comes before it).
 HUNKS_MAX = 12
 HUNKS_BUDGET_S = 240.0
 GUARDED, UNGUARDED, NOT_CHECKED = "guarded", "unguarded", "not checked"
+UNGUARDED_SHOWN = 20             # listed by line in the reviewer's section; the count covers all
 
 
 def valid_ids(value: object) -> list[str]:
@@ -172,6 +175,14 @@ def status(results: dict[str, str], wanted: str) -> str:
     return "ok" if all(r == "ok" for r in found) else "skipped"
 
 
+def _passed(results: dict[str, str], wanted: str) -> bool:
+    """For the hunk check: nothing the id names failed, and at least one of its tests ran and
+    passed. A skipped test is not a failure (a module run whole often holds one: a platform-
+    gated test), but an id whose tests were all skipped noticed nothing, so it doesn't pass."""
+    found = [r for name, r in results.items() if name == wanted or name.startswith(wanted + ".")]
+    return bool(found) and "ok" in found and not any(r in ("FAIL", "ERROR") for r in found)
+
+
 def judge(old: str, new: str) -> str:
     if NOT_FOUND in (old, new):
         return "id_not_found"
@@ -221,7 +232,7 @@ def prove(base_dir: Path, manifest: dict, ids: list[str], run) -> dict:
     production); each id is first resolved to the test file it names in the fix (#893), and an
     id that names none is reported as not found rather than run."""
     if not ids:
-        return none_named()
+        return _unnamed_hunks(base_dir, manifest, run)
     with tempfile.TemporaryDirectory(prefix="repro-proof-") as temp:
         trees = {}
         for name, only_tests in (("old", True), ("new", False)):
@@ -299,7 +310,7 @@ def hunk_guard(base_dir: Path, new_tree: Path, runs: list[str], path: str, new_o
     hunk never counts as guarded, and one hunk's failure never discards the rest of the proof.
     Only meaningful when the fix itself passes them: otherwise nothing is reverted."""
     results = ci_tests.parse(new_out)
-    if not runs or not all(status(results, wanted) == "ok" for wanted in runs):
+    if not runs or not all(_passed(results, wanted) for wanted in runs):
         return []
     hunks, started, rows = source_hunks(base_dir, new_tree), clock(), []
     for index, hunk in enumerate(hunks):
@@ -331,17 +342,58 @@ def hunk_guard(base_dir: Path, new_tree: Path, runs: list[str], path: str, new_o
                 target.write_bytes(original)
             _drop_bytecode(new_tree)
         seen = [status(out, wanted) for wanted in runs]
+        passing = all(_passed(out, wanted) for wanted in runs)
         if IMPORT_ERROR in seen:
             rows.append({**row, "status": NOT_CHECKED,
                          "why": "the test module does not import with it reverted"})
         elif "fail" in seen:
             rows.append({**row, "status": GUARDED})
-        elif all(s == "ok" for s in seen):
+        elif passing:
             rows.append({**row, "status": UNGUARDED})
         else:
             rows.append({**row, "status": NOT_CHECKED,
                          "why": "the tests' results could not be read with it reverted"})
     return rows
+
+
+def changed_test_modules(manifest: dict) -> list[str]:
+    """The Python test files a fix adds or changes, as module ids (``tests/test_x.py`` →
+    ``tests.test_x``): what the hunk check runs when the fixer named no reproduction test."""
+    from . import safe_push
+    _base, files, patch = safe_push._manifest(manifest)
+    paths = [path for path, _data in files]
+    if patch is not None:
+        paths += [path for path, _chunk in _split_patch(patch.decode("utf-8", errors="replace"))]
+    # A test module by either convention (`test_x.py`, `x_test.py`): a helper under tests/
+    # (`helpers.py`, `conftest.py`) runs no test, and a named id that runs none reads as missing.
+    return sorted({path[:-3].replace("/", ".") for path in paths
+                   if path.endswith(".py") and ci_fix.TEST_PATH.search(path)
+                   and (Path(path).name.startswith("test") or path.endswith("_test.py"))})
+
+
+def _unnamed_hunks(base_dir: Path, manifest: dict, run) -> dict:
+    """NONE NAMED, with the hunk check still run (#1043): against the test files the fix changed,
+    or, with none of those either, every source hunk listed unguarded (nothing could notice it)."""
+    proof = none_named()
+    with tempfile.TemporaryDirectory(prefix="repro-proof-") as temp:
+        tree = Path(temp) / "new"
+        shutil.copytree(base_dir, tree, symlinks=True)
+        apply_manifest(tree, manifest, only_tests=False)
+        found = [hit for hit in (resolve(tree, module) for module in changed_test_modules(manifest))
+                 if hit]
+        runs = [hit[0] for hit in found]
+        if runs:
+            path = ":".join(dict.fromkeys([*(hit[1] for hit in found), "."]))
+            proof["hunk_tests"] = runs
+            proof["hunks"] = hunk_guard(base_dir, tree, runs, path, run(tree, runs, path), run)
+            if not proof["hunks"] and source_hunks(base_dir, tree):
+                proof["hunk_why"] = "the fix's changed tests do not all pass on the fix"
+        else:
+            proof["hunks"] = [{"path": h["path"], "lines": _where(h), "status": UNGUARDED,
+                               "why": "no test named or changed"}
+                              for h in source_hunks(base_dir, tree)]   # nothing runs: no cap
+            proof["hunk_why"] = "the fix names no reproduction test and changes no test file"
+    return proof
 
 
 def dumps(proof: dict) -> str:
@@ -355,7 +407,8 @@ _WORDS = {
     UNRESOLVED: ("ID NOT FOUND — a named id matches no test file in this checkout, so it was not "
                  "run: the id's spelling is wrong, which says nothing about the fix. Ask for the "
                  "id as `python -m unittest -v` prints it."),
-    NONE_NAMED: "NONE NAMED — the fixer named no reproduction test, so nothing was run.",
+    NONE_NAMED: ("NONE NAMED — the fixer named no reproduction test, so no fail-then-pass "
+                 "proof was run."),
     UNAVAILABLE: "NOT RUN — the host could not run the proof.",
 }
 
@@ -381,15 +434,24 @@ def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
     if proof.get("why"):
         text += f"- reason: {json.dumps(str(proof['why'])[:200])}\n"
     hunks = [h for h in proof.get("hunks") or [] if isinstance(h, dict)]
+    if proof.get("hunk_tests"):
+        text += ("- hunk check ran against the test files the fix changed (no reproduction test was "
+                 "named): " + ", ".join(json.dumps(str(t)[:80]) for t in proof["hunk_tests"][:6])
+                 + "\n")
+    if proof.get("hunk_why"):
+        text += f"- hunk check: {proof['hunk_why']}\n"
     if hunks:
+        tests_word = ("fix's changed tests" if proof.get("hunk_tests") else "named tests")
         unguarded = [h for h in hunks if h.get("status") == UNGUARDED]
         unchecked = [h for h in hunks if h.get("status") == NOT_CHECKED]
         text += (f"- hunk check (#1043): the host reverted each changed source hunk on its own and "
-                 f"ran the named tests: {len(hunks) - len(unguarded) - len(unchecked)} guarded, "
+                 f"ran the {tests_word}: {len(hunks) - len(unguarded) - len(unchecked)} guarded, "
                  f"{len(unguarded)} unguarded, {len(unchecked)} not checked.\n")
-        for h in unguarded:
+        for h in unguarded[:UNGUARDED_SHOWN]:
             text += (f"  - unguarded: {json.dumps(str(h.get('path'))[:120])} {h.get('lines')} "
-                     "(reverting it alone fails none of the named tests)\n")
+                     f"(reverting it alone fails none of the {tests_word})\n")
+        if len(unguarded) > UNGUARDED_SHOWN:
+            text += f"  - and {len(unguarded) - UNGUARDED_SHOWN} more unguarded hunk(s)\n"
         for h in unchecked[:5]:
             text += (f"  - not checked: {json.dumps(str(h.get('path'))[:120])} {h.get('lines')} "
                      f"({h.get('why')})\n")
@@ -397,7 +459,7 @@ def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
             text += ("  An unguarded hunk that changes behaviour is a missing test: the repo's rule "
                      "is that every change has a test that fails without it. Treat it as a "
                      "blocking finding unless the hunk changes no behaviour (a rename, a message "
-                     "or log text, a refactor the named tests do not reach), and say which.\n")
+                     "or log text, a refactor the tests do not reach), and say which.\n")
     if fix_head and head and fix_head != head:
         text += (f"- proven at the fix commit {fix_head[:12]}; this review is at {head[:12]} "
                  "(later commits are not covered)\n")
