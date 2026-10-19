@@ -44,6 +44,7 @@ NOT_FOUND = "not found"
 HUNKS_MAX = 12
 HUNKS_BUDGET_S = 240.0
 GUARDED, UNGUARDED, NOT_CHECKED = "guarded", "unguarded", "not checked"
+UNGUARDED_SHOWN = 20             # listed by line in the reviewer's section; the count covers all
 
 
 def valid_ids(value: object) -> list[str]:
@@ -380,7 +381,7 @@ def _unnamed_hunks(base_dir: Path, manifest: dict, run) -> dict:
         else:
             proof["hunks"] = [{"path": h["path"], "lines": _where(h), "status": UNGUARDED,
                                "why": "no test named or changed"}
-                              for h in source_hunks(base_dir, tree)[:HUNKS_MAX]]
+                              for h in source_hunks(base_dir, tree)]   # nothing runs: no cap
             proof["hunk_why"] = "the fix names no reproduction test and changes no test file"
     return proof
 
@@ -434,9 +435,11 @@ def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
         text += (f"- hunk check (#1043): the host reverted each changed source hunk on its own and "
                  f"ran the named tests: {len(hunks) - len(unguarded) - len(unchecked)} guarded, "
                  f"{len(unguarded)} unguarded, {len(unchecked)} not checked.\n")
-        for h in unguarded:
+        for h in unguarded[:UNGUARDED_SHOWN]:
             text += (f"  - unguarded: {json.dumps(str(h.get('path'))[:120])} {h.get('lines')} "
                      "(reverting it alone fails none of the named tests)\n")
+        if len(unguarded) > UNGUARDED_SHOWN:
+            text += f"  - and {len(unguarded) - UNGUARDED_SHOWN} more unguarded hunk(s)\n"
         for h in unchecked[:5]:
             text += (f"  - not checked: {json.dumps(str(h.get('path'))[:120])} {h.get('lines')} "
                      f"({h.get('why')})\n")

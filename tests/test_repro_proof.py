@@ -246,6 +246,25 @@ class Proof(unittest.TestCase):
                          [repro_proof.GUARDED, repro_proof.UNGUARDED])
         self.assertIn("against the test files the fix changed", repro_proof.section(proof))
 
+    def test_with_no_test_every_source_hunk_is_listed_past_the_cap(self):
+        # Review on #1092 (F2, P1): the no-test fallback cut the list at HUNKS_MAX, and the rest
+        # vanished from the proof. Nothing runs there, so every hunk is listed; the section shows
+        # the first ones by line and counts the rest.
+        many = 25
+        old = "".join(f"def f{n}():\n    return 1\n\n\n" for n in range(many))
+        new = "".join(f"def f{n}():\n    return 2\n\n\n" for n in range(many))
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            base.mkdir()
+            (base / "mod.py").write_text(old)
+            proof = repro_proof.prove(base, manifest({"mod.py": new}), [],
+                                      lambda *a: self.fail("nothing to run"))
+        self.assertEqual(len(proof["hunks"]), many)
+        self.assertEqual({h["status"] for h in proof["hunks"]}, {repro_proof.UNGUARDED})
+        text = repro_proof.section(proof)
+        self.assertIn(f"0 guarded, {many} unguarded, 0 not checked", text)
+        self.assertIn(f"and {many - repro_proof.UNGUARDED_SHOWN} more unguarded hunk(s)", text)
+
     def test_the_fallback_takes_both_test_naming_conventions_and_no_helpers(self):
         # Review on #1092 (P1): `*_test.py` is a test file to TEST_PATH, but the fallback took
         # only `test*`, then said no test changed. A helper under tests/ runs no test and stays out.
