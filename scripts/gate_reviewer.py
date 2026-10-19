@@ -70,6 +70,10 @@ def main() -> None:
                 or current.get("state") != "closed"):
             silence("close event is stale or current PR state is unavailable")
         closing = "merged" if (current.get("merged") or current.get("merged_at")) else "closed"
+        if closing == "merged" and (current.get("base") or {}).get("ref") == loop["base"]:
+            # The base moved: other loop PRs may conflict now. Checked in a minute, not at the
+            # next sweep (conflict_scan); any PR's merge counts, not only the loop's.
+            gate.schedule_conflict_scan(loop, st)
         gate.reclaim(loop, number, closing)
         # Cleanup above is unconditional; the notice is only for PRs the loop worked on.
         if not loop_worked_on(loop, st, number, current):

@@ -552,6 +552,14 @@ queues one **resolving fixer turn** per head and base:
    exact-head lease.
 3. The fixer asks for the review, and the merged head is reviewed fresh.
 
+**When it is noticed.** A merge into the base is what usually causes a conflict, so the
+reviewer gate, on a PR's merged `closed` event, asks for a conflict-only check about 45 seconds
+later (`watchdog.py --loop <id> --conflicts`, started detached). A run of merges collapses into one
+check after the last of them. The check does only the sweep's conflict step: the same PRs, the same
+notice, the same turn, deduplicated the same way. GitHub works out mergeability lazily, so a read
+that answers "unknown" is read again once after a few seconds, in the sweep too. A push straight to
+the base, or a check that never ran, is still caught by the regular sweep.
+
 The loop does not resolve, and hands to you instead (the run ends `failed` with
 `conflict needs a person: …`):
 - a **whole-file** conflict: a modify/delete, a rename, a binary file. Git keeps one side whole,

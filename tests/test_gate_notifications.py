@@ -50,6 +50,7 @@ class NotificationFreshnessTest(unittest.TestCase):
               mock.patch.object(module.gh, "api", return_value={
                   "ref": "refs/heads/main", "object": {"type": "commit", "sha": HEAD_B}}),
               mock.patch.object(module.gate, "reclaim") as reclaim,
+              mock.patch.object(module.gate, "schedule_conflict_scan") as self.scan,
               mock.patch.object(module.gate, "drain_seat") as drain,
               mock.patch.object(module.observer, "notify") as notify):
             with self.assertRaises(SystemExit) as stop:
@@ -74,6 +75,22 @@ class NotificationFreshnessTest(unittest.TestCase):
         reclaim.assert_called_once_with(self.loop, 7, "merged")
         notify.assert_called_once()
         self.assertNotIn("reclaimed", str(notify.call_args).lower())
+
+    def test_a_merge_into_the_base_asks_for_a_conflict_scan_and_a_plain_close_does_not(self):
+        # Conflict speed: the base moved, so other PRs may conflict now; checked in a minute.
+        merged = pr(state="closed") | {"merged": True}
+        self.invoke(gate_reviewer, {"action": "closed", "number": 7, "pull_request": merged},
+                    merged)
+        self.scan.assert_called_once_with(self.loop, self.state)
+        closed = pr(state="closed")
+        self.invoke(gate_reviewer, {"action": "closed", "number": 7, "pull_request": closed},
+                    closed)
+        self.scan.assert_not_called()                  # closed unmerged: the base did not move
+        elsewhere = merged | {"base": {"ref": "release", "sha": HEAD_B,
+                                       "repo": {"full_name": "acme/widgets"}}}
+        self.invoke(gate_reviewer, {"action": "closed", "number": 7, "pull_request": elsewhere},
+                    elsewhere)
+        self.scan.assert_not_called()                  # merged into another branch
 
     def test_close_of_pr_the_loop_never_touched_cleans_up_without_notice(self):
         self.state.breach_get.return_value = {}
