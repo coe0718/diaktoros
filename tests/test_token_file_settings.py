@@ -212,6 +212,16 @@ class TokenFileSettingsTests(unittest.TestCase):
         self.assert_refused(["set", "--loop", "widgets", "--token", f"hook-admin={self.pat('x', 0o644)}"],
                             r"group/other can read it")
 
+    def test_set_token_refuses_an_empty_login(self):
+        """#946: `set --token "=/path"` would write an unusable tokens[""] entry."""
+        self.install()
+        good = self.pat("empty-login", 0o600)
+        for pair in (f"={good}", f"  ={good}"):
+            with self.subTest(pair=pair):
+                self.assert_refused(["set", "--loop", "widgets", "--token", pair],
+                                    r"empty login")
+        self.assertNotIn("", self.loop_json().get("tokens") or {})
+
     # -- plugin settings → apply / init -----------------------------------------------------
 
     def test_apply_maps_settings_to_tokens(self):
