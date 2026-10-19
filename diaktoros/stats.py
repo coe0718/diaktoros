@@ -191,40 +191,63 @@ def _why(state: str, error) -> str:
             "cancelled": "cancelled before any write — retry re-arms it"}.get(state, state)
 
 
+NOW_PAGE = 100          # rows of ``runs`` that ``now`` returns; the counts are never capped
+
+
+def _now_filter(at: float) -> tuple[str, tuple]:
+    """The WHERE clause that says what ``now`` covers (``repo`` is the first argument, then
+    these): every live run, the policy-cancelled fixer runs an operator ``retry`` recovers (the
+    one cancellation ``retry_action.offered`` draws the same line at; any other cancelled run is
+    only history) and the last day's failures. ``now``'s page, its counts and ``stuck`` all read
+    through it."""
+    from .run_supervisor import POLICY_CANCELLATIONS
+    marks = ",".join("?" * len(LIVE_STATES))
+    cancelled = ",".join("?" * len(POLICY_CANCELLATIONS))
+    return (f"repo=? AND seat!='shadow' AND (state IN ({marks}) "
+            f"OR (state='cancelled' AND error IN ({cancelled})) "
+            "OR (state='failed' AND updated>=?))",
+            (*LIVE_STATES, *POLICY_CANCELLATIONS, at - RECENT_FAILED_S))
+
+
+def _now_run(row) -> dict:
+    return {"pr": row["pr"], "seat": row["seat"], "head": str(row["head"] or "")[:7],
+            "state": row["state"], "why": _why(row["state"], row["error"]),
+            "since": row["updated"]}
+
+
 def now(db: Path, repo: str, at: float | None = None) -> dict | None:
     """What the loop is doing right now, for the Desktop page: every live run (queued, running,
     held, uncertain), the fixer runs the push policy cancelled (dead for their head until an
     operator ``retry`` recovers them, which is a thing to act on now), and the last day's
     failures, newest first. None when there is no ledger. Opened read-only.
+
+    ``counts`` and ``total`` cover the whole set. ``runs`` is the newest ``NOW_PAGE`` of it;
+    ``truncated`` says it is a page, not everything (``total`` > ``len(runs)``).
     """
     db = Path(db)
     if not db.exists():
         return None
     at = time.time() if at is None else at
-    # The one cancellation an operator retry recovers (``retry_action.offered`` draws the same
-    # line); any other cancelled run is superseded and only history.
-    from .run_supervisor import POLICY_CANCELLATIONS
+    where, args = _now_filter(at)
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
     try:
         con.row_factory = sqlite3.Row
-        marks = ",".join("?" * len(LIVE_STATES))
-        cancelled = ",".join("?" * len(POLICY_CANCELLATIONS))
-        rows = con.execute(f"SELECT pr, seat, head, state, error, updated FROM runs WHERE repo=? "
-                           "AND seat!='shadow' "
-                           f"AND (state IN ({marks}) OR (state='cancelled' AND error IN ({cancelled})) "
-                           "OR (state='failed' AND updated>=?)) "
-                           "ORDER BY updated DESC LIMIT 100",
-                           (repo, *LIVE_STATES, *POLICY_CANCELLATIONS,
-                            at - RECENT_FAILED_S)).fetchall()
+        rows = con.execute(f"SELECT pr, seat, head, state, error, updated FROM runs WHERE {where} "
+                           "ORDER BY updated DESC LIMIT ?", (repo, *args, NOW_PAGE)).fetchall()
+        # ``held`` is the test ``_why`` makes: a waiting run whose error starts "held:".
+        tally = con.execute("SELECT state, (state='waiting' AND substr(COALESCE(error,''),1,5)"
+                            f"='held:') AS held, COUNT(*) AS n FROM runs WHERE {where} "
+                            "GROUP BY 1, 2", (repo, *args)).fetchall()
     finally:
         con.close()
-    runs = [{"pr": row["pr"], "seat": row["seat"], "head": str(row["head"] or "")[:7],
-             "state": row["state"], "why": _why(row["state"], row["error"]),
-             "since": row["updated"]} for row in rows]
-    counts = Counter("held" if run["state"] == "waiting" and run["why"].startswith("held:")
-                     else "running" if run["state"] in ("claimed", "launching", "running")
-                     else run["state"] for run in runs)
-    return {"repo": repo, "at": at, "runs": runs, "counts": dict(counts)}
+    counts: Counter = Counter()
+    for row in tally:
+        counts["held" if row["held"]
+               else "running" if row["state"] in ("claimed", "launching", "running")
+               else row["state"]] += row["n"]
+    total = sum(counts.values())
+    return {"repo": repo, "at": at, "runs": [_now_run(row) for row in rows],
+            "counts": dict(counts), "total": total, "truncated": total > len(rows)}
 
 
 def _iso(text) -> float | None:
@@ -649,10 +672,21 @@ def fix_outcomes(db: Path, repo: str, since: float, until: float, pr_state) -> d
 
 def stuck(db: Path, repo: str, at: float) -> dict | None:
     """The longest-waiting run that is held, waiting or uncertain, with ``now``'s host-written
-    reason; None when nothing is stuck."""
-    live = (now(db, repo, at) or {}).get("runs") or []
-    waiting = [run for run in live if run["state"] in ("waiting", "uncertain")]
-    return min(waiting, key=lambda run: run["since"]) if waiting else None
+    reason; None when nothing is stuck. The ledger is asked for the oldest one, so it is the
+    oldest of all of them, not of the page ``now`` returns."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    where, args = _now_filter(at)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        con.row_factory = sqlite3.Row
+        row = con.execute(f"SELECT pr, seat, head, state, error, updated FROM runs WHERE {where} "
+                          "AND state IN ('waiting','uncertain') ORDER BY updated ASC LIMIT 1",
+                          (repo, *args)).fetchone()
+    finally:
+        con.close()
+    return _now_run(row) if row else None
 
 
 def _breaches(loop: dict) -> dict:
