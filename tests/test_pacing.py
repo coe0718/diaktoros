@@ -445,6 +445,15 @@ class SeatView(unittest.TestCase):
         # A loop with no triage configured does not claim that profile's window.
         self.assertEqual(pacing.seats(self.loop, now=now)["holds"], [])
 
+    def test_a_shadow_seats_closed_window_is_shown(self):
+        now = time.time()
+        pacing.hold("openai-codex|chatgpt.com|shade", now + 600, "openai answered 429")
+        loop = {**self.loop, "shadow": {"profile": "shade"}}
+        view = pacing.seats(loop, now=now)
+        self.assertEqual([hold["profile"] for hold in view["holds"]], ["shade"])
+        # A loop with shadow off does not claim that profile's window.
+        self.assertEqual(pacing.seats(self.loop, now=now)["holds"], [])
+
     def test_a_reopened_window_is_gone_even_though_a_run_still_names_it(self):
         now = time.time()
         pacing.hold("openai-codex|chatgpt.com|vex", now - 1, "openai answered 429")
