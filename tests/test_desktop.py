@@ -531,6 +531,24 @@ class Health(unittest.TestCase):
         # Unrelated headers do not refuse.
         self.assertTrue(desktop_api.probe_is_local("127.0.0.1", {"host": "localhost", "x-forwarding": "1"}))
 
+    def test_probe_is_local_refuses_raw_asgi_bytes_headers(self):
+        # The ASGI scope carries headers as (bytes, bytes) pairs; str(bytes) used to never match.
+        for headers in ({b"x-forwarded-proto": b"https"}, {b"X-Forwarded-For": b""},
+                        [(b"x-forwarded-proto", b"https")],
+                        [(b"host", b"localhost"), (b"Forwarded", b"for=1.2.3.4")],
+                        ((b"X-Real-IP", b"1.2.3.4"),), [("x-forwarded-proto", "https")]):
+            self.assertFalse(desktop_api.probe_is_local("127.0.0.1", headers), headers)
+        self.assertTrue(desktop_api.probe_is_local("127.0.0.1", [(b"host", b"localhost")]))
+        self.assertTrue(desktop_api.probe_is_local("127.0.0.1", {b"x-forwarding": b"1"}))
+
+    def test_health_view_probe_refuses_raw_asgi_forwarding_headers(self):
+        with self.loops([{"id": "widgets", "repo": REPO}]), \
+             mock.patch.object(desktop_api.doctor, "check_loop", return_value=[]) as called:
+            with self.assertRaises(desktop_api.Forbidden):
+                desktop_api.health_view("widgets", True, "127.0.0.1",
+                                        [(b"x-forwarded-proto", b"https")])
+        called.assert_not_called()
+
 
 DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings"}
 # The page stopped being read-only for one confirmed action (#371): POST /retry. Every other route
