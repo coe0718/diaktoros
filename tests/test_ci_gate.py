@@ -369,8 +369,25 @@ class CITestsUnit(unittest.TestCase):
                "more output\n"
                "ok\n"
                "test_quiet (m.C.test_quiet) ... FAIL\n"
-               "ok\n")                                    # an "ok" with no test waiting: ignored
+               + "-" * 70 + "\n"
+               "ok\n")                                    # after the summary: no test waiting
         self.assertEqual(ci_tests.parse(log), {"m.C.test_loud": "ok", "m.C.test_quiet": "FAIL"})
+
+    def test_the_last_bare_result_before_the_next_test_is_unittests(self):
+        log = ("test_fake_ok (m.C.test_fake_ok) ... \n"
+               "ok\n"                                    # printed by the test
+               "FAIL\n"                                  # unittest's
+               "test_fake_fail (m.C.test_fake_fail) ... \n"
+               "FAIL\n"                                  # printed by the test
+               "ok\n"                                    # unittest's
+               "test_inline (m.C.test_inline) ... FAIL\n" # printed inline by the test ...
+               "ok\n"                                    # ... unittest's, last: it stands
+               "\n" + "=" * 70 + "\n"
+               "FAIL: test_fake_ok (m.C.test_fake_ok)\n"
+               "ok\n")                                   # traceback text: not a result
+        self.assertEqual(ci_tests.parse(log), {"m.C.test_fake_ok": "FAIL",
+                                               "m.C.test_fake_fail": "ok",
+                                               "m.C.test_inline": "ok"})
 
     def test_a_subtest_failure_counts_for_its_test_and_the_worst_result_wins(self):
         log = ("test_sub (m.C.test_sub) ... \n"

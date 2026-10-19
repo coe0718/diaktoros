@@ -90,6 +90,16 @@ class Proof(unittest.TestCase):
         proof = self.prove(loud)
         self.assertEqual(proof["overall"], repro_proof.PROVEN, proof)
 
+    def test_a_test_that_prints_ok_and_then_fails_is_never_read_as_ok(self):
+        # Review on #1006: the parser took the first bare result after a test's line, so a test
+        # printing "ok" before failing read as passing — a false green on the fix.
+        fake = TEST.replace("        self.assertEqual(c.value(), 2)\n",
+                            "        import sys\n        print('ok', file=sys.stderr)\n"
+                            "        self.assertEqual(c.value(), 3)\n")
+        proof = self.prove(fake)
+        self.assertEqual(proof["ids"][0]["new"], "fail", proof)
+        self.assertNotEqual(proof["overall"], repro_proof.PROVEN)
+
     def test_a_test_file_that_imports_what_the_fix_adds_says_so(self):
         # #1005: on the original head the test module did not import, so its tests ran nowhere;
         # say that, never a bare "missing".
