@@ -220,6 +220,7 @@ for (const state of ['armed', 'paused']) {
     const dialog = hookDialog(h)
     assert.match(dialog.props.description, /loop fixture-loop/)
     assert.match(dialog.props.description, /not in-flight turns/)
+    assert.match(dialog.props.description, /Paused hooks deliver no new events to queue/)
     assert.match(dialog.props.description, /sweeper may recover events/)
     assert.equal(h.hookCalls.length, 0)
     const first = dialog.props.onConfirm()

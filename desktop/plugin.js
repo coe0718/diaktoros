@@ -1124,7 +1124,7 @@ function HooksControl({ loop, discoveryCurrent }) {
       pending && pending.loop === loop ? jsx(ConfirmDialog, { open: true,
         title: pending.action === 'pause' ? 'Pause webhook delivery?' : 'Resume webhook delivery?',
         description: (pending.action === 'pause' ? 'Pause' : 'Resume') + ' webhook delivery for loop ' + pending.loop +
-          '. Pausing stops GitHub webhook delivery, not in-flight turns. The sweeper may recover events even while paused. Resuming allows new webhook delivery; it does not restart completed turns.',
+          '. Pausing stops GitHub webhook delivery, not in-flight turns. Paused hooks deliver no new events to queue. The sweeper may recover events even while paused. Resuming allows new webhook delivery; it does not restart completed turns.',
         confirmLabel: pending.action === 'pause' ? 'Pause delivery' : 'Resume delivery',
         busyLabel: 'Checking hook change…', cancelLabel: 'Cancel', onClose: () => { if (targetRef.current === pending) cancel() }, onConfirm: () => confirm(pending) }) : null
     ] }) })
