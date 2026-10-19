@@ -145,10 +145,14 @@ class DesktopEvents:
             async with self._lock:
                 self.subscribers.discard(queue)
                 if not self.subscribers and self.task is not None:
-                    task, self.task = self.task, None
+                    task = self.task
                     task.cancel()
                     with suppress(asyncio.CancelledError):
                         await task
+                    # Keep the task visible to for_app while its scan is joining.
+                    # The watcher never takes this lock; reconnects wait here until
+                    # cleanup has joined it and can safely start a fresh scanner.
+                    self.task = None
 
     async def _watch(self):
         previous = None
@@ -181,9 +185,11 @@ def for_app(app):
     if managers is None:
         managers = app.state.diaktoros_desktop_events = {}
     key = (str(home), str(directory))
-    # Retain only managers with subscribers; no unbounded registry across profiles.
+    # Retain active and closing managers: a reconnect must share the same lock
+    # until the last subscriber has joined its in-flight scanner thread.
     for old in list(managers):
-        if not managers[old].subscribers:
+        manager = managers[old]
+        if not manager.subscribers and manager.task is None and not manager._lock.locked():
             del managers[old]
     if key not in managers:
         managers[key] = DesktopEvents(FileSnapshot(home, directory))

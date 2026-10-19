@@ -78,7 +78,7 @@ view availability: REST and existing stale/unavailable states remain decisive.
 
 Polling is always retained: now/overview/hooks every 30 seconds and stats every
 60 seconds, with other views retaining their existing on-demand refresh behavior.
-OAuth, absent/no-op SDK sockets, refused auth, host-isolated plugin APIs
+OAuth, absent/no-op socket transports (the supported SDK always provides `ctx.socket`), refused auth, host-isolated plugin APIs
 (which currently lack WebSocket forwarding, including secondary profiles), and disconnects degrade to
 existing polling/on-demand reads. There is no new realtime-freshness guarantee.
 The new backend route requires a future authorized backend restart to deploy;

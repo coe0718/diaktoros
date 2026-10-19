@@ -181,6 +181,67 @@ class Files(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.manager.task)
         self.assertFalse(self.manager.subscribers)
 
+    async def test_for_app_reconnect_waits_for_closing_scanner_join(self):
+        import threading
+        started, release = threading.Event(), threading.Event()
+        calls = []
+        def blocked_snapshot():
+            calls.append(None)
+            if len(calls) == 1:
+                started.set()
+                if not release.wait(5):
+                    raise AssertionError("test did not release the blocked snapshot")
+            return (), False
+        app = types.SimpleNamespace(state=types.SimpleNamespace())
+        reconnected = asyncio.Event()
+        async def consumer(manager, entered=None):
+            async with manager.subscribe():
+                if entered is not None:
+                    entered.set()
+                await asyncio.Event().wait()
+        with mock.patch.object(events.config, "home", return_value=self.home), \
+                mock.patch.object(events.config, "config_dir", return_value=self.directory), \
+                mock.patch.object(events, "FileSnapshot", return_value=blocked_snapshot):
+            manager = events.for_app(app)
+            first = asyncio.create_task(consumer(manager))
+            second = None
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 1))
+                scanner = manager.task
+                first.cancel()
+                async def cancellation_started():
+                    while not scanner.cancelling():
+                        await asyncio.sleep(0)
+                await asyncio.wait_for(cancellation_started(), 1)
+                self.assertFalse(first.done())
+                self.assertFalse(manager.subscribers)
+                replacement = events.for_app(app)
+                self.assertIs(replacement, manager, "registry must retain a joining manager")
+                self.assertIs(manager.task, scanner, "task stays discoverable until joined")
+                self.assertTrue(manager._lock.locked())
+                second = asyncio.create_task(consumer(replacement, reconnected))
+                # FIFO loop scheduling lets the reconnect attempt acquire the lock.
+                await asyncio.sleep(0)
+                self.assertFalse(reconnected.is_set())
+                self.assertEqual(len(calls), 1)
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(first, 1)
+                await asyncio.wait_for(reconnected.wait(), 1)
+                self.assertTrue(scanner.done())
+                self.assertIsNot(manager.task, scanner)
+                self.assertIs(events.for_app(app), manager)
+            finally:
+                release.set()
+                for task in (first, second):
+                    if task is not None:
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+            self.assertIsNone(manager.task)
+            self.assertFalse(manager.subscribers)
+            # Fully idle managers can still be evicted; the registry stays bounded.
+            self.assertIsNot(events.for_app(app), manager)
+
     async def test_bounded_overflow_conservatively_invalidates(self):
         with mock.patch.object(events, "MAX_ENTRIES", 2):
             self.assertTrue(self.snapshot()[1])
