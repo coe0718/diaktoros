@@ -201,17 +201,35 @@ class ConfirmedActions(fixtures.Base):
                 if change != "marker":
                     self.assertEqual(self.st.breach_get(7), {})
 
-    def test_cli_drain_launch_is_not_verified_completion(self):
+    def test_cli_drain_keeps_its_documented_exit_code_and_states_the_caveat(self):
+        # docs/commands.md: drain propagates its script's code and does not wait for completion,
+        # so a completed sweep is 0. Returning 2 here would claim a refusal that never happened.
         watchdog = mock.Mock(WATCHDOG_BUDGET_S=30, WATCHDOG_PER_CALL_S=2)
         before = dict(gh._GATE)
         with mock.patch.object(actions, "_script", return_value=watchdog):
             result = actions.perform_drain(self.loop, "fixer")
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["code"], 2)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["code"], 0)
         self.assertIn("unconfirmed", " ".join(result["lines"]))
         watchdog.run.assert_called_once()
         self.assertEqual(watchdog.run.call_args.args[0].seat, "fixer")
         self.assertEqual(gh._GATE, before)
+
+    def test_cli_drain_reports_a_refused_loop_rather_than_success(self):
+        watchdog = mock.Mock(WATCHDOG_BUDGET_S=30, WATCHDOG_PER_CALL_S=2,
+                             run=mock.Mock(side_effect=SystemExit(1)))
+        with mock.patch.object(actions, "_script", return_value=watchdog):
+            result = actions.perform_drain(self.loop, "reviewer")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], 1)
+
+    def test_cli_drain_budget_exhaustion_is_not_success(self):
+        watchdog = mock.Mock(WATCHDOG_BUDGET_S=30, WATCHDOG_PER_CALL_S=2,
+                             run=mock.Mock(side_effect=gh.GateBudgetExceeded("budget")))
+        with mock.patch.object(actions, "_script", return_value=watchdog):
+            result = actions.perform_drain(self.loop, "reviewer")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], 2)
 
     def test_plan_and_cli_use_the_same_escalation_selector(self):
         with self.github(), mock.patch.object(actions, "_escalation_decision", wraps=actions._escalation_decision) as select:

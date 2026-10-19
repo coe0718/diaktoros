@@ -1455,17 +1455,20 @@ test('actions: backend refusal accepts empty opaque identity and invalid PR inpu
   const input = () => h.flatten(h.tree()).find(n => n.type === 'Input' && n.props['aria-label'] === 'Action PR number')
   for (const value of ['0', '-1', '9.1', '1e3', ' 937 ', '999999999999999999999']) {
     input().props.onChange({ target: { value } }); const before = h.calls.length
-    assert.equal(actionButton(h, 'Preview action').props.disabled, true)
-    await actionButton(h, 'Preview action').props.onClick(); assert.equal(h.calls.length, before)
+    assert.equal(actionButton(h, 'Preview escalation').props.disabled, true)
+    await actionButton(h, 'Preview escalation').props.onClick(); assert.equal(h.calls.length, before)
   }
 })
 
-test('actions: review and drain cannot authorize execution even if malformed backend claims eligible', async () => {
-  for (const action of ['review', 'drain']) {
-    const h = await harness(); selectAction(h, action)
-    await previewAction(h, actionPlan({ action, pr: action === 'drain' ? null : 937, seat: action === 'drain' ? 'reviewer' : null }))
-    assert.match(h.text(h.tree()), /could not be verified/); assert.equal(actionButton(h, 'Confirm escalation'), undefined)
-  }
+test('actions: re-review and drain draw no control at all — only escalation is offered here', async () => {
+  const h = await harness(); h.render('page')
+  assert.ok(actionButton(h, 'Escalate'))
+  // A control that can never be honoured is not drawn; the CLI verbs are named instead.
+  for (const label of ['Re-review', 'Drain queue', 'reviewer', 'fixer']) assert.equal(actionButton(h, label), undefined)
+  assert.match(h.text(h.tree()), /Re-review · host CLI only/)
+  assert.match(h.text(h.tree()), /Drain queue · host CLI only/)
+  assert.match(h.text(h.tree()), /hermes dk review/)
+  assert.match(h.text(h.tree()), /hermes dk drain/)
 })
 
 test('actions: late write outcome after loop switch is discarded', async () => {
@@ -1493,12 +1496,12 @@ const actionPlan = (extra = {}) => ({ loop: 'fixture-loop', repo: 'fixture/repo'
   action: 'escalate', pr: 937, seat: null, eligible: true, head: 'a'.repeat(40), reason: '', confirmation: ' opaque/identity+= ', ...extra })
 const actionButton = (h, label) => h.buttons(h.tree()).find(b => b.props.children === label)
 const actionDialog = h => h.flatten(h.tree()).find(n => n.type === 'ConfirmDialog' && n.props.title === 'Escalate this PR?')
-const selectAction = (h, action = 'escalate', pr = '937') => {
+const selectAction = (h, pr = '937') => {
   h.render('page')
+  actionButton(h, 'Escalate').props.onClick()
   h.flatten(h.tree()).find(n => n.type === 'Input' && n.props['aria-label'] === 'Action PR number').props.onChange({ target: { value: pr } })
-  actionButton(h, action === 'escalate' ? 'Escalate' : action === 'review' ? 'Re-review' : 'Drain queue').props.onClick()
 }
-const previewAction = async (h, data = actionPlan()) => { h.respond(data); await actionButton(h, 'Preview action').props.onClick() }
+const previewAction = async (h, data = actionPlan()) => { h.respond(data); await actionButton(h, 'Preview escalation').props.onClick() }
 
 test('actions: independent PR preview confirms full target and opaque identity exactly once', async () => {
   const h = await harness(); selectAction(h); await previewAction(h)
@@ -1515,26 +1518,18 @@ test('actions: independent PR preview confirms full target and opaque identity e
   assert.equal(h.buttons(h.tree()).some(b => /merge/i.test(String(b.props.children))), false)
 })
 
-for (const action of ['review', 'drain']) test(`actions: ${action} preview refusal remains visible without execution affordance`, async () => {
-  const h = await harness(); selectAction(h, action)
-  await previewAction(h, actionPlan({ action, pr: action === 'drain' ? null : 937, seat: action === 'drain' ? 'reviewer' : null, eligible: false, confirmation: null, reason: 'Core operation is not snapshot safe.' }))
+test('actions: a backend escalation refusal leaves no execution affordance', async () => {
+  const h = await harness(); selectAction(h)
+  await previewAction(h, actionPlan({ eligible: false, confirmation: '', reason: 'Core operation is not snapshot safe.' }))
   assert.match(h.text(h.tree()), /not snapshot safe/)
   assert.equal(actionButton(h, 'Confirm escalation'), undefined)
   assert.equal(h.actionCalls.length, 0)
-  assert.match(h.text(h.tree()), action === 'review' ? /starts a review.*not replace.*verdict.*cap/ : /starts queued work.*GitHub writes/)
-  if (action === 'drain') {
-    actionButton(h, 'fixer').props.onClick()
-    await previewAction(h, actionPlan({ action, pr: null, seat: 'fixer', eligible: false, confirmation: null, reason: 'Core operation is not snapshot safe.' }))
-    assert.match(h.calls.at(-1), /action=drain&seat=fixer$/)
-  }
 })
 
-for (const changed of ['target', 'action', 'seat', 'loop', 'time', 'unmount', 'cancel', 'discovery']) test(`actions: ${changed} invalidates retained confirmation`, async () => {
+for (const changed of ['target', 'loop', 'time', 'unmount', 'cancel', 'discovery']) test(`actions: ${changed} invalidates retained confirmation`, async () => {
   const h = await harness(); h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })
   selectAction(h); await previewAction(h); actionButton(h, 'Confirm escalation').props.onClick(); const d = actionDialog(h)
   if (changed === 'target') h.flatten(h.tree()).find(n => n.type === 'Input' && n.props['aria-label'] === 'Action PR number').props.onChange({ target: { value: '938' } })
-  if (changed === 'action') actionButton(h, 'Re-review').props.onClick()
-  if (changed === 'seat') actionButton(h, 'fixer').props.onClick()
   if (changed === 'loop') actionButton(h, 'other-loop').props.onClick()
   if (changed === 'time') h.advance(60000, -3600000)
   if (changed === 'unmount') h.unmount()

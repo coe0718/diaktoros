@@ -1228,17 +1228,18 @@ function ActionsControl({ loop, discoveryCurrent }) {
   return jsx(Section, { title: 'One-shot actions', children: jsxs('div', {
     className: 'flex min-w-0 flex-col gap-4 rounded-md border border-(--ui-stroke-secondary) p-4', children: [
       jsx(Muted, { text: 'Preview a target independently of Right now — including an open PR whose previous turn completed. The host checks eligibility; a run label is not permission.' }),
-      jsx('div', { className: 'flex flex-wrap gap-2', children: [['escalate', 'Escalate'], ['review', 'Re-review'], ['drain', 'Drain queue']].map(([value, label]) => button(label, () => { reset(); setAction(value) }, busy.current)) }),
-      jsx('label', { className: 'flex min-w-0 max-w-sm flex-col gap-2 text-xs', children: jsxs('span', { className: 'flex flex-col gap-2', children: [
-        'PR number · required for escalation and re-review', jsx(Input, { 'aria-label': 'Action PR number', inputMode: 'numeric', value: prText,
-          disabled: busy.current || action === 'drain', placeholder: action === 'drain' ? 'Drain selects a seat, not a PR' : 'e.g. 937', onChange: e => { reset(); setPrText(e.target.value) } })] }) }),
+      // Only escalation can be honoured from this host (see one_shot_action.plan). A control that
+      // can never be eligible is not drawn: the other two are named as unavailable, with why, and
+      // stay on the CLI rather than offering a button whose only outcome is a refusal.
       jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
-        jsx(Muted, { text: 'Drain seat' }), ...['reviewer', 'fixer'].map(value => button(value, () => { reset(); setSeat(value) }, busy.current)),
-        jsx(Badge, { size: 'xs', variant: 'muted', children: 'Selected: ' + (action === 'drain' ? seat : action) })] }),
-      jsx(Muted, { text: action === 'review' ? 'Re-review starts a review; it does not replace a verdict or bypass the cap. Currently refused: core review is not snapshot safe.'
-        : action === 'drain' ? 'Drain starts queued work and may cause GitHub writes. Currently refused: core drain is not snapshot safe. Preview reviewer or fixer to see the host refusal.'
-        : 'Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Confirmation names the exact head.' }),
-      button(reading ? 'Reading preview…' : 'Preview action', read, reading || busy.current || !discoveryCurrent || (action !== 'drain' && !pr)),
+        button('Escalate', () => { reset(); setAction('escalate') }, busy.current),
+        ...['Re-review', 'Drain queue'].map(label => jsx(Badge, { size: 'xs', variant: 'muted', children: label + ' · host CLI only' }, label))] }),
+      jsx('label', { className: 'flex min-w-0 max-w-sm flex-col gap-2 text-xs', children: jsxs('span', { className: 'flex flex-col gap-2', children: [
+        'PR number · required for escalation', jsx(Input, { 'aria-label': 'Action PR number', inputMode: 'numeric', value: prText,
+          disabled: busy.current || action === 'drain', placeholder: action === 'drain' ? 'Drain selects a seat, not a PR' : 'e.g. 937', onChange: e => { reset(); setPrText(e.target.value) } })] }) }),
+
+      jsx(Muted, { text: 'Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Confirmation names the exact head. Re-review and drain need a core entry point that can bind a confirmed snapshot, so no Desktop control offers them yet; hermes dk review and hermes dk drain still run them.' }),
+      button(reading ? 'Reading preview…' : 'Preview escalation', read, reading || busy.current || !discoveryCurrent || !pr),
       preview ? jsxs('div', { role: 'status', className: 'flex min-w-0 flex-col gap-2 break-words text-xs', children: [
         jsx(Badge, { size: 'xs', variant: state === 'verified' && preview.data.eligible ? 'muted' : 'warn', children: state !== 'verified' ? 'Preview expired · read again' : preview.data.eligible ? 'Host eligible' : 'Host refused' }),
         jsx('div', { className: 'break-words', children: 'Loop ' + preview.target.loop + ' · ' + preview.data.repo + (preview.target.pr ? ' · #' + preview.target.pr : ' · ' + preview.target.seat) + ' · head ' + (preview.data.head || 'unavailable') }),

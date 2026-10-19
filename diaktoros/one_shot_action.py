@@ -202,10 +202,13 @@ def perform_drain(loop, seat="reviewer"):
 
 
 def _drain(loop, seat):
-    """CLI-only whole-seat request, not proof that every selected run completed.
+    """CLI-only whole-seat request: the sweep ran, which is not proof a run finished.
 
-    Unlike the old unconditional zero exit, an unbound watchdog return is uncertain
-    (exit 2). Desktop refuses this operation before launch for the same reason.
+    ``docs/commands.md`` makes this command propagate its script's exit code and says it does not
+    wait for completion, so a completed sweep is 0 with the caveat printed — reporting 2 for every
+    drain would claim a refusal that did not happen, and 2 is the documented refused-input code.
+    A refused loop file (the script calls ``sys.exit(1)``) and a spent GitHub budget stay
+    non-zero. Desktop refuses this operation before launch for the same reason.
     """
     if seat not in ("reviewer", "fixer"):
         print("refused: unknown drain seat")
@@ -220,11 +223,18 @@ def _drain(loop, seat):
     except gh.GateBudgetExceeded:
         print("drain did not finish; inspect the queue before retrying")
         return 2
+    except SystemExit as exc:
+        # The script refuses a bad loop with sys.exit(1); in-process that is an exception, not
+        # an exit, and letting it escape would unwind out of the caller's action.
+        code = exc.code if isinstance(exc.code, int) else 1
+        print(f"drain stopped: {code}; inspect the queue before retrying")
+        return code or 1
     finally:
         gh._GATE.clear()
         gh._GATE.update(budget)
-    print("drain completion requested; queue and run outcomes unconfirmed — inspect before retrying")
-    return 2
+    print("drain requested; the sweep ran, but queue and run outcomes are unconfirmed — "
+          "inspect status")
+    return 0
 
 
 def _reviewer_runs(repo: str, number: int, head: str) -> int:
