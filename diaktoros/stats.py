@@ -630,7 +630,8 @@ def fix_outcomes(db: Path, repo: str, since: float, until: float, pr_state) -> d
         try:
             actions = con.execute(f"SELECT pr, action, created FROM operator_actions WHERE repo=? "
                                   f"AND pr IN ({marks})", (repo, *prs)).fetchall() if prs else []
-            first = con.execute("SELECT MIN(created) FROM operator_actions").fetchone()[0]
+            first = con.execute("SELECT MIN(created) FROM operator_actions WHERE repo=?",
+                                (repo,)).fetchone()[0]
         except sqlite3.OperationalError:
             actions, first = [], None
     finally:
