@@ -187,8 +187,13 @@ changes no behaviour.
 
 The check is bounded:
 - comment- and blank-only hunks are skipped;
-- the largest 12 hunks are checked, within 240 s inside the fixer's turn; anything past that is
-  `not checked`, never "guarded".
+- a source file the fix deletes is checked too, as one hunk, labelled by its original lines;
+- the largest 12 hunks are checked, within 240 s inside the fixer's turn;
+- `not checked`, never "guarded", covers a hunk past the cap or the budget, a revert that stops
+  the test module importing, and a run that didn't finish (a timeout). One hunk's run failing
+  never discards the rest of the proof;
+- compiled bytecode is cleared before each run, so a same-size revert is never run as the fix's
+  stale code.
 
 `hermes dk report` totals the unguarded hunks across the window's issue fixes.
 

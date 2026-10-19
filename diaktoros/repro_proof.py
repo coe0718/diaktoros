@@ -245,18 +245,22 @@ def _comment_only(lines: list[str]) -> bool:
     return all(not line.strip() or line.lstrip().startswith("#") for line in lines)
 
 
+def _lines(path: Path) -> list[str]:
+    return path.read_text(errors="replace").splitlines(keepends=True) if path.is_file() else []
+
+
 def source_hunks(base_dir: Path, new_tree: Path) -> list[dict]:
     """Every changed hunk of the fix's non-test Python source: path, the old line range (from
-    the original head) and the new one (in the fix), largest first. Comment- and blank-only
-    hunks change no behaviour and are left out."""
+    the original head) and the new one (in the fix), largest first. A source file the fix
+    deletes is in it too (all its lines one hunk), so a removed behaviour is checked. Comment-
+    and blank-only hunks change no behaviour and are left out."""
+    paths = {p.relative_to(root).as_posix() for root in (Path(base_dir), Path(new_tree))
+             for p in root.rglob("*.py")}
     hunks = []
-    for path in sorted(p.relative_to(new_tree).as_posix() for p in Path(new_tree).rglob("*.py")):
-        if ci_fix.TEST_PATH.search(path) or path.startswith("."):
+    for path in sorted(paths):
+        if ci_fix.TEST_PATH.search(path) or any(part.startswith(".") for part in path.split("/")):
             continue
-        new = (Path(new_tree) / path).read_text(errors="replace").splitlines(keepends=True)
-        old_file = Path(base_dir) / path
-        old = old_file.read_text(errors="replace").splitlines(keepends=True) \
-            if old_file.is_file() else []
+        old, new = _lines(Path(base_dir) / path), _lines(Path(new_tree) / path)
         if old == new:
             continue
         for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new,
@@ -268,18 +272,38 @@ def source_hunks(base_dir: Path, new_tree: Path) -> list[dict]:
     return sorted(hunks, key=lambda h: (-h["size"], h["path"], h["new"][0]))
 
 
+def _drop_bytecode(tree: Path) -> None:
+    """Remove compiled bytecode before a run: Python reuses a .pyc whose source has the same
+    size and modification second, so a same-size revert written in the second the fix's run
+    compiled (`return 2` back to `return 1`) would run the fix's code and read as unguarded."""
+    for cache in list(Path(tree).rglob("__pycache__")):
+        shutil.rmtree(cache, ignore_errors=True)
+
+
+def _where(hunk: dict) -> str:
+    """The lines a reviewer can find: the fix's lines, or for a pure deletion (nothing left in
+    the fix) the original head's lines it removed."""
+    (i1, i2), (j1, j2) = hunk["old"], hunk["new"]
+    if j1 == j2:
+        return f"original lines {i1 + 1}-{i2} (deleted)"
+    return f"lines {j1 + 1}-{j2}"
+
+
 def hunk_guard(base_dir: Path, new_tree: Path, runs: list[str], path: str, new_out: str,
                run, clock=time.monotonic) -> list[dict]:
     """For each source hunk, revert it alone in the fix's tree, run the named tests, restore it.
-    ``guarded``: a named test failed or errored (it notices the hunk); ``unguarded``: every named
-    test still passed; ``not checked``: past the cap or the time budget, or the tests could not
-    be read. Only meaningful when the fix itself passes them: otherwise nothing is reverted."""
+    ``guarded``: a named test failed (it notices the hunk); ``unguarded``: every named test still
+    passed; ``not checked``: past the cap or the time budget, a revert that stops the test module
+    importing (a broken partial revert proves nothing), a run that raised (a timeout: reverting a
+    guard or a loop bound can hang the tests), or results that could not be read. A not-checked
+    hunk never counts as guarded, and one hunk's failure never discards the rest of the proof.
+    Only meaningful when the fix itself passes them: otherwise nothing is reverted."""
     results = ci_tests.parse(new_out)
     if not runs or not all(status(results, wanted) == "ok" for wanted in runs):
         return []
     hunks, started, rows = source_hunks(base_dir, new_tree), clock(), []
     for index, hunk in enumerate(hunks):
-        row = {"path": hunk["path"], "lines": f"{hunk['new'][0] + 1}-{max(hunk['new'][1], hunk['new'][0] + 1)}"}
+        row = {"path": hunk["path"], "lines": _where(hunk)}
         if index >= HUNKS_MAX:
             rows.append({**row, "status": NOT_CHECKED, "why": f"past the first {HUNKS_MAX} hunks"})
             continue
@@ -287,19 +311,30 @@ def hunk_guard(base_dir: Path, new_tree: Path, runs: list[str], path: str, new_o
             rows.append({**row, "status": NOT_CHECKED, "why": "the time budget was spent"})
             continue
         target = Path(new_tree) / hunk["path"]
-        original = target.read_bytes()
-        new = original.decode(errors="replace").splitlines(keepends=True)
-        old_file = Path(base_dir) / hunk["path"]
-        old = old_file.read_text(errors="replace").splitlines(keepends=True) \
-            if old_file.is_file() else []
+        original = target.read_bytes() if target.is_file() else None
+        new = original.decode(errors="replace").splitlines(keepends=True) if original else []
+        old = _lines(Path(base_dir) / hunk["path"])
         (i1, i2), (j1, j2) = hunk["old"], hunk["new"]
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("".join(new[:j1] + old[i1:i2] + new[j2:]))
+            _drop_bytecode(new_tree)
             out = ci_tests.parse(run(new_tree, runs, path))
+        except Exception as exc:          # the run raised (a timeout, containment): this hunk only
+            rows.append({**row, "status": NOT_CHECKED,
+                         "why": f"the tests did not finish with it reverted ({type(exc).__name__})"})
+            continue
         finally:
-            target.write_bytes(original)
+            if original is None:
+                target.unlink(missing_ok=True)
+            else:
+                target.write_bytes(original)
+            _drop_bytecode(new_tree)
         seen = [status(out, wanted) for wanted in runs]
-        if any(s in ("fail", IMPORT_ERROR) for s in seen):
+        if IMPORT_ERROR in seen:
+            rows.append({**row, "status": NOT_CHECKED,
+                         "why": "the test module does not import with it reverted"})
+        elif "fail" in seen:
             rows.append({**row, "status": GUARDED})
         elif all(s == "ok" for s in seen):
             rows.append({**row, "status": UNGUARDED})
@@ -353,11 +388,11 @@ def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
                  f"ran the named tests: {len(hunks) - len(unguarded) - len(unchecked)} guarded, "
                  f"{len(unguarded)} unguarded, {len(unchecked)} not checked.\n")
         for h in unguarded:
-            text += (f"  - unguarded: {json.dumps(str(h.get('path'))[:120])} lines "
-                     f"{h.get('lines')} (reverting it alone fails none of the named tests)\n")
+            text += (f"  - unguarded: {json.dumps(str(h.get('path'))[:120])} {h.get('lines')} "
+                     "(reverting it alone fails none of the named tests)\n")
         for h in unchecked[:5]:
-            text += (f"  - not checked: {json.dumps(str(h.get('path'))[:120])} lines "
-                     f"{h.get('lines')} ({h.get('why')})\n")
+            text += (f"  - not checked: {json.dumps(str(h.get('path'))[:120])} {h.get('lines')} "
+                     f"({h.get('why')})\n")
         if unguarded:
             text += ("  An unguarded hunk that changes behaviour is a missing test: the repo's rule "
                      "is that every change has a test that fails without it. Treat it as a "

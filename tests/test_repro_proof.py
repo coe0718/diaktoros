@@ -155,13 +155,80 @@ class Proof(unittest.TestCase):
         self.assertIn("not checked", repro_proof.section(
             {"overall": repro_proof.PROVEN, "ids": [], "hunks": rows}))
 
-    def test_a_revert_that_breaks_the_import_counts_as_noticed(self):
-        # Reverting the hunk that adds a name the test imports: the module fails to import,
-        # which is the tests noticing it.
+    def test_a_revert_that_breaks_the_import_is_not_checked_never_guarded(self):
+        # Review on #1048 (both seats): #1043 says a revert that doesn't import is "not checked"
+        # and never counts as guarded: a broken partial revert proves nothing about coverage.
         adds = NEW_CODE + "\n\nLIMIT = 3\n"
         test = TEST.replace("import widget as c\n", "import widget as c\nfrom widget import LIMIT\n")
         rows = self.guard(adds, test)["hunks"]
-        self.assertTrue(rows and all(h["status"] == repro_proof.GUARDED for h in rows), rows)
+        limit = [h for h in rows if h["status"] == repro_proof.NOT_CHECKED]
+        self.assertTrue(limit, rows)
+        self.assertIn("does not import", limit[0]["why"])
+        self.assertNotIn(repro_proof.UNGUARDED, {h["status"] for h in rows})
+
+    def trees(self, tmp, base_files, new_files):
+        base, new = Path(tmp) / "base", Path(tmp) / "new"
+        for root, files in ((base, base_files), (new, new_files)):
+            (root / "tests").mkdir(parents=True)
+            (root / "tests" / "__init__.py").write_text("")
+            for name, text in files.items():
+                (root / name).write_text(text)
+        return base, new
+
+    def test_a_deleted_source_file_and_a_deletion_hunk_are_checked_and_labelled(self):
+        # Review on #1048: only the fix's tree was walked, so a deleted file was invisible; and a
+        # pure deletion was labelled with a line the fix doesn't have.
+        with tempfile.TemporaryDirectory() as tmp:
+            base, new = self.trees(tmp, {"widget.py": "OLDER = 1\n\n\n" + OLD_CODE,
+                                         "helper.py": "def h():\n    return 1\n"},
+                                   {"widget.py": NEW_CODE, "tests/test_it.py": TEST})
+            (base / "tests" / "test_it.py").write_text(TEST)
+            ids = ["tests.test_it.Case.test_value"]
+            out = run_unittest(new, ids)
+            rows = repro_proof.hunk_guard(base, new, ids, ".", out, run_unittest)
+            self.assertFalse((new / "helper.py").exists(), "the reverted deletion was undone")
+        got = {(h["path"], h["lines"], h["status"]) for h in rows}
+        self.assertIn(("helper.py", "original lines 1-2 (deleted)", repro_proof.UNGUARDED), got)
+        self.assertIn(("widget.py", "original lines 1-3 (deleted)", repro_proof.UNGUARDED), got)
+        self.assertIn(("widget.py", "lines 2-2", repro_proof.GUARDED), got)
+
+    def test_a_same_size_revert_never_runs_the_fixs_stale_bytecode(self):
+        # Found building #1048: `return 2` back to `return 1` is the same size, and Python reuses
+        # a .pyc whose source has the same size and mtime, so the revert ran the fix's code and
+        # read as unguarded. Pin the mtime on every run to make that certain, not timing luck.
+        import os
+
+        def run(tree, ids, pythonpath="."):
+            os.utime(Path(tree) / "widget.py", (1_000_000_000, 1_000_000_000))
+            return run_unittest(tree, ids, pythonpath)
+        with tempfile.TemporaryDirectory() as tmp:
+            base, new = self.trees(tmp, {"widget.py": OLD_CODE},
+                                   {"widget.py": NEW_CODE, "tests/test_it.py": TEST})
+            ids = ["tests.test_it.Case.test_value"]
+            rows = repro_proof.hunk_guard(base, new, ids, ".", run(new, ids), run)
+        self.assertEqual([h["status"] for h in rows], [repro_proof.GUARDED])
+
+    def test_a_hunk_run_that_raises_is_not_checked_and_keeps_the_proof(self):
+        # Shadow review of #1048: a revert that hangs the tests (a guard or a loop bound) raised
+        # out of prove(), and the broker showed the reviewer "NOT RUN" for the whole proof.
+        calls = []
+
+        def run(tree, ids, pythonpath="."):
+            calls.append(1)
+            if len(calls) > 2:                      # the old and new runs pass through
+                raise subprocess.TimeoutExpired("unittest", 300)
+            return run_unittest(tree, ids, pythonpath)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            fix = manifest({"widget.py": NEW_CODE, "tests/test_it.py": TEST})
+            proof = repro_proof.prove(base, fix, ["tests.test_it.Case.test_value"], run)
+        self.assertEqual(proof["overall"], repro_proof.PROVEN)
+        self.assertEqual([(h["status"], h["why"]) for h in proof["hunks"]],
+                         [(repro_proof.NOT_CHECKED,
+                           "the tests did not finish with it reverted (TimeoutExpired)")])
 
     def test_a_test_failing_on_the_fix_or_missing_is_unproven(self):
         self.assertEqual(self.prove(TEST.replace("2)", "3)"))["overall"], repro_proof.UNPROVEN)
