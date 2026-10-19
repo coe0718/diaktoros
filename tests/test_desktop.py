@@ -550,10 +550,10 @@ class Health(unittest.TestCase):
         called.assert_not_called()
 
 
-DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings"}
-# The page stopped being read-only for one confirmed action (#371): POST /retry. Every other route
-# is a read, and this set is enumerated so a new route cannot ship unlisted.
-DASHBOARD_WRITE_ROUTES = {"/retry"}
+DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "/settings", "/hooks"}
+# Confirmed writes only: retry (#371) and host-owned hook pause/resume (#645).
+# Enumerate the boundary deliberately; hooks is the sole GET+POST resource.
+DASHBOARD_WRITE_ROUTES = {"/retry", "/hooks"}
 
 
 class RouteListing(unittest.TestCase):
@@ -575,7 +575,8 @@ class RouteListing(unittest.TestCase):
             if verb == "post":
                 self.assertIn(path, DASHBOARD_WRITE_ROUTES)
         paths = [path for _, path in found]
-        self.assertEqual(sorted(paths), sorted(set(paths)))
+        self.assertEqual(len(found), len(set(found)))
+        self.assertEqual({path for path in paths if paths.count(path) > 1}, {"/hooks"})
         self.assertEqual(set(paths), DASHBOARD_ROUTES | DASHBOARD_WRITE_ROUTES)
 
     def test_no_route_is_registered_another_way(self):
@@ -744,7 +745,9 @@ class Surface(unittest.TestCase):
         # replaced the operator's Node with a stub). Require reported tests, no failures, and a
         # named test.
         ok = re.findall(r"^ok \d+ - ", done.stdout, re.M)
-        self.assertGreaterEqual(len(ok), 77, done.stdout[-4000:])
+        self.assertGreaterEqual(len(ok), 112, done.stdout[-4000:])
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - hooks: old dialog cannot confirm or cancel a replacement confirmation$")
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - hooks: malformed POST identities, status and answer fields never produce verified success$")
         self.assertNotIn("not ok", done.stdout)
         reported_pass = re.search(r"^# pass (\d+)$", done.stdout, re.M)
         if reported_pass is None:

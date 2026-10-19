@@ -1,7 +1,7 @@
 {
   "name": "diaktoros",
   "label": "Diaktoros",
-  "description": "Loop activity for the Hermes Desktop page \u2014 seat turns, timings and live runs \u2014 and a confirmed Retry that re-arms a failed run which never wrote.",
+  "description": "Loop activity for the Hermes Desktop page \u2014 seat turns, timings and live runs \u2014 a confirmed Retry that re-arms a failed run which never wrote, and confirmed webhook pause/resume with verified hook status.",
   "icon": "Activity",
   "tab": {
     "hidden": true

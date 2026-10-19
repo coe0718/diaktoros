@@ -1,23 +1,23 @@
 """Backend routes for the Desktop Diaktoros page (#369, #630, #371), mounted by Hermes at
 ``/api/plugins/diaktoros/``, behind the gateway's own auth.
 
-Six routes read the loop config, the run ledger and (``/health``) the installation's own files.
-**One writes:** ``POST /retry`` re-arms a run the CLI's ``retry`` would re-arm — the page's one
-confirmed action, and the same host-owned code path (``diaktoros.retry_action`` over
-``Supervisor.retry``). No route calls GitHub or reads a token except ``/health?probe=1``, which is
-local-only. The logic is ``diaktoros.desktop_api``; this module maps its exceptions to status
-codes and does nothing else.
+Reads cover loop config, the run ledger, installation health and GitHub hook state.
+``POST /retry`` re-arms a run via ``retry_action``; ``POST /hooks`` confirms a pause/resume
+via the same ``arm_action`` operation as CLI ``arm``. Hooks use the existing host credential
+resolution and return no credentials or paths. ``/health?probe=1`` remains local-only.
+The logic lives in ``diaktoros.desktop_api``; this module maps exceptions and validates body shape.
 """
 from __future__ import annotations
 
 import pathlib
 import sys
+from typing import Any
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:          # Hermes imports this file by path, not as a package
     sys.path.insert(0, str(_ROOT))
 
-from fastapi import APIRouter, HTTPException, Request  # noqa: E402
+from fastapi import APIRouter, Body, HTTPException, Request  # noqa: E402
 
 from diaktoros import desktop_api  # noqa: E402
 
@@ -34,6 +34,8 @@ def _answer(fn, *args):
     except desktop_api.Conflict as exc:
         # A retry the ledger refuses: the operator sees the host's own reason, not a 500.
         raise HTTPException(status_code=409, detail=str(exc)) from None
+    except desktop_api.HookRequest as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     except desktop_api.BadRequest as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
@@ -75,6 +77,20 @@ def health(request: Request, loop: str | None = None, probe: bool = False):
 @router.get("/settings")
 def settings():
     return _answer(desktop_api.settings_view)
+
+
+@router.get("/hooks")
+def hooks(loop: str | None = None):
+    return _answer(desktop_api.hooks_view, loop)
+
+
+@router.post("/hooks")
+def hooks_action(payload: Any = Body(None)):
+    """Only loop/action/opaque confirmation; credentials stay entirely on the host."""
+    if not isinstance(payload, dict) or set(payload) != {'loop', 'action', 'confirmation'}:
+        raise HTTPException(status_code=422, detail='Expected loop, action and confirmation.')
+    return _answer(desktop_api.hooks_action_view, payload['loop'], payload['action'],
+                   payload['confirmation'])
 
 
 @router.post("/retry")

@@ -1,8 +1,8 @@
 // diaktoros: the Hermes Desktop half (#369, #630, #371). A Diaktoros page, a status-bar summary,
 // a drawer showing what would move one PR, and the installation's own preflight — all fed by
-// this plugin's own backend (dashboard/plugin_api.py) through ctx.rest. Every read is read-only.
-// One control writes: Retry re-arms a run the CLI's retry would re-arm, only for a row the
-// backend marks retryable, always behind a confirmation, and it shows the backend's own answer.
+// this plugin's own backend (dashboard/plugin_api.py) through ctx.rest. Reads never mutate state.
+// Writes require confirmation: Retry re-arms an eligible run; Pause/Resume changes webhook
+// delivery only. Each shows a verified host result, never an optimistic state.
 // Plain ESM, loaded uncompiled: jsx() calls, not JSX syntax, and only the three specifiers the
 // loader allows. Theme variables only, never a hardcoded color.
 import {
@@ -226,7 +226,7 @@ function trackedViewState(q, empty, maxAge = 120000) {
 function observeFreshness(query) {
   if (query.queryKey[0] !== ID) return
   const kind = query.queryKey[1]
-  if (kind === 'now' || kind === 'overview') freshRead(query.state, 60000)
+  if (kind === 'now' || kind === 'overview' || kind === 'hooks') freshRead(query.state, 60000)
   else if (kind === 'loops' || kind === 'stats' || kind === 'settings') freshRead(query.state, 120000)
 }
 
@@ -1031,6 +1031,105 @@ function Settings() {
   ] }) })
 }
 
+// Hook status is host-owned; unknown never means paused, and the confirmation is opaque.
+function validateHooks(data, loop, write = false) {
+  const object = data && typeof data === 'object' && !Array.isArray(data)
+  const bounded = value => typeof value === 'string' && value.length <= 400 && !/[\r\n\x00-\x1f]/.test(value)
+  if (!object || data.loop !== loop || typeof data.repo !== 'string' ||
+      !['armed', 'paused', 'unknown'].includes(data.state) || typeof data.eligible !== 'boolean' ||
+      !bounded(data.reason) || typeof data.read_at !== 'number' || !Number.isFinite(data.read_at) || data.read_at < 0 ||
+      !(data.confirmation === null || (typeof data.confirmation === 'string' && data.confirmation.length > 0 && data.confirmation.length <= 4096)) ||
+      (data.eligible && (data.state === 'unknown' || !data.repo || !data.confirmation)) ||
+      (data.state === 'unknown' && data.confirmation !== null) ||
+      (write && (typeof data.ok !== 'boolean' || !bounded(data.answer) || !data.answer))) throw invalidResponse('hooks')
+  return data
+}
+
+function HooksControl({ loop, discoveryCurrent }) {
+  const q = useQuery({ queryKey: [ID, 'hooks', loop], enabled: !!loop,
+    queryFn: async () => validateHooks(await call('/hooks?loop=' + encodeURIComponent(loop)), loop),
+    refetchInterval: 30000 })
+  const state = useViewState(q, false, 60000)
+  const [pending, setPending] = useState(null)
+  const [answer, setAnswer] = useState(null)
+  const current = useRef(null)
+  const targetRef = useRef(null)
+  const busy = useRef(false)
+  const consumed = useRef(null)
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  // Latest render is authoritative even for callbacks retained by a closing dialog.
+  current.current = { loop, q, discoveryCurrent }
+  const allowed = () => {
+    const latest = current.current
+    return mounted.current && latest.loop === loop && latest.discoveryCurrent &&
+      !latest.q.isFetching && trackedViewState(latest.q, false, 60000) === 'verified' &&
+      latest.q.data?.loop === loop && latest.q.data?.eligible === true &&
+      ['armed', 'paused'].includes(latest.q.data.state) &&
+      !(consumed.current?.data === latest.q.data && consumed.current?.at === latest.q.dataUpdatedAt)
+  }
+  const cancel = () => { targetRef.current = null; setPending(null) }
+  useEffect(() => { cancel(); setAnswer(null) }, [loop])
+  const ask = () => {
+    if (busy.current || !allowed()) return
+    const target = { loop, action: q.data.state === 'armed' ? 'pause' : 'resume',
+      confirmation: q.data.confirmation, data: q.data, at: q.dataUpdatedAt }
+    targetRef.current = target
+    setAnswer(null)
+    setPending(target)
+  }
+  const confirm = async target => {
+    if (busy.current || !target || targetRef.current !== target) return
+    const latest = current.current.q
+    if (!allowed() || target.loop !== current.current.loop || target.data !== latest.data ||
+        target.at !== latest.dataUpdatedAt || target.confirmation !== latest.data?.confirmation) {
+      cancel()
+      setAnswer('Confirmation expired. Read hook status again before confirming.')
+      return
+    }
+    busy.current = true
+    consumed.current = { data: latest.data, at: latest.dataUpdatedAt }
+    try {
+      const result = validateHooks(await call('/hooks', { method: 'POST', body: {
+        loop: target.loop, action: target.action, confirmation: target.confirmation } }), target.loop, true)
+      if (mounted.current && current.current.loop === target.loop && targetRef.current === target) {
+        setAnswer(result.ok && result.state === (target.action === 'pause' ? 'paused' : 'armed')
+          ? 'Backend verified webhook delivery ' + result.state + ' for loop ' + target.loop + '.'
+          : 'The backend could not confirm the requested change. Read hook status again.')
+      }
+    } catch (error) {
+      const failure = retryFailure(error)
+      const text = error?.code === 'INVALID_RESPONSE' ? 'The hook answer could not be verified. Read hook status again.'
+        : failure.status === 409 ? 'HTTP 409 · Confirmation refused: hook state changed. Read hook status and confirm again.'
+        : failure.status === 422 ? 'HTTP 422 · Hook change refused. Read hook status before trying again.'
+        : 'Hook change could not be verified. Check the connection and read hook status again.'
+      if (mounted.current && current.current.loop === target.loop && targetRef.current === target) setAnswer(text)
+    } finally {
+      busy.current = false
+      if (targetRef.current === target) cancel()
+      queryClient.invalidateQueries({ queryKey: [ID, 'hooks', target.loop] })
+      queryClient.invalidateQueries({ queryKey: [ID, 'health', target.loop] })
+    }
+  }
+  const awaitingRead = consumed.current?.data === q.data && consumed.current?.at === q.dataUpdatedAt
+  const verified = state === 'verified' && !q.isFetching && discoveryCurrent && !awaitingRead
+  return jsx(Section, { title: 'Webhook delivery', children: jsxs('div', {
+    className: 'flex min-w-0 flex-col gap-2', children: [
+      jsx(QueryStatus, { query: q, state: awaitingRead ? 'stale' : state, label: 'Webhook delivery' }),
+      jsx(Muted, { text: verified ? 'Loop ' + loop + ' · ' + (q.data?.state || 'unknown') : 'Current webhook delivery state unknown. Read status before changing it.' }),
+      jsx(Muted, { text: 'Pausing stops webhook delivery, not in-flight turns. The sweeper may recover events while hooks are paused; this is not a full execution stop.' }),
+      allowed() && !busy.current ? jsx(Button, { size: 'xs', variant: 'ghost', onClick: ask,
+        children: q.data.state === 'armed' ? 'Pause webhook delivery' : 'Resume webhook delivery' }) : null,
+      answer ? jsx('div', { role: 'status', className: 'break-words text-xs text-(--ui-text-secondary)', children: answer }) : null,
+      pending && pending.loop === loop ? jsx(ConfirmDialog, { open: true,
+        title: pending.action === 'pause' ? 'Pause webhook delivery?' : 'Resume webhook delivery?',
+        description: (pending.action === 'pause' ? 'Pause' : 'Resume') + ' webhook delivery for loop ' + pending.loop +
+          '. Pausing stops GitHub webhook delivery, not in-flight turns. The sweeper may recover events even while paused. Resuming allows new webhook delivery; it does not restart completed turns.',
+        confirmLabel: pending.action === 'pause' ? 'Pause delivery' : 'Resume delivery',
+        busyLabel: 'Checking hook change…', cancelLabel: 'Cancel', onClose: () => { if (targetRef.current === pending) cancel() }, onConfirm: () => confirm(pending) }) : null
+    ] }) })
+}
+
 function Page() {
   const [since, setSince] = useState('7d')
   const focus = useFocus()
@@ -1275,8 +1374,9 @@ function Page() {
             })]
         })
       }),
+      jsx(HooksControl, { loop, discoveryCurrent: loopsState === 'verified' && !loops.isFetching && list.some(item => item.id === loop) }),
       jsx(Health, { loop }),
-      jsx(Muted, { text: 'Read-only except Retry, which re-arms a run that never wrote and always asks first. Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
+      jsx(Muted, { text: 'Writes require confirmation: Retry re-arms a run that never wrote; Pause/Resume changes webhook delivery only. Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
     ]
   })
 
