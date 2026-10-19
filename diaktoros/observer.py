@@ -520,23 +520,30 @@ def render_digest(loop: dict, entries: list) -> str:
     for entry in entries:
         event = str(entry.get("event") or "")
         issue = bool(entry.get("issue", event in ISSUE_EVENTS))
-        group = groups.setdefault((issue, entry.get("number")),
-                                  {"words": [], "url": entry.get("url") or ""})
+        # A number-less entry (an empty ready set) names no PR or issue: group it by event.
+        key = (issue, entry.get("number")) if has_pr(entry.get("number")) else (None, event)
+        group = groups.setdefault(key, {"words": [], "url": entry.get("url") or ""})
         word = _digest_word(entry)
         if not group["words"] or group["words"][-1] != word:
             group["words"].append(word)
-    prs = sum(1 for issue, _ in groups if not issue)
-    issues = len(groups) - prs
+    prs = sum(1 for issue, _ in groups if issue is False)
+    issues = sum(1 for issue, _ in groups if issue)
+    notices = len(groups) - prs - issues
     counts = []
     if prs:
         counts.append(f"{prs} PR{'s' if prs != 1 else ''}")
     if issues:
         counts.append(f"{issues} issue{'s' if issues != 1 else ''}")
+    if notices:
+        counts.append(f"{notices} notice{'s' if notices != 1 else ''}")
     window = int((loop.get("observer") or {}).get("digest_min") or 0)
     span = f"last {window}m" if window else "Diaktoros digest"
     lines = [f"🗂 [{loop.get('id')}] {span} — {', '.join(counts)}"]
     for (issue, number), group in list(groups.items())[:DIGEST_LIMIT]:
-        label = (f"#{number} (issue)" if issue else f"#{number}") if has_pr(number) else "main"
+        if issue is None:  # no PR: the event name is the label, never a PR number or "main"
+            lines.append(f"{str(number).replace('_', ' ')} · {group['url']}")
+            continue
+        label = f"#{number} (issue)" if issue else f"#{number}"
         lines.append(f"{label} {' → '.join(group['words'])} · {group['url']}")
     if len(groups) > DIGEST_LIMIT:
         lines.append(f"…and {len(groups) - DIGEST_LIMIT} more")

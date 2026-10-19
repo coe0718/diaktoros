@@ -121,6 +121,21 @@ class NowCarriesTheBackendVerdict(Fixture):
         self.assertNotIn("exploded", json.dumps(self.now()))   # a run's error text never reaches it
         self.assertTrue(row["id"])
 
+    def test_a_failed_run_on_a_pr_the_watchdog_lists_closed_is_not_offered(self):
+        self.row("failed")
+        from diaktoros import state as state_mod
+        st = state_mod.state_for(self.loop)
+        st.watch_save({**st.watch(), "open_prs": {"at": time.time(), "numbers": [1, 2]}})
+        [run] = self.now()["runs"]
+        self.assertFalse(run["retry"]["eligible"])
+        self.assertIn("PR #356 is not open", run["retry"]["reason"])
+        with self.assertRaisesRegex(desktop_api.Conflict, "PR #356 is not open"):
+            self.retry()                                # the POST refuses with the same words
+        # A listing that still names the PR keeps the button.
+        st.watch_save({**st.watch(), "open_prs": {"at": time.time(), "numbers": [356]}})
+        [run] = self.now()["runs"]
+        self.assertTrue(run["retry"]["eligible"])
+
     def test_an_uncertain_run_is_listed_but_never_offered(self):
         self.row("uncertain", error="worker lost after launch intent")
         [run] = self.now()["runs"]

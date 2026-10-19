@@ -148,15 +148,22 @@ def page_targets(con, repo: str, loop: dict | None = None) -> dict:
         groups.setdefault((row["pr"], row["seat"]), []).append(row)
     out: dict = {}
     policy_off = fixer_policy(loop) if loop is not None else ""
+    listing = open_listing(loop) if loop is not None else None
     for (pr, seat), group in groups.items():
         offerable_rows = [row for row in group if offered(row)]
         head = (newest(offerable_rows) if offerable_rows else newest(group))["head"]
+        # The refusal ``perform`` makes for a PR the watchdog's complete listing shows closed:
+        # one verdict for every offered row at the head, from the same function.
+        closed = (closed_refusal(loop, pr, [row for row in offerable_rows if row["head"] == head],
+                                 listing) if loop is not None else "")
         for row in group:
             entry = {"eligible": False, "head": str(head or ""), "reason": ""}
             if row["head"] != head:
                 entry["reason"] = f"not the newest run for this PR: retry targets {str(head)[:7]}"
             elif not offered(row):
                 entry["reason"] = f"{row['state']}: retry does not re-arm this run"
+            elif closed:
+                entry["reason"] = bounded(closed)
             elif seat == "fixer" and policy_off:
                 entry["reason"] = bounded(policy_off)
             else:
@@ -191,6 +198,22 @@ def pr_open(loop: dict, pr: int, listing: dict | None = None, read_pr=None):
             return live.get("state") == "open"
         return not absent
     return True
+
+
+def closed_refusal(loop: dict, pr: int, offered_rows: list[dict], listing: dict | None = None,
+                   read_pr=None) -> str:
+    """The whole-command refusal for a PR that is no longer open, or ``""`` (#723).
+
+    Only a failed PR-seat row among those offered is judged; issue seats are keyed by issue
+    number and never are. ``perform`` refuses with this text and the Desktop's row verdict
+    (``page_targets``) withholds its button with the same text.
+    """
+    listing = open_listing(loop) if listing is None else listing
+    if listing is not None and any(row["state"] == "failed" and row["seat"] not in ISSUE_SEATS
+                                   for row in offered_rows):
+        if pr_open(loop, pr, listing, read_pr) is False:
+            return f"[{loop['id']}] PR #{pr} is not open (merged or closed); nothing to re-arm"
+    return ""
 
 
 def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confirm_head: str | None = None,
@@ -231,12 +254,10 @@ def perform(loop: dict, pr: int, seat: str | None = None, *, ledger=None, confir
                           f"confirmed {str(confirm_head)[:7]} (it is {found['head7']} now) — "
                           "nothing was re-armed; check the row and retry")
         return out
-    listing = open_listing(loop)
-    if listing is not None and any(row["state"] == "failed" and row["seat"] not in ISSUE_SEATS
-                                   for row in found["offered"]):
-        if pr_open(loop, pr, listing, read_pr) is False:
-            out["message"] = f"[{loop['id']}] PR #{pr} is not open (merged or closed); nothing to re-arm"
-            return out
+    closed = closed_refusal(loop, pr, found["offered"], read_pr=read_pr)
+    if closed:
+        out["message"] = closed
+        return out
     rearmed, refused = 0, 0
     for row in found["offered"]:
         entry = {"id": row["id"], "seat": row["seat"], "head": found["head"],

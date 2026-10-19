@@ -181,6 +181,20 @@ class Settled(tct.Worker):
         self.assertEqual(seen, {})
         self.assertEqual(row[0], "uncertain")
 
+    def test_a_published_push_is_held_as_published_not_unknown(self):
+        # #824 via #989: the host read the branch back at the commit, so the hold records
+        # published. The shadow review of #989 found this call site untested.
+        for outcome, held in (("published", "published"), ("unknown", "unknown"),
+                              ("unchanged", "unknown")):
+            with self.subTest(outcome=outcome):
+                self.setUp()
+                seen, row, *_ = self.settle(merged_of({"docs/commands.md": CONFLICT},
+                                                      ["docs/commands.md"]),
+                                            push_error=safe_push.PushFailure(outcome))
+                self.assertEqual(seen, {})
+                self.assertEqual(tuple(row[:2]), ("uncertain",
+                                                  f"post-write push quarantine: {held}"))
+
 
 class Setting(tct.unittest.TestCase):
     RAW = {"id": "w", "repo": "a/b", "tokens": {}, "read_token": "r", "fixers": ["f"],

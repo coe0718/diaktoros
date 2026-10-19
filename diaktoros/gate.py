@@ -194,6 +194,11 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
         if not shadow_sampled(loop, number, head):
             return "not sampled"
         delivery = f"{loop['repo']}:{number}:{head}:shadow" + (f":{turn_key}" if turn_key else "")
+        try:
+            st = state_mod.state_for(loop)
+            st.shadow_findings_put(number, head, st.findings_get(number))
+        except Exception as exc:
+            log(f"#{number}: shadow findings snapshot not kept: {type(exc).__name__}: {exc}")
         return supervisor.submit(delivery, loop["repo"], number, head, "shadow",
                                  turn_key=turn_key, budget=config.turn_budget(loop, "shadow"))
     except Exception as exc:
@@ -625,7 +630,7 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
                 continue
             marks.append(f"{label} for head {head[:7]} armed "
                          f"{_minutes_since(st.inflight_at(mark), now)}m ago "
-                         f"(ttl {loop['inflight_ttl_min']}m)")
+                         f"(ttl {st._minutes('inflight_ttl_min'):g}m)")   # the TTL inflight() used
             if label == "review":
                 inflight_review = True
             else:
@@ -990,9 +995,11 @@ def explain(loop: dict, st: state_mod.LoopState, number: int, facts: dict) -> di
             if stacked:
                 blockers.append(f"stacked PR: {chain_reason} — visible only; no reviewer or fixer "
                                 "run is authorized by parent readiness")
-            if boundary and transition.baseline_missing(boundary):
+            # The retarget hold vetoes only while the fresh review is still owed: a host-receipted
+            # post-boundary approval at this head ends it, as in `ready` and the gates (#791, #934).
+            if boundary and not approved and transition.baseline_missing(boundary):
                 blockers.append(f"same-head base retarget held: {transition.MISSING_BASELINE}")
-            elif boundary:
+            elif boundary and not approved:
                 blockers.append("same-head base retarget: pre-retarget reviews, rounds and approvals "
                                 "quarantined — fresh review situation; only a host-receipted "
                                 "post-boundary review counts (fresh reviewer turn: "

@@ -303,7 +303,16 @@ def fake_hermes_source() -> str:
     # would fail ``runtime:source``'s shape check, so the fixture must be a checkout like any
     # real install.
     (root / "run_agent.py").write_text("")
-    (root / ".git").mkdir(exist_ok=True)
+    if not (root / ".git").exists():
+        # #924: doctor asks Git whether run_agent.py is in HEAD, so the fixture is a real
+        # repository with it committed (turns snapshot HEAD, never the working tree).
+        import subprocess
+        env = {"PATH": "/usr/bin:/bin", "HOME": "/dev/null", "GIT_CONFIG_GLOBAL": "/dev/null",
+               "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        for args in (["init", "-q"], ["add", "run_agent.py"], ["commit", "-q", "-m", "fixture"]):
+            subprocess.run(["/usr/bin/git", "-C", str(root), *args], check=True, env=env,
+                           capture_output=True)
     return str(root)
 
 

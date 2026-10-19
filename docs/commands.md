@@ -889,7 +889,10 @@ An archive is treated as outside input. `restore` refuses it (exit `2`, nothing 
   entry is judged against the loop files being restored (the archive's, plus any live loop it
   does not replace; an archived loop file that does not load still replaces the live one, and
   claims nothing); a seat route's `deliver`/`deliver_extra` may also equal the live route's
-  own. A route no restored loop owns must have the live route's `profile`, `host` and `events`
+  own. The route's HMAC `secret` must equal the live route's (or, with no live route, the one in
+  the loop's `route-intent.json`) when this install holds one (#920), so an archive made before
+  a secret rotation is refused; a restore onto a machine with neither has nothing to compare,
+  and the archive's secret is taken there. A route no restored loop owns must have the live route's `profile`, `host` and `events`
   under the same name (a restore onto the install it came from), and is refused when there is
   no such live route; an observer route no restored loop owns is refused, because its
   destination cannot be checked;

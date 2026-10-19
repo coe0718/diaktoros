@@ -527,13 +527,18 @@ def _read_key_file(raw: str, where: str) -> str:
         info = path.lstat()
     except OSError:
         raise SeatModelError(f"{where}: key file {path} does not exist") from None
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() \
+            or info.st_mode & 0o077 or not info.st_mode & 0o400:
         raise SeatModelError(f"{where}: key file {path} must be a regular 0600 file you own "
                              f"(`chmod 600 {path}`)")
     try:
         key = path.read_text().strip()
     except UnicodeDecodeError:
         raise SeatModelError(f"{where}: key file {path} is not UTF-8 text") from None
+    except OSError as exc:
+        raise SeatModelError(f"{where}: key file {path} could not be read ({exc.__class__.__name__}"
+                             f"); it must be a readable 0600 file you own "
+                             f"(`chmod 600 {path}`)") from None
     if not key_text_is_one_line(key):
         raise SeatModelError(f"{where}: key file {path} is empty or has more than one line")
     return key
