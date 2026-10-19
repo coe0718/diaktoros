@@ -364,6 +364,18 @@ class CITestsBroker(pv.Broker):
 
 
 class CITestsUnit(unittest.TestCase):
+    def test_a_subtest_failure_counts_for_its_test_and_the_worst_result_wins(self):
+        log = ("test_sub (m.C.test_sub) ... \n"
+               "  test_sub (m.C.test_sub) (v=1) ... FAIL\n"
+               "  test_sub (m.C.test_sub) (v=2) ... ERROR\n"
+               "test_mixed (m.C.test_mixed) ... \n"
+               "  test_mixed (m.C.test_mixed) (v=1) ... skipped 'x'\n"
+               "test_mixed (m.C.test_mixed) ... ok\n"
+               "test_one_line (m.C.test_one_line) (v=1) ... FAIL\n"
+               "test_one_line (m.C.test_one_line) ... ok\n")
+        self.assertEqual(ci_tests.parse(log), {"m.C.test_sub": "ERROR", "m.C.test_mixed": "ok",
+                                               "m.C.test_one_line": "FAIL"})
+
     def test_parse_and_section(self):
         got = ci_tests.parse("\x1b[0m2026-01-01T00:00:00Z " + LOG_OK)
         self.assertEqual(got["test_desktop.Surface.test_it_parses_as_an_es_module"], "ok")

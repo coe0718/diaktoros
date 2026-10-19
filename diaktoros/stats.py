@@ -191,40 +191,63 @@ def _why(state: str, error) -> str:
             "cancelled": "cancelled before any write — retry re-arms it"}.get(state, state)
 
 
+NOW_PAGE = 100          # rows of ``runs`` that ``now`` returns; the counts are never capped
+
+
+def _now_filter(at: float) -> tuple[str, tuple]:
+    """The WHERE clause that says what ``now`` covers (``repo`` is the first argument, then
+    these): every live run, the policy-cancelled fixer runs an operator ``retry`` recovers (the
+    one cancellation ``retry_action.offered`` draws the same line at; any other cancelled run is
+    only history) and the last day's failures. ``now``'s page, its counts and ``stuck`` all read
+    through it."""
+    from .run_supervisor import POLICY_CANCELLATIONS
+    marks = ",".join("?" * len(LIVE_STATES))
+    cancelled = ",".join("?" * len(POLICY_CANCELLATIONS))
+    return (f"repo=? AND seat!='shadow' AND (state IN ({marks}) "
+            f"OR (state='cancelled' AND error IN ({cancelled})) "
+            "OR (state='failed' AND updated>=?))",
+            (*LIVE_STATES, *POLICY_CANCELLATIONS, at - RECENT_FAILED_S))
+
+
+def _now_run(row) -> dict:
+    return {"pr": row["pr"], "seat": row["seat"], "head": str(row["head"] or "")[:7],
+            "state": row["state"], "why": _why(row["state"], row["error"]),
+            "since": row["updated"]}
+
+
 def now(db: Path, repo: str, at: float | None = None) -> dict | None:
     """What the loop is doing right now, for the Desktop page: every live run (queued, running,
     held, uncertain), the fixer runs the push policy cancelled (dead for their head until an
     operator ``retry`` recovers them, which is a thing to act on now), and the last day's
     failures, newest first. None when there is no ledger. Opened read-only.
+
+    ``counts`` and ``total`` cover the whole set. ``runs`` is the newest ``NOW_PAGE`` of it;
+    ``truncated`` says it is a page, not everything (``total`` > ``len(runs)``).
     """
     db = Path(db)
     if not db.exists():
         return None
     at = time.time() if at is None else at
-    # The one cancellation an operator retry recovers (``retry_action.offered`` draws the same
-    # line); any other cancelled run is superseded and only history.
-    from .run_supervisor import POLICY_CANCELLATIONS
+    where, args = _now_filter(at)
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
     try:
         con.row_factory = sqlite3.Row
-        marks = ",".join("?" * len(LIVE_STATES))
-        cancelled = ",".join("?" * len(POLICY_CANCELLATIONS))
-        rows = con.execute(f"SELECT pr, seat, head, state, error, updated FROM runs WHERE repo=? "
-                           "AND seat!='shadow' "
-                           f"AND (state IN ({marks}) OR (state='cancelled' AND error IN ({cancelled})) "
-                           "OR (state='failed' AND updated>=?)) "
-                           "ORDER BY updated DESC LIMIT 100",
-                           (repo, *LIVE_STATES, *POLICY_CANCELLATIONS,
-                            at - RECENT_FAILED_S)).fetchall()
+        rows = con.execute(f"SELECT pr, seat, head, state, error, updated FROM runs WHERE {where} "
+                           "ORDER BY updated DESC LIMIT ?", (repo, *args, NOW_PAGE)).fetchall()
+        # ``held`` is the test ``_why`` makes: a waiting run whose error starts "held:".
+        tally = con.execute("SELECT state, (state='waiting' AND substr(COALESCE(error,''),1,5)"
+                            f"='held:') AS held, COUNT(*) AS n FROM runs WHERE {where} "
+                            "GROUP BY 1, 2", (repo, *args)).fetchall()
     finally:
         con.close()
-    runs = [{"pr": row["pr"], "seat": row["seat"], "head": str(row["head"] or "")[:7],
-             "state": row["state"], "why": _why(row["state"], row["error"]),
-             "since": row["updated"]} for row in rows]
-    counts = Counter("held" if run["state"] == "waiting" and run["why"].startswith("held:")
-                     else "running" if run["state"] in ("claimed", "launching", "running")
-                     else run["state"] for run in runs)
-    return {"repo": repo, "at": at, "runs": runs, "counts": dict(counts)}
+    counts: Counter = Counter()
+    for row in tally:
+        counts["held" if row["held"]
+               else "running" if row["state"] in ("claimed", "launching", "running")
+               else row["state"]] += row["n"]
+    total = sum(counts.values())
+    return {"repo": repo, "at": at, "runs": [_now_run(row) for row in rows],
+            "counts": dict(counts), "total": total, "truncated": total > len(rows)}
 
 
 def _iso(text) -> float | None:
@@ -236,11 +259,12 @@ def _iso(text) -> float | None:
 
 def github(loop: dict, since: float) -> dict:
     """The PRs opened in the window and their reviews, read as the reader. ``partial`` says a
-    read failed, so the counts are a lower bound."""
+    read failed; ``capped`` says the window held more PRs than the GITHUB_PAGES_MAX pages
+    read, with no read failing. Either way the counts are a lower bound."""
     from . import gh
     repo, reader = loop["repo"], loop.get("read_token")
     reviewers = {login.lower() for login in loop.get("reviewers") or []}
-    prs, partial = [], False
+    prs, partial, capped = [], False, False
     for page in range(1, GITHUB_PAGES_MAX + 1):
         batch = gh.api(loop, f"/repos/{repo}/pulls?state=all&sort=created&direction=desc"
                              f"&per_page=100&page={page}", login=reader)
@@ -253,7 +277,7 @@ def github(loop: dict, since: float) -> dict:
         if len(batch) < 100 or len(fresh) < len(batch):
             break
     else:
-        partial = True
+        capped = True
     authors, merge_times, first, rounds = Counter(), defaultdict(list), defaultdict(list), Counter()
     verdicts, merged, still_open = Counter(), 0, 0
     for pr in prs:
@@ -297,7 +321,7 @@ def github(loop: dict, since: float) -> dict:
             "open_to_merge": {who: summary(times) for who, times in merge_times.items()},
             "reviewers": by_reviewer,
             "changes_requested_rounds": {str(k): v for k, v in sorted(rounds.items())},
-            "partial": partial}
+            "partial": partial, "capped": capped}
 
 
 def collect(loop: dict, db: Path, since: float, with_github: bool,
@@ -607,7 +631,8 @@ def fix_outcomes(db: Path, repo: str, since: float, until: float, pr_state) -> d
         try:
             actions = con.execute(f"SELECT pr, action, created FROM operator_actions WHERE repo=? "
                                   f"AND pr IN ({marks})", (repo, *prs)).fetchall() if prs else []
-            first = con.execute("SELECT MIN(created) FROM operator_actions").fetchone()[0]
+            first = con.execute("SELECT MIN(created) FROM operator_actions WHERE repo=?",
+                                (repo,)).fetchone()[0]
         except sqlite3.OperationalError:
             actions, first = [], None
     finally:
@@ -649,10 +674,21 @@ def fix_outcomes(db: Path, repo: str, since: float, until: float, pr_state) -> d
 
 def stuck(db: Path, repo: str, at: float) -> dict | None:
     """The longest-waiting run that is held, waiting or uncertain, with ``now``'s host-written
-    reason; None when nothing is stuck."""
-    live = (now(db, repo, at) or {}).get("runs") or []
-    waiting = [run for run in live if run["state"] in ("waiting", "uncertain")]
-    return min(waiting, key=lambda run: run["since"]) if waiting else None
+    reason; None when nothing is stuck. The ledger is asked for the oldest one, so it is the
+    oldest of all of them, not of the page ``now`` returns."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    where, args = _now_filter(at)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=LOCK_WAIT_S)
+    try:
+        con.row_factory = sqlite3.Row
+        row = con.execute(f"SELECT pr, seat, head, state, error, updated FROM runs WHERE {where} "
+                          "AND state IN ('waiting','uncertain') ORDER BY updated ASC LIMIT 1",
+                          (repo, *args)).fetchone()
+    finally:
+        con.close()
+    return _now_run(row) if row else None
 
 
 def _breaches(loop: dict) -> dict:
@@ -1029,7 +1065,9 @@ def _github_parts(gh_report: dict) -> tuple[list[str], list[tuple[str, list[str]
     """The GitHub section as notes and (title, head, rows) tables, for text and HTML alike."""
     notes = [f"PRs opened {gh_report['opened']} · merged {gh_report['merged']} · "
              f"open {gh_report['open']}"
-             + ("  (a GitHub read failed: these are lower bounds)" if gh_report["partial"] else "")]
+             + ("  (a GitHub read failed: these are lower bounds)" if gh_report["partial"] else "")
+             + (f"  (the window may hold more than the {GITHUB_PAGES_MAX * 100} newest PRs "
+                "read: these are lower bounds)" if gh_report.get("capped") else "")]
     if gh_report["authors"]:
         notes.append("by author: " + ", ".join(f"{who} {n}" for who, n in
                                                sorted(gh_report["authors"].items(),

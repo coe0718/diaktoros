@@ -559,6 +559,20 @@ class Cli(unittest.TestCase):
         argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
         self.assertIn("--shadow-daily-tokens=9", argv)
 
+    def test_dropping_the_shadow_budget_shows_the_loop_default_set_alongside(self):
+        # #907: `--turn-budget N --shadow-turn-budget 0` printed the old loop default.
+        rc, out = self.init("--shadow-profile", "grok")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-turn-budget", "1200")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.cli("set", "--loop", LOOP_ID, "--turn-budget", "600",
+                           "--shadow-turn-budget", "0")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.seat(), {})
+        self.assertEqual(json.loads(self.file.read_text())["turn_budget_s"], 600)
+        self.assertIn("shadow turn budget: 1200s → 600s", out)
+        self.assertNotIn(f"→ {config.DEFAULT_TURN_BUDGET_S}s", out)
+
     def test_a_blank_form_moves_nothing(self):
         from diaktoros.config import settings_form
         raw = {**RAW, "shadow": {"profile": "grok"}}

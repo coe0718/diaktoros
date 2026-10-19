@@ -240,6 +240,16 @@ class Ledger(unittest.TestCase):
         self.assertEqual((before["proposed"], before["outcomes"]["merged"]), (1, 1))
         self.assertEqual(before["turns_per_merged"]["median"], 2)   # its later review counts
 
+    def test_steps_from_is_this_repos_first_operator_action(self):
+        self.proposal(20, "pr", 120, NOW - 4000)
+        self.action(120, "retry", NOW - 3500)
+        self.sup.record_operator_action("other/repo", 5, "hold")
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE operator_actions SET created=? WHERE repo='other/repo'",
+                        (NOW - 6000,))
+        data = stats.fix_outcomes(self.db, REPO, NOW - 7 * DAY, NOW, lambda number: "open")
+        self.assertEqual(data["steps_from"], NOW - 3500)
+
     def reviewed(self, pr, head, model):
         run_id = self.turn(pr, "reviewer", NOW - 5000)
         with ledger.connect(self.db) as con:
@@ -558,6 +568,30 @@ class GitHub(unittest.TestCase):
         self.assertIn("lower bounds", "\n".join(stats._github_parts(got)[0]))
         with self.patched(lambda *a, **k: None):
             self.assertTrue(stats.github(self.LOOP, NOW - DAY)["partial"])
+
+    def test_the_page_cap_is_a_lower_bound_but_not_a_failed_read(self):
+        total = stats.GITHUB_PAGES_MAX * 100
+        prs = [self.pr(n, "coder", NOW - n) for n in range(1, total + 1)]   # all in the window
+        with self.patched(self.fake(prs, {})):
+            got = stats.github(self.LOOP, NOW - DAY)
+        self.assertEqual(got["opened"], total)
+        self.assertTrue(got["capped"])
+        self.assertFalse(got["partial"])
+        note = "\n".join(stats._github_parts(got)[0])
+        self.assertIn("lower bounds", note)
+        self.assertNotIn("read failed", note)
+        report = {"repo": REPO, "loop": "w", "since": NOW - DAY, "until": NOW,
+                  "turns": {}, "github": got}
+        self.assertNotIn("read failed", stats.text(report))
+        # A failed read keeps its own note, and a window inside the cap is neither.
+        failing = {f"/repos/{REPO}/pulls/1/reviews?per_page=100"}
+        with self.patched(self.fake(prs, {}, failing)):
+            both = stats.github(self.LOOP, NOW - DAY)
+        self.assertTrue(both["partial"] and both["capped"])
+        self.assertIn("a GitHub read failed", "\n".join(stats._github_parts(both)[0]))
+        with self.patched(self.fake(prs[:150], {})):
+            small = stats.github(self.LOOP, NOW - DAY)
+        self.assertEqual((small["capped"], small["partial"]), (False, False))
 
     def test_a_page_that_crosses_the_window_start_is_the_last_one_read(self):
         prs = [self.pr(n, "coder", NOW - n * 60) for n in range(100)]     # newest first

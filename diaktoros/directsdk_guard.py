@@ -6,8 +6,9 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+import uuid
 
-# Inventory-only server reviewed at provider ef73726. Changed code needs review.
+# Inventory-only server reviewed at provider ef73726 (unchanged through 0.3.3). Changed code needs review.
 INERT_SHA256 = 'bf20a09b2358600981b115c32845ec24722cb66adfc18d247d1c35ed999a0e0a'
 
 
@@ -24,6 +25,13 @@ def _private_file(path, root, name):
     return path
 
 
+def _canonical_uuid(value):
+    try:
+        return str(uuid.UUID(value)) == value
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def validate_launch(argv, kwargs, command, plugin):
     """Accept only the reviewed one-turn transport grammar, including its MCP code."""
     def refuse():
@@ -34,7 +42,8 @@ def validate_launch(argv, kwargs, command, plugin):
     switches = {'-p', '--verbose', '--include-partial-messages', '--strict-mcp-config',
                 '--disable-slash-commands', '--no-session-persistence'}
     pairs = {'--model', '--input-format', '--output-format', '--tools', '--system-prompt-file',
-             '--settings', '--setting-sources', '--max-turns', '--permission-mode', '--mcp-config', '--effort'}
+             '--settings', '--setting-sources', '--max-turns', '--permission-mode', '--mcp-config', '--effort',
+             '--session-id'}
     i = 1
     while i < len(argv):
         key = argv[i]
@@ -55,6 +64,10 @@ def validate_launch(argv, kwargs, command, plugin):
     if any(values.get(k) != v for k, v in required.items()):
         refuse()
     if not {'--model', '--settings', '--system-prompt-file', '--mcp-config'} <= values.keys():
+        refuse()
+    # Provider 0.3.1+ names one native session per conversation (its conversation_session_id): an
+    # id, nothing more, and only a canonical UUID. --no-session-persistence is still required.
+    if '--session-id' in values and not _canonical_uuid(values['--session-id']):
         refuse()
     try:
         root = Path(values['--settings']).parent

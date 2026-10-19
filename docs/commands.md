@@ -445,7 +445,7 @@ check sequence. New loops always start with unattended fixer pushes off.
 | `--base` | `BASE` | `main` | the branch PRs target; only PRs against it are reviewed |
 | `--clone` | `CLONE` |  | local clone the runs may use |
 | `--root` | `ROOT` (repeatable) |  | a directory reviews may clean (repeatable) |
-| `--state-dir` | `STATE_DIR` |  | where this loop keeps its state files (default: ~/.hermes/state/review-loops/<id>) |
+| `--state-dir` | `STATE_DIR` |  | where this loop keeps its state files (default: ~/.hermes/state/diaktoros/<id>; ~/.hermes/state/review-loops/<id> is only a leftover until `migrate` moves it) |
 | `--token` | `TOKEN` (repeatable) |  | login=/path/to/pat (repeatable) |
 | `--read-token` | `READ_TOKEN` |  | required: login whose token reads GitHub — its own account, never a seat or the adjudicator login (the four-identity rule) |
 | `--skill` | `SKILL` |  | skill the seats are told to load. A plugin-provided skill is qualified, e.g. diaktoros:review-loop |
@@ -788,7 +788,10 @@ hermes dk doctor --loop "<loop-id>" --offline
 ```
 
 - Exit `1` means at least one ❌. With `--strict`, a ⚠️ counts as a failure too.
-- `--offline` skips the two network checks (gateway reachability and the repo hooks).
+- `--offline` skips every network probe and lists each as `not probed (--offline)`: gateway
+  reachability, repo hooks, review-only push access, token expiry and scopes, triage labels,
+  branch protection and the plugin-version comparison. Triage labels, branch protection and
+  review-only push access only appear when the loop enables them.
 - `--repair` is the one write `doctor` can make: it puts this loop's own routes back from the
   plugin's record of them (same secret), and heals plugin-owned gate shims, when another tool overwrote or removed them.
 
@@ -800,7 +803,7 @@ a real isolated seat turn. To prove the isolated path end to end, use [`selftest
 | flag | value | default | what it does |
 | --- | --- | --- | --- |
 | `--loop` | `LOOP` |  | loop id (default: every configured loop) |
-| `--offline` |  |  | skip the two network probes (gateway reachability, repo hooks) |
+| `--offline` |  |  | skip every network probe, each reported as not probed: gateway reachability, repo hooks, review-only push access, token expiry and scopes, triage labels, branch protection, plugin version |
 | `--strict` |  |  | treat a check that could not be decided as a failure |
 | `--repair` |  |  | restore this loop's own routes from the plugin's intent record (same secret) before checking; the only write doctor makes |
 <!-- /flags -->

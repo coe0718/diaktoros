@@ -258,6 +258,17 @@ class ChecklistTests(SelftestBase):
         self.assertIn(f"fix: chmod 600 {self.fx.settings['key_file']}", text)
         self.assert_no_secrets(text)
 
+    def test_multi_line_key_file_fails_like_the_production_reader(self):
+        key = pathlib.Path(self.fx.settings["key_file"])
+        for body in (MODEL_KEY + "\nsecond-line\n", MODEL_KEY + "\r\nsecond-line"):
+            key.write_text(body)
+            key.chmod(0o600)
+            rc, text = self.run_selftest()
+            self.assertEqual(rc, 1)
+            self.assertRegex(text, r"❌ runtime:key_file .*more than one line")
+            self.assertNotRegex(text, r"✅ runtime:key_file")
+            self.assert_no_secrets(text)
+
     def test_key_file_read_error_fails_instead_of_crashing(self):
         key = pathlib.Path(self.fx.settings["key_file"])
         real = pathlib.Path.read_text
@@ -288,6 +299,28 @@ class ChecklistTests(SelftestBase):
         self.assertEqual(rc, 1)
         self.assertIn("❌ bwrap:userns", text)
         self.assertIn("unprivileged_userns", text)
+
+    def test_bwrap_only_on_operator_path_fails_and_names_launch_path(self):
+        def which(cmd, mode=os.F_OK | os.X_OK, path=None):
+            # Present on the operator's PATH (path=None), absent from the launcher's.
+            return "/usr/local/bin/bwrap" if path is None else None
+        with mock.patch.object(selftest.shutil, "which", side_effect=which):
+            rc, text = self.run_selftest(model=False)
+        self.assertEqual(rc, 1)
+        self.assertIn("❌ bwrap:installed", text)
+        self.assertIn(contained.LAUNCH_PATH, text)
+        self.assertNotIn("bwrap:userns", text)
+
+    def test_bwrap_probe_uses_launch_path_and_the_binary_found_there(self):
+        def which(cmd, mode=os.F_OK | os.X_OK, path=None):
+            return "/usr/sbin/bwrap" if path == contained.LAUNCH_PATH else None
+        with mock.patch.object(selftest.shutil, "which", side_effect=which), \
+                mock.patch.object(selftest.subprocess, "run",
+                                  return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            self.run_selftest(model=False)
+        probe = run.call_args_list[0]
+        self.assertEqual(probe.args[0][0], "/usr/sbin/bwrap")
+        self.assertEqual(probe.kwargs["env"], {"PATH": contained.LAUNCH_PATH})
 
     def test_sandbox_reading_a_host_secret_fails(self):
         self.fx.probe["readable"] = [self.fx.settings["key_file"]]
@@ -617,6 +650,43 @@ class NoWriteBrokerTests(unittest.TestCase):
             trusted_turn.run_turn(self.fx.loop, scope, source=self.root, venv=self.root,
                                   runtime=self.root, rust=self.root, upstream="https://x/v1/chat/completions",
                                   key="k", model="m", prompt="p", no_write=True)
+
+
+class GitHubWriteWordingTests(SelftestBase):
+    """Reads only unless --ping is set; --ping is named as the write (#810)."""
+
+    def header(self, **kwargs):
+        with mock.patch.object(selftest, "check_hook_signatures"):
+            rc, text = self.run_selftest(model=False, **kwargs)
+        return text.splitlines()[0]
+
+    def test_header_says_nothing_is_posted_without_ping(self):
+        line = self.header()
+        self.assertIn("reads only, nothing is posted", line)
+        self.assertNotIn("--ping", line)
+
+    def test_header_names_ping_as_the_write_when_set(self):
+        line = self.header(ping=True)
+        self.assertIn("--ping", line)
+        self.assertNotIn("nothing is posted", line)
+
+    def test_cli_help_and_docstring_do_not_claim_never_writes(self):
+        captured = {}
+
+        class Ctx:
+            def register_cli_command(self, name, help_text, setup, description=""):
+                captured["setup"] = setup
+        cli.register_cli(Ctx())
+        parser = argparse.ArgumentParser()
+        captured["setup"](parser)
+        sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        help_text = next(a.help for a in sub._choices_actions if a.dest == "selftest")
+        self.assertNotIn("never writes", help_text)
+        self.assertIn("--ping", help_text)
+        for text in (cli.cmd_selftest.__doc__, selftest.__doc__):
+            self.assertNotIn("never writes to GitHub", text)
+            self.assertIn("--ping", text)
+        self.assertNotIn("**no step writes to GitHub**", selftest.__doc__)
 
 
 class RegistrationTests(unittest.TestCase):

@@ -201,8 +201,9 @@ def cmd_selftest(args) -> int:
     """Verify the live isolated path for one loop; every step and its fix live in selftest.py.
 
     Unlike ``doctor`` this touches the real capabilities (bubblewrap, the model, GitHub reads, and
-    with ``--live-turn`` one real reviewer turn) — but it never writes to GitHub: GitHub calls go
-    through a GET-only guard and the live turn's broker runs in its host-only no-write mode.
+    with ``--live-turn`` one real reviewer turn) — but it only reads from GitHub unless ``--ping``
+    is set: GitHub calls go through a GET-only guard and the live turn's broker runs in its
+    host-only no-write mode. ``--ping`` is the one write: it asks GitHub to ping each loop hook.
     """
     from .. import selftest
     if args.live_turn and args.pr is None:
@@ -320,7 +321,9 @@ def add_doctor(sub) -> None:  # noqa: ANN001
                                               "routes, hooks, scripts, cron, clone")
     preflight.add_argument("--loop", help="loop id (default: every configured loop)")
     preflight.add_argument("--offline", action="store_true",
-                           help="skip the two network probes (gateway reachability, repo hooks)")
+                           help="skip every network probe, each reported as not probed: gateway "
+                                "reachability, repo hooks, review-only push access, token expiry "
+                                "and scopes, triage labels, branch protection, plugin version")
     preflight.add_argument("--strict", action="store_true",
                            help="treat a check that could not be decided as a failure")
     preflight.add_argument("--repair", action="store_true",
@@ -333,7 +336,7 @@ def add_selftest(sub) -> None:  # noqa: ANN001
     """The ``selftest`` subcommand's parser, registered by ``cli.register_cli`` (#676)."""
     check = sub.add_parser("selftest", help="Verify the live isolated path step by step "
                                             "(runtime, bwrap, model, identities, broker, ledger); "
-                                            "never writes to GitHub")
+                                            "reads only from GitHub unless --ping is set")
     check.add_argument("--loop", required=True,
                        help="loop id (its config file name; `list` shows them)")
     check.add_argument("--pr", type=int, help="dry-run the reviewer write authorization on this PR")

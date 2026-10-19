@@ -73,6 +73,27 @@ class Now(unittest.TestCase):
     def test_no_ledger(self):
         self.assertIsNone(stats.now(self.db.with_name("missing.sqlite"), REPO))
 
+    def test_counts_and_stuck_cover_every_live_run_past_the_page(self):
+        # The oldest runs (an uncertain one, a held one) fall off the newest-100 page.
+        self.row("uncertain", NOW - 5000, SECRET, seat="fixer")
+        self.row("waiting", NOW - 4000, "held: waiting for CI")
+        for i in range(stats.NOW_PAGE + 20):
+            self.row("running", NOW - 100 + i * 0.01)
+        view = stats.now(self.db, REPO, at=NOW)
+        self.assertEqual(len(view["runs"]), stats.NOW_PAGE)
+        self.assertTrue(view["truncated"])
+        self.assertEqual(view["total"], stats.NOW_PAGE + 22)
+        self.assertEqual(view["counts"], {"running": stats.NOW_PAGE + 20, "held": 1, "uncertain": 1})
+        self.assertNotIn("uncertain", [run["state"] for run in view["runs"]])
+        oldest = stats.stuck(self.db, REPO, NOW)
+        self.assertEqual((oldest["state"], oldest["since"]), ("uncertain", NOW - 5000))
+
+    def test_a_short_list_is_not_truncated(self):
+        self.row("running", NOW - 10)
+        view = stats.now(self.db, REPO, at=NOW)
+        self.assertFalse(view["truncated"])
+        self.assertEqual(view["total"], 1)
+
 
 class Api(unittest.TestCase):
     LOOPS = [{"id": "widgets", "repo": REPO}, {"id": "gadgets", "repo": "acme/gadgets"}]
@@ -101,6 +122,24 @@ class Api(unittest.TestCase):
         self.assertEqual(typo["repo"], "")
         self.assertLessEqual(len(typo["reason"]), 200)
         self.assertNotIn("\n", typo["reason"])
+
+    def test_overview_needs_you_counts_uncertain_runs_beyond_the_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = pathlib.Path(tmp) / "runs.sqlite"
+            sup = Supervisor(db)
+            with mock.patch.object(sup, "_spawn"):
+                for i in range(stats.NOW_PAGE + 5):
+                    sup.enqueue(f"d{i}", REPO, 400 + i, "a" * 40, "reviewer")
+            with ledger.connect(db) as con:
+                con.execute("UPDATE runs SET state='running', updated=? ", (NOW,))
+                con.execute("UPDATE runs SET state='uncertain', updated=? WHERE delivery='d0'",
+                            (NOW - 9000,))
+            with mock.patch.object(desktop_api.config, "readable_loops",
+                                   return_value=(self.LOOPS[:1], [])), \
+                 mock.patch.object(desktop_api.run_supervisor, "production_ledger",
+                                   return_value=db):
+                [widgets] = desktop_api.overview_view()["loops"]
+        self.assertEqual(widgets["needs_you"], 1)
 
     def test_overview_names_an_unreadable_loop_beside_the_readable_one(self):
         with self.broken(self.LOOPS[:1], ("typo", "bad json")), \
@@ -316,6 +355,31 @@ class Pr(unittest.TestCase):
         self.assertEqual(view["cap"], 3)
         self.assertEqual([r["verdict"] for r in view["rulings"]], ["REJECT"])
         self.assertEqual(view["rulings"][0]["head"], head[:7])
+
+    def test_a_long_review_shows_the_newest_turns_and_rulings_and_the_true_totals(self):
+        extra = 7
+        with mock.patch.object(desktop_api, "TURNS_MAX", 5):
+            for _ in range(5 + extra):
+                self.row("succeeded")
+            with ledger.connect(self.db) as con:
+                rows = con.execute("SELECT id, head FROM runs ORDER BY id").fetchall()
+                # created is the order the page shows: stamp it so the oldest row is first.
+                for n, (run_id, head) in enumerate(rows):
+                    con.execute("UPDATE runs SET created=? WHERE id=?", (1000.0 + n, run_id))
+                    con.execute("INSERT INTO rulings(run_id,repo,pr,head,turn_key,verdict,body,"
+                                "created,updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                                (run_id, REPO, 626, head, f"t{n}", f"V{n}", "x", 1000.0 + n,
+                                 1000.0 + n))
+            loops, prod = self.patch_all()
+            with loops, prod:
+                view = desktop_api.pr_view("widgets", 626)
+        last = 5 + extra - 1
+        self.assertEqual([t["created"] for t in view["turns"]],
+                         [1000.0 + n for n in range(last - 4, last + 1)])     # newest, oldest first
+        self.assertEqual(view["turns_total"], 5 + extra)
+        self.assertEqual([r["verdict"] for r in view["rulings"]],
+                         [f"V{n}" for n in range(last - 4, last + 1)])
+        self.assertEqual(view["rulings_total"], 5 + extra)
 
     def test_findings_come_from_the_loops_own_state_with_the_hosts_open_flag(self):
         from diaktoros import state as state_mod
@@ -673,6 +737,8 @@ class Surface(unittest.TestCase):
         # This slice's own named proof: the real registered page, clicked through confirm → post.
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: confirming posts the exact target, then shows the answer and the state read back$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: a refusal shows the backend reason, keeps the dialog open and invalidates nothing$")
+        # The drawer's truncation wording (#821): the named proof that a cut list says so.
+        self.assertRegex(done.stdout, r"(?m)^ok \d+ - page: the drawer says when its turns and rulings are the newest of more, and only then$")
         self.assertIn("palette only: unseen successful cache read expires", done.stdout)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed here")

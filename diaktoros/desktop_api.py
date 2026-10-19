@@ -308,7 +308,8 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     loop = _loop(loop_id)
     repo = loop["repo"]
     view: dict = {"repo": repo, "loop": loop["id"], "pr": pr, "cap": loop.get("cap"),
-                  "stuck": [], "turns": [], "verdicts": {}, "rulings": [], "breach": None,
+                  "stuck": [], "turns": [], "turns_total": 0, "verdicts": {}, "rulings": [],
+                  "rulings_total": 0, "breach": None,
                   "findings": [], "decisions": [], "shadows": [], "shadows_older": 0,
                   "read_at": time.time()}
     # The loop's own state files, not the ledger: what the reviewer raised, and why each gate
@@ -331,9 +332,12 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
             view["stuck"].append({"seat": row["seat"], "head": str(row["head"] or "")[:7],
                                   "state": row["state"], "since": created,
                                   "next": run_supervisor.next_step(row, loop["id"])})
-        for row in con.execute(
+        # The newest TURNS_MAX rows, shown oldest first: the latest turns are the ones that say
+        # whether the PR is still moving. ``turns_total`` lets the page say the list is cut.
+        view["turns_total"] = _count(con, "runs", repo, pr)
+        for row in reversed(con.execute(
                 "SELECT seat, head, state, created, updated FROM runs WHERE repo=? AND pr=? "
-                "ORDER BY created, id LIMIT ?", (repo, pr, TURNS_MAX)):
+                "ORDER BY created DESC, id DESC LIMIT ?", (repo, pr, TURNS_MAX)).fetchall()):
             view["turns"].append({"seat": row["seat"], "head": str(row["head"] or "")[:7],
                                   "state": row["state"], "created": row["created"],
                                   "updated": row["updated"]})
@@ -347,9 +351,10 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
             verdict = str(row["verdict"] or "")
             if verdict:
                 view["verdicts"][verdict] = view["verdicts"].get(verdict, 0) + 1
-        for row in con.execute(
+        view["rulings_total"] = _count(con, "rulings", repo, pr)
+        for row in reversed(con.execute(
                 "SELECT verdict, head, created FROM rulings WHERE repo=? AND pr=? "
-                "ORDER BY created LIMIT ?", (repo, pr, TURNS_MAX)):
+                "ORDER BY created DESC, rowid DESC LIMIT ?", (repo, pr, TURNS_MAX)).fetchall()):
             view["rulings"].append({"verdict": str(row["verdict"] or "")[:80],
                                     "head": str(row["head"] or "")[:7], "created": row["created"]})
     finally:
@@ -360,6 +365,14 @@ def pr_view(loop_id: str | None, pr: int) -> dict:
     from . import stats
     view["shadows"], view["shadows_older"] = stats.shadow_reviews_for(db, repo, pr)
     return view
+
+
+def _count(con, table: str, repo: str, pr: int) -> int:
+    """How many ledger rows ``table`` (``runs`` or ``rulings``) holds for this PR, so a list cut
+    at TURNS_MAX can say how many there are."""
+    assert table in ("runs", "rulings")
+    return int(con.execute(f"SELECT COUNT(*) FROM {table} WHERE repo=? AND pr=?",
+                           (repo, pr)).fetchone()[0])
 
 
 def _findings(loop: dict, pr: int) -> list[dict]:

@@ -235,8 +235,7 @@ def _audit(loop: dict, record: dict) -> None:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             line = (json.dumps({**record, "at": time.time()}, sort_keys=True) + "\n").encode()
-            if os.write(fd, line) != len(line):
-                raise OSError("short audit write")
+            broker.append_audit_line(fd, line)
             os.fsync(fd)
             # A new audit file's directory entry must survive a crash too.
             os.fsync(dirfd)
@@ -264,7 +263,12 @@ class _Isolated:
     def _cmd(self, args):
         return ["/usr/bin/git", "-c", "credential.helper=", "-c", "core.hooksPath=/dev/null",
                 "-c", "commit.gpgsign=false", "-c", "protocol.allow=never",
-                "-c", f"protocol.{self.protocol}.allow=always", *args]
+                "-c", f"protocol.{self.protocol}.allow=always",
+                # No detached auto-maintenance: after a fetch, Git may leave a background
+                # ``gc``/``maintenance`` writing into the private repository, which races the
+                # temporary directory's removal (ENOTEMPTY on objects/pack).
+                "-c", "gc.auto=0", "-c", "gc.autoDetach=false",
+                "-c", "maintenance.auto=false", "-c", "receive.autogc=false", *args]
 
     def run_rc(self, *args: str, input: bytes | None = None) -> tuple[int, bytes]:
         try:

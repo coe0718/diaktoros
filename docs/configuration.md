@@ -672,7 +672,7 @@ The authoritative implementation is `diaktoros/config/`, with host-path detectio
 
 Important boundaries:
 
-- Loop top-level and working-seat objects are not closed schemas: unknown keys can survive normalization without acquiring behavior. Conversely, unknown persisted seat objects such as `issue_fixer` are not retained as configurable seats.
+- An unknown loop top-level key, an unknown key inside `seats.reviewer` or `seats.fixer`, and an unknown name directly under `seats` (anything but `reviewer`, `fixer`, `adjudicator`, `triage`, `shadow`; for example a misspelled seat or `issue_fixer`) are a `ConfigError` on load (`check_known_keys`). Keys inside the `adjudicator`, `triage` and `shadow` seat objects are checked by their own validators.
 - `seats.adjudicator`, `seats.triage`, `triage`, and runtime files/override blocks have explicit allowed-key checks. Observer parsing is deliberately lenient.
 - Loader validation is not a complete credential, profile, route, hook, model-package, clone, or safety audit. Some identity checks are deferred/scoped for legacy updates; live principals and current PR facts are rechecked before writes.
 - No configuration selects automatic merging, makes an observer an agent, grants an adjudicator push/review permission, or turns an unknown write outcome into permission to retry.

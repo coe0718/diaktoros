@@ -105,6 +105,31 @@ def _configure(clone: pathlib.Path, loop: dict, login: str) -> None:
     _git("config", "user.email", f"{login or 'review-loop'}@users.noreply.github.com", cwd=clone)
 
 
+def _resolve(path: pathlib.Path) -> pathlib.Path:
+    """Resolve ``path``, raising when it cannot be resolved (a symlink loop, a permission error).
+
+    ``Path.resolve()`` raises on a symlink loop up to Python 3.12 but silently returns a partly
+    resolved path from 3.13, so the loop is made to raise here on every version: the existing part
+    of the path is resolved strictly, and only a missing tail is appended unresolved.
+    """
+    try:
+        return path.resolve(strict=True)
+    except FileNotFoundError:
+        if path.parent == path:
+            return path
+        return _resolve(path.parent) / path.name
+
+
+def clone_inside_root(source: pathlib.Path, root: pathlib.Path) -> bool:
+    """True when ``source`` lives inside ``root``. Raises when either cannot be resolved.
+
+    The one place that decides the clone-inside-the-isolation-root question, shared by ``ensure``
+    (which refuses) and ``doctor`` (which reports). Callers must treat a raise as "cannot tell",
+    never as "not inside".
+    """
+    return str(_resolve(source)).startswith(str(_resolve(root)) + os.sep)
+
+
 def ensure(loop: dict, number: int, seat: str, head: str = "", login: str = "") -> dict | None:
     """Create or reuse this PR-and-seat workspace and check out ``head`` in it.
 
@@ -119,13 +144,18 @@ def ensure(loop: dict, number: int, seat: str, head: str = "", login: str = "") 
     root, clone = p["root"], p["clone"]
 
     # A rail with teeth: the configured clone must never live inside the isolation root, or a
-    # cleanup would delete the developer's working copy.
+    # cleanup would delete the developer's working copy. Fails closed: when a path cannot be
+    # resolved (a symlink loop, a permission error) the check cannot be made, so isolation is
+    # refused — never skipped.
     try:
-        if str(source.resolve()).startswith(str(root.resolve()) + os.sep) or source == clone:
-            log(f"refusing to isolate #{number}: the configured clone is inside {root}")
-            return None
-    except Exception:
-        pass
+        inside = clone_inside_root(source, root) or source == clone
+    except Exception as exc:
+        log(f"refusing to isolate #{number}: cannot tell whether the configured clone is inside "
+            f"{root} ({exc})")
+        return None
+    if inside:
+        log(f"refusing to isolate #{number}: the configured clone is inside {root}")
+        return None
 
     try:
         for d in (root, p["target"], p["tmp"]):

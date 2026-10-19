@@ -164,6 +164,10 @@ def has_not_verified(body: str) -> bool:
     return bool(_NOT_VERIFIED.search(body or ""))
 
 
+# The operations `perform` itself writes (a subset of what `authorize` permits).
+PERFORMED_OPERATIONS = ("review", "request_review")
+
+
 def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
             branch: str, operation: str, verdict: str = "", body: str = "",
             require_verdict: bool = True) -> object:
@@ -176,12 +180,17 @@ def perform(loop: dict, *, repo: str, number: int, head: str, role: str,
     """
     login = authorize(loop, repo=repo, number=number, head=head, role=role,
                       branch=branch, operation=operation, require_verdict=require_verdict)
+    # `authorize` also permits push, answers and file_issue, which have their own write paths.
+    # This function sends only the two REST writes below; anything else is refused here, so a
+    # new authorized operation can never fall through into a request-review POST.
+    if operation not in PERFORMED_OPERATIONS:
+        raise BrokerDenied("operation is not performed by this write path")
     if operation == "review":
         if verdict not in REVIEW_VERDICTS or not body.strip():
             raise BrokerDenied("invalid review verdict or empty body")
         path = f"/repos/{repo}/pulls/{number}/reviews"
         payload = {"commit_id": head, "event": verdict, "body": _signed(loop, body, role, head)}
-    else:
+    else:  # request_review
         if verdict or body:
             raise BrokerDenied("unexpected request-review fields")
         seat = loop.get("reviewer_seat")
@@ -215,10 +224,28 @@ def _audit(loop: dict, repo: str, number: int, head: str, branch: str,
         fcntl.flock(fd, fcntl.LOCK_EX)
         record = {"at": time.time(), "repo": repo, "pr": number, "head": head,
                   "branch": branch, "role": role, "operation": operation, "login": login}
-        os.write(fd, (json.dumps(record, sort_keys=True) + "\n").encode())
+        append_audit_line(fd, (json.dumps(record, sort_keys=True) + "\n").encode())
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def append_audit_line(fd: int, line: bytes) -> None:
+    """Append one whole line to the audit file or fail (shared with safe_push._audit).
+
+    The caller holds the exclusive flock. A short write is an error, and the partial bytes are
+    cut off again so a truncated JSON line is never left as the record of a write."""
+    start = os.fstat(fd).st_size
+    try:
+        written = os.write(fd, line)
+    except OSError:
+        written = -1
+    if written != len(line):
+        try:
+            os.ftruncate(fd, start)
+        except OSError:
+            pass
+        raise OSError("short audit write")
 
 
 # The fixer's answers to the findings: one bounded PR comment, posted by the host as the fixer

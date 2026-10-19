@@ -203,13 +203,81 @@ class Environment(unittest.TestCase):
             c = doctor.check_plugin_version(self.loop)
         self.assertEqual(c.status, doctor.UNKNOWN)
 
-    def test_plugin_version_offline_is_skipped(self):
-        self.assertIsNone(self.version_check(offline=True))
+    def test_plugin_version_offline_says_it_was_not_probed(self):
+        # through check_loop: the version line must be in the report, not silently absent
+        c = self.version_check(offline=True)
+        self.assertIsNotNone(c)
+        self.assertEqual(c.status, doctor.UNKNOWN)
+        self.assertIn("not probed (--offline)", c.detail)
+
+    def test_offline_branch_protection_says_it_was_not_probed(self):
+        with mock.patch.object(gh, "request", side_effect=AssertionError("network")):
+            c = {x.name: x for x in doctor.check_environment(self.loop, True)}["branch-protection"]
+        self.assertEqual(c.status, doctor.UNKNOWN)
+        self.assertIn("not probed (--offline)", c.detail)
+
+    def test_offline_help_names_every_skipped_probe(self):
+        import argparse
+        from diaktoros.cli import checks as cli_checks
+        parser = argparse.ArgumentParser()
+        cli_checks.add_doctor(parser.add_subparsers())
+        sub = parser._subparsers._group_actions[0].choices["doctor"]
+        text = next(a.help for a in sub._actions if "--offline" in a.option_strings)
+        for word in ("gateway", "hooks", "push", "token expiry", "scopes", "labels",
+                     "branch protection", "plugin version"):
+            self.assertIn(word, text)
 
     def test_check_loop_runs_them(self):
         names = self.run_check("loop")
         for name in ("token-expiry:rev", "token-expiry:fix", "token-expiry:reader", "labels"):
             self.assertIn(name, names)
+
+    def _clone_loop(self):
+        source = self.root / "source"
+        (source / ".git").mkdir(parents=True)
+        return {**self.loop, "clone": str(source)}
+
+    def test_clone_check_is_green_for_a_clone_outside_the_artifacts_root(self):
+        self.assertEqual(doctor.check_clone(self._clone_loop()).status, doctor.VERIFIED)
+
+    def test_clone_check_fails_closed_when_path_resolution_raises(self):
+        # A symlink loop at the artifacts root: isolation.ensure refuses (cannot tell), so the
+        # doctor must not report the clone as verified (#828 review F1).
+        loop = self._clone_loop()
+        artifacts = self.root / "state" / "artifacts"
+        artifacts.parent.mkdir(parents=True)
+        artifacts.symlink_to(artifacts)
+        check = doctor.check_clone(loop)
+        self.assertEqual(check.status, doctor.MISMATCH)
+        self.assertIn("cannot tell whether", check.detail)
+        self.assertIn(check.status, doctor.FAILURES)
+
+
+class PluginScripts(unittest.TestCase):
+    """#817: the `scripts` check covers every file a route runs by name, observe.py included."""
+
+    def scripts_in(self, names):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = pathlib.Path(temp.name)
+        for name in names:
+            (root / name).write_text("")
+        return mock.patch.object(doctor, "scripts_dir", lambda: root)
+
+    def test_every_route_script_is_checked(self):
+        from diaktoros import route_intent
+        self.assertLessEqual(set(route_intent.GATE_SCRIPT.values()), set(doctor.PLUGIN_SCRIPTS))
+        self.assertIn("observe.py", doctor.PLUGIN_SCRIPTS)
+
+    def test_missing_observe_script_fails_the_check(self):
+        with self.scripts_in([n for n in doctor.PLUGIN_SCRIPTS if n != "observe.py"]):
+            check = doctor.check_scripts()
+        self.assertEqual(check.status, doctor.ABSENT)
+        self.assertIn("observe.py", check.detail)
+
+    def test_all_scripts_present_is_verified(self):
+        with self.scripts_in(doctor.PLUGIN_SCRIPTS):
+            self.assertEqual(doctor.check_scripts().status, doctor.VERIFIED)
 
 
 if __name__ == "__main__":

@@ -1032,6 +1032,35 @@ test('page: the drawer shows shadow reviews beside the real verdict, and none wh
   assert.doesNotMatch(text, /Shadow reviews/)
 })
 
+test('page: the drawer says when its turns and rulings are the newest of more, and only then', async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queries.now = h.good({ runs: [{ pr: 42, seat: 'reviewer', head: 'abcdef0', state: 'waiting', why: 'waiting to retry' }],
+    counts: { waiting: 1 }, pacing: {}, available: true })
+  const turn = n => ({ seat: 'reviewer', head: 'abcdef' + n, state: 'succeeded', created: 1800000000 + n, updated: 1800000000 + n })
+  const ruling = n => ({ verdict: 'V' + n, head: 'abcdef' + n, created: 1800000000 + n })
+  const pr = { repo: 'acme/widgets', loop: 'widgets', pr: 42, cap: 3, stuck: [],
+    turns: [turn(1), turn(2), turn(3)], turns_total: 3, verdicts: {},
+    rulings: [ruling(1), ruling(2), ruling(3)], rulings_total: 3,
+    breach: null, findings: [], decisions: [], read_at: 1800000000 }
+  // Cut: the ledger holds 12 turns and 9 rulings, the view carries the newest three of each.
+  h.queries.pr = h.good({ ...pr, turns_total: 12, rulings_total: 9 })
+  let tree = h.render('page')
+  h.buttons(tree).find(n => h.text([n]).includes('#42')).props.onClick()
+  let text = h.text(h.render('page'))
+  assert.match(text, /Turns \(newest 3 of 12\)/)
+  assert.match(text, /… 9 older turn\(s\) not shown/)
+  assert.doesNotMatch(text, /Turns \(3\)/)
+  assert.match(text, /Adjudicator rulings \(newest 3 of 9\): V1 on abcdef1 · V2 on abcdef2 · V3 on abcdef3/)
+  // Not cut: the plain count and no notice, as before.
+  h.queries.pr = h.good(pr)
+  text = h.text(h.render('page'))
+  assert.match(text, /Turns \(3\)/)
+  assert.doesNotMatch(text, /not shown/)
+  assert.doesNotMatch(text, /newest/)
+  assert.match(text, /Adjudicator rulings: V1 on abcdef1/)
+})
+
 test('page: a /now read with no ledger renders unavailable, never nothing-running', async () => {
   const h = await harness()
   h.queries.now = h.good({ repo: 'fixture/repo', runs: [], counts: {}, pacing: {}, available: false })
