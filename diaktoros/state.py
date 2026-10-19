@@ -823,7 +823,7 @@ class LoopState:
     # -- watchdog memory ----------------------------------------------------
 
     def watch(self) -> dict:
-        return self._load(self.watch_file, {}) or {}
+        return _mapping(self._load(self.watch_file, {}))
 
     def watch_save(self, data: dict) -> None:
         self._save(self.watch_file, data)
