@@ -138,7 +138,10 @@ class Proof(unittest.TestCase):
         self.assertIn("is a missing test", text)
 
     def test_comment_only_hunks_are_not_checked_and_a_red_fix_reverts_nothing(self):
-        commented = NEW_CODE + "\n# a note about value\n"
+        # The comment sits apart from the code change (an unchanged `def` line between), so it
+        # is its own hunk; adjacent, difflib folds it into the code hunk and nothing is tested
+        # (shadow review of #1048, F4).
+        commented = "# a note about value\n\n" + NEW_CODE
         self.assertEqual([h["status"] for h in self.guard(commented)["hunks"]],
                          [repro_proof.GUARDED])                 # the comment is not a hunk
         self.assertEqual(self.guard(NEW_CODE, TEST.replace("2)", "3)"))["hunks"], [])
@@ -225,6 +228,35 @@ class Proof(unittest.TestCase):
                     (root / path).write_text(text)
             selected = {h["path"] for h in repro_proof.source_hunks(base, new)}
         self.assertEqual(selected, {p for p, source in paths.items() if source})
+
+    def test_with_no_test_named_the_changed_test_files_are_used(self):
+        # Shadow review of #1048: #1043 falls back to the test files the fix changed; prove()
+        # returned "none named" before the hunk check, so such a fix got no check at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            both = "def extra():\n    return 5\n\n\n" + NEW_CODE
+            proof = repro_proof.prove(base, manifest({"widget.py": both, "tests/test_it.py": TEST}),
+                                      [], run_unittest)
+        self.assertEqual(proof["overall"], repro_proof.NONE_NAMED)
+        self.assertEqual(proof["hunk_tests"], ["tests.test_it"])
+        self.assertEqual(sorted(h["status"] for h in proof["hunks"]),
+                         [repro_proof.GUARDED, repro_proof.UNGUARDED])
+        self.assertIn("against the test files the fix changed", repro_proof.section(proof))
+
+    def test_with_no_test_named_or_changed_every_source_hunk_is_unguarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            base.mkdir()
+            (base / "widget.py").write_text(OLD_CODE)
+            proof = repro_proof.prove(base, manifest({"widget.py": NEW_CODE}), [],
+                                      lambda *a: self.fail("nothing to run"))
+        self.assertEqual([h["status"] for h in proof["hunks"]], [repro_proof.UNGUARDED])
+        text = repro_proof.section(proof)
+        self.assertIn("names no reproduction test and changes no test file", text)
+        self.assertIn("1 unguarded", text)
 
     def test_a_hunk_run_that_raises_is_not_checked_and_keeps_the_proof(self):
         # Shadow review of #1048: a revert that hangs the tests (a guard or a loop bound) raised
@@ -385,10 +417,23 @@ class Broker(tif.Base):
         self.assertEqual(self.stored()[0]["overall"], "weak")
         self.assertEqual(self.sup.issue_fix_result(self.run_id)["state"], "requested")
 
-    def test_none_named_is_recorded_and_the_prover_is_not_run(self):
-        prover = mock.Mock()
+    def test_none_named_still_runs_the_hunk_check_and_is_recorded(self):
+        # #1043 (shadow review of #1048): with nothing named the prover still runs, with no ids,
+        # so the hunk check falls back to the fix's changed test files.
+        seen = []
+
+        def prover(manifest, ids):
+            seen.append(ids)
+            return {"overall": "none_named", "ids": [], "hunks": [{"status": "unguarded"}]}
         self.server(prover)._dispatch(self.request())
-        prover.assert_not_called()
+        self.assertEqual(seen, [[]])
+        self.assertEqual(self.stored()[0]["hunks"], [{"status": "unguarded"}])
+        self.setUp()
+        self.server(None)._dispatch(self.request())             # no sandbox: none named
+        self.assertEqual(self.stored()[0]["overall"], "none_named")
+        self.setUp()
+        broken = mock.Mock(side_effect=RuntimeError("no bwrap"))
+        self.server(broken)._dispatch(self.request())           # a broken one never blocks
         self.assertEqual(self.stored()[0]["overall"], "none_named")
 
     def test_without_a_sandbox_or_when_it_breaks_the_record_says_unavailable(self):

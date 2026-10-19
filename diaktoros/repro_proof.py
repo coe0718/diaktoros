@@ -39,7 +39,8 @@ NOT_FOUND = "not found"
 
 # Hunk guard (#1043): each changed hunk of the fix's Python source is reverted on its own and the
 # named tests run again; a hunk whose revert fails none of them is unguarded, a behaviour change
-# no test notices. Bounded: the largest hunks first, at most HUNKS_MAX, within HUNKS_BUDGET_S.
+# no test notices. Bounded: the largest hunks first, at most HUNKS_MAX; no new revert starts once
+# HUNKS_BUDGET_S has passed, so the check ends within it plus one run's own sandbox timeout.
 HUNKS_MAX = 12
 HUNKS_BUDGET_S = 240.0
 GUARDED, UNGUARDED, NOT_CHECKED = "guarded", "unguarded", "not checked"
@@ -221,7 +222,7 @@ def prove(base_dir: Path, manifest: dict, ids: list[str], run) -> dict:
     production); each id is first resolved to the test file it names in the fix (#893), and an
     id that names none is reported as not found rather than run."""
     if not ids:
-        return none_named()
+        return _unnamed_hunks(base_dir, manifest, run)
     with tempfile.TemporaryDirectory(prefix="repro-proof-") as temp:
         trees = {}
         for name, only_tests in (("old", True), ("new", False)):
@@ -344,6 +345,44 @@ def hunk_guard(base_dir: Path, new_tree: Path, runs: list[str], path: str, new_o
     return rows
 
 
+def changed_test_modules(manifest: dict) -> list[str]:
+    """The Python test files a fix adds or changes, as module ids (``tests/test_x.py`` →
+    ``tests.test_x``): what the hunk check runs when the fixer named no reproduction test."""
+    from . import safe_push
+    _base, files, patch = safe_push._manifest(manifest)
+    paths = [path for path, _data in files]
+    if patch is not None:
+        paths += [path for path, _chunk in _split_patch(patch.decode("utf-8", errors="replace"))]
+    return sorted({path[:-3].replace("/", ".") for path in paths
+                   if path.endswith(".py") and ci_fix.TEST_PATH.search(path)
+                   and Path(path).name.startswith("test")})
+
+
+def _unnamed_hunks(base_dir: Path, manifest: dict, run) -> dict:
+    """NONE NAMED, with the hunk check still run (#1043): against the test files the fix changed,
+    or, with none of those either, every source hunk listed unguarded (nothing could notice it)."""
+    proof = none_named()
+    with tempfile.TemporaryDirectory(prefix="repro-proof-") as temp:
+        tree = Path(temp) / "new"
+        shutil.copytree(base_dir, tree, symlinks=True)
+        apply_manifest(tree, manifest, only_tests=False)
+        found = [hit for hit in (resolve(tree, module) for module in changed_test_modules(manifest))
+                 if hit]
+        runs = [hit[0] for hit in found]
+        if runs:
+            path = ":".join(dict.fromkeys([*(hit[1] for hit in found), "."]))
+            proof["hunk_tests"] = runs
+            proof["hunks"] = hunk_guard(base_dir, tree, runs, path, run(tree, runs, path), run)
+            if not proof["hunks"] and source_hunks(base_dir, tree):
+                proof["hunk_why"] = "the fix's changed tests do not all pass on the fix"
+        else:
+            proof["hunks"] = [{"path": h["path"], "lines": _where(h), "status": UNGUARDED,
+                               "why": "no test named or changed"}
+                              for h in source_hunks(base_dir, tree)[:HUNKS_MAX]]
+            proof["hunk_why"] = "the fix names no reproduction test and changes no test file"
+    return proof
+
+
 def dumps(proof: dict) -> str:
     return json.dumps(proof, sort_keys=True)
 
@@ -381,6 +420,12 @@ def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
     if proof.get("why"):
         text += f"- reason: {json.dumps(str(proof['why'])[:200])}\n"
     hunks = [h for h in proof.get("hunks") or [] if isinstance(h, dict)]
+    if proof.get("hunk_tests"):
+        text += ("- hunk check ran against the test files the fix changed (no reproduction test was "
+                 "named): " + ", ".join(json.dumps(str(t)[:80]) for t in proof["hunk_tests"][:6])
+                 + "\n")
+    if proof.get("hunk_why"):
+        text += f"- hunk check: {proof['hunk_why']}\n"
     if hunks:
         unguarded = [h for h in hunks if h.get("status") == UNGUARDED]
         unchecked = [h for h in hunks if h.get("status") == NOT_CHECKED]
