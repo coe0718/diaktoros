@@ -322,6 +322,28 @@ turn), or use `retry` for an eligible pre-write run. No branch is automatically 
 or overwritten. Deleting a branch cannot make a recorded/uncertain run retryable;
 never delete receipts or safety history to bypass this boundary.
 
+## A burst of issues over the gateway's rate limit
+
+The Hermes webhook gateway answers HTTP 429 to the deliveries over its `rate_limit` per route
+per minute (30 unless set), and GitHub does not redeliver. A burst of new issues (55 filed in a
+minute) can therefore lose triage turns. Two things cover it:
+
+- **Recovery sweep.** Each armed watchdog sweep lists the open issues and queues the triage of
+  each one the gate would have queued: open, not a pull request, by a `triage.authors` login,
+  with no label from `triage.labels` (or `triage.fix_label`) and **no triage row in the run
+  ledger**. It skips an issue newer than 5 minutes (the delivery may still come) or older than 3
+  days (a backlog from before the loop is not triaged in bulk), and queues at most 10 per sweep,
+  oldest first. `status` lists them as `late: issue #N triage queued late: the webhook delivery
+  was missed`. The sweep needs the same private runtime the gate does, and changes nothing for a
+  loop without `triage`.
+- **Doctor.** `gate:rate_limit` reads the gateway's `rate_limit` and warns below 60. Raise it in
+  the gateway's `config.yaml` (`platforms.webhook.extra.rate_limit: 120`) and restart that
+  gateway. It is a gateway-wide setting: a `rate_limit` key on a route entry is never read, so
+  `setup` and `arm` cannot raise it for you.
+
+A dropped review or fix wake (a burst of PR events) has no such backstop yet: only the doctor
+warning covers it.
+
 ## Current limits
 
 - `trace` replays `pull_request`, `pull_request_review` and `issues`; `explain` evaluates PRs,
