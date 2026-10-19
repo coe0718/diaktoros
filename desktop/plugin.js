@@ -495,6 +495,9 @@ function Drawer({ loop, pr, onClose }) {
   const stuck = (d && d.stuck) || []
   const turns = (d && d.turns) || []
   const rulings = (d && d.rulings) || []
+  // The lists hold the newest rows only; the totals say how many the ledger has.
+  const turnsTotal = (d && d.turns_total) || 0
+  const rulingsTotal = (d && d.rulings_total) || 0
   const verdicts = (d && d.verdicts) || {}
   const counts = Object.keys(verdicts)
     .sort()
@@ -666,7 +669,9 @@ function Drawer({ loop, pr, onClose }) {
                     rulings.length
                       ? jsx(Muted, {
                           text:
-                            'Adjudicator rulings: ' +
+                            (rulingsTotal > rulings.length
+                              ? 'Adjudicator rulings (newest ' + rulings.length + ' of ' + rulingsTotal + '): '
+                              : 'Adjudicator rulings: ') +
                             rulings.map(r => r.verdict + ' on ' + r.head).join(' · ')
                         })
                       : null,
@@ -678,15 +683,25 @@ function Drawer({ loop, pr, onClose }) {
                   ]
                 }),
                 jsxs(Section, {
-                  title: 'Turns (' + turns.length + ')',
+                  title:
+                    turnsTotal > turns.length
+                      ? 'Turns (newest ' + turns.length + ' of ' + turnsTotal + ')'
+                      : 'Turns (' + turns.length + ')',
                   children: turns.length
-                    ? jsx(Table, {
-                        head: ['when', 'seat', 'head', 'state'],
-                        rows: turns
-                          .slice()
-                          .reverse()
-                          .map(t => [clock(t.created), t.seat, t.head, t.state])
-                      })
+                    ? [
+                        turnsTotal > turns.length
+                          ? jsx(Muted, {
+                              text: '… ' + (turnsTotal - turns.length) + ' older turn(s) not shown'
+                            }, 'older')
+                          : null,
+                        jsx(Table, {
+                          head: ['when', 'seat', 'head', 'state'],
+                          rows: turns
+                            .slice()
+                            .reverse()
+                            .map(t => [clock(t.created), t.seat, t.head, t.state])
+                        }, 'turns')
+                      ]
                     : jsx(Muted, { text: 'No turn recorded for this PR.' })
                 }),
                 jsx(Muted, {

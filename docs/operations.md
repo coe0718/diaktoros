@@ -694,7 +694,9 @@ summary such as `loop: 1 running · 1 held`. The page shows:
   shows a turn's output. **Click a row** for that PR's drawer: the live window state again, one
   line per stuck run saying what would move it (the host's own text, the same `next_step` line
   `retry` names), the reviewer verdicts and adjudicator rulings this ledger recorded, that PR's
-  turns, and the cap marker when a head has spent its cap. The live round count comes from
+  turns (the newest 50, with the title and a line saying how many older ones are not shown
+  when the PR has more; rulings are cut the same way), and the cap marker when a head has
+  spent its cap. The live round count comes from
   GitHub's reviews — a person's verdict counts too — so the drawer says what the ledger holds
   instead of guessing at it; `explain --pr N` has the GitHub half. Two more sections answer what
   the ledger cannot: **Findings** lists the reviewer's numbered findings across rounds (#475) with
