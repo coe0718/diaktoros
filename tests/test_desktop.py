@@ -745,7 +745,15 @@ class Surface(unittest.TestCase):
         # replaced the operator's Node with a stub). Require reported tests, no failures, and a
         # named test.
         ok = re.findall(r"^ok \d+ - ", done.stdout, re.M)
-        self.assertGreaterEqual(len(ok), 112, done.stdout[-4000:])
+        self.assertGreaterEqual(len(ok), 152, done.stdout[-4000:])
+        # #646 must exercise the independently registered pane, not only the existing page.
+        for name in (
+            "pane: independent registration docks below workspace at a bounded height",
+            "pane: shares page now key, enabled, staleTime, interval and validated encoded query",
+            "pane: switching and removed selection never show another loop cache rows",
+            "pane: monotonic expiry and timestamp replacement re-arm without stale timer races",
+        ):
+            self.assertRegex(done.stdout, rf"(?m)^ok \d+ - {re.escape(name)}$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - hooks: old dialog cannot confirm or cancel a replacement confirmation$")
         self.assertRegex(done.stdout, r"(?m)^ok \d+ - hooks: malformed POST identities, status and answer fields never produce verified success$")
         self.assertNotIn("not ok", done.stdout)

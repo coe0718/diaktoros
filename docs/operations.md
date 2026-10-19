@@ -694,7 +694,22 @@ It's refused while one of the loop's runs is in flight or uncertain. Then, in th
 ## The Desktop page
 
 In Hermes Desktop, the plugin adds a **Diaktoros** page (with a sidebar entry) and a status-bar
-summary such as `loop: 1 running · 1 held`. The page shows:
+summary such as `loop: 1 running · 1 held`.
+
+A passive **Diaktoros · Right now** pane initially docks below the conversation as a 200px strip
+(the normal Desktop pane chrome still lets you rearrange it). It mounts independently of the page,
+shows the selected loop's live and recent failed runs with their host-written reasons, and scrolls
+inside its bounds. Its local loop selector does not navigate or change the page's selection.
+Unreadable configurations stay named; a selected loop that disappears is marked not read rather
+than silently replaced. The pane has no mutation controls, row links, toasts or auto-navigation.
+It shares the page's validated `/now` React Query key and 30-second polling/freshness configuration,
+not a new backend route or a separate polling mechanism. Last-good timestamps, loading, unavailable,
+verified-empty and stale disclosures remain visible; missing ledgers are unavailable, not empty.
+Successful reads expire after 60 seconds even if refresh hangs or the wall clock moves backward.
+Run reasons describe the recorded state, not new remedies inferred by the pane. Use the page for
+pacing detail, drawers and confirmed actions. Diaktoros never merges.
+
+The page shows:
 - **Right now:** the live usage-window state first — any seat account held for its reset, and
   today's turns (and tokens, where a budget is set) per seat against their caps, from the same
   read [`status`](commands.md#status) prints. Then every queued, running, held or uncertain run,

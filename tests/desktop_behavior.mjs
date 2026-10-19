@@ -24,6 +24,12 @@ function overview(...loops) {
 async function harness({ cachedAge = null } = {}) {
   const registrations = []
   const queries = {}
+  // Opt-in exact keys let selection tests model independent TanStack cache entries.
+  // Existing fixtures retain their kind-wide defaults unless that kind is explicitly scoped.
+  const keyedQueries = new Map()
+  const scopedKinds = new Set()
+  const queryReads = []
+  const storageWrites = []
   const options = {}
   const calls = []
   const notices = []
@@ -84,7 +90,12 @@ async function harness({ cachedAge = null } = {}) {
       setQueryData: (key, data) => { queries[key[1]] = good(data); focusWrites.push(data) },
       getQueryData: key => (queries[key[1]] && queries[key[1]].data)
     },
-    useQuery: opts => { options[opts.queryKey[1]] = opts; return queries[opts.queryKey[1]] }
+    useQuery: opts => {
+      const kind = opts.queryKey[1]
+      options[kind] = opts
+      queryReads.push(opts)
+      return scopedKinds.has(kind) ? keyedQueries.get(JSON.stringify(opts.queryKey)) || loading() : queries[kind]
+    }
   })
   const react = {
     useEffect: (fn, deps) => {
@@ -138,7 +149,7 @@ async function harness({ cachedAge = null } = {}) {
       calls.push(path)
       return Promise.resolve(response)
     },
-    storage: { get: key => store.get(key), set: (key, value) => store.set(key, value) },
+    storage: { get: key => store.get(key), set: (key, value) => { storageWrites.push({ key, value }); store.set(key, value) } },
     onDispose: fn => disposers.push(fn), registerMany: rows => registrations.push(...rows)
   })
   const resolve = node => {
@@ -175,6 +186,8 @@ async function harness({ cachedAge = null } = {}) {
   const fail = data => ({ ...good(data), isError: true, error: new Error('fixture backend offline') })
   const loading = () => ({ ...good(undefined), isLoading: true, isFetching: true })
   return { queries, options, calls, notices, navigations, store, good, fail, loading,
+    registrations, queryReads, storageWrites,
+    queryFor: (key, query) => { scopedKinds.add(key[1]); keyedQueries.set(JSON.stringify(key), query) },
     actionCalls, actionResult: fn => { actionResult = fn },
     hookCalls, hookResult: fn => { hookResult = fn },
     retryCalls, retryAnswer: data => { retryResult = { ok: true, data } },
@@ -208,6 +221,267 @@ async function harness({ cachedAge = null } = {}) {
       }
     } }
 }
+
+// #646: exercise the registered pane without mounting the page or its action components.
+const PANE = 'right-now-pane'
+const nowKey = loop => ['diaktoros', 'now', loop]
+const paneSelect = h => h.flatten(h.tree()).find(node => node.type === 'select')
+const paneRuns = (pr = 646) => stalled([retrying({ pr, why: 'passive fixture row' })])
+function assertPassivePane(h) {
+  assert.equal(h.buttons(h.tree()).length, 0, 'no refresh, drawer, retry or action buttons')
+  assert.equal(h.flatten(h.tree()).some(n => ['Dialog', 'ConfirmDialog', 'a'].includes(n.type)), false)
+  assert.deepEqual([...new Set(h.queryReads.map(q => q.queryKey[1]))].sort(), ['loops', 'now'])
+  assert.deepEqual(h.calls, [], 'no REST, refetch or invalidation from rendering/selection/expiry')
+  for (const list of [h.notices, h.navigations, h.storageWrites, h.focusWrites(), h.actionCalls, h.hookCalls, h.retryCalls]) {
+    assert.deepEqual(list, [])
+  }
+  assert.equal(h.store.size, 0)
+}
+
+test('pane: independent registration docks below workspace at a bounded height', async () => {
+  const h = await harness()
+  const registration = h.registrations.find(r => r.id === PANE)
+  assert.ok(registration)
+  assert.equal(registration.area, 'panes')
+  assert.equal(registration.title, 'Diaktoros · Right now')
+  assert.deepEqual(JSON.parse(JSON.stringify(registration.data)), {
+    placement: 'bottom', dock: { pane: 'workspace', pos: 'bottom' }, height: '200px'
+  })
+  const tree = h.render(PANE)
+  assert.match(h.text(tree), /Right now.*Read-only · fixture-loop/)
+  const region = h.flatten(tree).find(n => n.props?.role === 'region')
+  assert.equal(region.props['aria-label'], 'Diaktoros Right now')
+  assert.equal(region.props.tabIndex, 0)
+  assert.match(region.props.className, /min-h-0.*min-w-0.*overflow-y-auto/)
+  assertPassivePane(h)
+  h.dispose()
+  assert.equal(h.timerCount(), 0)
+  assert.equal(h.listenerCount(), 0)
+})
+
+test('pane: shares page now key, enabled, staleTime, interval and validated encoded query', async () => {
+  const id = 'loop /?&'
+  const h = await harness()
+  h.queries.loops = h.good({ loops: [{ id }] })
+  h.render(PANE)
+  const paneQuery = h.options.now
+  h.render('page')
+  const pageQuery = h.options.now
+  for (const query of [paneQuery, pageQuery]) {
+    assert.equal(JSON.stringify(query.queryKey), JSON.stringify(nowKey(id)))
+    assert.equal(query.enabled, true)
+    assert.equal(query.staleTime, 30000)
+    assert.equal(query.refetchInterval, 30000)
+    h.respond({})
+    await assert.rejects(query.queryFn(), /Invalid now response/)
+    const data = paneRuns()
+    h.respond(data)
+    assert.equal(await query.queryFn(), data)
+    assert.equal(h.calls.at(-1), '/now?loop=' + encodeURIComponent(id))
+    h.respond({ runs: [], counts: { running: 1 }, available: false })
+    await assert.rejects(query.queryFn(), /Invalid now response/)
+  }
+  h.unmount()
+})
+
+for (const scenario of ['loading', 'error', 'empty']) {
+  test(`pane: ${scenario} discovery gates now and never leaks cached runs`, async () => {
+    const h = await harness()
+    h.queries.now = h.good(paneRuns())
+    h.queries.loops = scenario === 'loading' ? h.loading() : scenario === 'error' ? h.fail(undefined) : h.good({ loops: [] })
+    const text = h.text(h.render(PANE))
+    assert.equal(h.options.now.enabled, false)
+    assert.equal(h.options.now.queryKey[2], '')
+    assert.doesNotMatch(text, /#646|No active or recent failed/)
+    assert.match(text, scenario === 'loading' ? /Configured loops: loading/ : scenario === 'error' ? /Configured loops: no verified data available/ : /verified-empty.*No loops configured/)
+    if (scenario !== 'empty') assert.doesNotMatch(text, /No loops configured|verified-empty/)
+    assertPassivePane(h)
+    h.unmount()
+  })
+}
+
+test('pane: first loading/error, recovery, retained rows and timestamp are truthful and bounded', async () => {
+  const h = await harness()
+  h.queries.now = h.loading()
+  assert.match(h.text(h.render(PANE)), /Right now: loading/)
+  assert.doesNotMatch(h.text(h.tree()), /verified-empty|No active or recent failed|idle/)
+  h.queries.now = { ...h.fail(undefined), error: new Error('/private/token ghp_secret') }
+  assert.match(h.text(h.render(PANE)), /unavailable.*Backend read failed/)
+  assert.doesNotMatch(h.text(h.tree()), /private\/token|ghp_secret|verified-empty|idle/)
+  const data = paneRuns()
+  h.queries.now = h.good(data)
+  const stamp = new Date(h.queries.now.dataUpdatedAt).toLocaleString()
+  assert.match(h.text(h.render(PANE)), /#646.*passive fixture row/)
+  h.advance(10000)
+  h.queries.now = { ...h.queries.now, isFetching: true }
+  assert.match(h.text(h.render(PANE)), /refreshing….*#646/)
+  h.queries.now = { ...h.queries.now, isError: true, error: new Error('/private/token ghp_secret') }
+  const text = h.text(h.render(PANE))
+  assert.match(text, /stale.*showing last good data, not current status.*#646/)
+  assert.ok(text.includes('Last good read: ' + stamp))
+  assert.doesNotMatch(JSON.stringify(h.tree()), /private\/token|ghp_secret|No active or recent failed/)
+  assertPassivePane(h)
+  h.unmount()
+  assert.equal(h.timerCount(), 0)
+})
+
+test('pane: verified empty differs from missing ledger and pending counts without rows', async () => {
+  const h = await harness()
+  h.queries.now = h.good({ runs: [], counts: {}, available: true })
+  assert.match(h.text(h.render(PANE)), /verified-empty.*No active or recent failed/)
+  h.queries.now = h.good({ runs: [], counts: {}, available: false })
+  let text = h.text(h.render(PANE))
+  assert.match(text, /unavailable.*No run ledger available.*unavailable, not zero/)
+  assert.doesNotMatch(text, /verified-empty|idle|No active or recent failed/)
+  h.queries.now = h.good({ runs: [], counts: { pending: 2, waiting: 3 }, available: true })
+  text = h.text(h.render(PANE))
+  assert.match(text, /2 pending · 3 retry-waiting/)
+  assert.doesNotMatch(text, /verified-empty|idle|No active or recent failed/)
+  assertPassivePane(h)
+  h.unmount()
+})
+
+for (const allUnreadable of [false, true]) {
+  test(`pane: ${allUnreadable ? 'all' : 'mixed'} unreadable loops are named and never selected`, async () => {
+    const h = await harness()
+    h.queries.loops = h.good({ loops: [UNREADABLE, ...(allUnreadable ? [] : [{ id: 'widgets' }])] })
+    const text = h.text(h.render(PANE))
+    assert.match(text, /typo · config unreadable: bad json/)
+    assert.doesNotMatch(text, /No loops configured/)
+    assert.equal(h.options.now.enabled, !allUnreadable)
+    assert.equal(h.options.now.queryKey[2], allUnreadable ? '' : 'widgets')
+    assert.equal(paneSelect(h), undefined, 'unreadable configuration is not an option')
+    if (allUnreadable) assert.match(text, /No readable loop selected; run status is not read/)
+    assertPassivePane(h)
+    h.unmount()
+  })
+}
+
+for (const disappearance of ['removed', 'unreadable']) test(`pane: switching and ${disappearance} selection never show another loop cache rows`, async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queryFor(nowKey('widgets'), h.good(paneRuns(646)))
+  h.render(PANE)
+  assert.match(h.text(h.tree()), /#646/)
+  paneSelect(h).props.onChange({ target: { value: 'gadgets' } })
+  assert.equal(h.options.now.queryKey[2], 'gadgets')
+  assert.match(h.text(h.tree()), /Right now: loading/)
+  assert.doesNotMatch(h.text(h.tree()), /#646/)
+  h.queryFor(nowKey('gadgets'), h.good(paneRuns(647)))
+  h.render(PANE)
+  assert.match(h.text(h.tree()), /#647/)
+  assert.doesNotMatch(h.text(h.tree()), /#646/)
+  h.queries.loops = h.good({ loops: [{ id: 'widgets' }, ...(disappearance === 'unreadable' ? [{ ...UNREADABLE, id: 'gadgets' }] : [])] })
+  let text = h.text(h.render(PANE))
+  assert.match(text, /gadgets · not read: selected loop is no longer readable or configured/)
+  assert.doesNotMatch(text, /#646|#647/)
+  assert.equal(h.options.now.enabled, false)
+  assert.equal(h.options.now.queryKey[2], '')
+  assert.equal(paneSelect(h).props.value, 'gadgets')
+  paneSelect(h).props.onChange({ target: { value: 'widgets' } })
+  text = h.text(h.tree())
+  assert.match(text, /#646/)
+  assert.doesNotMatch(text, /#647/)
+  assertPassivePane(h)
+  h.unmount()
+})
+
+for (const change of ['removed', 'unreadable', 'reordered']) test('pane: initial selection survives discovery ' + change, async () => {
+  const h = await harness()
+  h.queries.loops = h.good(TWO_LOOPS)
+  h.queryFor(nowKey('widgets'), h.good(paneRuns(646)))
+  h.queryFor(nowKey('gadgets'), h.good(paneRuns(647)))
+  h.render(PANE)
+  assert.match(h.text(h.tree()), /#646/)
+  h.queries.loops = h.good({ loops: change === 'reordered' ? [...TWO_LOOPS.loops].reverse() :
+    [{ id: 'gadgets' }, ...(change === 'unreadable' ? [{ ...UNREADABLE, id: 'widgets' }] : [])] })
+  const text = h.text(h.render(PANE))
+  assert.doesNotMatch(text, /#647/)
+  if (change === 'reordered') assert.match(text, /#646/)
+  else { assert.match(text, /widgets · not read/); assert.equal(h.options.now.enabled, false) }
+  h.unmount()
+})
+
+for (const replacement of ['timestamp', 'identity']) {
+  test(`pane: monotonic expiry and ${replacement} replacement re-arm without stale timer races`, async () => {
+    const h = await harness()
+    h.render(PANE)
+    const oldTimers = h.pendingTimers()
+    assert.ok(oldTimers.length > 0)
+    h.advance(59999, -3600000)
+    assert.match(h.text(h.tree()), /verified-empty.*No active or recent failed/)
+    h.advance(1, 0)
+    assert.match(h.text(h.tree()), /stale/)
+    assert.doesNotMatch(h.text(h.tree()), /No active or recent failed/)
+    h.moveWall(-3600000)
+    h.render(PANE)
+    assert.doesNotMatch(h.text(h.tree()), /verified-empty/)
+    h.queries.loops = h.good(h.queries.loops.data)
+    h.queries.now = replacement === 'timestamp' ? h.good(h.queries.now.data) : {
+      ...h.queries.now, data: { runs: [], counts: {}, available: true }
+    }
+    h.render(PANE)
+    oldTimers.forEach(fn => fn())
+    assert.match(h.text(h.tree()), /verified-empty.*No active or recent failed/)
+    h.advance(59999, 0)
+    assert.match(h.text(h.tree()), /verified-empty/)
+    h.advance(1, -60000)
+    assert.doesNotMatch(h.text(h.tree()), /verified-empty|No active or recent failed/)
+    assertPassivePane(h)
+    h.dispose()
+    assert.equal(h.timerCount(), 0)
+    assert.equal(h.listenerCount(), 0)
+  })
+}
+
+test('pane: cached discovery failure retains rows but discloses stale discovery and bounded errors', async () => {
+  const h = await harness()
+  h.queries.now = h.good(paneRuns())
+  h.render(PANE)
+  h.queries.loops = { ...h.fail(h.queries.loops.data), error: { code: 'INVALID_RESPONSE', message: 'private-secret' } }
+  const text = h.text(h.render(PANE))
+  assert.match(text, /Configured loops: showing last good data/)
+  assert.match(text, /Backend response could not be verified/)
+  assert.match(text, /#646/)
+  assert.doesNotMatch(text, /private-secret/)
+  for (const node of h.flatten(h.tree())) {
+    if (typeof node === 'object') assert.doesNotMatch(node.props.title || '', /private-secret/)
+  }
+  assertPassivePane(h)
+  h.unmount()
+})
+
+test('pane: pending old expiry cannot expire a newer shared-data read', async () => {
+  const h = await harness()
+  h.render(PANE)
+  const oldTimers = h.pendingTimers()
+  h.advance(30000)
+  h.queries.now = h.good(h.queries.now.data)
+  h.queries.loops = h.good(h.queries.loops.data)
+  h.render(PANE)
+  oldTimers.forEach(fn => fn())
+  h.advance(30000, -3600000)
+  assert.match(h.text(h.tree()), /verified-empty.*No active or recent failed/)
+  h.advance(29999, 0)
+  assert.match(h.text(h.tree()), /verified-empty/)
+  h.advance(1, 0)
+  assert.doesNotMatch(h.text(h.tree()), /verified-empty|No active or recent failed/)
+  assertPassivePane(h)
+  h.unmount()
+  assert.equal(h.timerCount(), 0)
+})
+
+test('pane: unmount clears pending freshness timers without reads or side effects', async () => {
+  const h = await harness()
+  h.queries.now = h.good(paneRuns())
+  h.render(PANE)
+  assert.ok(h.timerCount() > 0)
+  assertPassivePane(h)
+  h.unmount()
+  assert.equal(h.timerCount(), 0)
+  h.advance(120000)
+  assertPassivePane(h)
+})
 
 const hookButton = h => h.buttons(h.tree()).find(b => /^(Pause|Resume) webhook delivery$/.test(b.props.children))
 const hookDialog = h => h.flatten(h.tree()).find(n => n.type === 'ConfirmDialog' && /webhook delivery/.test(n.props.title))
