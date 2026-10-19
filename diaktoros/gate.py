@@ -194,6 +194,11 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
         if not shadow_sampled(loop, number, head):
             return "not sampled"
         delivery = f"{loop['repo']}:{number}:{head}:shadow" + (f":{turn_key}" if turn_key else "")
+        try:
+            st = state_mod.state_for(loop)
+            st.shadow_findings_put(number, head, st.findings_get(number))
+        except Exception as exc:
+            log(f"#{number}: shadow findings snapshot not kept: {type(exc).__name__}: {exc}")
         return supervisor.submit(delivery, loop["repo"], number, head, "shadow",
                                  turn_key=turn_key, budget=config.turn_budget(loop, "shadow"))
     except Exception as exc:

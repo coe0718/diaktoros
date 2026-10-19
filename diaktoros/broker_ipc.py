@@ -570,7 +570,14 @@ class RunBroker:
             # Numbered findings (#475): every open one accounted for, new ones on changed code.
             # Before the capability is consumed, so the reviewer can resubmit in the same turn.
             from . import findings, state as state_mod
-            entry = state_mod.state_for(self._loop).findings_get(self.scope.number)
+            st = state_mod.state_for(self._loop)
+            entry = st.findings_get(self.scope.number)
+            if self._no_write:
+                # A shadow (#218) is judged on the ledger its prompt was built from: the real
+                # review of the same head may have recorded findings meanwhile, which it never
+                # saw (on #1005 they turned its approval into a forced block).
+                snapshot = st.shadow_findings_get(self.scope.number, self.scope.head)
+                entry = entry if snapshot is None else snapshot
             reason = findings.check(self._loop, entry, self.scope.number, self.scope.head, body,
                                     verdict)
             if reason:
