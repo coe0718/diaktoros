@@ -630,7 +630,7 @@ def _explain_state(loop: dict, st: state_mod.LoopState, key: str, number: int, h
                 continue
             marks.append(f"{label} for head {head[:7]} armed "
                          f"{_minutes_since(st.inflight_at(mark), now)}m ago "
-                         f"(ttl {loop['inflight_ttl_min']}m)")
+                         f"(ttl {st._minutes('inflight_ttl_min'):g}m)")   # the TTL inflight() used
             if label == "review":
                 inflight_review = True
             else:

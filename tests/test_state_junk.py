@@ -123,6 +123,21 @@ class Junk(unittest.TestCase):
         st.inflight_file.write_text(json.dumps({mark: time.time() - 20 * 60}))
         self.assertTrue(st.inflight(mark))
 
+    def test_explain_reports_the_healed_inflight_ttl(self):
+        """#938: ``explain`` prints the TTL ``inflight()`` used, and survives a missing key."""
+        st, mark = self.st, f"review:7:{HEAD}"
+        st.inflight_file.write_text(json.dumps({mark: time.time() - 60}))
+        del st.loop["inflight_ttl_min"]
+        for bad in [None, "abc", float("nan"), "30", 10]:
+            with self.subTest(bad=bad):
+                if bad is not None:
+                    st.loop["inflight_ttl_min"] = bad
+                else:
+                    st.loop.pop("inflight_ttl_min", None)
+                local = gate._explain_state(st.loop, st, KEY, 7, HEAD, time.time())
+                want = "30" if bad == "30" else "10"
+                self.assertIn(f"(ttl {want}m)", local["inflight"])
+
     def test_seat_ttl_survives_a_non_finite_ttl_min(self):
         for bad in [float("nan"), float("inf"), "inf"]:
             with self.subTest(bad=bad):
