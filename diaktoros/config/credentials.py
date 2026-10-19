@@ -24,9 +24,10 @@ def token_file_problem(value) -> str:
     raw = str(value or "").strip()
     if not raw:
         return "no path given"
+    problem = config.relative_path_problem(raw)
+    if problem:
+        return problem
     path = config._path(raw)
-    if not path.is_absolute():
-        return f"{raw!r} is not an absolute path (use /… or ~/…)"
     try:
         info = path.stat()
     except FileNotFoundError:
