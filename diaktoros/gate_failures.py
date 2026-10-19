@@ -128,6 +128,8 @@ def budget_s() -> float:
 
 GATEWAY_DEFAULT_TIMEOUT_S = 30   # gateway/platforms/webhook_filters.py DEFAULT_SCRIPT_TIMEOUT_SECONDS
 KEY = "script_timeout_seconds"
+RATE_LIMIT_KEY = "rate_limit"
+GATEWAY_DEFAULT_RATE_LIMIT = 30   # gateway/platforms/webhook.py: per route, per minute
 
 
 def _profile_standalone(home: pathlib.Path) -> bool | None:
@@ -217,8 +219,10 @@ def _leaf(data, *keys):
     return data
 
 
-def gateway_script_timeout(home: pathlib.Path | None = None) -> tuple[int | None, str]:
-    """``(seconds, where)`` — what the gateway will allow a route script, as it computes it.
+def gateway_webhook_setting(key: str, default: int, home: pathlib.Path | None = None,
+                            ) -> tuple[int | None, str]:
+    """``(value, where)`` — a webhook adapter integer setting (``extra[key]``), as the gateway
+    computes it. ``script_timeout_seconds`` and ``rate_limit`` share this one resolution.
 
     The gateway's layers, read from hermes-agent (``gateway/config.py`` ``load_gateway_config``,
     ``gateway/config_loader.py``), later winning:
@@ -232,7 +236,7 @@ def gateway_script_timeout(home: pathlib.Path | None = None) -> tuple[int | None
     3. a **top-level** ``webhook:`` block, bridged into ``extra`` last (``_bridged_keys`` with
        ``root_block``) — its plain key, then its own ``extra``;
     4. ``PlatformConfig.from_dict``: ``extra`` beats the block's plain key; the adapter reads
-       ``extra.get("script_timeout_seconds", 30)`` (``gateway/platforms/webhook.py``).
+       ``extra.get(key, default)`` (``gateway/platforms/webhook.py``).
 
     ``(None, reason)`` when the deciding value cannot be known here.
     """
@@ -245,11 +249,11 @@ def gateway_script_timeout(home: pathlib.Path | None = None) -> tuple[int | None
         nonlocal plain, extra
         if not isinstance(block, dict):
             return
-        if KEY in block:
-            plain = (block[KEY], where)
+        if key in block:
+            plain = (block[key], where)
         more = block.get("extra")
-        if isinstance(more, dict) and KEY in more:
-            extra = (more[KEY], where + ".extra")
+        if isinstance(more, dict) and key in more:
+            extra = (more[key], where + ".extra")
 
     legacy = home / "gateway.json"
     try:
@@ -307,36 +311,50 @@ def gateway_script_timeout(home: pathlib.Path | None = None) -> tuple[int | None
                      ("gateway", "webhook")):
             block = _leaf(merged, *keys)
             if isinstance(block, dict):
-                where_plain = f"{label(*keys, KEY)} {'.'.join(keys)}"
-                where_extra = f"{label(*keys, 'extra', KEY)} {'.'.join(keys)}"
-                if KEY in block:
-                    plain = (block[KEY], where_plain)
+                where_plain = f"{label(*keys, key)} {'.'.join(keys)}"
+                where_extra = f"{label(*keys, 'extra', key)} {'.'.join(keys)}"
+                if key in block:
+                    plain = (block[key], where_plain)
                 more = block.get("extra")
-                if isinstance(more, dict) and KEY in more:
-                    extra = (more[KEY], where_extra + ".extra")
+                if isinstance(more, dict) and key in more:
+                    extra = (more[key], where_extra + ".extra")
         top = merged.get("webhook")
         if isinstance(top, dict):                      # bridged into extra, last
-            if KEY in top:
-                extra = (top[KEY], f"{label('webhook', KEY)} webhook")
+            if key in top:
+                extra = (top[key], f"{label('webhook', key)} webhook")
             more = top.get("extra")
-            if isinstance(more, dict) and KEY in more:
-                extra = (more[KEY], f"{label('webhook', 'extra', KEY)} webhook.extra")
+            if isinstance(more, dict) and key in more:
+                extra = (more[key], f"{label('webhook', 'extra', key)} webhook.extra")
 
     decided = extra or plain
     note = f" ({'; '.join(notes)})" if notes else ""
     if decided is None:
-        return GATEWAY_DEFAULT_TIMEOUT_S, "gateway default (not set)" + note
+        return default, "gateway default (not set)" + note
     value, where = decided
     if isinstance(value, str):
         ref = _ENV_REF.fullmatch(value.strip())
         if ref:
             if ref.group(1) not in os.environ:
-                return None, f"{where}: {KEY} is {value!r}, which cannot be resolved here"
+                return None, f"{where}: {key} is {value!r}, which cannot be resolved here"
             value = os.environ[ref.group(1)]
     try:
         return max(1, int(value)), where + note
     except (TypeError, ValueError):
-        return None, f"{where}: {KEY} is not a number ({str(value)[:40]!r})"
+        return None, f"{where}: {key} is not a number ({str(value)[:40]!r})"
+
+
+def gateway_script_timeout(home: pathlib.Path | None = None) -> tuple[int | None, str]:
+    """``(seconds, where)`` — what the gateway will allow a route script, as it computes it."""
+    return gateway_webhook_setting(KEY, GATEWAY_DEFAULT_TIMEOUT_S, home)
+
+
+def gateway_rate_limit(home: pathlib.Path | None = None) -> tuple[int | None, str]:
+    """``(deliveries per route per minute, where)``: the gateway's ``rate_limit`` (default 30).
+
+    One limit for every route (``gateway/platforms/webhook.py``: ``extra.get("rate_limit", 30)``);
+    a ``rate_limit`` key on a route entry is never read.
+    """
+    return gateway_webhook_setting(RATE_LIMIT_KEY, GATEWAY_DEFAULT_RATE_LIMIT, home)
 
 
 STARTUP_S = 1.0     # interpreter start-up and imports before ``run`` starts its clock (~0.1s idle)

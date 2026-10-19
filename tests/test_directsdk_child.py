@@ -89,6 +89,38 @@ class NativeHostTests(unittest.TestCase):
         self.assertIn(b'data: [DONE]', wire)
         self.assertEqual(self.endpoint.active, set())
 
+    def test_unset_tmpdir_is_private_dir_outside_package_and_removed_after(self):
+        import subprocess
+        package = Path(backend.__file__).resolve().parent
+        seen = []
+        real = subprocess.Popen
+
+        def spy(*args, **kwargs):
+            tmp = kwargs['env']['TMPDIR']
+            seen.append((tmp, os.stat(tmp).st_mode & 0o777))
+            return real(*args, **kwargs)
+
+        with mock.patch.dict(os.environ):
+            os.environ.pop('TMPDIR', None)
+            with mock.patch.object(backend.subprocess, 'Popen', side_effect=spy):
+                _, _, reply = self.endpoint.post(json.dumps(self.payload).encode(), {})
+            self.assertEqual(json.loads(b''.join(reply))['choices'][0]['message']['content'], 'OK')
+        tmp, mode = seen[0]
+        resolved = Path(tmp).resolve()
+        self.assertNotEqual(resolved, package)
+        self.assertNotIn(package, resolved.parents)
+        self.assertIn(self.home.resolve(), resolved.parents)
+        self.assertEqual(mode, 0o700)
+        self.assertFalse(Path(tmp).exists())
+
+    def test_inherited_tmpdir_is_kept_and_not_removed(self):
+        keep = self.root / 'mine'
+        keep.mkdir()
+        with mock.patch.dict(os.environ, {'TMPDIR': str(keep)}):
+            _, _, reply = self.endpoint.post(json.dumps(self.payload).encode(), {})
+            b''.join(reply)
+        self.assertTrue(keep.is_dir())
+
     def test_untrusted_process_and_extra_token_parameters_refused(self):
         for field in ('command','args','env','cwd','timeout','client_kwargs','base_url','api_key'):
             with self.subTest(field=field), self.assertRaises(inference_proxy.ProxyError):

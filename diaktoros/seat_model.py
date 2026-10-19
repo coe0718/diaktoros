@@ -533,7 +533,9 @@ def _read_key_file(raw: str, where: str) -> str:
                              f"(`chmod 600 {path}`)")
     try:
         key = path.read_text().strip()
-    except (OSError, UnicodeDecodeError) as exc:
+    except UnicodeDecodeError:
+        raise SeatModelError(f"{where}: key file {path} is not UTF-8 text") from None
+    except OSError as exc:
         raise SeatModelError(f"{where}: key file {path} could not be read ({exc.__class__.__name__}"
                              f"); it must be a readable 0600 file you own "
                              f"(`chmod 600 {path}`)") from None

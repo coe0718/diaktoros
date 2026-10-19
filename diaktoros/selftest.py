@@ -182,12 +182,28 @@ def worker_tempdir():
 
 # -- step 1: runtime ---------------------------------------------------------------------------
 
+def _blocked_directory(path: Path) -> Path:
+    """The outermost ancestor of ``path`` this user cannot search (falls back to the parent)."""
+    blocked = path.parent
+    for parent in path.parents:
+        if not os.access(parent, os.X_OK):
+            blocked = parent
+    return blocked
+
+
 def _private_file(path: Path) -> tuple[bool, str, str]:
     """(ok, detail, fix) for a file that must be a regular, owned, 0600-style private file."""
     try:
         info = path.lstat()
     except FileNotFoundError:
         return False, f"no file at {path}", ""
+    except PermissionError:
+        blocked = _blocked_directory(path)
+        return (False, f"{path} is in a directory you cannot open ({blocked})",
+                f"chmod 700 {blocked}")
+    except OSError as exc:
+        return (False, f"{path} cannot be inspected ({type(exc).__name__})",
+                f"check that {path} and its parent directories are yours and readable")
     if stat.S_ISLNK(info.st_mode):
         return False, f"{path} is a symlink", f"replace {path} with the regular file it points to"
     if not stat.S_ISREG(info.st_mode):
@@ -250,6 +266,11 @@ def _check_override(report: Report, step: str, prefix: str, block: dict) -> bool
     if good:
         try:
             text = key_path.read_text().strip()
+        except UnicodeDecodeError:
+            good, detail, fix = (False, f"{key_path} is not UTF-8 text "
+                                 "(the production reader refuses it)",
+                                 f"rewrite the key file as text: only the provider API key, "
+                                 f"on one line, in {key_path}")
         except OSError as exc:
             good, detail, fix = (False, f"{key_path} cannot be read ({type(exc).__name__})",
                                  f"chmod 600 {key_path}")
@@ -278,7 +299,7 @@ def check_runtime(report: Report, path: Path) -> dict | None:
                 '"runtime": "/path/to/python-runtime", "rust": "~/.rustup/toolchains/stable-..."}')
     ok, detail, fix = _private_file(path)
     if not ok:
-        if not path.exists() and not path.is_symlink():
+        if detail.startswith("no file at"):
             fix = f"write {path} with {template} and `chmod 600 {path}`"
         report.add(step, "runtime:file", FAIL, detail, fix)
         return None

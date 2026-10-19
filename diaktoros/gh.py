@@ -558,6 +558,18 @@ def open_prs(loop: dict, errors: list | None = None):
     return result
 
 
+MAX_ISSUE_PAGES = 5
+
+
+def open_issues_read(loop: dict, since: str) -> tuple[list[dict] | None, str]:
+    """Open issues and PRs updated since ``since`` (ISO-8601), or ``(None, reason)`` (#849).
+
+    GitHub's issues listing includes pull requests (they carry ``pull_request``); the caller
+    filters them. Bounded to a few pages: a listing past them is unknown, never a prefix.
+    """
+    path = f"/repos/{loop['repo']}/issues?state=open&sort=created&direction=asc&since={since}&per_page=100"
+    return _read_pages(loop, path, "open issue", MAX_ISSUE_PAGES)
+
 
 def request_review(loop: dict, number: int, login: str | None = None, as_login: str | None = None):
     """Ask for a review explicitly.

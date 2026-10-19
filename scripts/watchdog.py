@@ -67,6 +67,7 @@ from diaktoros import (  # noqa: E402
     stale_approval,
     state as state_mod,
     transition,
+    triage_sweep,
 )
 from diaktoros.util import age_min, epoch, log, now_iso  # noqa: E402
 
@@ -1025,6 +1026,11 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         lines.extend(fix_hold.sweep(loop, st))
     except Exception as exc:
         lines.append(f"⚠️ Diaktoros [{loop['id']}] held issue fixes: "
+                     f"{type(exc).__name__}: {exc}")
+    try:
+        lines.extend(triage_sweep.sweep(loop, st))
+    except Exception as exc:                  # never let the recovery hide the stall scan
+        lines.append(f"⚠️ Diaktoros [{loop['id']}] triage recovery sweep: "
                      f"{type(exc).__name__}: {exc}")
     reconcile_stacked(loop, st, watch, prs, lines)
     retry_fresh_reviews(loop, st, prs, lines, since=now)
