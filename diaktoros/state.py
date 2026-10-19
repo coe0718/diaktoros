@@ -924,6 +924,29 @@ class LoopState:
                 self._save_strict(self.dir / "held-fixes.json", data)
             self.fix_hold_unsay(number)       # a later hold on this issue says so again (#796)
 
+    # -- issues the recovery sweep triaged late (#849): {issue number: {"at", "outcome"}} --
+
+    LATE_TRIAGE_KEEP = 20
+
+    def late_triage(self) -> dict:
+        """Read-only (`status` and `explain` call it): the newest few issues whose triage the
+        watchdog queued because the webhook delivery never arrived."""
+        raw = self._load(self.dir / "late-triage.json", {})
+        out = {}
+        for key, entry in (raw.items() if isinstance(raw, dict) else ()):
+            if str(key).isdigit() and isinstance(entry, dict) and isinstance(
+                    entry.get("at"), (int, float)) and not isinstance(entry.get("at"), bool):
+                out[int(key)] = {"at": float(entry["at"]), "outcome": str(entry.get("outcome"))[:80]}
+        return out
+
+    def late_triage_note(self, number: int, at: float, outcome: str) -> None:
+        with self.locked():
+            data = self.late_triage()
+            data[number] = {"at": at, "outcome": outcome}
+            newest = sorted(data, key=lambda n: data[n]["at"])[-self.LATE_TRIAGE_KEEP:]
+            self._save_strict(self.dir / "late-triage.json",
+                              {str(n): data[n] for n in newest})
+
     def _said_claim(self, name: str, number: int) -> bool:
         """Record ``number`` in the one-time-notice ledger ``name``; True only for the caller that
         recorded it. The check and the write are one step under the lock. A claim that did not reach

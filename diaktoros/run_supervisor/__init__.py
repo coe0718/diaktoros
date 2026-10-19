@@ -517,18 +517,30 @@ def triage_issue(loop: dict, number: int) -> dict:
     issue = gh.api(loop, f"/repos/{loop['repo']}/issues/{number}", login=loop['read_token'])
     if not isinstance(issue, dict) or issue.get('number') != number:
         raise RetryableError('issue unreadable (GitHub read failed)')
+    why = triage_blocker(loop, issue)
+    if why:
+        raise ValueError(why)
+    return issue
+
+
+def triage_blocker(loop: dict, issue: dict) -> str:
+    """Why this issue is not (or no longer) triage's, or ``''`` when it is (#213, #849).
+
+    The one rule for the run's launch, the broker's write and the watchdog's recovery sweep.
+    """
+    triage = loop.get('triage') or {}
     if 'pull_request' in issue:
-        raise ValueError('not an issue (a pull request)')
+        return 'not an issue (a pull request)'
     if issue.get('state') != 'open':
-        raise ValueError('issue no longer open')
+        return 'issue no longer open'
     author = str((issue.get('user') or {}).get('login') or '').lower()
     if author not in (triage.get('authors') or ()):
-        raise ValueError('issue author is not in triage.authors')
+        return 'issue author is not in triage.authors'
     present = {str((label or {}).get('name') or '').casefold()
                for label in issue.get('labels') or [] if isinstance(label, dict)}
     if present & {name.casefold() for name in triage.get('labels') or []}:
-        raise ValueError('issue already carries a triage label (a person labelled it)')
-    return issue
+        return 'issue already carries a triage label (a person labelled it)'
+    return ''
 
 
 def issue_fix_issue(loop: dict, number: int) -> dict:
@@ -1340,6 +1352,12 @@ class Supervisor(records.LedgerRecords):
         """Read-only, bounded operator view; no lease or worker is altered."""
         with self._connect() as con:
             return runs_view(con, repo, pr)
+
+    def seat_numbers(self, repo: str, seat: str) -> set[int]:
+        """Every PR/issue number with a ledger row for ``seat``, in any state (read-only)."""
+        with self._connect() as con:
+            return {int(row['pr']) for row in con.execute(
+                'SELECT DISTINCT pr FROM runs WHERE repo=? AND seat=?', (repo, seat))}
 
     def record_dependencies(self, run_id: str, owner: str, text: str) -> None:
         """The owning worker's note of its turn's dependency prefetch (#51), bounded and printable.

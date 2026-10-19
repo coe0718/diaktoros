@@ -226,6 +226,10 @@ def cmd_status(args) -> int:
             names = ", ".join(f"#{a}" for a in sorted(declared.get(issue_no) or {})) or "?"
             print(f"  held:       issue #{issue_no} fix waits for prerequisite {names} "
                   f"(`hermes dk depends --loop {loop['id']} --issue {issue_no}` says why)")
+        for issue_no, late in sorted(st.late_triage().items()):
+            print(f"  late:       issue #{issue_no} triage queued late "
+                  f"({time.strftime('%Y-%m-%d %H:%M', time.gmtime(late['at']))} UTC): the "
+                  "webhook delivery was missed (see `doctor`: gate:rate_limit)")
         for pr_no, hold in sorted(st.pr_holds().items()):
             print(f"  held:       PR #{pr_no} {pr_hold.line(hold)}")
         for pr_no, hold in sorted(st.scope_holds().items()):

@@ -1274,6 +1274,52 @@ def check_gate_timeouts(loop: dict) -> list[Check]:
     return checks
 
 
+RATE_LIMIT_MIN = 60     # a burst the loop should absorb: 55 issues filed in a minute (#849)
+RATE_LIMIT_SET = 120    # what the fix line asks for
+
+
+def check_gateway_rate_limit(loop: dict) -> Check:
+    """Can each gateway that serves this loop's routes absorb a burst of deliveries (#849)?
+
+    The webhook gateway answers HTTP 429 to the deliveries over ``rate_limit`` per route per
+    minute (30 unless set) and GitHub never redelivers, so a burst — 55 issues filed in a minute,
+    a rebase of stacked PRs — loses events. The limit is the gateway's one ``rate_limit`` setting
+    (``platforms.webhook.extra``), not a key on a route entry, so only ``config.yaml`` can raise
+    it, and ``setup``/``arm`` cannot. The watchdog's triage sweep (``triage_sweep``) re-queues an
+    issue whose delivery was dropped; a dropped review or fix wake has no such backstop yet.
+    """
+    from . import gate_failures as gf
+    hosts: dict[pathlib.Path, str] = {}
+    for profile in gate_timeout_profiles(loop):
+        try:
+            for label, host in gf.gateway_hosts(config.profile_dir(profile)):
+                hosts.setdefault(host, label)
+        except Exception as exc:  # noqa: BLE001 - one unreadable profile must not stop doctor
+            return Check("gate:rate_limit", UNKNOWN,
+                         f"the gateways serving this loop could not be worked out: "
+                         f"{type(exc).__name__}: {exc}")
+    rows = []
+    for host, label in hosts.items():
+        limit, where = gf.gateway_rate_limit(host)
+        rows.append((label, host, limit, where))
+    unread = [row for row in rows if row[2] is None]
+    if unread:
+        return Check("gate:rate_limit", UNKNOWN,
+                     "cannot read every gateway's rate_limit — "
+                     + "; ".join(f"{label}: {where}" for label, _h, _l, where in unread))
+    seen = "; ".join(f"{label}: {limit}/min ({where})" for label, _h, limit, where in rows)
+    low = [row for row in rows if row[2] < RATE_LIMIT_MIN]
+    if low:
+        fixes = "; ".join(f"set platforms.webhook.extra.rate_limit: {RATE_LIMIT_SET} in "
+                          f"{host / 'config.yaml'} for the {label}" for label, host, _l, _w in low)
+        return Check("gate:rate_limit", UNKNOWN,
+                     f"{seen} — below {RATE_LIMIT_MIN} deliveries per route per minute, so a "
+                     "burst (55 issues filed in a minute, a rebase of stacked PRs) is answered "
+                     "HTTP 429 and GitHub does not redeliver those events",
+                     f"{fixes}; then restart that gateway")
+    return Check("gate:rate_limit", VERIFIED, f"{seen}; a burst of {RATE_LIMIT_MIN} fits")
+
+
 _WATCHDOG_LINE = re.compile(r"WATCHDOG\s*=\s*pathlib\.Path\((['\"])(?P<path>.+?)\1\)")
 
 
@@ -2320,6 +2366,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.extend(check_gateway_scripts(loop))
     checks.append(check_scripts())
     checks.extend(check_gate_timeouts(loop))
+    checks.append(check_gateway_rate_limit(loop))
     checks.append(check_shim(loop))
     checks.append(check_cron_job(loop))
     checks.append(check_watchdog_last_run(loop))

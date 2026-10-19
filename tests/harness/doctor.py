@@ -206,9 +206,11 @@ def write_seat_models() -> list[pathlib.Path]:
     home = TMP / "hermes-home"
     if seat_config_style() == "yaml":
         model = ("# the profile's config, as Hermes writes it\nmodel:\n"
-                 "  default: test-model\n  provider: openrouter\n")
+                 "  default: test-model\n  provider: openrouter\n"
+                 "platforms:\n  webhook:\n    extra:\n      rate_limit: 120\n")
     else:
-        model = json.dumps({"model": {"default": "test-model", "provider": "openrouter"}}) + "\n"
+        model = json.dumps({"model": {"default": "test-model", "provider": "openrouter"},
+                            "platforms": {"webhook": {"extra": {"rate_limit": 120}}}}) + "\n"
     added = []
     for profile in ("reviewer-profile", "fixer-profile"):
         profile_home = home / "profiles" / profile
@@ -483,6 +485,8 @@ DOCTOR_FIXTURE_CHECKS = frozenset({
     "gateway-script:widgets-breach",
     "scripts",
     "gate:timeout:reviewer-profile", "gate:timeout:fixer-profile", "gate:timeout:default",
+    # #849: the gateway's rate_limit, one line for every gateway serving the loop's routes.
+    "gate:rate_limit",
     "cron:shim", "cron:job", "clone", "state_dir", "roots", "gateway",
     "hook:widgets-review", "hook:widgets-fix",
     # #67/#164: the watchdog's last-run staleness check, plus the runtime-path family (the runtime
@@ -704,10 +708,13 @@ def group_doctor() -> None:
     fixer_config = TMP / "hermes-home" / "profiles" / "fixer-profile" / "config.yaml"
     original = fixer_config.read_text()
     if seat_config_style() == "yaml":
-        fixer_config.write_text("model:\n  default: anthropic/claude-sonnet-4.6\n  provider: nous\n")
+        fixer_config.write_text("model:\n  default: anthropic/claude-sonnet-4.6\n  provider: nous\n"
+                                "platforms:\n  webhook:\n    extra:\n      rate_limit: 120\n")
     else:
         fixer_config.write_text(json.dumps({"model": {"default": "anthropic/claude-sonnet-4.6",
-                                                     "provider": "nous"}}) + "\n")
+                                                     "provider": "nous"},
+                                           "platforms": {"webhook": {"extra": {"rate_limit": 120}}}})
+                                + "\n")
     install_watchdog_state(load_loop())   # this run is --strict: never-swept is unknown
     rc, out = run_doctor("--loop", "widgets", "--strict")
     check("a nous anthropic/* seat on the chat wire passes --strict without the package", rc, 0)
