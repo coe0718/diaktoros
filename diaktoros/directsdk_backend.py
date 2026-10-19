@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import selectors
 import select
+import shutil
 import signal
 import socket
 import subprocess
@@ -67,12 +68,18 @@ class DirectSDKBackend:
         user_home = os.environ.get('HOME', '/') if host_guards.test_guard_active() else pwd.getpwuid(os.getuid()).pw_dir
         env = {'HOME': user_home, 'HERMES_HOME': str(self.home), 'PATH': '/usr/local/bin:/usr/bin:/bin',
                'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1', 'HERMES_DISABLE_LAZY_INSTALLS': '1',
-               'TMPDIR': os.environ.get('TMPDIR', str(Path(__file__).parent))}
+               'TMPDIR': os.environ.get('TMPDIR') or ''}
+        # Only a directory this launch created is ours to remove; an inherited TMPDIR is not.
+        own_tmp = None
+        if not env['TMPDIR']:
+            own_tmp = env['TMPDIR'] = self._private_tmp()
         env = util.leak_guard_env(env, pythonpath=False)
-        request = tempfile.TemporaryFile(dir=env['TMPDIR'])
-        request.write(body)
-        request.seek(0)
+        reply = None
+        request = None
         try:
+            request = tempfile.TemporaryFile(dir=env['TMPDIR'])
+            request.write(body)
+            request.seek(0)
             with self.lock:
                 if self.closed:
                     raise ProxyError('DirectSDK capability closed')
@@ -80,11 +87,21 @@ class DirectSDKBackend:
                 str(Path(__file__).with_name('directsdk_child.py')), self.source, str(self.plugin)],
                     stdin=request, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                     cwd=str(self.home), env=env, start_new_session=True)
-                reply = ProcessReply(process, self)
+                reply = ProcessReply(process, self, own_tmp)
                 self.active.add(reply)
         finally:
-            request.close()
+            if reply is None and own_tmp:
+                shutil.rmtree(own_tmp, ignore_errors=True)
+            if request is not None:
+                request.close()
         return 200, 'text/event-stream' if payload.get('stream') else 'application/json', reply
+
+    def _private_tmp(self):
+        """A fresh 0700 temp directory under the Hermes home for one launch. Never inside the
+        installed package tree: the native CLI leaves probe directories and sockets in its TMPDIR."""
+        root = self.home / 'directsdk-tmp'
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return tempfile.mkdtemp(prefix='launch-', dir=str(root))
 
     def close(self):
         with self.lock:
@@ -120,9 +137,10 @@ def validate_payload(payload):
 
 
 class ProcessReply:
-    def __init__(self, process, backend):
+    def __init__(self, process, backend, tmpdir=None):
         self.process = process
         self.backend = backend
+        self.tmpdir = tmpdir
         self.deadline = time.monotonic() + TIMEOUT
         self.total = 0
         self.closed = False
@@ -184,5 +202,7 @@ class ProcessReply:
                     self.process.wait()
             self.selector.close()
             self.process.stdout.close()
+            if self.tmpdir:
+                shutil.rmtree(self.tmpdir, ignore_errors=True)
         with self.backend.lock:
             self.backend.active.discard(self)
