@@ -178,6 +178,20 @@ pass). The result is stored in the ledger (`repro_proofs`) and the reviewer is s
 fact: `PROVEN`, `WEAK` (a named test passes on the original head, so it does not cover the fix),
 `UNPROVEN`, `NONE NAMED`, or `NOT RUN`.
 
+**Hunk check (#1043).** When the fix passes its named tests, the host also reverts each changed
+hunk of its non-test Python source **on its own** and runs the named tests again. A hunk whose
+revert still passes them all is **unguarded**: a behaviour change no test notices. The reviewer
+and the shadow see a guarded, unguarded and not-checked count, and each unguarded hunk's file and
+lines. They're told to treat an unguarded behaviour change as a missing test, unless the hunk
+changes no behaviour.
+
+The check is bounded:
+- comment- and blank-only hunks are skipped;
+- the largest 12 hunks are checked, within 240 s inside the fixer's turn; anything past that is
+  `not checked`, never "guarded".
+
+`hermes dk report` totals the unguarded hunks across the window's issue fixes.
+
 What cannot fire: the proof never blocks the PR. It runs only where the host has a sandbox
 (otherwise `NOT RUN`), only for Python `unittest` ids, and covers the fix commit, not later
 pushes to the PR. It is shown to the reviewer of an issue-fix PR only.

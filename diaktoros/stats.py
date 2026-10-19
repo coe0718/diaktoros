@@ -628,6 +628,14 @@ def fix_outcomes(db: Path, repo: str, since: float, until: float, pr_state) -> d
         launched = {row[0] for row in con.execute(
             "SELECT id FROM runs WHERE repo=? AND seat='issue_fixer' AND launch_intent IS NOT NULL",
             (repo,))}
+        # #1043: the host's per-hunk check, from each fix's stored proof.
+        try:
+            ids = [row["run_id"] for row in fixes]
+            proofs = [r[0] for r in con.execute(
+                f"SELECT proof FROM repro_proofs WHERE run_id IN ({','.join('?' * len(ids))})",
+                ids)] if ids else []
+        except sqlite3.OperationalError:
+            proofs = []
         try:
             actions = con.execute(f"SELECT pr, action, created FROM operator_actions WHERE repo=? "
                                   f"AND pr IN ({marks})", (repo, *prs)).fetchall() if prs else []
@@ -664,8 +672,18 @@ def fix_outcomes(db: Path, repo: str, since: float, until: float, pr_state) -> d
             turns.append((1 if fix["run_id"] in launched else 0)
                          + sum(1 for run in runs if run["pr"] == number
                                and run["created"] >= fix["created"]))
+    hunks, unguarded_fixes = Counter(), 0
+    for raw in proofs:
+        try:
+            rows = [h for h in (json.loads(raw).get("hunks") or []) if isinstance(h, dict)]
+        except (ValueError, TypeError, AttributeError):
+            continue
+        hunks.update(str(h.get("status")) for h in rows)
+        unguarded_fixes += any(h.get("status") == "unguarded" for h in rows)
     decided = outcomes["merged"] + outcomes["closed"]
-    return {"proposed": sum(outcomes.values()), "explained": explained,
+    return {"hunks": {"guarded": hunks["guarded"], "unguarded": hunks["unguarded"],
+                      "not checked": hunks["not checked"], "fixes_unguarded": unguarded_fixes},
+            "proposed": sum(outcomes.values()), "explained": explained,
             "outcomes": {name: outcomes[name] for name in ("merged", "closed", "open", "unknown")},
             "conversion": {"merged": outcomes["merged"], "decided": decided},
             "turns_per_merged": summary(turns), "steps": dict(sorted(steps.items())),
@@ -990,6 +1008,11 @@ def report_text(data: dict) -> str:
                       if steps else "none")
                    + (f", recorded from {_day(fixes['steps_from'])}" if fixes["steps_from"]
                       else ", none recorded yet"))
+        hunk = fixes.get("hunks") or {}
+        if any(hunk.get(k) for k in ("guarded", "unguarded", "not checked")):
+            out.append(f"hunk check: {hunk['unguarded']} unguarded hunk(s) in "
+                       f"{hunk['fixes_unguarded']} fix(es) · guarded {hunk['guarded']}"
+                       f" · not checked {hunk['not checked']}")
     turns, was = data["turns"] or {}, data["turns_before"]
     out.append(f"turns: {_trend(_total(turns), _total(was))} · failed "
                f"{_trend(_total(turns, 'failed'), _total(was, 'failed'))} · "

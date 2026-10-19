@@ -116,6 +116,53 @@ class Proof(unittest.TestCase):
         self.assertEqual(proof["overall"], repro_proof.UNPROVEN)
         self.assertIn("did not import on the original head", repro_proof.section(proof))
 
+    # -- the hunk guard (#1043) ---------------------------------------------------------------
+    def guard(self, new_code, test=TEST):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            fix = manifest({"widget.py": new_code, "tests/test_it.py": test})
+            return repro_proof.prove(base, fix, ["tests.test_it.Case.test_value"], run_unittest)
+
+    def test_a_hunk_the_tests_notice_is_guarded_and_one_they_do_not_is_unguarded(self):
+        both = "def extra():\n    return 5\n\n\n" + NEW_CODE        # extra() is untested
+        proof = self.guard(both)
+        rows = {(h["path"], h["status"]) for h in proof["hunks"]}
+        self.assertEqual(rows, {("widget.py", repro_proof.GUARDED),
+                                ("widget.py", repro_proof.UNGUARDED)}, proof["hunks"])
+        text = repro_proof.section(proof)
+        self.assertIn("1 guarded, 1 unguarded, 0 not checked", text)
+        self.assertIn("unguarded: \"widget.py\" lines 1-4", text)
+        self.assertIn("is a missing test", text)
+
+    def test_comment_only_hunks_are_not_checked_and_a_red_fix_reverts_nothing(self):
+        commented = NEW_CODE + "\n# a note about value\n"
+        self.assertEqual([h["status"] for h in self.guard(commented)["hunks"]],
+                         [repro_proof.GUARDED])                 # the comment is not a hunk
+        self.assertEqual(self.guard(NEW_CODE, TEST.replace("2)", "3)"))["hunks"], [])
+
+    def test_the_cap_and_the_time_budget_leave_hunks_not_checked(self):
+        both = "def extra():\n    return 5\n\n\n" + NEW_CODE
+        with mock.patch.object(repro_proof, "HUNKS_MAX", 1):
+            rows = self.guard(both)["hunks"]
+        self.assertEqual([h["status"] for h in rows][1:], [repro_proof.NOT_CHECKED])
+        self.assertIn("past the first 1 hunks", rows[1]["why"])
+        with mock.patch.object(repro_proof, "HUNKS_BUDGET_S", -1.0):
+            rows = self.guard(both)["hunks"]
+        self.assertEqual({h["status"] for h in rows}, {repro_proof.NOT_CHECKED})
+        self.assertIn("not checked", repro_proof.section(
+            {"overall": repro_proof.PROVEN, "ids": [], "hunks": rows}))
+
+    def test_a_revert_that_breaks_the_import_counts_as_noticed(self):
+        # Reverting the hunk that adds a name the test imports: the module fails to import,
+        # which is the tests noticing it.
+        adds = NEW_CODE + "\n\nLIMIT = 3\n"
+        test = TEST.replace("import widget as c\n", "import widget as c\nfrom widget import LIMIT\n")
+        rows = self.guard(adds, test)["hunks"]
+        self.assertTrue(rows and all(h["status"] == repro_proof.GUARDED for h in rows), rows)
+
     def test_a_test_failing_on_the_fix_or_missing_is_unproven(self):
         self.assertEqual(self.prove(TEST.replace("2)", "3)"))["overall"], repro_proof.UNPROVEN)
         self.assertEqual(self.prove(TEST, ("tests.test_it.Case.test_nope",))["overall"],
