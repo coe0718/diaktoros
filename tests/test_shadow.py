@@ -481,6 +481,29 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual((row["state"], self.seen), ("cancelled", {}))   # never a late review
         self.assertIn("CI did not finish", row["error"])
 
+    def test_a_claimed_shadow_whose_pr_went_draft_or_closed_is_not_sampled(self):
+        # #1003: the conflict hold applies to an open, non-draft PR only, and a row claimed
+        # before the PR went draft/closed must not fall through to a sample. A draft waits
+        # (even past the CI wait, with green checks); a closed PR retires the row.
+        old = time.time() - run_supervisor.CI_WAIT_MAX_S - 1
+        for name, extra, state in (("draft", {"draft": True}, "waiting"),
+                                   ("closed", {"state": "closed"}, "cancelled")):
+            for mergeable in ("dirty", "clean"):
+                with self.subTest(name, mergeable=mergeable):
+                    self.setUp()
+                    pr = {"number": 8, "state": "open", "draft": False,
+                          "mergeable_state": mergeable,
+                          "head": {"sha": HEAD, "ref": "fix-8"}, "user": {"login": "fixer"},
+                          **extra}
+                    sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok",
+                                                 "authorized": True, "denial": ""}],
+                                               pr=pr, created=old)
+                    self.assertEqual((row["state"], self.seen), (state, {}), row)
+                    self.assertEqual(sup.shadow_reviews(), [])
+                    self.assertNotIn("conflicts with its base", row["error"] or "")
+                    self.assertNotIn("CI did not finish", row["error"] or "")
+                    self.assertIn(name, row["error"])
+
     def test_green_ci_reviews_and_reads_the_head_it_reviews(self):
         _, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True,
                                    "denial": ""}])
