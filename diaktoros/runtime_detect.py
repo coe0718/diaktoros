@@ -218,6 +218,33 @@ def venv_missing(venv: Path) -> list[str]:
     return [n for n in ("bin/python", "bin/hermes") if not (venv / n).exists()]
 
 
+def source_head_problem(source: Path) -> str:
+    """Why a turn's source snapshot of ``source`` would lack ``run_agent.py``; ``""`` when fine.
+
+    ``trusted_turn`` exports only the HEAD tree (never the working tree) and denies the turn when
+    the export has no ``run_agent.py``. So a ``.git`` that is a stale pointer, a repository with no
+    commit, or a ``run_agent.py`` that is untracked all fail every turn while a plain
+    ``exists()`` check passes. This asks Git the same question with the same hardened
+    environment and binary the snapshot uses.
+    """
+    import subprocess
+    env = {"PATH": "/usr/bin:/bin", "HOME": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1",
+           "GIT_OPTIONAL_LOCKS": "0"}
+    try:
+        result = subprocess.run(["/usr/bin/git", "-C", str(source), "ls-tree", "-z",
+                                 "--full-tree", "HEAD", "--", "run_agent.py"],
+                                capture_output=True, env=env, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"Git could not read it ({type(exc).__name__})"
+    if result.returncode != 0:
+        return "it has no readable committed HEAD (stale .git, or no commit yet)"
+    meta = result.stdout.split(b"\t", 1)[0].split()
+    if len(meta) != 3 or meta[1] != b"blob" or meta[0] not in (b"100644", b"100755"):
+        return "run_agent.py is not committed in HEAD (untracked, or not a regular file)"
+    return ""
+
+
 def problems(settings: dict) -> dict[str, str]:
     """Why each host path would fail ``selftest``'s runtime step; an empty dict when none would."""
     from .selftest import _interpreter_outside

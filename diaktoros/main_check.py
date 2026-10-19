@@ -79,13 +79,13 @@ def _outcome(failed: list[str], merges: list[int] | None, url: str) -> str:
             since = ("merged PRs seen so far (partial list): " if partial
                      else "merged since main's last green head: ") + f"{shown}{more}"
         if partial:
-            if merges.reported:
-                since += (f" — GitHub's compare was truncated ({merges.seen} of {merges.total} "
-                          "commits read), so other merged PRs are missing; this is not the "
-                          "full list")
-            else:
-                since += (" — GitHub's compare did not report a total commit count "
-                          f"({merges.seen} commits read), so this list may be incomplete")
+            seen = merges.seen
+            if getattr(merges, "reported", False):
+                said = f"GitHub's compare was truncated ({seen} of {merges.total} commits read)"
+            else:                          # count absent/unreadable: say only what was observed
+                said = (f"could not confirm GitHub's compare was complete "
+                        f"({seen} commit{'' if seen == 1 else 's'} read, total unreported)")
+            since += f" — {said}, so other merged PRs may be missing; this is not the full list"
     text = f"main: required check(s) failed: {ci._names(failed)} — {since}. {ADVICE}"
     return f"{text} — {url}" if url else text
 

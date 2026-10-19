@@ -25,8 +25,14 @@ SKIPPED_SHOWN = 60
 
 # A subtest's result line carries its parameters after the id (`test_x (m.C.test_x) (v=1) ... FAIL`,
 # indented under its test on Python 3.11+); it counts for its test, and the worst result wins.
-_PLAIN = re.compile(r"^(?:\S+Z )?(test\w*) \(([\w.]+)\)(?: \(.*\))? \.\.\. (ok|FAIL|ERROR|skipped\b.*)$")
+_PLAIN = re.compile(r"^(?:\S+Z )?(test\w*) \(([\w.]+)\)( \(.*\))? \.\.\. (ok|FAIL|ERROR|skipped\b.*)$")
 _RANK = {"skipped": 0, "ok": 1, "FAIL": 2, "ERROR": 3}   # a test that ran beats a skip
+# A test that logged while it ran: unittest wrote `test_x (id) ... `, the test's own output followed
+# on that line, and the result landed alone on a later line.
+_START = re.compile(r"^(?:\S+Z )?(test\w*) \(([\w.]+)\)(?: \(.*\))? \.\.\.(?: |$)")
+_ALONE = re.compile(r"^(ok|FAIL|ERROR|skipped\b.*)$")
+# Where a test's output ends: unittest's failure banners and its run summary.
+_SUMMARY = re.compile(r"^(?:={20,}|-{20,}|Ran \d+ tests? in |(?:FAIL|ERROR): test)")
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # A finding that blocks only because the seat could not run the test itself (#763). Words that can
 # describe the code's behaviour (unavailable, not installed, cannot run) count only when the same
@@ -46,17 +52,59 @@ def parse(log: str) -> dict[str, str]:
     """Qualified test name (``mod.Class.test_x``) -> ``ok`` / ``FAIL`` / ``ERROR`` / ``skipped``.
 
     Tests sharing a method name in different classes or modules stay distinct. A test whose
-    subtests failed is ``FAIL``/``ERROR``: its own line then carries no result, only theirs do."""
+    subtests failed is ``FAIL``/``ERROR``: its own line then carries no result, only theirs do. A
+    test that logged while it ran gets unittest's result: the last one read for it before the next
+    test or the summary."""
     out: dict[str, str] = {}
+    # unittest prints a test's own result after everything the test printed, so it is the last
+    # result read for that test before the next one starts (or the summary): on the test's line
+    # or alone on a later one. A test that prints "ok" and then fails reads FAIL, one that prints
+    # "FAIL" and passes reads ok (review on #1006). Subtest lines (they carry their parameters)
+    # are separate results, and the worst of them stands.
+    waiting, last, worst_sub = None, None, None
+
+    def worse(a, b):
+        return b if a is None or (b is not None and _RANK[b] >= _RANK[a]) else a
+
+    def settle() -> None:
+        nonlocal waiting, last, worst_sub
+        if waiting:
+            result = worse(last, worst_sub)
+            if result is not None and _RANK[result] >= _RANK.get(out.get(waiting), -1):
+                out[waiting] = result
+        waiting, last, worst_sub = None, None, None
+
+    def word(raw_word: str) -> str:
+        return "skipped" if raw_word.startswith("skipped") else raw_word
+
+    def name_of(m) -> str:
+        name, where = m.group(1), m.group(2)
+        return where if where.endswith("." + name) else f"{where}.{name}"
+
     for raw in (_ANSI.sub("", log or "")).replace("\r", "").splitlines():
-        m = _PLAIN.match(raw.strip())
+        line = raw.strip()
+        m = _PLAIN.match(line)
         if m:
-            word = m.group(3)
-            name, where = m.group(1), m.group(2)
-            qualified = where if where.endswith("." + name) else f"{where}.{name}"
-            result = "skipped" if word.startswith("skipped") else word
-            if _RANK[result] >= _RANK.get(out.get(qualified), -1):
-                out[qualified] = result
+            if waiting != name_of(m):
+                settle()
+                waiting = name_of(m)
+            if m.group(3):                    # a subtest's result
+                worst_sub = worse(worst_sub, word(m.group(4)))
+            else:
+                last = word(m.group(4))
+            continue
+        start = _START.match(line)
+        if start:
+            settle()
+            waiting = name_of(start)
+            continue
+        if _SUMMARY.match(line):
+            settle()
+            continue
+        alone = _ALONE.match(line)
+        if alone and waiting:
+            last = word(alone.group(1))
+    settle()
     return out
 
 

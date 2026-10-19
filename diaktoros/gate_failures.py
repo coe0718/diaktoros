@@ -955,14 +955,21 @@ def _claim_github_read(payload, key: str, since: float, held_in: str = "") -> No
     loop = _loop_for(payload)
     if not loop or not loop.get("state_dir"):
         return
+    owner = f"gate-failures:{key}"
     try:
         from . import state as state_mod
         st = state_mod.state_for(loop)
-        failure = st.github_failure()
-        at = failure.get("at")
-        if isinstance(at, (int, float)) and not isinstance(at, bool) and at >= since:
-            st.github_failure_record({**failure, "owned_by": f"gate-failures:{key}",
-                                      "owned_in": held_in})
+        # Two tries, the second checking that the first landed: this runs last in the record
+        # phase, after a busy loop ledger has used up half of it, so on a slow disk the record
+        # alarm (one-shot) can fire inside the state read or write. Both swallow it (``_load``
+        # returns {}, ``_save`` logs), which used to leave the read unowned and announced twice.
+        for _ in range(2):
+            failure = st.github_failure()
+            if failure.get("owned_by") == owner:
+                return
+            at = failure.get("at")
+            if isinstance(at, (int, float)) and not isinstance(at, bool) and at >= since:
+                st.github_failure_record({**failure, "owned_by": owner, "owned_in": held_in})
     except Exception as err:  # noqa: BLE001 - the health sweep then reports it; never silent
         log(f"could not mark the failed read as owned: {type(err).__name__}: {err}")
 

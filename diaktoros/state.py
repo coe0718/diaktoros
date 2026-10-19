@@ -143,6 +143,17 @@ def _clock(value) -> float | None:
     return float(value)
 
 
+def _inflight_live(value, now: float, ttl_s: float) -> bool:
+    """Is this in-flight mark one we can age, and is it inside ``ttl_s``?
+
+    The one rule for the read and the write-path prune. As in ``_mark_live`` (#794), a mark dated
+    *after* ``now`` (a clock stepped back, a hand edit, a milliseconds stamp) has a negative age
+    that would sit inside any TTL forever: it is expired, never held and never kept (#940).
+    """
+    at = _clock(value)
+    return at is not None and 0 <= now - at < ttl_s
+
+
 DELIVERY_LEASE_S = 60.0
 
 
@@ -594,18 +605,20 @@ class LoopState:
         ttl_s = self._minutes("inflight_ttl_min") * 60
         if record:
             with self.locked():
+                # Read the clock only once the lock is held: a mark another process wrote while
+                # we waited is dated after a ``now`` taken before the wait, and would be pruned
+                # below as future-dated (#940), losing a live in-flight mark.
+                now = time.time()
                 data = _mapping(self._load(self.inflight_file, {}))
                 data[key] = now
                 # #545: an unageable mark is dropped, never subtracted from. #736: keep a mark
                 # at least as long as the read path honors it, so a configured TTL beyond a
                 # day is not cut short here.
                 keep_s = max(INFLIGHT_PRUNE_S, ttl_s)
-                data = {k: v for k, v in data.items()
-                        if _clock(v) is not None and now - _clock(v) < keep_s}
+                data = {k: v for k, v in data.items() if _inflight_live(v, now, keep_s)}
                 self._save_strict(self.inflight_file, data)
             return False
-        at = _clock(_mapping(self._load(self.inflight_file, {})).get(key))
-        return at is not None and now - at < ttl_s
+        return _inflight_live(_mapping(self._load(self.inflight_file, {})).get(key), now, ttl_s)
 
     def inflight_clear(self, key: str) -> None:
         """Drop one in-flight mark: its run has ended (the isolated worker's release, #98)."""
@@ -1147,6 +1160,33 @@ class LoopState:
             data = self.findings_all()
             data[str(number)] = entry
             self._save_strict(self.dir / "findings.json", data)
+
+    # The findings ledger as a shadow review was queued (#218): its prompt shows only the
+    # reviews posted before then, so the broker judges its review against this, never against
+    # what the real review of the same head recorded meanwhile. First snapshot wins.
+    SHADOW_FINDINGS_KEPT = 300
+
+    def shadow_findings_put(self, number: int, head: str, entry: dict) -> None:
+        with self.locked():
+            path = self.dir / "shadow-findings.json"
+            data = self._load(path, {})
+            data = data if isinstance(data, dict) else {}
+            key = f"{number}:{head}"
+            if key in data:
+                return
+            data[key] = {"entry": entry if isinstance(entry, dict) else {}, "at": time.time()}
+            if len(data) > self.SHADOW_FINDINGS_KEPT:
+                keep = sorted(data, key=lambda k: (data[k] or {}).get("at") or 0)
+                for old in keep[:len(data) - self.SHADOW_FINDINGS_KEPT]:
+                    data.pop(old, None)
+            self._save_strict(path, data)
+
+    def shadow_findings_get(self, number: int, head: str) -> dict | None:
+        """The snapshot for this PR and head, or None (none was taken)."""
+        data = self._load(self.dir / "shadow-findings.json", {})
+        item = data.get(f"{number}:{head}") if isinstance(data, dict) else None
+        entry = item.get("entry") if isinstance(item, dict) else None
+        return entry if isinstance(entry, dict) else None
 
     def github_failure_record(self, entry: dict) -> None:
         """Keep the most recent failed GitHub call (see ``gh.record_failure``)."""

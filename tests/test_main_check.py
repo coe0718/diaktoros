@@ -121,6 +121,24 @@ class MainCheck(unittest.TestCase):
         self.assertTrue(self.run_sweep("b" * 40, RED, compare=no_total))
         (_args, kw), = self.notices
         self.assertIn("partial", kw["outcome"])
+        # the count was merely unreadable: do not claim GitHub truncated the compare
+        self.assertNotIn("truncated", kw["outcome"])
+        self.assertIn("could not confirm GitHub's compare was complete "
+                      "(3 commits read, total unreported)", kw["outcome"])
+
+    def test_unreadable_total_wording(self):
+        def outcome(seen, total):
+            return main_check._outcome(["tests"], main_check.Merges([1], seen, total), "")
+        one = outcome(1, "3")                       # non-integer total
+        self.assertIn("(1 commit read, total unreported)", one)
+        self.assertNotIn("1 commits", one)
+        self.assertNotIn("truncated", one)
+        flag = outcome(1, True)                     # bool is not a count
+        self.assertNotIn("of True", flag)
+        self.assertNotIn("truncated", flag)
+        self.assertIn("total unreported", flag)
+        self.assertIn("(1 of 400 commits read)", outcome(1, 400))
+        self.assertIn("truncated", outcome(1, 400))
 
     def assert_unreported_total_is_not_truncation(self, total):
         no_total = {"commits": COMPARE["commits"], "total_commits": total}

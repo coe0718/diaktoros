@@ -10,6 +10,7 @@ import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_ho
 import json
 import os
 import pathlib
+import subprocess
 import tempfile
 import time
 import unittest
@@ -29,6 +30,27 @@ def _loop(**extra) -> dict:
            "read_token": "reader"}
     raw.update(extra)
     return config.normalize(raw)
+
+
+def _git(path: pathlib.Path, *args: str) -> None:
+    env = {"PATH": "/usr/bin:/bin", "HOME": "/dev/null", "GIT_CONFIG_GLOBAL": "/dev/null",
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    subprocess.run(["/usr/bin/git", "-C", str(path), *args], check=True, env=env,
+                   capture_output=True)
+
+
+def _git_repo(path: pathlib.Path, commit=(), untracked=()) -> None:
+    """A real Git repository holding ``commit`` in HEAD and ``untracked`` only on disk."""
+    path.mkdir(parents=True, exist_ok=True)
+    _git(path, "init", "-q")
+    (path / "README.md").write_text("x")
+    for name in commit:
+        (path / name).write_text("")
+    _git(path, "add", "README.md", *commit)
+    _git(path, "commit", "-q", "-m", "init")
+    for name in untracked:
+        (path / name).write_text("")
 
 
 class WatchdogLastRun(unittest.TestCase):
@@ -130,8 +152,8 @@ class RuntimePaths(unittest.TestCase):
     def write_runtime(self, **overrides):
         """Create a valid runtime file with real directories; override any path key."""
         source = self.root / "hermes-agent"
-        (source / ".git").mkdir(parents=True, exist_ok=True)
-        (source / "run_agent.py").write_text("")
+        if not (source / ".git").exists():
+            _git_repo(source, commit=("run_agent.py",))
         venv = self.root / "venv"
         (venv / "bin").mkdir(parents=True, exist_ok=True)
         (venv / "bin" / "python").write_text("")
@@ -204,6 +226,42 @@ class RuntimePaths(unittest.TestCase):
         checks = self.checks_by_name()
         self.assertEqual(checks["runtime:source"].status, doctor.MISMATCH)
         self.assertIn(".git", checks["runtime:source"].detail)
+
+    def test_source_with_untracked_run_agent_is_mismatch(self):
+        # #924: `.git` exists but run_agent.py is not in HEAD, so trusted_turn's HEAD-only
+        # snapshot lacks Hermes and denies every turn.
+        repo = self.root / "untracked-source"
+        _git_repo(repo, untracked=("run_agent.py",))
+        self.write_runtime(source=str(repo))
+        check = self.checks_by_name()["runtime:source"]
+        self.assertEqual(check.status, doctor.MISMATCH, check.detail)
+        self.assertIn("not committed", check.detail)
+        # The turn's own snapshot agrees: it is refused.
+        from diaktoros import trusted_turn
+        fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, fd)
+        with self.assertRaises(trusted_turn.TurnDenied):
+            trusted_turn._export_committed_source(fd, self.root / "snap")
+
+    def test_source_with_stale_gitdir_pointer_is_mismatch(self):
+        stale = self.root / "stale-source"
+        stale.mkdir()
+        (stale / "run_agent.py").write_text("")
+        (stale / ".git").write_text(f"gitdir: {self.root / 'removed'}\n")
+        self.write_runtime(source=str(stale))
+        check = self.checks_by_name()["runtime:source"]
+        self.assertEqual(check.status, doctor.MISMATCH, check.detail)
+        self.assertIn("no readable committed HEAD", check.detail)
+
+    def test_source_with_committed_run_agent_is_snapshotted(self):
+        # The positive twin: committed in HEAD, doctor verifies and the snapshot succeeds.
+        self.write_runtime()
+        self.assertEqual(self.checks_by_name()["runtime:source"].status, doctor.VERIFIED)
+        from diaktoros import trusted_turn
+        fd = os.open(self.root / "hermes-agent", os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, fd)
+        trusted_turn._export_committed_source(fd, self.root / "snap")
+        self.assertTrue((self.root / "snap" / "run_agent.py").is_file())
 
     def test_venv_without_python_is_mismatch(self):
         bare = self.root / "bare-venv"

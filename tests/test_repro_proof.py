@@ -80,6 +80,42 @@ class Proof(unittest.TestCase):
         self.assertEqual(proof["overall"], repro_proof.PROVEN, proof)
         self.assertEqual((proof["ids"][0]["old"], proof["ids"][0]["new"]), ("fail", "ok"))
 
+    def test_a_test_that_logs_while_it_runs_is_still_read(self):
+        # #1005: the code under test logged to stderr, so unittest's "ok" landed alone on the
+        # next line; the parser missed it and the proof told the reviewer the test FAILED with
+        # the fix.
+        loud = TEST.replace("        self.assertEqual(c.value(), 2)\n",
+                            "        import sys\n        print('[diaktoros] did a thing', "
+                            "file=sys.stderr)\n        self.assertEqual(c.value(), 2)\n")
+        proof = self.prove(loud)
+        self.assertEqual(proof["overall"], repro_proof.PROVEN, proof)
+
+    def test_a_test_that_prints_ok_and_then_fails_is_never_read_as_ok(self):
+        # Review on #1006: the parser took the first bare result after a test's line, so a test
+        # printing "ok" before failing read as passing — a false green on the fix.
+        fake = TEST.replace("        self.assertEqual(c.value(), 2)\n",
+                            "        import sys\n        print('ok', file=sys.stderr)\n"
+                            "        self.assertEqual(c.value(), 3)\n")
+        proof = self.prove(fake)
+        self.assertEqual(proof["ids"][0]["new"], "fail", proof)
+        self.assertNotEqual(proof["overall"], repro_proof.PROVEN)
+
+    def test_a_test_file_that_imports_what_the_fix_adds_says_so(self):
+        # #1005: on the original head the test module did not import, so its tests ran nowhere;
+        # say that, never a bare "missing".
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            (base / "tests").mkdir(parents=True)
+            (base / "tests" / "__init__.py").write_text("")
+            (base / "widget.py").write_text(OLD_CODE)
+            test = TEST.replace("import widget as c\n", "import widget as c\nimport added\n")
+            fix = manifest({"widget.py": NEW_CODE, "added.py": "X = 1\n",
+                            "tests/test_it.py": test})
+            proof = repro_proof.prove(base, fix, ["tests.test_it.Case.test_value"], run_unittest)
+        self.assertEqual(proof["ids"][0]["old"], repro_proof.IMPORT_ERROR, proof)
+        self.assertEqual(proof["overall"], repro_proof.UNPROVEN)
+        self.assertIn("did not import on the original head", repro_proof.section(proof))
+
     def test_a_test_failing_on_the_fix_or_missing_is_unproven(self):
         self.assertEqual(self.prove(TEST.replace("2)", "3)"))["overall"], repro_proof.UNPROVEN)
         self.assertEqual(self.prove(TEST, ("tests.test_it.Case.test_nope",))["overall"],

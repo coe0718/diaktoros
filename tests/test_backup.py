@@ -227,6 +227,23 @@ class Tampered(Base):
                 self.refused(bad, want=f"route one-review: ")
                 self.assertEqual(routes.all_routes()["one-review"], before)
 
+    def test_a_tampered_secret_is_refused_against_the_live_route(self):
+        # #920: `secret` decides who can mint signed deliveries; restore must not re-key a route.
+        before = routes.all_routes()["one-review"]
+        self.assertEqual(before["secret"], SECRET)
+        bad = self.tamper(lambda m: m["routes"]["one-review"].update({"secret": "k" * 64}))
+        self.refused(bad, want="route one-review: secret differs")
+        self.assertEqual(routes.all_routes()["one-review"], before)
+
+    def test_a_tampered_secret_is_refused_against_the_intent_record_without_a_live_route(self):
+        from diaktoros import route_intent
+        loop = config.all_loops()[0]
+        route_intent.record(loop, {"one-review": dict(routes.all_routes()["one-review"])})
+        bad = self.tamper(lambda m: m["routes"]["one-review"].update({"secret": "k" * 64}))
+        routes.remove_route("one-review")
+        self.refused(bad, want="route one-review: secret differs")
+        self.assertNotIn("one-review", routes.all_routes())
+
     def test_a_tampered_observer_route_is_refused_and_an_unclaimed_one_too(self):
         loop = config.all_loops()[0]
         name = "one-observer"

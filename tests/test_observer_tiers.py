@@ -101,6 +101,25 @@ class ObserverTierTests(unittest.TestCase):
         self.assertTrue(lines[3].startswith("#318 (issue) handed to fixer · "), lines[3])
         self.assertIn("/issues/318", lines[3])
 
+    def test_digest_labels_number_less_entry_by_event_and_does_not_count_it_as_pr(self):
+        self.loop["observer"]["digest_min"] = 30
+        self.register()
+        n = observer.notify
+        with patch.object(routes, "fire", return_value=True) as fire:
+            # An empty ready set is announced with number 0 (ready.py).
+            self.assertFalse(n(self.loop, self.state, "ready_set", 0, "base", identity="r"))
+            self.assertFalse(n(self.loop, self.state, "opened", 7, HEAD))
+            self.assertTrue(observer.flush(self.loop, self.state))
+        lines = fire.call_args.args[2]["_observer"]["message"].splitlines()
+        self.assertEqual(lines[0], "🗂 [feed] last 30m — 1 PR, 1 notice")
+        self.assertTrue(lines[1].startswith("ready set · "), lines[1])
+        self.assertNotIn("main", lines[1])
+        self.assertNotIn("#0", lines[1])
+        self.assertTrue(lines[2].startswith("#7 opened · "), lines[2])
+        only = observer.render_digest(self.loop, [{"event": "ready_set", "number": 0, "url": "u"}])
+        self.assertEqual(only.splitlines(),
+                         ["🗂 [feed] last 30m — 1 notice", "ready set · u"])
+
     def test_digest_is_bounded(self):
         entries = [{"event": "opened", "number": i, "url": f"u/{i}"} for i in range(40)]
         lines = observer.render_digest(self.loop, entries).splitlines()
