@@ -291,6 +291,22 @@ class FreshReviewTest(unittest.TestCase):
         self.assertTrue(report["approved"])
         self.assertIn("approved", report["next"]["action"])
 
+    def test_explain_drops_retarget_blocker_once_receipted_approval_exists(self):
+        self.merge_parent_and_retarget()
+
+        def facts():
+            return {"pr": self.child, "reviews": self.reviews, "armed": True,
+                    "receipts": transition.read_receipts(self.loop, 184, C)}
+        owed = gate.explain(self.loop, self.st, 184, facts())
+        self.assertFalse(owed["approved"])
+        self.assertTrue([b for b in owed["blockers"] if "same-head base retarget" in b], owed)
+        self.reviews.append(review(30, "APPROVED", minute=5))
+        self.receipt(30, "APPROVED")
+        report = gate.explain(self.loop, self.st, 184, facts())
+        self.assertTrue(report["approved"])
+        self.assertIn("a human merges it", report["next"]["action"])
+        self.assertEqual([b for b in report["blockers"] if "retarget" in b], [], report["blockers"])
+
     def test_unreceipted_or_misbound_post_boundary_reviews_are_ignored(self):
         self.merge_parent_and_retarget()
         human = review(40, "APPROVED", minute=5, login="critic")
