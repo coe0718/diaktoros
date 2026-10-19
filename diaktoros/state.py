@@ -605,6 +605,10 @@ class LoopState:
         ttl_s = self._minutes("inflight_ttl_min") * 60
         if record:
             with self.locked():
+                # Read the clock only once the lock is held: a mark another process wrote while
+                # we waited is dated after a ``now`` taken before the wait, and would be pruned
+                # below as future-dated (#940), losing a live in-flight mark.
+                now = time.time()
                 data = _mapping(self._load(self.inflight_file, {}))
                 data[key] = now
                 # #545: an unageable mark is dropped, never subtracted from. #736: keep a mark
