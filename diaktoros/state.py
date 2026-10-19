@@ -1148,6 +1148,33 @@ class LoopState:
             data[str(number)] = entry
             self._save_strict(self.dir / "findings.json", data)
 
+    # The findings ledger as a shadow review was queued (#218): its prompt shows only the
+    # reviews posted before then, so the broker judges its review against this, never against
+    # what the real review of the same head recorded meanwhile. First snapshot wins.
+    SHADOW_FINDINGS_KEPT = 300
+
+    def shadow_findings_put(self, number: int, head: str, entry: dict) -> None:
+        with self.locked():
+            path = self.dir / "shadow-findings.json"
+            data = self._load(path, {})
+            data = data if isinstance(data, dict) else {}
+            key = f"{number}:{head}"
+            if key in data:
+                return
+            data[key] = {"entry": entry if isinstance(entry, dict) else {}, "at": time.time()}
+            if len(data) > self.SHADOW_FINDINGS_KEPT:
+                keep = sorted(data, key=lambda k: (data[k] or {}).get("at") or 0)
+                for old in keep[:len(data) - self.SHADOW_FINDINGS_KEPT]:
+                    data.pop(old, None)
+            self._save_strict(path, data)
+
+    def shadow_findings_get(self, number: int, head: str) -> dict | None:
+        """The snapshot for this PR and head, or None (none was taken)."""
+        data = self._load(self.dir / "shadow-findings.json", {})
+        item = data.get(f"{number}:{head}") if isinstance(data, dict) else None
+        entry = item.get("entry") if isinstance(item, dict) else None
+        return entry if isinstance(entry, dict) else None
+
     def github_failure_record(self, entry: dict) -> None:
         """Keep the most recent failed GitHub call (see ``gh.record_failure``)."""
         self._save(self.github_reads, {"last_failure": entry})

@@ -63,15 +63,26 @@ FORWARDING_PREFIXES = ("x-forwarded-",)
 
 
 def _is_forwarding_header(name) -> bool:
+    # Raw ASGI header names are bytes; str(b"x") is the repr "b'x'", which would never match.
+    if isinstance(name, (bytes, bytearray)):
+        name = bytes(name).decode("latin-1")
     name = str(name).lower()
     return name in FORWARDING_HEADERS or name.startswith(FORWARDING_PREFIXES)
+
+
+def _header_names(headers):
+    """The names in ``headers``: a mapping's keys (a dict, Starlette ``Headers``) or the first
+    element of each ``(name, value)`` pair, which is how the ASGI scope carries them."""
+    if hasattr(headers, "keys"):
+        return list(headers.keys())
+    return [item[0] if isinstance(item, (tuple, list)) and item else item for item in headers]
 
 
 def probe_is_local(client_host: str | None, headers=None) -> bool:
     """Whether this caller may run the credential-reading probe: a local peer, and no forwarding
     header of any kind. An empty client_host (an in-process call) counts as local; a header that
     is present at all — even an empty one — does not."""
-    if headers is not None and any(_is_forwarding_header(name) for name in headers):
+    if headers is not None and any(_is_forwarding_header(name) for name in _header_names(headers)):
         return False
     return not client_host or client_host in LOCAL_HOSTS
 

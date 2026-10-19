@@ -132,6 +132,18 @@ class TriageVerb(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(config.load_id(LOOP_ID)["tokens"]["hook-admin"], str(good))
 
+    def test_token_refuses_an_empty_login(self):
+        """#946: `triage --token "=/path"` would write an unusable tokens[""] entry."""
+        before = LOOP_FILE.read_bytes()
+        good = self._pat(0o600)
+        for pair in (f"={good}", f"  ={good}"):
+            with self.subTest(pair=pair):
+                rc, out = self.enable("--token", pair)
+                self.assertEqual(rc, 2, out)
+                self.assertIn("empty login", out)
+                self.assertEqual(LOOP_FILE.read_bytes(), before)
+                self.assertIsNone(routes.route(ROUTE))
+
     def test_change_flag_without_enable_applies_when_on_and_refuses_when_off(self):
         # Off: refused, names --enable, writes nothing (#527).
         before = LOOP_FILE.read_bytes()

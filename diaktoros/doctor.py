@@ -447,6 +447,14 @@ def check_runtime_paths(loop: dict) -> list[Check]:
                                 f"{key} = {raw} is not a hermes-agent Git checkout "
                                 "(run_agent.py and .git required)",
                                 f"point {key} at the hermes-agent Git checkout"))
+        elif key == "source" and runtime_detect.source_head_problem(p):
+            # Turns export only the committed HEAD tree (trusted_turn), so run_agent.py must be
+            # in HEAD, not just on disk.
+            checks.append(Check(f"runtime:{key}", MISMATCH,
+                                f"{key} = {raw} cannot be snapshotted: "
+                                f"{runtime_detect.source_head_problem(p)}",
+                                "commit run_agent.py in the hermes-agent checkout (every turn "
+                                "snapshots HEAD, never the working tree)"))
         elif key == "venv" and runtime_detect.venv_missing(p):
             checks.append(Check(f"runtime:{key}", MISMATCH,
                                 f"{key} = {raw} exists but has no "

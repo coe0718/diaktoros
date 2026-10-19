@@ -141,10 +141,22 @@ def _method_homes(tree: Path, method: str) -> list[tuple[str, str, str]]:
     return homes
 
 
+IMPORT_ERROR = "import_error"
+
+
 def status(results: dict[str, str], wanted: str) -> str:
-    """ok / fail / skipped / missing for the tests an id names (a method, class or module)."""
+    """ok / fail / skipped / missing / import_error for the tests an id names (a method, class
+    or module). ``import_error``: its test module did not import (unittest's ``_FailedTest``),
+    so none of its tests ran — on the original head, typically a test file that imports code the
+    fix adds."""
     found = [r for name, r in results.items() if name == wanted or name.startswith(wanted + ".")]
     if not found:
+        # unittest names the failed import after one dotted part of the id (the module it could
+        # not import: `test_it` for both `test_it.Case.test_x` and `tests.test_it.Case.test_x`).
+        failed = {name.rsplit(".", 1)[-1] for name, r in results.items()
+                  if name.startswith("unittest.loader._FailedTest.") and r == "ERROR"}
+        if failed & set(wanted.split(".")):
+            return IMPORT_ERROR
         return "missing"
     if any(r in ("FAIL", "ERROR") for r in found):
         return "fail"
@@ -247,6 +259,11 @@ def section(proof: dict | None, fix_head: str = "", head: str = "") -> str:
         ran = f" (ran as {json.dumps(str(row['ran_as'])[:120])})" if row.get("ran_as") else ""
         text += (f"- {json.dumps(str(row.get('id'))[:120])}{ran}: original head {row.get('old')}, "
                  f"fix {row.get('new')} → {row.get('verdict')}\n")
+    if any((row.get("old") == IMPORT_ERROR) for row in proof.get("ids") or []):
+        text += ("- a test module did not import on the original head (it imports code the fix "
+                 "adds), so its tests ran nowhere there: that proves nothing about any other "
+                 "behaviour it tests. A test of code that already existed belongs in a file that "
+                 "imports only existing code.\n")
     if proof.get("why"):
         text += f"- reason: {json.dumps(str(proof['why'])[:200])}\n"
     if fix_head and head and fix_head != head:
