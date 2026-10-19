@@ -1324,6 +1324,18 @@ def _path(value: str) -> pathlib.Path:
     return pathlib.Path(str(value)).expanduser()
 
 
+def relative_path_problem(value) -> str:
+    """Why ``value`` is not an absolute path (after ``~`` expands), or ``""`` when it is.
+
+    The one wording every token-path check uses: ``normalize`` at load and
+    ``credentials.token_file_problem`` for the write path and doctor.
+    """
+    raw = str(value or "").strip()
+    if raw and not _path(raw).is_absolute():
+        return f"{raw!r} is not an absolute path (use /… or ~/…)"
+    return ""
+
+
 def dangerous_root(value: str) -> str:
     """Why a cleanup root is too broad to accept, or ``""`` when it is fine.
 
@@ -1475,6 +1487,11 @@ def normalize(raw: dict, source: pathlib.Path | None = None) -> dict:
     loop["ci_fix_cap"] = check_ci_fix_cap(loop.get("ci_fix_cap"), where)
 
     loop["tokens"] = {k: str(v) for k, v in (loop.get("tokens") or {}).items()}
+    for login, token_path in loop["tokens"].items():
+        # A relative path would resolve from whatever the current directory is at use time.
+        problem = relative_path_problem(token_path)
+        if problem:
+            raise ConfigError(f"{where}: tokens.{login}: {problem}")
     # The reader is named, never inferred: taking "the first token" would make whichever seat
     # happens to be listed first the account every gate reads GitHub as.
     loop["read_token"] = str(loop.get("read_token") or "").strip()
