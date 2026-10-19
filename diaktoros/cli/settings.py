@@ -771,7 +771,9 @@ def cmd_set(args) -> int:
         # Named so the printer below says what changed: "shadow" alone is the turn budget.
         label = "shadow" if key == "turn_budget_s" else f"shadow {key.replace('_', ' ')}"
         shown = config.turn_budget(loop, "shadow") if key == "turn_budget_s" else before
-        after = (value or config.turn_budget({**loop, "seats": {}}, "shadow")
+        # With no seat value left, the shadow turn runs on the loop default as this same `set`
+        # leaves it: `changes` holds a `--turn-budget` given alongside.
+        after = (value or config.turn_budget({**loop, **changes, "seats": {}}, "shadow")
                  if key == "turn_budget_s" else value or None)
         budget_changes[label] = (shown, after)
         shadow_seat = seats.setdefault("shadow", {})
