@@ -22,11 +22,12 @@ from diaktoros.cli import operations  # noqa: E402
 from scripts import watchdog  # noqa: E402
 
 LABELS = ["bug", "feature", "P1"]
-NOW = time.time()
 
 
 def iso(age_s: float) -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW - age_s))
+    # Age is relative to the moment the issue is built, not module import: the sweep reads the
+    # clock when it runs, and in a long suite run import time can be minutes (> GRACE_S) earlier.
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - age_s))
 
 
 def issue(number, author="owner", age=3600.0, labels=(), pr=False):
