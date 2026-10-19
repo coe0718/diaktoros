@@ -202,7 +202,37 @@ def archived_loops(archive: pathlib.Path, manifest: dict) -> list[dict]:
     return list(loops.values()) + [loop for loop in live if loop["id"] not in replaced]
 
 
+def secret_problems(entry: dict, live, claims: list) -> list[str]:
+    """An archived HMAC secret that is not the one this install holds for the route (#920).
+
+    The live route's secret is the reference; with no live route, the claiming loops' intent
+    record (``route_intent.load``) is. A restore onto a machine with neither has nothing to
+    compare against, so the archive's secret is taken as given there. Returns [] when it matches
+    or there is no reference.
+    """
+    known = []
+    if isinstance(live, dict) and live.get("secret"):
+        known.append(live["secret"])
+    else:
+        for loop, role in claims:
+            name = route_intent.routes_of(loop).get(role) if loop else None
+            try:
+                recorded = (route_intent.load(loop) or {}).get(name) if loop else None
+            except route_intent.IntentError:
+                continue
+            if isinstance(recorded, dict) and recorded.get("secret"):
+                known.append(recorded["secret"])
+    if known and entry.get("secret") not in known:
+        return ["secret differs from the one this install holds for the route"]
+    return []
+
+
 def route_problems(entry: dict, live, claims: list) -> list[str]:
+    """``secret_problems`` plus ``field_problems``: everything wrong with an archived route."""
+    return secret_problems(entry, live, claims) + field_problems(entry, live, claims)
+
+
+def field_problems(entry: dict, live, claims: list) -> list[str]:
     """The fields of an archived route entry that are not what this plugin writes (#783).
 
     Naming one of the plugin's scripts is not enough to be trusted: ``prompt`` is the observer's
@@ -275,7 +305,7 @@ def unsafe(manifest: dict, *, allowed_state_dirs=(), archive=None) -> list[str]:
     owns, install a route that runs anything but this plugin's gates, or replace a route that is
     someone else's. Every file must land inside the Hermes home or the loop files' directory,
     with no symlink in its path; every route must be one of this plugin's gates *and* carry the fields this
-    plugin writes for it (prompt, events, profile, host, delivery: ``route_problems``); a live route of
+    plugin writes for it (prompt, events, profile, host, delivery: ``route_problems``, which also refuses a secret differing from this install's, #920); a live route of
     the same name that is not this plugin's is never overwritten, even with --force.
 
     A loop's ``state_dir`` may lie elsewhere. The archive declares it, and the archive is not
