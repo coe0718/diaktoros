@@ -1377,8 +1377,8 @@ class Supervisor(records.LedgerRecords):
         fixer's branch push or PR create (#522) is held the same way, so its run ends
         ``uncertain`` (listed by ``status``, released by ``reconcile``), not ``succeeded``.
         """
-        allowed = {'fixer': ('unknown', 'published_pr_unverified'),
-                   'issue_fixer': ('unknown', 'pr_create_unknown')}
+        allowed = {'fixer': ('unknown', 'published', 'published_pr_unverified'),
+                   'issue_fixer': ('unknown', 'published', 'pr_create_unknown')}
         if outcome not in allowed.get(seat, ()):
             raise ValueError('not a post-write hold outcome')
         with self._connect() as con:
@@ -2879,8 +2879,7 @@ class Supervisor(records.LedgerRecords):
             except Exception as exc:
                 if isinstance(exc, safe_push.PushFailure) or not isinstance(
                         exc, broker.BrokerDenied):
-                    outcome = (exc.outcome if isinstance(exc, safe_push.PushFailure)
-                               and exc.outcome == 'published_pr_unverified' else 'unknown')
+                    outcome = safe_push.held_outcome(exc)
                     self.quarantine_push(*args, outcome)
                     turn.stopped = True
                     turn.error = f'post-write push quarantine: {outcome}'

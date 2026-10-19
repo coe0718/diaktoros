@@ -52,6 +52,18 @@ class PushFailure(broker.BrokerDenied):
         super().__init__(f"Git ref update not confirmed ({outcome})")
 
 
+# Outcomes of a PushFailure that a post-write hold records as they are; any other is "unknown".
+HELD_OUTCOMES = ("published", "published_pr_unverified")
+
+
+def held_outcome(exc: Exception) -> str:
+    """The outcome a post-write hold records for ``exc``: the host's own audited outcome when it
+    is one of ``HELD_OUTCOMES``, otherwise ``unknown``."""
+    if isinstance(exc, PushFailure) and exc.outcome in HELD_OUTCOMES:
+        return exc.outcome
+    return "unknown"
+
+
 def _sha(value: object) -> str:
     if not isinstance(value, str) or not SHA.fullmatch(value):
         raise broker.BrokerDenied("invalid Git object SHA")
