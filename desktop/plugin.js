@@ -73,6 +73,7 @@ function useNow(loop) {
     queryKey: [ID, 'now', loop || ''],
     queryFn: () => readView('/now?loop=' + encodeURIComponent(loop), 'now'),
     enabled: !!loop,
+    staleTime: 30000,
     refetchInterval: 30000
   })
 }
@@ -1252,6 +1253,83 @@ function ActionsControl({ loop, discoveryCurrent }) {
         confirmLabel: 'Escalate PR', busyLabel: 'Checking action…', cancelLabel: 'Cancel', onClose: () => cancel(pending), onConfirm: () => confirm(pending) }) : null
     ] }) })
 }
+/** Passive strip: independent discovery and the exact page query, never page action rows.
+ * Selection is local; no focus handoff, toast baseline, navigation or mutation is mounted. */
+function RightNowPane() {
+  const loops = useLoops()
+  const configured = loops.data?.loops || []
+  const readable = configured.filter(item => !item.unreadable)
+  const [chosen, setChosen] = useState('')
+  const selected = chosen ? readable.find(item => item.id === chosen) : readable[0]
+  const loop = selected?.id || ''
+  const now = useNow(loop)
+  const loopsState = useViewState(loops, !configured.length)
+  const runs = now.data?.runs || []
+  const state = useViewState(now, !runs.length && !Object.values(now.data?.counts || {}).some(n => n > 0), 60000)
+  const noLedger = now.data?.available === false
+  const displayState = noLedger ? 'unavailable' : state
+  // Remember the first displayed identity too: discovery reorder/removal must not silently
+  // replace its runs with another loop before the operator ever touches the selector.
+  useEffect(() => { if (!chosen && loop) setChosen(loop) }, [chosen, loop])
+  return jsxs('div', {
+    className: 'h-full min-h-0 min-w-0 overflow-y-auto p-2 text-xs',
+    role: 'region',
+    'aria-label': 'Diaktoros Right now',
+    tabIndex: 0,
+    children: [
+      jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+        jsx('h2', { className: 'font-medium', children: 'Right now' }),
+        jsx(Muted, { text: 'Read-only · ' + (loop || chosen || 'no readable loop') }),
+        readable.length > 1 || (chosen && !selected) ? jsx('select', {
+          'aria-label': 'Right now loop', value: chosen || loop,
+          className: 'min-w-0 max-w-full rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-editor) text-xs',
+          onChange: event => setChosen(event.target.value),
+          children: [chosen && !selected ? jsx('option', { value: chosen, children: chosen + ' · not read' }, chosen) : null,
+            ...readable.map(item => jsx('option', { value: item.id, children: item.id }, item.id))]
+        }) : null
+      ] }),
+      loopsState !== 'verified' ? jsx(PassiveReadStatus, { query: loops, state: loopsState, label: 'Configured loops' }) : null,
+      configured.filter(item => item.unreadable).map(item => jsx(Muted, {
+        text: item.id + ' · config unreadable' + (item.reason ? ': ' + item.reason : '')
+      }, item.id)),
+      !loop ? jsx(Muted, { text: chosen ? chosen + ' · not read: selected loop is no longer readable or configured.' :
+        loopsState === 'verified-empty' ? 'No loops configured.' : 'No readable loop selected; run status is not read.' }) : jsxs('div', {
+        className: 'mt-2 flex min-w-0 flex-col gap-2', children: [
+          jsx(PassiveReadStatus, { query: now, state: displayState, label: 'Right now', noLedger }),
+          now.data && !noLedger ? jsx(Muted, { text: summary(now.data.counts) }) : null,
+          !noLedger ? runs.map((run, index) => jsxs('div', {
+            className: 'min-w-0 border-t border-(--ui-stroke-secondary) py-1', children: [
+              jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+                jsx('span', { className: 'font-mono text-(--ui-accent)', children: '#' + run.pr }),
+                jsx('span', { children: run.seat }),
+                jsx('span', { className: 'break-all font-mono text-(--ui-text-tertiary)', children: run.head }),
+                jsx(Badge, { size: 'xs', variant: 'muted', children: run.state })
+              ] }),
+              jsx('div', { className: 'mt-1 break-words text-(--ui-text-secondary)', children: run.why })
+            ]
+          }, index)) : null,
+          displayState === 'verified-empty' ? jsx(Muted, { text: 'No active or recent failed runs recorded in this backend read.' }) : null
+        ]
+      })
+    ]
+  })
+}
+
+// Only read disclosure is reused: QueryStatus includes a refresh button, and RunRow includes
+// drawer/retry affordances. Neither belongs in a passive pane.
+function PassiveReadStatus({ query, state, label, noLedger = false }) {
+  return jsxs('div', { className: 'flex min-w-0 flex-col gap-1 py-1', children: [
+    jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+      jsx(Badge, { size: 'xs', variant: state === 'stale' || state === 'unavailable' ? 'warn' : 'muted', children: state }),
+      jsx(Muted, { text: label + (state === 'loading' ? ': loading…' : state === 'unavailable' ? ': no verified data available.' :
+        state === 'stale' ? ': showing last good data, not current status.' : ': backend read succeeded.') })
+    ] }),
+    noLedger ? jsx(Muted, { text: 'No run ledger available in the last successful backend read. Run counts are unavailable, not zero.' }) : null,
+    query.data != null ? jsx(Muted, { text: 'Last good read: ' + lastGood(query) + (query.isFetching ? ' · refreshing…' : '') }) : null,
+    query.isError ? jsx(Muted, { text: safeError(query.error) }) : null
+  ] })
+}
+
 function Page() {
   const [since, setSince] = useState('7d')
   const focus = useFocus()
@@ -1560,6 +1638,9 @@ export default {
       storage = null
     })
     ctx.registerMany([
+      { id: 'right-now-pane', area: 'panes', title: 'Diaktoros · Right now',
+        data: { placement: 'bottom', dock: { pane: 'workspace', pos: 'bottom' }, height: '200px' },
+        render: () => jsx(RightNowPane, {}) },
       { id: 'page', area: ROUTES_AREA, data: { path: PATH }, render: () => jsx(Page, {}) },
       { id: 'nav', area: SIDEBAR_NAV_AREA, data: { path: PATH, label: 'Diaktoros', codicon: 'git-pull-request' } },
       { id: 'status', area: STATUSBAR_AREAS.right, order: 140, render: () => jsx(StatusChip, {}) },
