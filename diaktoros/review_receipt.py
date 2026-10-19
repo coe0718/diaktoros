@@ -11,6 +11,7 @@ import time
 from . import gh, ledger
 
 SHA = re.compile(r'[0-9a-f]{40}\Z')
+REF_NAME = re.compile(r'[A-Za-z0-9._/-]{1,60}\Z')
 
 
 class ReceiptDenied(ValueError):
@@ -51,8 +52,20 @@ def ineligibility(pr, loop, number):
     base = pr.get('base')
     ref = base.get('ref') if isinstance(base, dict) else None
     if isinstance(ref, str) and ref != loop.get('base'):
-        return f'retargeted to {ref}'
+        return f'retargeted to {quote_ref(ref)}'
     return ''
+
+
+def quote_ref(ref):
+    """A GitHub-supplied ref name as a quoted literal, or fixed wording if it is not plainly one.
+
+    The result lands in text the seat reads as host instructions (broker_ipc's review outcome)
+    and in the ledger, so a PR-controlled ref must not pass through as prose: only a short
+    name of ref-safe characters is shown, always in double quotes; anything else is withheld.
+    """
+    if isinstance(ref, str) and REF_NAME.fullmatch(ref):
+        return f'"{ref}"'
+    return 'a branch whose name is not shown'
 
 
 def generation_for(pr, loop, number, head):
