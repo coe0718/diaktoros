@@ -13,6 +13,42 @@ import unittest
 from unittest import mock
 
 from diaktoros import desktop_events as events
+from hermes_prereqs import skip_or_fail
+
+
+def require_socket_prereqs(test):
+    """Standalone shards stay stdlib-only; the pinned-Hermes lane must run this test."""
+    for module in ("fastapi", "httpx", "hermes_cli"):
+        if importlib.util.find_spec(module) is None:
+            skip_or_fail(test, f"desktop socket integration needs {module} on this interpreter")
+    # Do not catch import errors below: broken/transitive imports must fail, not skip.
+
+
+class SocketPrerequisites(unittest.TestCase):
+    def test_missing_prerequisite_skips_standalone(self):
+        for missing in ("fastapi", "httpx", "hermes_cli"):
+            with self.subTest(missing=missing), \
+                    mock.patch("hermes_prereqs.REQUIRED", False), \
+                    mock.patch.object(importlib.util, "find_spec",
+                                      side_effect=lambda name: None if name == missing else object()):
+                with self.assertRaisesRegex(unittest.SkipTest, missing):
+                    Socket().test_real_hermes_validator_plugin_route_refusal_disconnect_reconnect()
+
+    def test_missing_prerequisite_fails_required_lane(self):
+        for missing in ("fastapi", "httpx", "hermes_cli"):
+            with self.subTest(missing=missing), \
+                    mock.patch("hermes_prereqs.REQUIRED", True), \
+                    mock.patch.object(importlib.util, "find_spec",
+                                      side_effect=lambda name: None if name == missing else object()):
+                with self.assertRaisesRegex(AssertionError, f"DIAKTOROS_REQUIRE_HERMES_SOURCE=1.*{missing}"):
+                    Socket().test_real_hermes_validator_plugin_route_refusal_disconnect_reconnect()
+
+    def test_available_prerequisites_do_not_skip_either_mode(self):
+        for required in (False, True):
+            with self.subTest(required=required), \
+                    mock.patch("hermes_prereqs.REQUIRED", required), \
+                    mock.patch.object(importlib.util, "find_spec", return_value=object()):
+                require_socket_prereqs(self)
 
 
 class Files(unittest.IsolatedAsyncioTestCase):
@@ -252,6 +288,7 @@ class Files(unittest.IsolatedAsyncioTestCase):
 
 class Socket(unittest.TestCase):
     def test_real_hermes_validator_plugin_route_refusal_disconnect_reconnect(self):
+        require_socket_prereqs(self)
         # Use the real Hermes validator, NOT a guessed Depends(HTTP-only auth).
         # Stub only web_server globals to avoid starting/importing the live server.
         from fastapi import FastAPI
@@ -286,12 +323,19 @@ class Socket(unittest.TestCase):
         manager = events.DesktopEvents(events.FileSnapshot(home, directory), interval=.01)
         with mock.patch.dict(sys.modules, {"hermes_cli.web_server": server}), \
                 mock.patch.object(events, "for_app", return_value=manager), TestClient(app) as client:
-            for suffix, headers in [("", {}), ("?token=wrong", {}),
-                                     ("?token=fixture-only-session-token", {"X-Hermes-Gateway-Ticket": "invalid"})]:
+            for suffix in ("", "?token=wrong"):
                 with self.assertRaises(WebSocketDisconnect):
-                    with client.websocket_connect("/api/plugins/diaktoros/events" + suffix, headers=headers):
+                    with client.websocket_connect("/api/plugins/diaktoros/events" + suffix):
                         self.fail("unauthenticated socket accepted")
                 self.assertIsNone(manager.task)
+            # HERMES_PINNED validates browser tickets in gated mode; the newer native
+            # X-Hermes-Gateway-Ticket header is not part of that commit's contract.
+            app.state.auth_required = True
+            with self.assertRaises(WebSocketDisconnect):
+                with client.websocket_connect("/api/plugins/diaktoros/events?ticket=invalid"):
+                    self.fail("invalid gated ticket accepted")
+            self.assertIsNone(manager.task)
+            app.state.auth_required = False
             for _ in range(2):
                 with client.websocket_connect("/api/plugins/diaktoros/events?token=fixture-only-session-token") as ws:
                     self.assertEqual(ws.receive_json(), {"event": "invalidate", "version": 1})
