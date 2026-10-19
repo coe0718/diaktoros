@@ -204,6 +204,23 @@ class ConnectHelper(unittest.TestCase):
         self.assertRaises(sqlite3.ProgrammingError, opened[0].execute, 'SELECT 1')
         self.assertEqual(self.rows(), [])
 
+    def test_an_opener_discards_path_and_sqlite_keywords(self):
+        # What the module docstring (#827) says: with ``opener=``, sqlite3.connect is never
+        # called by connect itself, so path, ``timeout`` and its default do not reach it.
+        real = sqlite3.connect
+        with mock.patch('sqlite3.connect') as connect:
+            connect.side_effect = lambda *a, **k: real(*a, **k)
+            with self.connect('ignored.db', opener=lambda: sqlite3.connect(self.db),
+                              timeout=1, isolation_level='EXCLUSIVE'):
+                pass
+        connect.assert_called_once_with(self.db)
+
+    def test_the_docstring_limits_keywords_to_the_sqlite_connect_path(self):
+        doc = ' '.join((ledger.__doc__ or '').split())
+        self.assertNotIn('Any ``sqlite3.connect`` keyword passes through unchanged', doc)
+        self.assertIn('Without ``opener=``, any ``sqlite3.connect`` keyword passes through', doc)
+        self.assertIn('is never called', doc)
+
     def test_worker_connect_closes_on_a_non_database_error(self):
         sup = Supervisor(self.db)
         opened = []

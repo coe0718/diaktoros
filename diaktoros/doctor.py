@@ -50,7 +50,7 @@ import time
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from . import config, gh, observer, route_intent, routes
+from . import config, gh, isolation, observer, route_intent, routes
 from .config import host_guards
 from .config import credentials
 
@@ -68,8 +68,9 @@ MARKS = {VERIFIED: "✅", ABSENT: "❌", MISMATCH: "❌", UNKNOWN: "⚠️", SKI
 # import ``cli``) and `tests/run_tests.py` asserts the two spellings agree — a preflight that
 # looks for a filename nothing writes would report a healthy install as broken.
 SHIM_NAME = "diaktoros-watchdog.py"      # a fresh install's; see shim_path() for the live one
-PLUGIN_SCRIPTS = ("watchdog.py", "gate_reviewer.py", "gate_fixer.py",
-                  "gate_adjudicator.py", "gate_triage.py", "cleanup.py")
+# Every file a route runs by name (route_intent.GATE_SCRIPT, observe.py included) plus the
+# watchdog and cleanup scripts, so a route script cannot be added without doctor checking it.
+PLUGIN_SCRIPTS = ("watchdog.py", *dict.fromkeys(route_intent.GATE_SCRIPT.values()), "cleanup.py")
 GATE_SCRIPT = {"reviewer": "gate_reviewer.py", "fixer": "gate_fixer.py",
                "triage": "gate_triage.py"}
 GATE_EVENT = config.HOOK_EVENT
@@ -819,11 +820,11 @@ def check_token(login: str, raw: str) -> Check:
         return Check(f"token:{login}", MISMATCH, f"{path} is empty",
                      f"write the PAT into {path}: an empty credential reads as an anonymous "
                      f"request, which GitHub answers with 404")
+    problem = credentials.token_file_problem(str(path))
+    if problem:
+        return Check(f"token:{login}", MISMATCH, problem,
+                     f"chmod 600 {path} (and own it): the same rule as every credential line")
     mode = path.stat().st_mode & 0o777
-    if mode & 0o077:
-        return Check(f"token:{login}", MISMATCH,
-                     f"{path} is mode {mode:03o} — readable by group/other users",
-                     f"chmod 600 {path}")
     return Check(f"token:{login}", VERIFIED, f"{path} (mode {mode:03o}, non-empty)")
 
 
@@ -1204,6 +1205,8 @@ def gate_timeout_profiles(loop: dict) -> dict[str, list[str]]:
         profile = config.seat_profile(loop, role)
         if profile:
             hosted.setdefault(profile, []).append(role)
+    if config.triage_enabled(loop):      # gate_triage.py fits its budget to this gateway too
+        hosted.setdefault(config.seat_profile(loop, "triage") or "default", []).append("triage")
     observer = loop.get("observer") if isinstance(loop.get("observer"), dict) else {}
     if observer.get("route"):
         hosted.setdefault(str(observer.get("profile") or "default"), []).append("observer")
@@ -1454,10 +1457,16 @@ def check_clone(loop: dict) -> Check:
     # The tree the cleanup deletes, derived from config rather than re-spelled here — a clone that
     # lives inside it is a working copy the cleanup would take with the artifacts.
     root = config.artifacts_dir(loop, 1).parent
+    # Same check, same fail-closed rule as isolation.ensure: a path that cannot be resolved is
+    # not "outside" — the rail cannot be shown to hold, so this is a failure, not a green.
     try:
-        inside = str(path.resolve()).startswith(str(root.resolve()) + os.sep)
-    except Exception:
-        inside = False
+        inside = isolation.clone_inside_root(path, root)
+    except Exception as exc:
+        return Check("clone", MISMATCH, f"cannot tell whether {path} is inside the loop's "
+                                        f"artifacts root {root} ({exc})",
+                     "fix the unresolvable path (a symlink loop or a permission error): isolation "
+                     "refuses to run while it cannot tell, and the cleanup deletes everything "
+                     "under artifacts/")
     if inside:
         return Check("clone", MISMATCH, f"{path} lives inside the loop's artifacts root {root}",
                      "move the clone out of the state directory: the cleanup deletes everything "
@@ -2174,8 +2183,10 @@ def check_branch_protection(loop: dict, offline: bool) -> Check | None:
     or they agree. A warning, not a failure: the loop runs, it just gates differently than GitHub.
     """
     wanted = config.required_checks(loop)
-    if not wanted or offline:
+    if not wanted:
         return None
+    if offline:
+        return Check("branch-protection", UNKNOWN, "not probed (--offline)")
     base = str(loop.get("base") or "main")
     # GitHub requires checks two ways: classic branch protection (its read needs admin access)
     # and rulesets (readable with plain read access). A base protected only by a ruleset answers
@@ -2230,16 +2241,18 @@ def installed_commit() -> str:
     return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else ""
 
 
-def check_plugin_version(loop: dict, offline: bool = False) -> Check | None:
-    """#556: is the installed plugin behind the latest release or ``main``? None with --offline.
+def check_plugin_version(loop: dict, offline: bool = False) -> Check:
+    """#556: is the installed plugin behind the latest release or ``main``?
+
+    With --offline it is reported as not probed (``unknown``), never left out of the report.
 
     Behind the latest release is a warning (``unknown``), never a failure. Either side
     unreadable is ``unknown`` too. Only a git checkout can be compared; a catalog install
     without ``.git`` reports unknown.
     """
-    if offline:
-        return None
     name = "plugin-version"
+    if offline:
+        return Check(name, UNKNOWN, "not probed (--offline)")
     sha = installed_commit()
     if not sha:
         return Check(name, UNKNOWN, "could not read the installed plugin's commit (not a git checkout)",
@@ -2317,9 +2330,7 @@ def check_loop(loop: dict, offline: bool = False) -> list[Check]:
     checks.append(check_gateway(loop, offline))
     checks.extend(check_hooks(loop, offline))
     checks.extend(check_environment(loop, offline))
-    version = check_plugin_version(loop, offline)
-    if version:
-        checks.append(version)
+    checks.append(check_plugin_version(loop, offline))
     return checks
 
 

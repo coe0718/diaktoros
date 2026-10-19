@@ -31,7 +31,7 @@ File shape (all keys except ``repo`` have defaults)::
       "tokens": {"reader-bot": "~/.hermes/keys/reader-bot-pat",
                  "rev-bot": "~/.hermes/keys/rev-bot-pat",
                  "dev-account": "~/.hermes/keys/dev-account-pat"},
-      "state_dir": "~/.hermes/state/review-loops/name",
+      "state_dir": "~/.hermes/state/diaktoros/name",
       "clone": "~/projects/name",
       "roots": ["~/reviews", "~/.hermes/cache/scratch"],
       "grace_min": 35, "marker_grace_min": 60, "cooldown_h": 6,
@@ -1344,6 +1344,9 @@ def dangerous_root(value: str) -> str:
 
 # Keys a loop file may hold besides DEFAULTS' (identity and the state ``disable`` keeps).
 LOOP_EXTRA_KEYS = frozenset({"id", "repo", "state_dir", "observer_disabled"})
+# Every name ``normalize`` reads under ``seats``: the two working seats plus the optional
+# adjudicator, triage and shadow seats. Anything else there is dropped on load, so it is refused.
+FILE_SEAT_NAMES = frozenset({*SEAT_KEYS, "adjudicator", "triage", "shadow"})
 # Keys of a reviewer/fixer seat.
 SEAT_FILE_KEYS = frozenset({"route", "profile", "login", "agent", "concurrency", "turn_budget_s",
                             "daily_turns", "daily_tokens", "max_steps"})
@@ -1364,6 +1367,7 @@ def check_known_keys(raw: dict, where: str) -> None:
     problems = _unknown_keys(raw, set(DEFAULTS) | LOOP_EXTRA_KEYS)
     seats = raw.get("seats")
     if isinstance(seats, dict):
+        problems += _unknown_keys(seats, FILE_SEAT_NAMES, "seats.")
         for seat in SEAT_KEYS:
             if isinstance(seats.get(seat), dict):
                 problems += _unknown_keys(seats[seat], SEAT_FILE_KEYS, f"seats.{seat}.")

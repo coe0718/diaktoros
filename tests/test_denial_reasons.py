@@ -33,6 +33,20 @@ class DenialMessageTests(unittest.TestCase):
                 self.assertEqual(self.msg(safe_push.PushFailure(outcome)), broker_ipc.PUSH_UNKNOWN)
         self.assertNotIn("write denied", lagged)
 
+    def test_a_review_that_posted_never_reads_as_not_published(self):
+        """#825: the POST succeeded, then the PR read back ineligible or the readback failed."""
+        from diaktoros import review_receipt
+        posted = self.msg(review_receipt.ReviewedPrIneligible("closed"))
+        self.assertIn("review posted, but the PR is now closed", posted)
+        unconfirmed = self.msg(review_receipt.ReviewPostUnconfirmed("exact-ID readback mismatch"))
+        self.assertIn("exact-ID readback mismatch", unconfirmed)
+        for text in (posted, unconfirmed):
+            self.assertNotIn("write denied", text)
+            self.assertIn("do not say it was not published", text)
+        # A refusal made before the POST stays opaque.
+        self.assertEqual(self.msg(review_receipt.ReceiptDenied("generation changed before POST")),
+                         "write denied")
+
     def test_every_public_reason_is_a_known_constant_string(self):
         for reason in broker_ipc.PUBLIC_DENIALS:
             self.assertNotIn("{", reason)

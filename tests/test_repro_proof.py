@@ -69,6 +69,17 @@ class Proof(unittest.TestCase):
         self.assertEqual(proof["ids"][0]["verdict"], "passes_on_old_head")
         self.assertIn("does not cover the fix", repro_proof.section(proof))
 
+    def test_a_test_that_fails_through_its_subtests_on_the_old_head_is_proven(self):
+        # #996: unittest -v prints a failing subTest on its own indented line, with its
+        # parameters, and leaves the test's own line without a result; the parser skipped those
+        # lines, so a real fail-then-pass read "missing" and the proof said UNPROVEN.
+        sub = TEST.replace("        self.assertEqual(c.value(), 2)\n",
+                           "        for n in (1, 2):\n            with self.subTest(n=n):\n"
+                           "                self.assertEqual(c.value(), 2)\n")
+        proof = self.prove(sub)
+        self.assertEqual(proof["overall"], repro_proof.PROVEN, proof)
+        self.assertEqual((proof["ids"][0]["old"], proof["ids"][0]["new"]), ("fail", "ok"))
+
     def test_a_test_failing_on_the_fix_or_missing_is_unproven(self):
         self.assertEqual(self.prove(TEST.replace("2)", "3)"))["overall"], repro_proof.UNPROVEN)
         self.assertEqual(self.prove(TEST, ("tests.test_it.Case.test_nope",))["overall"],

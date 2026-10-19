@@ -27,9 +27,10 @@ exits 1 if anything failed:
 7. with ``--live-turn --pr N``: one real isolated reviewer turn whose broker runs in its host-only
    no-write mode — the verdict and body the agent *would* have submitted are printed, never posted.
 
-Guarantees: **no step writes to GitHub** (every GitHub call made while the selftest runs goes
-through a GET-only guard, on top of the broker's no-write mode), and no token or key is printed
-(every line passes a redactor that knows the configured secrets).
+Guarantees: **no step writes to GitHub unless ``--ping`` is set** (every GitHub call made while
+the selftest runs goes through a GET-only guard, on top of the broker's no-write mode; ``--ping``
+is the one write, a POST to the hook's ``pings`` endpoint made outside that guard), and no token
+or key is printed (every line passes a redactor that knows the configured secrets).
 """
 from __future__ import annotations
 
@@ -222,6 +223,7 @@ def _interpreter_outside(link: Path, runtime: Path) -> str:
 
 def _check_override(report: Report, step: str, prefix: str, block: dict) -> bool:
     """An explicit model override's upstream and key file; True when both are usable."""
+    from . import seat_model
     from .inference_proxy import UPSTREAM_SUFFIX, _NoRedirectConnection
     ok = True
     upstream = block["upstream"]
@@ -247,14 +249,18 @@ def _check_override(report: Report, step: str, prefix: str, block: dict) -> bool
     good, detail, fix = _private_file(key_path)
     if good:
         try:
-            empty = not key_path.read_text().strip()
+            text = key_path.read_text().strip()
         except OSError as exc:
             good, detail, fix = (False, f"{key_path} cannot be read ({type(exc).__name__})",
                                  f"chmod 600 {key_path}")
         else:
-            if empty:
+            if not text:
                 good, detail, fix = (False, f"{key_path} is empty",
                                      f"write the provider API key into {key_path}")
+            elif not seat_model.key_text_is_one_line(text):
+                good, detail, fix = (False, f"{key_path} has more than one line "
+                                     "(the production reader refuses it)",
+                                     f"leave only the provider API key, on one line, in {key_path}")
     if not good:
         ok = False
         report.add(step, prefix + "key_file", FAIL, detail,
@@ -440,18 +446,24 @@ def check_bwrap(report: Report, loop: dict, settings: dict | None, runtime_file:
     """Step 2."""
     from . import contained, trusted_turn
     step = "bubblewrap"
-    if not shutil.which("bwrap"):
-        report.add(step, "bwrap:installed", FAIL, "bwrap is not on PATH",
-                   "install bubblewrap (`sudo dnf install bubblewrap` / `sudo apt install bubblewrap`)")
+    # The launcher starts the child with LAUNCH_PATH only, so that is where bwrap must be found,
+    # not on the operator's PATH (a bwrap in /usr/local/bin would pass here and fail every turn).
+    bwrap = shutil.which("bwrap", path=contained.LAUNCH_PATH)
+    if not bwrap:
+        report.add(step, "bwrap:installed", FAIL,
+                   f"bwrap is not in {contained.LAUNCH_PATH}, the only PATH the launcher uses "
+                   "(the operator's PATH does not count)",
+                   "install bubblewrap (`sudo dnf install bubblewrap` / `sudo apt install bubblewrap`) "
+                   f"so that bwrap is in {contained.LAUNCH_PATH}")
         return
-    report.add(step, "bwrap:installed", PASS, shutil.which("bwrap"))
-    probe = ["bwrap", "--unshare-all", "--die-with-parent", "--ro-bind", "/usr", "/usr",
+    report.add(step, "bwrap:installed", PASS, bwrap)
+    probe = [bwrap, "--unshare-all", "--die-with-parent", "--ro-bind", "/usr", "/usr",
              "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib",
              "--ro-bind-try", "/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
              "--", "/usr/bin/true"]
     try:
         result = subprocess.run(probe, capture_output=True, text=True, timeout=30,
-                                env={"PATH": "/usr/bin:/bin"})
+                                env={"PATH": contained.LAUNCH_PATH})
     except Exception as exc:
         report.add(step, "bwrap:userns", FAIL, f"bwrap did not run ({type(exc).__name__})",
                    _USERNS_FIX)
@@ -1228,8 +1240,10 @@ def run(loop: dict, *, pr: int | None = None, model: bool = True, live_turn: boo
     for raw in (loop.get("tokens") or {}).values():
         redact.add_file(raw)
     report = Report(out, redact)
+    github_scope = ("GitHub: reads only, plus one write: --ping asks GitHub to ping each loop hook"
+                    if ping else "GitHub: reads only, nothing is posted")
     report.text(f"[{loop['id']}] {loop['repo']} — isolated-path selftest "
-                "(GitHub: reads only, nothing is posted; no token or key is printed)")
+                f"({github_scope}; no token or key is printed)")
     if envnames.get("GH_STUB"):
         report.add("preconditions", "github:stub", FAIL, "DIAKTOROS_GH_STUB is set: GitHub is faked",
                    "unset DIAKTOROS_GH_STUB / REVIEW_LOOP_GH_STUB — the selftest must talk to the real API")

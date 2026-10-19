@@ -513,6 +513,14 @@ def upstream_for(base_url: str, where: str, api_mode: str = "chat_completions") 
     return check_upstream(base if base.endswith(suffix) else base + suffix, where, api_mode)
 
 
+def key_text_is_one_line(key: str) -> bool:
+    """The production rule for a stripped key file's text: non-empty and a single line.
+
+    ``_read_key_file`` and selftest's key-file check both apply it.
+    """
+    return bool(key) and "\n" not in key and "\r" not in key
+
+
 def _read_key_file(raw: str, where: str) -> str:
     path = Path(raw).expanduser()
     try:
@@ -523,7 +531,7 @@ def _read_key_file(raw: str, where: str) -> str:
         raise SeatModelError(f"{where}: key file {path} must be a regular 0600 file you own "
                              f"(`chmod 600 {path}`)")
     key = path.read_text().strip()
-    if not key or "\n" in key or "\r" in key:
+    if not key_text_is_one_line(key):
         raise SeatModelError(f"{where}: key file {path} is empty or has more than one line")
     return key
 

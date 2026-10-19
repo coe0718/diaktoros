@@ -771,7 +771,9 @@ def cmd_set(args) -> int:
         # Named so the printer below says what changed: "shadow" alone is the turn budget.
         label = "shadow" if key == "turn_budget_s" else f"shadow {key.replace('_', ' ')}"
         shown = config.turn_budget(loop, "shadow") if key == "turn_budget_s" else before
-        after = (value or config.turn_budget({**loop, "seats": {}}, "shadow")
+        # With no seat value left, the shadow turn runs on the loop default as this same `set`
+        # leaves it: `changes` holds a `--turn-budget` given alongside.
+        after = (value or config.turn_budget({**loop, **changes, "seats": {}}, "shadow")
                  if key == "turn_budget_s" else value or None)
         budget_changes[label] = (shown, after)
         shadow_seat = seats.setdefault("shadow", {})
@@ -1047,6 +1049,12 @@ def cmd_apply(args) -> int:
     return rc
 
 
+# Settings-form keys that live inside a loop section, which ``_apply`` compares as it does the
+# top-level ones (triage.fix_daily_turns is compared as the issue fixer's daily turns).
+_NESTED_FORM_KEYS = (("triage", "auto_fix_labels"), ("triage", "auto_fix_daily"),
+                     ("observer", "weekly_report"))
+
+
 def _apply(args) -> int:
     """Make a loop match the plugin settings — one push, with the diff printed.
 
@@ -1138,6 +1146,12 @@ def _apply(args) -> int:
                 "generated", "review_only", "review_only_cap", "review_only_daily", "shadow"):
         if updated.get(key) != loop.get(key):
             changes.append((key, loop.get(key), updated.get(key)))
+    # The form also pushes triage.auto_fix_* and observer.weekly_report (#781): compare them, or a
+    # push that moves only those is discarded as "already matches" and never written.
+    for section, key in _NESTED_FORM_KEYS:
+        was, now = (loop.get(section) or {}).get(key), (updated.get(section) or {}).get(key)
+        if was != now:
+            changes.append((f"{section}.{key}", was, now))
     if (updated.get("clone") or "") != (loop.get("clone") or ""):
         changes.append(("clone", loop.get("clone") or "(none)", updated.get("clone") or "(none)"))
     for seat in ("reviewer", "fixer"):
