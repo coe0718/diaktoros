@@ -379,6 +379,16 @@ class SafePushTests(unittest.TestCase):
             with self.assertRaises(broker_ipc.ProtocolError):
                 server._dispatch(payload)
 
+
+class IsolatedGitMaintenance(unittest.TestCase):
+    def test_no_background_maintenance_can_outlive_the_temporary_repository(self):
+        # A detached gc/maintenance after a fetch races the temp directory's removal.
+        git = safe_push._Isolated(Path('/nonexistent'), {}, 'file')
+        cmd = git._cmd(['status'])
+        for setting in ('gc.auto=0', 'gc.autoDetach=false', 'maintenance.auto=false'):
+            self.assertIn(setting, cmd)
+
+
 class RealBareCAS(unittest.TestCase):
     def test_local_object_construction_and_lease_races(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as temp:

@@ -251,7 +251,12 @@ class _Isolated:
     def _cmd(self, args):
         return ["/usr/bin/git", "-c", "credential.helper=", "-c", "core.hooksPath=/dev/null",
                 "-c", "commit.gpgsign=false", "-c", "protocol.allow=never",
-                "-c", f"protocol.{self.protocol}.allow=always", *args]
+                "-c", f"protocol.{self.protocol}.allow=always",
+                # No detached auto-maintenance: after a fetch, Git may leave a background
+                # ``gc``/``maintenance`` writing into the private repository, which races the
+                # temporary directory's removal (ENOTEMPTY on objects/pack).
+                "-c", "gc.auto=0", "-c", "gc.autoDetach=false",
+                "-c", "maintenance.auto=false", "-c", "receive.autogc=false", *args]
 
     def run_rc(self, *args: str, input: bytes | None = None) -> tuple[int, bytes]:
         try:
