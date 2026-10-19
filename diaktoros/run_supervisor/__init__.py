@@ -493,6 +493,15 @@ PUBLISH_NUDGE = ('**Your previous attempt at this turn ended without publishing 
                  'the work and end the turn with the broker write described below.\n\n')
 
 
+def _conflicts_at_head(pr: object, head: str) -> bool:
+    """The PR is open, out of draft, at ``head`` and conflicts with its base (GitHub runs
+    no CI on it). A closed or draft PR is not a conflict hold: the claim's eligibility
+    checks supersede or wait on it. Shared by the reviewer's and the shadow's CI gates."""
+    return (isinstance(pr, dict) and pr.get("mergeable_state") == "dirty"
+            and pr.get("state") == "open" and pr.get("draft") is False
+            and isinstance(pr.get("head"), dict) and pr["head"].get("sha") == head)
+
+
 def unpublished_before(row) -> bool:
     """Whether this run's last attempt exited without calling the broker (#144)."""
     return UNPUBLISHED in (row['error'] or '')
@@ -2725,10 +2734,7 @@ class Supervisor(records.LedgerRecords):
         queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}',
                         login=loop["read_token"])
         # A closed or draft PR is left to the eligibility checks below, which supersede it.
-        if (isinstance(queued, dict) and queued.get("mergeable_state") == "dirty"
-                and queued.get("state") == "open" and queued.get("draft") is False
-                and isinstance(queued.get("head"), dict)
-                and queued["head"].get("sha") == row["head"]):
+        if _conflicts_at_head(queued, row["head"]):
             base = queued.get("base")
             base = str(base.get("ref") or "") if isinstance(base, dict) else ""
             turn.paced_until = time.time() + CI_POLL_S
@@ -2795,8 +2801,8 @@ class Supervisor(records.LedgerRecords):
             self.held_for_ci = True
 
         queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}', login=loop["read_token"])
-        if (isinstance(queued, dict) and queued.get("mergeable_state") == "dirty"
-                and (queued.get("head") or {}).get("sha") == head):
+        # A closed or draft PR is not held here: the claim's eligibility wait covers it.
+        if _conflicts_at_head(queued, head):
             return hold("conflicts with its base, so GitHub runs no CI on it")
         checks = ci.gating(ci.read(loop, head), config.required_checks(loop))
         if checks is None:

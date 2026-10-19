@@ -481,6 +481,19 @@ class ProductionTurn(unittest.TestCase):
         self.assertEqual((row["state"], self.seen), ("cancelled", {}))   # never a late review
         self.assertIn("CI did not finish", row["error"])
 
+    def test_a_draft_or_closed_conflicted_pr_is_not_given_up_by_the_conflict_hold(self):
+        # #1003: the conflict hold applies to an open, non-draft PR only. A draft that is
+        # dirty, past the CI wait, with green checks must not be cancelled as "conflicts".
+        old = time.time() - run_supervisor.CI_WAIT_MAX_S - 1
+        for name, extra in (("draft", {"draft": True}), ("closed", {"state": "closed"})):
+            with self.subTest(name):
+                self.setUp()
+                pr = {"number": 8, "state": "open", "draft": False, "mergeable_state": "dirty",
+                      "head": {"sha": HEAD, "ref": "fix-8"}, "user": {"login": "fixer"}, **extra}
+                _, row = self.run_shadow([], pr=pr, created=old)
+                self.assertNotIn("conflicts with its base", row["error"] or "", row)
+                self.assertNotIn("CI did not finish", row["error"] or "", row)
+
     def test_green_ci_reviews_and_reads_the_head_it_reviews(self):
         _, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True,
                                    "denial": ""}])
