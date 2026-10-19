@@ -77,6 +77,23 @@ For ordinary PR writes, `broker.authorize` verifies:
 
 The optional Desktop page's backend routes (`loops`, `stats`, `now`, `overview`, `pr`, `health`, `settings`) are read-only: they read the loop's config, the run ledger and — for `health` — the installation's own files (profiles, the cron store, the venvs), and none writes. `health` runs `doctor`'s checks **offline** by default, so the checks that would need the network report themselves unprobed instead of reaching out; `pr` carries the host's own next-step line and what the ledger recorded, never a run's error text or a turn's output. The ledger is opened through the same read-only connection policy the other read-only views use (`run_supervisor.read_only_connect`): no migration, and no `-wal`/`-shm` created for a ledger that has none. **One exception, and it is local-only:** `health?probe=1` reads the loop's own tokens and makes GitHub reads for the hook, expiry and scope checks (the same set `hermes dk doctor` reads). It answers only a caller on this machine — a non-loopback peer, or any forwarding header at all (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`; presence counts, so an empty value refuses too) is refused with 403 before a token is opened — because the dashboard server is the surface Caddy exposes off-host. Its renderer half imports only the Desktop SDK and React (Hermes's catalog lint enforces this).
 
+**Desktop invalidation socket (#647):** `/api/plugins/diaktoros/events` is a
+read-only WebSocket, explicitly admitted with Hermes's `_ws_auth_ok` before
+accepting or starting its watcher. Native grants and token credentials are
+validated by the host; no new credential, URL construction, or transport is
+introduced. Admission failures close with policy violation. The watcher reads
+bounded loop config JSON solely for state-root discovery and filesystem metadata
+for ledger/WAL/config/state changes; it opens no database or token file, performs
+no network request and makes no writes. Hints contain only a fixed event/version,
+never filenames, contents, errors or credentials. Authenticated clients receive
+an initial hint and coalesced change hints, not authoritative data. The renderer
+invalidates existing server queries and uses their validated REST results;
+existing polling, stale disclosures and unavailable semantics remain intact.
+This does not authorize any operation or change write policy, navigation or
+notification behavior. OAuth and all host-isolated user plugin APIs currently
+cannot use this SDK socket and retain polling/on-demand reads; the host proxy
+forwards HTTP only, not WebSocket upgrades. In-process plugin APIs support it.
+
 **The page's ledger write (#371):** `POST /retry` re-arms the run `hermes dk retry` would re-arm. It is not a second decision engine — the selection is `retry_action`'s (the newest head that still has an offerable row, the same rule the CLI runs) and the re-arm itself is `Supervisor.retry`'s, including its write-evidence and push-policy refusals. The route is behind the gateway's own auth, like every other route; it reads the body as `{loop, pr, seat, head}`, where `head` is the **confirmation** the operator saw, never a claim about the run. It re-reads the ledger rather than trusting any client state, and refuses with 409 and one bounded line in the host's words anything `retry` refuses: an uncertain run, a run with any write-ahead record, a run that is not failed/waiting/push-policy-cancelled, a superseded cancellation, a PR the watchdog's last complete listing does not show open, or a confirmation whose head has moved (it refuses rather than re-arming a different head). A retry that succeeds records the operator action and asks the host to start a worker, exactly as the CLI does. It never calls GitHub and never opens a token file: the PR-head tiebreaker and the #723 live PR read are CLI-only, so the page uses the ledger-only answer the CLI itself falls back to when its PR read fails. The page offers the control only on rows the host marks retryable, asks for confirmation every time, and shows the host's answer and the state read back from the ledger.
 
 **Confirmed webhook control (#645):** `GET /hooks` reads GitHub through `arm`'s default

@@ -703,7 +703,10 @@ inside its bounds. Its local loop selector does not navigate or change the page'
 Unreadable configurations stay named; a selected loop that disappears is marked not read rather
 than silently replaced. The pane has no mutation controls, row links, toasts or auto-navigation.
 It shares the page's validated `/now` React Query key and 30-second polling/freshness configuration,
-not a new backend route or a separate polling mechanism. Last-good timestamps, loading, unavailable,
+not a separate polling mechanism. A shared authenticated invalidation socket now
+accelerates REST refreshes after local ledger/state/config changes; the existing
+polling remains the fallback on OAuth, disconnected or unsupported sockets. Events
+carry no view data and never turn an unavailable read into verified empty. Last-good timestamps, loading, unavailable,
 verified-empty and stale disclosures remain visible; missing ledgers are unavailable, not empty.
 Successful reads expire after 60 seconds even if refresh hangs or the wall clock moves backward.
 Run reasons describe the recorded state, not new remedies inferred by the pane. Use the page for

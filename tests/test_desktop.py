@@ -554,6 +554,7 @@ DASHBOARD_ROUTES = {"/loops", "/stats", "/now", "/overview", "/pr", "/health", "
 # Confirmed writes only: retry, hook pause/resume, and host-owned one-shot escalation.
 # Review/drain previews are refusals until the core can bind a safe identity.
 DASHBOARD_WRITE_ROUTES = {"/retry", "/hooks", "/actions"}
+DASHBOARD_SOCKET_ROUTES = {"/events"}
 
 
 class RouteListing(unittest.TestCase):
@@ -568,16 +569,17 @@ class RouteListing(unittest.TestCase):
     def test_every_route_is_a_listed_get_except_the_one_confirmed_write(self):
         found = self.decorators()
         self.assertTrue(found)
-        writes = {path for verb, path in found if verb != "get"}
+        writes = {path for verb, path in found if verb == "post"}
         self.assertEqual(writes, DASHBOARD_WRITE_ROUTES)
-        self.assertEqual({verb for verb, _ in found}, {"get", "post"})
+        self.assertEqual({verb for verb, _ in found}, {"get", "post", "websocket"})
+        self.assertEqual({path for verb, path in found if verb == "websocket"}, DASHBOARD_SOCKET_ROUTES)
         for verb, path in found:
             if verb == "post":
                 self.assertIn(path, DASHBOARD_WRITE_ROUTES)
         paths = [path for _, path in found]
         self.assertEqual(len(found), len(set(found)))
         self.assertEqual({path for path in paths if paths.count(path) > 1}, {"/hooks", "/actions"})
-        self.assertEqual(set(paths), DASHBOARD_ROUTES | DASHBOARD_WRITE_ROUTES)
+        self.assertEqual(set(paths), DASHBOARD_ROUTES | DASHBOARD_WRITE_ROUTES | DASHBOARD_SOCKET_ROUTES)
 
     def test_no_route_is_registered_another_way(self):
         text = self.source()
@@ -598,12 +600,15 @@ class Routes(unittest.TestCase):
 
     def test_reads_are_get_and_the_one_write_is_a_mapped_post(self):
         from fastapi import HTTPException
-        verbs = {(m, route.path) for route in self.api.router.routes for m in route.methods}
+        verbs = {(m, route.path) for route in self.api.router.routes for m in getattr(route, "methods", ())}
         self.assertEqual({method for method, _ in verbs}, {"GET", "POST"})
         self.assertEqual({path for method, path in verbs if method == "POST"},
                          DASHBOARD_WRITE_ROUTES)
         paths = {route.path for route in self.api.router.routes}
-        self.assertEqual(paths, DASHBOARD_ROUTES | DASHBOARD_WRITE_ROUTES)
+        self.assertEqual(paths, DASHBOARD_ROUTES | DASHBOARD_WRITE_ROUTES | DASHBOARD_SOCKET_ROUTES)
+        from fastapi.routing import APIWebSocketRoute
+        self.assertEqual({r.path for r in self.api.router.routes if isinstance(r, APIWebSocketRoute)},
+                         DASHBOARD_SOCKET_ROUTES)
         with mock.patch.object(desktop_api, "now_view", side_effect=desktop_api.NotFound("no")), \
              self.assertRaises(HTTPException) as caught:
             self.api.now("x")

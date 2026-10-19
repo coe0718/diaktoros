@@ -56,6 +56,42 @@ The page and chip expire `/now` reads at 60 seconds and loop-discovery reads at 
 
 Native Desktop render verification is still required: light/dark themes, narrow layouts, chip tooltip/action, and hot reload. Unified-package Desktop code is copied at boot or Settings → Capabilities → Plugins → Rescan, not read directly from the package source. A loop whose config file does not load is named by `/loops` and `/overview` (`unreadable: true`, empty `repo`, a bounded `reason`) and renders as `config unreadable` (fix the file), distinct from `not read` (a configured loop this read did not name: wait or retry); the Node harness covers both, but the native render of that state is not yet checked.
 
+### Socket invalidation (#647)
+
+The plugin registers one SDK `ctx.socket('/events', ...)` subscription, shared by
+page, pane and chip through the app query cache. The authenticated backend sends
+only `{"event":"invalidate","version":1}` (including once on each connection).
+It never sends replacement view data: the existing validated REST readers fetch
+again. Only server-query namespaces are invalidated; the client-only focus key
+is untouched. SDK reconnect/backoff and profile switching remain host-owned.
+
+While at least one socket is connected, one scanner per app/home samples file
+metadata every second: ledger and WAL (not reader-mutated SHM), loop configs,
+state roots, pacing/runtime, hooks and host config. This detects workers outside
+the dashboard without requiring them to publish events. Config JSON is bounded
+and read only to discover custom state roots; token files are never opened.
+Scans cap entries at 4096 and config bytes at 1 MiB; overflow conservatively
+invalidates each interval. A socket has at most one pending hint. The last socket
+leaving cancels and joins the scanner, including in-flight thread IO; server
+cancellation also joins socket tasks. Unavailable metadata cannot establish
+view availability: REST and existing stale/unavailable states remain decisive.
+
+Polling is always retained: now/overview/hooks every 30 seconds and stats every
+60 seconds, with other views retaining their existing on-demand refresh behavior.
+OAuth, absent/no-op SDK sockets, refused auth, host-isolated plugin APIs
+(which currently lack WebSocket forwarding, including secondary profiles), and disconnects degrade to
+existing polling/on-demand reads. There is no new realtime-freshness guarantee.
+The new backend route requires a future authorized backend restart to deploy;
+no live restart or install is part of development acceptance.
+
+`test_desktop_events.py` exercises real temporary SQLite WAL/state changes and
+FastAPI WebSocket admission/disconnect/cancellation. The Node behavior suite
+also supports real TanStack QueryClient/QueryObserver coverage when
+`DIAKTOROS_QUERY_CORE` points to its ESM entry: shared page/pane REST refresh,
+missed-change repair on reconnect, polling fallback and cleanup. Without that
+explicit dependency, those additional real-cache cases are not run. Neither
+fixture suite establishes full Electron/native-grant integration.
+
 ### Boundary and regression suite
 
 ```sh

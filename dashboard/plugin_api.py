@@ -19,11 +19,18 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:          # Hermes imports this file by path, not as a package
     sys.path.insert(0, str(_ROOT))
 
-from fastapi import APIRouter, Body, HTTPException, Request  # noqa: E402
+from fastapi import APIRouter, Body, HTTPException, Request, WebSocket  # noqa: E402
 
-from diaktoros import desktop_api  # noqa: E402
+from diaktoros import desktop_api, desktop_events  # noqa: E402
 
 router = APIRouter()
+
+
+@router.websocket("/events")
+async def events(websocket: WebSocket):
+    """Plugin-scoped SDK transport; host consent/scope plus explicit WS authentication."""
+    await desktop_events.serve(websocket)
+
 
 
 def _answer(fn, *args):
