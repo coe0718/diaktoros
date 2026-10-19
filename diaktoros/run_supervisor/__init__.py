@@ -2610,6 +2610,10 @@ class Supervisor(records.LedgerRecords):
             self._ci_hold(turn)
             if turn.error:
                 return
+        if row['seat'] == SHADOW:
+            self._shadow_ci_gate(turn)
+            if turn.error:
+                return
         launch = self._prepare_launch(turn)
         if launch is None:
             return
@@ -2766,6 +2770,49 @@ class Supervisor(records.LedgerRecords):
                              if checks.missing else
                              f"{len(checks.pending)} check(s) still running or not reported"))[:600]
             self.held_for_ci = True
+
+    def _shadow_ci_gate(self, turn: _Turn) -> None:
+        """A shadow review follows the reviewer's CI rules, strictly (#218): it waits, nothing
+        spent, while the PR conflicts or a required check is running, cancelled, missing or
+        unreadable; and it never reviews a red head, which it gives up (cancelled). Stricter
+        than the reviewer on purpose: running checks hold it whatever ``review_after_ci`` says,
+        a red head is never reviewed (the reviewer's is, once the fixer's CI-fix budget is
+        spent), and past ``CI_WAIT_MAX_S`` with CI unfinished it gives the head up rather than
+        review it. A shadow verdict is a sample of a model, so it is taken only on code CI
+        passed. Sets ``turn.error``."""
+        from .. import ci, config, gh
+        row, loop = turn.row, turn.loop
+        head = row['head']
+
+        def hold(why: str) -> None:
+            if time.time() - row['created'] >= CI_WAIT_MAX_S:
+                turn.cancel = True
+                turn.error = (f"shadow review skipped: CI did not finish at {head[:7]} within "
+                              f"{CI_WAIT_MAX_S // 60} min ({why})")[:600]
+                return
+            turn.paced_until = time.time() + CI_POLL_S
+            turn.error = f"{CI_HOLD} on {head[:7]} — {why}"[:600]
+            self.held_for_ci = True
+
+        queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}', login=loop["read_token"])
+        if (isinstance(queued, dict) and queued.get("mergeable_state") == "dirty"
+                and (queued.get("head") or {}).get("sha") == head):
+            return hold("conflicts with its base, so GitHub runs no CI on it")
+        checks = ci.gating(ci.read(loop, head), config.required_checks(loop))
+        if checks is None:
+            return hold("its checks could not be read")
+        if checks.failed:
+            turn.cancel = True
+            turn.error = (f"shadow review skipped: CI failed at {head[:7]} "
+                          f"({ci._names(checks.failed[:5])}); a shadow never reviews a red "
+                          "head — the fixed head gets its own")[:600]
+            return
+        if checks.cancelled:
+            return hold(f"{len(checks.cancelled)} check(s) cancelled")
+        if checks.missing:
+            return hold(f"{len(checks.missing)} required check(s) never reported")
+        if checks.pending:
+            return hold(f"{len(checks.pending)} check(s) still running")
 
     def _prepare_launch(self, turn: _Turn) -> _Launch | None:
         """What the turn is given: its prompt, its broker scope, and the change it sees.

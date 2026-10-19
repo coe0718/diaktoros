@@ -20,10 +20,11 @@ from contextlib import closing
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from diaktoros import config, gate, gh, run_supervisor, seat_model, stats, trusted_turn  # noqa: E402
+from diaktoros import ci, config, gate, gh, run_supervisor, seat_model, stats, trusted_turn  # noqa: E402
 from diaktoros.run_supervisor import Supervisor, pr_facts, turn_prompts  # noqa: E402
 
 HEAD = "a" * 40
+GREEN = ci.CIState(passed=["tests"])
 RAW = {"id": "widgets", "repo": "acme/widgets", "fixers": ["fixer"], "reviewers": ["reviewer"],
        "read_token": "reader",
        "seats": {"reviewer": {"profile": "rev", "route": "r"},
@@ -366,7 +367,7 @@ class ProductionTurn(unittest.TestCase):
                                    key="k", model="grok-x", api_mode="chat_completions",
                                    proxy_model="", client_identity="")
 
-    def run_shadow(self, submissions, reviews=(), rc=0):
+    def run_shadow(self, submissions, reviews=(), rc=0, checks=GREEN, pr=None, created=None):
         with mock.patch.object(Supervisor, "_spawn"), \
                 mock.patch.object(config, "by_repo", return_value=self.loop):
             gate.enqueue_isolated(self.loop, "reviewer", 8, HEAD)
@@ -378,6 +379,8 @@ class ProductionTurn(unittest.TestCase):
         with closing(sqlite3.connect(sup.db)) as con, con:
             con.execute("UPDATE runs SET state='launching', owner='w', launch_intent=1 WHERE id=?",
                         (row["id"],))
+            if created is not None:
+                con.execute("UPDATE runs SET created=? WHERE id=?", (created, row["id"]))
         self.seen = {}
 
         def turn(loop, scope, **kwargs):
@@ -389,9 +392,15 @@ class ProductionTurn(unittest.TestCase):
         def prompt(loop, row, reviews, marker=None, change=None):
             self.seen.update(prompt_seat=row["seat"], reviews=list(reviews))
             return "PROMPT"
-        pr = {"number": 8, "state": "open", "draft": False,
-              "head": {"sha": HEAD, "ref": "fix-8"}, "user": {"login": "fixer"}}
+        pr = pr or {"number": 8, "state": "open", "draft": False,
+                    "head": {"sha": HEAD, "ref": "fix-8"}, "user": {"login": "fixer"}}
+        self.ci_reads = []
+
+        def read(loop, head):
+            self.ci_reads.append(head)
+            return checks
         with mock.patch.object(config, "by_repo", return_value=self.loop), \
+                mock.patch.object(ci, "read", side_effect=read), \
                 mock.patch.object(seat_model, "load_runtime", return_value={
                     "source": "/x", "venv": "/x", "runtime": "/x", "rust": "/x"}), \
                 mock.patch.object(seat_model, "resolve_seat", return_value=self.inference) as resolved, \
@@ -425,6 +434,58 @@ class ProductionTurn(unittest.TestCase):
         got = sup.shadow_reviews("acme/widgets", 8)
         self.assertEqual([(r["verdict"], r["model"], r["body"]) for r in got],
                          [("REQUEST_CHANGES", "grok-x", "F1: a.py:1: x")])
+
+    def test_the_shadow_waits_for_ci_like_the_reviewer_and_spends_nothing(self):
+        # A shadow review is compared with the reviewer's, who never reviews a head CI is still
+        # deciding: running, cancelled, missing or unreadable checks hold it, nothing launched.
+        for name, checks in (("running", ci.CIState(pending=["tests"])),
+                             ("cancelled", ci.CIState(cancelled=["tests"])),
+                             ("unreadable", None)):
+            with self.subTest(name):
+                self.setUp()
+                sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}], checks=checks)
+                self.assertEqual(self.seen, {}, "no shadow turn launched")
+                self.assertEqual(row["state"], "waiting")
+                self.assertTrue(row["error"].startswith(run_supervisor.CI_HOLD), row["error"])
+                self.assertEqual(row["retries"], 0)
+                self.assertEqual(sup.shadow_reviews(), [])
+
+    def test_a_required_check_that_never_reported_holds_the_shadow(self):
+        # Review on #1002: the loop names "tests"; only "lint" reported, so "tests" is missing.
+        self.loop = {**self.loop, "required_checks": ["tests"]}
+        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
+                                   checks=ci.CIState(passed=["lint"]))
+        self.assertEqual(self.seen, {}, "no shadow turn launched")
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 0))
+        self.assertTrue(row["error"].startswith(run_supervisor.CI_HOLD), row["error"])
+        self.assertIn("never reported", row["error"])
+        self.assertEqual(sup.shadow_reviews(), [])
+
+    def test_the_shadow_never_reviews_a_red_head(self):
+        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
+                                   checks=ci.CIState(failed=["tests"], passed=["lint"]))
+        self.assertEqual(self.seen, {})
+        self.assertEqual(row["state"], "cancelled")
+        self.assertIn("CI failed", row["error"])
+        self.assertEqual(sup.shadow_reviews(), [])
+
+    def test_a_conflicted_head_is_held_and_unfinished_ci_past_the_wait_is_given_up(self):
+        dirty = {"number": 8, "state": "open", "draft": False, "mergeable_state": "dirty",
+                 "head": {"sha": HEAD, "ref": "fix-8"}, "user": {"login": "fixer"}}
+        _, row = self.run_shadow([], pr=dirty)
+        self.assertEqual((row["state"], self.seen), ("waiting", {}))
+        self.assertIn("conflicts with its base", row["error"])
+        self.setUp()
+        _, row = self.run_shadow([], checks=ci.CIState(pending=["tests"]),
+                                 created=time.time() - run_supervisor.CI_WAIT_MAX_S - 1)
+        self.assertEqual((row["state"], self.seen), ("cancelled", {}))   # never a late review
+        self.assertIn("CI did not finish", row["error"])
+
+    def test_green_ci_reviews_and_reads_the_head_it_reviews(self):
+        _, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok", "authorized": True,
+                                   "denial": ""}])
+        self.assertEqual(row["state"], "succeeded", row)
+        self.assertEqual(self.ci_reads, [HEAD])
 
     def test_a_shadow_that_submits_nothing_fails_once_and_is_not_retried(self):
         # #218: grok-4.7's first live shadow ran out of steps, exited 1, and was retried three
