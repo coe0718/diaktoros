@@ -25,7 +25,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diaktoros import cli, config, gate, gh, ledger, run_supervisor  # noqa: E402
+from diaktoros import cli, config, gate, gh, ledger, run_supervisor, seat_model  # noqa: E402
 from diaktoros.run_supervisor import pr_facts  # noqa: E402
 from diaktoros.run_supervisor import (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED,  # noqa: E402
                                         Supervisor, describe_run, read_only_view)
@@ -299,6 +299,69 @@ class CancelledFixer(unittest.TestCase):
         # The command it prints is one `retry` can act on: it finds the row.
         code, out = self.cli(cli.cmd_retry, loop="widgets", pr=7, seat="issue_fixer")
         self.assertNotIn("no isolated run on record", out)
+
+    def issue_loop(self, *, triage=True, label=True, push=True):
+        """A loop as the worker reads it, with each ``issue_fixes_enabled`` condition switchable."""
+        return {"id": "widgets", "repo": REPO, "base": "main", "unattended_fixer_push": push,
+                "triage": {**({"route": "t"} if triage else {}),
+                           **({"fix_label": "fix-me"} if label else {})}}
+
+    def issue_fix_run_id(self):
+        self.sup.submit("fix-1", REPO, 7, HEAD, "issue_fixer")
+        with ledger.connect(self.db) as con:
+            return con.execute("SELECT id FROM runs WHERE seat='issue_fixer'").fetchone()[0]
+
+    def test_the_worker_names_the_issue_fix_condition_that_failed(self):
+        # #980: every failure used to be recorded as "fixer push revoked", even with pushes on.
+        cases = ((dict(triage=False), "triage is off"),
+                 (dict(label=False), "no fix label is set"),
+                 (dict(push=False), "unattended fixer pushes are off"),
+                 (dict(triage=False, push=False), "triage is off and unattended fixer pushes are off"))
+        for kwargs, cause in cases:
+            with self.subTest(cause=cause):
+                with ledger.connect(self.db) as con:
+                    con.execute("DELETE FROM runs")
+                run_id = self.issue_fix_run_id()
+                with ledger.connect(self.db) as con:
+                    con.execute("UPDATE runs SET state='launching', owner='w', launch_intent=1, "
+                                "generation=COALESCE(NULLIF(generation, ''), 'g1')")
+                with mock.patch.object(config, "by_repo", return_value=self.issue_loop(**kwargs)), \
+                        mock.patch.object(seat_model, "load_runtime",
+                                          return_value={}), \
+                        mock.patch.object(self.sup, "recover"):
+                    self.sup._run_production(run_id, "w")
+                row = self.row_of("issue_fixer")
+                self.assertEqual(row["state"], "cancelled")
+                self.assertIn(cause, row["error"])
+                self.assertNotIn("fixer push revoked", row["error"])
+                if kwargs == dict(triage=False):
+                    self.assertNotIn("fix label", row["error"])
+                    self.assertNotIn("fixer pushes are off", row["error"])
+                # The cancellation is one the view lists and `retry` recovers, remedy included.
+                self.assertTrue(run_supervisor.policy_cancelled(row["error"]))
+                [view] = read_only_view(self.db, REPO, 7)
+                self.assertIn(cause, describe_run(view, "widgets"))
+                self.assertIn("--seat issue_fixer", describe_run(view, "widgets"))
+
+    def test_retry_of_an_issue_fix_is_refused_while_issue_fixes_are_off(self):
+        run_id = self.issue_fix_run_id()
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='cancelled', error=? WHERE id=?",
+                        (run_supervisor.issue_fix_off_reason(self.issue_loop(label=False))
+                         + run_supervisor.ISSUE_FIX_LAUNCH_SUFFIX, run_id))
+        # Pushes are on (self.pushes(True)), but triage has no fix label: still refused, with
+        # the failed condition; the row stays cancelled.
+        with mock.patch.object(config, "by_repo", return_value=self.issue_loop(label=False)):
+            with self.assertRaises(ValueError) as caught:
+                self.sup.retry(run_id)
+            code, out = self.cli(cli.cmd_retry, loop="widgets", pr=7, seat="issue_fixer")
+        self.assertIn("issue fixes are off: no fix label is set", str(caught.exception))
+        self.assertEqual(code, 2)
+        self.assertIn("issue fixes are off: no fix label is set", out)
+        self.assertEqual(self.row_of("issue_fixer")["state"], "cancelled")
+        # Once they are on, the same retry re-arms it.
+        with mock.patch.object(config, "by_repo", return_value=self.issue_loop()):
+            self.assertEqual(self.sup.retry(run_id), "pending")
 
     def test_a_superseded_cancellation_stays_out_of_the_view(self):
         self.sup.submit("fix-1", REPO, 7, HEAD, "fixer")
