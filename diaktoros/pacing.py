@@ -326,8 +326,9 @@ def seats(loop: dict, now: float | None = None) -> dict:
                        "tokens_cap": config.seat_daily_tokens(loop, seat)}
                 for seat in names}
     # The triage seat is paced on the same path (the supervisor holds its account on a 429), so
-    # its profile belongs here too (#806); a loop without triage has none ("").
-    profiles = ({config.seat_profile(loop, seat) for seat in ("reviewer", "fixer", "triage")}
+    # its profile belongs here too (#806); a loop without triage has none (""). A shadow review
+    # turn (#218) is paced the same way under its own seat, so the shadow profile does too (#963).
+    profiles = ({config.seat_profile(loop, seat) for seat in ("reviewer", "fixer", "triage", "shadow")}
                 | {str((loop.get("adjudicator") or {}).get("profile") or "")}) - {""}
     holds = []
     for key, entry in sorted((_load(path()).get("holds") or {}).items()):
