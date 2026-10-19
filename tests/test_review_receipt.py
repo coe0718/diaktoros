@@ -213,6 +213,24 @@ class ReceiptTests(unittest.TestCase):
         ineligible = self.deny_during_the_write('closed-after-post')
         self.assertNotEqual(retarget, ineligible)
 
+    def test_every_post_post_failure_is_marked_as_possibly_posted(self):
+        """#825: the broker answers by type, so each failure after the POST must carry it."""
+        for mode in ('wrong-id', 'readback-failed', 'lost-post', 'stale-after-post'):
+            with self.subTest(mode):
+                self.setUp()
+                self.mode = mode
+                with mock.patch.object(gh, 'api', side_effect=self.api):
+                    with self.assertRaises(review_receipt.ReviewPostUnconfirmed):
+                        review_receipt.submit(self.loop, self.scope, self.ledger,
+                                              'APPROVE', 'reviewed')
+                self.assertEqual(self.posts, 1)
+        self.setUp()
+        self.mode = 'stale-before-post'
+        with mock.patch.object(gh, 'api', side_effect=self.api):
+            with self.assertRaises(review_receipt.ReceiptDenied) as c:
+                review_receipt.submit(self.loop, self.scope, self.ledger, 'APPROVE', 'reviewed')
+        self.assertNotIsInstance(c.exception, review_receipt.ReviewPostUnconfirmed)
+
     def assert_uncertain_after_post(self):
         with mock.patch.object(gh, 'api', side_effect=self.api):
             with self.assertRaises((review_receipt.ReceiptDenied, TimeoutError)):
