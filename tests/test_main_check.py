@@ -122,6 +122,24 @@ class MainCheck(unittest.TestCase):
         (_args, kw), = self.notices
         self.assertIn("partial", kw["outcome"])
 
+    def assert_unreported_total_is_not_truncation(self, total):
+        no_total = {"commits": COMPARE["commits"], "total_commits": total}
+        self.assertFalse(self.run_sweep("a" * 40, GREEN))
+        self.assertTrue(self.run_sweep("b" * 40, RED, compare=no_total))
+        (_args, kw), = self.notices
+        text = kw["outcome"]
+        self.assertIn("did not report a total commit count", text)
+        self.assertIn("may be incomplete", text)
+        self.assertIn("3 commits read", text)
+        for banned in ("truncated", "are missing", "not the full list", "of True"):
+            self.assertNotIn(banned, text)
+
+    def test_missing_total_does_not_claim_truncation(self):
+        self.assert_unreported_total_is_not_truncation(None)
+
+    def test_bool_total_is_unreported_not_a_count(self):
+        self.assert_unreported_total_is_not_truncation(True)
+
     def test_unnamed_merges_notice_names_no_pr_zero(self):
         """Through the real sweep and notify: no merges to name means no #0 and no /pull/0."""
         sent = []
