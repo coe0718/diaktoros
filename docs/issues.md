@@ -307,7 +307,10 @@ No run row usually means the gate rejected the event or could not enqueue; verif
 runtime, hook delivery and exact author/sender. If durable work exists, inspect it
 before redelivery. Proven pre-write `failed`/`waiting` work can use `retry --pr` with
 the issue number; `--seat triage` or `--seat issue_fixer` restricts the retry to that
-seat's eligible problem runs at the selected ledgered head/base. Superseded cancellations,
+seat's eligible problem runs at the selected ledgered head/base. An issue fix cancelled
+because issue fixes went off says which condition failed (triage off, no fix label,
+unattended fixer pushes off), and `retry` refuses it with the same reason until it is
+fixed. Superseded cancellations,
 uncertain runs and reconciled runs cannot be retried. **Any** `triage_results` or
 `issue_fixes` row prohibits re-arm, even if its state is `nothing`, `skipped` or `denied`;
 other review/push/ruling write evidence also prohibits replay. Inspect the queries above

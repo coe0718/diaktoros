@@ -258,7 +258,36 @@ _FIXER_NOT_ADMITTED_BEFORE_97 = (
     "fixer push not admitted: unattended fixer pushes were off when this verdict was enqueued, "
     "and a later opt-in cannot authorize this run — no turn launched; this head needs a manual "
     "fix or a new commit")
-POLICY_CANCELLATIONS = (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED, _FIXER_NOT_ADMITTED_BEFORE_97)
+# An issue fix the worker cancels (or `retry` refuses) because ``config.issue_fixes_enabled`` is
+# false names the condition(s) that failed (#980), not the fixer-push cause alone. One wording
+# per combination, so the exact-match list below stays exact.
+ISSUE_FIX_OFF = "issue fixes are off"
+ISSUE_FIX_LAUNCH_SUFFIX = " — no turn launched"
+
+
+def issue_fix_off_reason(loop: dict) -> str:
+    """Why issue fixes are off for ``loop`` (the failed conditions of
+    ``config.issue_fixes_enabled``), or '' when they are on."""
+    from .. import config
+    failed = config.issue_fixes_off(loop)
+    if not failed:
+        return ""
+    return f"{ISSUE_FIX_OFF}: " + " and ".join(
+        why for key, why in config.ISSUE_FIX_CONDITIONS if key in failed)
+
+
+def _issue_fix_cancellations() -> tuple[str, ...]:
+    import itertools
+    from .. import config
+    whys = [why for _, why in config.ISSUE_FIX_CONDITIONS]
+    return tuple(f"{ISSUE_FIX_OFF}: " + " and ".join(combo) + ISSUE_FIX_LAUNCH_SUFFIX
+                 for size in range(1, len(whys) + 1)
+                 for combo in itertools.combinations(whys, size))
+
+
+ISSUE_FIX_CANCELLATIONS = _issue_fix_cancellations()
+POLICY_CANCELLATIONS = (FIXER_NOT_ADMITTED, FIXER_PUSH_REVOKED, _FIXER_NOT_ADMITTED_BEFORE_97,
+                        *ISSUE_FIX_CANCELLATIONS)
 
 
 class LedgerMissing(HostStateGone):
@@ -647,6 +676,7 @@ def policy_hold(error: object) -> bool:
     """
     return isinstance(error, str) and (error.startswith(FIXER_NOT_ADMITTED.split(":")[0])
                                        or error.startswith(FIXER_PUSH_REVOKED.split(":")[0])
+                                       or error.startswith(ISSUE_FIX_OFF + ":")
                                        or error.startswith(FIXER_PUSH_OFF))
 
 
@@ -732,10 +762,11 @@ def runs_view(con, repo: str | None = None, pr: int | None = None) -> list[dict]
     # for its head until an operator acts, so it is listed too (review on #97); a superseded
     # cancellation (head moved, PR closed) is not, since a new head gets its own turn.
     marks = ','.join('?' * len(POLICY_CANCELLATIONS))
-    held = [FIXER_NOT_ADMITTED.split(":")[0] + "%", FIXER_PUSH_REVOKED.split(":")[0] + "%"]
+    held = [FIXER_NOT_ADMITTED.split(":")[0] + "%", FIXER_PUSH_REVOKED.split(":")[0] + "%",
+            ISSUE_FIX_OFF + ":%"]
     where, args = ("(r.state IN ('failed','uncertain','waiting') OR "
                    f"(r.state='cancelled' AND r.error IN ({marks})) OR "
-                   f"(r.state='failed' AND (r.error LIKE ? OR r.error LIKE ?)))"), \
+                   f"(r.state='failed' AND (r.error LIKE ? OR r.error LIKE ? OR r.error LIKE ?)))"), \
         list(POLICY_CANCELLATIONS) + held
     # A shadow run (#218) is never one to act on: status, explain and the Desktop's stuck list
     # leave it out, and `explain` shows shadow reviews on their own line.
@@ -1819,8 +1850,22 @@ class Supervisor(records.LedgerRecords):
         with self._connect() as con:
             first = con.execute('SELECT repo,seat FROM runs WHERE id=?', (run_id,)).fetchone()
         fixer = first is not None and first['seat'] == 'fixer'
-        with (config.push_policy_lock() if fixer else nullcontext()), self._connect() as con:
+        # An issue fix publishes under the same push policy (and triage and a fix label, #980).
+        issue_fix = first is not None and first['seat'] == 'issue_fixer'
+        with (config.push_policy_lock() if fixer or issue_fix else nullcontext()), \
+                self._connect() as con:
             admitted, policy_off = None, ''
+            if issue_fix:
+                try:
+                    loop = config.by_repo(first['repo'])
+                    reason = (issue_fix_off_reason(loop) if loop is not None
+                              else f"no loop is configured for {first['repo']}")
+                except config.ConfigError as exc:
+                    reason = f"the loop configuration for {first['repo']} is unusable ({exc})"
+                if reason:
+                    policy_off = (f"refused: {reason}, so an issue fix could not publish; turn "
+                                  "it on (triage with a fix label, and unattended fixer "
+                                  "pushes), then retry")
             if fixer:
                 try:
                     loop = config.by_repo(first['repo'])
@@ -2585,8 +2630,9 @@ class Supervisor(records.LedgerRecords):
                       if row['seat'] not in ('triage', 'issue_fixer', SHADOW) else None)
         if row['seat'] == 'issue_fixer' and not config.issue_fixes_enabled(loop):
             # The policy may have changed since the gate: a turn that could not publish is
-            # never started (the broker would refuse its write anyway).
-            turn.error = FIXER_PUSH_REVOKED
+            # never started (the broker would refuse its write anyway). The cause names the
+            # condition that failed, not the fixer-push one alone (#980).
+            turn.error = issue_fix_off_reason(loop) + ISSUE_FIX_LAUNCH_SUFFIX
             return
         # The seat's own profile decides its model and account (#32). Resolved host-side,
         # before any GitHub read: an unresolvable seat is held here with the reason, and never

@@ -891,11 +891,25 @@ def triage_login(loop: dict) -> str:
                or "").lower()
 
 
+# The conditions ``issue_fixes_enabled`` needs: (key, what is wrong when it fails).
+# ``issue_fixes_off`` is the one place that tests them.
+ISSUE_FIX_CONDITIONS = (("triage", "triage is off"),
+                        ("fix_label", "no fix label is set"),
+                        ("push", "unattended fixer pushes are off"))
+
+
+def issue_fixes_off(loop: dict) -> tuple[str, ...]:
+    """The ``ISSUE_FIX_CONDITIONS`` keys that fail for this loop; empty when issue fixes are on."""
+    ok = {"triage": triage_enabled(loop),
+          "fix_label": bool((loop.get("triage") or {}).get("fix_label")),
+          "push": unattended_fixer_push_enabled(loop)}
+    return tuple(key for key, _ in ISSUE_FIX_CONDITIONS if not ok[key])
+
+
 def issue_fixes_enabled(loop: dict) -> bool:
     """Whether a maintainer's ``fix_label`` hands an issue to the fixer (#214) — needs triage on
     and the repository's unattended fixer pushes, which the operator opts into separately."""
-    return bool(triage_enabled(loop) and (loop.get("triage") or {}).get("fix_label")
-                and unattended_fixer_push_enabled(loop))
+    return not issue_fixes_off(loop)
 
 
 def auto_fix_labels(loop: dict) -> set[str]:
