@@ -208,6 +208,24 @@ class Proof(unittest.TestCase):
             rows = repro_proof.hunk_guard(base, new, ids, ".", run(new, ids), run)
         self.assertEqual([h["status"] for h in rows], [repro_proof.GUARDED])
 
+    def test_the_check_selects_every_non_test_python_file_and_nothing_else(self):
+        # Review on #1048 (F3): the selection rule, pinned. Every changed .py outside test paths
+        # and hidden directories is source, wherever it lives (the plugin reviews any repo, so no
+        # directory of this one is hard-coded); tests, specs, hidden dirs and non-Python are not.
+        change = ("def f():\n    return 1\n", "def f():\n    return 2\n")
+        paths = {"pkg/mod.py": True, "tool.py": True, "docs/site/build.py": True,
+                 "tests/test_x.py": False, "pkg/test_mod.py": False, "spec/a.py": False,
+                 "pkg/a_test.py": False, ".github/scripts/s.py": False, "README.md": False,
+                 "pkg/data.json": False}
+        with tempfile.TemporaryDirectory() as tmp:
+            base, new = Path(tmp) / "base", Path(tmp) / "new"
+            for root, text in ((base, change[0]), (new, change[1])):
+                for path in paths:
+                    (root / path).parent.mkdir(parents=True, exist_ok=True)
+                    (root / path).write_text(text)
+            selected = {h["path"] for h in repro_proof.source_hunks(base, new)}
+        self.assertEqual(selected, {p for p, source in paths.items() if source})
+
     def test_a_hunk_run_that_raises_is_not_checked_and_keeps_the_proof(self):
         # Shadow review of #1048: a revert that hangs the tests (a guard or a loop bound) raised
         # out of prove(), and the broker showed the reviewer "NOT RUN" for the whole proof.

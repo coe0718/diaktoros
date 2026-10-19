@@ -186,6 +186,8 @@ lines. They're told to treat an unguarded behaviour change as a missing test, un
 changes no behaviour.
 
 The check is bounded:
+- source means every changed `.py` file outside test paths (`tests/`, `test/`, `spec/`, `test_*`,
+  `*_test.*`) and hidden directories, wherever it lives in the repository;
 - comment- and blank-only hunks are skipped;
 - a source file the fix deletes is checked too, as one hunk, labelled by its original lines;
 - the largest 12 hunks are checked, within 240 s inside the fixer's turn;
