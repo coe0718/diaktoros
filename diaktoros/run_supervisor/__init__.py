@@ -2801,7 +2801,19 @@ class Supervisor(records.LedgerRecords):
             self.held_for_ci = True
 
         queued = gh.api(loop, f'/repos/{row["repo"]}/pulls/{row["pr"]}', login=loop["read_token"])
-        # A closed or draft PR is not held here: the claim's eligibility wait covers it.
+        # The claim's eligibility, re-read here because the PR may have changed since the
+        # claim (#1003): a closed PR retires the row, a draft waits for ready (the claim's
+        # wait) however old the row is, and neither is ever sampled or held as a conflict.
+        if isinstance(queued, dict) and (queued.get("head") or {}).get("sha") == head:
+            if queued.get("state") != "open":
+                turn.cancel = True
+                turn.error = "shadow review superseded: PR closed"
+                return
+            if queued.get("draft") is not False:
+                turn.paced_until = time.time() + CI_POLL_S
+                turn.error = f"{CI_HOLD} on {head[:7]} — the PR is a draft, waiting for ready"
+                self.held_for_ci = True
+                return
         if _conflicts_at_head(queued, head):
             return hold("conflicts with its base, so GitHub runs no CI on it")
         checks = ci.gating(ci.read(loop, head), config.required_checks(loop))
