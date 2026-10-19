@@ -8,9 +8,10 @@ every configured loop at once (for the status chip and the cross-loop block), ``
 host's own "what moves it" line (``run_supervisor.next_step``) plus what the ledger recorded,
 ``health`` is ``doctor``'s checks with the network reads left unprobed, and ``settings`` is the
 plugin-level form and each loop's effective answers. Never a turn's output, never a run's error
-text.
+text. ``hooks`` reads GitHub hook state with an opaque confirmation; ``hooks_action`` calls
+the shared ``arm_action`` owner used by CLI ``arm`` to pause/resume, then reads actual state.
 
-**One action, and it is a write (#371):** ``retry`` re-arms a run the CLI's ``retry`` would
+**Ledger-only action (#371):** ``retry`` re-arms a run the CLI's ``retry`` would
 re-arm. It is not a second implementation of anything: ``retry_action`` owns which run that is
 and ``Supervisor.retry`` owns re-arming it, and this function only re-reads the ledger, refuses a
 confirmation whose head has moved, and answers with the host's own words. It calls no GitHub API
@@ -22,7 +23,7 @@ from __future__ import annotations
 import pathlib
 import time
 
-from . import (config, doctor, findings, gate_decisions, pacing, retry_action, route_intent,
+from . import (arm_action, config, doctor, findings, gate_decisions, pacing, retry_action, route_intent,
                run_supervisor, stats)
 from .config import settings_form
 
@@ -48,6 +49,38 @@ class Forbidden(PermissionError):
 
 class Conflict(RuntimeError):
     """A retry the host refuses: the ledger says this run is not one to re-arm (#371)."""
+
+
+class HookRequest(BadRequest):
+    """Malformed hook selection (422), without echoing caller-supplied data."""
+
+
+def _hooks_loop(loop_id: str | None) -> dict:
+    if not isinstance(loop_id, str) or not loop_id or len(loop_id) > 200:
+        raise HookRequest('A loop id is required.')
+    try:
+        return _loop(loop_id)
+    except Exception:
+        raise Conflict('Loop configuration is unavailable; read loop state again.') from None
+
+
+def hooks_view(loop_id: str | None) -> dict:
+    """Current GitHub hook state, with no credential, hook URL or local path in the response."""
+    return arm_action.public_plan(arm_action.plan(_hooks_loop(loop_id)))
+
+
+def hooks_action_view(loop_id: str | None, action: str, confirmation: str) -> dict:
+    """Confirm and execute the same host operation as ``arm [--pause]``."""
+    if not isinstance(action, str) or action not in ('pause', 'resume'):
+        raise HookRequest('Action must be pause or resume.')
+    if (not isinstance(confirmation, str) or len(confirmation) != 64 or
+            any(c not in '0123456789abcdef' for c in confirmation)):
+        raise HookRequest('A valid hook confirmation is required.')
+    loop = _hooks_loop(loop_id)
+    try:
+        return arm_action.confirmed_perform(loop, action, confirmation)
+    except arm_action.StaleConfirmation:
+        raise Conflict('Hook confirmation is stale or unavailable; read hook state again.') from None
 
 
 # The probe reads a credential and calls GitHub, so it answers only a caller on this machine.

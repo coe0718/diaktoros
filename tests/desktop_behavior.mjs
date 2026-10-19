@@ -60,6 +60,7 @@ async function harness({ cachedAge = null } = {}) {
   const good = data => ({ data, dataUpdatedAt: time, isError: false, isFetching: false,
     isLoading: false, refetch: () => calls.push('refetch') })
   queries.loops = good({ loops: [{ id: 'fixture-loop', repo: 'fixture/repo' }] })
+  queries.hooks = good({ loop: 'fixture-loop', repo: 'fixture/repo', state: 'armed', eligible: true, confirmation: 'opaque-snapshot', reason: '', read_at: time / 1000 })
   queries.focus = good({ loop: '' })
   queries.now = good({ runs: [], counts: {}, pacing: {} })
   queries.overview = good({ loops: [overviewLoop('fixture-loop')], read_at: time / 1000 })
@@ -120,10 +121,13 @@ async function harness({ cachedAge = null } = {}) {
   await module.evaluate()
   // The page's one write (#371) is recorded on its own list, with its options, so a test can
   // assert the exact payload and that a refusal never turns into a visible success.
+  const hookCalls = []
+  let hookResult = () => Promise.reject(new Error('fixture hook result not configured'))
   const retryCalls = []
   let retryResult = { ok: false, error: new Error('fixture retry not configured') }
   module.namespace.default.register({
     rest: (path, opts) => {
+      if (path === '/hooks' && opts?.method === 'POST') { hookCalls.push(opts); return hookResult() }
       if (path === '/retry') {
         retryCalls.push(opts || {})
         return retryResult.ok ? Promise.resolve(retryResult.data) : Promise.reject(retryResult.error)
@@ -168,6 +172,7 @@ async function harness({ cachedAge = null } = {}) {
   const fail = data => ({ ...good(data), isError: true, error: new Error('fixture backend offline') })
   const loading = () => ({ ...good(undefined), isLoading: true, isFetching: true })
   return { queries, options, calls, notices, navigations, store, good, fail, loading,
+    hookCalls, hookResult: fn => { hookResult = fn },
     retryCalls, retryAnswer: data => { retryResult = { ok: true, data } },
     retryFails: error => { retryResult = { ok: false, error } },
     render, text, buttons, flatten, respond: value => { response = value },
@@ -199,6 +204,161 @@ async function harness({ cachedAge = null } = {}) {
       }
     } }
 }
+
+const hookButton = h => h.buttons(h.tree()).find(b => /^(Pause|Resume) webhook delivery$/.test(b.props.children))
+const hookDialog = h => h.flatten(h.tree()).find(n => n.type === 'ConfirmDialog' && /webhook delivery/.test(n.props.title))
+const hookView = (overrides = {}) => ({ loop: 'fixture-loop', repo: 'fixture/repo', state: 'armed', eligible: true, confirmation: 'opaque-snapshot', reason: '', read_at: 1800000000, ...overrides })
+
+for (const state of ['armed', 'paused']) {
+  test(`hooks: ${state} confirms exact payload, no optimistic state, duplicate confirm blocked`, async () => {
+    const h = await harness()
+    h.queries.hooks = h.good(hookView({ state }))
+    let finish
+    h.hookResult(() => new Promise(resolve => { finish = resolve }))
+    h.render('page')
+    hookButton(h).props.onClick()
+    const dialog = hookDialog(h)
+    assert.match(dialog.props.description, /loop fixture-loop/)
+    assert.match(dialog.props.description, /not in-flight turns/)
+    assert.match(dialog.props.description, /Paused hooks deliver no new events to queue/)
+    assert.match(dialog.props.description, /sweeper may recover events/)
+    assert.equal(h.hookCalls.length, 0)
+    const first = dialog.props.onConfirm()
+    await dialog.props.onConfirm()
+    assert.equal(h.hookCalls.length, 1)
+    const action = state === 'armed' ? 'pause' : 'resume'
+    assert.equal(JSON.stringify(h.hookCalls[0]), JSON.stringify({ method: 'POST', body: { loop: 'fixture-loop', action, confirmation: 'opaque-snapshot' } }))
+    assert.doesNotMatch(h.text(h.tree()), /Backend verified webhook delivery/)
+    finish(hookView({ state: action === 'pause' ? 'paused' : 'armed', ok: true, answer: 'Verified by host' }))
+    await first
+    assert.match(h.text(h.tree()), /Backend verified webhook delivery/)
+    assert.equal(h.queries.hooks.data.state, state, 'does not optimistically change cached status')
+    assert.equal(hookButton(h), undefined, 'consumed read cannot authorize another write')
+    assert.ok(h.calls.some(c => c?.queryKey?.[1] === 'hooks'))
+    h.queries.hooks = h.good(hookView({ state: action === 'pause' ? 'paused' : 'armed', confirmation: 'new-snapshot' }))
+    h.render('page')
+    assert.ok(hookButton(h))
+    assert.equal(h.buttons(h.tree()).some(b => /merge/i.test(String(b.props.children))), false)
+  })
+  test(`hooks: ${state} cancel and retained confirm handler send nothing`, async () => {
+    const h = await harness(); h.queries.hooks = h.good(hookView({ state })); h.render('page')
+    hookButton(h).props.onClick(); const d = hookDialog(h)
+    d.props.onClose(); await d.props.onConfirm()
+    assert.equal(hookDialog(h), undefined); assert.equal(h.hookCalls.length, 0)
+  })
+}
+
+for (const scenario of ['loading', 'first-error', 'cached-error', 'refreshing', 'stale', 'no-timestamp', 'unknown', 'ineligible', 'discovery-error', 'discovery-refresh']) {
+  test(`hooks: ${scenario} never exposes a mutation`, async () => {
+    const h = await harness(); const data = hookView()
+    if (scenario === 'loading') h.queries.hooks = h.loading()
+    if (scenario === 'first-error') h.queries.hooks = h.fail(undefined)
+    if (scenario === 'cached-error') h.queries.hooks = h.fail(data)
+    if (scenario === 'refreshing') h.queries.hooks = { ...h.good(data), isFetching: true }
+    if (scenario === 'stale') h.queries.hooks = { ...h.good(data), dataUpdatedAt: 1799999940000 }
+    if (scenario === 'no-timestamp') h.queries.hooks = { ...h.good(data), dataUpdatedAt: 0 }
+    if (scenario === 'unknown') h.queries.hooks = h.good(hookView({ state: 'unknown', eligible: false, confirmation: null }))
+    if (scenario === 'ineligible') h.queries.hooks = h.good(hookView({ eligible: false, confirmation: null }))
+    if (scenario === 'discovery-error') h.queries.loops = h.fail(h.queries.loops.data)
+    if (scenario === 'discovery-refresh') h.queries.loops.isFetching = true
+    h.render('page'); assert.equal(hookButton(h), undefined)
+    assert.equal(h.hookCalls.length, 0)
+    if (scenario === 'unknown') assert.match(h.text(h.tree()), /Loop fixture-loop · unknown/)
+  })
+}
+
+for (const changed of ['time', 'identity', 'timestamp', 'refreshing', 'error', 'loop', 'unmount']) {
+  test(`hooks: confirmation is refused after ${changed}`, async () => {
+    const h = await harness(); h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] }); h.render('page')
+    hookButton(h).props.onClick(); const confirm = hookDialog(h).props.onConfirm
+    if (changed === 'time') h.advance(60000, -3600000)
+    if (changed === 'identity') h.queries.hooks = h.good(hookView({ confirmation: 'replacement' }))
+    if (changed === 'timestamp') h.queries.hooks = { ...h.queries.hooks, dataUpdatedAt: 1800000000001 }
+    if (changed === 'refreshing') h.queries.hooks.isFetching = true
+    if (changed === 'error') h.queries.hooks = h.fail(h.queries.hooks.data)
+    if (changed === 'loop') h.buttons(h.tree()).find(b => b.props.children === 'other-loop').props.onClick()
+    if (changed === 'unmount') h.unmount(); else h.render('page')
+    await confirm(); assert.equal(h.hookCalls.length, 0)
+  })
+}
+
+for (const scenario of ['409', '422', 'network', 'malformed', 'false', 'unknown', 'wrong-state']) {
+  test(`hooks: ${scenario} write failure is bounded and requires a new read`, async () => {
+    const h = await harness()
+    h.hookResult(() => {
+      if (['409', '422', 'network'].includes(scenario)) return Promise.reject(new Error(scenario + ': {"detail":"/private/token ghp_secret"}'))
+      return Promise.resolve(scenario === 'malformed' ? {} : hookView({ ok: scenario !== 'false', answer: 'host answer', state: scenario === 'unknown' ? 'unknown' : scenario === 'wrong-state' ? 'armed' : 'paused', eligible: scenario !== 'unknown', confirmation: scenario === 'unknown' ? null : 'opaque' }))
+    })
+    h.render('page'); hookButton(h).props.onClick(); await hookDialog(h).props.onConfirm()
+    assert.doesNotMatch(h.text(h.tree()), /Backend verified webhook delivery|private\/token|ghp_secret/)
+    if (scenario === '409' || scenario === '422') assert.match(h.text(h.tree()), new RegExp('HTTP ' + scenario))
+    assert.equal(hookButton(h), undefined)
+    assert.equal(hookDialog(h), undefined)
+  })
+}
+
+test('hooks: old dialog cannot confirm or cancel a replacement confirmation', async () => {
+  const h = await harness(); h.render('page'); hookButton(h).props.onClick(); const old = hookDialog(h)
+  old.props.onClose(); hookButton(h).props.onClick(); const replacement = hookDialog(h)
+  await old.props.onConfirm(); old.props.onClose()
+  assert.equal(h.hookCalls.length, 0); assert.equal(hookDialog(h).props.description, replacement.props.description)
+  replacement.props.onClose()
+})
+
+test('hooks: late write response after loop switch never appears in another loop', async () => {
+  const h = await harness(); h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })
+  let finish; h.hookResult(() => new Promise(resolve => { finish = resolve }))
+  h.render('page'); hookButton(h).props.onClick(); const task = hookDialog(h).props.onConfirm()
+  h.buttons(h.tree()).find(b => b.props.children === 'other-loop').props.onClick()
+  finish(hookView({ ok: true, state: 'paused', answer: 'Verified' })); await task
+  assert.doesNotMatch(h.text(h.tree()), /Backend verified webhook delivery/)
+})
+
+test('hooks: malformed POST identities, status and answer fields never produce verified success', async () => {
+  const mutations = [d => { d.loop = 'other-loop' }, d => { d.ok = 'yes' }, d => { delete d.ok }, d => { d.answer = '' }, d => { d.answer = null }, d => { d.answer = 'x'.repeat(401) }, d => { d.answer = 'bad\nanswer' }, d => { d.state = 'missing' }, d => { d.read_at = Infinity }, d => { d.confirmation = 7 }, d => { d.eligible = 'yes' }, d => { d.reason = null }, d => { d.repo = null }]
+  for (const mutate of mutations) {
+    const h = await harness(); const data = hookView({ ok: true, answer: 'Verified', state: 'paused' }); mutate(data)
+    h.hookResult(() => Promise.resolve(data)); h.render('page'); hookButton(h).props.onClick()
+    await hookDialog(h).props.onConfirm()
+    assert.match(h.text(h.tree()), /hook answer could not be verified/)
+    assert.doesNotMatch(h.text(h.tree()), /Backend verified webhook delivery/)
+    assert.equal(hookButton(h), undefined)
+  }
+})
+
+test('hooks: selected loop is encoded in GET and refresh-error recovery needs verified read', async () => {
+  const h = await harness(); const id = 'loop /?&'
+  h.queries.loops = h.good({ loops: [{ id }] }); h.queries.hooks = h.fail(undefined)
+  h.render('page'); assert.equal(hookButton(h), undefined)
+  h.respond(hookView({ loop: id })); const data = await h.options.hooks.queryFn()
+  assert.equal(h.calls.at(-1), '/hooks?loop=' + encodeURIComponent(id))
+  h.queries.hooks = h.good(data); h.render('page'); assert.ok(hookButton(h))
+})
+
+test('hooks: GET validates all fields before cache and scopes encoded loop', async () => {
+  const h = await harness(); h.render('page')
+  const mutations = [d => { d.loop = 'other' }, d => { d.repo = null }, d => { d.state = 'missing' }, d => { d.eligible = 'true' }, d => { d.reason = null }, d => { d.reason = 'x'.repeat(401) }, d => { d.confirmation = '' }, d => { d.confirmation = 1 }, d => { d.confirmation = null }, d => { d.read_at = NaN }, d => { d.read_at = -1 }, d => { d.state = 'unknown' }, d => { delete d.read_at }]
+  for (const mutate of mutations) {
+    const data = hookView(); mutate(data); h.respond(data)
+    await assert.rejects(h.options.hooks.queryFn(), /Invalid hooks response/)
+  }
+  for (const data of [null, [], hookView({ state: 'unknown', eligible: true, confirmation: null })]) {
+    h.respond(data); await assert.rejects(h.options.hooks.queryFn(), /Invalid hooks response/)
+  }
+  for (const data of [hookView(), hookView({ state: 'paused' }), hookView({ state: 'unknown', eligible: false, confirmation: null })]) {
+    h.respond(data); assert.equal((await h.options.hooks.queryFn()).state, data.state)
+  }
+  assert.equal(h.calls.at(-1), '/hooks?loop=fixture-loop')
+})
+
+test('hooks: expired read stays expired across clock rollback and fresh replacement restores controls', async () => {
+  const h = await harness(); h.render('page'); assert.ok(hookButton(h))
+  h.advance(59999, -3600000); assert.ok(hookButton(h))
+  h.advance(1, 0); assert.equal(hookButton(h), undefined)
+  h.moveWall(-3600000); h.render('page'); assert.equal(hookButton(h), undefined)
+  h.queries.hooks = h.good(hookView()); h.queries.loops = h.good(h.queries.loops.data)
+  h.render('page'); assert.ok(hookButton(h)); h.unmount(); assert.equal(h.timerCount(), 0)
+})
 
 test('settings: production projection renders every schema field and dynamically added unknown type', async () => {
   const h = await harness()

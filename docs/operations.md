@@ -740,16 +740,30 @@ It refreshes every 30–60 seconds. Both halves ship **off**:
 2. **The Desktop half:** turn on **Diaktoros** under **Capabilities → Plugins**.
 
 The backend (`dashboard/plugin_api.py`, mounted at `/api/plugins/diaktoros/` behind the
-gateway's own auth) has seven GET routes: `loops`, `stats`, `now`, `overview`, `pr`, `health` and `settings`.
+gateway's own auth) has eight GET routes: `loops`, `stats`, `now`, `overview`, `pr`, `health`, `settings` and `hooks`.
 They read the loop's config, the run ledger and — for `health` — the installation's own files,
 without mutating loop state. `settings` returns the plugin form's schema and effective values plus
 each loop's effective seats, budgets and flags, so the Desktop form can render what a loop runs
 as without applying anything; a token field is a path and the file is never opened.
-Its one write is `POST /retry` with `{loop, pr, seat, head}`, the Retry button's confirmation:
+Its ledger write is `POST /retry` with `{loop, pr, seat, head}`, the Retry button's confirmation:
 it re-reads the ledger, runs the same `retry_action` / `Supervisor.retry` path `hermes dk retry`
 runs, answers 409 with the host's own reason for anything that retry refuses (including a head
 that moved since the operator confirmed), and never calls GitHub or reads a token.
-`health?probe=1` is the one route that reads a credential: the loop's own tokens, to read GitHub for
+`GET /hooks?loop=<id>` reads GitHub using `arm`'s default token resolution (the loop's
+mapped reader login, which must have hook-admin permission), returning armed, paused or unknown. Missing, mixed or
+unreadable hooks never mean paused. Only a fresh, eligible read offers Pause/Resume.
+`POST /hooks` takes `{loop, action, confirmation}` (`action` is `pause` or `resume`). The
+confirmation names the loop and consequences; the host re-reads loop identity, route targets
+and hook identity/wiring/state, rejecting a stale confirmation with 409. It calls the same
+`arm_action.perform` as `hermes dk arm --pause` / `hermes dk arm`, including resume ping,
+and reads back the resulting state. A partial action is not rollback or success: the answer
+reports the observed state with `ok:false` and withholds controls until a fresh read.
+Pausing stops webhook delivery, not turns already running. Sweeps may still recover events;
+this is not a global stop or drain. Tokens, paths and raw transport diagnostics never reach
+this UI. Both hook routes use gateway authentication; unlike `health?probe=1`, they are not
+local-only. No merge control exists.
+
+`health?probe=1` also reads a credential: the loop's own tokens, to read GitHub for
 the hook, expiry and scope checks the offline pass leaves unprobed. It is refused unless the caller
 is on this machine — a non-loopback peer, or any forwarding header at all (`Forwarded`,
 any `X-Forwarded-*` such as `-For`, `-Host` or `-Proto`, and `X-Real-IP`; present is what counts, so an empty one refuses
