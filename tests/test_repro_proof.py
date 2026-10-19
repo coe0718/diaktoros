@@ -246,6 +246,22 @@ class Proof(unittest.TestCase):
                          [repro_proof.GUARDED, repro_proof.UNGUARDED])
         self.assertIn("against the test files the fix changed", repro_proof.section(proof))
 
+    def test_the_fallback_takes_both_test_naming_conventions_and_no_helpers(self):
+        # Review on #1092 (P1): `*_test.py` is a test file to TEST_PATH, but the fallback took
+        # only `test*`, then said no test changed. A helper under tests/ runs no test and stays out.
+        files = {"tests/test_a.py": "", "pkg/b_test.py": "", "tests/helpers.py": "",
+                 "tests/conftest.py": "", "widget.py": NEW_CODE}
+        self.assertEqual(repro_proof.changed_test_modules(manifest(files)),
+                         ["pkg.b_test", "tests.test_a"])
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            base.mkdir()
+            (base / "widget.py").write_text(OLD_CODE)
+            proof = repro_proof.prove(base, manifest({"widget.py": NEW_CODE,
+                                                      "widget_test.py": TEST}), [], run_unittest)
+        self.assertEqual(proof["hunk_tests"], ["widget_test"])
+        self.assertEqual([h["status"] for h in proof["hunks"]], [repro_proof.GUARDED])
+
     def test_with_no_test_named_or_changed_every_source_hunk_is_unguarded(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "base"

@@ -353,9 +353,11 @@ def changed_test_modules(manifest: dict) -> list[str]:
     paths = [path for path, _data in files]
     if patch is not None:
         paths += [path for path, _chunk in _split_patch(patch.decode("utf-8", errors="replace"))]
+    # A test module by either convention (`test_x.py`, `x_test.py`): a helper under tests/
+    # (`helpers.py`, `conftest.py`) runs no test, and a named id that runs none reads as missing.
     return sorted({path[:-3].replace("/", ".") for path in paths
                    if path.endswith(".py") and ci_fix.TEST_PATH.search(path)
-                   and Path(path).name.startswith("test")})
+                   and (Path(path).name.startswith("test") or path.endswith("_test.py"))})
 
 
 def _unnamed_hunks(base_dir: Path, manifest: dict, run) -> dict:
