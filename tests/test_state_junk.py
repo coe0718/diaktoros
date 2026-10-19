@@ -8,6 +8,7 @@ against every junk shape: none may raise, and a write leaves a well-formed file 
 """
 import _home_guard  # noqa: F401  first import: temp HOME/HERMES_HOME (tests/_home_guard.py)
 import fcntl
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -101,6 +102,30 @@ class Junk(unittest.TestCase):
                 self.assertIn("other#1", json.loads(st.inflight_file.read_text()))
         st.inflight_file.write_text(json.dumps({mark: time.time()}))
         self.assertTrue(st.inflight(mark))                   # a current mark still holds
+
+    def test_a_mark_written_while_record_waited_for_the_lock_is_kept(self):
+        """#940 (shadow review): ``record`` reads the clock once it holds the lock. Another
+        process's mark, written while this one waited, is dated after a clock read taken
+        before the wait, and would be pruned as future-dated."""
+        from unittest import mock
+        from diaktoros import state as state_mod
+        st, t0 = self.st, time.time()
+        clock = {"now": t0}
+        real_locked = state_mod.LoopState.locked
+
+        @contextlib.contextmanager
+        def slow_lock(this):
+            # The wait: meanwhile another process records its mark, 5 s after we read t0.
+            st.inflight_file.write_text(json.dumps({"theirs#2": t0 + 5}))
+            clock["now"] = t0 + 10
+            with real_locked(this):
+                yield
+        with mock.patch.object(state_mod.time, "time", side_effect=lambda: clock["now"]), \
+                mock.patch.object(state_mod.LoopState, "locked", slow_lock):
+            st.inflight("ours#1", record=True)
+        data = json.loads(st.inflight_file.read_text())
+        self.assertIn("theirs#2", data, "a live mark written during the wait was pruned")
+        self.assertEqual(data["ours#1"], t0 + 10)        # ours is dated when it was written
 
     def test_record_keeps_marks_within_a_ttl_longer_than_a_day(self):
         """#736: the arming prune must not discard a mark the read path still honors."""
