@@ -672,6 +672,161 @@ def retry_fresh_reviews(loop: dict, st: state_mod.LoopState, prs: list, lines: l
 
 
 
+# GitHub computes a PR's mergeability lazily: the first read after its base moves usually
+# answers null/"unknown" and starts the computation. One short wait, then one re-read.
+MERGEABILITY_WAIT_S = 5.0
+
+
+def mergeability(loop: dict, live, head: str, author: str) -> str:
+    """``conflict``, ``unknown`` (GitHub has not computed it yet) or ``""`` for a loop PR read
+    live at ``head``. A review-only PR that merely fell behind counts as a conflict too, when
+    the host may update it."""
+    if not isinstance(live, dict) or (live.get("head") or {}).get("sha") != head:
+        return ""
+    stale = ("dirty", "behind") if (author in config.review_only(loop)
+                                    and config.review_only_update(loop)) else ("dirty",)
+    if live.get("mergeable_state") in stale:
+        return "conflict"
+    if live.get("mergeable") is None or live.get("mergeable_state") in (None, "unknown"):
+        return "unknown"
+    return ""
+
+
+def recheck_unknown(loop: dict, unknown: list[tuple[int, str, str]],
+                    conflict_live: dict[int, dict]) -> list[tuple[int, str, str, str]]:
+    """Re-read, once and after one shared wait, the PRs whose mergeability was not computed yet:
+    otherwise a conflict a merge just caused waits for the next sweep."""
+    if not unknown:
+        return []
+    if not TEST:
+        time.sleep(MERGEABILITY_WAIT_S)
+    found = []
+    for number, head, author in unknown:
+        live = gh.pr(loop, number)
+        if mergeability(loop, live, head, author) == "conflict":
+            found.append((number, head, str((live.get("base") or {}).get("sha") or ""), author))
+            conflict_live[number] = live
+    return found
+
+
+def act_on_conflicts(loop: dict, st: state_mod.LoopState,
+                     conflicts: list[tuple[int, str, str, str]],
+                     conflict_live: dict[int, dict]) -> None:
+    """Queue a conflict turn and say each conflicted head once (#303). The sweep and the
+    merge-triggered conflict scan share it, so both act the same way; the turn key and the
+    observer's per-head dedup keep a later pass from doing it twice."""
+    resolving = config.unattended_fixer_push_enabled(loop)
+    tip = base_tip(loop) if resolving and conflicts else None
+    for number, head, _pr_base_sha, author in conflicts:
+        # A review-only author's PR (#191) is never the fixer's, a conflict included.
+        review_only = author in config.review_only(loop)
+        # The turn is pinned to the base branch's tip, not the PR's ``base.sha``: GitHub leaves
+        # that at the base commit of the PR's last update, so a conflict a later merge caused
+        # would be merged against a base that never conflicted ("nothing to resolve").
+        base_sha = tip or ""
+        if resolving and not review_only and not base_sha:
+            log(f"#{number} @ {head[:7]} conflict turn not queued: {loop['base']}'s tip "
+                "unreadable (GitHub read failed); the next sweep retries")
+        if resolving and not review_only and re.fullmatch(r"[0-9a-f]{40}", base_sha):
+            # #303 stage 3: one resolving fixer turn per (head, base); the ledger's turn key
+            # dedups every later sweep. The worker merges and may still hand it to a person
+            # (a whole-file conflict, or workflow changes the fixer's token cannot push).
+            # enqueue_isolated, not block_pr_agent: that one is a gate's and ends the process.
+            from diaktoros.run_supervisor import CONFLICT_KEY
+            try:
+                outcome = gate.enqueue_isolated(loop, "fixer", number, head,
+                                                turn_key=f"{CONFLICT_KEY}{base_sha}")
+                log(f"#{number} @ {head[:7]} conflict with {loop['base']} at {base_sha[:7]}: "
+                    f"fixer {outcome}")
+            except Exception as exc:
+                log(f"#{number} @ {head[:7]} conflict turn at {base_sha[:7]} not queued: "
+                    f"{type(exc).__name__}: {exc}")
+        next_review_only = ""
+        if review_only:
+            # The cause, the files and the commands (a dry merge on the host, nothing pushed);
+            # with review_only_update on, a clean merge is pushed first, once, under a lease.
+            tried = ""
+            try:
+                facts = review_only_conflict.assess(loop, number, head,
+                                                    conflict_live.get(number) or {})
+                if (conflict_live.get(number) or {}).get("mergeable_state") == "behind" \
+                        and (facts["conflicted"] or facts["error"]):
+                    continue                  # behind, not conflicting: nothing to say
+                pushed, tried = review_only_conflict.update(loop, number, head, facts)
+                if pushed:
+                    log(f"#{number} @ {head[:7]} merged {loop['base']} in: {pushed[:7]}")
+                    observer.notify(loop, st, "updated", number, pushed, identity="updated",
+                                    outcome=f"merged {loop['base']} into #{number} at "
+                                            f"{pushed[:7]}; review resumes",
+                                    next_turn="reviewer: the new head is reviewed as usual")
+                    continue
+                next_review_only = review_only_conflict.message(loop, author, facts, tried)
+            except Exception as exc:
+                log(f"#{number} review-only conflict facts unavailable: "
+                    f"{type(exc).__name__}: {exc}")
+                next_review_only = (f"{author}: merge {loop['base']} into the branch "
+                                    "(review-only — no fixer)")
+            if (conflict_live.get(number) or {}).get("mergeable_state") == "behind":
+                continue                      # behind and the host did not update: no conflict
+        # Keyed by head (the observer dedups on it): a new push that still conflicts is a new
+        # notice, a sweep that sees the same conflicted head again is not.
+        observer.notify(loop, st, "conflict", number, head, identity="conflict",
+                        outcome=f"conflicts with {loop['base']} — GitHub cannot merge it as it is",
+                        next_turn=(next_review_only if review_only else
+                                   f"the fixer will try to merge {loop['base']} into the branch "
+                                   "and resolve it (a whole-file conflict or workflow changes "
+                                   "come back to you)" if resolving else
+                                   f"you: merge {loop['base']} into the branch (unattended fixer "
+                                   "pushes are off, so the loop does not resolve it)"))
+
+
+def scan_conflicts(loop: dict, st: state_mod.LoopState) -> int:
+    """The sweep's conflict step alone, for the scan a merge requests (``conflict_scan``).
+
+    The same PRs as the sweep (reviewed authors, not drafts, on the loop's base, not held), the
+    same detection and the same action. Nothing else: stalls and alerts stay the sweep's,
+    whose output is the one delivered. Returns how many conflicts it acted on.
+    """
+    armed = True if TEST else gate.hooks_read(loop)[0]
+    if armed is not True:
+        log("conflict scan skipped: hooks paused or unreadable")
+        return 0
+    prs = gh.open_prs(loop)
+    if not isinstance(prs, list):
+        log("conflict scan skipped: open PRs could not be listed")
+        return 0
+    conflicts: list[tuple[int, str, str, str]] = []
+    conflict_live: dict[int, dict] = {}
+    unknown: list[tuple[int, str, str]] = []
+    for pr in prs:
+        if not isinstance(pr, dict):
+            continue
+        author = ((pr.get("user") or {}).get("login") or "").lower()
+        if author not in config.reviewed_authors(loop) or pr.get("draft"):
+            continue
+        if (pr.get("base") or {}).get("ref") != loop["base"]:
+            continue
+        number = pr.get("number")
+        head = (pr.get("head") or {}).get("sha") or ""
+        if not number or not head:
+            continue
+        hold, hold_error = pr_hold.read(loop, number)
+        if hold or hold_error:
+            continue                          # a held or unreadable hold: the sweep's to judge
+        live = gh.pr(loop, number)
+        verdict = mergeability(loop, live, head, author)
+        if verdict == "conflict":
+            conflicts.append((number, head, str((live.get("base") or {}).get("sha") or ""), author))
+            conflict_live[number] = live
+        elif verdict == "unknown":
+            unknown.append((number, head, author))
+    conflicts += recheck_unknown(loop, unknown, conflict_live)
+    act_on_conflicts(loop, st, conflicts, conflict_live)
+    observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
+    log(f"conflict scan: {len(conflicts)} conflicted PR(s) acted on")
+    return len(conflicts)
+
+
 def base_tip(loop: dict) -> str | None:
     """The base branch's current commit, or None when it cannot be read.
 
@@ -975,6 +1130,7 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
 
     conflicts: list[tuple[int, str, str, str]] = []
     conflict_live: dict[int, dict] = {}
+    unknown: list[tuple[int, str, str]] = []       # mergeability not computed yet at this read
     # #532: heads whose pending review request the sweep already delivered to the gate itself.
     kicks = watch.get("review_kicks") if isinstance(watch.get("review_kicks"), dict) else {}
     open_numbers = {str(p.get("number")) for p in prs if isinstance(p, dict)}
@@ -1010,13 +1166,12 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         # The listing carries no mergeability, so this is one read of the PR; GitHub computes it
         # lazily, and an unknown answer (null) is simply not a conflict yet.
         live = gh.pr(loop, number)
-        # A review-only PR that merely fell behind counts too, when the host may update it.
-        stale = ("dirty", "behind") if (author in config.review_only(loop)
-                                        and config.review_only_update(loop)) else ("dirty",)
-        if (isinstance(live, dict) and live.get("mergeable_state") in stale
-                and (live.get("head") or {}).get("sha") == head):
+        verdict = mergeability(loop, live, head, author)
+        if verdict == "conflict":
             conflicts.append((number, head, str((live.get("base") or {}).get("sha") or ""), author))
             conflict_live[number] = live
+        elif verdict == "unknown":
+            unknown.append((number, head, author))
 
         # A held head is judged only by host-receipted post-boundary reviews: an old verdict
         # is not a current stall, and a missing fresh verdict is the reviewer's to post.
@@ -1236,69 +1391,8 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
         ready.sweep(loop, st, log)            # #654: one notice when the ready-to-merge set changes
     except Exception as exc:
         log(f"ready sweep failed: {type(exc).__name__}: {exc}")
-    resolving = config.unattended_fixer_push_enabled(loop)
-    tip = base_tip(loop) if resolving and conflicts else None
-    for number, head, _pr_base_sha, author in conflicts:
-        # A review-only author's PR (#191) is never the fixer's, a conflict included.
-        review_only = author in config.review_only(loop)
-        # The turn is pinned to the base branch's tip, not the PR's ``base.sha``: GitHub leaves
-        # that at the base commit of the PR's last update, so a conflict a later merge caused
-        # would be merged against a base that never conflicted ("nothing to resolve").
-        base_sha = tip or ""
-        if resolving and not review_only and not base_sha:
-            log(f"#{number} @ {head[:7]} conflict turn not queued: {loop['base']}'s tip "
-                "unreadable (GitHub read failed); the next sweep retries")
-        if resolving and not review_only and re.fullmatch(r"[0-9a-f]{40}", base_sha):
-            # #303 stage 3: one resolving fixer turn per (head, base); the ledger's turn key
-            # dedups every later sweep. The worker merges and may still hand it to a person
-            # (a whole-file conflict, or workflow changes the fixer's token cannot push).
-            # enqueue_isolated, not block_pr_agent: that one is a gate's and ends the process.
-            from diaktoros.run_supervisor import CONFLICT_KEY
-            try:
-                outcome = gate.enqueue_isolated(loop, "fixer", number, head,
-                                                turn_key=f"{CONFLICT_KEY}{base_sha}")
-                log(f"#{number} @ {head[:7]} conflict with {loop['base']} at {base_sha[:7]}: "
-                    f"fixer {outcome}")
-            except Exception as exc:
-                log(f"#{number} @ {head[:7]} conflict turn at {base_sha[:7]} not queued: "
-                    f"{type(exc).__name__}: {exc}")
-        next_review_only = ""
-        if review_only:
-            # The cause, the files and the commands (a dry merge on the host, nothing pushed);
-            # with review_only_update on, a clean merge is pushed first, once, under a lease.
-            tried = ""
-            try:
-                facts = review_only_conflict.assess(loop, number, head,
-                                                    conflict_live.get(number) or {})
-                if (conflict_live.get(number) or {}).get("mergeable_state") == "behind" \
-                        and (facts["conflicted"] or facts["error"]):
-                    continue                  # behind, not conflicting: nothing to say
-                pushed, tried = review_only_conflict.update(loop, number, head, facts)
-                if pushed:
-                    log(f"#{number} @ {head[:7]} merged {loop['base']} in: {pushed[:7]}")
-                    observer.notify(loop, st, "updated", number, pushed, identity="updated",
-                                    outcome=f"merged {loop['base']} into #{number} at "
-                                            f"{pushed[:7]}; review resumes",
-                                    next_turn="reviewer: the new head is reviewed as usual")
-                    continue
-                next_review_only = review_only_conflict.message(loop, author, facts, tried)
-            except Exception as exc:
-                log(f"#{number} review-only conflict facts unavailable: "
-                    f"{type(exc).__name__}: {exc}")
-                next_review_only = (f"{author}: merge {loop['base']} into the branch "
-                                    "(review-only — no fixer)")
-            if (conflict_live.get(number) or {}).get("mergeable_state") == "behind":
-                continue                      # behind and the host did not update: no conflict
-        # Keyed by head (the observer dedups on it): a new push that still conflicts is a new
-        # notice, a sweep that sees the same conflicted head again is not.
-        observer.notify(loop, st, "conflict", number, head, identity="conflict",
-                        outcome=f"conflicts with {loop['base']} — GitHub cannot merge it as it is",
-                        next_turn=(next_review_only if review_only else
-                                   f"the fixer will try to merge {loop['base']} into the branch "
-                                   "and resolve it (a whole-file conflict or workflow changes "
-                                   "come back to you)" if resolving else
-                                   f"you: merge {loop['base']} into the branch (unattended fixer "
-                                   "pushes are off, so the loop does not resolve it)"))
+    conflicts += recheck_unknown(loop, unknown, conflict_live)
+    act_on_conflicts(loop, st, conflicts, conflict_live)
     if observer.retry(loop, st):
         log("observer: retried an undelivered notice")
     observer.flush(loop, st, wait_s=0 if TEST else observer.digest_wait(loop))
@@ -1450,6 +1544,8 @@ def main() -> None:
     ap.add_argument("--loop", help="loop id (default: every configured loop)")
     ap.add_argument("--drain", action="store_true", help="start a queued run and print nothing else")
     ap.add_argument("--seat", default="reviewer", choices=["reviewer", "fixer"])
+    ap.add_argument("--conflicts", action="store_true",
+                    help="wait for a requested conflict scan (after a merge) and run only that")
     args = ap.parse_args()
     global EMIT
     EMIT = lambda line: print(line, flush=True)  # noqa: E731
@@ -1488,6 +1584,14 @@ def run(args: argparse.Namespace, budget: float) -> None:
             sys.exit(1)
     else:
         loops, refused = config.readable_loops()
+
+    if args.conflicts:
+        from diaktoros import conflict_scan
+        for loop in loops:
+            st = state_mod.state_for(loop)
+            # Inside this process's GitHub budget (main's begin_gate), with half left for a scan.
+            conflict_scan.run(st, lambda: scan_conflicts(loop, st), lifetime=budget / 2)
+        return
 
     if args.drain:
         for loop_id, reason in refused:

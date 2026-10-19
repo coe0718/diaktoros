@@ -1297,6 +1297,22 @@ def drain_seat(loop: dict, seat: str) -> None:
         log(f"drain {seat} failed: {exc}")
 
 
+def schedule_conflict_scan(loop: dict, st) -> None:
+    """A merge into the base: ask for a conflict check shortly (``conflict_scan``) and start the
+    detached scanner that waits for it. Best effort; the watchdog's sweep is the fallback."""
+    from . import conflict_scan
+    try:
+        conflict_scan.request(st)
+        subprocess.Popen([sys.executable, str(pathlib.Path(__file__).resolve().parents[1]
+                                              / "scripts" / "watchdog.py"),
+                          "--loop", loop["id"], "--conflicts"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+                         env=dict(os.environ))
+    except Exception as exc:
+        log(f"conflict scan not scheduled ({type(exc).__name__}: {exc}); the sweep checks")
+
+
 def reclaim(loop: dict, number: int, state: str) -> None:
     """A finished PR gives back its disk: worktrees, build dirs, locks, counters."""
     log(f"PR #{number} {state} — reclaiming local review artifacts")
