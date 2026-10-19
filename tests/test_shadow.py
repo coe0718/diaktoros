@@ -450,6 +450,17 @@ class ProductionTurn(unittest.TestCase):
                 self.assertEqual(row["retries"], 0)
                 self.assertEqual(sup.shadow_reviews(), [])
 
+    def test_a_required_check_that_never_reported_holds_the_shadow(self):
+        # Review on #1002: the loop names "tests"; only "lint" reported, so "tests" is missing.
+        self.loop = {**self.loop, "required_checks": ["tests"]}
+        sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
+                                   checks=ci.CIState(passed=["lint"]))
+        self.assertEqual(self.seen, {}, "no shadow turn launched")
+        self.assertEqual((row["state"], row["retries"]), ("waiting", 0))
+        self.assertTrue(row["error"].startswith(run_supervisor.CI_HOLD), row["error"])
+        self.assertIn("never reported", row["error"])
+        self.assertEqual(sup.shadow_reviews(), [])
+
     def test_the_shadow_never_reviews_a_red_head(self):
         sup, row = self.run_shadow([{"verdict": "APPROVE", "body": "ok"}],
                                    checks=ci.CIState(failed=["tests"], passed=["lint"]))

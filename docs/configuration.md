@@ -425,11 +425,11 @@ A shadow turn gets the reviewer's prompt and change view at that head, minus any
 - it pages nobody when it fails, and a failed one is not retried: it is a lost sample, not stuck work (a closed usage window still waits for its reset, which costs nothing);
 - `stats`, `retry` (unless `--seat shadow`) and `escalate` leave it out.
 
-It follows the reviewer's CI rules, more strictly, so the two are compared on the same footing. It
-waits, with nothing spent, while the PR conflicts or a required check is running, cancelled,
-missing or unreadable. It never reviews a red head: that shadow is cancelled, and the fixed head
-gets its own. Unlike the reviewer, it never reviews unfinished CI after the hour's wait; it gives
-that head up instead.
+It reviews only code CI has passed, which is stricter than the reviewer. It waits, with nothing
+spent, while the PR conflicts or a required check is running, cancelled, missing or unreadable,
+whatever `review_after_ci` says (the reviewer waits for running checks only with it on). It never
+reviews a red head: that shadow is cancelled, and the fixed head gets its own. And it never reviews
+unfinished CI after the hour's wait; it gives that head up instead.
 
 Its records are the `shadow_reviews` table in the run ledger (run, PR, head, model, verdict, body, and whether the broker would have authorized it or left an approval to a person under `human_paths`). `hermes dk report` and the weekly report set each one beside the real review at the same head: see [`report`](commands.md#report). For one PR, `hermes dk explain --pr N` prints a `shadow:` line per shadow review (model, head, would-be verdict, the real reviewer's verdict there and whether they agree, its first findings), and the Desktop PR drawer shows the same under *Shadow reviews*. A failed shadow run appears in neither `status` nor the drawer's stuck list: it is never one to act on (`retry --seat shadow` re-arms it).
 

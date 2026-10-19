@@ -2774,10 +2774,12 @@ class Supervisor(records.LedgerRecords):
     def _shadow_ci_gate(self, turn: _Turn) -> None:
         """A shadow review follows the reviewer's CI rules, strictly (#218): it waits, nothing
         spent, while the PR conflicts or a required check is running, cancelled, missing or
-        unreadable; and it never reviews a red head, which it gives up (cancelled). Its numbers
-        are compared with the reviewer's, who never reviews code CI is still deciding, so
-        neither may it. Unlike the reviewer it never times out into a review: past
-        ``CI_WAIT_MAX_S`` with CI unfinished it gives the head up too. Sets ``turn.error``."""
+        unreadable; and it never reviews a red head, which it gives up (cancelled). Stricter
+        than the reviewer on purpose: running checks hold it whatever ``review_after_ci`` says,
+        a red head is never reviewed (the reviewer's is, once the fixer's CI-fix budget is
+        spent), and past ``CI_WAIT_MAX_S`` with CI unfinished it gives the head up rather than
+        review it. A shadow verdict is a sample of a model, so it is taken only on code CI
+        passed. Sets ``turn.error``."""
         from .. import ci, config, gh
         row, loop = turn.row, turn.loop
         head = row['head']
