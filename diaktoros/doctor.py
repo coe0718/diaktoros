@@ -819,11 +819,11 @@ def check_token(login: str, raw: str) -> Check:
         return Check(f"token:{login}", MISMATCH, f"{path} is empty",
                      f"write the PAT into {path}: an empty credential reads as an anonymous "
                      f"request, which GitHub answers with 404")
+    problem = credentials.token_file_problem(str(path))
+    if problem:
+        return Check(f"token:{login}", MISMATCH, problem,
+                     f"chmod 600 {path} (and own it): the same rule as every credential line")
     mode = path.stat().st_mode & 0o777
-    if mode & 0o077:
-        return Check(f"token:{login}", MISMATCH,
-                     f"{path} is mode {mode:03o} — readable by group/other users",
-                     f"chmod 600 {path}")
     return Check(f"token:{login}", VERIFIED, f"{path} (mode {mode:03o}, non-empty)")
 
 
