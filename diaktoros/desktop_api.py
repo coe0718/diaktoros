@@ -10,6 +10,9 @@ host's own "what moves it" line (``run_supervisor.next_step``) plus what the led
 plugin-level form and each loop's effective answers. Never a turn's output, never a run's error
 text. ``hooks`` reads GitHub hook state with an opaque confirmation; ``hooks_action`` calls
 the shared ``arm_action`` owner used by CLI ``arm`` to pause/resume, then reads actual state.
+``action_view`` previews per-target one-shot eligibility; ``action_perform_view`` invokes
+the shared ``one_shot_action`` owner and reports exact escalation read-back. Re-review and
+drain remain explicit refusals while their core entry points cannot bind a safe confirmation.
 
 **Ledger-only action (#371):** ``retry`` re-arms a run the CLI's ``retry`` would
 re-arm. It is not a second implementation of anything: ``retry_action`` owns which run that is
@@ -81,6 +84,45 @@ def hooks_action_view(loop_id: str | None, action: str, confirmation: str) -> di
         return arm_action.confirmed_perform(loop, action, confirmation)
     except arm_action.StaleConfirmation:
         raise Conflict('Hook confirmation is stale or unavailable; read hook state again.') from None
+
+
+def _action_target(loop_id, action, pr, seat):
+    """Validate shape only; every eligibility rule belongs to the shared owner."""
+    if action not in ('review', 'escalate', 'drain') or not isinstance(action, str):
+        raise BadRequest('Action must be review, escalate or drain.')
+    if action == 'drain':
+        if pr is not None or seat not in ('reviewer', 'fixer'):
+            raise BadRequest('Drain requires a reviewer or fixer seat, not a PR.')
+    elif type(pr) is not int or pr <= 0 or seat is not None:
+        raise BadRequest('Review and escalation require a positive PR number, not a seat.')
+    return _hooks_loop(loop_id)
+
+
+def action_view(loop_id: str | None, action: str, pr=None, seat=None) -> dict:
+    """Read a per-target one-shot offer. Refusal is a valid read, never authorization."""
+    from . import one_shot_action
+    loop = _action_target(loop_id, action, pr, seat)
+    try:
+        result = one_shot_action.public_plan(one_shot_action.plan(loop, action, pr=pr, seat=seat))
+    except Exception:
+        raise Conflict('Action preview unavailable; nothing authorized.') from None
+    return dict(result, loop=loop['id'], repo=loop['repo'], read_at=time.time())
+
+
+def action_perform_view(loop_id: str | None, action: str, pr, seat, confirmation) -> dict:
+    """Execute only the exact host offer and return its verified/partial/unknown read-back."""
+    from . import one_shot_action
+    loop = _action_target(loop_id, action, pr, seat)
+    if (not isinstance(confirmation, str) or len(confirmation) != 64 or
+            any(c not in '0123456789abcdef' for c in confirmation)):
+        raise BadRequest('A valid action confirmation is required.')
+    try:
+        result = one_shot_action.confirmed_perform(loop, action, confirmation, pr=pr, seat=seat)
+    except Exception:
+        raise Conflict('Action outcome unavailable; inspect state before retrying.') from None
+    if result['status'] in ('stale', 'refused'):
+        raise Conflict('Action confirmation is stale or unavailable; preview again.')
+    return dict(result, loop=loop['id'], repo=loop['repo'], read_at=time.time())
 
 
 # The probe reads a credential and calls GitHub, so it answers only a caller on this machine.

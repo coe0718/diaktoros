@@ -1,7 +1,7 @@
 {
   "name": "diaktoros",
   "label": "Diaktoros",
-  "description": "Loop activity for the Hermes Desktop page \u2014 seat turns, timings and live runs \u2014 a confirmed Retry that re-arms a failed run which never wrote, and confirmed webhook pause/resume with verified hook status.",
+  "description": "Loop activity for the Hermes Desktop page \u2014 seat turns, timings and live runs \u2014 a confirmed Retry that re-arms a failed run which never wrote, confirmed webhook pause/resume with verified hook status, and previewed head-bound escalation with exact-marker readback. Re-review/drain previews currently refuse unsafe execution.",
   "icon": "Activity",
   "tab": {
     "hidden": true

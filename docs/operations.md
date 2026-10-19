@@ -740,7 +740,7 @@ It refreshes every 30–60 seconds. Both halves ship **off**:
 2. **The Desktop half:** turn on **Diaktoros** under **Capabilities → Plugins**.
 
 The backend (`dashboard/plugin_api.py`, mounted at `/api/plugins/diaktoros/` behind the
-gateway's own auth) has eight GET routes: `loops`, `stats`, `now`, `overview`, `pr`, `health`, `settings` and `hooks`.
+gateway's own auth) has nine GET routes: `loops`, `stats`, `now`, `overview`, `pr`, `health`, `settings`, `hooks` and `actions`.
 They read the loop's config, the run ledger and — for `health` — the installation's own files,
 without mutating loop state. `settings` returns the plugin form's schema and effective values plus
 each loop's effective seats, budgets and flags, so the Desktop form can render what a loop runs
@@ -762,6 +762,39 @@ Pausing stops webhook delivery, not turns already running. Sweeps may still reco
 this is not a global stop or drain. Tokens, paths and raw transport diagnostics never reach
 this UI. Both hook routes use gateway authentication; unlike `health?probe=1`, they are not
 local-only. No merge control exists.
+
+### Confirmed one-shot actions (#644)
+
+The **One-shot actions** panel looks up a PR independently of the live-run table. Choose
+Re-review or Escalate and enter a PR number; Drain queue instead selects the reviewer/fixer
+seat (the seats the current drain core supports). Preview is read-only and returns the host's
+per-target eligibility; the page never infers it from a run state.
+
+`GET /actions?loop=<id>&action=escalate&pr=<n>` returns an opaque confirmation bound to
+loop config, the exact live PR/head, effective verdicts, escalation marker and ledger rows.
+`POST /actions` accepts exactly `{loop, action, pr, seat, confirmation}`; `seat` is null for
+PR actions, `pr` is null for drain. A stale/unavailable offer returns 409 rather than acting on
+whatever is newest. All routes use gateway authentication. Tokens stay on the host.
+
+**Escalate** parks this head against further review/fix and requests an adjudicator ruling,
+spending its configured turn budget. A queued review/fix is retired when the ruling worker
+claims it. The confirmation names loop, PR and head, these consequences and the equivalent
+CLI command. The backend uses the same selector/operation as `hermes dk escalate`, rechecks
+the offer under the existing breach reservation lock and reads back the exact operation's
+marker. Verified means parked awaiting adjudication, **not** a completed ruling. Delivery
+pending is partial; missing/changed/unreadable read-back is unknown. Neither is success, and
+the consumed preview offers no follow-up control without another safe read.
+
+**Re-review and Drain are currently refused in Desktop.** A re-review would ask the existing
+reviewer gate for a fresh review (not erase a verdict or bypass its cap); its script currently
+owns process-global input/signals/context, unsafe inside the threaded Desktop host. A drain
+would start queued work for a seat and may lead to GitHub writes; its whole-seat watchdog
+entry point cannot bind an exact confirmed queue snapshot. These are disclosed refusals, not
+inert buttons or weaker gates. The CLI still calls those core entry points through the shared
+host owner; `review --another-round` remains CLI-only. Drain now exits 2 with an unconfirmed
+outcome instead of claiming success merely because the watchdog returned. Inspect `explain`
+and the queue before asking again. Escalation also refuses corrupt marker stores and unknown
+ledger outcomes through either caller. No action grants merge authority.
 
 `health?probe=1` also reads a credential: the loop's own tokens, to read GitHub for
 the hook, expiry and scope checks the offline pass leaves unprobed. It is refused unless the caller

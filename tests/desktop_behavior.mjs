@@ -72,7 +72,7 @@ async function harness({ cachedAge = null } = {}) {
   const element = (type, props, key) => ({ type, props: props || {}, key })
   const ui = name => props => element(name, props)
   const sdk = Object.fromEntries(['Badge', 'Button', 'ConfirmDialog', 'Dialog', 'DialogContent',
-    'DialogDescription', 'DialogHeader', 'DialogTitle', 'StatusDot'].map(name => [name, ui(name)]))
+    'DialogDescription', 'DialogHeader', 'DialogTitle', 'StatusDot', 'Input'].map(name => [name, ui(name)]))
   Object.assign(sdk, {
     PALETTE_AREA: 'palette', ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'nav', STATUSBAR_AREAS: { right: 'status' },
     host: { notify: n => notices.push(n), navigate: p => navigations.push(p) },
@@ -121,12 +121,15 @@ async function harness({ cachedAge = null } = {}) {
   await module.evaluate()
   // The page's one write (#371) is recorded on its own list, with its options, so a test can
   // assert the exact payload and that a refusal never turns into a visible success.
+  const actionCalls = []
+  let actionResult = () => Promise.reject(new Error('fixture action not configured'))
   const hookCalls = []
   let hookResult = () => Promise.reject(new Error('fixture hook result not configured'))
   const retryCalls = []
   let retryResult = { ok: false, error: new Error('fixture retry not configured') }
   module.namespace.default.register({
     rest: (path, opts) => {
+      if (path === '/actions' && opts?.method === 'POST') { actionCalls.push(opts); return actionResult() }
       if (path === '/hooks' && opts?.method === 'POST') { hookCalls.push(opts); return hookResult() }
       if (path === '/retry') {
         retryCalls.push(opts || {})
@@ -172,6 +175,7 @@ async function harness({ cachedAge = null } = {}) {
   const fail = data => ({ ...good(data), isError: true, error: new Error('fixture backend offline') })
   const loading = () => ({ ...good(undefined), isLoading: true, isFetching: true })
   return { queries, options, calls, notices, navigations, store, good, fail, loading,
+    actionCalls, actionResult: fn => { actionResult = fn },
     hookCalls, hookResult: fn => { hookResult = fn },
     retryCalls, retryAnswer: data => { retryResult = { ok: true, data } },
     retryFails: error => { retryResult = { ok: false, error } },
@@ -1440,4 +1444,116 @@ test('page: /now accepts a retry verdict and rejects a malformed one before cach
     h.respond(payload)
     await assert.rejects(h.options.now.queryFn(), /Invalid now response/)
   }
+})
+
+
+
+test('actions: backend refusal accepts empty opaque identity and invalid PR input never reads', async () => {
+  const h = await harness(); selectAction(h)
+  await previewAction(h, actionPlan({ eligible: false, confirmation: '', reason: 'no adjudicator configured' }))
+  assert.match(h.text(h.tree()), /no adjudicator configured/)
+  const input = () => h.flatten(h.tree()).find(n => n.type === 'Input' && n.props['aria-label'] === 'Action PR number')
+  for (const value of ['0', '-1', '9.1', '1e3', ' 937 ', '999999999999999999999']) {
+    input().props.onChange({ target: { value } }); const before = h.calls.length
+    assert.equal(actionButton(h, 'Preview escalation').props.disabled, true)
+    await actionButton(h, 'Preview escalation').props.onClick(); assert.equal(h.calls.length, before)
+  }
+})
+
+test('actions: re-review and drain draw no control at all — only escalation is offered here', async () => {
+  const h = await harness(); h.render('page')
+  assert.ok(actionButton(h, 'Escalate'))
+  // A control that can never be honoured is not drawn; the CLI verbs are named instead.
+  for (const label of ['Re-review', 'Drain queue', 'reviewer', 'fixer']) assert.equal(actionButton(h, label), undefined)
+  assert.match(h.text(h.tree()), /Re-review · host CLI only/)
+  assert.match(h.text(h.tree()), /Drain queue · host CLI only/)
+  assert.match(h.text(h.tree()), /hermes dk review/)
+  assert.match(h.text(h.tree()), /hermes dk drain/)
+})
+
+test('actions: late write outcome after loop switch is discarded', async () => {
+  const h = await harness(); h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })
+  selectAction(h); await previewAction(h); let finish
+  h.actionResult(() => new Promise(resolve => { finish = resolve }))
+  actionButton(h, 'Confirm escalation').props.onClick(); const task = actionDialog(h).props.onConfirm()
+  actionButton(h, 'other-loop').props.onClick()
+  finish({ loop: 'fixture-loop', repo: 'fixture/repo', read_at: 1800000000, head: 'a'.repeat(40), ok: true, status: 'verified', reason: '' }); await task
+  assert.doesNotMatch(h.text(h.tree()), /Backend verified escalation/)
+})
+
+test('actions: old cancelled dialog cannot cancel replacement and backward-clock expiry is sticky', async () => {
+  const h = await harness(); selectAction(h); await previewAction(h)
+  actionButton(h, 'Confirm escalation').props.onClick(); const old = actionDialog(h)
+  old.props.onClose(); actionButton(h, 'Confirm escalation').props.onClick(); old.props.onClose(); await old.props.onConfirm()
+  // An identical preview is the same authorization; cancel then reopen does not retarget it.
+  assert.ok(actionDialog(h)); assert.equal(h.actionCalls.length, 0)
+  h.advance(60000, -3600000); assert.equal(actionButton(h, 'Confirm escalation'), undefined)
+  h.moveWall(-3600000); h.render('page'); assert.equal(actionButton(h, 'Confirm escalation'), undefined)
+})
+
+// One-shot actions use independent host previews, never a /now state label.
+const actionPlan = (extra = {}) => ({ loop: 'fixture-loop', repo: 'fixture/repo', read_at: 1800000000,
+  action: 'escalate', pr: 937, seat: null, eligible: true, head: 'a'.repeat(40), reason: '', confirmation: ' opaque/identity+= ', ...extra })
+const actionButton = (h, label) => h.buttons(h.tree()).find(b => b.props.children === label)
+const actionDialog = h => h.flatten(h.tree()).find(n => n.type === 'ConfirmDialog' && n.props.title === 'Escalate this PR?')
+const selectAction = (h, pr = '937') => {
+  h.render('page')
+  actionButton(h, 'Escalate').props.onClick()
+  h.flatten(h.tree()).find(n => n.type === 'Input' && n.props['aria-label'] === 'Action PR number').props.onChange({ target: { value: pr } })
+}
+const previewAction = async (h, data = actionPlan()) => { h.respond(data); await actionButton(h, 'Preview escalation').props.onClick() }
+
+test('actions: independent PR preview confirms full target and opaque identity exactly once', async () => {
+  const h = await harness(); selectAction(h); await previewAction(h)
+  assert.equal(h.calls.at(-1), '/actions?loop=fixture-loop&action=escalate&pr=937')
+  actionButton(h, 'Confirm escalation').props.onClick(); const d = actionDialog(h)
+  for (const re of [/fixture-loop/, /fixture\/repo/, /#937/, /a{40}/, /adjudicator/, /parks this head against further review and fix/, /spends an adjudicator turn/, /hermes dk escalate --loop fixture-loop --pr 937/]) assert.match(d.props.description, re)
+  let finish; h.actionResult(() => new Promise(resolve => { finish = resolve }))
+  const task = d.props.onConfirm(); await d.props.onConfirm()
+  assert.equal(h.actionCalls.length, 1)
+  assert.deepEqual(JSON.parse(JSON.stringify(h.actionCalls[0])), { method: 'POST', body: { loop: 'fixture-loop', action: 'escalate', pr: 937, seat: null, confirmation: ' opaque/identity+= ' } })
+  finish({ loop: 'fixture-loop', repo: 'fixture/repo', read_at: 1800000000, head: 'a'.repeat(40), ok: true, status: 'verified', reason: '' }); await task
+  assert.match(h.text(h.tree()), /Backend verified escalation/)
+  assert.equal(actionButton(h, 'Confirm escalation'), undefined)
+  assert.equal(h.buttons(h.tree()).some(b => /merge/i.test(String(b.props.children))), false)
+})
+
+test('actions: a backend escalation refusal leaves no execution affordance', async () => {
+  const h = await harness(); selectAction(h)
+  await previewAction(h, actionPlan({ eligible: false, confirmation: '', reason: 'Core operation is not snapshot safe.' }))
+  assert.match(h.text(h.tree()), /not snapshot safe/)
+  assert.equal(actionButton(h, 'Confirm escalation'), undefined)
+  assert.equal(h.actionCalls.length, 0)
+})
+
+for (const changed of ['target', 'loop', 'time', 'unmount', 'cancel', 'discovery']) test(`actions: ${changed} invalidates retained confirmation`, async () => {
+  const h = await harness(); h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })
+  selectAction(h); await previewAction(h); actionButton(h, 'Confirm escalation').props.onClick(); const d = actionDialog(h)
+  if (changed === 'target') h.flatten(h.tree()).find(n => n.type === 'Input' && n.props['aria-label'] === 'Action PR number').props.onChange({ target: { value: '938' } })
+  if (changed === 'loop') actionButton(h, 'other-loop').props.onClick()
+  if (changed === 'time') h.advance(60000, -3600000)
+  if (changed === 'unmount') h.unmount()
+  if (changed === 'cancel') d.props.onClose()
+  if (changed === 'discovery') { h.queries.loops = h.fail(h.queries.loops.data); h.render('page') }
+  await d.props.onConfirm(); assert.equal(h.actionCalls.length, 0)
+})
+
+for (const status of ['partial', 'unknown', 'stale', 'refused', 'network', 'malformed', 'wrong-loop', 'wrong-head']) test(`actions: ${status} outcome never offers follow-up until fresh preview`, async () => {
+  const h = await harness(); selectAction(h); await previewAction(h)
+  h.actionResult(() => status === 'network' ? Promise.reject(new Error('/private/token ghp_secret')) : Promise.resolve(status === 'malformed' ? {} : {
+    loop: status === 'wrong-loop' ? 'other' : 'fixture-loop', repo: 'fixture/repo', read_at: 1800000000, head: status === 'wrong-head' ? 'b'.repeat(40) : 'a'.repeat(40), ok: ['wrong-loop', 'wrong-head'].includes(status), status: ['wrong-loop', 'wrong-head'].includes(status) ? 'verified' : status, reason: '/private/token ghp_secret' }))
+  actionButton(h, 'Confirm escalation').props.onClick(); await actionDialog(h).props.onConfirm()
+  assert.doesNotMatch(h.text(h.tree()), /Backend verified escalation|private\/token|ghp_secret/)
+  assert.equal(actionButton(h, 'Confirm escalation'), undefined)
+  await previewAction(h); assert.ok(actionButton(h, 'Confirm escalation'))
+})
+
+test('actions: malformed GET success is rejected before confirmation; raw reason withheld', async () => {
+  const h = await harness(); selectAction(h)
+  for (const extra of [{ loop: 'other' }, { pr: 938 }, { action: 'review' }, { seat: 'fixer' }, { head: '' }, { eligible: 'yes' }, { confirmation: null }, { read_at: -1 }, { reason: 'x'.repeat(401) }, { repo: null }]) {
+    await previewAction(h, actionPlan(extra)); assert.equal(actionButton(h, 'Confirm escalation'), undefined)
+    assert.match(h.text(h.tree()), /could not be verified/)
+  }
+  await previewAction(h, actionPlan({ eligible: false, confirmation: null, reason: '/private/token ghp_secret' }))
+  assert.doesNotMatch(h.text(h.tree()), /private\/token|ghp_secret/)
 })

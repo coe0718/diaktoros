@@ -2,7 +2,8 @@
 // a drawer showing what would move one PR, and the installation's own preflight — all fed by
 // this plugin's own backend (dashboard/plugin_api.py) through ctx.rest. Reads never mutate state.
 // Writes require confirmation: Retry re-arms an eligible run; Pause/Resume changes webhook
-// delivery only. Each shows a verified host result, never an optimistic state.
+// delivery only; one-shot escalation requires an independent host preview and opaque confirmation.
+// Re-review and drain are preview-only refusals until core operations can bind safe snapshots.
 // Plain ESM, loaded uncompiled: jsx() calls, not JSX syntax, and only the three specifiers the
 // loader allows. Theme variables only, never a hardcoded color.
 import {
@@ -14,6 +15,7 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
+  Input,
   PALETTE_AREA,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
@@ -1130,6 +1132,126 @@ function HooksControl({ loop, discoveryCurrent }) {
     ] }) })
 }
 
+// The host owns every one-shot eligibility decision. A preview is consumed on submission,
+// including uncertain outcomes; a new explicit read is required before any next action.
+function validateAction(data, target, write = false) {
+  const bounded = v => typeof v === 'string' && v.length <= 400 && !/[\x00-\x1f]/.test(v)
+  const sha = v => typeof v === 'string' && /^[0-9a-fA-F]{40}$/.test(v)
+  if (!data || typeof data !== 'object' || Array.isArray(data) || data.loop !== target.loop ||
+      !bounded(data.repo) || !bounded(data.reason) || !Number.isFinite(data.read_at) || data.read_at < 0 ||
+      !(data.head === '' || sha(data.head))) throw invalidResponse('action')
+  if (write) {
+    if (!['verified', 'partial', 'unknown', 'stale', 'refused'].includes(data.status) ||
+        typeof data.ok !== 'boolean' || data.ok !== (data.status === 'verified') ||
+        (data.status === 'verified' && (data.head !== target.head || data.repo !== target.repo))) throw invalidResponse('action')
+  } else if (data.action !== target.action || data.pr !== target.pr || data.seat !== target.seat ||
+      typeof data.eligible !== 'boolean' || !(data.confirmation === null || (!data.eligible && data.confirmation === '') ||
+        (typeof data.confirmation === 'string' && data.confirmation.length > 0 && data.confirmation.length <= 4096)) ||
+      (data.eligible && (!sha(data.head) || !data.repo || !data.confirmation || data.action !== 'escalate')) ||
+      (!data.eligible && data.confirmation !== null && data.confirmation !== '')) throw invalidResponse('action')
+  return data
+}
+
+function actionReason(reason) {
+  // Reasons are host-bounded, but never echo paths, credentials or arbitrary transport text.
+  return reason && !/(?:\/|\\|gh[pousr]_|github_pat_|Bearer|token=)/i.test(reason)
+    ? reason : 'The host refused this action. Read a fresh preview for the current target.'
+}
+
+function ActionsControl({ loop, discoveryCurrent }) {
+  const [action, setAction] = useState('escalate')
+  const [prText, setPrText] = useState('')
+  const [seat, setSeat] = useState('reviewer')
+  const [preview, setPreview] = useState(null)
+  const [pending, setPending] = useState(null)
+  const [answer, setAnswer] = useState('')
+  const [reading, setReading] = useState(false)
+  const [, setWriting] = useState(false)
+  const current = useRef(null)
+  const generation = useRef(0)
+  const busy = useRef(false)
+  const mounted = useRef(true)
+  const activeDialog = useRef(null)
+  const pr = /^[1-9][0-9]*$/.test(prText) && Number.isSafeInteger(Number(prText)) ? Number(prText) : null
+  const target = { loop, action, pr: action === 'drain' ? null : pr, seat: action === 'drain' ? seat : null }
+  current.current = { target, discoveryCurrent, preview }
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++ } }, [])
+  const reset = () => {
+    generation.current++; activeDialog.current = null; setPending(null); setPreview(null); setAnswer(''); setReading(false)
+  }
+  useEffect(() => { reset(); setPrText('') }, [loop])
+  const state = useViewState(preview || { data: undefined }, false, 60000)
+  const sameTarget = t => Object.keys(target).every(key => current.current.target[key] === t[key])
+  const allowed = p => mounted.current && p && current.current.preview === p && sameTarget(p.target) &&
+    current.current.discoveryCurrent && trackedViewState(p, false, 60000) === 'verified' && p.data.eligible
+  const read = async () => {
+    if (busy.current || !discoveryCurrent || (action !== 'drain' && !pr)) return
+    reset(); const version = generation.current; const selected = { ...target }; setReading(true)
+    try {
+      const path = '/actions?loop=' + encodeURIComponent(loop) + '&action=' + action +
+        (action === 'drain' ? '&seat=' + seat : '&pr=' + pr)
+      const data = validateAction(await call(path), selected)
+      if (mounted.current && generation.current === version && sameTarget(selected))
+        setPreview({ data, target: selected, dataUpdatedAt: Date.now(), isError: false })
+    } catch (error) {
+      if (mounted.current && generation.current === version) setAnswer(safeError(error))
+    } finally { if (mounted.current && generation.current === version) setReading(false) }
+  }
+  const ask = () => {
+    if (busy.current || !allowed(preview)) return
+    const dialog = { offer: preview }
+    activeDialog.current = dialog; setPending(dialog)
+  }
+  const cancel = p => { if (activeDialog.current === p) { activeDialog.current = null; setPending(null) } }
+  const confirm = async dialog => {
+    const p = dialog.offer
+    if (busy.current || activeDialog.current !== dialog || !allowed(p)) { cancel(dialog); return }
+    busy.current = true; setWriting(true)
+    const version = ++generation.current
+    activeDialog.current = null; setPending(null); setPreview(null)
+    setAnswer('Checking action outcome…')
+    try {
+      const data = validateAction(await call('/actions', { method: 'POST', body: {
+        ...p.target, confirmation: p.data.confirmation } }), { ...p.target, head: p.data.head, repo: p.data.repo }, true)
+      if (mounted.current && generation.current === version && sameTarget(p.target)) setAnswer(data.status === 'verified'
+        ? 'Backend verified escalation for loop ' + p.target.loop + ' · #' + p.target.pr + ' @ ' + data.head + '.'
+        : 'Action outcome: ' + data.status + '. No follow-up action is available until a fresh safe preview. ' + actionReason(data.reason))
+    } catch {
+      if (mounted.current && generation.current === version) setAnswer('Action outcome could not be verified. It may have written. Read a fresh safe preview before any follow-up action.')
+    } finally {
+      busy.current = false
+      if (mounted.current) setWriting(false)
+      for (const kind of ['now', 'pr', 'overview']) queryClient.invalidateQueries({ queryKey: kind === 'overview' ? [ID, kind] : [ID, kind, p.target.loop] })
+    }
+  }
+  const button = (label, onClick, disabled = false) => jsx(Button, { size: 'xs', variant: 'ghost', className: 'self-start', onClick, disabled, children: label }, label)
+  return jsx(Section, { title: 'One-shot actions', children: jsxs('div', {
+    className: 'flex min-w-0 flex-col gap-4 rounded-md border border-(--ui-stroke-secondary) p-4', children: [
+      jsx(Muted, { text: 'Preview a target independently of Right now — including an open PR whose previous turn completed. The host checks eligibility; a run label is not permission.' }),
+      // Only escalation can be honoured from this host (see one_shot_action.plan). A control that
+      // can never be eligible is not drawn: the other two are named as unavailable, with why, and
+      // stay on the CLI rather than offering a button whose only outcome is a refusal.
+      jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+        button('Escalate', () => { reset(); setAction('escalate') }, busy.current),
+        ...['Re-review', 'Drain queue'].map(label => jsx(Badge, { size: 'xs', variant: 'muted', children: label + ' · host CLI only' }, label))] }),
+      jsx('label', { className: 'flex min-w-0 max-w-sm flex-col gap-2 text-xs', children: jsxs('span', { className: 'flex flex-col gap-2', children: [
+        'PR number · required for escalation', jsx(Input, { 'aria-label': 'Action PR number', inputMode: 'numeric', value: prText,
+          disabled: busy.current || action === 'drain', placeholder: action === 'drain' ? 'Drain selects a seat, not a PR' : 'e.g. 937', onChange: e => { reset(); setPrText(e.target.value) } })] }) }),
+
+      jsx(Muted, { text: 'Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Confirmation names the exact head. Re-review and drain need a core entry point that can bind a confirmed snapshot, so no Desktop control offers them yet; hermes dk review and hermes dk drain still run them.' }),
+      button(reading ? 'Reading preview…' : 'Preview escalation', read, reading || busy.current || !discoveryCurrent || !pr),
+      preview ? jsxs('div', { role: 'status', className: 'flex min-w-0 flex-col gap-2 break-words text-xs', children: [
+        jsx(Badge, { size: 'xs', variant: state === 'verified' && preview.data.eligible ? 'muted' : 'warn', children: state !== 'verified' ? 'Preview expired · read again' : preview.data.eligible ? 'Host eligible' : 'Host refused' }),
+        jsx('div', { className: 'break-words', children: 'Loop ' + preview.target.loop + ' · ' + preview.data.repo + (preview.target.pr ? ' · #' + preview.target.pr : ' · ' + preview.target.seat) + ' · head ' + (preview.data.head || 'unavailable') }),
+        !preview.data.eligible ? jsx('div', { children: actionReason(preview.data.reason) }) : null,
+        allowed(preview) ? button('Confirm escalation', ask) : null] }) : null,
+      answer ? jsx('div', { role: 'status', className: 'break-words text-xs text-(--ui-text-secondary)', children: answer }) : null,
+      pending && allowed(pending.offer) ? jsx(ConfirmDialog, { open: true, title: 'Escalate this PR?',
+        description: 'Loop ' + pending.offer.target.loop + ' · ' + pending.offer.data.repo + ' · PR #' + pending.offer.target.pr + ' · head ' + pending.offer.data.head +
+          ' · seat adjudicator. Escalation parks this head against further review and fix, and spends an adjudicator turn to request a ruling. Queued review or fix work is retired when the adjudicator claims it. A verified result means parked awaiting adjudication, not a completed ruling. This is not a re-review and does not replace a reviewer verdict. Equivalent CLI: hermes dk escalate --loop ' + pending.offer.target.loop + ' --pr ' + pending.offer.target.pr + '.',
+        confirmLabel: 'Escalate PR', busyLabel: 'Checking action…', cancelLabel: 'Cancel', onClose: () => cancel(pending), onConfirm: () => confirm(pending) }) : null
+    ] }) })
+}
 function Page() {
   const [since, setSince] = useState('7d')
   const focus = useFocus()
@@ -1374,9 +1496,10 @@ function Page() {
             })]
         })
       }),
+      jsx(ActionsControl, { loop, discoveryCurrent: loopsState === 'verified' && !loops.isFetching && list.some(item => item.id === loop) }),
       jsx(HooksControl, { loop, discoveryCurrent: loopsState === 'verified' && !loops.isFetching && list.some(item => item.id === loop) }),
       jsx(Health, { loop }),
-      jsx(Muted, { text: 'Writes require confirmation: Retry re-arms a run that never wrote; Pause/Resume changes webhook delivery only. Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
+      jsx(Muted, { text: 'Writes require confirmation: Retry re-arms a run that never wrote; Pause/Resume changes webhook delivery only; escalation uses an exact host preview. Re-review and drain are preview-only. Data is this machine\'s run ledger; for PRs and reviews from GitHub, run: hermes dk stats --github' })
     ]
   })
 
