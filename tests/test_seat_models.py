@@ -422,6 +422,24 @@ class Precedence(Base):
                                                                   "OVERRIDE-KEY-4444"))
         self.assertEqual(seat_model.resolve_seat(self.loop, "reviewer", settings).origin, "profile")
 
+    def test_unreadable_override_key_file_is_a_seat_model_error(self):
+        for mode in (0o000, 0o200):
+            with self.subTest(mode=oct(mode)):
+                key = self.key_file(f"unreadable{mode:o}.key", "OVERRIDE-KEY-4444")
+                os.chmod(key, mode)
+                self.addCleanup(os.chmod, key, 0o600)
+                settings = {**self.settings, "seats": {"fixer": {
+                    "model": "override-model", "upstream": "https://override.test/v1/chat/completions",
+                    "key_file": key}}}
+                with self.assertRaisesRegex(seat_model.SeatModelError, f"chmod 600 {key}"):
+                    seat_model.resolve_seat(self.loop, "fixer", settings)
+
+    def test_key_file_read_error_is_a_seat_model_error(self):
+        key = self.key_file("racy.key", "OVERRIDE-KEY-4444")
+        with mock.patch.object(pathlib.Path, "read_text", side_effect=PermissionError(13, "denied")):
+            with self.assertRaisesRegex(seat_model.SeatModelError, "could not be read"):
+                seat_model._read_key_file(key, "seats.fixer")
+
     def test_legacy_trio_only_when_the_profile_cannot_resolve(self):
         settings = {**self.settings, "model": "legacy-model",
                     "upstream": "https://legacy.test/v1/chat/completions",
