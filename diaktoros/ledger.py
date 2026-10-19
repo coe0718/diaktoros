@@ -9,14 +9,18 @@ the ``with con:`` transaction semantics exactly and closes the connection on the
         con.execute('BEGIN IMMEDIATE')
         ...
 
-Any ``sqlite3.connect`` keyword passes through unchanged (``timeout``, ``isolation_level``,
-``uri``, ...). ``row_factory`` and ``pragmas`` are applied before the body runs; if one of them
+Without ``opener=``, any ``sqlite3.connect`` keyword passes through unchanged (``timeout``,
+``isolation_level``, ``uri``, ...), and a caller that names no ``timeout`` gets ``LOCK_WAIT_S``.
+With ``opener=`` (below) ``sqlite3.connect`` is never called: ``path`` and every such keyword,
+the ``timeout`` default included, are discarded, and the opener sets its own wait and
+isolation. ``row_factory`` and ``pragmas`` are applied before the body runs; if one of them
 fails, the connection is still closed. A close() that fails while an exception is already on
 its way out is attached to that exception as a note instead of replacing it.
 
 A caller that must open the connection itself (a worker vetting the host's ledger before any
 pragma touches it) passes ``opener=``: the connection it returns gets the same transaction and
-the same close. What the opener opens and then refuses, it closes itself before raising.
+the same close; ``row_factory`` and ``pragmas`` still apply to it. What the opener opens and
+then refuses, it closes itself before raising.
 """
 
 from __future__ import annotations
@@ -65,7 +69,8 @@ def where(exc: BaseException) -> str:
 def connect(path, *, row_factory=None, pragmas: tuple[str, ...] = (),
             opener: Callable[[], sqlite3.Connection] | None = None,
             **kwargs) -> Iterator[sqlite3.Connection]:
-    # ``opener`` opens (and vets) the connection in place of ``sqlite3.connect(path, **kwargs)``.
+    # ``opener`` opens (and vets) the connection in place of ``sqlite3.connect(path, **kwargs)``:
+    # with an opener, ``path`` and ``kwargs`` (the timeout default too) are not used at all.
     # From the moment it returns, the connection is this function's to close; until then it is
     # the opener's, which must close anything it opened before raising.
     # A caller that names no wait still gets the ledger's (#601), never SQLite's 5 s default.
