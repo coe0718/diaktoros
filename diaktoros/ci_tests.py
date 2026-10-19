@@ -27,6 +27,10 @@ SKIPPED_SHOWN = 60
 # indented under its test on Python 3.11+); it counts for its test, and the worst result wins.
 _PLAIN = re.compile(r"^(?:\S+Z )?(test\w*) \(([\w.]+)\)(?: \(.*\))? \.\.\. (ok|FAIL|ERROR|skipped\b.*)$")
 _RANK = {"skipped": 0, "ok": 1, "FAIL": 2, "ERROR": 3}   # a test that ran beats a skip
+# A test that logged while it ran: unittest wrote `test_x (id) ... `, the test's own output followed
+# on that line, and the result landed alone on a later line.
+_START = re.compile(r"^(?:\S+Z )?(test\w*) \(([\w.]+)\)(?: \(.*\))? \.\.\. ")
+_ALONE = re.compile(r"^(ok|FAIL|ERROR|skipped\b.*)$")
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # A finding that blocks only because the seat could not run the test itself (#763). Words that can
 # describe the code's behaviour (unavailable, not installed, cannot run) count only when the same
@@ -46,17 +50,35 @@ def parse(log: str) -> dict[str, str]:
     """Qualified test name (``mod.Class.test_x``) -> ``ok`` / ``FAIL`` / ``ERROR`` / ``skipped``.
 
     Tests sharing a method name in different classes or modules stay distinct. A test whose
-    subtests failed is ``FAIL``/``ERROR``: its own line then carries no result, only theirs do."""
+    subtests failed is ``FAIL``/``ERROR``: its own line then carries no result, only theirs do. A
+    test that logged while it ran gets the result that follows on a line of its own."""
     out: dict[str, str] = {}
+    waiting = None                     # a test whose line ended without its result
+
+    def record(qualified: str, word: str) -> None:
+        result = "skipped" if word.startswith("skipped") else word
+        if _RANK[result] >= _RANK.get(out.get(qualified), -1):
+            out[qualified] = result
+
+    def name_of(m) -> str:
+        name, where = m.group(1), m.group(2)
+        return where if where.endswith("." + name) else f"{where}.{name}"
+
     for raw in (_ANSI.sub("", log or "")).replace("\r", "").splitlines():
-        m = _PLAIN.match(raw.strip())
+        line = raw.strip()
+        m = _PLAIN.match(line)
         if m:
-            word = m.group(3)
-            name, where = m.group(1), m.group(2)
-            qualified = where if where.endswith("." + name) else f"{where}.{name}"
-            result = "skipped" if word.startswith("skipped") else word
-            if _RANK[result] >= _RANK.get(out.get(qualified), -1):
-                out[qualified] = result
+            record(name_of(m), m.group(3))
+            waiting = None
+            continue
+        start = _START.match(line)
+        if start:
+            waiting = name_of(start)
+            continue
+        alone = _ALONE.match(line)
+        if alone and waiting:
+            record(waiting, alone.group(1))
+            waiting = None
     return out
 
 

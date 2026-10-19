@@ -364,6 +364,14 @@ class CITestsBroker(pv.Broker):
 
 
 class CITestsUnit(unittest.TestCase):
+    def test_a_result_after_the_tests_own_output_is_its_result(self):
+        log = ("test_loud (m.C.test_loud) ... [diaktoros] queued\n"
+               "more output\n"
+               "ok\n"
+               "test_quiet (m.C.test_quiet) ... FAIL\n"
+               "ok\n")                                    # an "ok" with no test waiting: ignored
+        self.assertEqual(ci_tests.parse(log), {"m.C.test_loud": "ok", "m.C.test_quiet": "FAIL"})
+
     def test_a_subtest_failure_counts_for_its_test_and_the_worst_result_wins(self):
         log = ("test_sub (m.C.test_sub) ... \n"
                "  test_sub (m.C.test_sub) (v=1) ... FAIL\n"
