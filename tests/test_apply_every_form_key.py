@@ -61,6 +61,7 @@ PUSHES = {
     "required_checks": "tests (3.11), lint",
     "shadow_profile": "arbiter",
     "shadow_every": "7",
+    "shadow_escalate": "on",
     "human_paths": ".github/**, scripts/release*",
     "generated": "docs/commands.md=python3 tests/commands_doc.py --write",
     "fixer_check": "python3 tests/run_tests.py",
@@ -97,7 +98,7 @@ class ApplyEveryFormKey(unittest.TestCase):
         # trusted login per seat with its own token, an adjudicator, and a shadow reviewer.
         rc, out = self.run_cli(self.init_argv(
             "--clone", str(self.clone), "--reviewer", "rev-other", "--fixer", "fix-other",
-            "--reviewer-seat", tf.REV, "--shadow-profile", "critic",
+            "--reviewer-seat", tf.REV, "--shadow-profile", "critic", "--shadow-every", "1",
             "--adjudicator-login", tf.ADJ, "--token", f"{tf.ADJ}={self.pats['adj']}",
             "--token", f"rev-other={self.pats['rev-other']}",
             "--token", f"fix-other={self.pats['fix-other']}",

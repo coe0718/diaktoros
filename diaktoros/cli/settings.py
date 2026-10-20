@@ -616,12 +616,14 @@ def cmd_set(args) -> int:
         if names != (loop.get("generated") or []):
             changes["generated"] = names
     if getattr(args, "no_shadow", False) or getattr(args, "shadow_profile", None) is not None \
-            or getattr(args, "shadow_every", None) is not None:
+            or getattr(args, "shadow_every", None) is not None \
+            or getattr(args, "shadow_escalate", None) is not None:
         from ..config import settings_form
         try:
             shadow = settings_form.shadow_block(
                 loop.get("shadow"), "off" if args.no_shadow else args.shadow_profile,
-                args.shadow_every, "--shadow-profile/--shadow-every")
+                args.shadow_every, "--shadow-profile/--shadow-every/--shadow-escalate",
+                escalate=getattr(args, "shadow_escalate", None))   # "on" with --no-shadow: refused
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             return 2
@@ -1852,6 +1854,8 @@ def add_set(sub) -> None:  # noqa: ANN001
                          help="turn shadow reviews off")
     change.add_argument("--shadow-every", type=int, default=None,
                         help="shadow one in this many reviewer turns, 1-1000 (needs a shadow profile)")
+    change.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
+                        help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1")
     humans = change.add_mutually_exclusive_group()
     humans.add_argument("--human-path", action="append", default=None,
                         help="a glob pattern for paths only a human may approve (repeat it); replaces the list")

@@ -425,6 +425,17 @@ A shadow turn gets the reviewer's prompt and change view at that head, minus any
 - it pages nobody when it fails, and a failed one is not retried: it is a lost sample, not stuck work (a closed usage window still waits for its reset, which costs nothing);
 - `stats`, `retry` (unless `--seat shadow`) and `escalate` leave it out.
 
+**Holding the PR (`shadow.escalate`, #1004).** Off by default. With it on, a PR is **not ready
+to merge** while the shadow review of its head is still running, or after that review requested
+changes. `hermes dk ready` and `explain` say which (and `explain` won't recommend merging it);
+the ready-set notice leaves it out of the set. It needs `shadow.every: 1`,
+because a head the sampling skips would have no second review to hold it. A head with no shadow
+review to wait for is never held: one queued before escalate was on, or a shadow run that ended
+without a review, or a loop whose run ledger doesn't exist yet (`explain` notes it). A shadow run
+queued after the newest review of the head, such as a re-review, holds until it lands, even past
+an earlier approval. A run ledger that exists but can't be read holds, because unknown isn't ready. Set it with `set`/`init`/`setup --shadow-escalate on|off`, the settings form's *Shadow
+review holds the PR*, or the loop file.
+
 It reviews only code CI has passed, which is stricter than the reviewer. It waits, with nothing
 spent, while the PR conflicts or a required check is running, cancelled, missing or unreadable,
 whatever `review_after_ci` says (the reviewer waits for running checks only with it on). It never

@@ -183,6 +183,11 @@ SETTINGS_SCHEMA: dict = {
                      "description": "How often a reviewer turn also gets a shadow review, 1-1000 "
                                     "(1 = every one). Blank = not set here: the loop keeps its "
                                     "own value (default 5)"},
+    "shadow_escalate": {"label": "Shadow review holds the PR", "type": "str", "default": "",
+                        "description": "on: a PR is not ready to merge while its shadow review "
+                                       "is running, or after it requested changes (#1004). "
+                                       "Needs shadow every = 1. Blank = not set here: the loop "
+                                       "keeps its own value (default: off)"},
     "human_paths": {"label": "Human-only paths (comma-separated globs)", "type": "str",
                     "default": "",
                     "description": "Glob patterns, e.g. '.github/**, scripts/release*'. If a "
@@ -283,11 +288,25 @@ def _form_value(settings: dict | None, key: str):
     return None if value is None or str(value).strip() == "" else value
 
 
-def shadow_block(current, profile, every, where: str) -> dict | None:
-    """The ``shadow`` block (#218) after a form, ``init``/``setup`` or ``set`` names a profile
-    and/or ``every``; None when neither was named. ``off`` as the profile turns shadow reviews
-    off. ``every`` alone needs a profile, already set or named with it."""
-    if profile is None and every is None:
+def _on_off_value(value, where: str, name: str):
+    """``on``/``off`` (or a bool) as a bool; None when not given."""
+    if value is None or isinstance(value, bool):
+        return value
+    word = str(value).strip().lower()
+    if word in ("on", "true", "yes", "1"):
+        return True
+    if word in ("off", "false", "no", "0"):
+        return False
+    raise config.ConfigError(f"{where}: {name} must be on or off, got {value!r}")
+
+
+def shadow_block(current, profile, every, where: str, escalate=None) -> dict | None:
+    """The ``shadow`` block (#218) after a form, ``init``/``setup`` or ``set`` names a profile,
+    ``every`` and/or ``escalate`` (#1004); None when none was named. ``off`` as the profile turns
+    shadow reviews off. ``every`` and ``escalate on`` need a profile, already set or named with
+    it; ``escalate off`` without one changes nothing."""
+    escalate = _on_off_value(escalate, where, "shadow escalate")
+    if profile is None and every is None and escalate is None:
         return None
     shadow = dict(current or {})
     if profile is not None:
@@ -298,6 +317,14 @@ def shadow_block(current, profile, every, where: str) -> dict | None:
             raise config.ConfigError(f"{where}: a shadow review rate needs a shadow profile "
                                      "(name one with it)")
         shadow["every"] = config._form_int(every)
+    if escalate is not None:
+        if escalate and not shadow.get("profile"):
+            raise config.ConfigError(f"{where}: shadow escalate needs a shadow profile "
+                                     "(name one with it)")
+        if escalate:
+            shadow["escalate"] = True
+        else:
+            shadow.pop("escalate", None)
     return config.normalize_shadow(shadow, where)
 
 
@@ -384,7 +411,8 @@ def apply_settings(loop_raw: dict, settings: dict | None) -> dict:
     if _form_value(settings, "fixer_check") is not None:
         overlaid["fixer_check"] = config.check_fixer_check(d["fixer_check"], "settings")
     shadow = shadow_block(overlaid.get("shadow"), _form_value(settings, "shadow_profile"),
-                          _form_value(settings, "shadow_every"), "settings")
+                          _form_value(settings, "shadow_every"), "settings",
+                          escalate=_form_value(settings, "shadow_escalate"))
     if shadow is not None:
         overlaid["shadow"] = shadow
     # Turn knobs (#309): validated like the CLI/loop file, and only when the form names them.

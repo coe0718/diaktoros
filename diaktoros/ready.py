@@ -6,7 +6,7 @@ the reason for every PR it leaves out. The loop never merges.
 A PR is ready when it is approved at its head (the same effective-review predicate the gates use),
 that approval is not stale (#473, ``stale_approval.is_stale``), the required checks at the head are
 green (``ci.gating``), GitHub calls it mergeable, and nothing holds it: no draft, open gate failure,
-human-paths hold, escalation or same-head retarget quarantine. A retarget quarantine blocks only
+human-paths hold, escalation, shadow-review hold (#1004) or same-head retarget quarantine. A retarget quarantine blocks only
 while its fresh review is owed: a host-receipted approval at the head ends it (#791). Anything
 unreadable is an exclusion, never a guess. An issue-fix hold (``st.fix_holds()``) is not a hold on a PR: it means
 the issue waits for its origin PR to merge, so it never excludes that PR (#759).
@@ -115,6 +115,9 @@ def assess(loop: dict, st, pr: dict, reviews, ci_state, detail: dict | None) -> 
             marker if isinstance(marker, dict) else {}, head) in {"awaiting-adjudication",
                                                                   "adjudicating"}:
         why.append("escalated: parked awaiting adjudication")
+    shadow_held, _note = gate.shadow_hold(loop, number, head)          # #1004
+    if shadow_held:
+        why.append("shadow review: " + shadow_held)
     # The hold blocks only while the fresh review is still owed. ``reviews`` above are already the
     # host-receipted post-boundary ones, so an approval found there ends the hold's veto, as in
     # the gates (#791). An unreadable review list never counts as approved.

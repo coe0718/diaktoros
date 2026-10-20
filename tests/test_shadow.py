@@ -583,6 +583,32 @@ class Cli(unittest.TestCase):
                 self.assertEqual(rc, 0, out)
                 self.assertEqual(self.shadow(), want)
 
+    def test_init_takes_shadow_escalate_from_the_form_and_the_flag(self):
+        # #1004 (shadow review of #1097, F3): init's own path for the setting, form and flag.
+        form = {"shadow_profile": "grok", "shadow_every": "1", "shadow_escalate": "on"}
+        for extra, settings, want in (
+                ((), form, {"profile": "grok", "every": 1, "escalate": True}),
+                (("--shadow-escalate", "off"), form, {"profile": "grok", "every": 1}),
+                (("--shadow-profile", "x", "--shadow-every", "1", "--shadow-escalate", "on"),
+                 None, {"profile": "x", "every": 1, "escalate": True})):
+            with self.subTest(extra=extra, settings=settings):
+                self.file.unlink(missing_ok=True)
+                rc, out = self.init(*extra, settings=settings)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self.shadow(), want)
+        self.file.unlink(missing_ok=True)
+        rc, out = self.init("--shadow-profile", "x", "--shadow-escalate", "on")
+        self.assertNotEqual(rc, 0)                         # every defaults to 5: refused
+        self.assertIn("every 1", out)
+
+    def test_setup_hands_init_shadow_escalate(self):
+        from diaktoros.cli import install as cli_install
+        t = self.t
+        args = t.parser_for({}).parse_args(["setup", "--repo", t.REPO, "--shadow-profile", "x",
+                                            "--shadow-every", "1", "--shadow-escalate", "on"])
+        argv, _ = cli_install._setup_init_argv(args, t.REPO, LOOP_ID, interactive=False)
+        self.assertIn("--shadow-escalate=on", argv)
+
     def test_set_turns_it_on_rates_it_off_and_refuses_and_apply_moves_it(self):
         self.assertEqual(self.init()[0], 0)
         rc, out = self.cli("set", "--loop", LOOP_ID, "--shadow-every", "2")

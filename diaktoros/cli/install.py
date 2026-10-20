@@ -327,6 +327,19 @@ def cmd_init(args) -> int:
             print(f"refused: --observer-weekly-report: {exc}")
             return 2
 
+    # Shadow reviews (#218, #1004): the flags win, else the plugin settings. Built before the
+    # loop dict so a bad value is a refusal, not a traceback.
+    try:
+        shadow = settings_form.shadow_block(
+            {}, (args.shadow_profile if getattr(args, "shadow_profile", None) is not None
+                 else settings_form._form_value(d, "shadow_profile")),
+            (args.shadow_every if getattr(args, "shadow_every", None) is not None
+             else settings_form._form_value(d, "shadow_every")), "init",
+            escalate=(args.shadow_escalate if getattr(args, "shadow_escalate", None) is not None
+                      else settings_form._form_value(d, "shadow_escalate"))) or {}
+    except config.ConfigError as exc:
+        print(f"refused: {exc}")
+        return 2
     raw = {
         "id": args.id or args.repo.split("/")[-1],
         "repo": args.repo, "base": args.base, "cap": args.cap,
@@ -343,12 +356,8 @@ def cmd_init(args) -> int:
         },
         "adjudicator": ({"route": args.adjudicator_route, "profile": adjudicator_profile}
                         if args.adjudicator_route else {}),
-        # Shadow reviews (#218): the flags win, else the plugin settings.
-        "shadow": settings_form.shadow_block(
-            {}, (args.shadow_profile if getattr(args, "shadow_profile", None) is not None
-                 else settings_form._form_value(d, "shadow_profile")),
-            (args.shadow_every if getattr(args, "shadow_every", None) is not None
-             else settings_form._form_value(d, "shadow_every")), "init") or {},
+        # Shadow reviews (#218): the flags win, else the plugin settings (built above).
+        "shadow": shadow,
         "skill": args.skill,
         "tokens": tokens, "read_token": args.read_token,
         "clone": args.clone, "roots": args.root or [],
@@ -813,6 +822,8 @@ def _setup_init_argv(args, repo: str, loop_id: str, interactive: bool) -> tuple[
         argv.append(f"--shadow-profile={str(shadow).strip()}")
     if getattr(args, "shadow_every", None) is not None:
         argv.append(f"--shadow-every={args.shadow_every}")
+    if getattr(args, "shadow_escalate", None) is not None:
+        argv.append(f"--shadow-escalate={args.shadow_escalate}")
     reviewed = (args.review_only if getattr(args, "review_only", None) is not None else
                 [name for name in _ask("GitHub logins whose PRs the reviewer reviews but the fixer "
                                        "never touches, comma-separated (blank: none)",
@@ -1060,6 +1071,8 @@ def add_init(sub, d, both) -> None:  # noqa: ANN001
                      help="the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none)")
     init.add_argument("--shadow-every", type=int, default=None,
                      help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
+    init.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
+                      help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off)")
     init.add_argument("--human-path", action="append", default=None,
                       help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     init.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
@@ -1153,6 +1166,8 @@ def add_setup(sub) -> None:  # noqa: ANN001
                       help="the Hermes profile shadow reviews run as (#218): a second reviewer model whose verdicts are recorded, never posted (default: the plugin setting, else none)")
     first.add_argument("--shadow-every", type=int, default=None,
                       help="shadow one in this many reviewer turns, 1-1000 (default: the plugin setting, else 5)")
+    first.add_argument("--shadow-escalate", choices=("on", "off"), default=None,
+                       help="on: a PR is not ready to merge while its shadow review is running, or after it requested changes (#1004); needs --shadow-every 1 (default: the plugin setting, else off)")
     first.add_argument("--human-path", action="append", default=None,
                        help="a glob pattern for paths only a human may approve: the loop's approval of a diff touching one is left to a person (repeat it; none = no path reserved) (default: the plugin setting)")
     first.add_argument("--generated", action="append", default=None, metavar="PATH[,PATH]=COMMAND",
