@@ -219,6 +219,15 @@ class Between(Base):
             con.execute("ALTER TABLE rulings DROP COLUMN shadow_run")
             self.assertNotIn("shadow_run", {r[1] for r in con.execute("PRAGMA table_info(rulings)")})
 
+    def test_the_rulings_ddl_has_no_inline_comment(self):
+        # sqlite keeps the CREATE TABLE text verbatim; a "--" comment inside it makes some
+        # SQLite builds fail ALTER TABLE ... DROP COLUMN ("incomplete input"), which is how
+        # this suite's drop_column helper (and an operator's own repair) rebuilds an old ledger.
+        run_supervisor.Supervisor(self.db)
+        with closing(sqlite3.connect(self.db)) as con:
+            sql = con.execute("SELECT sql FROM sqlite_master WHERE name='rulings'").fetchone()[0]
+        self.assertNotIn("--", sql)
+
     def test_a_ledger_without_the_column_is_read_by_time(self):
         # gate._rulings_at's OperationalError fallback: no column reads as NULL (time rule).
         self.shadow("REQUEST_CHANGES")

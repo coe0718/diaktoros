@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS operator_notices (
 );
 -- One adjudicator ruling per run, recorded BEFORE any notice or GitHub write.
 -- notice: operator outbox (cron stdout) delivery; comment: optional PR comment.
+-- shadow_run: the shadow review (shadow_reviews.run_id) the adjudicator was shown (#1112); ''
+-- when it was shown none, NULL on a ruling from before this column (time rule). Kept out of
+-- the statement: a comment inside it is stored in sqlite_master and breaks DROP COLUMN.
 CREATE TABLE IF NOT EXISTS rulings (
  run_id TEXT PRIMARY KEY REFERENCES runs(id), repo TEXT NOT NULL,
  pr INTEGER NOT NULL, head TEXT NOT NULL, turn_key TEXT NOT NULL,
@@ -58,8 +61,6 @@ CREATE TABLE IF NOT EXISTS rulings (
  observer TEXT NOT NULL DEFAULT 'pending', notice TEXT NOT NULL DEFAULT 'pending',
  notice_delivered REAL, comment TEXT NOT NULL DEFAULT 'pending',
  comment_id INTEGER, comment_error TEXT, updated REAL NOT NULL,
- -- The shadow review (shadow_reviews.run_id) the adjudicator was shown (#1112); '' when it was
- -- shown none, NULL on a ruling from before this column (those fall back to the time rule).
  shadow_run TEXT
 );
 -- The fixer's one answers comment per run (#52): 'posting' is committed before the POST, so a
