@@ -8,7 +8,16 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from diaktoros import broker, config, desktop_api, gate_failures, gh, main_check, safe_push, state
+from diaktoros import broker, config, desktop_api, gate_failures, gh, main_check, observer, safe_push, state
+
+
+def watchdog_writer():
+    path = Path(__file__).resolve().parents[1] / 'scripts/watchdog.py'
+    spec = importlib.util.spec_from_file_location('records_watchdog_writer', path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def require_records_prereqs(test, dependencies=('fastapi', 'httpx')):
@@ -69,10 +78,31 @@ class Records(unittest.TestCase):
         main_check._remember(st, self.directory / main_check.FILE, 'green', 'b' * 40)
         main_check._remember(st, self.directory / main_check.FILE, 'notified', 'c' * 40)
 
+    def notice(self, event='stall', number=12, receipt=(False, 'private secret', True), **kwargs):
+        self.loop['observer'] = {'route': 'private', 'deliver': 'telegram'}
+        with patch.object(observer, '_post', return_value=receipt):
+            observer.notify(self.loop, state.state_for(self.loop), event, number, 'a' * 40,
+                            outcome='/home/private github_pat_secret', **kwargs)
+
+    def watch(self):
+        writer = watchdog_writer()
+        state.state_for(self.loop).watch_save({
+            'last_run': '2027-01-15T08:00:00Z',
+            'heads': {'12': {'sha': 'a' * 40, 'base': '/home/private',
+                             'base_sha': 'b' * 40, 'observed_at': None,
+                             'last_seen_at': 1800000000}},
+            'head_history': {'12:' + 'c' * 40 + ':private:secret': {
+                'sha': 'c' * 40, 'base': 'private', 'base_sha': 'd' * 40,
+                'observed_at': 1799999900, 'last_seen_at': 1799999990}},
+            'alerts': {writer.stall_key(12, 'a' * 40, 'reviewer never posted a verdict'): 1800000000,
+                       'queue:fixer:private#12': 1800000000},
+            'github_read': {'error': '/home/private secret', 'who': 'private-login'}})
+
     def test_missing_is_not_verified_empty(self):
         view = self.view()
-        self.assertEqual(set(view), {'loop', 'repo', 'read_at', 'failures', 'broker', 'main_ci'})
-        for key in ('failures', 'broker', 'main_ci'):
+        self.assertEqual(set(view), {'loop', 'repo', 'read_at', 'failures', 'broker', 'main_ci',
+                                    'observer', 'watchdog'})
+        for key in ('failures', 'broker', 'main_ci', 'observer', 'watchdog'):
             self.assertEqual(view[key], {'status': 'missing', 'reason': 'not_recorded', 'items': []})
 
     def test_real_writers_contract_and_secret_exclusion(self):
@@ -192,11 +222,17 @@ class Records(unittest.TestCase):
         self.failure()
         self.audit()
         self.main()
+        self.notice()
+        self.watch()
         before = {str(path.relative_to(self.root)): path.read_bytes()
                   for path in self.root.rglob('*') if path.is_file()}
         with patch.object(gate_failures.Ledger, 'payload',
-                          side_effect=AssertionError('payload forbidden')):
-            self.view()
+                          side_effect=AssertionError('payload forbidden')), \
+                patch.object(observer, '_read', side_effect=AssertionError('unbounded reader forbidden')), \
+                patch.object(state.LoopState, 'watch', side_effect=AssertionError('unbounded reader forbidden')):
+            result = self.view()
+            self.assertEqual(result['observer']['status'], 'available')
+            self.assertEqual(result['watchdog']['status'], 'available')
         after = {str(path.relative_to(self.root)): path.read_bytes()
                  for path in self.root.rglob('*') if path.is_file()}
         self.assertEqual(before, after)
@@ -238,6 +274,166 @@ class Records(unittest.TestCase):
                 self.loop['required_checks'] = checks
                 self.assertEqual(self.view()['main_ci']['status'], 'unreadable')
 
+    def test_observer_real_notice_receipts_and_digest_preserve_recorded_states(self):
+        cases = ((False, 'private secret', True, 'uncertain'),
+                 (False, 'private secret', False, 'failed'),
+                 (True, '', False, 'delivered'))
+        for number, (delivered, error, uncertain, status) in enumerate(cases, 1):
+            self.notice(number=number, receipt=(delivered, error, uncertain))
+        rows = self.view()['observer']['items']
+        self.assertEqual({row['number']: row['status'] for row in rows},
+                         {1: 'uncertain', 2: 'failed', 3: 'delivered'})
+        self.assertTrue(all(row['attempts'] == 1 for row in rows))
+        self.assertEqual(set(rows[0]), {'event', 'number', 'head', 'status', 'at', 'attempts', 'issue'})
+        self.loop['observer']['digest_min'] = 10
+        st = state.state_for(self.loop)
+        with patch.object(observer, '_post', return_value=(False, 'private secret', True)):
+            observer.notify(self.loop, st, 'triaged', 99, '', identity='private secret')
+            queued = next(row for row in self.view()['observer']['items'] if row['number'] == 99)
+            self.assertEqual((queued['status'], queued['attempts'], queued['issue']), ('queued', 0, True))
+            observer.flush(self.loop, st)
+        rows = self.view()['observer']['items']
+        digest = next(row for row in rows if row['event'] == 'digest')
+        self.assertEqual((digest['number'], digest['status'], digest['issue']), (None, 'uncertain', None))
+        member = next(row for row in rows if row['number'] == 99)
+        self.assertEqual((member['status'], member['attempts']), ('uncertain', 0))
+        observer.settle(st, observer.key_for(self.loop, 1, 'a' * 40, 'stall'), delivered=True)
+        self.assertEqual(next(row for row in self.view()['observer']['items']
+                              if row['number'] == 1)['status'], 'delivered')
+        for value in ('private', 'secret', 'message', 'summary', 'url', 'delivery', str(self.root)):
+            self.assertNotIn(value, json.dumps(self.view()))
+
+    def test_pending_notice_is_not_a_delivery_and_report_has_no_pr(self):
+        self.loop['observer'] = {'route': 'private'}
+        st = state.state_for(self.loop)
+        with patch.object(observer, '_deliver', return_value=False):
+            observer.notify(self.loop, st, 'held', 12, 'a' * 40)
+        row = self.view()['observer']['items'][0]
+        self.assertEqual((row['status'], row['attempts']), ('pending', 0))
+        with patch.object(observer, '_post', return_value=(False, 'private secret', True)):
+            observer.send_report(self.loop, st, 'private identity', 'private message')
+        report = next(row for row in self.view()['observer']['items'] if row['event'] == 'report')
+        self.assertEqual((report['number'], report['head'], report['status']), (0, '', 'uncertain'))
+
+    def test_selected_loop_runtime_records_do_not_mix_repositories(self):
+        self.notice()
+        self.watch()
+        other = {**self.loop, 'id': 'other', 'repo': 'other/repo',
+                 'state_dir': str(self.root / 'other')}
+        state.state_for(other).watch_save({'alerts': {'23:bbbbbbb:fixer never pushed': 1}})
+        with patch.object(config, 'readable_loops', return_value=([self.loop, other], [])):
+            first = desktop_api.records_view('widgets')
+            second = desktop_api.records_view('other')
+        self.assertEqual({row.get('pr') for row in first['watchdog']['items'] if 'pr' in row}, {12})
+        self.assertEqual(second['watchdog']['items'][0]['pr'], 23)
+        self.assertEqual(second['observer']['status'], 'missing')
+
+    def test_watchdog_head_history_and_cooldown_memory_are_not_live_health(self):
+        self.watch()
+        rows = self.view()['watchdog']['items']
+        by_kind = {row['kind']: row for row in rows}
+        self.assertEqual(set(by_kind), {'sweep', 'head', 'head_history', 'stall'})
+        self.assertEqual(by_kind['head'], {'kind': 'head', 'pr': 12, 'head': 'a' * 40,
+                                          'observed_at': None, 'at': 1800000000})
+        self.assertEqual(by_kind['head_history']['head'], 'c' * 40)
+        self.assertEqual(by_kind['stall'], {'kind': 'stall', 'pr': 12, 'head7': 'a' * 7,
+                                           'category': 'reviewer_missing', 'at': 1800000000})
+        self.assertEqual(by_kind['sweep']['at'], 1800000000)
+        for value in ('private', 'secret', 'github_read', 'base', 'healthy', str(self.root)):
+            self.assertNotIn(value, json.dumps(self.view()))
+
+    def test_watchdog_real_stall_key_categories_and_unknown_prose_are_sanitized(self):
+        writer = watchdog_writer()
+        kinds = {'reviewer never posted a verdict': 'reviewer_missing',
+                 'fixer never pushed — private prose': 'fixer_missing',
+                 'parked awaiting adjudication for 3h': 'awaiting_adjudication',
+                 'adjudicating for 3h': 'adjudicating',
+                 writer.PUSH_OFF_KIND: 'fixer_push_disabled',
+                 '3 verdicts, no approval and NO escalation marker': 'missing_escalation',
+                 'disputed at head aaaaaaa': 'disputed',
+                 '/home/private github_pat_secret': 'unknown'}
+        st = state.state_for(self.loop)
+        for kind, category in kinds.items():
+            with self.subTest(kind=kind):
+                st.watch_save({'alerts': {writer.stall_key(12, 'a' * 40, kind): 10}})
+                self.assertEqual(self.view()['watchdog']['items'], [
+                    {'kind': 'stall', 'pr': 12, 'head7': 'a' * 7, 'category': category, 'at': 10}])
+
+    def test_observer_watchdog_malformed_fields_fail_without_hiding_other_sections(self):
+        self.audit()
+        cases = {'observations.json': [[], {}, {'entries': []}, {'entries': {'private': None}},
+                    {'entries': {'private': {'event': 'stall', 'number': True, 'at': 1}}}],
+                 'watchdog.json': [[], {'last_run': 'private secret'}, {'last_run': True},
+                    {'last_run': '2026-99-99T00:00:00Z'}, {'heads': []},
+                    {'heads': {'12': None}}, {'head_history': {'secret': {}}},
+                    {'heads': {'12': {'sha': 'a' * 40, 'observed_at': True, 'last_seen_at': 1}}},
+                    {'head_history': {'12:secret': {'sha': 'private', 'observed_at': None,
+                                                  'last_seen_at': 1}}},
+                    {'alerts': []}, {'alerts': {'private secret': 1}},
+                    {'alerts': {'12:aaaaaaa:secret': float('nan')}}]}
+        for name, values in cases.items():
+            section = 'observer' if name == 'observations.json' else 'watchdog'
+            for value in values:
+                with self.subTest(name=name, value=value):
+                    (self.directory / name).write_text(json.dumps(value))
+                    result = self.view()
+                    self.assertEqual(result[section],
+                                     {'status': 'unreadable', 'reason': 'malformed', 'items': []})
+                    self.assertEqual(result['broker']['status'], 'available')
+
+    def test_runtime_records_unknown_enums_are_categories_not_raw_text(self):
+        self.notice()
+        path = self.directory / 'observations.json'
+        data = json.loads(path.read_text())
+        entry = next(iter(data['entries'].values()))
+        entry.update(event='/home/private secret', status='github_pat_secret')
+        observer._save(path, data)
+        row = self.view()['observer']['items'][0]
+        self.assertEqual((row['event'], row['status']), ('unknown', 'unknown'))
+        for field, value in (('at', True), ('attempts', -1), ('number', []),
+                             ('head', 'private secret'), ('issue', 'false')):
+            with self.subTest(field=field):
+                observer._save(path, {'entries': {'private': {**entry, field: value}}})
+                self.assertEqual(self.view()['observer']['reason'], 'malformed')
+
+    def test_runtime_records_bound_counts_and_bytes(self):
+        self.notice()
+        path = self.directory / 'observations.json'
+        entry = next(iter(json.loads(path.read_text())['entries'].values()))
+        observer._save(path, {'entries': {str(n): {**entry, 'at': n} for n in range(70)}})
+        self.assertEqual([row['at'] for row in self.view()['observer']['items']], list(range(69, 19, -1)))
+        st = state.state_for(self.loop)
+        st.watch_save({'heads': {str(n): {'sha': 'a' * 40, 'observed_at': None,
+                                         'last_seen_at': n} for n in range(1, 71)}})
+        self.assertEqual([row['pr'] for row in self.view()['watchdog']['items']], list(range(70, 20, -1)))
+        st.watch_save({'alerts': {str(n): 1 for n in range(1001)}})
+        self.assertEqual(self.view()['watchdog']['reason'], 'too_large')
+        observer._save(path, {'entries': {str(n): entry for n in range(1001)}})
+        self.assertEqual(self.view()['observer']['reason'], 'too_large')
+
+    def test_runtime_records_refuse_unsafe_files_and_parent_symlinks(self):
+        for name, section in (('observations.json', 'observer'), ('watchdog.json', 'watchdog')):
+            path = self.directory / name
+            for kind in ('fifo', 'symlink', 'directory', 'large'):
+                with self.subTest(section=section, kind=kind):
+                    if kind == 'fifo':
+                        os.mkfifo(path)
+                    elif kind == 'symlink':
+                        path.symlink_to(self.root / 'not-read-secret')
+                    elif kind == 'directory':
+                        path.mkdir()
+                    else:
+                        path.write_bytes(b' ' * (desktop_api.RECORDS_BYTES + 1))
+                    result = self.view()[section]
+                    self.assertEqual((result['status'], result['reason']),
+                                     ('unreadable', 'too_large' if kind == 'large' else 'unsafe_file'))
+                    path.rmdir() if path.is_dir() else path.unlink()
+        real = self.root / 'real'
+        self.directory.rename(real)
+        self.directory.symlink_to(real, target_is_directory=True)
+        for section in ('observer', 'watchdog'):
+            self.assertEqual(self.view()[section]['reason'], 'unsafe_file')
+
     def test_shared_js_fixture_is_exact_real_writer_projection(self):
         self.loop.update(id='fixture-loop', repo='fixture/repo', required_checks=['tests'])
         with patch('time.time', return_value=1800000000):
@@ -245,6 +441,8 @@ class Records(unittest.TestCase):
             safe_push._audit(self.loop, {'repo': self.loop['repo'], 'pr': 651, 'old_head': 'a' * 40,
                                         'role': 'fixer', 'operation': 'push', 'phase': 'attempt'})
             self.main()
+            self.notice(number=651, receipt=(True, '', False))
+            self.watch()
             actual = desktop_api.records_view('fixture-loop')
         expected = json.loads((Path(__file__).parent / 'fixtures/desktop_records.json').read_text())
         self.assertEqual(actual, expected)
@@ -263,11 +461,16 @@ class Records(unittest.TestCase):
         self.failure()
         self.audit()
         self.main()
+        self.notice()
+        self.watch()
         with TestClient(app) as client:
             reply = client.get('/api/plugins/diaktoros/records', params={'loop': 'widgets'})
             self.assertEqual(reply.status_code, 200)
             self.assertEqual(reply.json()['failures']['items'][0]['kind'], 'timeout')
             self.assertEqual(reply.json()['main_ci']['items'][0]['required_checks'], self.loop['required_checks'])
+            self.assertEqual(reply.json()['observer']['items'][0]['status'], 'uncertain')
+            self.assertEqual({row['kind'] for row in reply.json()['watchdog']['items']},
+                             {'sweep', 'head', 'head_history', 'stall'})
             refused = client.get('/api/plugins/diaktoros/records', params={'loop': 'missing'})
             self.assertEqual(refused.status_code, 404)
             self.assertNotIn(str(self.root), refused.text)

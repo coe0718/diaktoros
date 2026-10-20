@@ -4,5 +4,7 @@
   "read_at": 1800000000,
   "failures": {"status": "available", "reason": "recorded", "items": [{"id": "bc1eae16c0f85d30", "gate": "gate_reviewer", "kind": "timeout", "pr": 651, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "first_at": 1800000000, "last_at": 1800000000, "attempts": 1, "redrives": 0}]},
   "broker": {"status": "available", "reason": "recorded", "items": [{"at": 1800000000, "pr": 651, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "role": "fixer", "operation": "push", "phase": "attempt", "outcome": "unknown"}]},
-  "main_ci": {"status": "available", "reason": "recorded", "items": [{"green": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "notified": "cccccccccccccccccccccccccccccccccccccccc", "required_checks": ["tests"]}]}
+  "main_ci": {"status": "available", "reason": "recorded", "items": [{"green": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "notified": "cccccccccccccccccccccccccccccccccccccccc", "required_checks": ["tests"]}]},
+  "observer": {"status": "available", "reason": "recorded", "items": [{"event": "stall", "number": 651, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "delivered", "at": 1800000000, "attempts": 1, "issue": false}]},
+  "watchdog": {"status": "available", "reason": "recorded", "items": [{"kind": "sweep", "at": 1800000000}, {"kind": "head", "pr": 12, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "observed_at": null, "at": 1800000000}, {"kind": "stall", "pr": 12, "head7": "aaaaaaa", "category": "reviewer_missing", "at": 1800000000}, {"kind": "head_history", "pr": 12, "head": "cccccccccccccccccccccccccccccccccccccccc", "observed_at": 1799999900, "at": 1799999990}]}
 }
