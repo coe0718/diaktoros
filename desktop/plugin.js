@@ -43,8 +43,9 @@ const HEALTH_STALE_MS = 600000
 let rest = null
 let storage = null
 let disposeRegistration = null
-// Server-owned query namespaces only. In particular, never invalidate the client focus handoff.
-const SERVER_QUERIES = ['now', 'overview', 'loops', 'pr', 'stats', 'settings', 'hooks', 'health', 'records']
+// Cheap server reads only. Never invalidate the client focus handoff or the expensive doctor
+// sweep: local socket changes are not a reason to repeat token/GitHub diagnostics.
+const SERVER_QUERIES = ['now', 'overview', 'loops', 'pr', 'stats', 'settings', 'hooks', 'records']
 // The status chip reports the loop it highlights and the page must open that loop, but the SDK
 // hands a route's render no location. Both halves live in this one file and share the app's query
 // cache, so the chip writes the loop here and the page observes it: the handoff works when the
@@ -288,17 +289,34 @@ function usePr(loop, pr) {
   })
 }
 
-function useHealth(loop, probe) {
-  // The probe reads the loop's own tokens, so it is a different read, not a refresh of this one:
-  // its own cache entry, and it only ever runs because the operator asked for it.
-  const params = []
-  if (loop) params.push('loop=' + encodeURIComponent(loop))
-  if (probe) params.push('probe=1')
+function useHealth(loop) {
   return useQuery({
-    queryKey: [ID, 'health', loop, probe ? 'probe' : 'local'],
-    queryFn: () => call('/health' + (params.length ? '?' + params.join('&') : '')),
+    queryKey: [ID, 'health', loop, 'probe'],
+    queryFn: async () => {
+      const data = await call('/health?loop=' + encodeURIComponent(loop) + '&probe=1')
+      const object = value => value && typeof value === 'object' && !Array.isArray(value)
+      if (!object(data) || data.loop !== loop || typeof data.repo !== 'string' ||
+          typeof data.offline !== 'boolean' || !Number.isFinite(data.read_at) || data.read_at < 0 ||
+          !Array.isArray(data.checks) || !object(data.counts) ||
+          !data.checks.every(check => object(check) && typeof check.name === 'string' &&
+            ['verified', 'skipped', 'mismatch', 'absent', 'unknown'].includes(check.status) &&
+            typeof check.detail === 'string' && typeof check.fix === 'string' &&
+            typeof check.paused === 'boolean') ||
+          !Object.values(data.counts).every(count => Number.isSafeInteger(count) && count >= 0)) throw invalidResponse('health')
+      const counts = {}
+      for (const check of data.checks) counts[check.status] = (counts[check.status] || 0) + 1
+      if (Object.keys(data.counts).length !== Object.keys(counts).length ||
+          Object.keys(counts).some(status => counts[status] !== data.counts[status])) throw invalidResponse('health')
+      return data
+    },
     enabled: !!loop,
+    // A full doctor read is automatic on page entry, not on each local poll/socket hint.
+    // Share fresh reads for ten minutes; failures remain explicit/manual, never a retry storm.
+    retry: false,
+    retryOnMount: false,
+    refetchOnReconnect: false,
     refetchOnWindowFocus: false,
+    refetchInterval: false,
     staleTime: HEALTH_STALE_MS
   })
 }
@@ -871,14 +889,14 @@ function otherStates(states) {
 
 function Health({ loop }) {
   const [showAll, setShowAll] = useState(false)
-  const [probe, setProbe] = useState(false)
-  const health = useHealth(loop, probe)
+  const health = useHealth(loop)
+  const state = useViewState(health, false, HEALTH_STALE_MS)
   const checks = (health.data && health.data.checks) || []
   const counts = (health.data && health.data.counts) || {}
 
   // The failures first: an install is read for what is wrong with it, not for its 40 verified
-  // lines. Then what could not be read at all — an unprobed check is not a passing one, and the
-  // offline set is exactly what Probe GitHub is for. "Show all" reaches the rest without hiding
+  // lines. Then what could not be read at all — an unprobed check is not a passing one, and an
+  // offline response is disclosed rather than hidden. "Show all" reaches the rest without hiding
   // that they were checked.
   const attention = checks.filter(c => c.status === 'mismatch' || c.status === 'absent')
   const unprobed = checks.filter(c => c.status === 'unknown')
@@ -901,18 +919,15 @@ function Health({ loop }) {
                 jsx(Badge, { size: 'xs', variant: CHECK_TONE[name] || 'muted', children: counts[name] + ' ' + name }, name)
               ),
             jsx('div', { className: 'flex-1' }),
-            health.data && health.data.offline
-              ? button('Probe GitHub', () => setProbe(true), health.isFetching)
-              : null,
-            button(health.isFetching ? 'Checking…' : 'Re-check', () => health.refetch(), health.isFetching),
+            button(health.isFetching ? 'Checking…' : 'Refresh GitHub', () => health.refetch(), health.isFetching || !loop),
             checks.length
               ? button(showAll ? 'Only problems' : 'Show all ' + checks.length, () => setShowAll(!showAll), false)
               : null
           ]
         }),
-        health.isError
-          ? jsx(ErrorLine, { error: health.error, children: 'the health view did not answer' })
-          : jsx('div', {
+        jsx(QueryStatus, { query: health, state, label: 'Health', noLedger: false }),
+        health.data || health.isLoading
+          ? jsx('div', {
               className: 'rounded-md border border-(--ui-stroke-secondary) px-3',
               children: health.isLoading
                 ? jsx('div', { className: 'py-2', children: jsx(Muted, { text: 'Checking…' }) })
@@ -922,16 +937,16 @@ function Health({ loop }) {
                       className: 'py-2',
                       children: jsx(Muted, { text: cleanLine(counts, checks.length) })
                     })
-            }),
+            }) : null,
         jsx(Muted, {
           text: health.data && health.data.offline
-            ? 'The installation’s own preflight, read offline: the gateway, the hooks, token expiry ' +
-              'and scopes, and the labels are left unprobed — nothing here fires a route or a ' +
-              'GitHub call. Probe GitHub reads them with this loop’s own tokens, from this machine ' +
-              'only; hermes dk doctor does the same in a terminal.'
-            : 'Read on demand with this loop’s own tokens: the gateway, every hook with its latest ' +
+            ? 'This response came back offline: the gateway, the hooks, token expiry and scopes, ' +
+              'and the labels were left unprobed. Refresh GitHub asks again for the probed set with ' +
+              'this loop’s own tokens, from this machine only; hermes dk doctor does the same in a ' +
+              'terminal.'
+            : 'Automatically read when this loop opens, using its own tokens on this machine: the gateway, every hook with its latest ' +
               'delivery and decision, token expiry and scopes, and the labels — the same set ' +
-              'hermes dk doctor reads.'
+              'hermes dk doctor reads. Shared for ten minutes; Refresh GitHub checks again. Not polled.'
         })
       ]
     })

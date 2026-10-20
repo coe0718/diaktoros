@@ -49,35 +49,51 @@ def _answer(fn, *args):
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
+def _read_answer(fn, *args):
+    """Read failures are unavailable, never a successful empty result or raw transport text.
+
+    Keep the shared operation/refusal mapping, but bound unexpected store/runtime failures
+    at the HTTP read boundary. Writes deliberately keep their existing exception semantics:
+    an exception after a write cannot establish whether that write happened.
+    """
+    try:
+        return _answer(fn, *args)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503,
+                            detail='Desktop read unavailable; retry the read.') from None
+
+
 @router.get("/loops")
 def loops():
-    return {"loops": desktop_api.loops()}
+    return {"loops": _read_answer(desktop_api.loops)}
 
 
 @router.get("/stats")
 def stats(loop: str | None = None, since: str = "7d"):
-    return _answer(desktop_api.stats_view, loop, since)
+    return _read_answer(desktop_api.stats_view, loop, since)
 
 
 @router.get("/now")
 def now(loop: str | None = None):
-    return _answer(desktop_api.now_view, loop)
+    return _read_answer(desktop_api.now_view, loop)
 
 
 @router.get("/records")
 def records(loop: str | None = None):
     """Read-only bounded local artifacts; deliberately no live CI or authorization probe."""
-    return _answer(desktop_api.records_view, loop)
+    return _read_answer(desktop_api.records_view, loop)
 
 
 @router.get("/overview")
 def overview():
-    return _answer(desktop_api.overview_view)
+    return _read_answer(desktop_api.overview_view)
 
 
 @router.get("/pr")
 def pr(pr: int, loop: str | None = None):
-    return _answer(desktop_api.pr_view, loop, pr)
+    return _read_answer(desktop_api.pr_view, loop, pr)
 
 
 @router.get("/health")
@@ -85,18 +101,18 @@ def health(request: Request, loop: str | None = None, probe: bool = False):
     client = request.client
     # The whole header mapping goes down, not one value: presence is what refuses, and an empty
     # X-Forwarded-For is still a forwarding header (#648 review, F1).
-    return _answer(desktop_api.health_view, loop, probe,
+    return _read_answer(desktop_api.health_view, loop, probe,
                    client.host if client else None, request.headers)
 
 
 @router.get("/settings")
 def settings():
-    return _answer(desktop_api.settings_view)
+    return _read_answer(desktop_api.settings_view)
 
 
 @router.get("/hooks")
 def hooks(loop: str | None = None):
-    return _answer(desktop_api.hooks_view, loop)
+    return _read_answer(desktop_api.hooks_view, loop)
 
 
 @router.post("/hooks")
@@ -117,7 +133,7 @@ def actions(loop: str | None = None, action: str = '', pr: str | None = None,
         if not isinstance(pr, str) or not pr.isascii() or not pr.isdigit() or len(pr) > 12:
             raise HTTPException(status_code=422, detail='PR must be a positive integer.')
     number = int(pr) if pr is not None else None
-    return _answer(desktop_api.action_view, loop, action, number, seat)
+    return _read_answer(desktop_api.action_view, loop, action, number, seat)
 
 
 @router.post("/actions")

@@ -46,8 +46,12 @@ The harness also validates fenced `hermes dk` command examples in README/docs/sk
 
 ```sh
 node --experimental-vm-modules --test tests/desktop_behavior.mjs
+# With the installed desktop's real cache (shared-query and REST-Retry acceptance):
+DIAKTOROS_QUERY_CORE=<hermes>/node_modules/@tanstack/query-core/build/modern/index.js \
+  node --experimental-vm-modules --test --test-reporter=tap tests/desktop_behavior.mjs
 node --input-type=module --check < desktop/plugin.js
 python tests/leakguard.py discover -v -s tests -p 'test_desktop.py'
+python tests/leakguard.py -v test_desktop_reads   # needs FastAPI/HTTPX (and Hermes for the mount case)
 ```
 
 The Node harness executes the shipped plugin's registered page and chip with explicitly synthetic SDK/query fixtures. It tests loading, unavailable, stale cached data, successful empty reads, retry callbacks, summaries, and notifications; it is not a live backend or a browser layout test. Its independent elapsed-timer and wall clocks fire component expiry timers and hook-driven renders without a manual rerender, including a hung refresh, backward wall-clock changes, timestamp replacement, and unmount cleanup. It also checks malformed nested responses, safe error categories, and a missing-ledger payload pinned from real `stats.collect` output (the Python test verifies the same fixture against the collector and Desktop endpoint). `test_desktop.py` also runs this harness when Node is available. The VM module flag is required by this dependency-free harness, not by the Desktop plugin itself.
