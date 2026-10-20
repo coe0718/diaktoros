@@ -281,6 +281,31 @@ test('records: missing unreadable empty and retained stale are distinct without 
   h.dispose(); assert.equal(h.timerCount(), 0)
 })
 
+test('records: first displayed loop survives reorder removal and unreadability', async () => {
+  const h = await harness()
+  h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })
+  h.render('page')
+  h.queries.loops = h.good({ loops: [{ id: 'other-loop' }, { id: 'fixture-loop' }] }); h.render('page')
+  assert.equal(h.options.records.queryKey[2], 'fixture-loop')
+  h.queries.loops = h.good({ loops: [{ id: 'other-loop' }] }); h.render('page')
+  assert.equal(h.options.records.queryKey[2], 'fixture-loop')
+  assert.equal(h.options.records.enabled, false)
+  assert.match(h.text(recordsRegion(h)), /Selected loop is not readable.*records not read/)
+  assert.doesNotMatch(h.text(recordsRegion(h)), /timeout/)
+  h.queries.loops = h.good({ loops: [{ id: 'fixture-loop', unreadable: true }, { id: 'other-loop' }] }); h.render('page')
+  assert.equal(h.options.records.queryKey[2], 'fixture-loop')
+  assert.equal(h.options.records.enabled, false)
+  h.dispose()
+})
+
+test('records: reconciled unchanged is retained as a known audit outcome', async () => {
+  const h = await harness(); h.render('page')
+  const d = recordsFixture(); d.broker.items[0].phase = 'reconciled'; d.broker.items[0].outcome = 'unchanged'
+  h.respond(d); h.queries.records = h.good(await h.options.records.queryFn()); h.render('page')
+  assert.match(h.text(recordsRegion(h)), /reconciled.*unchanged/)
+  h.dispose()
+})
+
 test('records: loop switching binds queries and removal never substitutes history', async () => {
   const h = await harness(); h.queries.records = h.good(recordsFixture())
   h.queries.loops = h.good({ loops: [{ id: 'fixture-loop' }, { id: 'other-loop' }] })

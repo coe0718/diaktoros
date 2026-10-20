@@ -750,7 +750,7 @@ class Surface(unittest.TestCase):
         # replaced the operator's Node with a stub). Require reported tests, no failures, and a
         # named test.
         ok = re.findall(r"^ok \d+ - ", done.stdout, re.M)
-        self.assertGreaterEqual(len(ok), 158, done.stdout[-4000:])
+        self.assertGreaterEqual(len(ok), 160, done.stdout[-4000:])
         # #646 must exercise the independently registered pane, not only the existing page.
         for name in (
             "pane: independent registration docks below workspace at a bounded height",

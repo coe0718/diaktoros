@@ -112,6 +112,16 @@ class Records(unittest.TestCase):
                          (123, 'attempt', 'unknown'))
         self.assertEqual(rows[-1]['pr'], 16)
 
+    def test_reconciled_push_writer_outcomes_are_preserved(self):
+        for operation in ('push', 'update_branch'):
+            for outcome in ('unchanged', 'published', 'unknown', 'published_pr_unverified'):
+                with self.subTest(operation=operation, outcome=outcome):
+                    safe_push._audit(self.loop, {'repo': self.loop['repo'], 'pr': 123,
+                        'old_head': 'd' * 40, 'role': 'fixer', 'operation': operation,
+                        'phase': 'reconciled', 'outcome': outcome})
+                    row = self.view()['broker']['items'][0]
+                    self.assertEqual((row['operation'], row['outcome']), (operation, outcome))
+
     def test_jsonl_tail_discards_only_incomplete_prefix_and_bounds_io(self):
         self.audit()
         path = self.directory / 'broker-audit.jsonl'

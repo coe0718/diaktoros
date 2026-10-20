@@ -1063,7 +1063,7 @@ function validateRecords(data, loop) {
           category(row.role, ['reviewer', 'fixer', 'triage', 'adjudicator', 'issue_fixer', 'review_only_update', 'unknown']) &&
           category(row.operation, ['review', 'push', 'answers', 'labels', 'comment', 'open_pr', 'request_review', 'issue_comment', 'file_issue', 'ruling_comment', 'issue_branch', 'update_branch', 'unknown']) &&
           category(row.phase, ['recorded', 'attempt', 'reconciled', 'unknown']) &&
-          category(row.outcome, ['recorded', 'published', 'not_published', 'unknown', 'published_pr_unverified']) :
+          category(row.outcome, ['recorded', 'published', 'not_published', 'unchanged', 'unknown', 'published_pr_unverified']) :
           sha(row.green) && sha(row.notified) && Array.isArray(row.required_checks) && row.required_checks.length <= 50 && row.required_checks.every(label)
       if (!valid) throw invalidResponse('records')
     }
@@ -1072,12 +1072,12 @@ function validateRecords(data, loop) {
   return data
 }
 
-function Records({ loop }) {
-  const query = useQuery({ queryKey: [ID, 'records', loop || ''], enabled: !!loop,
+function Records({ loop, known }) {
+  const query = useQuery({ queryKey: [ID, 'records', loop || ''], enabled: !!loop && known,
     queryFn: async () => validateRecords(await call('/records?loop=' + encodeURIComponent(loop)), loop),
     staleTime: 30000, refetchInterval: 30000 })
   const state = useViewState(query, false, 60000)
-  const data = query.data?.loop === loop ? query.data : null
+  const data = known && query.data?.loop === loop ? query.data : null
   const reason = { malformed: 'malformed record', unsafe_file: 'unsafe file type', read_failed: 'read failed', too_large: 'read bound exceeded' }
   const group = (key, title, description, empty, render) => {
     const s = data?.[key]
@@ -1092,7 +1092,8 @@ function Records({ loop }) {
   }
   return jsx(Section, { title: 'Local loop records', children: jsxs('div', { role: 'region', 'aria-label': 'Local loop records', className: 'flex min-w-0 flex-col gap-4', children: [
     jsx(Muted, { text: 'Read-only · ' + (loop || 'No loop selected') + '. Bounded local artifacts; no GitHub reads. Raw errors, payloads and credentials are withheld.' }),
-    jsx(QueryStatus, { query, state: !loop ? 'unavailable' : state, label: 'Local records' }),
+    jsx(QueryStatus, { query, state: !loop || !known ? 'unavailable' : state, label: 'Local records' }),
+    loop && !known ? jsx(Muted, { text: 'Selected loop is not readable in current discovery; records not read.' }) : null,
     group('failures', 'Unresolved gate failures', 'Failures to finish, not quiet gate declines. Includes repository-matched fallback records. Failure kind is the safe reason category.', 'No unresolved failures in the read stores.', item =>
       item.gate + ' · ' + item.kind + ' · ' + (item.pr ? '#' + item.pr : 'No PR') + (item.head ? ' @ ' + item.head.slice(0, 7) : '') + ' · ' + item.attempts + ' attempts · ' + item.redrives + ' re-drives · Last failure: ' + clock(item.last_at)),
     group('broker', 'Broker write audit', 'Recorded writes and push attempts, not a complete authorization-decision log. Attempts do not prove publication. Latest appends first; only the bounded tail is read.', 'No audit entries in the bounded read.', item =>
@@ -1416,6 +1417,7 @@ function Page() {
   // A ref, not state: two clicks in the same tick both read the render's state, and only a ref
   // that is set synchronously stops the second request (#371: no double submission).
   const retryInFlight = useRef(false)
+  const initialLoop = useRef('')
   const loops = useLoops()
   const overview = useOverview()
   const configured = (loops.data && loops.data.loops) || []
@@ -1427,7 +1429,9 @@ function Page() {
     const id = focus.data && focus.data.loop
     if (id) setChosen(id)
   }, [focus.data])
-  const loop = chosen || (list[0] && list[0].id) || ''
+  // Preserve the first displayed identity too: discovery reorder/removal never selects a new loop.
+  if (!initialLoop.current && list[0]) initialLoop.current = list[0].id
+  const loop = chosen || initialLoop.current || ''
   const stats = useQuery({
     queryKey: [ID, 'stats', loop, since],
     queryFn: () => readView('/stats?since=' + since + '&loop=' + encodeURIComponent(loop), 'stats'),
@@ -1656,7 +1660,7 @@ function Page() {
     children: [
       header,
       body,
-      jsx(Records, { loop }),
+      jsx(Records, { loop, known: list.some(item => item.id === loop) }),
       jsx(Settings, {}),
       retryDialog,
       openPr && openPr.loop === loop

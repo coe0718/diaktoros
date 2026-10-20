@@ -367,7 +367,7 @@ def _record_broker(loop):
                                            ('recorded', 'attempt', 'reconciled')),
                      'outcome': _record_enum(entry.get('outcome', 'recorded' if 'phase' not in entry
                                                        else 'unknown'),
-                                             ('recorded', 'published', 'not_published', 'unknown',
+                                             ('recorded', 'published', 'not_published', 'unchanged', 'unknown',
                                               'published_pr_unverified'))})
     # File order, not wall clock, identifies the latest append (clocks can go backward).
     return list(reversed(rows[-RECORDS_MAX:]))
