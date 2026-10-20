@@ -406,12 +406,46 @@ class OperatorCommands(unittest.TestCase):
         self.sup.submit('s', 'acme/widgets', 7, HEAD, 'shadow')
         with ledger.connect(self.db) as con:
             con.execute("UPDATE runs SET state='failed', error='x' WHERE delivery='s'")
+        self.keep_snapshot(7)
         _, out = self.run_cli(cli.cmd_retry, loop='widgets', pr=7, seat=None)
         self.assertNotIn('shadow', out)
         self.assertEqual(self.sup.get('s')['state'], 'failed')
         code, out = self.run_cli(cli.cmd_retry, loop='widgets', pr=7, seat='shadow')
         self.assertIn('shadow #7 @ aaaaaaa re-armed', out)
         self.assertEqual(self.sup.get('s')['state'], 'pending')
+
+    def keep_snapshot(self, pr):
+        from diaktoros import config, state as state_mod
+        state_mod.state_for(config.by_repo('acme/widgets')).shadow_findings_put(pr, HEAD, {}, set())
+
+    def test_retry_refuses_a_shadow_whose_findings_snapshot_is_gone(self):
+        # #1013: a failed shadow's snapshot is evicted by design; re-arming it would judge it on
+        # the live findings ledger. The operator's retry is a run, so it is refused, and says why.
+        from diaktoros import cli, config, state as state_mod
+        self.sup.submit('s', 'acme/widgets', 7, HEAD, 'shadow')
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='failed', error='x' WHERE delivery='s'")
+        st = state_mod.state_for(config.by_repo('acme/widgets'))
+        self.assertIsNone(st.shadow_findings_get(7, HEAD))
+        code, out = self.run_cli(cli.cmd_retry, loop='widgets', pr=7, seat='shadow')
+        self.assertEqual(code, 2, out)
+        self.assertIn('findings snapshot', out)
+        self.assertNotIn('re-armed', out)
+        self.assertEqual(self.sup.get('s')['state'], 'failed')
+        # With the snapshot still on file the same retry is allowed.
+        self.keep_snapshot(7)
+        code, out = self.run_cli(cli.cmd_retry, loop='widgets', pr=7, seat='shadow')
+        self.assertIn('re-armed', out)
+        self.assertEqual(self.sup.get('s')['state'], 'pending')
+        self.assertEqual(st.shadow_findings_get(7, HEAD), {})
+
+    def test_supervisor_retry_refuses_a_shadow_without_a_snapshot(self):
+        self.sup.submit('s', 'acme/widgets', 7, HEAD, 'shadow')
+        with ledger.connect(self.db) as con:
+            con.execute("UPDATE runs SET state='failed', error='x' WHERE delivery='s'")
+        with self.assertRaisesRegex(ValueError, 'findings snapshot'):
+            self.sup.retry(self.sup.get('s')['id'])
+        self.assertEqual(self.sup.get('s')['state'], 'failed')
 
     def test_retry_rearms_prewrite_and_refuses_uncertain(self):
         from diaktoros import cli

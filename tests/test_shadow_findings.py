@@ -62,5 +62,106 @@ class Snapshot(unittest.TestCase):
         self.assertIsNone(st.shadow_findings_get(7, "b" * 40))
 
 
+class Retention(unittest.TestCase):
+    """A snapshot outlives its shadow run: the 300-entry cap never evicts one in use (#1013)."""
+
+    setUp = ts.NoWriteBrokerTests.setUp
+    serve = ts.NoWriteBrokerTests.serve
+
+    def fill(self, st, n):
+        for i in range(n):
+            st.shadow_findings_put(1000 + i, ts.HEAD, {})
+
+    def ledger(self, *runs):
+        """A run ledger holding shadow rows ``(pr, state)``, as the production one would."""
+        import pathlib
+        import sqlite3
+        import tempfile
+        from contextlib import closing
+        from diaktoros.run_supervisor import Supervisor
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        db = pathlib.Path(temp.name) / "runs.sqlite"
+        sup = Supervisor(db, fixture_mode=True)
+        sup._spawn = lambda: None
+        for pr, state in runs:
+            delivery = f"acme/widgets:{pr}:{ts.HEAD}:shadow"
+            sup.enqueue(delivery, "acme/widgets", pr, ts.HEAD, "shadow")
+            with closing(sqlite3.connect(db)) as con, con:
+                con.execute("UPDATE runs SET state=? WHERE delivery=?", (state, delivery))
+        return db
+
+    def test_the_cap_spares_a_snapshot_whose_shadow_is_still_open(self):
+        st = state_mod.state_for(self.fx.loop)
+        self.fill(st, st.SHADOW_FINDINGS_KEPT)
+        st.shadow_findings_put(5, ts.HEAD, {}, {(1000, ts.HEAD)})
+        self.assertEqual(st.shadow_findings_get(1000, ts.HEAD), {})   # the oldest, still in use
+        self.assertIsNone(st.shadow_findings_get(1001, ts.HEAD))      # the oldest one that is not
+        self.assertEqual(st.shadow_findings_get(5, ts.HEAD), {})
+
+    def test_an_unknown_set_of_open_runs_evicts_nothing(self):
+        st = state_mod.state_for(self.fx.loop)
+        self.fill(st, st.SHADOW_FINDINGS_KEPT + 3)
+        self.assertEqual(st.shadow_findings_get(1000, ts.HEAD), {})
+
+    def test_queueing_through_the_gate_keeps_the_snapshot_of_a_delayed_shadow(self):
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        self.fill(st, st.SHADOW_FINDINGS_KEPT)
+        db = self.ledger((1000, "waiting"), (1001, "succeeded"))
+        with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db):
+            gate.enqueue_shadow(loop, mock.Mock(), 7, ts.HEAD)
+        self.assertEqual(st.shadow_findings_get(1000, ts.HEAD), {})   # delayed, still open
+        self.assertIsNone(st.shadow_findings_get(1001, ts.HEAD))      # ended: evicted
+        self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})
+
+    def test_a_delayed_shadow_is_still_judged_on_its_snapshot_after_the_cap(self):
+        st = state_mod.state_for(self.fx.loop)
+        st.findings_put(7, VEX_SAME_ROUND)
+        st.shadow_findings_put(7, ts.HEAD, {}, set())
+        self.fill(st, st.SHADOW_FINDINGS_KEPT)
+        st.shadow_findings_put(8, ts.HEAD, {}, {(7, ts.HEAD)})
+        answer, server = Snapshot.approve(self)
+        self.assertTrue(answer.get("ok"), answer)
+
+    def test_a_second_enqueue_in_the_gap_before_submit_cannot_evict_the_first_snapshot(self):
+        """299 open snapshots; B's enqueue starts while A's run is not yet in the ledger."""
+        import threading
+        from diaktoros.run_supervisor import Supervisor
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        st = state_mod.state_for(loop)
+        self.fill(st, st.SHADOW_FINDINGS_KEPT - 1)
+        db = self.ledger(*[(1000 + i, "waiting") for i in range(st.SHADOW_FINDINGS_KEPT - 1)])
+        sup = Supervisor(db, fixture_mode=True)
+        sup._spawn = lambda: None
+        seen = {}
+        second = threading.Thread(target=lambda: seen.update(
+            b=gate.enqueue_shadow(loop, sup, 8, ts.HEAD)))
+        real_submit = sup.submit
+
+        def submit_a(*args, **kwargs):
+            if not second.is_alive() and not seen:
+                second.start()              # B arrives after A's snapshot, before A's row
+                second.join(0.5)            # unfixed, B finishes here and evicts A's snapshot
+            return real_submit(*args, **kwargs)
+
+        sup.submit = submit_a
+        with mock.patch("diaktoros.run_supervisor.production_ledger", return_value=db):
+            a = gate.enqueue_shadow(loop, sup, 7, ts.HEAD)
+            second.join(30)
+        self.assertEqual(a, "enqueued")
+        self.assertEqual(seen.get("b"), "enqueued")
+        self.assertEqual(st.shadow_findings_get(7, ts.HEAD), {})      # A's run is open: kept
+        self.assertEqual(st.shadow_findings_get(8, ts.HEAD), {})
+
+    def test_no_snapshot_no_shadow(self):
+        loop = {**self.fx.loop, "shadow": {"profile": "shadow", "every": 1}}
+        supervisor = mock.Mock()
+        with mock.patch.object(state_mod.LoopState, "shadow_findings_put",
+                               side_effect=OSError("disk full")):
+            self.assertEqual(gate.enqueue_shadow(loop, supervisor, 7, ts.HEAD), "no snapshot")
+        supervisor.submit.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

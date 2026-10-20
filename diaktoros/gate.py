@@ -214,6 +214,25 @@ def ruling_answers(ruling, review_run: str, review_created: float) -> bool:
     return str(shown) == str(review_run)
 
 
+def shadow_open_heads(db=None) -> set[tuple[int, str]]:
+    """``(pr, head)`` of every shadow run still open (``SHADOW_OPEN``), whose findings snapshot
+    must outlive it (#1013). Empty when the ledger does not exist yet; raises when it exists
+    but cannot be read, so the caller never evicts on a guess."""
+    from . import run_supervisor
+    path = pathlib.Path(db or run_supervisor.production_ledger())
+    if not path.exists():
+        return set()
+    con = run_supervisor.read_only_connect(path)
+    if con is None:
+        return set()
+    try:
+        rows = con.execute(f"SELECT pr, head FROM runs WHERE seat='shadow' AND "
+                           f"state IN ({','.join('?' * len(SHADOW_OPEN))})", SHADOW_OPEN).fetchall()
+    finally:
+        con.close()
+    return {(int(r[0]), str(r[1])) for r in rows}
+
+
 def shadow_hold(loop: dict, number: int, head: str, db=None,
                 marker: dict | None = None) -> tuple[str, str]:
     """``(hold, note)`` for a PR head under ``shadow.escalate`` (#1004), read-only.
@@ -384,13 +403,32 @@ def enqueue_shadow(loop: dict, supervisor, number: int, head: str, *, turn_key: 
         if not shadow_sampled(loop, number, head):
             return "not sampled"
         delivery = f"{loop['repo']}:{number}:{head}:shadow" + (f":{turn_key}" if turn_key else "")
+        # No durable snapshot, no shadow: the broker would judge it on the live ledger, which
+        # the real review of this head may change meanwhile (#218, #1013).
         try:
             st = state_mod.state_for(loop)
-            st.shadow_findings_put(number, head, st.findings_get(number))
         except Exception as exc:
-            log(f"#{number}: shadow findings snapshot not kept: {type(exc).__name__}: {exc}")
-        return supervisor.submit(delivery, loop["repo"], number, head, "shadow",
-                                 turn_key=turn_key, budget=config.turn_budget(loop, "shadow"))
+            log(f"#{number}: shadow findings snapshot not kept, shadow not queued: "
+                f"{type(exc).__name__}: {exc}")
+            return "no snapshot"
+        # One state lock over the open-runs read, the snapshot write and the submit: a second
+        # enqueue cannot sample the ledger before this run is visible in it and then evict this
+        # snapshot as unused (#1013). The lock is reentrant.
+        with st.locked():
+            try:
+                try:
+                    keep = shadow_open_heads()
+                except Exception as exc:
+                    keep = None                  # unknown open runs: evict nothing
+                    log(f"#{number}: shadow runs unreadable, no snapshot evicted: "
+                        f"{type(exc).__name__}: {exc}")
+                st.shadow_findings_put(number, head, st.findings_get(number), keep)
+            except Exception as exc:
+                log(f"#{number}: shadow findings snapshot not kept, shadow not queued: "
+                    f"{type(exc).__name__}: {exc}")
+                return "no snapshot"
+            return supervisor.submit(delivery, loop["repo"], number, head, "shadow",
+                                     turn_key=turn_key, budget=config.turn_budget(loop, "shadow"))
     except Exception as exc:
         log(f"#{number}: shadow review not queued: {type(exc).__name__}: {exc}")
         return "error"

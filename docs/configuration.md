@@ -158,6 +158,7 @@ Daily caps count turns started per loop/seat per **local day**. A capped turn wa
 ```bash
 hermes dk set --loop "<loop-id>" --concurrency 2 --clone "<absolute-clone-path>"
 hermes dk set --loop "<loop-id>" --reviewer-concurrency 2 --fixer-concurrency 1
+hermes dk set --loop "<loop-id>" --shadow-concurrency 3 --triage-concurrency 2
 hermes dk set --loop "<loop-id>" --reviewer-daily-turns 20
 hermes dk set --loop "<loop-id>" --reviewer-daily-turns 0
 ```
@@ -466,6 +467,7 @@ The desktop renders `plugin.yaml`'s `config_schema` under **Capabilities → Plu
 |---|---|---|
 | `cap` | `3` | `cap` |
 | `reviewer_concurrency`, `fixer_concurrency` | `1` each | Working-seat capacities; placement rules below. |
+| `shadow_concurrency`, `triage_concurrency` | Blank | `seats.shadow.concurrency` / `seats.triage.concurrency` (>= 1); the loop default never reaches these seats. Inert while the loop has no shadow profile / no issue triage. Blank keeps the loop's own value. |
 | `clone` | Blank | `clone`; blank preserves an existing clone. |
 | `base` | `main` | `base` |
 | `grace_min`, `ttl_min`, `inflight_ttl_min` | `35`, `45`, `10` | Same loop timer keys. |

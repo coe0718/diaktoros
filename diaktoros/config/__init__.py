@@ -1105,6 +1105,15 @@ def normalize_triage(raw, loop: dict, where: str) -> dict:
     return out
 
 
+def check_concurrency(value, what: str, where: str) -> int:
+    """A seat's own ``concurrency``: a whole number >= 1 (1 = serialized). The one rule the
+    loader, ``set``, ``init``, ``setup`` and the settings form share for ``seats.<seat>.concurrency``."""
+    number = _as_int(value, what, where)
+    if number < 1:
+        raise ConfigError(f"{where}: {what} must be >= 1 (1 = serialized)")
+    return number
+
+
 def _triage_seat(raw, where: str, name: str = "triage") -> dict:
     """``seats.triage`` (or ``seats.shadow``, #218): its turn budget, daily cap and concurrency —
     no login (see triage.login; a shadow never writes)."""
@@ -1127,9 +1136,8 @@ def _triage_seat(raw, where: str, name: str = "triage") -> dict:
         seat["turn_budget_s"] = _check_budget(raw["turn_budget_s"], f"seats.{name}.turn_budget_s",
                                               where)
     if raw.get("concurrency") not in (None, ""):
-        seat["concurrency"] = _as_int(raw["concurrency"], f"seats.{name}.concurrency", where)
-        if seat["concurrency"] < 1:
-            raise ConfigError(f"{where}: seats.{name}.concurrency must be >= 1 (1 = serialized)")
+        seat["concurrency"] = check_concurrency(raw["concurrency"], f"seats.{name}.concurrency",
+                                                where)
     return seat
 
 
