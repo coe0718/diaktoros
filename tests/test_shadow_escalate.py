@@ -81,6 +81,11 @@ class SetCommand(unittest.TestCase):
         rc, out = self.run_cli(["set", "--loop", "widgets", "--shadow-escalate", "off"])
         self.assertEqual(rc, 0, out)
         self.assertNotIn("escalate", self.loop_json()["shadow"])
+        # Shadow review of #1097: `--no-shadow --shadow-escalate on` dropped the "on" silently.
+        rc, out = self.run_cli(["set", "--loop", "widgets", "--no-shadow", "--shadow-escalate", "on"])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("needs a shadow profile", out)
+        self.assertTrue(self.loop_json()["shadow"].get("profile"))     # nothing was written
 
 
 class Hold(unittest.TestCase):
@@ -207,6 +212,52 @@ class ExplainBlocker(fg.Base):
         self.assertIn("shadow review: the shadow review requested changes at aaaaaaa",
                       report["blockers"])
         self.assertEqual(report["shadow"]["hold"], facts["shadow_hold"][0])
+
+
+import test_merged_tree_blockers as mt  # noqa: E402
+
+
+class Wiring(unittest.TestCase):
+    """Shadow review of #1097 (F1): the explain_facts read and the CLI's note line, pinned."""
+
+    def test_explain_facts_asks_shadow_hold_about_the_live_head(self):
+        with mock.patch.object(gate.gh, "fetch", side_effect=[(mt.PR, ""), ([], "")]), \
+                mock.patch.object(gate, "hooks_read", return_value=(True, "")), \
+                mock.patch.object(gate, "shadow_hold", return_value=("held here", "")) as hold:
+            facts = gate.explain_facts(mt.LOOP, 7)
+        hold.assert_called_once_with(mt.LOOP, 7, mt.HEAD)
+        self.assertEqual(facts["shadow_hold"], ("held here", ""))
+
+    def test_the_explain_command_prints_the_note(self):
+        # The whole command, real `gate.explain`, on fg's loop: only the GitHub read is stubbed.
+        import contextlib
+        import io
+        import types
+        from diaktoros.cli import operations
+        base = fg.Base("run")
+        base.setUp()
+        self.addCleanup(base.doCleanups)
+        facts = {"pr": fg.LIVE, "reviews": [], "armed": True, "read_at": 0,
+                 "shadow_hold": ("", "no shadow review was queued for aaaaaaa")}
+        out = io.StringIO()
+        with mock.patch.object(gate, "explain_facts", return_value=facts), \
+                contextlib.redirect_stdout(out):
+            rc = operations.cmd_explain(types.SimpleNamespace(loop="one", pr=7))
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("no shadow review was queued for aaaaaaa", out.getvalue())
+
+    def test_explain_prints_the_note_and_nothing_without_one(self):
+        import contextlib
+        import io
+        from diaktoros.cli import operations
+        for report, want in (({"shadow": {"hold": "", "note": "no shadow review was queued"}},
+                              "  shadow:     no shadow review was queued\n"),
+                             ({"shadow": {"hold": "x", "note": ""}}, ""), ({}, "")):
+            with self.subTest(report=report):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    operations._print_shadow_note(report, "  shadow:     ")
+                self.assertEqual(out.getvalue(), want)
 
 
 if __name__ == "__main__":

@@ -376,6 +376,14 @@ def _print_ledger_runs(loop: dict, pr: int | None, prefix: str, limit: int) -> l
     return rows
 
 
+def _print_shadow_note(report: dict, prefix: str) -> None:
+    """``explain``'s note when a held loop has no shadow review to wait for at this head (#1004):
+    none was queued, or its run ended without one."""
+    note = (report.get("shadow") or {}).get("note")
+    if note:
+        print(f"{prefix}{note}")
+
+
 def _print_shadows(loop: dict, pr: int, prefix: str) -> None:
     """This PR's shadow reviews (#218), each beside the real reviewer's verdict at its head.
     Data for comparing models: nothing in the loop acts on them."""
@@ -782,9 +790,7 @@ def cmd_explain(args) -> int:
             print(f"  {'gates:':<12}no unresolved gate failure recorded for this PR")
         runs = _print_ledger_runs(loop, args.pr, f"  {'run:':<12}", limit=6)
         _print_shadows(loop, args.pr, f"  {'shadow:':<12}")
-        note = (report.get("shadow") or {}).get("note")
-        if note:
-            print(f"  {'shadow:':<12}{note}")
+        _print_shadow_note(report, f"  {'shadow:':<12}")
         # A ledgered turn at the current head that waits to retry, failed before any write, or
         # is quarantined holds the PR as surely as any gate guard (#53): it is the blocker, and
         # its step is next. A failed turn that did write is final; GitHub shows where it left off.

@@ -1089,7 +1089,8 @@ left out. Read-only: the loop never merges.
 
 A PR is listed when it is approved at its head, that approval is not stale (#473), the required
 checks are green, GitHub reports it mergeable, and nothing holds it (draft, open gate failure,
-human-paths hold, escalation, issue-fix hold, same-head retarget hold). A retarget hold blocks only while its fresh review is
+human-paths hold, escalation, issue-fix hold, shadow-review hold (with `shadow.escalate`),
+same-head retarget hold). A retarget hold blocks only while its fresh review is
 still owed; a host-receipted approval at that head lifts it. Anything unreadable
 excludes the PR and says so. A stacked PR (based on another PR's branch) comes after its parent
 and is excluded until the parent is ready. PRs changing the same files are listed one after

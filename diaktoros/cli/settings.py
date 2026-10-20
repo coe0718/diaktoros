@@ -623,7 +623,7 @@ def cmd_set(args) -> int:
             shadow = settings_form.shadow_block(
                 loop.get("shadow"), "off" if args.no_shadow else args.shadow_profile,
                 args.shadow_every, "--shadow-profile/--shadow-every/--shadow-escalate",
-                escalate=None if args.no_shadow else getattr(args, "shadow_escalate", None))
+                escalate=getattr(args, "shadow_escalate", None))   # "on" with --no-shadow: refused
         except config.ConfigError as exc:
             print(f"refused: {exc}")
             return 2
