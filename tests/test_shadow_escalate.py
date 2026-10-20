@@ -130,6 +130,21 @@ class Hold(unittest.TestCase):
         self.shadow_run("succeeded", "APPROVE")              # a later review at the head wins
         self.assertEqual(self.hold(), ("", ""))
 
+    def test_a_shadow_run_queued_after_an_approving_review_holds_until_it_lands(self):
+        # Shadow review of #1097 (P2): a re-review at the same head (a dispute's maintainer
+        # re-request) queues a new shadow run; the earlier APPROVE must not hide it.
+        self.shadow_run("succeeded", "APPROVE")
+        self.assertEqual(self.hold(), ("", ""))
+        self.shadow_run("running")
+        self.assertIn("waiting on the shadow review", self.hold()[0])
+        self.shadow_run("succeeded", "APPROVE")              # the re-review approved too
+        self.assertEqual(self.hold(), ("", ""))
+
+    def test_an_open_run_older_than_the_newest_review_is_not_waited_for(self):
+        self.shadow_run("running")
+        self.shadow_run("succeeded", "APPROVE")
+        self.assertEqual(self.hold(), ("", ""))
+
     def test_nothing_to_wait_for_is_a_note_never_a_hold(self):
         held, note = self.hold()                              # none queued
         self.assertEqual(held, "")
@@ -145,9 +160,17 @@ class Hold(unittest.TestCase):
         self.shadow_run("running", head="b" * 40)
         self.assertEqual(self.hold()[0], "")
 
-    def test_an_unreadable_ledger_holds_and_escalate_off_never_does(self):
+    def test_a_missing_ledger_is_a_note_an_unreadable_one_holds_escalate_off_never_does(self):
+        # Shadow review of #1097: a ledger never created holds no shadow review, so it is a
+        # note, not a hold on every approved PR of a fresh loop. One that exists but can't be
+        # read still holds.
         missing = self.db.with_name("missing.sqlite")
-        held, _ = gate.shadow_hold(self.loop, 7, HEAD, db=missing)
+        held, note = gate.shadow_hold(self.loop, 7, HEAD, db=missing)
+        self.assertEqual(held, "")
+        self.assertIn("no run ledger yet", note)
+        broken = self.db.with_name("broken.sqlite")
+        broken.write_bytes(b"not a database at all" * 40)
+        held, _ = gate.shadow_hold(self.loop, 7, HEAD, db=broken)
         self.assertIn("unreadable", held)
         off = config.normalize({**RAW, "shadow": {"profile": "critic", "every": 1}})
         self.shadow_run("running")

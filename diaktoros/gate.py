@@ -193,42 +193,56 @@ SHADOW_OPEN = ("pending", "waiting", "claimed", "launching", "running")
 def shadow_hold(loop: dict, number: int, head: str, db=None) -> tuple[str, str]:
     """``(hold, note)`` for a PR head under ``shadow.escalate`` (#1004), read-only.
 
-    ``hold`` (it is not ready to merge) while the shadow review of this head is still running,
-    or once it requested changes; an unreadable ledger holds too (unknown is not ready). ``note``
-    only, never a hold, when there is no shadow review of this head to wait for: none was queued
-    (sampled out, or queued before escalate was on) or its run ended without one, so a failed
-    shadow never parks a PR for good. ``("", "")`` with escalate off."""
+    ``hold`` (it is not ready to merge) once the newest shadow review of this head requested
+    changes, or while a shadow run started after the newest review (or with none yet) is still
+    open; a ledger that exists but cannot be read holds too (unknown is not ready). ``note``
+    only, never a hold, when there is nothing to wait for: no ledger yet, no shadow run queued
+    (sampled out, or queued before escalate was on), or runs that ended without a review, so a
+    failed shadow never parks a PR for good. ``("", "")`` with escalate off."""
     if not config.shadow_escalate(loop):
         return "", ""
     import sqlite3
+    from pathlib import Path
     from . import run_supervisor
     short = str(head)[:7]
+    path = Path(db or run_supervisor.production_ledger())
+    if not path.exists():
+        # A loop whose ledger was never created holds no shadow review (shadow review of #1097).
+        return "", f"no run ledger yet, so no shadow review of {short} exists: nothing to wait for"
     try:
-        con = run_supervisor.read_only_connect(db or run_supervisor.production_ledger())
+        con = run_supervisor.read_only_connect(path)
         if con is None:
             return f"the run ledger is unreadable, so the shadow review at {short} is unknown", ""
         try:
             try:
-                review = con.execute("SELECT verdict FROM shadow_reviews WHERE repo=? AND pr=? "
-                                     "AND head=? ORDER BY created DESC LIMIT 1",
+                review = con.execute("SELECT verdict, created FROM shadow_reviews WHERE repo=? "
+                                     "AND pr=? AND head=? ORDER BY created DESC LIMIT 1",
                                      (loop["repo"], number, head)).fetchone()
             except sqlite3.OperationalError:
                 review = None              # a ledger from before shadow reviews: none recorded
-            run = con.execute("SELECT state FROM runs WHERE repo=? AND pr=? AND head=? AND "
-                              "seat='shadow' ORDER BY updated DESC, created DESC LIMIT 1",
+            run = con.execute("SELECT state, created FROM runs WHERE repo=? AND pr=? AND head=? "
+                              "AND seat='shadow' ORDER BY created DESC, updated DESC LIMIT 1",
                               (loop["repo"], number, head)).fetchone()
+            pending = con.execute(
+                f"SELECT state FROM runs WHERE repo=? AND pr=? AND head=? AND seat='shadow' AND "
+                f"state IN ({','.join('?' * len(SHADOW_OPEN))}) AND created>? "
+                "ORDER BY created DESC LIMIT 1",
+                (loop["repo"], number, head, *SHADOW_OPEN,
+                 float(review[1]) if review is not None else -1.0)).fetchone()
         finally:
             con.close()
     except Exception as exc:
         return (f"the run ledger is unreadable ({type(exc).__name__}), so the shadow review at "
                 f"{short} is unknown"), ""
+    if review is not None and str(review[0]) == "REQUEST_CHANGES":
+        return (f"the shadow review requested changes at {short} — it holds the PR until "
+                "you decide (`hermes dk explain --pr N` shows its findings)"), ""
+    if pending is not None:
+        # A shadow run queued after the newest review (a re-review at the same head, #1097's
+        # shadow review) can still change it: wait for it, even past an earlier approval.
+        return f"waiting on the shadow review at {short} ({pending[0]})", ""
     if review is not None:
-        if str(review[0]) == "REQUEST_CHANGES":
-            return (f"the shadow review requested changes at {short} — it holds the PR until "
-                    "you decide (`hermes dk explain --pr N` shows its findings)"), ""
         return "", ""
-    if run is not None and run[0] in SHADOW_OPEN:
-        return f"waiting on the shadow review at {short} ({run[0]})", ""
     if run is None:
         return "", f"no shadow review was queued for {short}: nothing to wait for"
     return "", f"the shadow run at {short} ended {run[0]} without a review: nothing to wait for"
