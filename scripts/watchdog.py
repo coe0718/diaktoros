@@ -1202,6 +1202,14 @@ def _sweep_loop_locked(loop: dict, st: state_mod.LoopState, lines: list[str]) ->
                         "sent for a ruling")
             except Exception as exc:
                 log(f"#{number} shadow escalation check failed: {type(exc).__name__}: {exc}")
+            # #1114: the ruling it went for is owed like any other: a dead adjudicator turn is
+            # a stall here too. A pending delivery is the escalation check's to retry (above).
+            marker = st.breach_get(number)
+            if ((marker.get("escalated") or {}).get("by") == gate.SHADOW_ESCALATION
+                    and gate.breach_delivery_status(marker, head) != "delivery-pending"):
+                kind = parked_kind(loop, marker, number, head, marker_grace) or ""
+                if kind and due(stall_key(number, head, kind)):
+                    alerts.append((number, kind, (pr.get("title") or "")[:60]))
             continue                              # approved at this head: the loop is done here
 
         at_head = (gate.changes_at_head(reviews, loop, head)
@@ -1450,7 +1458,11 @@ def parked_kind(loop: dict, marker: dict, number: int, head: str,
     if not isinstance(marker, dict) or marker.get("head") != head:
         return None
     from diaktoros.run_supervisor import ruling_at, turn_state
-    if ruling_at(config.host_path("ledger"), loop["repo"], number, head):
+    # A shadow marker can be re-armed at its head for a later dissent (#1111): only its own
+    # round's ruling ends it, not the earlier round's.
+    shadow = (marker.get("escalated") or {}).get("by") == gate.SHADOW_ESCALATION
+    if ruling_at(config.host_path("ledger"), loop["repo"], number, head,
+                 turn_key=f"breach:{marker.get('rounds')}" if shadow else None):
         return ""             # ruled: the decision is the operator's, and the ruling said so
     if marker.get("status") != "adjudicating":
         mins = age_min(marker.get("at"))

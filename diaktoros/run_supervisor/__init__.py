@@ -904,8 +904,10 @@ def turn_state(db: str | Path, repo: str, pr: int, head: str, seat: str) -> str 
         return None
 
 
-def ruling_at(db: str | Path, repo: str, pr: int, head: str) -> str | None:
-    """The newest recorded ruling's verdict on this PR head, read-only, or None.
+def ruling_at(db: str | Path, repo: str, pr: int, head: str,
+              turn_key: str | None = None) -> str | None:
+    """The newest recorded ruling's verdict on this PR head, read-only, or None. With
+    ``turn_key``, only the ruling of that turn (one round of a re-armed marker, #1111).
 
     A ruling ends adjudication: the marker stays ``adjudicating`` at its head (the decision is a
     person's now), so the watchdog and ``explain`` read this to tell "ruled, waiting for you" from
@@ -917,7 +919,10 @@ def ruling_at(db: str | Path, repo: str, pr: int, head: str) -> str | None:
             return None
         try:
             row = con.execute("SELECT verdict FROM rulings WHERE repo=? AND pr=? AND head=? "
-                              "ORDER BY created DESC LIMIT 1", (repo, pr, head)).fetchone()
+                              + ("AND turn_key=? " if turn_key is not None else "")
+                              + "ORDER BY created DESC LIMIT 1",
+                              (repo, pr, head, *(() if turn_key is None else (turn_key,)))
+                              ).fetchone()
             return str(row[0]) if row else None
         finally:
             con.close()
